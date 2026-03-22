@@ -4,8 +4,9 @@ import type { Provider, Model } from '@dojo/shared';
 import * as api from '../lib/api';
 import { RouterConfig } from '../components/RouterConfig';
 import { RouterTest } from '../components/RouterTest';
+import { formatDate } from '../lib/dates';
 
-type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router';
+type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'dreaming';
 
 export const Settings = () => {
   const [searchParams] = useSearchParams();
@@ -19,6 +20,7 @@ export const Settings = () => {
     { key: 'router', label: 'Router' },
     { key: 'profile', label: 'Profile' },
     { key: 'security', label: 'Security' },
+    { key: 'dreaming', label: 'Dreaming' },
   ];
 
   return (
@@ -49,6 +51,7 @@ export const Settings = () => {
       {activeTab === 'router' && <RouterTab />}
       {activeTab === 'profile' && <ProfileTab />}
       {activeTab === 'security' && <SecurityTab />}
+      {activeTab === 'dreaming' && <DreamingTab />}
     </div>
   );
 };
@@ -1696,5 +1699,152 @@ const SecurityTab = () => {
         {saving ? 'Changing...' : 'Change Password'}
       </button>
     </form>
+  );
+};
+
+// ── Dreaming Tab ──
+
+const DreamingTab = () => {
+  const [models, setModels] = useState<Model[]>([]);
+  const [dreamModelId, setDreamModelId] = useState('');
+  const [dreamTime, setDreamTime] = useState('03:00');
+  const [dreamMode, setDreamMode] = useState<'full' | 'light'>('full');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [lastDream, setLastDream] = useState<api.DreamReport | null>(null);
+
+  useEffect(() => {
+    const load = async () => {
+      const [configResult, modelsResult, latestResult] = await Promise.all([
+        api.getDreamingConfig(),
+        api.getModels(),
+        api.getLatestDream(),
+      ]);
+      if (configResult.ok) {
+        setDreamModelId(configResult.data.modelId ?? '');
+        setDreamTime(configResult.data.dreamTime);
+        setDreamMode(configResult.data.dreamMode === 'off' ? 'full' : configResult.data.dreamMode);
+      }
+      if (modelsResult.ok) {
+        setModels(modelsResult.data.filter((m: Model) => m.isEnabled));
+      }
+      if (latestResult.ok) {
+        setLastDream(latestResult.data);
+      }
+      setLoading(false);
+    };
+    load();
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    const result = await api.updateDreamingConfig({
+      modelId: dreamModelId || undefined,
+      dreamTime,
+      dreamMode,
+    });
+    if (result.ok) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    }
+    setSaving(false);
+  };
+
+  if (loading) return <div className="text-white/40 text-sm">Loading...</div>;
+
+  return (
+    <div className="space-y-6 max-w-lg">
+      <div className="glass-card p-4 space-y-4">
+        <div>
+          <h3 className="text-sm font-medium text-white/70">Dreaming</h3>
+          <p className="text-xs text-white/40 mt-1">
+            Configure how the dojo processes its daily conversations into long-term memories overnight. A temporary "Dreamer" agent is spawned to do the work -- it uses the tracker, extracts knowledge, and dismisses itself when done.
+          </p>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-white/55 mb-1">Dreamer Model</label>
+          <select
+            value={dreamModelId}
+            onChange={(e) => setDreamModelId(e.target.value)}
+            className="w-full px-3 py-2 bg-white/[0.05] border border-white/[0.08] rounded-lg text-sm text-white/90 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="">Auto (first available Standard tier model)</option>
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name} ({m.apiModelId})
+              </option>
+            ))}
+          </select>
+          <p className="text-[10px] text-white/30 mt-1">
+            The model the Dreamer agent uses. Standard tier recommended for good extraction quality at reasonable cost.
+          </p>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-white/55 mb-1">Dream Time</label>
+          <input
+            type="time"
+            value={dreamTime}
+            onChange={(e) => setDreamTime(e.target.value)}
+            className="w-full px-3 py-2 bg-white/[0.05] border border-white/[0.08] rounded-lg text-sm text-white/90 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <p className="text-[10px] text-white/30 mt-1">
+            When the Dreamer agent wakes up to process the day's conversations. Default: 3:00 AM.
+          </p>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-white/55 mb-2">Dream Mode</label>
+          <div className="space-y-2">
+            {([
+              { value: 'full', label: 'Full Dream', desc: 'Extract memories + identify technique candidates + vault maintenance' },
+              { value: 'light', label: 'Light Dream', desc: 'Extract memories + vault maintenance only, no technique identification' },
+            ] as const).map((option) => (
+              <label key={option.value} className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="dreamMode"
+                  value={option.value}
+                  checked={dreamMode === option.value}
+                  onChange={() => setDreamMode(option.value)}
+                  className="mt-1 accent-blue-500"
+                />
+                <div>
+                  <span className="text-sm text-white/80">{option.label}</span>
+                  <p className="text-[10px] text-white/30">{option.desc}</p>
+                </div>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 pt-2">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:text-white/40 text-white text-sm font-medium rounded-lg transition-colors"
+          >
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+          {saved && <span className="text-xs text-green-400">Saved!</span>}
+        </div>
+      </div>
+
+      {/* Last Dream Report */}
+      {lastDream && (
+        <div className="glass-card p-4 space-y-2">
+          <h3 className="text-sm font-medium text-white/70">Last Dream</h3>
+          <p className="text-[10px] text-white/30">
+            {formatDate(lastDream.createdAt)}
+            {lastDream.durationMs && ` (${(lastDream.durationMs / 1000).toFixed(1)}s)`}
+          </p>
+          <pre className="text-xs text-white/60 whitespace-pre-wrap font-mono bg-white/[0.03] rounded p-2">
+            {lastDream.reportText ?? 'No report text available'}
+          </pre>
+        </div>
+      )}
+    </div>
   );
 };

@@ -5,6 +5,7 @@ import type { ChatChunkEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorE
 import * as api from '../lib/api';
 import type { AttachmentInfo } from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
+import { formatDate } from '../lib/dates';
 import { StatusBadge } from '../components/StatusBadge';
 import { ToolCallBlock, ToolCallCard } from '../components/ToolCallBlock';
 import { Markdown } from '../components/Markdown';
@@ -111,7 +112,7 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
           <AttachmentChips attachments={msg.attachments} />
         )}
         <div className="text-xs mt-2 text-blue-200">
-          {new Date(msg.createdAt).toLocaleTimeString()}
+          {formatDate(msg.createdAt)}
         </div>
       </div>
     </div>
@@ -166,7 +167,7 @@ const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
         )}
         {!msg.isStreaming && (
           <div className="text-xs mt-1 white/40 px-1">
-            {new Date(msg.createdAt).toLocaleTimeString()}
+            {formatDate(msg.createdAt)}
           </div>
         )}
       </div>
@@ -753,7 +754,7 @@ const HistoryTab = ({ agentId }: { agentId: string }) => {
                   })()}
                 </pre>
                 <div className="text-xs white/30 mt-0.5">
-                  {new Date(msg.createdAt).toLocaleString()}
+                  {formatDate(msg.createdAt)}
                   {msg.tokenCount ? ` | ${msg.tokenCount} tokens` : ''}
                   {msg.cost ? ` | $${msg.cost.toFixed(4)}` : ''}
                 </div>
@@ -830,7 +831,7 @@ const InterAgentTab = ({ agentId }: { agentId: string }) => {
                     {msg.messageType}
                   </span>
                   <span className="text-xs white/40 ml-auto">
-                    {new Date(msg.createdAt).toLocaleString()}
+                    {formatDate(msg.createdAt)}
                   </span>
                 </div>
                 <div className="flex items-center gap-1 text-xs white/40 mb-2">

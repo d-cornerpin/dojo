@@ -6,6 +6,7 @@ import { getContextWindow } from '../agent/model.js';
 import { estimateTokens, getRecentMessages } from './store.js';
 import { getContextSummaries } from './dag.js';
 import { getLatestBriefing } from './briefing.js';
+import { retrieveForContext } from '../vault/retrieval.js';
 import type { Summary } from './dag.js';
 import type { Message } from '@dojo/shared';
 
@@ -26,13 +27,13 @@ function getFreshTailCount(contextWindow: number): number {
 
 // ── Context Assembly ──
 
-export function assembleContext(
+export async function assembleContext(
   agentId: string,
   modelId: string,
-): {
+): Promise<{
   systemPrompt: string;
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>;
-} {
+}> {
   const contextWindow = getContextWindow(modelId);
   const maxTokens = Math.floor(DEFAULTS.contextThreshold * contextWindow);
 
@@ -53,6 +54,29 @@ export function assembleContext(
       messages.push({ role: 'assistant', content: 'Understood, I have reviewed the morning briefing.' });
       usedTokens += briefingTokens + estimateTokens('Understood, I have reviewed the morning briefing.');
     }
+  }
+
+  // 2.5. Vault entries (pinned + semantically relevant)
+  try {
+    // Use the last few fresh tail messages as the query for relevance
+    const recentForQuery = getRecentMessages(agentId, 3);
+    const queryText = recentForQuery.map(m => m.content).join(' ').slice(0, 500);
+    if (queryText.length > 10) {
+      const vaultResult = await retrieveForContext(queryText, contextWindow);
+      if (vaultResult.section) {
+        const vaultTokens = estimateTokens(vaultResult.section);
+        if (usedTokens + vaultTokens < maxTokens) {
+          messages.push({ role: 'user', content: vaultResult.section });
+          messages.push({ role: 'assistant', content: 'Understood, I have reviewed my vault memories.' });
+          usedTokens += vaultTokens + estimateTokens('Understood, I have reviewed my vault memories.');
+        }
+      }
+    }
+  } catch (err) {
+    // Vault injection is best-effort — don't block context assembly
+    logger.warn('Vault context injection failed', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
   }
 
   // 3. Summaries from context_items

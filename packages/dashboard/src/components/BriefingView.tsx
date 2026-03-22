@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { Briefing } from '@dojo/shared';
 import * as api from '../lib/api';
+import { parseUtc } from '../lib/dates';
 
 interface BriefingViewProps {
   agentId: string;
@@ -55,14 +56,17 @@ export const BriefingView = ({ agentId }: BriefingViewProps) => {
     setRegenerating(false);
   };
 
-  const formatDate = (d: string) =>
-    new Date(d).toLocaleString('en-US', {
+  const formatDate = (d: string) => {
+    const parsed = parseUtc(d);
+    if (!parsed) return '';
+    return parsed.toLocaleString('en-US', {
       month: 'short',
       day: 'numeric',
       year: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
     });
+  };
 
   if (loading) {
     return (

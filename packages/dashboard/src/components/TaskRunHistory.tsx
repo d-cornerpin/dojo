@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import * as api from '../lib/api';
+import { parseUtc } from '../lib/dates';
 
 interface TaskRunHistoryProps {
   taskId: string;
@@ -24,7 +25,9 @@ const formatDuration = (start: string | null, end: string | null): string => {
 
 const formatTime = (iso: string | null): string => {
   if (!iso) return '--';
-  return new Date(iso).toLocaleString('en-US', {
+  const d = parseUtc(iso);
+  if (!d) return '--';
+  return d.toLocaleString('en-US', {
     month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   });
 };

@@ -935,4 +935,151 @@ export const getOllamaLockStatus = async (): Promise<ApiResponse<OllamaLockStatu
   return request<OllamaLockStatus>('/system/ollama/lock');
 };
 
+// ── Vault ──
+
+export interface VaultEntry {
+  id: string;
+  agentId: string;
+  agentName: string | null;
+  type: string;
+  content: string;
+  context: string | null;
+  confidence: number;
+  isPermanent: boolean;
+  tags: string[];
+  isPinned: boolean;
+  isObsolete: boolean;
+  supersededBy: string | null;
+  retrievalCount: number;
+  lastRetrievedAt: string | null;
+  sourceConversationId: string | null;
+  source: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface VaultStats {
+  totalEntries: number;
+  byType: Record<string, number>;
+  permanentCount: number;
+  pinnedCount: number;
+  avgConfidence: number;
+  retrievedToday: number;
+  unprocessedArchives: number;
+  lastDreamAt: string | null;
+}
+
+export interface DreamReport {
+  id: string;
+  archivesProcessed: number;
+  memoriesExtracted: number;
+  techniquesFound: number;
+  duplicatesMerged: number;
+  contradictionsResolved: number;
+  entriesPruned: number;
+  entriesConsolidated: number;
+  totalEntries: number;
+  pinnedCount: number;
+  permanentCount: number;
+  reportText: string | null;
+  dreamMode: string;
+  modelId: string | null;
+  durationMs: number | null;
+  createdAt: string;
+}
+
+export interface DreamingConfig {
+  modelId: string | null;
+  dreamTime: string;
+  dreamMode: 'full' | 'light' | 'off';
+}
+
+export const getVaultEntries = async (params?: {
+  type?: string;
+  agent?: string;
+  tag?: string;
+  pinned?: boolean;
+  permanent?: boolean;
+  search?: string;
+  limit?: number;
+}): Promise<ApiResponse<VaultEntry[]>> => {
+  const q = new URLSearchParams();
+  if (params?.type) q.set('type', params.type);
+  if (params?.agent) q.set('agent', params.agent);
+  if (params?.tag) q.set('tag', params.tag);
+  if (params?.pinned) q.set('pinned', 'true');
+  if (params?.permanent) q.set('permanent', 'true');
+  if (params?.search) q.set('search', params.search);
+  if (params?.limit) q.set('limit', String(params.limit));
+  return request<VaultEntry[]>(`/vault/entries?${q.toString()}`);
+};
+
+export const getVaultEntry = async (id: string): Promise<ApiResponse<VaultEntry>> => {
+  return request<VaultEntry>(`/vault/entries/${id}`);
+};
+
+export const createVaultEntry = async (body: {
+  content: string;
+  type: string;
+  tags?: string[];
+  pin?: boolean;
+  permanent?: boolean;
+}): Promise<ApiResponse<VaultEntry>> => {
+  return request<VaultEntry>('/vault/entries', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+};
+
+export const updateVaultEntry = async (id: string, body: {
+  content?: string;
+  tags?: string[];
+  pin?: boolean;
+  permanent?: boolean;
+  confidence?: number;
+}): Promise<ApiResponse<VaultEntry>> => {
+  return request<VaultEntry>(`/vault/entries/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+};
+
+export const markVaultEntryObsolete = async (id: string, reason: string): Promise<ApiResponse<void>> => {
+  return request<void>(`/vault/entries/${id}/obsolete`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
+};
+
+export const deleteVaultEntry = async (id: string): Promise<ApiResponse<void>> => {
+  return request<void>(`/vault/entries/${id}`, { method: 'DELETE' });
+};
+
+export const getVaultStats = async (): Promise<ApiResponse<VaultStats>> => {
+  return request<VaultStats>('/vault/stats');
+};
+
+export const triggerDream = async (): Promise<ApiResponse<Record<string, number>>> => {
+  return request<Record<string, number>>('/vault/dream', { method: 'POST' });
+};
+
+export const getDreamHistory = async (limit = 10): Promise<ApiResponse<DreamReport[]>> => {
+  return request<DreamReport[]>(`/vault/dream/history?limit=${limit}`);
+};
+
+export const getLatestDream = async (): Promise<ApiResponse<DreamReport | null>> => {
+  return request<DreamReport | null>('/vault/dream/latest');
+};
+
+export const getDreamingConfig = async (): Promise<ApiResponse<DreamingConfig>> => {
+  return request<DreamingConfig>('/vault/dream/config');
+};
+
+export const updateDreamingConfig = async (config: Partial<DreamingConfig>): Promise<ApiResponse<DreamingConfig>> => {
+  return request<DreamingConfig>('/vault/dream/config', {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  });
+};
+
 export { getToken, clearToken };

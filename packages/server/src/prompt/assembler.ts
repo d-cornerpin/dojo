@@ -133,7 +133,11 @@ ${groupInfo ? `- ${groupInfo}` : ''}
 - Use the **project tracker** to update your task status as you work
 - When done, call \`complete_task\` with a summary of what you accomplished
 - If you're blocked, set your task status to "blocked" and message ${primaryName} or ${pmName}
-- Be concise and direct in all communications`;
+- Be concise and direct in all communications
+
+# Vault (Long-Term Memory)
+
+You have access to the dojo's memory vault -- the same one every agent uses. Before starting your task, use vault_search to check for relevant prior knowledge -- someone may have already figured out part of what you need. As you work, use vault_remember to save anything important you discover. Your entries are immediately visible to all agents and persist after you're gone -- save generously.`;
   } catch {
     return '# Identity\n\nYou are a sub-agent in the DOJO Agent Platform. Follow your task instructions and call complete_task when done.';
   }
@@ -157,6 +161,7 @@ function generateToolsGuidance(agentId: string): string {
     'Time': agentTools.filter(t => t.name === 'get_current_time'),
     'Communication': agentTools.filter(t => t.name === 'imessage_send'),
     'Techniques': agentTools.filter(t => ['save_technique', 'use_technique', 'list_techniques', 'publish_technique', 'update_technique', 'submit_technique_for_review'].includes(t.name)),
+    'Vault (Long-Term Memory)': agentTools.filter(t => t.name.startsWith('vault_')),
   };
 
   for (const [category, tools] of Object.entries(categories)) {
@@ -204,6 +209,53 @@ function generateToolsGuidance(agentId: string): string {
     lines.push('- **For scheduled work**: Use `get_current_time` first, then set `scheduled_start` on the task. Add `repeat_interval` + `repeat_unit` for recurring tasks.');
     lines.push('- Do NOT rely on memory to track work. The tracker is the single source of truth.');
     lines.push('');
+  }
+
+  // Vault awareness — for ALL agents with vault tools
+  const hasVault = agentTools.some(t => t.name.startsWith('vault_'));
+  if (hasVault) {
+    lines.push(`## Your Long-Term Memory (The Vault)
+
+You have a persistent memory vault shared by every agent in the dojo. Your conversation window is short-term memory -- it fades when compaction runs. The vault is permanent.
+
+### SAVE to the vault (vault_remember) -- do this instinctively:
+- The user states a fact about themselves, their business, their preferences, or their life
+- A decision is made and the reasoning behind it matters
+- You discover a procedure or workflow that took effort to figure out
+- The user corrects you -- save the correction so you never make the same mistake
+- A relationship between people, projects, or systems is clarified
+- Something happens that has a specific date/time attached
+- The user says "remember this" or anything similar
+
+For definitionally stable facts (names, relationships, birth dates, business names), set permanent: true so the memory never fades.
+
+Do NOT save: routine tool output, temporary debugging state, info already in the vault, trivial small talk.
+
+### URGENT -- save these IMMEDIATELY with vault_remember, do not wait:
+- The user corrects you on any fact -- save the correction RIGHT NOW
+- The user tells you about a schedule change -- save it RIGHT NOW
+- The user shares important personal or business news -- save it RIGHT NOW
+- The user says "remember this" or anything similar -- save it RIGHT NOW
+
+These cannot wait for the dreaming cycle. Use vault_remember immediately in the same turn.
+
+### SEARCH the vault (vault_search) -- do this proactively:
+- The user references something you should know but don't see in your current context
+- You're about to start a task and want to check for relevant history or prior decisions
+- The user asks "do you remember..." or "what did we decide about..."
+- You're unsure about a preference or procedure that might have been established before
+- A topic comes up that feels like it has prior context you can't see
+
+vault_search is your FIRST choice for recall. If it doesn't have what you need, fall back to memory_grep or memory_expand to search raw conversation history.
+
+### FORGET (vault_forget) -- when things change:
+- The user explicitly says something is no longer true
+- A decision has been reversed
+- Information has been superseded by newer facts
+
+### This is not optional.
+The vault is how you maintain continuity across conversations. If something matters, write it down. If you need something you can't see, look it up.
+`);
   }
 
   // Orchestration guidance — only for agents that can spawn sub-agents

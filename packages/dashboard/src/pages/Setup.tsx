@@ -4,9 +4,9 @@ import type { Model, Provider } from '@dojo/shared';
 import * as api from '../lib/api';
 import { SetupDeps, SetupPermissions } from '../components/SetupDeps';
 
-type Step = 'welcome' | 'dependencies' | 'permissions' | 'provider' | 'models' | 'your-profile' | 'primary-agent' | 'pm-agent' | 'trainer-agent' | 'imessage' | 'web-search' | 'complete';
+type Step = 'welcome' | 'dependencies' | 'permissions' | 'provider' | 'models' | 'your-profile' | 'primary-agent' | 'pm-agent' | 'trainer-agent' | 'dreamer' | 'imessage' | 'web-search' | 'complete';
 
-const STEPS: Step[] = ['welcome', 'dependencies', 'permissions', 'provider', 'models', 'your-profile', 'primary-agent', 'pm-agent', 'trainer-agent', 'imessage', 'web-search', 'complete'];
+const STEPS: Step[] = ['welcome', 'dependencies', 'permissions', 'provider', 'models', 'your-profile', 'primary-agent', 'pm-agent', 'trainer-agent', 'dreamer', 'imessage', 'web-search', 'complete'];
 
 const STEP_LABELS: Record<Step, string> = {
   welcome: 'Welcome',
@@ -18,6 +18,7 @@ const STEP_LABELS: Record<Step, string> = {
   'primary-agent': 'Primary Agent',
   'pm-agent': 'Project Manager',
   'trainer-agent': 'Technique Trainer',
+  dreamer: 'Dreamer',
   imessage: 'iMessage',
   'web-search': 'Web Search',
   complete: 'Enter the Dojo',
@@ -96,6 +97,7 @@ export const Setup = () => {
           {currentStep === 'primary-agent' && <PrimaryAgentStep />}
           {currentStep === 'pm-agent' && <PMAgentStep />}
           {currentStep === 'trainer-agent' && <TrainerAgentStep />}
+          {currentStep === 'dreamer' && <DreamerStep />}
           {currentStep === 'imessage' && <IMessageStep />}
           {currentStep === 'web-search' && <WebSearchStep />}
           {currentStep === 'complete' && <CompleteStep />}
@@ -924,6 +926,135 @@ const TrainerAgentStep = () => {
       )}
 
       <button onClick={handleSave} disabled={saved || !trainerName.trim()}
+        className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
+          saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
+        }`}>
+        {saved ? '\u2713 Saved' : 'Save'}
+      </button>
+    </div>
+  );
+};
+
+// ── Dreamer ──
+
+const DreamerStep = () => {
+  const [models, setModels] = useState<Model[]>([]);
+  const [selectedModel, setSelectedModel] = useState('');
+  const [dreamTime, setDreamTime] = useState('03:00');
+  const [dreamMode, setDreamMode] = useState<'full' | 'light'>('full');
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    api.getModels().then(r => {
+      if (r.ok) {
+        const enabledModels = r.data.filter((m: Model) => m.isEnabled);
+        setModels(enabledModels);
+        // Default to a Sonnet-class model, or cheapest available
+        const sonnet = enabledModels.find((m: Model) => m.apiModelId.includes('sonnet'));
+        const fallback = enabledModels.find((m: Model) => m.inputCostPerM === 0 || m.inputCostPerM === null) ?? enabledModels[0];
+        setSelectedModel((sonnet ?? fallback)?.id ?? '');
+      }
+    });
+  }, []);
+
+  const handleSave = async () => {
+    await api.updateDreamingConfig({
+      modelId: selectedModel || undefined,
+      dreamTime,
+      dreamMode,
+    });
+    setSaved(true);
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-white/55">
+        Every night, the dojo <strong className="text-white/90">dreams</strong>. Just like humans consolidate memories during sleep,
+        a temporary <strong className="text-white/90">Dreamer</strong> agent wakes up, processes the day's conversations, and
+        extracts the important stuff into the dojo's long-term memory vault: facts, preferences, decisions,
+        procedures, relationships, and events.
+      </p>
+      <p className="text-sm text-white/55">
+        Without dreaming, your agents would gradually forget things as older conversations get compacted.
+        The Dreamer makes sure nothing important is lost.
+      </p>
+
+      <div>
+        <label className="block text-sm font-medium text-white/70 mb-1">Dreamer Model</label>
+        <p className="text-xs text-white/40 mb-2">
+          The model the Dreamer uses to read conversations and extract knowledge. A Standard tier model
+          (like Sonnet) gives good quality at reasonable cost. A smaller model works but may miss subtleties.
+        </p>
+        {models.length > 0 && (
+          <select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); setSaved(false); }}
+            className="glass-select w-full">
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name} ({m.apiModelId}){m.inputCostPerM === 0 || m.inputCostPerM === null ? ' -- free' : ''}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-white/70 mb-1">Dream Time</label>
+        <p className="text-xs text-white/40 mb-2">
+          What time should the Dreamer run each night? Pick a time when the dojo is idle.
+        </p>
+        <input
+          type="time"
+          value={dreamTime}
+          onChange={(e) => { setDreamTime(e.target.value); setSaved(false); }}
+          className="glass-input w-full"
+        />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-white/70 mb-2">Dream Mode</label>
+        <div className="space-y-3">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="radio"
+              name="setupDreamMode"
+              checked={dreamMode === 'full'}
+              onChange={() => { setDreamMode('full'); setSaved(false); }}
+              className="mt-1 accent-blue-500"
+            />
+            <div>
+              <span className="text-sm text-white/80 font-medium">Full Dream</span>
+              <p className="text-xs text-white/40 mt-0.5">
+                Extract memories from conversations AND identify reusable techniques.
+                When the Dreamer spots a procedure that other agents could benefit from,
+                it sends it to the Trainer to be turned into a proper technique.
+              </p>
+            </div>
+          </label>
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="radio"
+              name="setupDreamMode"
+              checked={dreamMode === 'light'}
+              onChange={() => { setDreamMode('light'); setSaved(false); }}
+              className="mt-1 accent-blue-500"
+            />
+            <div>
+              <span className="text-sm text-white/80 font-medium">Light Dream</span>
+              <p className="text-xs text-white/40 mt-0.5">
+                Extract memories only. Faster and cheaper, but won't discover new techniques automatically.
+              </p>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      {saved && (
+        <div className="px-3 py-2 rounded-lg glass-badge-teal border border-cp-teal/20 text-sm">
+          The Dreamer will process conversations every night at {dreamTime}.
+        </div>
+      )}
+
+      <button onClick={handleSave} disabled={saved}
         className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
           saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
         }`}>

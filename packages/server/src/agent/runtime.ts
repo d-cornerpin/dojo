@@ -132,7 +132,7 @@ class AgentRuntime {
       loopCount++;
 
       // Assemble context: system prompt + summaries + fresh tail
-      const context = assembleContext(agentId, contextModelId);
+      const context = await assembleContext(agentId, contextModelId);
       const systemPrompt = context.systemPrompt;
       const messages = context.messages;
 

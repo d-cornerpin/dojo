@@ -30,6 +30,7 @@ import { webSearch, webFetch } from './web-tools.js';
 import { mouseClick, mouseMove, keyboardType, screenRead, applescriptRun } from './system-control.js';
 import { executeWebBrowse } from './browser.js';
 import { createGroup, assignAgentToGroup } from './groups.js';
+import { executeVaultRemember, executeVaultSearch, executeVaultForget } from '../vault/tools.js';
 import type { ToolCall, ToolResult } from '@dojo/shared';
 
 const logger = createLogger('tools');
@@ -990,6 +991,49 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['name'],
     },
   },
+
+  // ── Vault (Long-Term Memory) ──
+
+  {
+    name: 'vault_remember',
+    description: 'Save an important piece of knowledge to the dojo\'s long-term memory vault. Use this when you learn something worth remembering permanently -- facts about the user, decisions made, procedures discovered, preferences stated. This is saved immediately and visible to all agents.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'The knowledge to remember, written as a standalone statement (max 500 tokens)' },
+        type: { type: 'string', enum: ['fact', 'preference', 'decision', 'procedure', 'relationship', 'event', 'note'], description: 'Type of knowledge' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Tags for categorization' },
+        pin: { type: 'boolean', description: 'If true, this memory is always included in context regardless of relevance' },
+        permanent: { type: 'boolean', description: 'If true, this fact never decays over time (use for definitionally stable truths like names, relationships, birth dates)' },
+      },
+      required: ['content', 'type'],
+    },
+  },
+  {
+    name: 'vault_search',
+    description: 'Search the dojo\'s long-term memory vault for relevant knowledge. Returns memories matching your query, ranked by relevance. Use this when you need to recall something that isn\'t in your current context window.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'What to search for' },
+        type: { type: 'string', enum: ['fact', 'preference', 'decision', 'procedure', 'relationship', 'event', 'note'], description: 'Filter by memory type (optional)' },
+        limit: { type: 'number', description: 'Max results (default 10)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'vault_forget',
+    description: 'Mark a vault entry as obsolete. Use when information is no longer accurate or relevant. The entry is soft-deleted, not destroyed. Sensei agents only.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        entry_id: { type: 'string', description: 'The vault entry ID to mark as obsolete' },
+        reason: { type: 'string', description: 'Why this is no longer accurate' },
+      },
+      required: ['entry_id', 'reason'],
+    },
+  },
 ];
 
 // ── Path Resolution ──
@@ -1940,6 +1984,24 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'submit_technique_for_review': {
         const { executeSubmitForReview } = await import('../techniques/tools.js');
         content = executeSubmitForReview(agentId, args);
+        isError = content.startsWith('Error');
+        break;
+      }
+
+      // ── Vault (Long-Term Memory) ──
+
+      case 'vault_remember': {
+        content = await executeVaultRemember(agentId, args);
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'vault_search': {
+        content = await executeVaultSearch(agentId, args);
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'vault_forget': {
+        content = executeVaultForget(agentId, args);
         isError = content.startsWith('Error');
         break;
       }

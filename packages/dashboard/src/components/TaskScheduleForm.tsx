@@ -1,5 +1,15 @@
 import { useState } from 'react';
 
+/** Convert a Date to "YYYY-MM-DDTHH:MM" in the browser's local timezone (for datetime-local inputs) */
+function toLocalIso(d: Date): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hours = String(d.getHours()).padStart(2, '0');
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
 export interface ScheduleConfig {
   scheduledStart: string | null;
   repeatInterval: number | null;
@@ -34,18 +44,26 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
     if (!on) {
       onChange(DEFAULT_SCHEDULE);
     } else {
-      // Default to 1 hour from now
-      const defaultStart = new Date(Date.now() + 3600000).toISOString().slice(0, 16);
-      update({ scheduledStart: defaultStart });
+      // Default to 1 hour from now in LOCAL time (for the datetime-local input)
+      const future = new Date(Date.now() + 3600000);
+      const localIso = toLocalIso(future);
+      update({ scheduledStart: future.toISOString() });
+      // We store UTC but display local -- the dateTimeValue getter handles conversion
     }
   };
 
-  // Format datetime-local value from ISO
-  const dateTimeValue = value.scheduledStart
-    ? value.scheduledStart.includes('T')
-      ? value.scheduledStart.slice(0, 16)
-      : value.scheduledStart
-    : '';
+  // Convert a UTC ISO string from the server to a local datetime-local value
+  // datetime-local inputs expect "YYYY-MM-DDTHH:MM" in LOCAL time
+  const dateTimeValue = (() => {
+    if (!value.scheduledStart) return '';
+    // Parse as UTC (append Z if missing)
+    const utcStr = value.scheduledStart.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(value.scheduledStart)
+      ? value.scheduledStart
+      : value.scheduledStart + 'Z';
+    const d = new Date(utcStr);
+    if (isNaN(d.getTime())) return '';
+    return toLocalIso(d);
+  })();
 
   return (
     <div className="space-y-3">

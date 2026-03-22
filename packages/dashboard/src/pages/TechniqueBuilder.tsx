@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import type { Message } from '@dojo/shared';
 import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, WsEvent } from '@dojo/shared';
 import * as api from '../lib/api';
+import { formatDate } from '../lib/dates';
 import type { AttachmentInfo } from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { ToolCallBlock, ToolCallCard, ToolResultBlock } from '../components/ToolCallBlock';
@@ -134,7 +135,7 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
           <AttachmentChips attachments={msg.attachments} />
         )}
         <div className="text-[10px] mt-2" style={{ color: 'var(--text-tertiary)' }}>
-          {new Date(msg.createdAt).toLocaleTimeString()}
+          {formatDate(msg.createdAt)}
         </div>
       </div>
     </div>
@@ -201,7 +202,7 @@ const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
 
         {!msg.isStreaming && (
           <div className="text-[10px] mt-1 px-1" style={{ color: 'var(--text-tertiary)' }}>
-            {new Date(msg.createdAt).toLocaleTimeString()}
+            {formatDate(msg.createdAt)}
           </div>
         )}
       </div>

@@ -3,6 +3,7 @@ import type { Message } from '@dojo/shared';
 import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, WsEvent } from '@dojo/shared';
 import * as api from '../lib/api';
 import type { AttachmentInfo } from '../lib/api';
+import { formatDate } from '../lib/dates';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { ToolCallBlock, ToolCallCard, ToolResultBlock } from '../components/ToolCallBlock';
 import { Markdown } from '../components/Markdown';
@@ -97,14 +98,14 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
           <AttachmentChips attachments={msg.attachments} />
         )}
         <div className="text-[10px] mt-2" style={{ color: 'var(--text-tertiary)' }}>
-          {new Date(msg.createdAt).toLocaleTimeString()}
+          {formatDate(msg.createdAt)}
         </div>
       </div>
     </div>
   );
 };
 
-const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
+const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMode?: boolean }) => {
   const { text, blocks } = parseMessageContent(msg.content);
   const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
 
@@ -137,7 +138,7 @@ const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
         )}
 
         {/* Tool use blocks from DB history */}
-        {hasToolUse && (
+        {wordyMode && hasToolUse && (
           <div className="mt-1">
             {blocks!
               .filter((b) => b.type === 'tool_use')
@@ -152,7 +153,7 @@ const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
         )}
 
         {/* Live streaming tool calls (from WS events, not yet persisted) */}
-        {msg.toolCalls && msg.toolCalls.length > 0 && !hasToolUse && (
+        {wordyMode && msg.toolCalls && msg.toolCalls.length > 0 && !hasToolUse && (
           <div className="mt-1">
             {msg.toolCalls.map((tc, i) => (
               <ToolCallBlock
@@ -169,7 +170,7 @@ const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
         {/* Timestamp */}
         {!msg.isStreaming && (
           <div className="text-[10px] mt-1 px-1" style={{ color: 'var(--text-tertiary)' }}>
-            {new Date(msg.createdAt).toLocaleTimeString()}
+            {formatDate(msg.createdAt)}
           </div>
         )}
       </div>
@@ -224,6 +225,10 @@ export const Chat = () => {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [wordyMode, setWordyMode] = useState(() => {
+    const stored = localStorage.getItem('dojo_wordy_mode');
+    return stored === 'true';
+  });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
@@ -479,8 +484,21 @@ export const Chat = () => {
 
         {messages.map((msg) => {
           if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} />;
-          if (msg.role === 'tool') return <ToolResultBubble key={msg.id} msg={msg} />;
-          return <AssistantBubble key={msg.id} msg={msg} />;
+          if (msg.role === 'tool') {
+            if (!wordyMode) return null; // Hide tool results in non-wordy mode
+            return <ToolResultBubble key={msg.id} msg={msg} />;
+          }
+          if (msg.role === 'system') {
+            if (!wordyMode) return null; // Hide system messages in non-wordy mode
+          }
+          // For assistant messages, hide tool-only messages in non-wordy mode
+          if (msg.role === 'assistant' && !wordyMode) {
+            const { text, blocks } = parseMessageContent(msg.content);
+            const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
+            // If the message has ONLY tool calls and no text, skip it
+            if (!text && hasToolUse) return null;
+          }
+          return <AssistantBubble key={msg.id} msg={msg} wordyMode={wordyMode} />;
         })}
         {isWorking && !messages.some(m => m.isStreaming) && <ThinkingBubble />}
         <div ref={messagesEndRef} />
@@ -496,7 +514,17 @@ export const Chat = () => {
 
       {/* Input */}
       {/* Input */}
-      <ChatInput agentId={AGENT_ID} onSend={handleSend} variant="primary" />
+      <ChatInput
+        agentId={AGENT_ID}
+        onSend={handleSend}
+        variant="primary"
+        wordyMode={wordyMode}
+        onToggleWordyMode={() => {
+          const next = !wordyMode;
+          setWordyMode(next);
+          localStorage.setItem('dojo_wordy_mode', String(next));
+        }}
+      />
     </div>
   );
 };

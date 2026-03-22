@@ -3,6 +3,7 @@ import type { HealthData, LogEntry } from '@dojo/shared';
 import type { LogEntryEvent, WsEvent } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
+import { formatDate } from '../lib/dates';
 import { PercentageBar } from '../components/CostCharts';
 import { ProviderHealth } from '../components/ProviderHealth';
 
@@ -537,7 +538,7 @@ const LogRow = ({ log }: { log: LogEntry }) => {
         onClick={() => hasMeta && setExpanded(!expanded)}
       >
         <td className="px-4 py-1.5 text-xs white/40 font-mono whitespace-nowrap">
-          {new Date(log.timestamp).toLocaleTimeString()}
+          {formatDate(log.timestamp)}
         </td>
         <td className="px-4 py-1.5">
           <span className={`text-xs px-1.5 py-0.5 rounded ${levelColors[log.level] || 'bg-white/[0.08] white/70'}`}>

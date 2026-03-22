@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
+import { formatDate } from '../lib/dates';
 
 // ── Types ──
 
@@ -206,10 +207,10 @@ const OverviewTab = ({ technique }: { technique: TechniqueData }) => (
       <h3 className="text-sm font-medium text-white/70">Stats</h3>
       <div className="grid grid-cols-2 gap-2 text-xs text-white/50">
         <div>Usage count: <span className="text-white/80">{technique.usageCount}</span></div>
-        <div>Last used: <span className="text-white/80">{technique.lastUsedAt ? new Date(technique.lastUsedAt).toLocaleString() : 'Never'}</span></div>
-        <div>Created: <span className="text-white/80">{new Date(technique.createdAt).toLocaleString()}</span></div>
-        <div>Updated: <span className="text-white/80">{new Date(technique.updatedAt).toLocaleString()}</span></div>
-        {technique.publishedAt && <div>Published: <span className="text-white/80">{new Date(technique.publishedAt).toLocaleString()}</span></div>}
+        <div>Last used: <span className="text-white/80">{technique.lastUsedAt ? formatDate(technique.lastUsedAt) : 'Never'}</span></div>
+        <div>Created: <span className="text-white/80">{formatDate(technique.createdAt)}</span></div>
+        <div>Updated: <span className="text-white/80">{formatDate(technique.updatedAt)}</span></div>
+        {technique.publishedAt && <div>Published: <span className="text-white/80">{formatDate(technique.publishedAt)}</span></div>}
         {technique.buildProjectId && <div>Build project: <Link to={`/tracker?project=${technique.buildProjectId}`} className="text-cp-blue hover:underline">{technique.buildProjectId.slice(0, 8)}</Link></div>}
       </div>
     </div>
@@ -316,7 +317,7 @@ const UsageTab = ({ techniqueId }: { techniqueId: string }) => {
           {usage.map(u => (
             <tr key={u.id} className="border-b border-white/[0.04]">
               <td className="p-3 text-white/80">{u.agentName ?? u.agentId.slice(0, 8)}</td>
-              <td className="p-3 text-white/50">{new Date(u.usedAt).toLocaleString()}</td>
+              <td className="p-3 text-white/50">{formatDate(u.usedAt)}</td>
               <td className="p-3 text-white/40">{u.notes ?? '-'}</td>
             </tr>
           ))}
@@ -356,7 +357,7 @@ const VersionsTab = ({ techniqueId }: { techniqueId: string }) => {
             <div className="text-sm text-white/80">Version {v.versionNumber}</div>
             <div className="text-xs text-white/40 mt-0.5">{v.changeSummary ?? 'No description'}</div>
             <div className="text-[10px] text-white/30 mt-0.5">
-              {v.changedBy ?? 'system'} &middot; {new Date(v.createdAt).toLocaleString()}
+              {v.changedBy ?? 'system'} &middot; {formatDate(v.createdAt)}
             </div>
           </button>
         ))}

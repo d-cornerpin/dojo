@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { SearchResult } from '@dojo/shared';
 import * as api from '../lib/api';
+import { parseUtc } from '../lib/dates';
 
 type SearchScope = 'both' | 'messages' | 'summaries';
 type SearchMode = 'text' | 'semantic';
@@ -104,7 +105,9 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
 
   const formatTimestamp = (ts: string) => {
     if (!ts) return '';
-    return new Date(ts).toLocaleString('en-US', {
+    const d = parseUtc(ts);
+    if (!d) return '';
+    return d.toLocaleString('en-US', {
       month: 'short',
       day: 'numeric',
       hour: '2-digit',

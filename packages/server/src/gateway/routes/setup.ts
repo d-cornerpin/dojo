@@ -124,6 +124,23 @@ setupRouter.post('/complete', async (c) => {
     logger.info('System group re-assigned after agent creation');
   } catch { /* ignore */ }
 
+  // Schedule the nightly dreaming cycle
+  try {
+    const { scheduleDreamingCycle } = await import('../../vault/maintenance.js');
+    scheduleDreamingCycle();
+  } catch { /* ignore */ }
+
+  // Run first-run profile bootstrap (Dreamer processes USER.md into vault)
+  try {
+    const { runFirstRunProfileBootstrap } = await import('../../vault/maintenance.js');
+    runFirstRunProfileBootstrap().catch(err => {
+      logger.error('First-run profile bootstrap failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    logger.info('First-run profile bootstrap initiated');
+  } catch { /* ignore */ }
+
   logger.info('Setup completed');
 
   return c.json({ ok: true, data: { token } });

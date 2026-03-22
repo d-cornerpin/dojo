@@ -22,6 +22,7 @@ import { controlRouter } from './routes/control.js';
 import { setupDepsRouter } from './routes/setup-deps.js';
 import { groupsRouter } from './routes/groups.js';
 import { taskRunsRouter } from './routes/task-runs.js';
+import { vaultRouter } from './routes/vault.js';
 import { verifyAndTrackClient, removeClient, handleClientMessage } from './ws.js';
 import { getPrimaryAgentId, getPMAgentId } from '../config/platform.js';
 import { createLogger } from '../logger.js';
@@ -114,6 +115,7 @@ export function createServer() {
   app.route('/api/control', controlRouter); // /api/control/mouse-click, /api/control/screen-read, etc.
   app.route('/api/groups', groupsRouter);   // /api/groups, /api/groups/:id
   app.route('/api/techniques', techniquesRouter); // /api/techniques, /api/techniques/:id
+  app.route('/api/vault', vaultRouter);     // /api/vault/entries, /api/vault/dream, etc.
   app.route('/api', taskRunsRouter);        // /api/tasks/:taskId/runs
   app.route('/api', systemRouter);        // /api/health, /api/system/logs
 

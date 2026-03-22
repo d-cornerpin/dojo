@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import type { AgentDetail, Model, PermissionManifest } from '@dojo/shared';
 import type { WsEvent, AgentCreatedEvent, AgentStatusEvent, AgentTerminatedEvent } from '@dojo/shared';
 import * as api from '../lib/api';
+import { formatDateShort } from '../lib/dates';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { AgentCard } from '../components/AgentCard';
 import { GroupCard } from '../components/GroupCard';
@@ -260,7 +261,7 @@ const TerminatedAgentRow = ({
         <span className="text-xs white/40 w-20">{duration}</span>
         <span className="text-xs white/40 w-16">{agent.messageCount} msgs</span>
         <span className="text-xs white/40 flex-1 truncate">{agent.taskId || ''}</span>
-        <span className="text-xs white/30">{new Date(agent.updatedAt).toLocaleDateString()}</span>
+        <span className="text-xs white/30">{formatDateShort(agent.updatedAt)}</span>
       </div>
 
       {expanded && (

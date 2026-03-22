@@ -10,6 +10,7 @@ import {
   replaceContextItems,
 } from './dag.js';
 import { generateSummary } from './summarize.js';
+import { archiveMessagesBeforeCompaction } from '../vault/archive.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('memory-compaction');
@@ -61,6 +62,14 @@ export async function checkAndCompact(
       threshold,
     }, agentId);
 
+    // Archive raw messages to vault BEFORE compaction destroys them
+    const messagesForArchive = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(contextWindow));
+    const archiveCompactedIds = getCompactedMessageIds(agentId);
+    const uncompactedForArchive = messagesForArchive.filter(m => !archiveCompactedIds.has(m.id));
+    if (uncompactedForArchive.length > 0) {
+      archiveMessagesBeforeCompaction(agentId, uncompactedForArchive);
+    }
+
     const tokensBefore = totalTokens;
     const leafCreated = await runLeafCompaction(agentId, modelId, contextWindow);
     const condensedCreated = await runCondensation(agentId, modelId, DEFAULTS.incrementalMaxDepth);
@@ -95,6 +104,11 @@ export async function checkAndCompact(
       uncompactedTokens,
       threshold: DEFAULTS.leafChunkTokens,
     }, agentId);
+
+    // Archive raw messages to vault BEFORE proactive compaction
+    if (uncompactedMessages.length > 0) {
+      archiveMessagesBeforeCompaction(agentId, uncompactedMessages);
+    }
 
     const leafCreated = await runLeafCompaction(agentId, modelId, contextWindow);
     rebuildContextItems(agentId);

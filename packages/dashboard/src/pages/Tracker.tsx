@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import type { Project, Task, AgentDetail } from '@dojo/shared';
 import type { WsEvent, TrackerTaskUpdatedEvent, TrackerProjectUpdatedEvent } from '@dojo/shared';
 import * as api from '../lib/api';
+import { formatDate } from '../lib/dates';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { KanbanBoard } from '../components/KanbanBoard';
 import { TaskRunHistory } from '../components/TaskRunHistory';
@@ -189,9 +190,9 @@ const TaskDetailPanel = ({
               <div>Step {task.stepNumber}{task.totalSteps ? ` of ${task.totalSteps}` : ''}</div>
             )}
             <div>Phase: {task.phase}</div>
-            <div>Created: {new Date(task.createdAt).toLocaleString()}</div>
-            <div>Updated: {new Date(task.updatedAt).toLocaleString()}</div>
-            {task.completedAt && <div>Completed: {new Date(task.completedAt).toLocaleString()}</div>}
+            <div>Created: {formatDate(task.createdAt)}</div>
+            <div>Updated: {formatDate(task.updatedAt)}</div>
+            {task.completedAt && <div>Completed: {formatDate(task.completedAt)}</div>}
           </div>
 
           {/* Notes */}
@@ -791,7 +792,7 @@ const ScheduleEditor = ({ task, onUpdate }: { task: Task; onUpdate: () => void }
             {task.nextRunAt && (
               <div className="flex justify-between text-white/50">
                 <span>Next Run</span>
-                <span className="text-cp-blue">{new Date(task.nextRunAt).toLocaleString()}</span>
+                <span className="text-cp-blue">{formatDate(task.nextRunAt)}</span>
               </div>
             )}
             <div className="flex justify-between text-white/50">

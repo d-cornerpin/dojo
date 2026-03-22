@@ -19,6 +19,8 @@ interface ChatInputProps {
   disabled?: boolean;
   placeholder?: string;
   variant?: 'primary' | 'agent'; // primary = main chat page, agent = agent detail
+  wordyMode?: boolean;
+  onToggleWordyMode?: () => void;
 }
 
 function formatFileSize(bytes: number): string {
@@ -27,7 +29,7 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'primary' }: ChatInputProps) => {
+export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'primary', wordyMode, onToggleWordyMode }: ChatInputProps) => {
   const [input, setInput] = useState('');
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -273,8 +275,8 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
             disabled={disabled || uploading}
             rows={1}
             className={isPrimary
-              ? 'glass-input w-full resize-none py-3.5 pr-5 text-[15px]'
-              : 'w-full py-2.5 pr-4 bg-white/[0.05] border white/[0.08] rounded-xl white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none disabled:opacity-50'
+              ? 'glass-input w-full resize-none py-3.5 pr-5 text-[15px] scrollbar-hide'
+              : 'w-full py-2.5 pr-4 bg-white/[0.05] border border-white/[0.08] rounded-xl text-white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none disabled:opacity-50 scrollbar-hide'
             }
             style={isPrimary
               ? { minHeight: '50px', borderRadius: '16px', paddingLeft: '44px' }
@@ -299,9 +301,29 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
           <button
             onClick={handleSend}
             disabled={disabled || uploading || (!input.trim() && pendingFiles.length === 0)}
-            className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white font-medium rounded-xl transition-colors shrink-0"
+            className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:text-white/40 text-white font-medium rounded-xl transition-colors shrink-0"
           >
             {uploading ? 'Uploading...' : 'Send'}
+          </button>
+        )}
+
+        {/* Wordy Mode toggle */}
+        {onToggleWordyMode && (
+          <button
+            onClick={onToggleWordyMode}
+            title={wordyMode ? 'Wordy Mode: ON (showing tool calls)' : 'Wordy Mode: OFF (chat only)'}
+            className={`shrink-0 flex items-center justify-center w-9 h-9 rounded-full transition-all ${
+              wordyMode
+                ? 'bg-purple-500/20 text-purple-400'
+                : 'bg-white/[0.06] text-white/25 hover:text-white/50'
+            }`}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="16" y1="13" x2="8" y2="13" />
+              <line x1="16" y1="17" x2="8" y2="17" />
+            </svg>
           </button>
         )}
       </div>

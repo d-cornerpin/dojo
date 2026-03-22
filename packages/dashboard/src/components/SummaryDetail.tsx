@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { SummaryDetail as SummaryDetailType } from '@dojo/shared';
 import * as api from '../lib/api';
+import { parseUtc } from '../lib/dates';
 
 const DEPTH_COLORS: Record<number, string> = {
   0: 'text-blue-400',
@@ -99,14 +100,17 @@ export const SummaryDetail = ({
 
   if (!detail) return null;
 
-  const formatDate = (d: string) =>
-    new Date(d).toLocaleString('en-US', {
+  const fmtDate = (d: string) => {
+    const parsed = parseUtc(d);
+    if (!parsed) return '';
+    return parsed.toLocaleString('en-US', {
       month: 'short',
       day: 'numeric',
       year: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
     });
+  };
 
   return (
     <div className="flex flex-col h-full">
@@ -221,15 +225,15 @@ export const SummaryDetail = ({
               </tr>
               <tr className="border-b white/[0.08]/50">
                 <td className="px-4 py-2 white/40 font-medium">Earliest</td>
-                <td className="px-4 py-2 white/70">{formatDate(detail.earliestAt)}</td>
+                <td className="px-4 py-2 white/70">{fmtDate(detail.earliestAt)}</td>
               </tr>
               <tr className="border-b white/[0.08]/50">
                 <td className="px-4 py-2 white/40 font-medium">Latest</td>
-                <td className="px-4 py-2 white/70">{formatDate(detail.latestAt)}</td>
+                <td className="px-4 py-2 white/70">{fmtDate(detail.latestAt)}</td>
               </tr>
               <tr>
                 <td className="px-4 py-2 white/40 font-medium">Created</td>
-                <td className="px-4 py-2 white/70">{formatDate(detail.createdAt)}</td>
+                <td className="px-4 py-2 white/70">{fmtDate(detail.createdAt)}</td>
               </tr>
             </tbody>
           </table>

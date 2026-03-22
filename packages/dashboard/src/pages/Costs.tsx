@@ -3,6 +3,7 @@ import * as api from '../lib/api';
 import { BarChart, PercentageBar } from '../components/CostCharts';
 import { BudgetConfig } from '../components/BudgetConfig';
 import { useWebSocket } from '../hooks/useWebSocket';
+import { formatDate } from '../lib/dates';
 
 type Period = '24h' | '7d' | '30d' | 'all';
 type SortField = 'time' | 'agent' | 'model' | 'tier' | 'inputTokens' | 'outputTokens' | 'cost' | 'latency';
@@ -341,7 +342,7 @@ export const Costs = () => {
               {sortedRecords.map((r) => (
                 <tr key={r.id} className="border-t white/[0.04] hover:white/[0.02]">
                   <td className="px-4 py-1.5 text-xs white/40 font-mono whitespace-nowrap">
-                    {r.time ? new Date(r.time.includes('Z') ? r.time : r.time + 'Z').toLocaleTimeString() : '--'}
+                    {r.time ? formatDate(r.time) : '--'}
                   </td>
                   <td className="px-4 py-1.5 text-xs white/70">{r.agentName || r.agentId}</td>
                   <td className="px-4 py-1.5 text-xs white/55">{r.modelName || r.modelId?.slice(0, 8)}</td>

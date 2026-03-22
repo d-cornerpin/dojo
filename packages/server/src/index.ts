@@ -186,6 +186,14 @@ async function main(): Promise<void> {
     logger.warn('Failed to auto-start tunnel', { error: err instanceof Error ? err.message : String(err) });
   }
 
+  // Schedule the nightly dreaming cycle for the vault
+  try {
+    const { scheduleDreamingCycle } = await import('./vault/maintenance.js');
+    scheduleDreamingCycle();
+  } catch (err) {
+    logger.warn('Failed to schedule dreaming cycle', { error: err instanceof Error ? err.message : String(err) });
+  }
+
   const timeoutInterval = setInterval(() => {
     try { checkTimeouts(); } catch (err) {
       logger.error('Timeout checker failed', { error: err instanceof Error ? err.message : String(err) });
