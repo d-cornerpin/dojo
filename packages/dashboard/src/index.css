@@ -1,0 +1,567 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ════════════════════════════════════════
+   DOJO — Glassmorphism Design System
+   Inspired by vivid frosted glass aesthetics
+   ════════════════════════════════════════ */
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --cp-amber: #F5A623;
+    --cp-amber-light: #FFBA42;
+    --cp-teal: #00D4AA;
+    --cp-teal-light: #4AEDC4;
+    --cp-coral: #FF6B8A;
+    --cp-blue: #5B8DEF;
+    --cp-blue-light: #7BA4F7;
+    --cp-purple: #A78BFA;
+    --cp-purple-deep: #8B5CF6;
+    --text-primary: rgba(255, 255, 255, 0.92);
+    --text-secondary: rgba(255, 255, 255, 0.55);
+    --text-tertiary: rgba(255, 255, 255, 0.30);
+  }
+
+  html, body, #root { height: 100%; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'DM Sans', system-ui, sans-serif;
+    /* Rich gradient background — NOT flat dark */
+    background: linear-gradient(135deg, #0B0F1A 0%, #1a1040 25%, #0d2137 50%, #1a0f2e 75%, #0B0F1A 100%);
+    background-attachment: fixed;
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.2); }
+}
+
+@layer components {
+
+  /* ════════════════════════════════════════
+     GRADIENT BLOBS — Vivid, bright, NO blur
+     The backdrop-filter on glass cards blurs them.
+     These must be CLEARLY VISIBLE colored shapes.
+     ════════════════════════════════════════ */
+
+  .gradient-blob-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: visible;
+  }
+  .gradient-blob-layer .blob {
+    position: absolute;
+    border-radius: 50%;
+    pointer-events: none;
+    /* NO filter: blur() — the glass cards blur them via backdrop-filter */
+  }
+  .gradient-blob-layer .blob-purple {
+    top: -10%;
+    left: -5%;
+    width: 600px;
+    height: 600px;
+    background: radial-gradient(circle, #7c3aed 0%, transparent 70%);
+    opacity: 0.6;
+  }
+  .gradient-blob-layer .blob-teal {
+    bottom: -10%;
+    right: -5%;
+    width: 500px;
+    height: 500px;
+    background: radial-gradient(circle, #06b6d4 0%, transparent 70%);
+    opacity: 0.5;
+  }
+  .gradient-blob-layer .blob-warm {
+    top: 40%;
+    left: 30%;
+    width: 400px;
+    height: 400px;
+    background: radial-gradient(circle, #ec4899 0%, transparent 70%);
+    opacity: 0.4;
+  }
+
+  /* ════════════════════════════════════════
+     GLASS CARD — transparent + blur + glossy edge
+     The inset box-shadow creates the glossy top highlight.
+     ════════════════════════════════════════ */
+
+  .glass-card {
+    background: rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 16px;
+    box-shadow:
+      0 8px 32px rgba(0, 0, 0, 0.4),
+      inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    transition: all 0.25s ease;
+  }
+  .glass-card-hover:hover {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.2);
+    box-shadow:
+      0 12px 40px rgba(0, 0, 0, 0.5),
+      inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    transform: translateY(-1px);
+  }
+
+  /* Nested glass inside cards */
+  .glass-nested {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+
+  /* ════════════════════════════════════════
+     GLASS SIDEBAR — translucent, blobs visible through it
+     ════════════════════════════════════════ */
+
+  .glass-sidebar {
+    background: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(30px);
+    -webkit-backdrop-filter: blur(30px);
+    border-right: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+
+  /* ════════════════════════════════════════
+     FORM INPUTS — glass styled
+     ════════════════════════════════════════ */
+
+  .glass-input {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 12px;
+    color: rgba(255, 255, 255, 0.92);
+    padding: 10px 14px;
+    font-size: 14px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    outline: none;
+    width: 100%;
+  }
+  .glass-input::placeholder { color: rgba(255, 255, 255, 0.3); }
+  .glass-input:focus {
+    border-color: rgba(245, 166, 35, 0.5);
+    box-shadow: 0 0 12px rgba(245, 166, 35, 0.15);
+  }
+
+  .glass-select {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 12px;
+    color: rgba(255, 255, 255, 0.92);
+    padding: 10px 14px;
+    font-size: 14px;
+    outline: none;
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='rgba(255,255,255,0.4)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: 32px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .glass-select:focus {
+    border-color: rgba(245, 166, 35, 0.5);
+    box-shadow: 0 0 12px rgba(245, 166, 35, 0.15);
+  }
+
+  .glass-textarea {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 12px;
+    color: rgba(255, 255, 255, 0.92);
+    padding: 12px 14px;
+    font-size: 14px;
+    outline: none;
+    resize: vertical;
+    width: 100%;
+    min-height: 80px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .glass-textarea::placeholder { color: rgba(255, 255, 255, 0.3); }
+  .glass-textarea:focus {
+    border-color: rgba(245, 166, 35, 0.5);
+    box-shadow: 0 0 12px rgba(245, 166, 35, 0.15);
+  }
+
+  /* ════════════════════════════════════════
+     BUTTONS
+     ════════════════════════════════════════ */
+
+  .glass-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 20px;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    outline: none;
+    white-space: nowrap;
+    transition: all 0.2s ease;
+  }
+  .glass-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .glass-btn-primary {
+    background: linear-gradient(135deg, #F5A623, #FFBA42);
+    color: #1a1a2e;
+    font-weight: 600;
+  }
+  .glass-btn-primary:not(:disabled):hover {
+    box-shadow: 0 0 20px rgba(245, 166, 35, 0.4);
+    transform: translateY(-1px);
+  }
+
+  .glass-btn-secondary {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(12px);
+  }
+  .glass-btn-secondary:not(:disabled):hover {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+
+  .glass-btn-destructive {
+    background: rgba(255, 107, 138, 0.15);
+    border: 1px solid rgba(255, 107, 138, 0.25);
+    color: #FF6B8A;
+  }
+  .glass-btn-destructive:not(:disabled):hover {
+    background: rgba(255, 107, 138, 0.25);
+  }
+
+  .glass-btn-ghost {
+    background: transparent;
+    color: rgba(255, 255, 255, 0.55);
+    border: none;
+    padding: 8px 16px;
+  }
+  .glass-btn-ghost:not(:disabled):hover {
+    color: rgba(255, 255, 255, 0.92);
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .glass-btn-success {
+    background: linear-gradient(135deg, #00D4AA, #4AEDC4);
+    color: #0B0F1A;
+    font-weight: 600;
+  }
+
+  /* ════════════════════════════════════════
+     BADGES & STATUS
+     ════════════════════════════════════════ */
+
+  .glass-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .glass-badge-amber  { background: rgba(245, 166, 35, 0.2); color: #FFBA42; border: 1px solid rgba(245, 166, 35, 0.3); }
+  .glass-badge-teal   { background: rgba(0, 212, 170, 0.2); color: #4AEDC4; border: 1px solid rgba(0, 212, 170, 0.3); }
+  .glass-badge-coral  { background: rgba(255, 107, 138, 0.2); color: #FF6B8A; border: 1px solid rgba(255, 107, 138, 0.3); }
+  .glass-badge-blue   { background: rgba(91, 141, 239, 0.2); color: #7BA4F7; border: 1px solid rgba(91, 141, 239, 0.3); }
+  .glass-badge-purple { background: rgba(139, 92, 246, 0.2); color: #A78BFA; border: 1px solid rgba(139, 92, 246, 0.3); }
+  .glass-badge-gray   { background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.5); border: 1px solid rgba(255, 255, 255, 0.1); }
+
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .status-dot-healthy { background: #4AEDC4; box-shadow: 0 0 8px rgba(74, 237, 196, 0.5); }
+  .status-dot-warning { background: #F5A623; box-shadow: 0 0 8px rgba(245, 166, 35, 0.5); }
+  .status-dot-error   { background: #FF6B8A; box-shadow: 0 0 8px rgba(255, 107, 138, 0.5); }
+  .status-dot-idle    { background: rgba(255, 255, 255, 0.3); }
+  .status-dot-pulse   { animation: pulse-dot 2s ease-in-out infinite; }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+
+  /* ════════════════════════════════════════
+     MODALS & TOASTS
+     ════════════════════════════════════════ */
+
+  .glass-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(8px);
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .glass-modal {
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(32px);
+    -webkit-backdrop-filter: blur(32px);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 20px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    max-height: 85vh;
+    overflow-y: auto;
+  }
+
+  .glass-toast {
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    border-left: 3px solid;
+    animation: slideInRight 0.3s ease-out;
+  }
+  .glass-toast-info    { border-left-color: #5B8DEF; }
+  .glass-toast-success { border-left-color: #00D4AA; }
+  .glass-toast-warning { border-left-color: #F5A623; }
+  .glass-toast-error   { border-left-color: #FF6B8A; }
+
+  /* ════════════════════════════════════════
+     UTILITIES
+     ════════════════════════════════════════ */
+
+  .section-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.55);
+  }
+
+  .accent-bar-amber  { border-top: 3px solid #F5A623; }
+  .accent-bar-teal   { border-top: 3px solid #00D4AA; }
+  .accent-bar-coral  { border-top: 3px solid #FF6B8A; }
+  .accent-bar-blue   { border-top: 3px solid #5B8DEF; }
+  .accent-bar-purple { border-top: 3px solid #A78BFA; }
+
+  .stagger-1 { animation-delay: 0ms; }
+  .stagger-2 { animation-delay: 50ms; }
+  .stagger-3 { animation-delay: 100ms; }
+  .stagger-4 { animation-delay: 150ms; }
+  .stagger-5 { animation-delay: 200ms; }
+  .stagger-6 { animation-delay: 250ms; }
+
+  /* Stat cards */
+  .stat-card { position: relative; overflow: hidden; }
+  .stat-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--stat-accent, #F5A623); }
+  .stat-number { font-size: 36px; font-weight: 300; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(255, 255, 255, 0.55); }
+
+  /* Glass table */
+  .glass-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+  .glass-table thead th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(255, 255, 255, 0.45); padding: 12px 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); text-align: left; font-weight: 600; }
+  .glass-table tbody tr { transition: background 0.15s ease; }
+  .glass-table tbody tr:hover { background: rgba(255, 255, 255, 0.04); }
+  .glass-table tbody td { padding: 12px 16px; color: rgba(255, 255, 255, 0.85); border-bottom: 1px solid rgba(255, 255, 255, 0.04); }
+  .glass-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.02); }
+
+  /* Tier badges */
+  .badge-heavy    { background: rgba(139, 92, 246, 0.2); color: #A78BFA; border: 1px solid rgba(139, 92, 246, 0.3); }
+  .badge-standard { background: rgba(91, 141, 239, 0.2); color: #7BA4F7; border: 1px solid rgba(91, 141, 239, 0.3); }
+  .badge-light    { background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.6); border: 1px solid rgba(255, 255, 255, 0.12); }
+  .badge-system   { background: rgba(0, 212, 170, 0.2); color: #4AEDC4; border: 1px solid rgba(0, 212, 170, 0.3); }
+  .badge-permanent { background: rgba(245, 166, 35, 0.2); color: #FFBA42; border: 1px solid rgba(245, 166, 35, 0.3); }
+  .badge-freelance { background: rgba(91, 141, 239, 0.2); color: #7BA4F7; border: 1px solid rgba(91, 141, 239, 0.3); }
+  .badge-temp      { background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.5); border: 1px solid rgba(255, 255, 255, 0.1); }
+}
+
+/* ════════════════════════════════════════
+   ACTIVE WORK INDICATOR — rotating border glow
+   Technique: oversized conic-gradient rotates behind the card,
+   clipped by overflow:hidden. An inner ::after fills the card
+   interior, so only the thin rotating edge is visible.
+   A sibling glow div adds a soft blurred version behind.
+   ════════════════════════════════════════ */
+
+/* Wrapper — needed because glass-card already uses ::before/::after in some cases */
+.card-working-wrap {
+  position: relative;
+}
+
+/*
+  Structure: the card component renders:
+  <div class="card-working-wrap">        ← outer wrapper, position:relative
+    <div class="card-working-glow">      ← blurred glow copy (optional)
+    <div class="card-working-border">    ← the rotating border container
+    <div class="glass-card ...">         ← the actual card, sits on top
+      ...content...
+    </div>
+  </div>
+
+  The border div has overflow:hidden + the huge rotating conic-gradient.
+  The glass-card sits on top (z-index:1) and its background covers the interior.
+*/
+
+.card-working-wrap {
+  position: relative;
+}
+
+.card-working-border {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 16px;
+  z-index: 0;
+  pointer-events: none;
+}
+.card-working-border::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(0deg);
+  width: 99999px;
+  height: 99999px;
+  background-image: conic-gradient(
+    rgba(0,0,0,0),
+    var(--glow-color, #F5A623),
+    rgba(0,0,0,0) 25%
+  );
+  animation: card-border-rotate 4s linear infinite;
+}
+
+.card-working-glow {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 16px;
+  z-index: 0;
+  pointer-events: none;
+  filter: blur(16px);
+  opacity: 0.6;
+}
+.card-working-glow::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(0deg);
+  width: 99999px;
+  height: 99999px;
+  background-image: conic-gradient(
+    rgba(0,0,0,0),
+    var(--glow-color, #F5A623),
+    rgba(0,0,0,0) 25%
+  );
+  animation: card-border-rotate 4s linear infinite;
+}
+
+/* The actual card sits ABOVE the border layers with an opaque background
+   so the rotating gradient doesn't bleed through the glass */
+.card-working-wrap > .glass-card,
+.card-working-wrap > .glass-nested {
+  position: relative;
+  z-index: 1;
+  margin: 2px;
+  background: #141929 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+@keyframes card-border-rotate {
+  100% { transform: translate(-50%, -50%) rotate(1turn); }
+}
+
+/* Color variants */
+.card-glow-amber  { --glow-color: #F5A623; }
+.card-glow-teal   { --glow-color: #00D4AA; }
+.card-glow-purple { --glow-color: #7c3aed; }
+.card-glow-blue   { --glow-color: #5B8DEF; }
+.card-glow-coral  { --glow-color: #FF6B8A; }
+
+/* Error state — coral pulse */
+.card-error-wrap {
+  position: relative;
+}
+.card-error-glow {
+  position: absolute;
+  inset: -3px;
+  border-radius: 19px;
+  z-index: -1;
+  pointer-events: none;
+  background: rgba(255, 107, 138, 0.12);
+  animation: card-error-pulse 2s ease-in-out infinite;
+  filter: blur(8px);
+}
+@keyframes card-error-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.8; }
+}
+
+/* Animations */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 768px) {
+  .glass-card { backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+  .glass-nested { backdrop-filter: none; }
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .glass-card { background: rgba(26, 31, 53, 0.92); }
+  .glass-sidebar { background: rgba(26, 31, 53, 0.95); }
+}
+
+/* ── Typing / Thinking Indicator ── */
+.thinking-dots {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 0;
+}
+
+.thinking-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: rgba(255, 255, 255, 0.35);
+  animation: thinking-bounce 0.6s infinite alternate;
+}
+
+.thinking-dot:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes thinking-bounce {
+  to {
+    transform: translateY(-6px);
+    background-color: rgba(255, 255, 255, 0.6);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-dot {
+    animation: thinking-fade 1.5s infinite alternate;
+  }
+  .thinking-dot:nth-child(2) { animation-delay: 0.5s; }
+  .thinking-dot:nth-child(3) { animation-delay: 1.0s; }
+  @keyframes thinking-fade { to { opacity: 0.3; } }
+}

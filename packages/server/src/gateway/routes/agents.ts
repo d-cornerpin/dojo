@@ -1,0 +1,547 @@
+import { Hono } from 'hono';
+import { v4 as uuidv4 } from 'uuid';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { getDb } from '../../db/connection.js';
+import { getAgentRuntime } from '../../agent/runtime.js';
+import { spawnAgent, terminateAgent } from '../../agent/spawner.js';
+import { getAgentMessages } from '../../agent/agent-bus.js';
+import { createLogger } from '../../logger.js';
+import { broadcast } from '../ws.js';
+import { isPrimaryAgent, getPrimaryAgentId } from '../../config/platform.js';
+import type { AgentDetail, Model, Message, AgentMessage } from '@dojo/shared';
+
+const logger = createLogger('agents-routes');
+const agentsRouter = new Hono();
+
+// GET / - list all agents with detail
+agentsRouter.get('/', (c) => {
+  const db = getDb();
+  const rows = db.prepare('SELECT * FROM agents ORDER BY created_at ASC').all() as Array<Record<string, unknown>>;
+
+  const agents: AgentDetail[] = rows.map(row => rowToAgentDetail(row));
+  return c.json({ ok: true, data: agents });
+});
+
+// GET /:id - single agent detail
+agentsRouter.get('/:id', (c) => {
+  const id = c.req.param('id');
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+
+  if (!row) {
+    return c.json({ ok: false, error: 'Agent not found' }, 404);
+  }
+
+  const agent = rowToAgentDetail(row);
+  return c.json({ ok: true, data: agent });
+});
+
+// PATCH /:id/model - set agent's model
+agentsRouter.patch('/:id/model', async (c) => {
+  const id = c.req.param('id');
+  const db = getDb();
+
+  const agent = db.prepare('SELECT id FROM agents WHERE id = ?').get(id);
+  if (!agent) {
+    return c.json({ ok: false, error: 'Agent not found' }, 404);
+  }
+
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body.modelId !== 'string') {
+    return c.json({ ok: false, error: 'modelId string is required' }, 400);
+  }
+
+  const { modelId } = body;
+
+  if (modelId === 'auto') {
+    // Auto-routing: store null model_id + autoRouted flag in config
+    const existingConfig = db.prepare('SELECT config FROM agents WHERE id = ?').get(id) as { config: string } | undefined;
+    const config = JSON.parse(existingConfig?.config || '{}');
+    config.autoRouted = true;
+    db.prepare("UPDATE agents SET model_id = NULL, config = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(config), id);
+    logger.info('Agent model set to auto-router', { agentId: id });
+  } else {
+    // Verify the model exists and is enabled
+    const model = db.prepare('SELECT id, name FROM models WHERE id = ? AND is_enabled = 1').get(modelId) as { id: string; name: string } | undefined;
+    if (!model) {
+      return c.json({ ok: false, error: 'Model not found or not enabled' }, 400);
+    }
+    // Clear autoRouted flag when setting a specific model
+    const existingConfig2 = db.prepare('SELECT config FROM agents WHERE id = ?').get(id) as { config: string } | undefined;
+    const config2 = JSON.parse(existingConfig2?.config || '{}');
+    if (config2.autoRouted) {
+      delete config2.autoRouted;
+      db.prepare("UPDATE agents SET model_id = ?, config = ?, updated_at = datetime('now') WHERE id = ?").run(modelId, JSON.stringify(config2), id);
+    } else {
+      db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?").run(modelId, id);
+    }
+    logger.info('Agent model updated', { agentId: id, modelId, modelName: model.name });
+  }
+
+  // Return updated agent
+  const row = db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as Record<string, unknown>;
+  return c.json({ ok: true, data: rowToAgentDetail(row) });
+});
+
+// POST / — create standalone agent from dashboard
+agentsRouter.post('/', async (c) => {
+  const body = await c.req.json().catch(() => null);
+
+  if (!body || typeof body.name !== 'string' || typeof body.systemPrompt !== 'string') {
+    return c.json({ ok: false, error: 'name (string) and systemPrompt (string) are required' }, 400);
+  }
+
+  try {
+    const db = getDb();
+    const agentId = uuidv4();
+    const isAutoRouted = body.modelId === 'auto';
+    const resolvedModelId = isAutoRouted ? null : (body.modelId || null);
+    const config = JSON.stringify({
+      autoRouted: isAutoRouted || undefined,
+      shareUserProfile: body.shareUserProfile || undefined,
+    });
+    const timeoutSeconds = body.timeout ? Number(body.timeout) : null;
+    const timeoutAt = timeoutSeconds ? new Date(Date.now() + timeoutSeconds * 1000).toISOString() : null;
+
+    const classification = body.classification === 'ronin' ? 'ronin' : 'apprentice';
+
+    const groupId = body.groupId ?? null;
+
+    db.prepare(`
+      INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by,
+                          parent_agent, spawn_depth, agent_type, classification, group_id, max_runtime, timeout_at,
+                          permissions, tools_policy, equipped_techniques, task_id, created_at, updated_at)
+      VALUES (?, ?, ?, NULL, 'idle', ?, 'dashboard',
+              NULL, 0, 'standard', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    `).run(
+      agentId,
+      body.name,
+      resolvedModelId,
+      config,
+      classification,
+      groupId,
+      timeoutSeconds,
+      timeoutAt,
+      JSON.stringify(body.permissions ?? {}),
+      JSON.stringify(body.toolsPolicy ?? {}),
+      JSON.stringify(body.equippedTechniques ?? []),
+      body.taskId ?? null,
+    );
+
+    // Store system prompt as first message (no spawn injection)
+    db.prepare(`
+      INSERT INTO messages (id, agent_id, role, content, created_at)
+      VALUES (?, ?, 'system', ?, datetime('now'))
+    `).run(uuidv4(), agentId, body.systemPrompt);
+
+    // Store initial user message — just the task, no IMPORTANT INSTRUCTIONS
+    const initMsgId = uuidv4();
+    db.prepare(`
+      INSERT INTO messages (id, agent_id, role, content, created_at)
+      VALUES (?, ?, 'user', ?, datetime('now'))
+    `).run(initMsgId, agentId, body.systemPrompt);
+
+    // Start the agent runtime
+    const runtime = getAgentRuntime();
+    runtime.handleMessage(agentId, body.systemPrompt).catch(err => {
+      logger.error('Dashboard agent initial run failed', {
+        agentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+
+    logger.info('Dashboard agent created', { agentId, name: body.name });
+
+    broadcast({
+      type: 'agent:created',
+      data: {
+        id: agentId,
+        name: body.name,
+        modelId: resolvedModelId,
+        systemPromptPath: null,
+        status: 'idle' as const,
+        config: JSON.parse(config),
+        createdBy: 'dashboard',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        parentAgent: null,
+        spawnDepth: 0,
+        agentType: 'standard' as const,
+        classification: classification as 'ronin' | 'apprentice',
+        groupId: null,
+        maxRuntime: timeoutSeconds,
+        timeoutAt,
+        permissions: body.permissions ?? {},
+        toolsPolicy: body.toolsPolicy ?? {},
+        equippedTechniques: body.equippedTechniques ?? [],
+        taskId: body.taskId ?? null,
+      },
+    });
+
+    const row = db.prepare('SELECT * FROM agents WHERE id = ?').get(agentId) as Record<string, unknown>;
+    return c.json({ ok: true, data: rowToAgentDetail(row) }, 201);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Failed to create agent', { error: msg });
+    return c.json({ ok: false, error: msg }, 500);
+  }
+});
+
+// GET /:id/system-prompt — get agent's system prompt
+agentsRouter.get('/:id/system-prompt', (c) => {
+  const id = c.req.param('id');
+  const db = getDb();
+
+  if (isPrimaryAgent(id)) {
+    const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
+    try {
+      const content = fs.readFileSync(soulPath, 'utf-8');
+      return c.json({ ok: true, data: { content } });
+    } catch {
+      return c.json({ ok: true, data: { content: '' } });
+    }
+  }
+
+  const msg = db.prepare("SELECT content FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY rowid ASC LIMIT 1").get(id) as { content: string } | undefined;
+  return c.json({ ok: true, data: { content: msg?.content ?? '' } });
+});
+
+// PUT /:id — update agent config (model, system prompt, permissions, tools policy)
+agentsRouter.put('/:id', async (c) => {
+  const id = c.req.param('id');
+  const db = getDb();
+
+  const agent = db.prepare('SELECT id FROM agents WHERE id = ?').get(id);
+  if (!agent) {
+    return c.json({ ok: false, error: 'Agent not found' }, 404);
+  }
+
+  const body = await c.req.json().catch(() => null);
+  if (!body) {
+    return c.json({ ok: false, error: 'Request body required' }, 400);
+  }
+
+  const updates: string[] = [];
+  const params: unknown[] = [];
+
+  if (typeof body.name === 'string' && body.name.trim()) {
+    updates.push('name = ?');
+    params.push(body.name.trim());
+  }
+
+  if (typeof body.modelId === 'string') {
+    if (body.modelId === 'auto') {
+      updates.push('model_id = NULL');
+      // Set autoRouted flag in config
+      const existingCfg = db.prepare('SELECT config FROM agents WHERE id = ?').get(id) as { config: string } | undefined;
+      const cfg = JSON.parse(existingCfg?.config || '{}');
+      cfg.autoRouted = true;
+      updates.push('config = ?');
+      params.push(JSON.stringify(cfg));
+    } else {
+      const model = db.prepare('SELECT id FROM models WHERE id = ? AND is_enabled = 1').get(body.modelId);
+      if (!model) {
+        return c.json({ ok: false, error: 'Model not found or not enabled' }, 400);
+      }
+      updates.push('model_id = ?');
+      params.push(body.modelId);
+      // Clear autoRouted flag
+      const existingCfg2 = db.prepare('SELECT config FROM agents WHERE id = ?').get(id) as { config: string } | undefined;
+      const cfg2 = JSON.parse(existingCfg2?.config || '{}');
+      if (cfg2.autoRouted) {
+        delete cfg2.autoRouted;
+        updates.push('config = ?');
+        params.push(JSON.stringify(cfg2));
+      }
+    }
+  }
+
+  if (typeof body.systemPrompt === 'string') {
+    // For primary agent, write to SOUL.md. For others, store as first system message.
+    if (isPrimaryAgent(id)) {
+      const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
+      fs.mkdirSync(path.dirname(soulPath), { recursive: true });
+      fs.writeFileSync(soulPath, body.systemPrompt, 'utf-8');
+      logger.info('Primary agent SOUL.md updated via agent config', { agentId: id });
+    } else {
+      // Update or insert the system message for this agent
+      const existing = db.prepare("SELECT id FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY rowid ASC LIMIT 1").get(id) as { id: string } | undefined;
+      if (existing) {
+        db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(body.systemPrompt, existing.id);
+      } else {
+        db.prepare("INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(uuidv4(), id, body.systemPrompt);
+      }
+    }
+  }
+
+  if (body.permissions !== undefined) {
+    updates.push('permissions = ?');
+    params.push(JSON.stringify(body.permissions));
+  }
+
+  if (body.classification !== undefined && ['ronin', 'apprentice'].includes(body.classification)) {
+    updates.push('classification = ?');
+    params.push(body.classification);
+  }
+
+  if (body.config !== undefined && typeof body.config === 'object') {
+    // Merge with existing config (don't overwrite autoRouted etc.)
+    const existingCfg = db.prepare('SELECT config FROM agents WHERE id = ?').get(id) as { config: string } | undefined;
+    const merged = { ...JSON.parse(existingCfg?.config || '{}'), ...body.config };
+    updates.push('config = ?');
+    params.push(JSON.stringify(merged));
+  }
+
+  if (body.toolsPolicy !== undefined) {
+    updates.push('tools_policy = ?');
+    params.push(JSON.stringify(body.toolsPolicy));
+  }
+
+  if (body.equippedTechniques !== undefined) {
+    updates.push('equipped_techniques = ?');
+    params.push(JSON.stringify(body.equippedTechniques));
+  }
+
+  if (updates.length > 0) {
+    updates.push("updated_at = datetime('now')");
+    params.push(id);
+    db.prepare(`UPDATE agents SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  logger.info('Agent config updated', { agentId: id, fields: Object.keys(body) });
+
+  const row = db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as Record<string, unknown>;
+  return c.json({ ok: true, data: rowToAgentDetail(row) });
+});
+
+// DELETE /:id — terminate agent (cascade)
+agentsRouter.delete('/:id', (c) => {
+  const id = c.req.param('id');
+  const db = getDb();
+
+  const agent = db.prepare('SELECT id, status, classification FROM agents WHERE id = ?').get(id) as { id: string; status: string; classification: string } | undefined;
+  if (!agent) {
+    return c.json({ ok: false, error: 'Agent not found' }, 404);
+  }
+
+  if (agent.classification === 'sensei') {
+    return c.json({ ok: false, error: 'Cannot terminate a sensei agent' }, 403);
+  }
+
+  if (agent.status === 'terminated') {
+    return c.json({ ok: false, error: 'Agent is already terminated' }, 400);
+  }
+
+  terminateAgent(id, 'Terminated via dashboard');
+  return c.json({ ok: true, data: { agentId: id, status: 'terminated' } });
+});
+
+// POST /:id/purge — permanently delete a terminated agent and all its data
+agentsRouter.post('/:id/purge', (c) => {
+  const id = c.req.param('id');
+  const db = getDb();
+
+  // Prevent deleting primary agent
+  if (isPrimaryAgent(id)) {
+    return c.json({ ok: false, error: 'Cannot delete the primary agent' }, 400);
+  }
+
+  const agent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(id) as { id: string; status: string } | undefined;
+  if (!agent) {
+    return c.json({ ok: false, error: 'Agent not found' }, 404);
+  }
+
+  if (agent.status !== 'terminated') {
+    return c.json({ ok: false, error: 'Agent must be terminated before it can be deleted' }, 400);
+  }
+
+  // Delete all associated data
+  db.prepare('DELETE FROM messages WHERE agent_id = ?').run(id);
+  db.prepare('DELETE FROM agent_messages WHERE from_agent = ? OR to_agent = ?').run(id, id);
+  db.prepare('DELETE FROM summary_messages WHERE summary_id IN (SELECT id FROM summaries WHERE agent_id = ?)').run(id);
+  db.prepare('DELETE FROM summary_parents WHERE summary_id IN (SELECT id FROM summaries WHERE agent_id = ?) OR parent_id IN (SELECT id FROM summaries WHERE agent_id = ?)').run(id, id);
+  db.prepare('DELETE FROM summaries WHERE agent_id = ?').run(id);
+  db.prepare('DELETE FROM context_items WHERE agent_id = ?').run(id);
+  db.prepare('DELETE FROM large_files WHERE agent_id = ?').run(id);
+  db.prepare('DELETE FROM audit_log WHERE agent_id = ?').run(id);
+  db.prepare('DELETE FROM agents WHERE id = ?').run(id);
+
+  logger.info('Agent permanently deleted', { agentId: id });
+  return c.json({ ok: true, data: { agentId: id, deleted: true } });
+});
+
+// POST /:id/message — send direct message to agent
+agentsRouter.post('/:id/message', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => null);
+
+  if (!body || typeof body.content !== 'string' || body.content.trim().length === 0) {
+    return c.json({ ok: false, error: 'content (string) is required' }, 400);
+  }
+
+  const db = getDb();
+  const agent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(id) as { id: string; status: string } | undefined;
+  if (!agent) {
+    return c.json({ ok: false, error: 'Agent not found' }, 404);
+  }
+
+  if (agent.status === 'terminated') {
+    return c.json({ ok: false, error: 'Agent is terminated' }, 400);
+  }
+
+  if (agent.status === 'working') {
+    return c.json({ ok: false, error: 'Agent is currently busy' }, 409);
+  }
+
+  const { content } = body;
+  const messageId = uuidv4();
+
+  // Persist as user message
+  db.prepare(`
+    INSERT INTO messages (id, agent_id, role, content, created_at)
+    VALUES (?, ?, 'user', ?, datetime('now'))
+  `).run(messageId, id, content);
+
+  // Trigger the agent runtime
+  const runtime = getAgentRuntime();
+  runtime.handleMessage(id, content).catch(err => {
+    logger.error('Agent message handling failed', {
+      agentId: id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+
+  return c.json({ ok: true, data: { messageId, agentId: id } });
+});
+
+// GET /:id/messages — conversation history for this agent
+agentsRouter.get('/:id/messages', (c) => {
+  const id = c.req.param('id');
+  const db = getDb();
+
+  const agent = db.prepare('SELECT id FROM agents WHERE id = ?').get(id);
+  if (!agent) {
+    return c.json({ ok: false, error: 'Agent not found' }, 404);
+  }
+
+  const limit = parseInt(c.req.query('limit') ?? '100', 10);
+  const offset = parseInt(c.req.query('offset') ?? '0', 10);
+
+  const rows = db.prepare(`
+    SELECT * FROM messages WHERE agent_id = ?
+    ORDER BY created_at ASC
+    LIMIT ? OFFSET ?
+  `).all(id, limit, offset) as Array<Record<string, unknown>>;
+
+  const messages: Message[] = rows.map(row => ({
+    id: row.id as string,
+    agentId: row.agent_id as string,
+    role: row.role as Message['role'],
+    content: row.content as string,
+    tokenCount: row.token_count as number | null,
+    modelId: row.model_id as string | null,
+    cost: row.cost as number | null,
+    latencyMs: row.latency_ms as number | null,
+    createdAt: row.created_at as string,
+  }));
+
+  return c.json({ ok: true, data: messages });
+});
+
+// GET /:id/agent-messages — inter-agent messages
+agentsRouter.get('/:id/agent-messages', (c) => {
+  const id = c.req.param('id');
+  const db = getDb();
+
+  const agent = db.prepare('SELECT id FROM agents WHERE id = ?').get(id);
+  if (!agent) {
+    return c.json({ ok: false, error: 'Agent not found' }, 404);
+  }
+
+  const direction = (c.req.query('direction') ?? 'both') as 'sent' | 'received' | 'both';
+  const limit = parseInt(c.req.query('limit') ?? '50', 10);
+
+  const messages: AgentMessage[] = getAgentMessages(id, { direction, limit });
+  return c.json({ ok: true, data: messages });
+});
+
+function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
+  const db = getDb();
+  const agentId = row.id as string;
+  const modelId = row.model_id as string | null;
+
+  // Get message count
+  const msgCount = (db.prepare('SELECT COUNT(*) as count FROM messages WHERE agent_id = ?').get(agentId) as { count: number }).count;
+
+  // Get model if set
+  let model: Model | null = null;
+  if (modelId) {
+    const modelRow = db.prepare('SELECT * FROM models WHERE id = ?').get(modelId) as Record<string, unknown> | undefined;
+    if (modelRow) {
+      model = {
+        id: modelRow.id as string,
+        providerId: modelRow.provider_id as string,
+        name: modelRow.name as string,
+        apiModelId: modelRow.api_model_id as string,
+        capabilities: JSON.parse(modelRow.capabilities as string),
+        contextWindow: modelRow.context_window as number | null,
+        maxOutputTokens: modelRow.max_output_tokens as number | null,
+        inputCostPerM: modelRow.input_cost_per_m as number | null,
+        outputCostPerM: modelRow.output_cost_per_m as number | null,
+        isEnabled: Boolean(modelRow.is_enabled),
+        createdAt: modelRow.created_at as string,
+        updatedAt: modelRow.updated_at as string,
+      };
+    }
+  }
+
+  // Get uptime from runtime
+  const runtime = getAgentRuntime();
+  const uptime = runtime.getAgentUptime(agentId);
+
+  return {
+    id: agentId,
+    name: row.name as string,
+    modelId: modelId,
+    systemPromptPath: row.system_prompt_path as string | null,
+    status: row.status as AgentDetail['status'],
+    config: JSON.parse((row.config as string) || '{}'),
+    createdBy: row.created_by as string,
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+    parentAgent: (row.parent_agent as string) ?? null,
+    spawnDepth: (row.spawn_depth as number) ?? 0,
+    agentType: ((row.agent_type as string) ?? 'standard') as 'standard' | 'persistent' | 'system',
+    classification: ((row.classification as string) ?? 'apprentice') as 'sensei' | 'ronin' | 'apprentice',
+    groupId: (row.group_id as string) ?? null,
+    maxRuntime: (row.max_runtime as number) ?? null,
+    timeoutAt: (row.timeout_at as string) ?? null,
+    permissions: JSON.parse((row.permissions as string) || '{}'),
+    toolsPolicy: JSON.parse((row.tools_policy as string) || '{}'),
+    equippedTechniques: JSON.parse((row.equipped_techniques as string) || '[]'),
+    taskId: (row.task_id as string) ?? null,
+    messageCount: msgCount,
+    uptime,
+    model,
+  };
+}
+
+// POST /archive — hide terminated agents older than N days (default 7)
+agentsRouter.post('/archive', (c) => {
+  const db = getDb();
+  const days = 7;
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+  // Mark old terminated agents as archived by setting agent_type to 'archived'
+  const result = db.prepare(`
+    UPDATE agents SET agent_type = 'archived', updated_at = datetime('now')
+    WHERE status = 'terminated' AND updated_at < ? AND classification != 'sensei' AND agent_type != 'archived'
+  `).run(cutoff);
+
+  logger.info('Archived old terminated agents', { count: result.changes, cutoffDays: days });
+  return c.json({ ok: true, data: { archived: result.changes } });
+});
+
+export { agentsRouter };

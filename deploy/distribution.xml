@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>Agent D.O.J.O.</title>
+    <welcome file="welcome.html"/>
+    <license file="license.html"/>
+    <conclusion file="conclusion.html"/>
+    <options customize="never" require-scripts="true" hostArchitectures="arm64,x86_64"/>
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="13.0"/>
+        </allowed-os-versions>
+    </volume-check>
+    <domains enable_anywhere="true"/>
+    <pkg-ref id="com.dojo.platform"/>
+    <choices-outline>
+        <line choice="default">
+            <line choice="com.dojo.platform"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="com.dojo.platform" visible="false">
+        <pkg-ref id="com.dojo.platform"/>
+    </choice>
+    <pkg-ref id="com.dojo.platform" version="1.0" onConclusion="none">dojo-component.pkg</pkg-ref>
+</installer-gui-script>

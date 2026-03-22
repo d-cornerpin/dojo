@@ -1,0 +1,938 @@
+import type {
+  ApiResponse,
+  LoginResponse,
+  AuthMeResponse,
+  SetupStatusResponse,
+  CreateProviderRequest,
+  ProviderResponse,
+  ProvidersListResponse,
+  ProviderModelsResponse,
+  ModelsListResponse,
+  IdentityFileResponse,
+  GenerateIdentityRequest,
+  GenerateIdentityResponse,
+  SendMessageResponse,
+  ChatHistoryResponse,
+  AgentsListResponse,
+  AgentDetailResponse,
+  HealthResponse,
+  LogsResponse,
+  DagApiResponse,
+  SummaryDetailResponse,
+  SearchResultsResponse,
+  BriefingResponse,
+  InjectMemoryResponse,
+  CompactionResponse,
+  ProjectsListResponse,
+  ProjectDetailResponse,
+  CreateProjectRequest,
+  CreateProjectResponse,
+  TasksListResponse,
+  TaskDetailResponse,
+  CreateTaskRequest,
+  UpdateTaskRequest,
+  CreateAgentRequest,
+  AgentMessagesResponse,
+} from '@dojo/shared';
+
+const BASE_URL = '/api';
+
+const getToken = (): string | null => localStorage.getItem('dojo_token');
+
+const setToken = (token: string): void => {
+  localStorage.setItem('dojo_token', token);
+};
+
+const clearToken = (): void => {
+  localStorage.removeItem('dojo_token');
+};
+
+// Read CSRF token from cookie (non-httpOnly, accessible to JS)
+function getCsrfToken(): string | null {
+  const match = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
+  return match ? match[1] : null;
+}
+
+const request = async <T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<ApiResponse<T>> => {
+  const token = getToken();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...((options.headers as Record<string, string>) || {}),
+  };
+
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  // Add CSRF token for state-changing requests
+  const method = options.method?.toUpperCase() ?? 'GET';
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+    const csrfToken = getCsrfToken();
+    if (csrfToken) {
+      headers['X-CSRF-Token'] = csrfToken;
+    }
+  }
+
+  try {
+    const response = await fetch(`${BASE_URL}${path}`, {
+      ...options,
+      headers,
+      credentials: 'same-origin', // Send cookies with requests
+    });
+
+    if (response.status === 401 && !path.startsWith('/auth/login')) {
+      clearToken();
+      window.location.href = '/login';
+      return { ok: false, error: 'Unauthorized' };
+    }
+
+    const text = await response.text();
+    if (!text) {
+      return { ok: false, error: `Empty response (status ${response.status})` };
+    }
+    try {
+      return JSON.parse(text) as ApiResponse<T>;
+    } catch {
+      return { ok: false, error: `Server error (status ${response.status})` };
+    }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  }
+};
+
+// ── Auth ──
+
+export const login = async (password: string): Promise<ApiResponse<LoginResponse>> => {
+  const result = await request<LoginResponse>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  });
+  if (result.ok) {
+    setToken(result.data.token);
+    // CSRF token is set via Set-Cookie header (non-httpOnly cookie)
+  }
+  return result;
+};
+
+export const checkAuth = async (): Promise<ApiResponse<AuthMeResponse>> => {
+  return request<AuthMeResponse>('/auth/me');
+};
+
+export const changePassword = async (
+  currentPassword: string,
+  newPassword: string,
+): Promise<ApiResponse<void>> => {
+  return request<void>('/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+};
+
+// ── Setup ──
+
+export const getSetupStatus = async (): Promise<ApiResponse<SetupStatusResponse>> => {
+  return request<SetupStatusResponse>('/setup/status');
+};
+
+// ── Providers ──
+
+export const createProvider = async (
+  data: CreateProviderRequest,
+): Promise<ApiResponse<ProviderResponse>> => {
+  return request<ProviderResponse>('/config/providers', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+};
+
+export const getProviders = async (): Promise<ApiResponse<ProvidersListResponse>> => {
+  return request<ProvidersListResponse>('/config/providers');
+};
+
+export const deleteProvider = async (id: string): Promise<ApiResponse<void>> => {
+  return request<void>(`/config/providers/${id}`, {
+    method: 'DELETE',
+  });
+};
+
+export const validateProvider = async (id: string): Promise<ApiResponse<{ valid: boolean }>> => {
+  return request<{ valid: boolean }>(`/config/providers/${id}/validate`, {
+    method: 'POST',
+  });
+};
+
+export const getProviderModels = async (
+  id: string,
+): Promise<ApiResponse<ProviderModelsResponse>> => {
+  return request<ProviderModelsResponse>(`/config/providers/${id}/models`);
+};
+
+// ── Browse Models (OpenRouter / aggregator providers) ──
+
+export interface BrowseModelResult {
+  apiModelId: string;
+  name: string;
+  contextWindow: number | null;
+  maxOutputTokens: number | null;
+  inputCostPerM: number | null;
+  outputCostPerM: number | null;
+}
+
+export const browseProviderModels = async (providerId: string, query: string): Promise<ApiResponse<BrowseModelResult[]>> => {
+  return request<BrowseModelResult[]>(`/config/providers/${providerId}/browse-models?q=${encodeURIComponent(query)}`);
+};
+
+export const addProviderModel = async (providerId: string, model: BrowseModelResult): Promise<ApiResponse<Record<string, unknown>>> => {
+  return request<Record<string, unknown>>(`/config/providers/${providerId}/add-model`, {
+    method: 'POST',
+    body: JSON.stringify(model),
+  });
+};
+
+// ── Models ──
+
+export const enableModels = async (modelIds: string[]): Promise<ApiResponse<void>> => {
+  return request<void>('/config/models/enable', {
+    method: 'POST',
+    body: JSON.stringify({ modelIds }),
+  });
+};
+
+export const disableModels = async (modelIds: string[]): Promise<ApiResponse<void>> => {
+  return request<void>('/config/models/disable', {
+    method: 'POST',
+    body: JSON.stringify({ modelIds }),
+  });
+};
+
+export const getModels = async (): Promise<ApiResponse<ModelsListResponse>> => {
+  return request<ModelsListResponse>('/config/models');
+};
+
+export const updateModelPricing = async (
+  modelId: string,
+  pricing: { inputCostPerM?: number; outputCostPerM?: number },
+): Promise<ApiResponse<unknown>> => {
+  return request(`/config/models/${modelId}/pricing`, {
+    method: 'PUT',
+    body: JSON.stringify(pricing),
+  });
+};
+
+// ── Identity ──
+
+export const getIdentity = async (
+  file: string,
+): Promise<ApiResponse<IdentityFileResponse>> => {
+  return request<IdentityFileResponse>(`/config/identity/${file}`);
+};
+
+export const updateIdentity = async (
+  file: string,
+  content: string,
+): Promise<ApiResponse<void>> => {
+  return request<void>(`/config/identity/${file}`, {
+    method: 'PUT',
+    body: JSON.stringify({ content }),
+  });
+};
+
+export const generateIdentity = async (
+  data: GenerateIdentityRequest,
+): Promise<ApiResponse<GenerateIdentityResponse>> => {
+  return request<GenerateIdentityResponse>('/config/identity/generate', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+};
+
+// ── Chat ──
+
+export interface AttachmentInfo {
+  fileId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  path: string;
+  category: 'image' | 'pdf' | 'text' | 'office' | 'unknown';
+}
+
+export const uploadFiles = async (agentId: string, files: File[]): Promise<ApiResponse<AttachmentInfo[]>> => {
+  const token = getToken();
+  const formData = new FormData();
+  for (const file of files) {
+    formData.append('files', file);
+  }
+
+  try {
+    const csrfToken = getCsrfToken();
+    const response = await fetch(`${BASE_URL}/upload/${agentId}`, {
+      method: 'POST',
+      headers: {
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+      },
+      body: formData,
+    });
+
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      return { ok: false as const, error: data.error ?? 'Upload failed' };
+    }
+    return { ok: true as const, data: data.data as AttachmentInfo[] };
+  } catch (err) {
+    return { ok: false as const, error: err instanceof Error ? err.message : 'Upload failed' };
+  }
+};
+
+export const sendMessage = async (
+  agentId: string,
+  content: string,
+  attachments?: AttachmentInfo[],
+): Promise<ApiResponse<SendMessageResponse>> => {
+  return request<SendMessageResponse>(`/chat/${agentId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ content, attachments: attachments?.length ? attachments : undefined }),
+  });
+};
+
+export const getChatHistory = async (
+  agentId: string,
+  limit?: number,
+  before?: string,
+): Promise<ApiResponse<ChatHistoryResponse>> => {
+  const params = new URLSearchParams();
+  if (limit) params.set('limit', String(limit));
+  if (before) params.set('before', before);
+  const query = params.toString();
+  return request<ChatHistoryResponse>(`/chat/${agentId}/messages${query ? `?${query}` : ''}`);
+};
+
+// ── Agents ──
+
+export const getAgents = async (): Promise<ApiResponse<AgentsListResponse>> => {
+  return request<AgentsListResponse>('/agents');
+};
+
+export const getAgent = async (id: string): Promise<ApiResponse<AgentDetailResponse>> => {
+  return request<AgentDetailResponse>(`/agents/${id}`);
+};
+
+export const setAgentModel = async (agentId: string, modelId: string): Promise<ApiResponse<AgentDetailResponse>> => {
+  return request<AgentDetailResponse>(`/agents/${agentId}/model`, {
+    method: 'PATCH',
+    body: JSON.stringify({ modelId }),
+  });
+};
+
+// ── System ──
+
+export const getHealth = async (): Promise<ApiResponse<HealthResponse>> => {
+  return request<HealthResponse>('/health');
+};
+
+export const getLogs = async (
+  level?: string,
+  component?: string,
+  limit?: number,
+): Promise<ApiResponse<LogsResponse>> => {
+  const params = new URLSearchParams();
+  if (level) params.set('level', level);
+  if (component) params.set('component', component);
+  if (limit) params.set('limit', String(limit));
+  const query = params.toString();
+  return request<LogsResponse>(`/system/logs${query ? `?${query}` : ''}`);
+};
+
+// ── Setup actions (password set during setup) ──
+
+export const setPassword = async (password: string): Promise<ApiResponse<void>> => {
+  return request<void>('/setup/password', {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  });
+};
+
+export const completeSetup = async (): Promise<ApiResponse<LoginResponse>> => {
+  const result = await request<LoginResponse>('/setup/complete', {
+    method: 'POST',
+  });
+  if (result.ok) {
+    setToken(result.data.token);
+  }
+  return result;
+};
+
+// ── Platform Settings ──
+
+export const getSetting = async (key: string): Promise<ApiResponse<{ key: string; value: string | null }>> => {
+  return request<{ key: string; value: string | null }>(`/config/settings/${key}`);
+};
+
+export const setSetting = async (key: string, value: string): Promise<ApiResponse<{ key: string; value: string }>> => {
+  return request<{ key: string; value: string }>(`/config/settings/${key}`, {
+    method: 'PUT',
+    body: JSON.stringify({ value }),
+  });
+};
+
+export const getAllSettings = async (): Promise<ApiResponse<Record<string, string>>> => {
+  return request<Record<string, string>>('/config/settings');
+};
+
+// ── Memory ──
+
+export const getMemoryDag = async (
+  agentId: string,
+  depths?: number[],
+): Promise<ApiResponse<DagApiResponse>> => {
+  const params = new URLSearchParams();
+  if (depths) {
+    depths.forEach((d) => params.append('depth', String(d)));
+  }
+  const query = params.toString();
+  return request<DagApiResponse>(`/memory/${agentId}/dag${query ? `?${query}` : ''}`);
+};
+
+export const getSummaryDetail = async (
+  agentId: string,
+  summaryId: string,
+): Promise<ApiResponse<SummaryDetailResponse>> => {
+  return request<SummaryDetailResponse>(`/memory/${agentId}/summary/${summaryId}`);
+};
+
+export const deleteSummary = async (
+  agentId: string,
+  summaryId: string,
+): Promise<ApiResponse<void>> => {
+  return request<void>(`/memory/${agentId}/summary/${summaryId}`, {
+    method: 'DELETE',
+  });
+};
+
+export const updateSummary = async (
+  agentId: string,
+  summaryId: string,
+  content: string,
+): Promise<ApiResponse<SummaryDetailResponse>> => {
+  return request<SummaryDetailResponse>(`/memory/${agentId}/summary/${summaryId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ content }),
+  });
+};
+
+export const searchMemory = async (
+  agentId: string,
+  query: string,
+  scope?: 'messages' | 'summaries' | 'both',
+  limit?: number,
+): Promise<ApiResponse<SearchResultsResponse>> => {
+  const params = new URLSearchParams();
+  params.set('q', query);
+  if (scope) params.set('scope', scope);
+  if (limit) params.set('limit', String(limit));
+  return request<SearchResultsResponse>(`/memory/${agentId}/search?${params.toString()}`);
+};
+
+export const injectMemory = async (
+  agentId: string,
+  content: string,
+): Promise<ApiResponse<InjectMemoryResponse>> => {
+  return request<InjectMemoryResponse>(`/memory/${agentId}/inject`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  });
+};
+
+export const getBriefing = async (
+  agentId: string,
+): Promise<ApiResponse<BriefingResponse>> => {
+  return request<BriefingResponse>(`/memory/${agentId}/briefing`);
+};
+
+export const updateBriefing = async (
+  agentId: string,
+  content: string,
+): Promise<ApiResponse<void>> => {
+  return request<void>(`/memory/${agentId}/briefing`, {
+    method: 'PUT',
+    body: JSON.stringify({ content }),
+  });
+};
+
+export const regenerateBriefing = async (
+  agentId: string,
+): Promise<ApiResponse<BriefingResponse>> => {
+  return request<BriefingResponse>(`/memory/${agentId}/briefing/regenerate`, {
+    method: 'POST',
+  });
+};
+
+export const triggerCompaction = async (
+  agentId: string,
+): Promise<ApiResponse<CompactionResponse>> => {
+  return request<CompactionResponse>(`/memory/${agentId}/compact`, {
+    method: 'POST',
+  });
+};
+
+// ── Tracker ──
+
+export const getProjects = async (): Promise<ApiResponse<ProjectsListResponse>> => {
+  return request<ProjectsListResponse>('/tracker/projects');
+};
+
+export const getProjectDetail = async (id: string): Promise<ApiResponse<ProjectDetailResponse>> => {
+  return request<ProjectDetailResponse>(`/tracker/projects/${id}`);
+};
+
+export const createProject = async (data: CreateProjectRequest): Promise<ApiResponse<CreateProjectResponse>> => {
+  return request<CreateProjectResponse>('/tracker/projects', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+};
+
+export const getTasks = async (filter?: {
+  status?: string;
+  assignedTo?: string;
+  priority?: string;
+  projectId?: string;
+}): Promise<ApiResponse<TasksListResponse>> => {
+  const params = new URLSearchParams();
+  if (filter?.status) params.set('status', filter.status);
+  if (filter?.assignedTo) params.set('assignedTo', filter.assignedTo);
+  if (filter?.priority) params.set('priority', filter.priority);
+  if (filter?.projectId) params.set('projectId', filter.projectId);
+  const query = params.toString();
+  return request<TasksListResponse>(`/tracker/tasks${query ? `?${query}` : ''}`);
+};
+
+export const getTaskDetail = async (id: string): Promise<ApiResponse<TaskDetailResponse>> => {
+  return request<TaskDetailResponse>(`/tracker/tasks/${id}`);
+};
+
+export const createTask = async (data: CreateTaskRequest): Promise<ApiResponse<{ taskId: string }>> => {
+  return request<{ taskId: string }>('/tracker/tasks', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+};
+
+export const deleteProject = async (id: string): Promise<ApiResponse<void>> => {
+  return request<void>(`/tracker/projects/${id}`, { method: 'DELETE' });
+};
+
+export const deleteTask = async (id: string): Promise<ApiResponse<void>> => {
+  return request<void>(`/tracker/tasks/${id}`, { method: 'DELETE' });
+};
+
+export const updateTask = async (id: string, updates: UpdateTaskRequest): Promise<ApiResponse<TaskDetailResponse>> => {
+  return request<TaskDetailResponse>(`/tracker/tasks/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(updates),
+  });
+};
+
+// ── Agents (expanded) ──
+
+export const createAgent = async (data: CreateAgentRequest): Promise<ApiResponse<AgentDetailResponse>> => {
+  return request<AgentDetailResponse>('/agents', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+};
+
+export const terminateAgent = async (id: string): Promise<ApiResponse<void>> => {
+  return request<void>(`/agents/${id}`, {
+    method: 'DELETE',
+  });
+};
+
+export const getAgentSystemPrompt = async (id: string): Promise<ApiResponse<{ content: string }>> => {
+  return request<{ content: string }>(`/agents/${id}/system-prompt`);
+};
+
+export const updateAgentConfig = async (
+  id: string,
+  updates: { modelId?: string; systemPrompt?: string; permissions?: Record<string, unknown>; toolsPolicy?: { allow: string[]; deny: string[] } },
+): Promise<ApiResponse<AgentDetailResponse>> => {
+  return request<AgentDetailResponse>(`/agents/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(updates),
+  });
+};
+
+export const archiveOldAgents = async (): Promise<ApiResponse<{ archived: number }>> => {
+  return request<{ archived: number }>('/agents/archive', {
+    method: 'POST',
+  });
+};
+
+export const purgeAgent = async (id: string): Promise<ApiResponse<void>> => {
+  return request<void>(`/agents/${id}/purge`, {
+    method: 'POST',
+  });
+};
+
+export const sendAgentMessage = async (
+  agentId: string,
+  content: string,
+  attachments?: AttachmentInfo[],
+): Promise<ApiResponse<SendMessageResponse>> => {
+  return request<SendMessageResponse>(`/chat/${agentId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ content, attachments: attachments?.length ? attachments : undefined }),
+  });
+};
+
+export const getAgentHistory = async (
+  agentId: string,
+  limit?: number,
+): Promise<ApiResponse<ChatHistoryResponse>> => {
+  const params = new URLSearchParams();
+  if (limit) params.set('limit', String(limit));
+  const query = params.toString();
+  return request<ChatHistoryResponse>(`/chat/${agentId}/messages${query ? `?${query}` : ''}`);
+};
+
+export const getAgentInterMessages = async (
+  agentId: string,
+  direction?: string,
+  limit?: number,
+): Promise<ApiResponse<AgentMessagesResponse>> => {
+  const params = new URLSearchParams();
+  if (direction) params.set('direction', direction);
+  if (limit) params.set('limit', String(limit));
+  const query = params.toString();
+  return request<AgentMessagesResponse>(`/agents/${agentId}/messages${query ? `?${query}` : ''}`);
+};
+
+// ── Router ──
+
+export const getRouterConfig = async (): Promise<ApiResponse<{
+  tiers: Array<{
+    id: string;
+    name: string;
+    description: string;
+    models: Array<{ modelId: string; modelName: string; priority: number }>;
+  }>;
+  dimensions: Array<{
+    id: string;
+    name: string;
+    weight: number;
+    isEnabled: boolean;
+  }>;
+}>> => {
+  return request('/router/config');
+};
+
+export const updateTierModels = async (
+  tierId: string,
+  models: Array<{ modelId: string; priority: number }>,
+): Promise<ApiResponse<void>> => {
+  return request<void>(`/router/tiers/${tierId}/models`, {
+    method: 'PUT',
+    body: JSON.stringify({ models }),
+  });
+};
+
+export const updateDimension = async (
+  dimensionId: string,
+  updates: { weight?: number; isEnabled?: boolean },
+): Promise<ApiResponse<void>> => {
+  return request<void>(`/router/dimensions/${dimensionId}`, {
+    method: 'PUT',
+    body: JSON.stringify(updates),
+  });
+};
+
+export const testRouter = async (
+  prompt: string,
+): Promise<ApiResponse<{
+  scores: Array<{ dimension: string; score: number; weight: number; weighted: number }>;
+  rawScore: number;
+  confidence: number;
+  tier: string;
+  selectedModel: string;
+}>> => {
+  return request('/router/test', {
+    method: 'POST',
+    body: JSON.stringify({ prompt }),
+  });
+};
+
+export const getRouterStats = async (
+  period: string,
+): Promise<ApiResponse<{
+  requestsByTier: Record<string, number>;
+  requestsByModel: Record<string, number>;
+}>> => {
+  return request(`/router/stats?period=${encodeURIComponent(period)}`);
+};
+
+// ── Costs ──
+
+export const getCostSummary = async (
+  period: string,
+): Promise<ApiResponse<{
+  totalSpend: number;
+  dailyAvg: number;
+  byModel: Array<{ modelId: string; modelName: string; spend: number }>;
+  byAgent: Array<{ agentId: string; agentName: string; spend: number }>;
+  byTier: Array<{ tier: string; count: number; percentage: number }>;
+}>> => {
+  return request(`/costs/summary?period=${encodeURIComponent(period)}`);
+};
+
+export const getCostRecords = async (
+  filter?: { period?: string; agentId?: string; modelId?: string },
+): Promise<ApiResponse<{
+  records: Array<{
+    id: string;
+    time: string;
+    agentId: string;
+    agentName: string;
+    modelId: string;
+    modelName: string;
+    tier: string;
+    inputTokens: number;
+    outputTokens: number;
+    cost: number;
+    latencyMs: number;
+  }>;
+  total: number;
+}>> => {
+  const params = new URLSearchParams();
+  if (filter?.period) params.set('period', filter.period);
+  if (filter?.agentId) params.set('agentId', filter.agentId);
+  if (filter?.modelId) params.set('modelId', filter.modelId);
+  const query = params.toString();
+  return request(`/costs/records${query ? `?${query}` : ''}`);
+};
+
+export const getBudgets = async (): Promise<ApiResponse<{
+  global: { limitUsd: number; spentUsd: number } | null;
+  agents: Array<{
+    agentId: string;
+    agentName: string;
+    limitUsd: number;
+    period: string;
+    spentUsd: number;
+  }>;
+}>> => {
+  return request('/costs/budget');
+};
+
+export const setGlobalBudget = async (limitUsd: number): Promise<ApiResponse<void>> => {
+  return request<void>('/costs/budget/global', {
+    method: 'PUT',
+    body: JSON.stringify({ limitUsd }),
+  });
+};
+
+export const setAgentBudget = async (
+  agentId: string,
+  limitUsd: number,
+  period: string,
+): Promise<ApiResponse<void>> => {
+  return request<void>(`/costs/budget/agent/${agentId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ limitUsd, period }),
+  });
+};
+
+// ── Services ──
+
+export const getWatchdogStatus = async (): Promise<ApiResponse<{
+  running: boolean;
+  lastCheck: string | null;
+  lastAlert: string | null;
+}>> => {
+  return request('/system/watchdog');
+};
+
+export const getIMBridgeStatus = async (): Promise<ApiResponse<{
+  enabled: boolean;
+  connected: boolean;
+  lastReceived: string | null;
+  lastSent: string | null;
+}>> => {
+  return request('/system/imessage');
+};
+
+export const sendTestIMessage = async (message: string): Promise<ApiResponse<void>> => {
+  return request<void>('/system/imessage/test', {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  });
+};
+
+export const getProviderHealth = async (): Promise<ApiResponse<{
+  providers: Array<{
+    id: string;
+    name: string;
+    healthy: boolean;
+    lastSuccess: string | null;
+    errorCount: number;
+  }>;
+}>> => {
+  return request('/system/providers/health');
+};
+
+export const getResources = async (): Promise<ApiResponse<{
+  memory: { used: number; total: number; percentage: number };
+  cpu: { usage: number };
+  ollama: { running: boolean; models: string[] } | null;
+}>> => {
+  return request('/system/resources');
+};
+
+// ── Search Config ──
+
+export const getSearchConfig = async (): Promise<ApiResponse<{ provider: string; hasKey: boolean }>> => {
+  return request<{ provider: string; hasKey: boolean }>('/config/search');
+};
+
+export const setSearchConfig = async (
+  provider: string,
+  apiKey: string,
+): Promise<ApiResponse<{ provider: string; hasKey: boolean }>> => {
+  return request<{ provider: string; hasKey: boolean }>('/config/search', {
+    method: 'PUT',
+    body: JSON.stringify({ provider, apiKey }),
+  });
+};
+
+export const validateSearchKey = async (
+  provider: string,
+  apiKey: string,
+): Promise<ApiResponse<{ valid: boolean }>> => {
+  return request<{ valid: boolean }>('/config/search/validate', {
+    method: 'POST',
+    body: JSON.stringify({ provider, apiKey }),
+  });
+};
+
+// ── Router (available models) ──
+
+export const getAvailableRouterModels = async (): Promise<ApiResponse<Array<{
+  id: string;
+  name: string;
+  api_model_id: string;
+  provider_name: string;
+}>>> => {
+  return request('/router/available-models');
+};
+
+// ── Vector Search ──
+
+export interface VectorSearchResult {
+  sourceType: string;
+  sourceId: string;
+  preview: string;
+  similarity: number;
+  agentId: string | null;
+}
+
+export const vectorSearchMemory = async (
+  query: string,
+  agentId?: string,
+  limit?: number,
+): Promise<ApiResponse<VectorSearchResult[]>> => {
+  const params = new URLSearchParams();
+  params.set('q', query);
+  if (agentId) params.set('agent_id', agentId);
+  if (limit) params.set('limit', String(limit));
+  return request<VectorSearchResult[]>(`/memory/vector-search?${params.toString()}`);
+};
+
+// ── Embedding Status ──
+
+export const getEmbeddingStatus = async (): Promise<ApiResponse<{
+  total: number;
+  embedded: number;
+  pending: number;
+  backfillRunning: boolean;
+  config: { provider: string; model: string; dimensions: number };
+}>> => {
+  return request('/memory/embeddings/status');
+};
+
+// ── Groups ──
+
+export interface AgentGroup {
+  id: string;
+  name: string;
+  description: string | null;
+  createdBy: string;
+  color: string;
+  memberCount: number;
+  createdAt: string;
+}
+
+export const getGroups = async (): Promise<ApiResponse<AgentGroup[]>> => {
+  return request<AgentGroup[]>('/groups');
+};
+
+export const createGroupApi = async (name: string, description: string, color?: string): Promise<ApiResponse<AgentGroup>> => {
+  return request<AgentGroup>('/groups', {
+    method: 'POST',
+    body: JSON.stringify({ name, description, color }),
+  });
+};
+
+export const deleteGroupApi = async (id: string): Promise<ApiResponse<void>> => {
+  return request<void>(`/groups/${id}`, { method: 'DELETE' });
+};
+
+export const updateGroupApi = async (id: string, updates: { name?: string; description?: string; color?: string }): Promise<ApiResponse<unknown>> => {
+  return request(`/groups/${id}`, { method: 'PUT', body: JSON.stringify(updates) });
+};
+
+export const assignAgentToGroupApi = async (agentId: string, groupId: string | null): Promise<ApiResponse<void>> => {
+  return request<void>(`/groups/agents/${agentId}/group`, {
+    method: 'PUT',
+    body: JSON.stringify({ group_id: groupId }),
+  });
+};
+
+// ── Task Runs ──
+
+export interface TaskRun {
+  id: string;
+  taskId: string;
+  runNumber: number;
+  scheduledFor: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  status: string;
+  assignedTo: string | null;
+  agentName: string | null;
+  resultSummary: string | null;
+  error: string | null;
+}
+
+export const getTaskRuns = async (taskId: string): Promise<ApiResponse<TaskRun[]>> => {
+  return request<TaskRun[]>(`/tasks/${taskId}/runs`);
+};
+
+// ── Ollama Lock Status ──
+
+export interface OllamaLockStatus {
+  maxConcurrentModels: number;
+  slots: Array<{ modelName: string; activeRequests: number }>;
+  queuedRequests: number;
+  queuedModels: string[];
+  activeAgentModels: { count: number; models: string[] };
+  warning: string | null;
+}
+
+export const getOllamaLockStatus = async (): Promise<ApiResponse<OllamaLockStatus>> => {
+  return request<OllamaLockStatus>('/system/ollama/lock');
+};
+
+export { getToken, clearToken };

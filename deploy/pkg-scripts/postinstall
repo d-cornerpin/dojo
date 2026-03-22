@@ -1,0 +1,35 @@
+#!/bin/bash
+# Post-install script for the .pkg installer
+# Opens a single Terminal window to run the install visibly
+
+INSTALL_TEMP="/tmp/dojo-install"
+
+# Get the real user (not root)
+REAL_USER="${USER}"
+if [[ "$REAL_USER" == "root" ]]; then
+    REAL_USER=$(stat -f '%Su' /dev/console)
+fi
+
+# Make install script executable
+chmod +x "$INSTALL_TEMP/install.sh" 2>/dev/null
+
+# Write a launcher script that the user's Terminal will run
+cat > /tmp/dojo-run-install.sh << 'LAUNCHER'
+#!/bin/bash
+clear
+echo ""
+echo "🥋 Agent D.O.J.O. — Installing..."
+echo ""
+cd /tmp/dojo-install && bash install.sh
+echo ""
+echo "✅ Installation complete. This window will close in 5 seconds..."
+sleep 5
+osascript -e 'tell application "Terminal" to close (every window whose name contains "dojo-run-install")' &
+exit 0
+LAUNCHER
+chmod +x /tmp/dojo-run-install.sh
+
+# Open Terminal with the launcher (as the real user, single window)
+sudo -u "$REAL_USER" open -a Terminal /tmp/dojo-run-install.sh
+
+exit 0

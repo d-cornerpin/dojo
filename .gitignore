@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+packages/server/dist/
+packages/dashboard/dist/
+packages/shared/dist/
+watchdog/dist/
+menubar/build/
+
+# Deploy artifacts
+deploy/dist/
+
+# macOS
+.DS_Store
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Environment / Secrets (never commit)
+.env
+.env.local
+*.yaml.bak
+
+# User data (lives in ~/.dojo/, not in the repo)
+*.db
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+
+# Temporary files
+/tmp/
+*.tmp

@@ -1,0 +1,492 @@
+import { useState, useEffect, useRef, useCallback } from 'react';
+import type { Message } from '@dojo/shared';
+import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, WsEvent } from '@dojo/shared';
+import * as api from '../lib/api';
+import type { AttachmentInfo } from '../lib/api';
+import { useWebSocket } from '../hooks/useWebSocket';
+import { ToolCallBlock, ToolCallCard, ToolResultBlock } from '../components/ToolCallBlock';
+import { Markdown } from '../components/Markdown';
+import { ChatInput } from '../components/ChatInput';
+import { AttachmentChips } from '../components/AttachmentChips';
+import { ThinkingBubble } from '../components/ThinkingBubble';
+
+// ── Types ──
+
+interface ContentBlock {
+  type: string;
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  tool_use_id?: string;
+  content?: string;
+  is_error?: boolean;
+}
+
+interface ToolCallData {
+  name: string;
+  args: Record<string, unknown>;
+  result?: string;
+  isError?: boolean;
+}
+
+interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;        // raw content from DB (may be JSON)
+  blocks?: ContentBlock[]; // parsed content blocks (if JSON array)
+  createdAt: string;
+  toolCalls?: ToolCallData[];
+  isStreaming?: boolean;
+  attachments?: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: string }>;
+}
+
+// Primary agent ID — loaded from settings
+let _primaryAgentId: string | null = null;
+function usePrimaryAgentId(): string {
+  const [id, setId] = useState(_primaryAgentId ?? 'primary');
+  useEffect(() => {
+    if (_primaryAgentId) return;
+    api.getSetting('primary_agent_id').then(r => {
+      if (r.ok && r.data.value) {
+        _primaryAgentId = r.data.value;
+        setId(r.data.value);
+      }
+    });
+  }, []);
+  return id;
+}
+
+// ── Parse DB message content into structured blocks ──
+
+function parseMessageContent(raw: string): { text: string; blocks?: ContentBlock[] } {
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      // Extract plain text from text blocks for display
+      const textParts = parsed
+        .filter((b: ContentBlock) => b.type === 'text' && b.text)
+        .map((b: ContentBlock) => b.text)
+        .join('');
+      return { text: textParts, blocks: parsed };
+    }
+  } catch {
+    // Not JSON — plain text
+  }
+  return { text: raw };
+}
+
+// ── Message Bubble Renderers ──
+
+const UserBubble = ({ msg }: { msg: ChatMessage }) => {
+  // Strip === File: === blocks from display text (they're shown as chips instead)
+  const displayContent = msg.attachments?.length
+    ? msg.content.replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '').trim()
+    : msg.content;
+
+  return (
+    <div className="flex justify-end">
+      <div className="max-w-[75%] px-4 py-3 text-white"
+        style={{ background: 'rgba(124, 58, 237, 0.25)', border: '1px solid rgba(124, 58, 237, 0.4)', borderRadius: '16px 16px 4px 16px', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1)' }}>
+        {displayContent && (
+          <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed break-words">
+            {displayContent}
+          </pre>
+        )}
+        {msg.attachments && msg.attachments.length > 0 && (
+          <AttachmentChips attachments={msg.attachments} />
+        )}
+        <div className="text-[10px] mt-2" style={{ color: 'var(--text-tertiary)' }}>
+          {new Date(msg.createdAt).toLocaleTimeString()}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
+  const { text, blocks } = parseMessageContent(msg.content);
+  const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
+
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[75%]">
+        {/* Text content */}
+        {text && (
+          <div className="px-4 py-3 whitespace-pre-wrap" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '16px 16px 16px 4px', backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)', color: 'rgba(255,255,255,0.92)', boxShadow: '0 4px 16px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)' }}>
+            <Markdown content={text} />
+            {msg.isStreaming && (
+              <span className="inline-flex gap-1 ml-1 align-middle">
+                <span className="w-1.5 h-1.5 rounded-full bg-cp-amber animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-cp-amber animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-cp-amber animate-bounce" style={{ animationDelay: '300ms' }} />
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Streaming cursor when no text yet */}
+        {!text && msg.isStreaming && (
+          <div className="px-4 py-3" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '16px 16px 16px 4px', backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1)' }}>
+            <span className="inline-flex gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-cp-amber animate-bounce" style={{ animationDelay: '0ms' }} />
+              <span className="w-1.5 h-1.5 rounded-full bg-cp-amber animate-bounce" style={{ animationDelay: '150ms' }} />
+              <span className="w-1.5 h-1.5 rounded-full bg-cp-amber animate-bounce" style={{ animationDelay: '300ms' }} />
+            </span>
+          </div>
+        )}
+
+        {/* Tool use blocks from DB history */}
+        {hasToolUse && (
+          <div className="mt-1">
+            {blocks!
+              .filter((b) => b.type === 'tool_use')
+              .map((b) => (
+                <ToolCallCard
+                  key={b.id}
+                  name={b.name!}
+                  input={(b.input as Record<string, unknown>) ?? {}}
+                />
+              ))}
+          </div>
+        )}
+
+        {/* Live streaming tool calls (from WS events, not yet persisted) */}
+        {msg.toolCalls && msg.toolCalls.length > 0 && !hasToolUse && (
+          <div className="mt-1">
+            {msg.toolCalls.map((tc, i) => (
+              <ToolCallBlock
+                key={`${msg.id}-tool-${i}`}
+                toolName={tc.name}
+                args={tc.args}
+                result={tc.result}
+                isError={tc.isError}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Timestamp */}
+        {!msg.isStreaming && (
+          <div className="text-[10px] mt-1 px-1" style={{ color: 'var(--text-tertiary)' }}>
+            {new Date(msg.createdAt).toLocaleTimeString()}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const ToolResultBubble = ({ msg }: { msg: ChatMessage }) => {
+  const { blocks } = parseMessageContent(msg.content);
+
+  if (!blocks) {
+    // Fallback for non-JSON tool messages
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-[75%]">
+          <ToolResultBlock toolUseId="" content={msg.content} isError={false} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[75%]">
+        {blocks
+          .filter((b) => b.type === 'tool_result')
+          .map((b, i) => (
+            <ToolResultBlock
+              key={`${msg.id}-result-${i}`}
+              toolUseId={b.tool_use_id ?? ''}
+              content={b.content ?? ''}
+              isError={!!b.is_error}
+            />
+          ))}
+      </div>
+    </div>
+  );
+};
+
+// ── Main Chat Component ──
+
+export const Chat = () => {
+  const AGENT_ID = usePrimaryAgentId();
+  const agentIdRef = useRef(AGENT_ID);
+  agentIdRef.current = AGENT_ID; // always up to date for closures
+
+  const [agentName, setAgentName] = useState('');
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState('');
+  const [isWorking, setIsWorking] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    api.getSetting('primary_agent_name').then(r => {
+      if (r.ok && r.data.value) setAgentName(r.data.value);
+    });
+  }, []);
+  const { subscribe } = useWebSocket();
+  const currentToolCallsRef = useRef<ToolCallData[]>([]);
+
+  // Auto-scroll — only when the last message changes (new message appended),
+  // not when older messages are prepended at the top
+  const lastMessageIdRef = useRef<string | null>(null);
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
+
+  useEffect(() => {
+    const lastId = messages.length > 0 ? messages[messages.length - 1].id : null;
+    if (lastId && lastId !== lastMessageIdRef.current) {
+      lastMessageIdRef.current = lastId;
+      scrollToBottom();
+    }
+  }, [messages, scrollToBottom]);
+
+  // Load chat history
+  useEffect(() => {
+    const loadHistory = async () => {
+      const result = await api.getChatHistory(AGENT_ID, 50);
+      if (result.ok) {
+        setMessages(
+          result.data.map((m: Message) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            createdAt: m.createdAt,
+            attachments: m.attachments,
+          })),
+        );
+        setHasMore(result.data.length >= 50);
+        // Scroll to bottom on initial load — delay to ensure DOM is painted
+        setTimeout(() => {
+          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }, 100);
+      }
+      setLoading(false);
+    };
+    loadHistory();
+  }, [AGENT_ID]);
+
+  // Load older messages when scrolling to top
+  const loadOlderMessages = useCallback(async () => {
+    if (loadingMore || !hasMore || messages.length === 0) return;
+    const oldestId = messages[0]?.id;
+    if (!oldestId) return;
+
+    setLoadingMore(true);
+    const container = messagesContainerRef.current;
+    const prevScrollHeight = container?.scrollHeight ?? 0;
+
+    const result = await api.getChatHistory(AGENT_ID, 50, oldestId);
+    if (result.ok && result.data.length > 0) {
+      const older = result.data.map((m: Message) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        createdAt: m.createdAt,
+        attachments: m.attachments,
+      }));
+      setMessages(prev => [...older, ...prev]);
+      setHasMore(result.data.length >= 50);
+
+      // Maintain scroll position after prepending
+      requestAnimationFrame(() => {
+        if (container) {
+          container.scrollTop = container.scrollHeight - prevScrollHeight;
+        }
+      });
+    } else {
+      setHasMore(false);
+    }
+    setLoadingMore(false);
+  }, [loadingMore, hasMore, messages, AGENT_ID]);
+
+  // Detect scroll to top
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      if (container.scrollTop < 100 && hasMore && !loadingMore) {
+        loadOlderMessages();
+      }
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, [hasMore, loadingMore, loadOlderMessages]);
+
+  // Subscribe to WebSocket events
+  useEffect(() => {
+    const unsubChunk = subscribe('chat:chunk', (event: WsEvent) => {
+      const e = event as ChatChunkEvent;
+      if (e.agentId !== agentIdRef.current) return;
+
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && last.isStreaming && last.id === e.messageId) {
+          const updated = { ...last, content: last.content + e.content };
+          if (e.done) {
+            updated.isStreaming = false;
+            updated.toolCalls = currentToolCallsRef.current.length > 0
+              ? [...currentToolCallsRef.current]
+              : undefined;
+            currentToolCallsRef.current = [];
+            setIsWorking(false);
+          }
+          return [...prev.slice(0, -1), updated];
+        } else {
+          return [
+            ...prev,
+            {
+              id: e.messageId,
+              role: 'assistant' as const,
+              content: e.content,
+              createdAt: new Date().toISOString(),
+              isStreaming: !e.done,
+            },
+          ];
+        }
+      });
+    });
+
+    const unsubToolCall = subscribe('chat:tool_call', (event: WsEvent) => {
+      const e = event as ChatToolCallEvent;
+      if (e.agentId !== agentIdRef.current) return;
+      currentToolCallsRef.current.push({
+        name: e.tool,
+        args: e.args,
+      });
+    });
+
+    const unsubToolResult = subscribe('chat:tool_result', (event: WsEvent) => {
+      const e = event as ChatToolResultEvent;
+      if (e.agentId !== agentIdRef.current) return;
+      const tc = currentToolCallsRef.current.find((t) => t.name === e.tool && !t.result);
+      if (tc) {
+        tc.result = e.result;
+      }
+    });
+
+    const unsubError = subscribe('chat:error', (event: WsEvent) => {
+      const e = event as ChatErrorEvent;
+      if (e.agentId !== agentIdRef.current) return;
+      setError(e.error);
+      setIsWorking(false);
+    });
+
+    // Subscribe to full message events (tool results, system messages, etc.)
+    const unsubMessage = subscribe('chat:message', (event: WsEvent) => {
+      const e = event as ChatMessageEvent;
+      if (e.agentId !== agentIdRef.current) return;
+
+      setMessages((prev) => {
+        // Don't add if we already have this message (from streaming or optimistic add)
+        if (prev.some((m) => m.id === e.message.id)) return prev;
+        // Don't add if there's a streaming message in progress with the same ID
+        const last = prev[prev.length - 1];
+        if (last?.isStreaming && last.id === e.message.id) return prev;
+
+        return [
+          ...prev,
+          {
+            id: e.message.id,
+            role: e.message.role,
+            content: e.message.content,
+            createdAt: e.message.createdAt,
+          },
+        ];
+      });
+    });
+
+    return () => {
+      unsubChunk();
+      unsubToolCall();
+      unsubToolResult();
+      unsubError();
+      unsubMessage();
+    };
+  }, [subscribe, AGENT_ID]);
+
+  const handleSend = async (content: string, attachments?: AttachmentInfo[]) => {
+    setError(null);
+    setIsWorking(true);
+
+    const userMsg: ChatMessage = {
+      id: `temp-${Date.now()}`,
+      role: 'user',
+      content,
+      createdAt: new Date().toISOString(),
+      attachments,
+    };
+    setMessages((prev) => [...prev, userMsg]);
+
+    const result = await api.sendMessage(AGENT_ID, content, attachments);
+    if (!result.ok) {
+      setIsWorking(false);
+      if (result.error.includes('busy')) {
+        setError(`${agentName || 'Agent'} is mid-mission — your message will be delivered when they finish.`);
+      } else {
+        setError(result.error);
+      }
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <p className="white/40">Loading chat...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0">
+      {/* Messages */}
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto min-h-0 px-4 md:px-6 py-6 space-y-4">
+        {loadingMore && (
+          <div className="text-center py-2">
+            <span className="text-xs white/30">Loading older messages...</span>
+          </div>
+        )}
+        {messages.length === 0 && (
+          <div className="flex-1 flex items-center justify-center h-full">
+            <div className="text-center animate-fade-up">
+              <div className="text-4xl mb-4">{'\u{1F4AC}'}</div>
+              <h2 className="text-xl font-semibold text-white/80 mb-2">Chat with {agentName || 'your agent'}</h2>
+              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Send a message to get started.</p>
+            </div>
+          </div>
+        )}
+
+        {messages.map((msg) => {
+          if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} />;
+          if (msg.role === 'tool') return <ToolResultBubble key={msg.id} msg={msg} />;
+          return <AssistantBubble key={msg.id} msg={msg} />;
+        })}
+        {isWorking && !messages.some(m => m.isStreaming) && <ThinkingBubble />}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Error banner */}
+      {error && (
+        <div className="shrink-0 mx-4 mb-2 glass-toast glass-toast-error px-4 py-3 text-sm flex items-center justify-between" style={{ color: 'var(--cp-coral)' }}>
+          <span>{error}</span>
+          <button onClick={() => setError(null)} className="hover:opacity-70 ml-2 shrink-0">&times;</button>
+        </div>
+      )}
+
+      {/* Input */}
+      {/* Input */}
+      <ChatInput agentId={AGENT_ID} onSend={handleSend} variant="primary" />
+    </div>
+  );
+};
