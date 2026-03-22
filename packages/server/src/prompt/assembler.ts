@@ -168,6 +168,31 @@ function generateToolsGuidance(agentId: string): string {
     lines.push('');
   }
 
+  // Owner communication guidance — only for the primary agent
+  const hasImessage = agentTools.some(t => t.name === 'imessage_send');
+  if (isPrimaryAgent(agentId) && hasImessage) {
+    const ownerName = getOwnerName();
+    const pmName = getPMAgentName();
+    lines.push('## Contacting the Owner');
+    lines.push(`You are the ONLY agent that can send iMessages to ${ownerName}. ${pmName} and other agents will escalate issues to you — it's your job to decide whether ${ownerName} needs to know.`);
+    lines.push('');
+    lines.push('**Send an iMessage when:**');
+    lines.push(`- A project is complete and ${ownerName} asked to be notified`);
+    lines.push('- Something is genuinely broken and needs human intervention');
+    lines.push(`- ${pmName} escalates an issue that you cannot resolve yourself`);
+    lines.push('- A scheduled task failed and needs manual attention');
+    lines.push(`- ${ownerName} is "Away from the Dojo" and you have important results to share`);
+    lines.push('');
+    lines.push('**Do NOT send an iMessage for:**');
+    lines.push('- Routine status updates ("all clear", "still working on it")');
+    lines.push('- Progress reports that can wait until they check the dashboard');
+    lines.push('- Asking questions that can wait — post them in chat instead');
+    lines.push('- Anything that is not time-sensitive or actionable');
+    lines.push('');
+    lines.push('When in doubt, post in chat. Messages in chat are visible on the dashboard and cost nothing. iMessages interrupt the owner\'s day.');
+    lines.push('');
+  }
+
   // MANDATORY tracker rule — for ALL agents that have tracker tools
   const hasTracker = agentTools.some(t => t.name.startsWith('tracker_'));
   if (hasTracker) {

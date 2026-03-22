@@ -113,8 +113,7 @@ export function ensurePMAgentRunning(): void {
       allow: [
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status', 'tracker_reassign_task',
         'tracker_add_notes', 'tracker_pause_schedule', 'tracker_resume_schedule',
-        'send_to_agent', 'list_agents', 'list_groups', 'get_current_time',
-        'imessage_send',
+        'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups', 'get_current_time',
       ],
     });
     db.prepare("UPDATE agents SET tools_policy = ?, updated_at = datetime('now') WHERE id = ?").run(syncToolsPolicy, pmId);
@@ -148,8 +147,7 @@ export function ensurePMAgentRunning(): void {
       allow: [
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status', 'tracker_reassign_task',
         'tracker_add_notes', 'tracker_pause_schedule', 'tracker_resume_schedule',
-        'send_to_agent', 'list_agents', 'list_groups', 'get_current_time',
-        'imessage_send',
+        'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups', 'get_current_time',
       ],
     });
     db.prepare(`
@@ -186,8 +184,7 @@ export function ensurePMAgentRunning(): void {
       allow: [
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status', 'tracker_reassign_task',
         'tracker_add_notes', 'tracker_pause_schedule', 'tracker_resume_schedule',
-        'send_to_agent', 'list_agents', 'list_groups', 'get_current_time',
-        'imessage_send',
+        'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups', 'get_current_time',
       ],
     });
     db.prepare(`
@@ -300,20 +297,34 @@ async function runPMReview(): Promise<void> {
     SELECT id, name, status, classification FROM agents WHERE status != 'terminated'
   `).all() as Array<{ id: string; name: string; status: string; classification: string }>;
 
-  // Build situation report
+  // Build situation report with scheduled task awareness
+  const now2 = new Date();
   const taskLines = allTasks.map(t => {
     const agentStatus = t.assignedTo
       ? (agents.find(a => a.id === t.assignedTo)?.status ?? 'UNKNOWN')
       : 'unassigned';
-    const schedInfo = t.scheduledStart
-      ? ` | scheduled: ${t.scheduleStatus}, runs: ${t.runCount}${t.nextRunAt ? ', next: ' + t.nextRunAt : ''}`
-      : '';
-    return `- [${t.status.toUpperCase()}] "${t.title}" (${t.id}) → ${t.assignedToName ?? t.assignedTo ?? 'unassigned'} (agent ${agentStatus})${schedInfo}${t.notes ? ' | notes: ' + t.notes.split('\n').pop() : ''}`;
+
+    // Label scheduled tasks clearly so the PM doesn't flag them as stalled
+    let schedLabel = '';
+    if (t.scheduledStart) {
+      const scheduledTime = new Date(t.scheduledStart);
+      const nextRun = t.nextRunAt ? new Date(t.nextRunAt) : null;
+      if (nextRun && nextRun > now2) {
+        schedLabel = ` [SCHEDULED — waiting for ${t.nextRunAt}, do NOT flag as stalled]`;
+      } else if (nextRun && nextRun <= now2) {
+        schedLabel = ` [OVERDUE — was supposed to run at ${t.nextRunAt}, may need attention]`;
+      } else if (scheduledTime > now2) {
+        schedLabel = ` [SCHEDULED — first run at ${t.scheduledStart}, do NOT flag as stalled]`;
+      }
+      schedLabel += ` | runs: ${t.runCount}${t.repeatInterval ? `, repeats every ${t.repeatInterval} ${t.repeatUnit}` : ''}`;
+    }
+
+    return `- [${t.status.toUpperCase()}] "${t.title}" (${t.id}) → ${t.assignedToName ?? t.assignedTo ?? 'unassigned'} (agent ${agentStatus})${schedLabel}${t.notes ? ' | notes: ' + t.notes.split('\n').pop() : ''}`;
   }).join('\n');
 
   const agentLines = agents.map(a => `- ${a.name} (${a.id}): ${a.status}`).join('\n');
 
-  const situationReport = `TRACKER STATUS REVIEW — ${new Date().toLocaleString()}
+  const situationReport = `TRACKER STATUS REVIEW — ${now2.toLocaleString()}
 
 TASKS:
 ${taskLines || '(no tasks)'}
@@ -321,21 +332,24 @@ ${taskLines || '(no tasks)'}
 AGENTS:
 ${agentLines}
 
+IMPORTANT — Scheduled tasks:
+- Tasks marked [SCHEDULED — waiting for ...] are NORMAL. They are waiting for their scheduled fire time. Do NOT flag them as stalled, do NOT poke their agents, do NOT reassign them.
+- Only flag a scheduled task if it says [OVERDUE] — meaning its run time has passed and it hasn't executed.
+
 Review the tasks above. Look for:
-1. Tasks assigned to terminated or idle agents that should be reassigned
-2. Tasks stuck in on_deck that should be in_progress
+1. Tasks assigned to terminated agents that should be reassigned
+2. NON-scheduled tasks stuck in on_deck with no recent activity (ignore scheduled tasks waiting for fire time)
 3. Blocked tasks that need attention
-4. Scheduled tasks that missed their run time
+4. OVERDUE scheduled tasks that missed their run time
 5. Completed upstream tasks where downstream tasks should now start
-6. Any task that looks stuck or problematic
 
 If you find issues, use your tools to fix them:
 - tracker_update_status to change task status
 - tracker_reassign_task to move tasks to available agents
 - send_to_agent to poke agents or notify ${primaryName}
-- If you can't fix something, tell ${primaryName} what's wrong
 
-If everything looks fine, just say "All clear" — don't take action for the sake of it.`;
+If everything looks fine, just say "All clear" in chat — no further action needed.
+If something needs ${primaryName}'s attention, use send_to_agent to notify them. They will decide whether to contact the owner.`;
 
   // Inject into Samantha's conversation and trigger her runtime
   const msgId = uuidv4();

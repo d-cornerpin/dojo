@@ -36,6 +36,11 @@ export function calculateNextRun(task: ScheduledTask): string | null {
     if (!isNaN(endDate.getTime()) && new Date() >= endDate) return null;
   }
 
+  // If task has never run, first run IS the scheduled_start — don't add interval
+  if (!task.last_run_at && task.run_count === 0) {
+    return task.scheduled_start;
+  }
+
   // Calculate next run from last run (or from scheduled_start if never run)
   const baseTime = task.last_run_at
     ? new Date(task.last_run_at)
