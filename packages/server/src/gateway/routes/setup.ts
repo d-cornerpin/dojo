@@ -9,7 +9,7 @@ import {
 } from '../../config/loader.js';
 import { LoginSchema } from '../../config/schema.js';
 import { createLogger } from '../../logger.js';
-import { isPMEnabled } from '../../config/platform.js';
+import { isPMEnabled, isTrainerEnabled } from '../../config/platform.js';
 import type { SetupStatus } from '@dojo/shared';
 import type { AppEnv } from '../server.js';
 
@@ -103,6 +103,26 @@ setupRouter.post('/complete', async (c) => {
       });
     }
   }
+
+  // Spawn Trainer agent if enabled
+  if (isTrainerEnabled()) {
+    try {
+      const { ensureTrainerAgentRunning } = await import('../../techniques/trainer-agent.js');
+      ensureTrainerAgentRunning();
+      logger.info('Trainer agent spawned during setup completion');
+    } catch (err) {
+      logger.error('Failed to spawn Trainer agent', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Re-run system group assignment now that all agents exist
+  try {
+    const { ensureSystemGroup: reassignGroups } = await import('../../agent/groups.js');
+    reassignGroups();
+    logger.info('System group re-assigned after agent creation');
+  } catch { /* ignore */ }
 
   logger.info('Setup completed');
 

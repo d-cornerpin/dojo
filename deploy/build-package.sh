@@ -49,7 +49,9 @@ cp "$PROJECT_ROOT/package.json" "$DEST/platform/"
 cp "$PROJECT_ROOT/package-lock.json" "$DEST/platform/" 2>/dev/null || true
 cp -r "$PROJECT_ROOT/packages/server/dist" "$DEST/platform/packages/server/"
 cp "$PROJECT_ROOT/packages/server/package.json" "$DEST/platform/packages/server/"
-cp -r "$PROJECT_ROOT/packages/server/src/db/migrations" "$DEST/platform/packages/server/migrations"
+# Copy migrations to where the compiled code expects them (dist/db/migrations)
+mkdir -p "$DEST/platform/packages/server/dist/db"
+cp -r "$PROJECT_ROOT/packages/server/src/db/migrations" "$DEST/platform/packages/server/dist/db/migrations"
 cp -r "$PROJECT_ROOT/packages/dashboard/dist" "$DEST/platform/packages/dashboard/"
 cp "$PROJECT_ROOT/packages/dashboard/package.json" "$DEST/platform/packages/dashboard/"
 cp -r "$PROJECT_ROOT/packages/shared/dist" "$DEST/platform/packages/shared/"

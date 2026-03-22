@@ -3,6 +3,7 @@
 // ════════════════════════════════════════
 
 import os from 'node:os';
+import { execSync } from 'node:child_process';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { sendAlert } from './imessage-bridge.js';
@@ -24,17 +25,48 @@ export interface ResourceInfo {
   };
 }
 
+/**
+ * Get memory info using macOS `vm_stat` which accounts for purgeable/cached memory.
+ * os.freemem() only reports "free" pages, ignoring inactive/purgeable memory
+ * that macOS can reclaim instantly — making it look like 99% used when it's really ~50%.
+ */
+function getMacMemoryMb(): { total: number; used: number; free: number } {
+  const totalMb = Math.round(os.totalmem() / (1024 * 1024));
+  try {
+    const vmstat = execSync('vm_stat', { encoding: 'utf-8', timeout: 3000 });
+    const pageSizeMatch = vmstat.match(/page size of (\d+) bytes/);
+    const pageSize = pageSizeMatch ? parseInt(pageSizeMatch[1], 10) : 16384;
+
+    const parsePage = (label: string): number => {
+      const match = vmstat.match(new RegExp(`${label}:\\s+(\\d+)`));
+      return match ? parseInt(match[1], 10) : 0;
+    };
+
+    // "App Memory" = wired + active (this matches Activity Monitor's "Memory Used" closely)
+    const wired = parsePage('Pages wired down');
+    const active = parsePage('Pages active');
+    const compressed = parsePage('Pages occupied by compressor');
+
+    const usedPages = wired + active + compressed;
+    const usedMb = Math.round((usedPages * pageSize) / (1024 * 1024));
+    const freeMb = Math.max(0, totalMb - usedMb);
+
+    return { total: totalMb, used: usedMb, free: freeMb };
+  } catch {
+    const freeMem = os.freemem();
+    return {
+      total: totalMb,
+      used: Math.round((os.totalmem() - freeMem) / (1024 * 1024)),
+      free: Math.round(freeMem / (1024 * 1024)),
+    };
+  }
+}
+
 export function getResourceInfo(): ResourceInfo {
-  const totalMem = os.totalmem();
-  const freeMem = os.freemem();
-  const usedMem = totalMem - freeMem;
+  const memory = getMacMemoryMb();
 
   return {
-    memory: {
-      total: Math.round(totalMem / (1024 * 1024)),
-      used: Math.round(usedMem / (1024 * 1024)),
-      free: Math.round(freeMem / (1024 * 1024)),
-    },
+    memory,
     cpu: {
       loadAvg: os.loadavg(),
     },

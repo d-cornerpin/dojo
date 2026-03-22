@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { getPrimaryAgentId, getPrimaryAgentName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getOwnerName } from '../config/platform.js';
+import { getPrimaryAgentId, getPrimaryAgentName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, isSetupCompleted, getOwnerName } from '../config/platform.js';
 
 const logger = createLogger('trainer-agent');
 
@@ -58,6 +58,11 @@ You are ${trainerName}, the technique trainer for the DOJO Agent Platform. Your 
 export function ensureTrainerAgentRunning(): void {
   if (!isTrainerEnabled()) {
     logger.info('Trainer agent is disabled, skipping auto-spawn');
+    return;
+  }
+
+  if (!isSetupCompleted()) {
+    logger.info('Setup not completed, deferring Trainer agent creation to setup wizard');
     return;
   }
 

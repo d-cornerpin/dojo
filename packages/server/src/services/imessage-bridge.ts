@@ -22,10 +22,20 @@ let lastSeenRowId = 0;
 const POLL_INTERVAL_MS = 5000;
 
 // Track which sender triggered each agent's current turn so we reply to the right person
-const pendingIMResponseMap = new Map<string, string>(); // agentId -> sender identifier
+// Entries expire after 60 seconds to prevent stale flags from sending unexpected iMessages
+const pendingIMResponseMap = new Map<string, { sender: string; setAt: number }>(); // agentId -> { sender, timestamp }
+
+const IM_RESPONSE_TIMEOUT_MS = 60000; // 60 seconds — flags expire to prevent stale replies
 
 export function isAwaitingIMResponse(agentId: string): boolean {
-  return pendingIMResponseMap.has(agentId);
+  const entry = pendingIMResponseMap.get(agentId);
+  if (!entry) return false;
+  // Expire stale flags
+  if (Date.now() - entry.setAt > IM_RESPONSE_TIMEOUT_MS) {
+    pendingIMResponseMap.delete(agentId);
+    return false;
+  }
+  return true;
 }
 
 export function clearIMResponseFlag(agentId: string): void {
@@ -34,7 +44,8 @@ export function clearIMResponseFlag(agentId: string): void {
 
 export function sendResponseViaIMessage(text: string, agentId?: string): void {
   if (!agentId) agentId = getPrimaryAgentId();
-  const sender = pendingIMResponseMap.get(agentId) ?? approvedSenders[0];
+  const entry = pendingIMResponseMap.get(agentId);
+  const sender = entry?.sender ?? approvedSenders[0];
   if (sender) {
     sendIMessage(sender, text);
   }
@@ -150,7 +161,7 @@ async function pollMessages(): Promise<void> {
           });
 
           // Flag that primary agent's next response should be sent back via iMessage to this sender
-          pendingIMResponseMap.set(primaryId, sender);
+          pendingIMResponseMap.set(primaryId, { sender, setAt: Date.now() });
 
           const runtime = getAgentRuntime();
           runtime.handleMessage(primaryId, msgContent).catch(err => {
@@ -335,10 +346,15 @@ export function isIMBridgeRunning(): boolean {
   return pollTimer !== null;
 }
 
-export function getIMBridgeStatus(): { running: boolean; approvedSenders: string[]; lastSeenRowId: number } {
+export function getIMBridgeStatus(): { running: boolean; enabled: boolean; connected: boolean; approvedSenders: string[]; lastSeenRowId: number } {
+  const running = pollTimer !== null;
+  // "enabled" = senders are configured (bridge can be started)
+  const hasSenders = approvedSenders.length > 0 || getApprovedSenders().length > 0;
   return {
-    running: pollTimer !== null,
-    approvedSenders,
+    running,
+    enabled: hasSenders || running,
+    connected: running,
+    approvedSenders: approvedSenders.length > 0 ? approvedSenders : getApprovedSenders(),
     lastSeenRowId,
   };
 }

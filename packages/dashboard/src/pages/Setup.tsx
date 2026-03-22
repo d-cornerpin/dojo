@@ -12,7 +12,7 @@ const STEP_LABELS: Record<Step, string> = {
   welcome: 'Welcome',
   dependencies: 'Equip the Dojo',
   permissions: 'macOS Permissions',
-  provider: 'API Providers',
+  provider: 'AI Providers',
   models: 'Enable Models',
   'your-profile': 'Your Profile',
   'primary-agent': 'Primary Agent',
@@ -352,9 +352,21 @@ const ProviderStep = () => {
           <div>
             <label className="block text-sm font-medium white/70 mb-1">{authType === 'oauth' && type === 'anthropic' ? 'OAuth Token' : 'API Key'}</label>
             <input type="password" value={credential} onChange={(e) => setCredential(e.target.value)}
-              placeholder={type === 'openai' ? 'sk-...' : authType === 'oauth' ? 'Bearer token...' : 'sk-...'}
+              placeholder={type === 'openai' ? 'sk-...' : authType === 'oauth' ? 'sk-ant-oat...' : 'sk-...'}
               className="glass-input" />
           </div>
+
+          {/* OAuth hint for Anthropic */}
+          {type === 'anthropic' && authType === 'oauth' && (
+            <div className="px-3 py-2.5 rounded-lg bg-blue-500/5 border border-blue-500/10 text-[11px] text-blue-300/70 leading-relaxed space-y-1.5">
+              <p className="font-medium text-blue-300/90">How to get your OAuth token:</p>
+              <p>1. Install Claude Code (if you haven't already):</p>
+              <code className="block px-2 py-1 rounded bg-white/[0.05] font-mono text-[10px] text-white/60">curl -fsSL https://claude.ai/install.sh | bash</code>
+              <p>2. Generate your token:</p>
+              <code className="block px-2 py-1 rounded bg-white/[0.05] font-mono text-[10px] text-white/60">claude setup-token</code>
+              <p>3. Copy the token (starts with <span className="font-mono">sk-ant-oat</span>) and paste it above.</p>
+            </div>
+          )}
         </>
       )}
 
@@ -763,7 +775,6 @@ const PrimaryAgentStep = () => {
 // ── Project Manager ──
 
 const PMAgentStep = () => {
-  const [enabled, setEnabled] = useState(true);
   const [pmName, setPmName] = useState('');
   const [models, setModels] = useState<Model[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
@@ -783,8 +794,8 @@ const PMAgentStep = () => {
   }, []);
 
   const handleSave = async () => {
-    await api.setSetting('pm_agent_enabled', enabled ? 'true' : 'false');
-    if (enabled && pmName.trim()) {
+    await api.setSetting('pm_agent_enabled', 'true');
+    if (pmName.trim()) {
       const pmId = pmName.trim().toLowerCase().replace(/[^a-z0-9]/g, '-');
       await api.setSetting('pm_agent_name', pmName.trim());
       await api.setSetting('pm_agent_id', pmId);
@@ -798,56 +809,41 @@ const PMAgentStep = () => {
   return (
     <div className="space-y-4">
       <p className="text-sm text-white/55">
-        The <strong className="white/90">project manager</strong> is an optional agent that tracks tasks,
+        The <strong className="white/90">project manager</strong> tracks tasks,
         pokes stalled work, and escalates issues. It runs on a lighter model to save costs and keeps your primary agent accountable.
       </p>
 
-      <div className="flex items-center justify-between py-3 px-4 glass-nested rounded-xl">
-        <div>
-          <span className="text-sm font-medium white/90">Enable Project Manager</span>
-          <p className="text-xs text-white/40 mt-0.5">Tracks tasks, sends reminders, escalates blockers</p>
-        </div>
-        <button onClick={() => { setEnabled(!enabled); setSaved(false); }}
-          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 ${enabled ? 'bg-cp-teal' : 'bg-white/[0.12]'}`}>
-          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-200 ${enabled ? 'translate-x-6' : 'translate-x-1'}`} />
-        </button>
+      <div>
+        <label className="block text-sm font-medium white/70 mb-1">PM Name</label>
+        <input type="text" value={pmName} onChange={(e) => { setPmName(e.target.value); setSaved(false); }}
+          placeholder="e.g., Kelly, Max, Tracker"
+          className="glass-input" />
       </div>
 
-      {enabled && (
-        <>
-          <div>
-            <label className="block text-sm font-medium white/70 mb-1">PM Name</label>
-            <input type="text" value={pmName} onChange={(e) => { setPmName(e.target.value); setSaved(false); }}
-              placeholder="e.g., Kelly, Max, Tracker"
-              className="glass-input" />
-          </div>
-
-          {models.length > 0 && (
-            <div>
-              <label className="block text-sm font-medium white/70 mb-1">Model</label>
-              <p className="text-xs text-white/40 mb-2">
-                The PM uses a lighter model to save costs. A free local model works well here.
-              </p>
-              <select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); setSaved(false); }}
-                className="glass-select w-full">
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name} ({m.apiModelId}){m.inputCostPerM === 0 || m.inputCostPerM === null ? ' — free' : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-        </>
+      {models.length > 0 && (
+        <div>
+          <label className="block text-sm font-medium white/70 mb-1">Model</label>
+          <p className="text-xs text-white/40 mb-2">
+            The PM uses a lighter model to save costs. A free local model works well here.
+          </p>
+          <select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); setSaved(false); }}
+            className="glass-select w-full">
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name} ({m.apiModelId}){m.inputCostPerM === 0 || m.inputCostPerM === null ? ' — free' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
       )}
 
       {saved && (
         <div className="px-3 py-2 rounded-lg glass-badge-teal border border-cp-teal/20 text-sm">
-          {enabled ? `${pmName} will manage your projects!` : 'Project manager disabled.'}
+          {`${pmName} will manage your projects!`}
         </div>
       )}
 
-      <button onClick={handleSave} disabled={saved || (enabled && !pmName.trim())}
+      <button onClick={handleSave} disabled={saved || !pmName.trim()}
         className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
           saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
         }`}>
@@ -860,7 +856,6 @@ const PMAgentStep = () => {
 // ── Trainer Agent ──
 
 const TrainerAgentStep = () => {
-  const [enabled, setEnabled] = useState(true);
   const [trainerName, setTrainerName] = useState('');
   const [models, setModels] = useState<Model[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
@@ -879,8 +874,8 @@ const TrainerAgentStep = () => {
   }, []);
 
   const handleSave = async () => {
-    await api.setSetting('trainer_agent_enabled', enabled ? 'true' : 'false');
-    if (enabled && trainerName.trim()) {
+    await api.setSetting('trainer_agent_enabled', 'true');
+    if (trainerName.trim()) {
       const trainerId = trainerName.trim().toLowerCase().replace(/[^a-z0-9]/g, '-');
       await api.setSetting('trainer_agent_name', trainerName.trim());
       await api.setSetting('trainer_agent_id', trainerId);
@@ -894,56 +889,41 @@ const TrainerAgentStep = () => {
   return (
     <div className="space-y-4">
       <p className="text-sm text-white/55">
-        The <strong className="white/90">technique trainer</strong> is an agent that helps you create, refine, and manage
+        The <strong className="white/90">technique trainer</strong> helps you create, refine, and manage
         reusable techniques for the dojo. It runs the Technique Trainer interface and ensures techniques are well-documented and useful.
       </p>
 
-      <div className="flex items-center justify-between py-3 px-4 glass-nested rounded-xl">
-        <div>
-          <span className="text-sm font-medium white/90">Enable Technique Trainer</span>
-          <p className="text-xs text-white/40 mt-0.5">Creates and manages reusable techniques for all agents</p>
-        </div>
-        <button onClick={() => { setEnabled(!enabled); setSaved(false); }}
-          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 ${enabled ? 'bg-cp-teal' : 'bg-white/[0.12]'}`}>
-          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-200 ${enabled ? 'translate-x-6' : 'translate-x-1'}`} />
-        </button>
+      <div>
+        <label className="block text-sm font-medium white/70 mb-1">Trainer Name</label>
+        <input type="text" value={trainerName} onChange={(e) => { setTrainerName(e.target.value); setSaved(false); }}
+          placeholder="e.g., Sensei, Coach, Instructor"
+          className="glass-input" />
       </div>
 
-      {enabled && (
-        <>
-          <div>
-            <label className="block text-sm font-medium white/70 mb-1">Trainer Name</label>
-            <input type="text" value={trainerName} onChange={(e) => { setTrainerName(e.target.value); setSaved(false); }}
-              placeholder="e.g., Sensei, Coach, Instructor"
-              className="glass-input" />
-          </div>
-
-          {models.length > 0 && (
-            <div>
-              <label className="block text-sm font-medium white/70 mb-1">Model</label>
-              <p className="text-xs text-white/40 mb-2">
-                The Trainer uses the same model as other agents. A capable model works best here since it writes detailed instructions.
-              </p>
-              <select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); setSaved(false); }}
-                className="glass-select w-full">
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name} ({m.apiModelId}){m.inputCostPerM === 0 || m.inputCostPerM === null ? ' — free' : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-        </>
+      {models.length > 0 && (
+        <div>
+          <label className="block text-sm font-medium white/70 mb-1">Model</label>
+          <p className="text-xs text-white/40 mb-2">
+            The Trainer uses the same model as other agents. A capable model works best here since it writes detailed instructions.
+          </p>
+          <select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); setSaved(false); }}
+            className="glass-select w-full">
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name} ({m.apiModelId}){m.inputCostPerM === 0 || m.inputCostPerM === null ? ' — free' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
       )}
 
       {saved && (
         <div className="px-3 py-2 rounded-lg glass-badge-teal border border-cp-teal/20 text-sm">
-          {enabled ? `${trainerName} will train your dojo's techniques!` : 'Technique trainer disabled.'}
+          {`${trainerName} will train your dojo's techniques!`}
         </div>
       )}
 
-      <button onClick={handleSave} disabled={saved || (enabled && !trainerName.trim())}
+      <button onClick={handleSave} disabled={saved || !trainerName.trim()}
         className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
           saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
         }`}>
@@ -981,6 +961,8 @@ const IMessageStep = () => {
     setSaved(false);
   };
 
+  const [sending, setSending] = useState(false);
+
   const handleSave = async () => {
     setError(null);
     if (enabled && senders.length === 0) {
@@ -994,6 +976,33 @@ const IMessageStep = () => {
       api.setSetting('imessage_recipient', senders[0] ?? ''),
       api.setSetting('imessage_default_sender', effectiveDefault),
     ]);
+
+    // Send welcome message to start the bridge and verify it works
+    if (enabled && effectiveDefault) {
+      setSending(true);
+      const token = localStorage.getItem('dojo_token');
+      const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
+      const csrf = csrfMatch ? csrfMatch[1] : null;
+      try {
+        const res = await fetch('/api/system/imessage/welcome', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+          },
+          body: JSON.stringify({ recipient: effectiveDefault }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          setError(`iMessage saved but welcome message failed: ${data.error}. You may need to grant Automation permission for Messages.`);
+        }
+      } catch {
+        setError('Settings saved but could not send welcome message. Check Automation permissions.');
+      }
+      setSending(false);
+    }
+
     setSaved(true);
   };
 
@@ -1052,14 +1061,14 @@ const IMessageStep = () => {
 
       {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
       {saved && <div className="px-3 py-2 rounded-lg glass-badge-teal border border-cp-teal/20 text-sm">
-        {enabled ? 'iMessage bridge configured!' : 'iMessage bridge disabled.'}
+        {enabled ? 'iMessage bridge configured! Check your phone for a welcome message.' : 'iMessage bridge disabled.'}
       </div>}
 
-      <button onClick={handleSave} disabled={saved}
+      <button onClick={handleSave} disabled={saved || sending}
         className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
           saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
         }`}>
-        {saved ? '\u2713 Saved' : enabled ? 'Save iMessage Settings' : 'Skip (Leave Disabled)'}
+        {sending ? 'Sending welcome message...' : saved ? '\u2713 Saved' : enabled ? 'Save & Test iMessage' : 'Skip (Leave Disabled)'}
       </button>
     </div>
   );
@@ -1148,18 +1157,18 @@ const WebSearchStep = () => {
 const CompleteStep = () => {
   const [primaryName, setPrimaryName] = useState('');
   const [pmName, setPmName] = useState('');
-  const [pmEnabled, setPmEnabled] = useState(true);
+  const [trainerName, setTrainerName] = useState('');
 
   useEffect(() => {
     const load = async () => {
-      const [pn, pm, pme] = await Promise.all([
+      const [pn, pm, tn] = await Promise.all([
         api.getSetting('primary_agent_name'),
         api.getSetting('pm_agent_name'),
-        api.getSetting('pm_agent_enabled'),
+        api.getSetting('trainer_agent_name'),
       ]);
       if (pn.ok && pn.data.value) setPrimaryName(pn.data.value);
       if (pm.ok && pm.data.value) setPmName(pm.data.value);
-      if (pme.ok) setPmEnabled(pme.data.value !== 'false');
+      if (tn.ok && tn.data.value) setTrainerName(tn.data.value);
     };
     load();
   }, []);
@@ -1170,7 +1179,8 @@ const CompleteStep = () => {
       <h3 className="text-xl font-semibold text-white">You're all set!</h3>
       <div className="text-sm text-white/55 space-y-1">
         <p>Primary agent: <strong className="white/90">{primaryName || 'Agent'}</strong></p>
-        {pmEnabled && pmName && <p>Project manager: <strong className="white/90">{pmName}</strong></p>}
+        {pmName && <p>Project manager: <strong className="white/90">{pmName}</strong></p>}
+        {trainerName && <p>Technique trainer: <strong className="white/90">{trainerName}</strong></p>}
       </div>
       <p className="text-sm text-white/40">
         Click <strong className="text-green-400">Launch</strong> to enter the dashboard and start chatting.

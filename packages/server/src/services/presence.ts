@@ -33,7 +33,8 @@ export function setPresence(status: PresenceStatus): void {
 
 export function isImessageConfigured(): boolean {
   const status = getIMBridgeStatus();
-  return status.running && !!getDefaultSender();
+  // "Configured" means senders are set up — the bridge doesn't need to be actively running
+  return (status.enabled || status.running) && !!getDefaultSender();
 }
 
 /**

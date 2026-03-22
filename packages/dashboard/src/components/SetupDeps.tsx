@@ -521,6 +521,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
 export const SetupPermissions = () => {
   const [permissions, setPermissions] = useState<Record<string, string>>({});
   const [checking, setChecking] = useState(true);
+  const [expandedHint, setExpandedHint] = useState<string | null>(null);
 
   const checkPermissions = async () => {
     setChecking(true);
@@ -531,43 +532,98 @@ export const SetupPermissions = () => {
 
   useEffect(() => { checkPermissions(); }, []);
 
-  const openSettings = async (perm: string) => {
-    await fetchJson(`${API}/permissions/open/${perm}`, { method: 'POST' });
-    // Re-check after a delay
-    setTimeout(checkPermissions, 3000);
+  const openSettings = async (apiKey: string) => {
+    await fetchJson(`${API}/permissions/request/${apiKey}`, { method: 'POST' });
+    // Re-check after a delay (user needs time to toggle in System Settings)
+    setTimeout(checkPermissions, 5000);
   };
 
   const permItems = [
-    { key: 'screen_recording', label: 'Screen Recording', description: 'Required for screen_read tool' },
-    { key: 'accessibility', label: 'Accessibility', description: 'Required for mouse & keyboard control' },
-    { key: 'full_disk', label: 'Full Disk Access', description: 'Required to read system files' },
-    { key: 'automation', label: 'Automation (AppleScript)', description: 'Required for iMessage and system control' },
+    {
+      key: 'screen_recording',
+      apiKey: 'screen',
+      label: 'Screen Recording',
+      description: 'Allows agents to see your screen and take screenshots',
+      hint: 'System Settings → Privacy & Security → Screen Recording. Look for "node" or "screencapture" in the list and toggle it ON. If it\'s not listed, click "+" and navigate to /opt/homebrew/bin/node (or /usr/local/bin/node). You may need to restart the DOJO server after granting this.',
+    },
+    {
+      key: 'accessibility',
+      apiKey: 'accessibility',
+      label: 'Accessibility',
+      description: 'Allows agents to control mouse and keyboard',
+      hint: 'System Settings → Privacy & Security → Accessibility. Click "+" and add /opt/homebrew/bin/cliclick (Apple Silicon) or /usr/local/bin/cliclick (Intel). If you can\'t find it, open Terminal and type: which cliclick — then add the path shown.',
+    },
+    {
+      key: 'full_disk',
+      apiKey: 'full-disk-access',
+      label: 'Full Disk Access',
+      description: 'Allows agents to read protected files like iMessage database',
+      hint: 'System Settings → Privacy & Security → Full Disk Access. Click "+" and add /opt/homebrew/bin/node (Apple Silicon) or /usr/local/bin/node (Intel). You may need to restart the DOJO server after granting this.',
+    },
+    {
+      key: 'automation',
+      apiKey: 'automation',
+      label: 'Automation (AppleScript)',
+      description: 'Allows iMessage sending and system automation',
+      hint: 'This permission is granted automatically the first time DOJO tries to send an iMessage. If you see a macOS popup asking to allow automation, click "OK". You can also find it in System Settings → Privacy & Security → Automation → node.',
+    },
   ];
+
+  const allGranted = permItems.every(item => permissions[item.key] === 'granted');
 
   return (
     <div className="space-y-4">
       <p className="text-sm text-white/55">
-        These permissions are optional but required for full functionality. You can grant them now or later.
+        These macOS permissions allow your agents to interact with your system. They're optional — you can grant them now or later in System Settings.
+      </p>
+
+      <p className="text-[10px] text-white/30">
+        DOJO runs as a Node.js process, so permissions need to be granted to "node" (not Terminal). Each button opens the correct section of System Settings. Click "Help" for step-by-step instructions.
       </p>
 
       <div className="glass-nested rounded-xl p-4 divide-y divide-gray-700">
         {permItems.map((item) => {
           const status = permissions[item.key] ?? 'unknown';
           const icon = status === 'granted' ? '\u2705' : status === 'denied' ? '\u274C' : '\u2753';
+          const isExpanded = expandedHint === item.key;
+
           return (
-            <div key={item.key} className="flex items-center justify-between py-2.5">
-              <div className="flex items-center gap-3">
-                <span className="text-lg">{icon}</span>
-                <div>
-                  <span className="text-sm white/80">{item.label}</span>
-                  <p className="text-[10px] white/30">{item.description}</p>
+            <div key={item.key} className="py-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="text-lg">{icon}</span>
+                  <div className="min-w-0">
+                    <span className="text-sm white/80">{item.label}</span>
+                    <p className="text-[10px] white/30">{item.description}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {status === 'granted' ? (
+                    <span className="text-[10px] text-green-400">Granted</span>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => setExpandedHint(isExpanded ? null : item.key)}
+                        className="text-[10px] text-white/30 hover:text-white/50 transition-colors"
+                      >
+                        {isExpanded ? 'Hide help' : 'Help'}
+                      </button>
+                      <button
+                        onClick={() => openSettings(item.apiKey)}
+                        className="px-2.5 py-1 text-xs bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 rounded transition-colors"
+                      >
+                        Open Settings
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
-              {status !== 'granted' && (
-                <button onClick={() => openSettings(item.key)}
-                  className="px-2 py-1 text-xs bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 rounded transition-colors">
-                  Open Settings
-                </button>
+
+              {/* Expanded hint */}
+              {isExpanded && status !== 'granted' && (
+                <div className="mt-2 ml-9 px-3 py-2 rounded-lg bg-blue-500/5 border border-blue-500/10 text-[11px] text-blue-300/70 leading-relaxed">
+                  {item.hint}
+                </div>
               )}
             </div>
           );
@@ -576,9 +632,14 @@ export const SetupPermissions = () => {
 
       {checking && <p className="text-xs text-yellow-400 animate-pulse">Checking permissions...</p>}
 
-      <button onClick={checkPermissions} className="text-xs text-blue-400 hover:text-blue-300">
-        Re-check permissions
-      </button>
+      <div className="flex items-center justify-between">
+        <button onClick={checkPermissions} className="text-xs text-blue-400 hover:text-blue-300">
+          Re-check permissions
+        </button>
+        {allGranted && (
+          <span className="text-xs text-green-400">All permissions granted</span>
+        )}
+      </div>
     </div>
   );
 };

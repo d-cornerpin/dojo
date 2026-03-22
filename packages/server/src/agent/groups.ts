@@ -159,9 +159,10 @@ export function deleteGroup(id: string): boolean {
 export function assignAgentToGroup(agentId: string, groupId: string | null): { ok: boolean; error?: string } {
   const primaryId = getPrimaryAgentId();
   const pmId = getPMAgentId();
+  const trainerId = getTrainerAgentId();
 
-  // Permanent agents (primary + PM) are locked to the System Group
-  if (agentId === primaryId || agentId === pmId) {
+  // Permanent agents (primary + PM + trainer) are locked to the System Group
+  if (agentId === primaryId || agentId === pmId || agentId === trainerId) {
     return { ok: false, error: 'Permanent agents cannot be moved from the System group' };
   }
 

@@ -96,23 +96,26 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4c. Ensure PM agent exists and poke loop is running (if enabled)
-  if (isPMEnabled()) {
-    try {
-      const { ensurePMAgentRunning } = await import('./tracker/pm-agent.js');
-      ensurePMAgentRunning();
-      logger.info('PM agent ensured on server startup');
-    } catch (err) {
-      logger.error('Failed to ensure PM agent', {
-        error: err instanceof Error ? err.message : String(err),
-      });
+  // 4c. Ensure PM agent exists and poke loop is running (if enabled and setup is complete)
+  {
+    const { isSetupCompleted } = await import('./config/platform.js');
+    if (isSetupCompleted() && isPMEnabled()) {
+      try {
+        const { ensurePMAgentRunning } = await import('./tracker/pm-agent.js');
+        ensurePMAgentRunning();
+        logger.info('PM agent ensured on server startup');
+      } catch (err) {
+        logger.error('Failed to ensure PM agent', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 
-  // 4c2. Ensure Trainer agent exists (if enabled)
+  // 4c2. Ensure Trainer agent exists (if enabled and setup is complete)
   {
-    const { isTrainerEnabled } = await import('./config/platform.js');
-    if (isTrainerEnabled()) {
+    const { isTrainerEnabled, isSetupCompleted: isSetupDone } = await import('./config/platform.js');
+    if (isSetupDone() && isTrainerEnabled()) {
       try {
         const { ensureTrainerAgentRunning } = await import('./techniques/trainer-agent.js');
         ensureTrainerAgentRunning();

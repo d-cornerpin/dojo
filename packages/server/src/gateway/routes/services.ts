@@ -5,7 +5,7 @@
 import { Hono } from 'hono';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
-import { getIMBridgeStatus, sendIMessage } from '../../services/imessage-bridge.js';
+import { getIMBridgeStatus, sendIMessage, startIMBridge } from '../../services/imessage-bridge.js';
 import { getResourceInfo } from '../../services/resource-monitor.js';
 import { checkOllamaHealth, getOllamaStatus, listOllamaModels } from '../../services/ollama.js';
 import { getOllamaLock, getActiveOllamaModelCount, getOllamaMaxConcurrent } from '../../services/ollama-lock.js';
@@ -88,6 +88,30 @@ servicesRouter.post('/imessage/test', async (c) => {
   }
 });
 
+// POST /imessage/welcome — send welcome message and start the bridge (used during OOBE)
+servicesRouter.post('/imessage/welcome', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const recipient = body?.recipient as string | undefined;
+
+  if (!recipient) {
+    return c.json({ ok: false, error: 'recipient is required' }, 400);
+  }
+
+  try {
+    // Start the bridge first
+    startIMBridge(recipient);
+
+    // Send welcome message
+    sendIMessage(recipient, '🥋 Welcome to the D.O.J.O! Your agent platform is set up and ready. You can talk to your agents through iMessage when you\'re away from the dashboard.');
+
+    return c.json({ ok: true, data: { sent: true, bridgeStarted: true } });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Failed to send welcome iMessage', { error: msg });
+    return c.json({ ok: false, error: msg }, 500);
+  }
+});
+
 // GET /providers/health — provider health check
 servicesRouter.get('/providers/health', async (c) => {
   const db = getDb();
@@ -137,8 +161,9 @@ servicesRouter.get('/resources', async (c) => {
   }
 
   // CPU usage approximation from load average
+  // Use 5-minute average (loadAvg[1]) for a smoother, less spiky reading
   const cpuCount = (await import('node:os')).cpus().length || 1;
-  const cpuUsage = Math.min(100, (info.cpu.loadAvg[0] / cpuCount) * 100);
+  const cpuUsage = Math.min(100, Math.round((info.cpu.loadAvg[1] / cpuCount) * 100));
 
   return c.json({
     ok: true,

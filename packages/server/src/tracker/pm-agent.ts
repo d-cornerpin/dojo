@@ -9,7 +9,7 @@ import { sendAgentMessage } from '../agent/agent-bus.js';
 import { listTasks, getTask, getLastPoke, logPoke } from './schema.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { sendAlert } from '../services/imessage-bridge.js';
-import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, getOwnerName } from '../config/platform.js';
+import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, isSetupCompleted, getOwnerName } from '../config/platform.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('pm-agent');
@@ -80,6 +80,11 @@ You are ${pmName}, the project manager for this agent platform. Your only job is
 export function ensurePMAgentRunning(): void {
   if (!isPMEnabled()) {
     logger.info('PM agent is disabled, skipping auto-spawn');
+    return;
+  }
+
+  if (!isSetupCompleted()) {
+    logger.info('Setup not completed, deferring PM agent creation to setup wizard');
     return;
   }
 

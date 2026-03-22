@@ -407,12 +407,22 @@ export const Chat = () => {
       });
     });
 
+    // Clear isWorking when agent goes idle (catches cases where done chunk is missed)
+    const unsubStatus = subscribe('agent:status', (event: WsEvent) => {
+      const e = event as { agentId: string; status: string };
+      if (e.agentId !== agentIdRef.current) return;
+      if (e.status === 'idle' || e.status === 'error') {
+        setIsWorking(false);
+      }
+    });
+
     return () => {
       unsubChunk();
       unsubToolCall();
       unsubToolResult();
       unsubError();
       unsubMessage();
+      unsubStatus();
     };
   }, [subscribe, AGENT_ID]);
 

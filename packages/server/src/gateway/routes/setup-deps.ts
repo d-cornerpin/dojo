@@ -376,9 +376,9 @@ setupDepsRouter.get('/permissions/check', (c) => {
   return c.json({
     ok: true,
     data: {
-      screen: checkPermission('screen'),
+      screen_recording: checkPermission('screen'),
       accessibility: checkPermission('accessibility'),
-      fullDiskAccess: checkPermission('full-disk-access'),
+      full_disk: checkPermission('full-disk-access'),
       automation: checkPermission('automation'),
     },
   });

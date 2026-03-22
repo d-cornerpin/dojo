@@ -39,6 +39,38 @@ let consecutiveFailures = 0;
 const MAX_FAILURES_BEFORE_ALERT = 3;
 const MAX_FAILURES_BEFORE_RESTART = 5;
 
+// ── Alert deduplication ──
+// Tracks when each alert type was last sent to avoid spamming.
+// First occurrence: send immediately. Same issue again: suppress for 2 hours.
+// Issue resolved: send a recovery message.
+const ALERT_COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+const alertState: Record<string, { lastSentAt: number; active: boolean }> = {};
+
+function shouldSendAlert(alertKey: string): boolean {
+  const state = alertState[alertKey];
+  if (!state || !state.active) {
+    // First time or was resolved — send it
+    alertState[alertKey] = { lastSentAt: Date.now(), active: true };
+    return true;
+  }
+  // Already sent and still active — only re-send after cooldown
+  if (Date.now() - state.lastSentAt > ALERT_COOLDOWN_MS) {
+    alertState[alertKey] = { lastSentAt: Date.now(), active: true };
+    return true;
+  }
+  return false;
+}
+
+function markAlertResolved(alertKey: string): boolean {
+  const state = alertState[alertKey];
+  if (state?.active) {
+    alertState[alertKey] = { lastSentAt: state.lastSentAt, active: false };
+    return true; // Was active, now resolved — caller should send recovery
+  }
+  return false; // Was already resolved or never sent
+}
+
 // ── Logging ──
 
 function ensureLogDir(): void {
@@ -185,10 +217,20 @@ function checkStalledAgents(): void {
       const names = stalled.map(a => a.name).join(', ');
       log('warn', `Stalled agents detected: ${names}`, { count: stalled.length });
 
-      const imRecipient = getImessageRecipient();
+      if (shouldSendAlert('stalled_agents')) {
+        const imRecipient = getImessageRecipient();
       if (imRecipient) {
-        sendIMessage(imRecipient, `Watchdog: ${stalled.length} stalled agent(s): ${names}`);
+        sendIMessage(imRecipient, `Watchdog: ${stalled.length} stalled agent(s): ${names}. Will follow up when resolved.`);
         recordAlert(`Stalled agents: ${names}`);
+      }
+      }
+    } else {
+      if (markAlertResolved('stalled_agents')) {
+        log('info', 'No more stalled agents');
+        const imRecipient = getImessageRecipient();
+        if (imRecipient) {
+          sendIMessage(imRecipient, 'Watchdog: Stalled agents resolved — all agents are responding.');
+        }
       }
     }
   } catch (err) {
@@ -225,25 +267,49 @@ async function checkProviders(): Promise<void> {
   }
 }
 
+function getMacAvailableMemoryMb(): { totalMb: number; freeMb: number; freePercent: number } {
+  const totalMb = Math.round(os.totalmem() / (1024 * 1024));
+  try {
+    const vmstat = execSync('vm_stat', { encoding: 'utf-8', timeout: 3000 });
+    const pageSizeMatch = vmstat.match(/page size of (\d+) bytes/);
+    const pageSize = pageSizeMatch ? parseInt(pageSizeMatch[1], 10) : 16384;
+    const parsePage = (label: string): number => {
+      const match = vmstat.match(new RegExp(`${label}:\\s+(\\d+)`));
+      return match ? parseInt(match[1], 10) : 0;
+    };
+    const available = parsePage('Pages free') + parsePage('Pages inactive') + parsePage('Pages purgeable') + parsePage('Pages speculative');
+    const freeMb = Math.round((available * pageSize) / (1024 * 1024));
+    return { totalMb, freeMb: Math.max(0, freeMb), freePercent: (freeMb / totalMb) * 100 };
+  } catch {
+    const freeMb = Math.round(os.freemem() / (1024 * 1024));
+    return { totalMb, freeMb, freePercent: (freeMb / totalMb) * 100 };
+  }
+}
+
 function checkSystemMemory(): void {
-  const totalMem = os.totalmem();
-  const freeMem = os.freemem();
-  const freePercent = (freeMem / totalMem) * 100;
-  const freeMb = Math.round(freeMem / (1024 * 1024));
+  const { freeMb, freePercent } = getMacAvailableMemoryMb();
 
   if (freePercent < 10) {
-    log('warn', 'System memory critically low', {
-      freeMb,
-      freePercent: freePercent.toFixed(1),
-    });
+    log('warn', 'System memory low', { freeMb, freePercent: freePercent.toFixed(1) });
 
-    const imRecipient = getImessageRecipient();
-    if (imRecipient) {
-      sendIMessage(imRecipient, `Watchdog: System memory critically low — ${freeMb}MB free (${freePercent.toFixed(1)}%)`);
-      recordAlert(`Memory critically low: ${freeMb}MB`);
+    if (shouldSendAlert('memory_low')) {
+      const imRecipient = getImessageRecipient();
+      if (imRecipient) {
+        sendIMessage(imRecipient, `Watchdog: System memory low — ${freeMb}MB free (${freePercent.toFixed(0)}%). Will follow up when resolved.`);
+        recordAlert(`Memory low: ${freeMb}MB`);
+      }
     }
   } else {
-    log('debug', 'System memory OK', { freeMb, freePercent: freePercent.toFixed(1) });
+    // Memory is fine — send recovery if it was previously alerting
+    if (markAlertResolved('memory_low')) {
+      log('info', 'System memory recovered', { freeMb, freePercent: freePercent.toFixed(1) });
+      const imRecipient = getImessageRecipient();
+      if (imRecipient) {
+        sendIMessage(imRecipient, `Watchdog: Memory recovered — ${freeMb}MB free (${freePercent.toFixed(0)}%)`);
+      }
+    } else {
+      log('debug', 'System memory OK', { freeMb, freePercent: freePercent.toFixed(1) });
+    }
   }
 }
 
@@ -256,12 +322,20 @@ function checkDiskSpace(): void {
 
     if (availableGb < 1) {
       log('warn', 'Disk space critically low', { availableGb: availableGb.toFixed(2) });
-      const imRecipient = getImessageRecipient();
-      if (imRecipient) {
-        sendIMessage(imRecipient, `Watchdog: Disk space critically low — ${availableGb.toFixed(1)}GB free`);
-        recordAlert(`Disk space low: ${availableGb.toFixed(1)}GB`);
+      if (shouldSendAlert('disk_low')) {
+        const imRecipient = getImessageRecipient();
+        if (imRecipient) {
+          sendIMessage(imRecipient, `Watchdog: Disk space low — ${availableGb.toFixed(1)}GB free. Will follow up when resolved.`);
+          recordAlert(`Disk space low: ${availableGb.toFixed(1)}GB`);
+        }
       }
     } else {
+      if (markAlertResolved('disk_low')) {
+        const imRecipient = getImessageRecipient();
+        if (imRecipient) {
+          sendIMessage(imRecipient, `Watchdog: Disk space recovered — ${availableGb.toFixed(1)}GB free.`);
+        }
+      }
       log('debug', 'Disk space OK', { availableGb: availableGb.toFixed(1) });
     }
 
@@ -287,12 +361,15 @@ function checkDatabaseIntegrity(): void {
     const status = result[0]?.integrity_check ?? 'unknown';
     if (status !== 'ok') {
       log('error', 'Database integrity check FAILED', { status });
-      const imRecipient = getImessageRecipient();
-      if (imRecipient) {
-        sendIMessage(imRecipient, `Watchdog: Database integrity check failed — ${status}`);
-        recordAlert(`DB integrity: ${status}`);
+      if (shouldSendAlert('db_integrity')) {
+        const imRecipient = getImessageRecipient();
+        if (imRecipient) {
+          sendIMessage(imRecipient, `Watchdog: Database integrity check failed — ${status}`);
+          recordAlert(`DB integrity: ${status}`);
+        }
       }
     } else {
+      markAlertResolved('db_integrity');
       log('debug', 'Database integrity OK');
     }
   } catch (err) {
@@ -364,20 +441,20 @@ async function runCheck(): Promise<void> {
       consecutiveFailures = 0; // Reset after restart attempt
     }
 
-    if (consecutiveFailures >= MAX_FAILURES_BEFORE_ALERT) {
+    if (consecutiveFailures >= MAX_FAILURES_BEFORE_ALERT && shouldSendAlert('platform_down')) {
       const imRecipient = getImessageRecipient();
       if (imRecipient) {
-        sendIMessage(imRecipient, `Watchdog: Dojo platform is DOWN (${consecutiveFailures} checks failed)`);
+        sendIMessage(imRecipient, `Watchdog: Dojo platform is DOWN (${consecutiveFailures} checks failed). Will notify when it recovers.`);
         recordAlert(`Platform down: ${consecutiveFailures} checks failed`);
       }
     }
   } else {
     if (consecutiveFailures > 0) {
       log('info', 'Platform recovered', { previousFailures: consecutiveFailures });
-      if (consecutiveFailures >= MAX_FAILURES_BEFORE_ALERT) {
+      if (markAlertResolved('platform_down')) {
         const imRecipient = getImessageRecipient();
         if (imRecipient) {
-          sendIMessage(imRecipient, 'Watchdog: Dojo platform is back UP');
+          sendIMessage(imRecipient, 'Watchdog: Dojo platform is back UP and healthy.');
         }
       }
     }
