@@ -17,14 +17,21 @@ const logger = createLogger('memory-compaction');
 // ── Defaults ──
 
 const DEFAULTS = {
-  freshTailCount: 32,
   contextThreshold: 0.75,
-  leafChunkTokens: 10000,
-  leafTargetTokens: 4000,
-  condensedTargetTokens: 5000,
+  leafChunkTokens: 20000,    // Raised from 10k — less aggressive proactive compaction
+  leafTargetTokens: 5000,
+  condensedTargetTokens: 6000,
   condensedMinFanout: 4,
   incrementalMaxDepth: 1,
 };
+
+// Model-aware tail count for compaction boundary
+function getCompactionTailCount(contextWindow: number): number {
+  if (contextWindow >= 200000) return 80;
+  if (contextWindow >= 128000) return 64;
+  if (contextWindow >= 32000) return 40;
+  return 24;
+}
 
 // ── Main Entry Point ──
 
@@ -55,7 +62,7 @@ export async function checkAndCompact(
     }, agentId);
 
     const tokensBefore = totalTokens;
-    const leafCreated = await runLeafCompaction(agentId, modelId);
+    const leafCreated = await runLeafCompaction(agentId, modelId, contextWindow);
     const condensedCreated = await runCondensation(agentId, modelId, DEFAULTS.incrementalMaxDepth);
     rebuildContextItems(agentId);
 
@@ -75,7 +82,7 @@ export async function checkAndCompact(
   }
 
   // Check for proactive leaf compaction
-  const messagesOutside = getMessagesOutsideFreshTail(agentId, DEFAULTS.freshTailCount);
+  const messagesOutside = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(contextWindow));
   const compactedIds = getCompactedMessageIds(agentId);
   const uncompactedMessages = messagesOutside.filter(m => !compactedIds.has(m.id));
   const uncompactedTokens = uncompactedMessages.reduce(
@@ -89,7 +96,7 @@ export async function checkAndCompact(
       threshold: DEFAULTS.leafChunkTokens,
     }, agentId);
 
-    const leafCreated = await runLeafCompaction(agentId, modelId);
+    const leafCreated = await runLeafCompaction(agentId, modelId, contextWindow);
     rebuildContextItems(agentId);
 
     const result = { leafCreated, condensedCreated: 0, tokensReclaimed: 0 };
@@ -109,8 +116,9 @@ export async function checkAndCompact(
 
 // ── Leaf Compaction ──
 
-export async function runLeafCompaction(agentId: string, modelId: string): Promise<number> {
-  const messagesOutside = getMessagesOutsideFreshTail(agentId, DEFAULTS.freshTailCount);
+export async function runLeafCompaction(agentId: string, modelId: string, contextWindow?: number): Promise<number> {
+  const cw = contextWindow ?? 200000;
+  const messagesOutside = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(cw));
   const compactedIds = getCompactedMessageIds(agentId);
 
   // Filter to only uncompacted messages
@@ -250,6 +258,14 @@ export function rebuildContextItems(agentId: string): void {
   // i.e., the "leaf nodes" of the DAG (top of the tree, highest depth)
   const db = getDb();
 
+  // Look up agent's model context window for tail sizing
+  const agentModel = db.prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined;
+  let contextWindow = 200000; // default
+  if (agentModel?.model_id) {
+    const model = db.prepare('SELECT context_window FROM models WHERE id = ?').get(agentModel.model_id) as { context_window: number | null } | undefined;
+    if (model?.context_window) contextWindow = model.context_window;
+  }
+
   interface TopLevelRow {
     id: string;
     earliest_at: string;
@@ -265,7 +281,7 @@ export function rebuildContextItems(agentId: string): void {
   `).all(agentId) as TopLevelRow[];
 
   // Fresh tail messages
-  const freshTail = getRecentMessages(agentId, DEFAULTS.freshTailCount);
+  const freshTail = getRecentMessages(agentId, getCompactionTailCount(contextWindow));
 
   // Build context items: summaries first, then fresh tail messages
   const items: Array<{ itemType: 'message' | 'summary'; itemId: string }> = [];

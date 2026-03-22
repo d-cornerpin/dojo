@@ -49,6 +49,12 @@ ABSOLUTE RULES — NEVER VIOLATE THESE:
 - When the user says "X is Y", write "X is Y" — do not generalize to "discussed X"
 - Note any unresolved questions, pending tasks, or open decisions
 - Attribute every fact to the correct person
+- CRITICAL — Preserve resolution state. At the end of the summary, include a section:
+  RESOLVED: [issue] — fixed [how/when]
+  DECIDED: [what was decided and why]
+  CLOSED: [task/project name] — completed
+  DEFERRED: [item] — [reason it was deprioritized]
+  This prevents the agent from re-raising issues that are already handled.
 - Target approximately ${targetTokens} tokens — use the space to keep details, not to pad
 - Do NOT include preamble — write the factual summary directly
 

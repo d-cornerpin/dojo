@@ -117,6 +117,8 @@ function mapTaskRow(row: TaskRow): Task {
     scheduledStart: row.scheduled_start ?? null,
     repeatInterval: row.repeat_interval ?? null,
     repeatUnit: row.repeat_unit ?? null,
+    repeatEndType: row.repeat_end_type ?? 'never',
+    repeatEndValue: row.repeat_end_value ?? null,
     nextRunAt: row.next_run_at ?? null,
     runCount: row.run_count ?? 0,
     isPaused: Boolean(row.is_paused),

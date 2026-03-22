@@ -214,6 +214,29 @@ export function startIMBridge(recipientId: string): void {
 
   lastSeenRowId = loadLastSeenRowId();
 
+  // If no stored lastSeenRowId (first run or reset), seed from the current max ROWID
+  // so we only process messages received AFTER the bridge starts, not the entire history
+  if (lastSeenRowId === 0) {
+    try {
+      const chatDb = new Database(CHAT_DB_PATH, { readonly: true, fileMustExist: true });
+      try {
+        const maxRow = chatDb.prepare('SELECT MAX(ROWID) as maxId FROM message').get() as { maxId: number | null } | undefined;
+        if (maxRow?.maxId) {
+          lastSeenRowId = maxRow.maxId;
+          saveLastSeenRowId(lastSeenRowId);
+          logger.info('Seeded lastSeenRowId from Messages DB (first run)', { lastSeenRowId });
+        }
+      } finally {
+        chatDb.close();
+      }
+    } catch (err) {
+      // If we can't read chat.db, leave at 0 — pollMessages will handle the error gracefully
+      logger.warn('Could not seed lastSeenRowId from Messages DB', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   logger.info('Starting iMessage bridge', { approvedSenders, lastSeenRowId });
 
   // Start polling

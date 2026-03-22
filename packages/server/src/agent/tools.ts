@@ -564,11 +564,11 @@ export const toolDefinitions: ToolDefinition[] = [
         repeat_end_type: {
           type: 'string',
           enum: ['never', 'after_count', 'on_date'],
-          description: 'When to stop repeating',
+          description: 'When to stop repeating. For repeating tasks that should stop after N runs, set repeat_end_type="after_count" and repeat_end_value="N". If omitted, the task repeats forever.',
         },
         repeat_end_value: {
           type: 'string',
-          description: 'End after N runs or on a specific ISO8601 date',
+          description: 'For after_count: the number of runs (e.g., "5"). For on_date: an ISO8601 date (e.g., "2026-04-01"). Required when repeat_end_type is not "never".',
         },
         assigned_to_group: {
           type: 'string',
@@ -1725,24 +1725,42 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           break;
         }
 
-        // Optionally terminate all members first
+        // Terminate members BEFORE deleting the group (deleteGroup sets group_id to NULL,
+        // so we must query members while group_id still matches)
+        const terminated: string[] = [];
+        const skipped: string[] = [];
         if (args.terminate_members) {
           const groupDb = getDb();
           const members = groupDb.prepare("SELECT id, name, classification FROM agents WHERE group_id = ? AND status != 'terminated'").all(groupId) as Array<{ id: string; name: string; classification: string }>;
-          const terminated: string[] = [];
           for (const member of members) {
-            if (member.classification === 'sensei' || member.classification === 'ronin') continue;
-            terminateAgent(member.id, `Group deleted by agent ${agentId}`);
-            terminated.push(member.name);
+            if (member.classification === 'sensei' || member.classification === 'ronin') {
+              skipped.push(`${member.name} (${member.classification}, protected)`);
+              continue;
+            }
+            try {
+              terminateAgent(member.id, `Group deleted by agent ${agentId}`);
+              terminated.push(member.name);
+            } catch (err) {
+              skipped.push(`${member.name} (terminate failed: ${err instanceof Error ? err.message : String(err)})`);
+            }
           }
           if (terminated.length > 0) {
             logger.info('Terminated group members before deletion', { groupId, terminated });
           }
         }
 
+        // Now delete the group (ungroups any remaining agents)
         const deleted = doDeleteGroup(groupId);
         if (deleted) {
-          content = `Group ${groupId} deleted.${args.terminate_members ? ' Member agents terminated.' : ' Remaining agents moved to ungrouped.'}`;
+          const parts = [`Group ${groupId} deleted.`];
+          if (args.terminate_members) {
+            if (terminated.length > 0) parts.push(`Terminated: ${terminated.join(', ')}.`);
+            if (skipped.length > 0) parts.push(`Skipped: ${skipped.join('; ')}.`);
+            if (terminated.length === 0 && skipped.length === 0) parts.push('No members to terminate.');
+          } else {
+            parts.push('Remaining agents moved to ungrouped.');
+          }
+          content = parts.join(' ');
         } else {
           content = `Failed to delete group ${groupId}. It may not exist.`;
           isError = true;

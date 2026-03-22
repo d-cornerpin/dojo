@@ -12,9 +12,17 @@ import type { Message } from '@dojo/shared';
 const logger = createLogger('memory-assembler');
 
 const DEFAULTS = {
-  freshTailCount: 32,
   contextThreshold: 0.75,
 };
+
+// Model-aware tail sizing: use more of the context window for fresh messages
+// instead of a fixed count. Larger models keep more raw conversation.
+function getFreshTailCount(contextWindow: number): number {
+  if (contextWindow >= 200000) return 80;   // 200k+ (Sonnet, Opus) — ~15-20 turns
+  if (contextWindow >= 128000) return 64;   // 128k (GPT-4o) — ~12-15 turns
+  if (contextWindow >= 32000) return 40;    // 32k models — ~8-10 turns
+  return 24;                                 // Small models — ~5 turns
+}
 
 // ── Context Assembly ──
 
@@ -67,7 +75,8 @@ export function assembleContext(
   }
 
   // 4. Fresh tail
-  const freshTail = getRecentMessages(agentId, DEFAULTS.freshTailCount);
+  const freshTailCount = getFreshTailCount(contextWindow);
+  const freshTail = getRecentMessages(agentId, freshTailCount);
 
   // Budget: only include messages that fit
   const tailMessages = budgetFreshTail(freshTail, maxTokens - usedTokens);

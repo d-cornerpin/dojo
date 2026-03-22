@@ -749,8 +749,8 @@ const ScheduleEditor = ({ task, onUpdate }: { task: Task; onUpdate: () => void }
     scheduledStart: task.scheduledStart,
     repeatInterval: task.repeatInterval,
     repeatUnit: task.repeatUnit,
-    repeatEndType: 'never',
-    repeatEndValue: null,
+    repeatEndType: task.repeatEndType ?? 'never',
+    repeatEndValue: task.repeatEndValue ?? null,
   });
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);

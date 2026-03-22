@@ -242,6 +242,8 @@ export interface Task {
   scheduledStart: string | null;
   repeatInterval: number | null;
   repeatUnit: string | null;
+  repeatEndType: string;
+  repeatEndValue: string | null;
   nextRunAt: string | null;
   runCount: number;
   isPaused: boolean;
