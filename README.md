@@ -90,7 +90,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`. Bow to the mat.
+Open `http://localhost:3000` (dev) or `http://localhost:3001` (production). Bow to the mat.
 
 ## Requirements
 
