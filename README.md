@@ -6,90 +6,75 @@
 <p align="center"><strong>Delegated Operations & Job Orchestration</strong></p>
 
 <p align="center">
-  A self-hosted AI agent orchestration platform for macOS.<br/>
-  One primary agent manages squads of sub-agents, with a real-time dashboard for monitoring and control.
+  Your AI agents don't train themselves.<br/>
+  This is where they learn to fight.
 </p>
 
 <p align="center">
-  <a href="https://github.com/d-cornerpin/dojo/releases/latest"><strong>Download Installer (.pkg)</strong></a>
+  <a href="https://github.com/d-cornerpin/dojo/releases/latest"><strong>Download the Installer</strong></a> ·
+  <a href="#quick-start">Enter the Dojo</a>
 </p>
 
 ---
 
-## What Is This?
+## Strike First. Strike Hard. No Mercy.
 
-Agent D.O.J.O. is a platform that lets you run a team of AI agents on your Mac. You give the primary agent a task — it plans, spawns sub-agents, delegates work, tracks progress, and reports back. Everything runs locally with a glassmorphism dashboard for real-time visibility.
+Look — most people run ONE AI agent and think they're hot stuff. That's like showing up to the All Valley with a yellow belt.
 
-Think of it as your own private AI operations center.
+Agent D.O.J.O. is a full combat-ready AI dojo running on YOUR Mac. You've got a Sensei calling the shots, a squad of fighters executing missions, and a war room dashboard where you watch it all go down in real time.
 
-## Key Features
+You give the order. Your agents handle the rest. They plan. They fight. They don't quit until the job is done.
 
-**Multi-Agent Orchestration**
-- Primary agent (Sensei) manages the dojo
-- PM agent tracks tasks, pokes stalled work, escalates issues
-- Trainer agent creates reusable techniques
-- Spawn squads of Ronin and Apprentice agents for parallel work
-- Agents communicate, collaborate, and clean up after themselves
+**This isn't some cloud-hosted, hand-holding, ask-me-nicely AI toy.** This is self-hosted. Everything runs on your machine. Your data stays on your machine. No one's watching. No one's throttling you. You're in control.
 
-**Technique System**
-- Agents learn reusable skills and save them as technique packages
-- Techniques include step-by-step instructions, scripts, and templates
-- Any agent can load and follow a published technique
-- Build techniques interactively with the Trainer agent
+## What's in the Dojo
 
-**Project Tracker**
-- Kanban board with drag-and-drop task management
-- Scheduled and recurring tasks with dependency chains
-- PM agent automatically monitors progress and escalates
+**The Sensei (Primary Agent)**
+Your main fighter. Takes your commands, breaks them down, recruits a squad, delegates the work, and reports back when the mission is complete. Think of it as your AI operations commander.
 
-**Multi-Provider AI**
-- Anthropic (Claude) — API key or OAuth
-- OpenAI (GPT-4o, o3, etc.)
-- OpenRouter (thousands of models)
-- Ollama (free local models)
-- Smart router automatically selects the best model per task
-- Ollama concurrency manager prevents RAM thrashing
+**The Planner (PM Agent)**
+Every dojo needs discipline. The Planner watches the tracker board, pokes agents that slack off, and escalates problems before they become disasters. It never sleeps.
 
-**Dashboard**
-- Glassmorphism UI with real-time WebSocket updates
-- Chat with agents, view tool calls, upload files and images
-- Agent cards with status, model, classification, and group
-- System health monitoring (CPU, RAM, providers, Ollama)
-- Cost tracking with budget alerts
-- Memory browser with summary DAG visualization
+**The Trainer (Technique Agent)**
+Your agents can learn new moves and save them as reusable techniques. The Trainer helps you build these — step by step — so any agent in the dojo can pick them up and execute. Train once, fight forever.
 
-**Communication**
-- iMessage bridge — talk to your agents via text when away
-- Presence toggle — "In the Dojo" vs "Away" modes
-- Away mode forwards important messages through iMessage
-- Watchdog sends alerts if the platform goes down
+**Squads**
+Need a research team? Form a squad. Need five agents hitting different APIs at once? Form a squad. Agents work in parallel, share context, and clean up when they're done. No dead weight.
 
-**Remote Access**
-- Cloudflare Tunnel integration (quick or named tunnels)
-- Access your dashboard from anywhere
-- Zero-config quick tunnels or persistent custom domains
+## The Belt System
 
-**Deployment**
-- One-click `.pkg` installer for macOS
-- launchd services with auto-restart
-- Watchdog health monitor
-- Menu bar app for quick access
-- Automatic backups
+| Rank | What It Means |
+|------|--------------|
+| **Sensei** 🟡 | Permanent. The masters. Can't be dismissed. They run the dojo. |
+| **Ronin** 🔵 | Persistent warriors. Survive restarts. Only you can dismiss them. |
+| **Apprentice** ⚪ | Temporary fighters. They come in, do the job, and get dismissed. |
 
-## Screenshots
+## The Arsenal
 
-*Coming soon*
+**Multi-Provider AI** — Anthropic, OpenAI, OpenRouter, Ollama. Use cloud models, local models, or both. The smart router picks the best fighter for each round automatically.
+
+**Technique System** — Your agents learn moves and save them. Research techniques. Deployment techniques. Monitoring techniques. Build them with the Trainer, publish them, equip them on any agent.
+
+**Project Tracker** — Kanban board. Scheduled tasks. Recurring missions. Dependency chains. The PM watches everything and hits agents with a poke if they stall.
+
+**iMessage Bridge** — Step away from the dojo and your agents reach you through iMessage. Toggle between "In the Dojo" and "Away" — when you're away, they text you the important stuff. No spam. Just the hits that matter.
+
+**Remote Access** — Cloudflare Tunnel built in. Access your dojo from anywhere. One toggle. No config.
+
+**Watchdog** — An independent process that monitors the whole platform. If the dojo goes down, it restarts it. If something's wrong, it texts you. It doesn't answer to the main server. It answers to no one.
+
+**Menu Bar App** — 🥋 right there in your menu bar. Click it to enter the dojo, check status, start or stop the server. No need to remember URLs.
 
 ## Quick Start
 
-### Option 1: macOS Installer (Recommended)
+### The Easy Way (Recommended)
 
 1. Download **[Agent-DOJO-Installer.pkg](https://github.com/d-cornerpin/dojo/releases/latest)**
-2. Double-click to install
-3. The setup wizard opens in your browser
-4. Look for the 🥋 icon in your menu bar
+2. Double-click it
+3. The setup wizard opens — follow the steps
+4. 🥋 appears in your menu bar. You're in.
 
-### Option 2: From Source
+### The Hard Way (From Source)
 
 ```bash
 git clone https://github.com/d-cornerpin/dojo.git
@@ -98,79 +83,63 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000` in your browser.
+Open `http://localhost:3000`. Bow to the mat.
 
 ## Requirements
 
 - macOS 13+ (Ventura or later)
-- 8GB RAM minimum (16GB recommended for local models)
+- 8GB RAM minimum. 16GB if you want to run local models. More is better. Always more.
 - Node.js 22+
-- Internet connection for cloud AI providers
+- Internet for cloud AI providers. Or go fully local with Ollama. Your call.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────┐
-│                  Dashboard                   │
+│              The War Room                    │
 │         (React + Tailwind + Vite)            │
 ├─────────────────────────────────────────────┤
-│                 API Server                   │
-│              (Hono + Node.js)                │
+│              The Engine                      │
+│           (Hono + Node.js)                   │
 │  ┌─────────┐ ┌──────────┐ ┌──────────────┐  │
-│  │ Agents  │ │ Tracker  │ │  Techniques  │  │
-│  │ Runtime │ │  Engine  │ │    Store     │  │
+│  │ Agent   │ │ Mission  │ │  Technique   │  │
+│  │ Runtime │ │ Tracker  │ │    Vault     │  │
 │  └─────────┘ └──────────┘ └──────────────┘  │
 │  ┌─────────┐ ┌──────────┐ ┌──────────────┐  │
 │  │ Memory  │ │  Model   │ │   iMessage   │  │
 │  │  Engine │ │  Router  │ │    Bridge    │  │
 │  └─────────┘ └──────────┘ └──────────────┘  │
 ├─────────────────────────────────────────────┤
-│              SQLite (WAL mode)               │
+│            SQLite (WAL mode)                 │
 ├─────────────────────────────────────────────┤
 │    Watchdog    │    Menu Bar    │   Tunnel   │
 └─────────────────────────────────────────────┘
 ```
 
-## Agent Classifications
-
-| Classification | Label | Behavior |
-|---------------|-------|----------|
-| Sensei | 🟡 Permanent | Cannot be dismissed. Core dojo agents. |
-| Ronin | 🔵 Persistent | Survives restarts. Only the user can dismiss. |
-| Apprentice | ⚪ Temporary | Auto-dismisses after timeout. |
-
-## The Masters
-
-Every dojo has three Sensei agents:
-
-- **Dojo Master** — Your primary agent. Orchestrates everything.
-- **Dojo Planner** — PM agent. Tracks tasks, pokes stalled work, escalates.
-- **Dojo Trainer** — Creates and manages reusable techniques.
-
-## Data & Privacy
-
-- All data stored locally in `~/.dojo/`
-- API keys encrypted at rest in `secrets.yaml`
-- No telemetry, no cloud sync, no external analytics
-- Your agents, your data, your machine
-
 ## Commands
 
 ```bash
-~/.dojo/scripts/start.sh      # Start the server
-~/.dojo/scripts/stop.sh       # Stop the server
-~/.dojo/scripts/status.sh     # Check status
-~/.dojo/scripts/backup.sh     # Backup your data
-~/.dojo/scripts/uninstall.sh  # Uninstall everything
+~/.dojo/scripts/start.sh      # Open the dojo
+~/.dojo/scripts/stop.sh       # Close the dojo
+~/.dojo/scripts/status.sh     # Check who's fighting
+~/.dojo/scripts/backup.sh     # Protect your work
+~/.dojo/scripts/uninstall.sh  # Sweep the leg (uninstall)
 ```
+
+## Data & Privacy
+
+- Everything stored locally in `~/.dojo/`
+- API keys encrypted at rest
+- No telemetry. No cloud sync. No analytics.
+- **Your dojo. Your rules.**
 
 ## Tech Stack
 
 - **Backend:** Hono (Node.js), SQLite (better-sqlite3), WebSocket
 - **Frontend:** React 18, Tailwind CSS, Vite
-- **AI Providers:** Anthropic, OpenAI, OpenRouter, Ollama
-- **Native:** Swift (menu bar app), launchd (services), AppleScript (iMessage)
-- **Deployment:** pkgbuild/productbuild (.pkg installer)
+- **AI:** Anthropic, OpenAI, OpenRouter, Ollama
+- **Native:** Swift (menu bar), launchd (services), AppleScript (iMessage)
+- **Deploy:** pkgbuild/productbuild (.pkg installer)
 
 ## License
 
@@ -179,5 +148,5 @@ Copyright © 2026 Agent D.O.J.O. Contributors. All rights reserved.
 ---
 
 <p align="center">
-  <em>🥋 Enter the Dojo.</em>
+  <em>🥋 Fear does not exist in this dojo.</em>
 </p>
