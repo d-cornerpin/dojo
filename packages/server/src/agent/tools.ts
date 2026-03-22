@@ -411,7 +411,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'send_to_agent',
-    description: 'Send a message to an existing running sub-agent by ID or name. Use this to give follow-up instructions, ask for status, or provide additional context to a sub-agent that is already running.',
+    description: 'Send a message to any agent in the dojo by ID or name. Works for any direction: parent to sub-agent, sub-agent to parent, peer to peer, or to the PM. The recipient will see who sent the message and can reply.',
     input_schema: {
       type: 'object',
       properties: {
@@ -425,6 +425,24 @@ export const toolDefinitions: ToolDefinition[] = [
         },
       },
       required: ['agent', 'message'],
+    },
+  },
+  {
+    name: 'broadcast_to_group',
+    description: 'Send a message to ALL agents in a group simultaneously. Useful for announcements, status updates, or coordinating a squad.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        group_id: {
+          type: 'string',
+          description: 'The group ID to broadcast to',
+        },
+        message: {
+          type: 'string',
+          description: 'The message to send to all group members',
+        },
+      },
+      required: ['group_id', 'message'],
     },
   },
   {
@@ -1420,12 +1438,17 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           content = `Agent "${target.name}" (${target.id}) is terminated. Use spawn_agent to create a new one.`;
           isError = true;
         } else {
-          // Persist as a user message in the target agent's conversation
+          // Get sender agent's name for context
+          const senderRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+          const senderName = senderRow?.name ?? agentId;
+
+          // Persist as a user message with sender context and reply instructions
           const msgId = uuidv4();
+          const contextMessage = `[Message from ${senderName} (agent ID: ${agentId})] ${message}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
           db.prepare(`
             INSERT INTO messages (id, agent_id, role, content, created_at)
             VALUES (?, ?, 'user', ?, datetime('now'))
-          `).run(msgId, target.id, message);
+          `).run(msgId, target.id, contextMessage);
 
           // Broadcast so the target agent's chat view updates
           broadcast({
@@ -1435,7 +1458,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
               id: msgId,
               agentId: target.id,
               role: 'user' as const,
-              content: message,
+              content: contextMessage,
               tokenCount: null,
               modelId: null,
               cost: null,
@@ -1446,7 +1469,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
           // Trigger the target agent's runtime
           const runtime = getAgentRuntime();
-          runtime.handleMessage(target.id, message).catch(err => {
+          runtime.handleMessage(target.id, contextMessage).catch(err => {
             logger.error('send_to_agent: target agent runtime failed', {
               targetId: target!.id,
               error: err instanceof Error ? err.message : String(err),
@@ -1455,6 +1478,63 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
           content = `Message sent to agent "${target.name}" (${target.id}). Status: ${target.status}.`;
         }
+        break;
+      }
+      case 'broadcast_to_group': {
+        const groupId = args.group_id as string;
+        const broadcastMsg = args.message as string;
+        if (!groupId || !broadcastMsg) { content = 'Error: group_id and message are required'; isError = true; break; }
+
+        const bcDb = getDb();
+        const senderRow2 = bcDb.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+        const senderName2 = senderRow2?.name ?? agentId;
+
+        // Get all non-terminated agents in the group (excluding the sender)
+        const groupMembers = bcDb.prepare(`
+          SELECT id, name, status FROM agents
+          WHERE group_id = ? AND status != 'terminated' AND id != ?
+        `).all(groupId, agentId) as Array<{ id: string; name: string; status: string }>;
+
+        if (groupMembers.length === 0) {
+          content = 'No other active agents in this group.';
+          break;
+        }
+
+        const bcRuntime = getAgentRuntime();
+        const sent: string[] = [];
+
+        for (const member of groupMembers) {
+          const bcMsgId = uuidv4();
+          const bcContextMsg = `[Broadcast from ${senderName2} to group] ${broadcastMsg}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
+          bcDb.prepare(`
+            INSERT INTO messages (id, agent_id, role, content, created_at)
+            VALUES (?, ?, 'user', ?, datetime('now'))
+          `).run(bcMsgId, member.id, bcContextMsg);
+
+          broadcast({
+            type: 'chat:message',
+            agentId: member.id,
+            message: {
+              id: bcMsgId,
+              agentId: member.id,
+              role: 'user' as const,
+              content: bcContextMsg,
+              tokenCount: null, modelId: null, cost: null, latencyMs: null,
+              createdAt: new Date().toISOString(),
+            },
+          });
+
+          bcRuntime.handleMessage(member.id, bcContextMsg).catch(err => {
+            logger.error('broadcast_to_group: member runtime failed', {
+              memberId: member.id,
+              error: err instanceof Error ? err.message : String(err),
+            }, agentId);
+          });
+
+          sent.push(member.name);
+        }
+
+        content = `Broadcast sent to ${sent.length} agent(s): ${sent.join(', ')}`;
         break;
       }
       case 'complete_task': {

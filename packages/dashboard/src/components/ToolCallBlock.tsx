@@ -22,6 +22,7 @@ const toolIcons: Record<string, string> = {
   spawn_agent: '\u{1F916}',
   kill_agent: '\u{274C}',
   send_to_agent: '\u{1F4E8}',
+  broadcast_to_group: '\u{1F4E2}',
   tracker_create_project: '\u{1F4CB}',
   tracker_create_task: '\u{1F4CB}',
   tracker_update_status: '\u{1F4CB}',
@@ -51,7 +52,9 @@ function toolSummary(name: string, input: Record<string, unknown>): string {
     case 'spawn_agent':
       return String(input.name ?? '');
     case 'send_to_agent':
-      return String(input.agent_id ?? '').slice(0, 12);
+      return String(input.agent ?? input.agent_id ?? '').slice(0, 20);
+    case 'broadcast_to_group':
+      return `group: ${String(input.group_id ?? '').slice(0, 12)}`;
     case 'tracker_create_project':
       return String(input.title ?? '');
     case 'tracker_create_task':

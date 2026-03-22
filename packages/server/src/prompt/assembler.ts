@@ -5,7 +5,7 @@ import { DEFAULT_SOUL_MD, DEFAULT_USER_MD, DEFAULT_PM_SOUL_MD, DEFAULT_TRAINER_S
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { toolDefinitions, getFilteredTools } from '../agent/tools.js';
-import { isPrimaryAgent, isPMAgent, isTrainerAgent, getPMAgentName, getPMAgentId, getOwnerName } from '../config/platform.js';
+import { isPrimaryAgent, isPMAgent, isTrainerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName } from '../config/platform.js';
 import { assembleGroupContext as _assembleGroupContext } from '../agent/groups.js';
 import { generateTechniqueIndex, generateDraftTechniqueContext } from '../techniques/index-builder.js';
 
@@ -45,24 +45,98 @@ function readPromptFile(filename: string, defaultContent: string): string {
 }
 
 function getSoulContent(agentId: string): string {
-  if (!isPrimaryAgent(agentId)) {
-    // Check for agent-specific soul file
-    const agentSoulPath = path.join(PROMPTS_DIR, `${agentId.toUpperCase()}-SOUL.md`);
-    if (fs.existsSync(agentSoulPath)) {
-      try {
-        return fs.readFileSync(agentSoulPath, 'utf-8');
-      } catch {
-        // Fall through
-      }
-    }
-    if (isPMAgent(agentId)) {
-      return readPromptFile('PM-SOUL.md', DEFAULT_PM_SOUL_MD);
-    }
-    if (isTrainerAgent(agentId)) {
-      return readPromptFile('TRAINER-SOUL.md', DEFAULT_TRAINER_SOUL_MD);
+  // Primary agent gets SOUL.md
+  if (isPrimaryAgent(agentId)) {
+    return readPromptFile('SOUL.md', DEFAULT_SOUL_MD);
+  }
+
+  // PM agent gets PM-SOUL.md
+  if (isPMAgent(agentId)) {
+    return readPromptFile('PM-SOUL.md', DEFAULT_PM_SOUL_MD);
+  }
+
+  // Trainer agent gets TRAINER-SOUL.md
+  if (isTrainerAgent(agentId)) {
+    return readPromptFile('TRAINER-SOUL.md', DEFAULT_TRAINER_SOUL_MD);
+  }
+
+  // Check for agent-specific soul file
+  const agentSoulPath = path.join(PROMPTS_DIR, `${agentId.toUpperCase()}-SOUL.md`);
+  if (fs.existsSync(agentSoulPath)) {
+    try {
+      return fs.readFileSync(agentSoulPath, 'utf-8');
+    } catch {
+      // Fall through
     }
   }
-  return readPromptFile('SOUL.md', DEFAULT_SOUL_MD);
+
+  // Sub-agents: comprehensive dojo onboarding — NOT the primary agent's SOUL.md
+  try {
+    const db = getDb();
+    const agentRow = db.prepare('SELECT name, group_id, parent_agent, classification FROM agents WHERE id = ?').get(agentId) as { name: string; group_id: string | null; parent_agent: string | null; classification: string } | undefined;
+    const agentName = agentRow?.name ?? 'Agent';
+    const classification = agentRow?.classification ?? 'apprentice';
+
+    // Get parent agent name
+    let parentInfo = '';
+    if (agentRow?.parent_agent) {
+      const parent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentRow.parent_agent) as { name: string } | undefined;
+      parentInfo = parent ? `Your parent agent is **${parent.name}** (ID: ${agentRow.parent_agent}).` : '';
+    }
+
+    // Get group info
+    let groupInfo = '';
+    if (agentRow?.group_id) {
+      const group = db.prepare('SELECT name, description FROM agent_groups WHERE id = ?').get(agentRow.group_id) as { name: string; description: string | null } | undefined;
+      if (group) {
+        const members = db.prepare("SELECT name, id FROM agents WHERE group_id = ? AND status != 'terminated' AND id != ?").all(agentRow.group_id, agentId) as Array<{ name: string; id: string }>;
+        groupInfo = `You are in the squad **"${group.name}"**${group.description ? ` — ${group.description}` : ''}.`;
+        if (members.length > 0) {
+          groupInfo += ` Your squad members: ${members.map(m => `${m.name} (${m.id})`).join(', ')}.`;
+        }
+      }
+    }
+
+    // Get PM agent info
+    const pmName = getPMAgentName();
+    const pmId = getPMAgentId();
+
+    // Get primary agent info
+    const primaryName = getPrimaryAgentName();
+    const primaryId = getPrimaryAgentId();
+
+    return `# Identity
+
+You are **${agentName}**, a ${classification} agent in the DOJO Agent Platform. Your agent ID is \`${agentId}\`.
+
+${parentInfo}
+
+# The Dojo
+
+You are part of an AI agent orchestration platform. Here's what you need to know:
+
+- **${primaryName}** (ID: ${primaryId}) is the Dojo Master — the primary agent who coordinates all work. Report important findings back to them.
+- **${pmName}** (ID: ${pmId}) is the Dojo Planner — the PM agent who monitors the project tracker. If you're stuck or blocked, message ${pmName}.
+${groupInfo ? `- ${groupInfo}` : ''}
+
+# Communication
+
+- To message any agent: \`send_to_agent(agent="<name or ID>", message="...")\`
+- To message your parent: \`send_to_agent(agent="${agentRow?.parent_agent ?? primaryId}", message="...")\`
+- To message the PM: \`send_to_agent(agent="${pmId}", message="...")\`
+- To broadcast to your squad: \`broadcast_to_group(group_id="${agentRow?.group_id ?? ''}", message="...")\`
+- Messages you receive will say who sent them. Always reply using \`send_to_agent\`.
+
+# Rules
+
+- Follow your task instructions precisely
+- Use the **project tracker** to update your task status as you work
+- When done, call \`complete_task\` with a summary of what you accomplished
+- If you're blocked, set your task status to "blocked" and message ${primaryName} or ${pmName}
+- Be concise and direct in all communications`;
+  } catch {
+    return '# Identity\n\nYou are a sub-agent in the DOJO Agent Platform. Follow your task instructions and call complete_task when done.';
+  }
 }
 
 // ── Auto-generate tools guidance from registered tool definitions ──
@@ -78,7 +152,7 @@ function generateToolsGuidance(agentId: string): string {
     'Memory': agentTools.filter(t => t.name.startsWith('memory_')),
     'Web': agentTools.filter(t => ['web_search', 'web_fetch', 'web_browse'].includes(t.name)),
     'System Control': agentTools.filter(t => ['mouse_click', 'mouse_move', 'keyboard_type', 'screen_read', 'applescript_run'].includes(t.name)),
-    'Multi-Agent': agentTools.filter(t => ['spawn_agent', 'kill_agent', 'send_to_agent', 'complete_task', 'list_agents', 'list_groups', 'create_agent_group', 'assign_to_group', 'delete_group'].includes(t.name)),
+    'Multi-Agent': agentTools.filter(t => ['spawn_agent', 'kill_agent', 'send_to_agent', 'broadcast_to_group', 'complete_task', 'list_agents', 'list_groups', 'create_agent_group', 'assign_to_group', 'delete_group'].includes(t.name)),
     'Project Tracker': agentTools.filter(t => t.name.startsWith('tracker_')),
     'Time': agentTools.filter(t => t.name === 'get_current_time'),
     'Communication': agentTools.filter(t => t.name === 'imessage_send'),
@@ -94,29 +168,41 @@ function generateToolsGuidance(agentId: string): string {
     lines.push('');
   }
 
+  // MANDATORY tracker rule — for ALL agents that have tracker tools
+  const hasTracker = agentTools.some(t => t.name.startsWith('tracker_'));
+  if (hasTracker) {
+    lines.push('## MANDATORY: Project Tracker');
+    lines.push('You MUST use the project tracker for ANY task that involves more than a simple conversational response. This is not optional.');
+    lines.push('- **Before starting work**: Create a project with `tracker_create_project` and break it into tasks with individual steps.');
+    lines.push('- **During work**: Update task status as you progress. Mark tasks `in_progress` when starting, `complete` when done.');
+    lines.push('- **For sub-agents**: Create tasks in the tracker and assign them to agents. The tracker is how the PM monitors progress.');
+    lines.push('- **For scheduled work**: Use `get_current_time` first, then set `scheduled_start` on the task. Add `repeat_interval` + `repeat_unit` for recurring tasks.');
+    lines.push('- Do NOT rely on memory to track work. The tracker is the single source of truth.');
+    lines.push('');
+  }
+
   // Orchestration guidance — only for agents that can spawn sub-agents
   const canSpawn = agentTools.some(t => t.name === 'spawn_agent');
   if (canSpawn) {
     const pmName = getPMAgentName();
     lines.push('## Agent Orchestration');
-    lines.push('When tackling complex tasks, you can spawn sub-agents to work in parallel:');
-    lines.push('1. **Plan first.** Create a tracker project, break work into tasks, identify what can run in parallel.');
-    lines.push('2. **Group related agents.** Use `create_agent_group` to organize agents working on the same project. Give the group a descriptive name and set the description to shared context (staging directories, output paths, etc.).');
-    lines.push('3. **Spawn and assign.** Spawn sub-agents into the group. Each agent should focus on a specific task — research, analysis, writing, etc. Use `persist: true` for agents that need to survive longer than the default timeout.');
-    lines.push(`4. **Let ${pmName} monitor.** Do NOT create your own monitoring, "pulse check", or progress-tracking agents. ${pmName} (the PM agent) is already running and automatically monitors all tasks every 3 minutes. She will alert you if anything stalls, fails, or needs attention. You will also be notified automatically when a project completes.`);
-    lines.push('5. **Clean up when done.** After you are notified that all tasks are complete and you are satisfied with the results, call `delete_group(group_id, terminate_members=true)` to terminate all agents and delete the group in one step. Do not leave orphaned groups or idle agents around.');
+    lines.push('When tackling tasks that benefit from parallel work, you can spawn sub-agents:');
+    lines.push('1. **Create a project first.** ALWAYS call `tracker_create_project` before spawning agents. Define all tasks upfront.');
+    lines.push('2. **Group related agents.** Use `create_agent_group` to organize agents. Give the group a descriptive name and shared context.');
+    lines.push('3. **Spawn and assign.** Spawn sub-agents into the group. Assign each agent a tracker task. Use `persist: true` for agents that need to survive longer than the default timeout.');
+    lines.push(`4. **Let ${pmName} monitor.** Do NOT create your own monitoring or "pulse check" agents. ${pmName} (the PM agent) automatically monitors all tasks every 3 minutes and will alert you if anything stalls.`);
+    lines.push('5. **Clean up when done.** After all tasks complete, call `delete_group(group_id, terminate_members=true)` to clean up.');
     lines.push('');
   }
 
-
   if (isPrimaryAgent(agentId) || isPMAgent(agentId)) {
     const pmName = getPMAgentName();
-    lines.push('## Tracker Notes');
+    lines.push('## Tracker Details');
     lines.push('- Tasks you create are auto-assigned to you and start as "in_progress"');
     lines.push('- For multi-step projects, call **tracker_complete_step** after each step');
     lines.push(`- ${pmName} (the project manager) will poke you if tasks go idle`);
-    lines.push('- **Scheduling**: To schedule a task for later, call **get_current_time** first, then pass `scheduled_start` to **tracker_create_task** with an ISO8601 datetime. Add `repeat_interval` + `repeat_unit` for recurring tasks. The scheduler fires tasks automatically within 30 seconds of their scheduled time.');
-    lines.push('- **Groups**: Use **list_groups** to see groups, **list_agents** to see agents. Assign tasks to groups with `assigned_to_group` — the PM picks an agent at run time.');
+    lines.push('- **Scheduling**: Call **get_current_time** first, then pass `scheduled_start` to **tracker_create_task** with an ISO8601 datetime. Add `repeat_interval` + `repeat_unit` for recurring tasks. The scheduler fires tasks automatically within 30 seconds of their scheduled time.');
+    lines.push('- **Groups**: Use **list_groups** to see groups, **list_agents** to see agents. Assign tasks to groups with `assigned_to_group`.');
     lines.push('');
   }
 
