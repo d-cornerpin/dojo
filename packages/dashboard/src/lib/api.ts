@@ -1082,4 +1082,33 @@ export const updateDreamingConfig = async (config: Partial<DreamingConfig>): Pro
   });
 };
 
+// ── Updates ──
+
+export interface UpdateCheckResult {
+  currentVersion: string;
+  latestVersion: string | null;
+  latestTag?: string;
+  releaseName?: string;
+  publishedAt?: string;
+  releaseNotes?: string | null;
+  updateAvailable: boolean;
+  downloadUrl?: string | null;
+  downloadSize?: number | null;
+  error?: string;
+}
+
+export const checkForUpdates = async (): Promise<ApiResponse<UpdateCheckResult>> => {
+  return request<UpdateCheckResult>('/update/check');
+};
+
+export const getVersion = async (): Promise<ApiResponse<{ version: string }>> => {
+  return request<{ version: string }>('/update/version');
+};
+
+export const applyUpdate = async (): Promise<ApiResponse<{ message: string; previousVersion: string; newVersion: string; backupDir: string }>> => {
+  return request<{ message: string; previousVersion: string; newVersion: string; backupDir: string }>('/update/apply', {
+    method: 'POST',
+  });
+};
+
 export { getToken, clearToken };

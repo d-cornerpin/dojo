@@ -6,7 +6,7 @@ import { RouterConfig } from '../components/RouterConfig';
 import { RouterTest } from '../components/RouterTest';
 import { formatDate } from '../lib/dates';
 
-type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'dreaming';
+type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'dreaming' | 'update';
 
 export const Settings = () => {
   const [searchParams] = useSearchParams();
@@ -21,6 +21,7 @@ export const Settings = () => {
     { key: 'profile', label: 'Profile' },
     { key: 'security', label: 'Security' },
     { key: 'dreaming', label: 'Dreaming' },
+    { key: 'update', label: 'Update' },
   ];
 
   return (
@@ -52,6 +53,7 @@ export const Settings = () => {
       {activeTab === 'profile' && <ProfileTab />}
       {activeTab === 'security' && <SecurityTab />}
       {activeTab === 'dreaming' && <DreamingTab />}
+      {activeTab === 'update' && <UpdateTab />}
     </div>
   );
 };
@@ -1845,6 +1847,146 @@ const DreamingTab = () => {
           </pre>
         </div>
       )}
+    </div>
+  );
+};
+
+// ── Update Tab ──
+
+const UpdateTab = () => {
+  const [checking, setChecking] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<api.UpdateCheckResult | null>(null);
+  const [updateResult, setUpdateResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const checkUpdates = async () => {
+    setChecking(true);
+    setError(null);
+    const result = await api.checkForUpdates();
+    if (result.ok) {
+      setUpdateInfo(result.data);
+      if (result.data.error) setError(result.data.error);
+    } else {
+      setError(result.error);
+    }
+    setChecking(false);
+  };
+
+  useEffect(() => { checkUpdates(); }, []);
+
+  const handleUpdate = async () => {
+    if (!confirm('This will download the latest version, update the platform, and restart the server. Continue?')) return;
+    setUpdating(true);
+    setError(null);
+    setUpdateResult(null);
+    const result = await api.applyUpdate();
+    if (result.ok) {
+      setUpdateResult(result.data.message);
+      setTimeout(() => {
+        const poll = setInterval(async () => {
+          try {
+            const r = await api.getVersion();
+            if (r.ok) {
+              clearInterval(poll);
+              window.location.reload();
+            }
+          } catch { /* still restarting */ }
+        }, 2000);
+        setTimeout(() => clearInterval(poll), 60000);
+      }, 3000);
+    } else {
+      setError(result.error);
+      setUpdating(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6 max-w-lg">
+      <div className="glass-card p-4 space-y-4">
+        <div>
+          <h3 className="text-sm font-medium text-white/70">Software Update</h3>
+          <p className="text-xs text-white/40 mt-1">
+            Check for and install updates from the Agent D.O.J.O. repository.
+          </p>
+        </div>
+
+        <div className="flex items-center justify-between py-2">
+          <span className="text-sm text-white/50">Current Version</span>
+          <span className="text-sm text-white/90 font-mono">{updateInfo?.currentVersion ?? '...'}</span>
+        </div>
+
+        {updateInfo?.latestVersion && (
+          <div className="flex items-center justify-between py-2">
+            <span className="text-sm text-white/50">Latest Version</span>
+            <span className="text-sm text-white/90 font-mono">{updateInfo.latestVersion}</span>
+          </div>
+        )}
+
+        {updateInfo && !updateInfo.updateAvailable && !updateInfo.error && (
+          <div className="px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/20 text-green-400 text-sm">
+            You're up to date.
+          </div>
+        )}
+
+        {updateInfo?.updateAvailable && (
+          <div className="px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-sm">
+            Update available: {updateInfo.latestVersion}
+            {updateInfo.downloadSize && (
+              <span className="text-xs text-amber-400/60 ml-2">
+                ({(updateInfo.downloadSize / 1024).toFixed(0)} KB)
+              </span>
+            )}
+          </div>
+        )}
+
+        {updateInfo?.releaseNotes && updateInfo.updateAvailable && (
+          <div>
+            <span className="text-xs text-white/40">Release Notes</span>
+            <pre className="mt-1 text-xs text-white/60 whitespace-pre-wrap font-mono bg-white/[0.03] rounded p-2 max-h-40 overflow-y-auto">
+              {updateInfo.releaseNotes}
+            </pre>
+          </div>
+        )}
+
+        {error && (
+          <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+            {error}
+          </div>
+        )}
+
+        {updateResult && (
+          <div className="px-3 py-2 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400 text-sm">
+            {updateResult}
+          </div>
+        )}
+
+        <div className="flex items-center gap-3 pt-2">
+          <button
+            onClick={checkUpdates}
+            disabled={checking || updating}
+            className="px-4 py-2 bg-white/[0.05] hover:bg-white/[0.08] disabled:opacity-40 text-white/70 text-sm font-medium rounded-lg transition-colors"
+          >
+            {checking ? 'Checking...' : 'Check for Updates'}
+          </button>
+
+          {updateInfo?.updateAvailable && (
+            <button
+              onClick={handleUpdate}
+              disabled={updating}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 text-white text-sm font-medium rounded-lg transition-colors"
+            >
+              {updating ? 'Updating...' : 'Update Now'}
+            </button>
+          )}
+        </div>
+
+        {updating && (
+          <div className="text-xs text-white/40">
+            Downloading and installing update. The server will restart automatically. This page will reload when the server is back.
+          </div>
+        )}
+      </div>
     </div>
   );
 };
