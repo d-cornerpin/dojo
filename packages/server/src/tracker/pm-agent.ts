@@ -339,25 +339,41 @@ async function runPMReview(): Promise<void> {
     }
   }
 
-  // If no issues found, skip LLM entirely -- just log "all clear"
-  if (issues.length === 0) {
-    logger.info('PM review: all clear, no issues found', { activeTasks: activeTasks.length });
-    return;
-  }
+  // Build a compact summary of active tasks for the LLM to review
+  // Only include active tasks -- skip completed/fallen to keep the prompt small
+  const taskSummary = activeTasks.map(t => {
+    let line = `- [${t.status.toUpperCase()}] "${t.title}" -> ${t.assignedToName ?? 'unassigned'}`;
+    if (t.repeatInterval) line += ` (repeats every ${t.repeatInterval} ${t.repeatUnit})`;
+    if (t.scheduledStart) {
+      const nextRun = t.nextRunAt ? new Date(t.nextRunAt.includes('Z') ? t.nextRunAt : t.nextRunAt + 'Z') : null;
+      if (nextRun && nextRun > nowDate) {
+        line += ` [next run: ${t.nextRunAt}]`;
+      }
+    }
+    if (t.status === 'blocked') line += ' [BLOCKED]';
+    return line;
+  }).join('\n');
 
-  // Only call the LLM when there are actual issues to act on
-  // Keep the prompt MINIMAL for a small model
-  const situationReport = `Issues found in tracker review:
+  // Pre-digested issues the engine already detected
+  const engineIssues = issues.length > 0
+    ? `\nENGINE-DETECTED ISSUES (act on these):\n${issues.map((issue, i) => `${i + 1}. ${issue}`).join('\n')}`
+    : '';
 
-${issues.map((issue, i) => `${i + 1}. ${issue}`).join('\n')}
+  const situationReport = `Tracker review -- ${activeTasks.length} active tasks:
 
-For each issue, take ONE action:
-- ORPHANED tasks: send_to_agent to ${primaryName} saying which task is orphaned
-- OVERDUE tasks: send_to_agent to ${primaryName} saying which task missed its schedule
-- BLOCKED tasks: send_to_agent to ${primaryName} saying which task is blocked
-- STALE tasks: send_to_agent to the assigned agent asking them to start working
+${taskSummary}
+${engineIssues}
 
-Do NOT reassign tasks. Do NOT touch scheduled tasks that are waiting. Keep messages short.`;
+Review the tasks above. The engine already flagged obvious issues. Your job is to look for things the engine can't catch:
+- Does a task's schedule match what was intended? (e.g., agent said "every 5 minutes" but it's set to every 10)
+- Are there tasks that seem redundant or conflicting?
+- Is an agent working on something that doesn't match their assignment?
+- Anything that looks off or inconsistent?
+
+If you spot something, notify ${primaryName} via send_to_agent with a short explanation.
+For engine-detected issues, act on them: notify ${primaryName} about orphaned/overdue/blocked tasks, or poke stale agents.
+If everything looks fine, just say "All clear."
+Keep it brief.`;
 
   const msgId = uuidv4();
   db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`)
