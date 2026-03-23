@@ -960,10 +960,16 @@ ${userRole ? `- Role: ${userRole}` : ''}
 ${userPreferences || '- Prefers concise, direct communication\n- Values autonomous action for routine tasks'}
 `;
 
-  // Write files (TOOLS.md is now auto-generated, no longer written here)
+  // Write SOUL.md (always generated from the form inputs)
   fs.mkdirSync(PROMPTS_DIR, { recursive: true });
   fs.writeFileSync(path.join(PROMPTS_DIR, 'SOUL.md'), soul, 'utf-8');
-  fs.writeFileSync(path.join(PROMPTS_DIR, 'USER.md'), user, 'utf-8');
+
+  // Only write USER.md if it doesn't already exist (the user may have already
+  // written a detailed profile in the "Your Profile" setup step -- don't overwrite it)
+  const userMdPath = path.join(PROMPTS_DIR, 'USER.md');
+  if (!fs.existsSync(userMdPath) || fs.readFileSync(userMdPath, 'utf-8').trim().length < 20) {
+    fs.writeFileSync(userMdPath, user, 'utf-8');
+  }
 
   logger.info('Identity files generated', { agentName, userName });
   return c.json({ ok: true, data: { soul, user } });
