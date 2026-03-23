@@ -275,7 +275,7 @@ The vault is how you maintain continuity across conversations. If something matt
     lines.push('1. **Create a project first.** ALWAYS call `tracker_create_project` before spawning agents. Define all tasks upfront.');
     lines.push('2. **Group related agents.** Use `create_agent_group` to organize agents. Give the group a descriptive name and shared context.');
     lines.push('3. **Spawn and assign.** Spawn sub-agents into the group. Assign each agent a tracker task. Use `persist: true` for agents that need to survive longer than the default timeout.');
-    lines.push(`4. **Let ${pmName} monitor.** NEVER create monitoring, pulse-check, or status-polling agents. NEVER create recurring "check" tasks. ${pmName} already monitors ALL tasks every 3 minutes and will alert you if anything stalls. Creating your own monitoring is forbidden — it wastes resources and duplicates ${pmName}'s job.`);
+    lines.push(`4. **Let ${pmName} monitor.** NEVER create monitoring, pulse-check, or status-polling agents. NEVER create recurring "check" tasks. ${pmName} already monitors ALL tasks every 10 minutes and will alert you if anything stalls. Creating your own monitoring is forbidden — it wastes resources and duplicates ${pmName}'s job.`);
     lines.push('5. **Clean up when done.** After all tasks complete, call `delete_group(group_id, terminate_members=true)` to clean up.');
     lines.push('');
   }
@@ -337,7 +337,7 @@ export function assembleSystemPrompt(agentId: string, modelId: string): string {
       if (pmAgent && pmAgent.status !== 'terminated') {
         parts.push(`## Project Manager: ${pmName}
 
-${pmName} (agent ID: ${pmId}) is your dedicated PM agent. ${pmName} is already running and monitors the project tracker automatically every 3 minutes. NEVER create monitoring, pulse-check, or status-polling agents — ${pmName} already does this. NEVER create recurring "pulse" or "check" tasks — that is ${pmName}'s job, not yours. Creating your own monitoring infrastructure is FORBIDDEN.
+${pmName} (agent ID: ${pmId}) is your dedicated PM agent. ${pmName} is already running and monitors the project tracker automatically every 10 minutes. NEVER create monitoring, pulse-check, or status-polling agents — ${pmName} already does this. NEVER create recurring "pulse" or "check" tasks — that is ${pmName}'s job, not yours. Creating your own monitoring infrastructure is FORBIDDEN.
 
 ${pmName}'s responsibilities:
 - Watches all tasks in the tracker for stalls, failures, or missed deadlines

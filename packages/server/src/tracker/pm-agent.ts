@@ -265,10 +265,10 @@ export function stopPokeLoop(): void {
   logger.info('Poke loop and scheduler stopped');
 }
 
-// ── PM LLM Review — runs Samantha's brain periodically ──
+// ── PM LLM Review — runs the PM agent's brain periodically ──
 
 let lastLLMReviewAt = 0;
-const LLM_REVIEW_INTERVAL_MS = 180_000; // 3 minutes — keeps local LLM costs low
+const LLM_REVIEW_INTERVAL_MS = 600_000; // 10 minutes — gives tasks time to settle before reviewing
 
 async function runPMReview(): Promise<void> {
   const now = Date.now();
@@ -384,7 +384,7 @@ function runPokeCheck(): void {
 
   logger.info('PM poke loop tick', { activeTasks: allActiveTasks.length });
 
-  // If there are active tasks, trigger the PM's LLM to review (throttled to every 3 min)
+  // If there are active tasks, trigger the PM's LLM to review (throttled to every 10 min)
   if (allActiveTasks.length > 0) {
     runPMReview().catch(err => {
       logger.error('PM review failed', { error: err instanceof Error ? err.message : String(err) });
