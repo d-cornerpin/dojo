@@ -106,11 +106,11 @@ function runEngineMaintenance(): { pruned: number; decayed: number } {
 
 // ── Build Dreamer Instructions ──
 
-function buildDreamerPrompt(
+async function buildDreamerPrompt(
   unprocessed: VaultConversation[],
   dreamMode: DreamMode,
   stats: ReturnType<typeof getVaultStats>,
-): string {
+): Promise<string> {
   // Summarize what needs processing
   const archiveSummary = unprocessed.map((conv, i) => {
     return `Archive ${i + 1}: Agent "${conv.agentName ?? conv.agentId}", ${conv.messageCount} messages, ${conv.tokenCount} tokens (${conv.earliestAt} to ${conv.latestAt}), ID: ${conv.id}`;
@@ -121,16 +121,29 @@ function buildDreamerPrompt(
   const techniqueInstructions = dreamMode === 'full' ? `
 - IDENTIFY TECHNIQUES: If a conversation contains a reusable multi-step procedure or workflow that other agents would benefit from, send a message to the Trainer agent (**${trainerName}**, ID: ${trainerId}) via send_to_agent describing the technique candidate. Include: a suggested name, what it does, and the step-by-step instructions. The Trainer is the technique expert -- let them create and refine it. Only flag genuinely reusable processes, not one-off commands.` : '';
 
-  return `You are the Dreamer -- a specialized agent that processes the dojo's daily conversations into long-term memories.
+  // Get file paths for profile updates
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
+  const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
+
+  return `You are the Dreamer -- a specialized agent that processes the dojo's daily conversations into long-term memories and keeps the dojo's profile files up to date.
 
 # Your Mission
 
-The dojo has ${unprocessed.length} unprocessed conversation archive(s) that need to be turned into vault memories. You also need to review the vault for duplicates and consolidation opportunities.
+The dojo has ${unprocessed.length} unprocessed conversation archive(s). You have three jobs:
+1. Extract knowledge from conversations into the vault
+2. Update the owner's profile (USER.md) if conversations revealed new behavioral or operational info
+3. Update the agent personality (SOUL.md) if the owner gave feedback about how the agent should behave
+
+# Files
+
+- USER.md: ${profilePath} -- The owner's profile. Contains behavioral/operational info the agent needs every turn.
+- SOUL.md: ${soulPath} -- The agent's personality and instructions. Defines how the agent talks and works.
 
 # Current Vault State
 
 - Total entries: ${stats.totalEntries} (${stats.pinnedCount} pinned, ${stats.permanentCount} permanent)
-- Average confidence: ${(stats.avgConfidence * 100).toFixed(0)}%
 - Unprocessed archives: ${unprocessed.length}
 
 # Archives to Process
@@ -142,30 +155,47 @@ ${archiveSummary}
 1. **Create a project in the tracker** called "Dream Cycle [date]" with tasks for each step.
 2. **For each unprocessed archive:**
    a. Read the archive content (it will be provided in your conversation)
-   b. Extract every piece of knowledge worth remembering:
-      - Facts about the user, their businesses, projects, preferences
+   b. Extract facts worth remembering into the vault via vault_remember:
+      - Facts about the user, their businesses, projects
       - Decisions that were made and WHY
       - Procedures or workflows that were figured out
       - Relationships between people, systems, or projects
       - Events with specific dates
-      - Corrections the user made (high priority!)
-   c. For each piece of knowledge, call vault_remember with:
-      - content: standalone statement (someone with no context should understand it)
-      - type: fact | preference | decision | procedure | relationship | event | note
-      - tags: relevant categorization tags
-      - permanent: true for definitionally stable truths (names, family, business identities)
-   d. Do NOT save: routine tool calls, transient debugging, small talk, info already in the vault${techniqueInstructions}
-3. **After processing all archives**, search the vault for potential duplicates or entries that could be consolidated. If you find entries that say essentially the same thing, use vault_forget on the less detailed one.
-4. **When done**, call complete_task with a summary of what you extracted and any observations.
+      - Corrections the user made
+   c. Do NOT vault: routine tool calls, transient debugging, small talk, info already in the vault
+   d. Look for information that should update USER.md or SOUL.md (see below)${techniqueInstructions}
+3. **After processing all archives**, check if USER.md or SOUL.md need updates (see below). If so, read the current file with file_read, make targeted edits, and write it back with file_write.
+4. **Deduplicate**: search the vault for entries that say essentially the same thing. Use vault_forget on the less detailed one.
+5. **When done**, call complete_task with a summary.
 
-# Rules
+# When to Update USER.md
 
-- Write every vault entry as a STANDALONE statement -- it must make sense to someone reading it with zero context
-- Be thorough -- extract MORE rather than less. It's better to over-remember than to lose knowledge.
-- Check vault_search before saving to avoid duplicates
-- Mark stable facts as permanent: true (names, family members, business names, locations)
-- Keep each entry under 500 tokens
-- Update your tracker tasks as you go so the PM can see your progress`;
+Read USER.md first. Then check: did any conversation reveal new behavioral or operational info that belongs there? Examples:
+- The owner moved to a new timezone
+- The owner changed their work schedule
+- The owner stated a new communication preference or rule
+- The owner mentioned a new recurring scheduling constraint
+
+If yes, read the current file, add the new info in the owner's style, and write it back. Do NOT remove existing content. Only ADD new behavioral/operational info. Do NOT add factual reference info (that goes to the vault instead).
+
+# When to Update SOUL.md
+
+Read SOUL.md first. Then check: did the owner give the agent direct feedback about its behavior? Examples:
+- "Stop doing X" or "Start doing Y"
+- "You're being too formal" or "Be more concise"
+- "When I ask about X, always do Y"
+- "Never do X again"
+
+If yes, read the current file, add the new rule or adjust the existing text, and write it back. Preserve the file's existing voice and energy. Make surgical additions, not rewrites.
+
+# Vault Entry Rules
+
+- Write each entry as a STANDALONE statement
+- Use the correct type: fact, relationship, decision, procedure, event, preference, note
+- "preference" = factual preferences (likes Leica cameras, drinks iced black coffee). NOT behavioral rules.
+- Mark stable facts as permanent: true (names, family, businesses, locations, birth dates)
+- vault_search before saving to avoid duplicates
+- Keep each entry under 500 tokens`;
 }
 
 function buildDreamerInitialMessage(unprocessed: VaultConversation[]): string {
@@ -231,6 +261,12 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
     return { dreamerId: null };
   }
 
+  // Compute profile file paths for Dreamer's file access
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
+  const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
+
   // Step 1: Engine-level maintenance (no LLM, fast)
   const maintenance = runEngineMaintenance();
   logger.info('Engine maintenance complete', maintenance);
@@ -257,7 +293,7 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
     const result = await spawnAgent({
       parentId: primaryId,
       name: 'Dreamer',
-      systemPrompt: buildDreamerPrompt(unprocessed, config.dreamMode, stats),
+      systemPrompt: await buildDreamerPrompt(unprocessed, config.dreamMode, stats),
       modelId,
       classification: 'apprentice',
       timeout: 3600, // 1 hour safety net
@@ -269,6 +305,8 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
           'vault_forget',
           'memory_grep',
           'memory_search',
+          'file_read',
+          'file_write',
           'tracker_create_project',
           'tracker_create_task',
           'tracker_update_status',
@@ -281,8 +319,8 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
         deny: [],
       },
       permissions: {
-        file_read: [],
-        file_write: [],
+        file_read: [profilePath, soulPath],
+        file_write: [profilePath, soulPath],
         file_delete: 'none',
         exec_allow: [],
         exec_deny: ['*'],
