@@ -171,19 +171,27 @@ updateRouter.post('/apply', async (c) => {
     await execAsync(`cp -R "${PLATFORM_DIR}" "${backupDir}"`, { timeout: 30000 });
 
     // 6. Copy new files over (preserve node_modules, data, secrets)
-    // Copy everything except node_modules from the extracted dir
+    // Use rsync to properly overwrite existing directories
+    // --delete ensures old files that no longer exist in the update are removed
+    const env = { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH}` };
     const entries = fs.readdirSync(extractedDir);
     for (const entry of entries) {
       if (entry === 'node_modules') continue;
       const src = path.join(extractedDir, entry);
       const dest = path.join(PLATFORM_DIR, entry);
-      await execAsync(`cp -R "${src}" "${dest}"`, { timeout: 30000 });
+      const stat = fs.statSync(src);
+      if (stat.isDirectory()) {
+        // For directories: rsync with trailing slashes to merge/overwrite properly
+        await execAsync(`rsync -a --delete "${src}/" "${dest}/"`, { timeout: 30000, env });
+      } else {
+        // For files: simple copy
+        await execAsync(`cp -f "${src}" "${dest}"`, { timeout: 30000 });
+      }
     }
 
     logger.info('Files updated, running npm install');
 
     // 7. Install production dependencies (no build needed -- zip includes pre-compiled dist/)
-    const env = { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH}` };
     await execAsync('npm install --omit=dev', { cwd: PLATFORM_DIR, timeout: 120000, env });
 
     // 8. Clean up temp files
