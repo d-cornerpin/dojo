@@ -170,13 +170,14 @@ ${archiveSummary}
 
 # When to Update USER.md
 
-Read USER.md first. Then check: did any conversation reveal new behavioral or operational info that belongs there? Examples:
-- The owner moved to a new timezone
+Read USER.md first. Then check: did any conversation reveal changes that affect it? Examples:
+- The owner moved (update location and timezone, remove the old ones)
 - The owner changed their work schedule
 - The owner stated a new communication preference or rule
-- The owner mentioned a new recurring scheduling constraint
+- A scheduling constraint changed or was removed
+- Information in the file is now outdated or contradicted by something said in conversation
 
-If yes, read the current file, add the new info in the owner's style, and write it back. Do NOT remove existing content. Only ADD new behavioral/operational info. Do NOT add factual reference info (that goes to the vault instead).
+If yes, read the current file, make the changes, and write it back. You CAN update, replace, or remove content that is outdated. If the owner moved from Washington to Colorado, replace Washington with Colorado -- don't keep both. Keep the file lean and current. Only behavioral/operational content belongs here -- factual reference info goes to the vault.
 
 # When to Update SOUL.md
 
@@ -185,8 +186,9 @@ Read SOUL.md first. Then check: did the owner give the agent direct feedback abo
 - "You're being too formal" or "Be more concise"
 - "When I ask about X, always do Y"
 - "Never do X again"
+- A rule in SOUL.md is now contradicted by something the owner said
 
-If yes, read the current file, add the new rule or adjust the existing text, and write it back. Preserve the file's existing voice and energy. Make surgical additions, not rewrites.
+If yes, read the current file, make targeted edits, and write it back. You CAN remove or update rules that have been superseded. Preserve the file's existing voice and energy -- don't rewrite the whole thing, just update the parts that changed.
 
 # Vault Entry Rules
 
