@@ -377,7 +377,7 @@ export const toolDefinitions: ToolDefinition[] = [
         classification: {
           type: 'string',
           enum: ['apprentice', 'ronin'],
-          description: 'Agent classification. "apprentice" (default): can be terminated by other agents, subject to timeouts. "ronin": persists across restarts, only David can terminate from dashboard.',
+          description: 'Agent classification. "apprentice" (default): can be terminated by other agents, subject to timeouts. "ronin": persists across restarts, only the owner can terminate from the dashboard.',
         },
         share_user_profile: {
           type: 'boolean',
@@ -1461,7 +1461,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           break;
         }
         if (targetAgent?.classification === 'ronin') {
-          content = 'Cannot terminate ronin agent. Only David can manage ronin agents from the dashboard.';
+          content = 'Cannot terminate ronin agent. Only the owner can manage ronin agents from the dashboard.';
           isError = true;
           break;
         }

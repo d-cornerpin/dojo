@@ -82,7 +82,7 @@ function checkProjectCompletion(projectId: string | null, callingAgentId: string
         const summary = tasks.map(t => `- ${t.title}: ${t.status}${t.notes ? ` — ${t.notes.split('\n').pop()}` : ''}`).join('\n');
 
         const ownerName = getOwnerName();
-        // Force-notify Kevin even if he's the one who spawned the completing agent
+        // Force-notify the primary agent even if they spawned the completing agent
         notifyPrimaryAgent(
           `Project "${project.title}" is complete! All ${tasks.length} tasks finished.\n\nResults:\n${summary}\n\nPlease review the results and let ${ownerName} know. If you spawned agent groups for this project, clean them up with delete_group(group_id, terminate_members=true).`,
           callingAgentId,

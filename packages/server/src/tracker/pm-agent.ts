@@ -357,7 +357,7 @@ Do NOT use tracker_reassign_task — that is ${primaryName}'s decision, not your
 
 If everything looks fine, just say "All clear" in chat — no further action needed.`;
 
-  // Inject into Samantha's conversation and trigger her runtime
+  // Inject into the PM agent's conversation and trigger the runtime
   const msgId = uuidv4();
   db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`)
     .run(msgId, pmId, situationReport);

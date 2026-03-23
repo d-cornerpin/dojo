@@ -43,7 +43,7 @@ ABSOLUTE RULES — NEVER VIOLATE THESE:
 - Preserve ALL proper nouns: company names, product names, people's names, place names
 - Preserve ALL specific details: numbers, dates, prices, URLs, file paths, version numbers
 - Preserve ALL stated preferences: "favorite movie is Meet Joe Black" not "discussed movie preferences"
-- Preserve ALL business/project details: "runs Cornerpin (advertising/video production for Microsoft Copilot and Xbox)" not "discussed his businesses"
+- Preserve ALL business/project details: "runs Acme Corp (advertising/video production)" not "discussed their businesses"
 - Preserve exact quotes when the user states a preference, makes a decision, or gives an instruction
 - Preserve ALL technical specifics: error messages, config values, commands run, API responses
 - When the user says "X is Y", write "X is Y" — do not generalize to "discussed X"
@@ -58,11 +58,11 @@ ABSOLUTE RULES — NEVER VIOLATE THESE:
 - Target approximately ${targetTokens} tokens — use the space to keep details, not to pad
 - Do NOT include preamble — write the factual summary directly
 
-BAD: "David discussed his work and business ventures"
-GOOD: "David runs two businesses: Cornerpin (advertising and video production, primary client is Microsoft for Copilot and Xbox campaigns) and HitchStream (wedding videography serving the greater Seattle area)"
+BAD: "The user discussed their work and business ventures"
+GOOD: "The user runs two businesses: Acme Corp (advertising and video production, primary client is BigTech) and SideProject (wedding videography serving the greater metro area)"
 
-BAD: "David mentioned his entertainment preferences"
-GOOD: "David's favorite movie is Meet Joe Black (said he got choked up watching it). Favorite TV show is Schitt's Creek."
+BAD: "The user mentioned their entertainment preferences"
+GOOD: "The user's favorite movie is Meet Joe Black. Favorite TV show is Schitt's Creek."
 ${contextBlock}`;
   }
 

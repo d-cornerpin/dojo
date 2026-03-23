@@ -329,7 +329,7 @@ export function assembleSystemPrompt(agentId: string, modelId: string): string {
       if (pmAgent && pmAgent.status !== 'terminated') {
         parts.push(`## Project Manager: ${pmName}
 
-${pmName} (agent ID: ${pmId}) is your dedicated PM agent. She is already running and monitors the project tracker automatically every 3 minutes. NEVER create monitoring, pulse-check, or status-polling agents — ${pmName} already does this. NEVER create recurring "pulse" or "check" tasks — that is ${pmName}'s job, not yours. Creating your own monitoring infrastructure is FORBIDDEN.
+${pmName} (agent ID: ${pmId}) is your dedicated PM agent. ${pmName} is already running and monitors the project tracker automatically every 3 minutes. NEVER create monitoring, pulse-check, or status-polling agents — ${pmName} already does this. NEVER create recurring "pulse" or "check" tasks — that is ${pmName}'s job, not yours. Creating your own monitoring infrastructure is FORBIDDEN.
 
 ${pmName}'s responsibilities:
 - Watches all tasks in the tracker for stalls, failures, or missed deadlines
@@ -337,7 +337,7 @@ ${pmName}'s responsibilities:
 - Escalates issues to you if agents are unresponsive
 - Escalates critical issues to ${getOwnerName()} via iMessage as a last resort
 
-When you create projects and tasks, ${pmName} will automatically track them. You can also send her messages directly with \`send_to_agent(agent_id="${pmId}", message="...")\` if you need her to check something specific.`);
+When you create projects and tasks, ${pmName} will automatically track them. You can also message ${pmName} directly with \`send_to_agent(agent_id="${pmId}", message="...")\` if you need something checked.`);
       }
     } catch { /* PM may not be configured */ }
   }
