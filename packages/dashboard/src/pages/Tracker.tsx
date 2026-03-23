@@ -14,11 +14,13 @@ import { TaskScheduleForm, DEFAULT_SCHEDULE, type ScheduleConfig } from '../comp
 const TaskDetailPanel = ({
   task,
   agents,
+  allTasks,
   onClose,
   onUpdate,
 }: {
   task: Task;
   agents: AgentDetail[];
+  allTasks: Task[];
   onClose: () => void;
   onUpdate: () => void;
 }) => {
@@ -164,11 +166,17 @@ const TaskDetailPanel = ({
           {/* Dependencies */}
           {task.dependsOn.length > 0 && (
             <div>
-              <h3 className="text-xs font-semibold white/55 uppercase tracking-wide mb-1">Dependencies</h3>
+              <h3 className="text-xs font-semibold text-white/55 uppercase tracking-wide mb-1">Dependencies</h3>
               <div className="space-y-1">
-                {task.dependsOn.map((dep) => (
-                  <div key={dep} className="text-sm white/55 font-mono">{dep}</div>
-                ))}
+                {task.dependsOn.map((depId) => {
+                  const depTask = allTasks.find(t => t.id === depId);
+                  return (
+                    <div key={depId} className="text-sm text-white/55 flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${depTask?.status === 'complete' ? 'bg-green-400' : depTask?.status === 'in_progress' ? 'bg-blue-400' : 'bg-white/20'}`} />
+                      {depTask?.title ?? depId}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -593,6 +601,7 @@ export const Tracker = () => {
         <TaskDetailPanel
           task={selectedTask}
           agents={agents}
+          allTasks={tasks}
           onClose={() => setSelectedTaskId(null)}
           onUpdate={loadData}
         />

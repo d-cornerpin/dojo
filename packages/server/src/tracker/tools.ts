@@ -168,7 +168,14 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     const projectId = args.projectId as string | undefined;
     const description = args.description as string | undefined;
     // Default assigned_to to the calling agent if not specified
-    const assignedTo = (args.assignedTo as string | undefined) ?? agentId;
+    // Resolve agent name to ID if a name was passed instead of a UUID
+    let assignedTo = (args.assignedTo as string | undefined) ?? agentId;
+    if (assignedTo && !assignedTo.match(/^[0-9a-f]{8}-[0-9a-f]{4}-/)) {
+      // Looks like a name, not a UUID -- resolve it
+      const resolveDb = getDb();
+      const resolved = resolveDb.prepare("SELECT id FROM agents WHERE name = ? AND status != 'terminated' ORDER BY created_at DESC LIMIT 1").get(assignedTo) as { id: string } | undefined;
+      if (resolved) assignedTo = resolved.id;
+    }
     const priority = args.priority as 'high' | 'normal' | 'low' | undefined;
     const stepNumber = args.stepNumber as number | undefined;
     const dependsOn = args.dependsOn as string[] | undefined;
@@ -403,11 +410,21 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
         `Status: ${task.status}`,
         `Priority: ${task.priority}`,
       ];
-      if (task.projectId) parts.push(`Project: ${task.projectId}`);
-      if (task.assignedTo) parts.push(`Assigned to: ${task.assignedTo}`);
+      if (task.projectId) {
+        const statusDb = getDb();
+        const proj = statusDb.prepare('SELECT title FROM projects WHERE id = ?').get(task.projectId) as { title: string } | undefined;
+        parts.push(`Project: ${proj?.title ?? task.projectId}`);
+      }
+      if (task.assignedTo) parts.push(`Assigned to: ${task.assignedToName ?? task.assignedTo}`);
       if (task.description) parts.push(`Description: ${task.description}`);
       if (task.stepNumber !== null) parts.push(`Step: ${task.stepNumber}${task.totalSteps ? ` of ${task.totalSteps}` : ''}`);
-      if (task.dependsOn.length > 0) parts.push(`Depends on: ${task.dependsOn.join(', ')}`);
+      if (task.dependsOn.length > 0) {
+        const depNames = task.dependsOn.map(depId => {
+          const dep = getTask(depId);
+          return dep ? dep.title : depId;
+        });
+        parts.push(`Depends on: ${depNames.join(', ')}`);
+      }
       if (task.notes) parts.push(`\nNotes:\n${task.notes}`);
       parts.push(`Created: ${task.createdAt}`);
       parts.push(`Updated: ${task.updatedAt}`);
@@ -484,7 +501,7 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
         parts.push('');
         parts.push(`In Progress Tasks (${inProgress.length}):`);
         for (const t of inProgress) {
-          const assignee = t.assignedTo ? ` [${t.assignedTo}]` : ' [unassigned]';
+          const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
           parts.push(`  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`);
         }
       }
@@ -493,7 +510,7 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
         parts.push('');
         parts.push(`On Deck Tasks (${pending.length}):`);
         for (const t of pending.slice(0, 10)) {
-          const assignee = t.assignedTo ? ` [${t.assignedTo}]` : ' [unassigned]';
+          const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
           parts.push(`  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`);
         }
         if (pending.length > 10) {
@@ -505,7 +522,7 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
         parts.push('');
         parts.push(`Blocked Tasks (${blocked.length}):`);
         for (const t of blocked) {
-          const assignee = t.assignedTo ? ` [${t.assignedTo}]` : ' [unassigned]';
+          const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
           parts.push(`  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`);
         }
       }
