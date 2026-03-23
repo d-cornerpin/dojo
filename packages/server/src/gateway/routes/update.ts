@@ -173,12 +173,11 @@ updateRouter.post('/apply', async (c) => {
       await execAsync(`cp -R "${src}" "${dest}"`, { timeout: 30000 });
     }
 
-    logger.info('Files updated, running npm install and build');
+    logger.info('Files updated, running npm install');
 
-    // 7. Run npm install and build
+    // 7. Install production dependencies (no build needed -- zip includes pre-compiled dist/)
     const env = { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH}` };
     await execAsync('npm install --omit=dev', { cwd: PLATFORM_DIR, timeout: 120000, env });
-    await execAsync('npm run build', { cwd: PLATFORM_DIR, timeout: 120000, env });
 
     // 8. Clean up temp files
     fs.rmSync(tmpDir, { recursive: true });
