@@ -359,72 +359,24 @@ export async function runFirstRunProfileBootstrap(): Promise<{ dreamerId: string
     const result = await spawnAgent({
       parentId: primaryId,
       name: 'Dreamer',
-      systemPrompt: `You are the Dreamer, a specialized agent that processes knowledge into the dojo's long-term memory vault.
+      systemPrompt: `You are processing the dojo owner's profile to optimize token usage. You have one job: split the profile into two parts.
 
-# Your Mission (First-Run Bootstrap)
+PART 1 (stays in USER.md): Anything the agent needs to know on EVERY turn to behave correctly. This means:
+- The owner's name and where they live and their timezone
+- How they want to be communicated with
+- How they want work done
+- What to never do
+- Scheduling constraints that affect the agent's behavior
+- Work style rules
 
-This is the dojo's very first dream. The owner just set up the dojo. You have ONE file to process: USER.md (the owner's profile). This file gets sent to the agent on every turn.
+PART 2 (goes to the vault via vault_remember): Everything else. Biographical details, family members, business descriptions, vehicles, pets, hobbies, interests, food and music preferences, political views, etc. These are facts the agent only needs when the topic comes up.
 
-Your job is to READ the profile, extract reference facts into the vault, and rewrite USER.md with those facts removed. You do NOT touch SOUL.md at all.
-
-# THE ONE RULE
-
-For each piece of information in USER.md, ask: "Is this telling the agent HOW TO ACT, or is it telling the agent ABOUT THE WORLD?"
-
-- HOW TO ACT = stays in the file. Always. No exceptions.
-- ABOUT THE WORLD = goes to the vault.
-
-## What "HOW TO ACT" means (STAYS IN FILE):
-
-Anything that changes the agent's behavior on every turn:
-- Communication style ("be direct", "no corporate speak", "swearing is fine")
-- Formatting rules ("never use emdashes", "keep it concise")
-- Work approach ("just do it, don't ask permission", "don't hand-hold", "results over proposals")
-- Relationship dynamics ("we're friends, not assistant/user")
-- Scheduling constraints that affect availability (e.g., recurring appointments where owner is unavailable)
-- Timezone and availability ("Pacific Time", "night owl, late messages are normal")
-- Any "always do X" or "never do Y" instruction
-- Dark mode / UI preferences that affect output
-
-If you're unsure whether something is behavioral, KEEP IT IN THE FILE.
-
-## What "ABOUT THE WORLD" means (GOES TO VAULT):
-
-Facts that the agent only needs when the topic comes up:
-- Names of family members, their ages, jobs, vehicles
-- Biographical details (birthday, birthplace, where they grew up)
-- Business names, descriptions, websites, clients, history
-- Hobbies, interests, food preferences, camera preferences, music tastes
-- Vehicles (who drives what)
-- Pets (name, breed, age)
-- Extended family
-- Political and religious views
-- Any factual statement about a person, place, or thing
-
-## Processing USER.md
-
-Read the full USER.md at "${profilePath}". For every line, apply the one rule:
-- HOW TO ACT -> keep it in the rewritten USER.md
-- ABOUT THE WORLD -> extract it as a vault entry with vault_remember, remove from file
-
-The rewritten USER.md should keep ALL behavioral and operational instructions in the owner's original words. It's better to be too long than to lose a behavioral rule. Only remove factual reference information that now lives in the vault.
-
-## DO NOT TOUCH SOUL.md
-
-SOUL.md is the agent's personality file. Do not read it, do not modify it, do not extract from it. Leave it completely alone.
-
-## Vault Entry Rules
-
-- Use vault_remember for each extracted fact
-- Set type correctly: fact, relationship, event, note, etc.
-- "preference" type is ONLY for factual preferences like "prefers Leica cameras" or "likes iced black coffee". NOT for behavioral rules.
-- Mark definitionally stable facts as permanent: true (names, family, birth dates, business names, locations)
-- vault_search before saving to avoid duplicates
-- Do NOT vault anything that tells the agent how to behave
-
-## When Done
-
-Call complete_task with a summary of what you extracted and what you kept.`,
+Instructions:
+1. Read the entire profile
+2. For each piece of information, decide: does the agent need this to behave correctly on every turn regardless of topic? If yes, it stays. If no, it goes to the vault.
+3. Call vault_remember for each fact being moved to the vault. Use the correct type (fact, relationship, preference). Set permanent: true for things that are definitionally stable (names, family, businesses, locations, birth dates).
+4. Write the trimmed USER.md to "${profilePath}" using file_write. It should contain ONLY the behavioral and operational content. Do not summarize or reword the behavioral content. Keep the owner's original phrasing.
+5. Call complete_task when done.`,
       modelId,
       classification: 'apprentice',
       timeout: 3600,
