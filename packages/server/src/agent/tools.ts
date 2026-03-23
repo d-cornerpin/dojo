@@ -11,10 +11,10 @@ import { broadcast } from '../gateway/ws.js';
 import { memoryGrep, memoryDescribe, memoryExpand, memorySearch } from '../memory/retrieval.js';
 import { shouldIntercept, interceptLargeFile } from '../memory/large-files.js';
 import { checkPermission, getAgentPermissions } from './permissions.js';
-import { isPrimaryAgent, isPMAgent, getPrimaryAgentId } from '../config/platform.js';
+import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
 import { spawnAgent, terminateAgent, completeAgent } from './spawner.js';
 import { getAgentRuntime } from './runtime.js';
-import { sendIMessage, getDefaultSender, getApprovedSenders } from '../services/imessage-bridge.js';
+import { sendIMessage, getDefaultSender } from '../services/imessage-bridge.js';
 import {
   trackerCreateProject,
   trackerCreateTask,
@@ -1306,9 +1306,9 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
   }
 
   if (name === 'imessage_send') {
-    if (!isPrimaryAgent(agentId) && !isPMAgent(agentId)) {
-      auditLog(agentId, 'imessage_send', null, 'denied', 'imessage_send is restricted to primary and PM agents');
-      return { toolCallId: id, name, content: 'Permission denied: imessage_send is restricted', isError: true };
+    if (!isPrimaryAgent(agentId)) {
+      auditLog(agentId, 'imessage_send', null, 'denied', 'imessage_send is restricted to the primary agent only');
+      return { toolCallId: id, name, content: 'Permission denied: only the primary agent can send iMessages. Escalate to the primary agent instead.', isError: true };
     }
   }
 
@@ -1950,17 +1950,6 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
             break;
           }
           recipient = defaultSender;
-        }
-
-        // PM agent can only send to approved senders
-        if (isPMAgent(agentId)) {
-          const approved = getApprovedSenders();
-          if (!approved.includes(recipient)) {
-            auditLog(agentId, 'imessage_send', recipient, 'denied', 'PM agent can only send to approved senders');
-            content = `Permission denied: This agent can only send to approved senders. "${recipient}" is not on the approved list.`;
-            isError = true;
-            break;
-          }
         }
 
         sendIMessage(recipient, message);

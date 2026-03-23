@@ -8,7 +8,6 @@ import { broadcast } from '../gateway/ws.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';
 import { listTasks, getTask, getLastPoke, logPoke } from './schema.js';
 import { getAgentRuntime } from '../agent/runtime.js';
-import { sendAlert } from '../services/imessage-bridge.js';
 import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, isSetupCompleted, getOwnerName } from '../config/platform.js';
 import type { Message } from '@dojo/shared';
 
@@ -518,12 +517,9 @@ function runPokeCheck(): void {
       });
     });
 
-    // Alert owner via iMessage for escalations
-    if (pokeType === 'escalate_primary') {
-      const idleMinutes = Math.floor(idleSeconds / 60);
-      const primaryName = getPrimaryAgentName();
-      sendAlert(`Task "${task.title}" stalled — ${task.assignedTo} unresponsive after ${idleMinutes}m. ${primaryName} has been notified.`, 'warning');
-    }
+    // Escalations go to the primary agent (already sent above via agent bus).
+    // The primary agent decides whether to contact the owner — the PM never
+    // sends iMessages directly.
 
     // Log the poke
     logPoke(task.id, task.assignedTo, pokeNumber, pokeType);

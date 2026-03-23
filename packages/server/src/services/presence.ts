@@ -6,7 +6,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { sendIMessage, getDefaultSender, getIMBridgeStatus } from './imessage-bridge.js';
-import { isPrimaryAgent, isPMAgent, getPrimaryAgentName, getPMAgentName } from '../config/platform.js';
+import { isPrimaryAgent, getPrimaryAgentName } from '../config/platform.js';
 
 const logger = createLogger('presence');
 
@@ -87,8 +87,9 @@ export function maybeForwardToImessage(agentId: string, content: string): void {
   if (getPresence() !== 'away') return;
   if (!isImessageConfigured()) return;
 
-  // Only forward messages from the primary agent and PM agent
-  if (!isPrimaryAgent(agentId) && !isPMAgent(agentId)) return;
+  // Only forward messages from the primary agent — the PM escalates through
+  // the primary agent, never contacts the owner directly
+  if (!isPrimaryAgent(agentId)) return;
 
   // Don't forward empty or very short responses
   if (!content || content.trim().length < 10) return;
@@ -96,7 +97,7 @@ export function maybeForwardToImessage(agentId: string, content: string): void {
   // Don't forward system/internal messages
   if (content.startsWith('[System]') || content.startsWith('[Task Update]')) return;
 
-  const agentName = isPrimaryAgent(agentId) ? getPrimaryAgentName() : getPMAgentName();
+  const agentName = getPrimaryAgentName();
   const recipient = getDefaultSender();
   if (!recipient) return;
 
