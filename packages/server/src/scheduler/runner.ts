@@ -114,9 +114,9 @@ export async function checkScheduledTasks(): Promise<void> {
       assignedAgent = getPrimaryAgentId();
     }
 
-    // 3. Update task status
+    // 3. Update task status — set both schedule_status and main status
     db.prepare(`
-      UPDATE tasks SET schedule_status = 'running', last_run_at = ?, updated_at = datetime('now') WHERE id = ?
+      UPDATE tasks SET schedule_status = 'running', status = 'in_progress', last_run_at = ?, updated_at = datetime('now') WHERE id = ?
     `).run(now, taskId);
 
     // 4. Update run instance
