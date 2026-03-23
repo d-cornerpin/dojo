@@ -127,7 +127,8 @@ export async function checkScheduledTasks(): Promise<void> {
     // 5. Trigger execution
     const taskTitle = taskRow.title as string;
     const taskDesc = taskRow.description as string | null;
-    const message = `[Scheduled Task — Run #${runNumber}] ${taskTitle}${taskDesc ? '\n' + taskDesc : ''}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nWhen you finish, call tracker_update_status with task_id="${taskId}" and status="complete".`;
+    const totalRuns = taskRow.repeat_end_value ? ` of ${taskRow.repeat_end_value}` : '';
+    const message = `[Scheduled Task — Run #${runNumber}${totalRuns}] ${taskTitle}${taskDesc ? '\n' + taskDesc : ''}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nIMPORTANT: Execute this task ONCE for this run only. Do NOT loop or repeat internally — the scheduler handles repetition. When this single run is finished, call tracker_update_status with task_id="${taskId}" and status="complete".`;
 
     // Inject as user message and trigger runtime
     const msgId = uuidv4();

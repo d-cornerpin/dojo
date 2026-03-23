@@ -581,7 +581,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'tracker_update_status',
-    description: 'Update the status of a task in the tracker. Call this when starting work (in_progress), finishing (complete), getting stuck (blocked), or failing (failed). Always update task status as you work — don\'t leave tasks stale.',
+    description: 'Update the status of a task in the tracker. Call this when starting work (in_progress), finishing (complete), getting stuck (blocked), or failing (failed). Always update task status as you work — don\'t leave tasks stale. For recurring tasks: if you completed all iterations in a single run, set complete_all_runs=true to stop the schedule entirely.',
     input_schema: {
       type: 'object',
       properties: {
@@ -597,6 +597,10 @@ export const toolDefinitions: ToolDefinition[] = [
         notes: {
           type: 'string',
           description: 'Optional notes about the status change',
+        },
+        complete_all_runs: {
+          type: 'boolean',
+          description: 'For recurring tasks only: if true, marks ALL remaining runs as complete and stops the schedule. Use when you handled all iterations in a single run.',
         },
       },
       required: ['task_id', 'status'],
@@ -670,11 +674,12 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Schedule Tools (Phase 6) ──
   {
     name: 'tracker_pause_schedule',
-    description: 'Pause a recurring task\'s schedule. It won\'t run again until resumed.',
+    description: 'Pause a recurring task\'s schedule. If the work is already done, set mark_complete=true to stop the schedule AND mark the task as complete (terminal state). Without mark_complete, the task stays in on_deck.',
     input_schema: {
       type: 'object',
       properties: {
         task_id: { type: 'string', description: 'The task ID to pause' },
+        mark_complete: { type: 'boolean', description: 'If true, also mark the task as complete (use when the work is already done and remaining runs are unnecessary)' },
       },
       required: ['task_id'],
     },
@@ -1673,7 +1678,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
       // ── Schedule Tools (Phase 6) ──
       case 'tracker_pause_schedule':
-        content = trackerPauseSchedule(agentId, { taskId: args.task_id as string });
+        content = trackerPauseSchedule(agentId, { taskId: args.task_id as string, mark_complete: args.mark_complete as boolean | undefined });
         isError = content.startsWith('Error');
         break;
       case 'tracker_resume_schedule':
@@ -1790,6 +1795,24 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           }
           if (terminated.length > 0) {
             logger.info('Terminated group members before deletion', { groupId, terminated });
+          }
+        }
+
+        // Auto-complete any tasks still assigned to terminated members or the group
+        // This prevents orphaned tasks stuck in on_deck/in_progress after cleanup
+        if (args.terminate_members) {
+          const groupDb2 = getDb();
+          const orphanedTasks = groupDb2.prepare(`
+            SELECT id, title, status, schedule_status FROM tasks
+            WHERE (assigned_to_group = ? OR assigned_to IN (SELECT id FROM agents WHERE group_id = ? AND status = 'terminated'))
+              AND status NOT IN ('complete', 'fallen')
+          `).all(groupId, groupId) as Array<{ id: string; title: string; status: string; schedule_status: string }>;
+          for (const t of orphanedTasks) {
+            groupDb2.prepare("UPDATE tasks SET status = 'complete', schedule_status = CASE WHEN schedule_status = 'unscheduled' THEN 'unscheduled' ELSE 'completed' END, is_paused = 1, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(t.id);
+            groupDb2.prepare("UPDATE task_runs SET status = 'complete', completed_at = datetime('now'), result_summary = 'Auto-completed: group deleted' WHERE task_id = ? AND status = 'running'").run(t.id);
+          }
+          if (orphanedTasks.length > 0) {
+            logger.info('Auto-completed orphaned tasks during group deletion', { groupId, count: orphanedTasks.length });
           }
         }
 

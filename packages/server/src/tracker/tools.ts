@@ -288,13 +288,27 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     if (assignedTo) updates.assignedTo = assignedTo;
     if (priority) updates.priority = priority;
 
-    // For recurring tasks being marked complete: complete the current run,
-    // but DON'T permanently set the task to complete — let onTaskRunComplete handle it
+    // For recurring tasks being marked complete
     if (status === 'complete' && isScheduledRecurring) {
       const notes = args.notes as string | undefined;
-      // Complete the run (this will set next_run_at and put task back to 'waiting' if runs remain)
+      const completeAllRuns = (args.complete_all_runs as boolean) ?? false;
+
+      if (completeAllRuns) {
+        // Agent says ALL work is done — stop the entire repeat cycle immediately
+        // This handles the case where an agent completed multiple iterations internally
+        db.prepare("UPDATE tasks SET status = 'complete', schedule_status = 'completed', is_paused = 1, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(taskId);
+        db.prepare("UPDATE task_runs SET status = 'complete', completed_at = datetime('now'), result_summary = ? WHERE task_id = ? AND status = 'running'").run(notes ?? 'All runs completed by agent', taskId);
+        const updatedTask = getTask(taskId)!;
+        notifyPrimaryAgent(
+          `Recurring task "${updatedTask.title}" fully completed by ${updatedTask.assignedToName ?? updatedTask.assignedTo ?? agentId} (all runs done).${notes ? ` Notes: ${notes}` : ''}`,
+          agentId,
+        );
+        checkProjectCompletion(updatedTask.projectId, agentId);
+        return `Recurring task "${updatedTask.title}" fully completed. Schedule stopped. All runs marked done.`;
+      }
+
+      // Normal path: complete the current run, let onTaskRunComplete decide about next run
       onTaskRunComplete(taskId, 'complete', notes ?? '');
-      // Re-read the task after onTaskRunComplete modified it
       const updatedTask = getTask(taskId)!;
 
       notifyPrimaryAgent(
@@ -303,7 +317,6 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       );
 
       if (!updatedTask.nextRunAt) {
-        // No more runs — now mark task truly complete
         updateTask(taskId, { status: 'complete' });
         checkProjectCompletion(updatedTask.projectId, agentId);
       }
@@ -583,15 +596,25 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
 export function trackerPauseSchedule(agentId: string, args: Record<string, unknown>): string {
   const taskId = args.taskId as string;
   if (!taskId) return 'Error: taskId is required';
+  const markComplete = (args.mark_complete as boolean) ?? false;
 
   const db = getDb();
-  const task = db.prepare('SELECT id, title, schedule_status FROM tasks WHERE id = ?').get(taskId) as { id: string; title: string; schedule_status: string } | undefined;
+  const task = db.prepare('SELECT id, title, schedule_status, project_id FROM tasks WHERE id = ?').get(taskId) as { id: string; title: string; schedule_status: string; project_id: string } | undefined;
   if (!task) return `Error: Task not found: ${taskId}`;
   if (task.schedule_status === 'unscheduled') return `Error: Task "${task.title}" is not scheduled`;
 
+  if (markComplete) {
+    // Stop the schedule AND mark the task as complete (terminal state)
+    db.prepare("UPDATE tasks SET is_paused = 1, schedule_status = 'completed', status = 'complete', completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(taskId);
+    db.prepare("UPDATE task_runs SET status = 'complete', completed_at = datetime('now'), result_summary = 'Schedule stopped and marked complete' WHERE task_id = ? AND status = 'running'").run(taskId);
+    logger.info('Schedule paused and task marked complete', { taskId }, agentId);
+    checkProjectCompletion(task.project_id, agentId);
+    return `Schedule stopped and task "${task.title}" marked complete.`;
+  }
+
   db.prepare("UPDATE tasks SET is_paused = 1, schedule_status = 'paused', updated_at = datetime('now') WHERE id = ?").run(taskId);
   logger.info('Schedule paused', { taskId }, agentId);
-  return `Schedule paused for "${task.title}". It won't run again until resumed.`;
+  return `Schedule paused for "${task.title}". It won't run again until resumed. NOTE: Task is still in "on_deck" status — if the work is already done, use mark_complete: true to finalize it.`;
 }
 
 // ── trackerResumeSchedule ──
