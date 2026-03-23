@@ -35,6 +35,9 @@ export async function checkScheduledTasks(): Promise<void> {
   const db = getDb();
   const now = new Date().toISOString();
 
+  // ── Orphan cleanup: tasks stuck in 'running' whose assigned agent is terminated ──
+  cleanupOrphanedRuns();
+
   const dueTasks = db.prepare(`
     SELECT * FROM tasks
     WHERE next_run_at <= ?
@@ -230,4 +233,41 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   } catch { /* ignore */ }
 
   logger.info('Scheduler: run completed', { taskId, runId, status, nextRun });
+}
+
+// ── Orphan cleanup ──
+
+/**
+ * Find task_runs stuck in 'running' whose assigned agent is terminated.
+ * Auto-complete them so the task can move on (or finish if it was the last run).
+ */
+function cleanupOrphanedRuns(): void {
+  const db = getDb();
+
+  const orphans = db.prepare(`
+    SELECT tr.id as run_id, tr.task_id, tr.assigned_to
+    FROM task_runs tr
+    LEFT JOIN agents a ON a.id = tr.assigned_to
+    WHERE tr.status = 'running'
+      AND (a.status = 'terminated' OR a.id IS NULL)
+  `).all() as Array<{ run_id: string; task_id: string; assigned_to: string | null }>;
+
+  if (orphans.length === 0) return;
+
+  logger.info(`Scheduler: cleaning up ${orphans.length} orphaned run(s)`);
+
+  for (const orphan of orphans) {
+    // Complete the orphaned run
+    db.prepare(`
+      UPDATE task_runs SET status = 'complete', completed_at = datetime('now'), result_summary = 'Auto-completed: assigned agent was terminated' WHERE id = ?
+    `).run(orphan.run_id);
+
+    // Trigger the normal completion flow so the task advances or finishes
+    onTaskRunComplete(orphan.task_id, 'complete', 'Auto-completed: assigned agent was terminated').catch(err => {
+      logger.error('Scheduler: orphan cleanup failed for task', {
+        taskId: orphan.task_id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
 }

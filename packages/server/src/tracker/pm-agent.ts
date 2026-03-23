@@ -111,7 +111,7 @@ export function ensurePMAgentRunning(): void {
     // Ensure permissions are up to date on every boot
     const syncToolsPolicy = JSON.stringify({
       allow: [
-        'tracker_list_active', 'tracker_get_status', 'tracker_update_status', 'tracker_reassign_task',
+        'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
         'tracker_add_notes', 'tracker_pause_schedule', 'tracker_resume_schedule',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups', 'get_current_time',
       ],
@@ -145,7 +145,7 @@ export function ensurePMAgentRunning(): void {
     });
     const reactivateToolsPolicy = JSON.stringify({
       allow: [
-        'tracker_list_active', 'tracker_get_status', 'tracker_update_status', 'tracker_reassign_task',
+        'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
         'tracker_add_notes', 'tracker_pause_schedule', 'tracker_resume_schedule',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups', 'get_current_time',
       ],
@@ -182,7 +182,7 @@ export function ensurePMAgentRunning(): void {
     // Allow only the tools the PM needs
     const pmToolsPolicy = JSON.stringify({
       allow: [
-        'tracker_list_active', 'tracker_get_status', 'tracker_update_status', 'tracker_reassign_task',
+        'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
         'tracker_add_notes', 'tracker_pause_schedule', 'tracker_resume_schedule',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups', 'get_current_time',
       ],
@@ -336,20 +336,26 @@ IMPORTANT — Scheduled tasks:
 - Tasks marked [SCHEDULED — waiting for ...] are NORMAL. They are waiting for their scheduled fire time. Do NOT flag them as stalled, do NOT poke their agents, do NOT reassign them.
 - Only flag a scheduled task if it says [OVERDUE] — meaning its run time has passed and it hasn't executed.
 
+CRITICAL RULES:
+- NEVER reassign tasks yourself. If a task is orphaned (assigned to a terminated agent), notify ${primaryName} via send_to_agent and let THEM decide what to do. You are a PM, not an operations commander.
+- NEVER assign ANY task to the Trainer agent. The Trainer ONLY handles technique creation and training. No exceptions.
+- NEVER reassign scheduled tasks that are waiting for their fire time. Those are normal.
+
 Review the tasks above. Look for:
-1. Tasks assigned to terminated agents that should be reassigned
+1. Tasks assigned to terminated agents — notify ${primaryName} about these
 2. NON-scheduled tasks stuck in on_deck with no recent activity (ignore scheduled tasks waiting for fire time)
 3. Blocked tasks that need attention
 4. OVERDUE scheduled tasks that missed their run time
 5. Completed upstream tasks where downstream tasks should now start
 
-If you find issues, use your tools to fix them:
-- tracker_update_status to change task status
-- tracker_reassign_task to move tasks to available agents
-- send_to_agent to poke agents or notify ${primaryName}
+If you find issues:
+- tracker_update_status to change task status (e.g., mark fallen tasks)
+- send_to_agent to notify ${primaryName} about orphaned or stuck tasks — ${primaryName} decides reassignment
+- send_to_agent to poke idle agents who should be working
 
-If everything looks fine, just say "All clear" in chat — no further action needed.
-If something needs ${primaryName}'s attention, use send_to_agent to notify them. They will decide whether to contact the owner.`;
+Do NOT use tracker_reassign_task — that is ${primaryName}'s decision, not yours.
+
+If everything looks fine, just say "All clear" in chat — no further action needed.`;
 
   // Inject into Samantha's conversation and trigger her runtime
   const msgId = uuidv4();
