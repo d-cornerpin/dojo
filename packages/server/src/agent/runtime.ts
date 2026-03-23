@@ -85,16 +85,24 @@ class AgentRuntime {
       activeRuns.delete(agentId);
 
       // If a message arrived while we were busy, re-trigger the loop
+      // BUT only if there's actually a new user/tool message to process
+      // (prevents the agent from repeating itself when woken up with no new input)
       if (pendingWakeups.has(agentId)) {
         pendingWakeups.delete(agentId);
-        logger.info('Processing queued wakeup', { agentId }, agentId);
-        // Use setImmediate-style async to avoid stack buildup
-        this.handleMessage(agentId, '').catch(err => {
-          logger.error('Queued wakeup failed', {
-            agentId,
-            error: err instanceof Error ? err.message : String(err),
-          }, agentId);
-        });
+        const lastMsg = getDb().prepare(
+          'SELECT role FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
+        ).get(agentId) as { role: string } | undefined;
+        if (lastMsg && lastMsg.role !== 'assistant') {
+          logger.info('Processing queued wakeup (new user/tool message found)', { agentId }, agentId);
+          this.handleMessage(agentId, '').catch(err => {
+            logger.error('Queued wakeup failed', {
+              agentId,
+              error: err instanceof Error ? err.message : String(err),
+            }, agentId);
+          });
+        } else {
+          logger.debug('Skipping queued wakeup (last message is assistant, nothing new to process)', { agentId }, agentId);
+        }
       }
     }
   }
