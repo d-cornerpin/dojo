@@ -211,9 +211,17 @@ function generateToolsGuidance(agentId: string): string {
     lines.push('');
   }
 
-  // Vault awareness — for ALL agents with vault tools
+  // Vault awareness — for ALL agents with vault tools EXCEPT the Dreamer
+  // (the Dreamer has its own specific vault instructions in its system prompt
+  // and the generic "save everything instinctively" block would conflict)
   const hasVault = agentTools.some(t => t.name.startsWith('vault_'));
-  if (hasVault) {
+  const isDreamer = (() => {
+    try {
+      const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+      return agentRow?.name === 'Dreamer';
+    } catch { return false; }
+  })();
+  if (hasVault && !isDreamer) {
     lines.push(`## Your Long-Term Memory (The Vault)
 
 You have a persistent memory vault shared by every agent in the dojo. Your conversation window is short-term memory -- it fades when compaction runs. The vault is permanent.
