@@ -189,8 +189,9 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
 
   // Create agent record
   const agentId = uuidv4();
-  const timeoutSeconds = timeout ?? spawnConfig.defaultTimeout;
-  const timeoutAt = new Date(Date.now() + timeoutSeconds * 1000).toISOString().replace('T', ' ').replace('Z', '');
+  // Ronin agents don't get a timeout -- they persist until the user dismisses them
+  const timeoutSeconds = classification === 'ronin' ? null : (timeout ?? spawnConfig.defaultTimeout);
+  const timeoutAt = timeoutSeconds ? new Date(Date.now() + timeoutSeconds * 1000).toISOString().replace('T', ' ').replace('Z', '') : null;
 
   const permissionsJson = JSON.stringify(permissions ?? getAgentPermissions(parentId));
   const toolsPolicyJson = JSON.stringify(toolsPolicy ?? {});
@@ -264,20 +265,22 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     data: agentData,
   });
 
-  // Set timeout timer (persist agents get their timeout cleared instead of terminated)
-  if (persist) {
-    const timer = setTimeout(() => {
-      logger.info('Persist agent timeout reached — clearing timeout, agent stays alive', { agentId, name, timeout: timeoutSeconds }, agentId);
-      db.prepare(`UPDATE agents SET timeout_at = NULL, updated_at = datetime('now') WHERE id = ?`).run(agentId);
-      timeoutTimers.delete(agentId);
-    }, timeoutSeconds * 1000);
-    timeoutTimers.set(agentId, timer);
-  } else {
-    const timer = setTimeout(() => {
-      logger.warn('Agent timed out', { agentId, name, timeout: timeoutSeconds }, agentId);
-      terminateAgent(agentId, 'Timeout reached');
-    }, timeoutSeconds * 1000);
-    timeoutTimers.set(agentId, timer);
+  // Set timeout timer -- ronin agents never timeout, persist agents get cleared, apprentices get terminated
+  if (timeoutSeconds && classification !== 'ronin') {
+    if (persist) {
+      const timer = setTimeout(() => {
+        logger.info('Persist agent timeout reached -- clearing timeout, agent stays alive', { agentId, name, timeout: timeoutSeconds }, agentId);
+        db.prepare(`UPDATE agents SET timeout_at = NULL, updated_at = datetime('now') WHERE id = ?`).run(agentId);
+        timeoutTimers.delete(agentId);
+      }, timeoutSeconds * 1000);
+      timeoutTimers.set(agentId, timer);
+    } else {
+      const timer = setTimeout(() => {
+        logger.warn('Agent timed out', { agentId, name, timeout: timeoutSeconds }, agentId);
+        terminateAgent(agentId, 'Timeout reached');
+      }, timeoutSeconds * 1000);
+      timeoutTimers.set(agentId, timer);
+    }
   }
 
   // Start the agent runtime with an initial task message
