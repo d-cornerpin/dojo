@@ -342,24 +342,16 @@ export async function runFirstRunProfileBootstrap(): Promise<{ dreamerId: string
   const path = await import('node:path');
   const os = await import('node:os');
   const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
-  const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
 
   let profileContent = '';
-  let soulContent = '';
   try { profileContent = fs.readFileSync(profilePath, 'utf-8'); } catch { /* ok */ }
-  try { soulContent = fs.readFileSync(soulPath, 'utf-8'); } catch { /* ok */ }
 
-  if (profileContent.trim().length < 50 && soulContent.trim().length < 50) {
-    logger.info('USER.md and SOUL.md too short, skipping first-run profile bootstrap');
+  if (profileContent.trim().length < 50) {
+    logger.info('USER.md too short, skipping first-run profile bootstrap');
     return { dreamerId: null };
   }
 
-  // Get owner name and primary agent name for context
   const db = getDb();
-  const ownerRow = db.prepare("SELECT value FROM config WHERE key = 'owner_name'").get() as { value: string } | undefined;
-  const ownerName = ownerRow?.value ?? 'the owner';
-  const agentNameRow = db.prepare("SELECT value FROM config WHERE key = 'primary_agent_name'").get() as { value: string } | undefined;
-  const agentName = agentNameRow?.value ?? 'the primary agent';
 
   logger.info('Spawning first-run Dreamer to bootstrap profile into vault');
 
@@ -371,11 +363,13 @@ export async function runFirstRunProfileBootstrap(): Promise<{ dreamerId: string
 
 # Your Mission (First-Run Bootstrap)
 
-This is the dojo's very first dream. The owner just set up the dojo. You have two files to process. Both files get sent to the agent on EVERY single turn, so every token counts. Your job is to move reference facts into the vault (where they're retrieved only when relevant) while keeping operational instructions and personality in the files (where the agent needs them every turn).
+This is the dojo's very first dream. The owner just set up the dojo. You have ONE file to process: USER.md (the owner's profile). This file gets sent to the agent on every turn.
+
+Your job is to READ the profile, extract reference facts into the vault, and rewrite USER.md with those facts removed. You do NOT touch SOUL.md at all.
 
 # THE ONE RULE
 
-For each piece of information, ask: "Is this telling the agent HOW TO ACT, or is it telling the agent ABOUT THE WORLD?"
+For each piece of information in USER.md, ask: "Is this telling the agent HOW TO ACT, or is it telling the agent ABOUT THE WORLD?"
 
 - HOW TO ACT = stays in the file. Always. No exceptions.
 - ABOUT THE WORLD = goes to the vault.
@@ -386,15 +380,13 @@ Anything that changes the agent's behavior on every turn:
 - Communication style ("be direct", "no corporate speak", "swearing is fine")
 - Formatting rules ("never use emdashes", "keep it concise")
 - Work approach ("just do it, don't ask permission", "don't hand-hold", "results over proposals")
-- Relationship dynamics ("we're friends, not assistant/user", "push back once then respect his call")
-- Scheduling constraints ("Crystal's chemo is every other Friday, be low-maintenance during those times")
+- Relationship dynamics ("we're friends, not assistant/user")
+- Scheduling constraints that affect availability (e.g., recurring appointments where owner is unavailable)
 - Timezone and availability ("Pacific Time", "night owl, late messages are normal")
-- Identity statements ("you are the owner's right hand man")
-- Management rules ("respect the PM's prods", "don't over-provision sub-agents")
-- System rules ("be protective of the machine", "never rm -rf without confirmation")
 - Any "always do X" or "never do Y" instruction
+- Dark mode / UI preferences that affect output
 
-If you're unsure whether something is behavioral, KEEP IT IN THE FILE. An extra 20 tokens in the system prompt is far cheaper than losing a behavioral rule.
+If you're unsure whether something is behavioral, KEEP IT IN THE FILE.
 
 ## What "ABOUT THE WORLD" means (GOES TO VAULT):
 
@@ -412,37 +404,27 @@ Facts that the agent only needs when the topic comes up:
 ## Processing USER.md
 
 Read the full USER.md at "${profilePath}". For every line, apply the one rule:
-- HOW TO ACT -> rewrite it concisely and keep it in the trimmed USER.md
-- ABOUT THE WORLD -> extract it as a vault entry with vault_remember
+- HOW TO ACT -> keep it in the rewritten USER.md
+- ABOUT THE WORLD -> extract it as a vault entry with vault_remember, remove from file
 
-The trimmed USER.md should keep ALL behavioral and operational instructions. Don't worry about length. It's better to be too long than to lose a behavioral rule. Remove only factual reference information (biographical details, family details, business descriptions, vehicle info, hobbies, interests) which go to the vault.
+The rewritten USER.md should keep ALL behavioral and operational instructions in the owner's original words. It's better to be too long than to lose a behavioral rule. Only remove factual reference information that now lives in the vault.
 
-## Processing SOUL.md
+## DO NOT TOUCH SOUL.md
 
-Read the full SOUL.md at "${soulPath}". This defines the agent's personality and voice. DO NOT flatten, simplify, or make it generic. The owner wrote it with specific energy and attitude. Preserve that.
-
-Apply the same rule:
-- HOW TO ACT (personality, voice, behavioral rules, relationship dynamics, management rules) -> stays
-- ABOUT THE WORLD (any factual references to the owner's life, businesses, family embedded in the personality text) -> extract to vault, remove from file
-
-The SOUL.md should still sound exactly like the owner wrote it after trimming. Only factual content gets removed, not voice or personality.
+SOUL.md is the agent's personality file. Do not read it, do not modify it, do not extract from it. Leave it completely alone.
 
 ## Vault Entry Rules
 
 - Use vault_remember for each extracted fact
-- Set type correctly: fact, preference, relationship, event, etc.
-- "preference" type is ONLY for factual preferences like "prefers Leica cameras for stills" or "likes iced black coffee". It is NOT for behavioral rules like "prefers concise communication" which stay in the file.
-- Mark definitionally stable facts as permanent: true (names, family relationships, birth dates, business names, locations)
-- Use vault_search before saving to avoid duplicates
-- Do NOT vault behavioral instructions under any circumstances
+- Set type correctly: fact, relationship, event, note, etc.
+- "preference" type is ONLY for factual preferences like "prefers Leica cameras" or "likes iced black coffee". NOT for behavioral rules.
+- Mark definitionally stable facts as permanent: true (names, family, birth dates, business names, locations)
+- vault_search before saving to avoid duplicates
+- Do NOT vault anything that tells the agent how to behave
 
 ## When Done
 
-Call complete_task with a summary of:
-- How many facts extracted to vault
-- How many tokens the trimmed USER.md is
-- How many tokens the trimmed SOUL.md is
-- Any facts you chose to keep in the file and why`,
+Call complete_task with a summary of what you extracted and what you kept.`,
       modelId,
       classification: 'apprentice',
       timeout: 3600,
@@ -459,8 +441,8 @@ Call complete_task with a summary of:
         deny: [],
       },
       permissions: {
-        file_read: [profilePath, soulPath],
-        file_write: [profilePath, soulPath],
+        file_read: [profilePath],
+        file_write: [profilePath],
         file_delete: 'none',
         exec_allow: [],
         exec_deny: ['*'],
@@ -470,17 +452,13 @@ Call complete_task with a summary of:
         can_assign_permissions: false,
         system_control: [],
       },
-      initialMessage: `Here are the two files to process. Extract long-term facts into the vault, then trim both files down to essentials.
+      initialMessage: `Here is the owner's profile. Extract reference facts into the vault, then rewrite the file with those facts removed. Keep all behavioral and operational instructions.
 
 --- USER PROFILE (${profilePath}) ---
 ${profileContent}
 --- END USER PROFILE ---
 
---- AGENT PERSONALITY (${soulPath}) ---
-${soulContent}
---- END AGENT PERSONALITY ---
-
-Process USER.md first (extract facts, rewrite trimmed), then SOUL.md (extract case-by-case stuff, simplify personality). Use vault_remember for each fact, then file_write for each trimmed file.`,
+Use vault_remember for each fact extracted, then file_write to save the trimmed USER.md. Do NOT touch SOUL.md.`,
     });
 
     logger.info('First-run Dreamer spawned for profile bootstrap', { dreamerId: result.agentId });
