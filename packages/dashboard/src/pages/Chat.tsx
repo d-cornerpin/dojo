@@ -338,6 +338,7 @@ export const Chat = () => {
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last && last.isStreaming && last.id === e.messageId) {
+          // Append chunk to existing streaming message
           const updated = { ...last, content: last.content + e.content };
           if (e.done) {
             updated.isStreaming = false;
@@ -348,7 +349,11 @@ export const Chat = () => {
             setIsWorking(false);
           }
           return [...prev.slice(0, -1), updated];
+        } else if (prev.some((m) => m.id === e.messageId)) {
+          // Already have this message (finalized) -- skip duplicate from reconnect
+          return prev;
         } else {
+          // New streaming message
           return [
             ...prev,
             {

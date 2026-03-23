@@ -286,6 +286,9 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             setIsWorking(false);
           }
           return [...prev.slice(0, -1), updated];
+        } else if (prev.some((m) => m.id === e.messageId)) {
+          // Already have this message -- skip duplicate from reconnect
+          return prev;
         } else {
           return [
             ...prev,
