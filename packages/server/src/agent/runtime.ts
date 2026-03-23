@@ -89,23 +89,26 @@ class AgentRuntime {
 
       // If a message arrived while we were busy, re-trigger the loop
       // BUT only if there's a genuinely new user message we haven't processed yet
+      // Delay slightly to batch rapid-fire messages from multiple sub-agents
       if (pendingWakeups.has(agentId)) {
         pendingWakeups.delete(agentId);
-        const lastUserMsg = getDb().prepare(
-          "SELECT id, role FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1"
-        ).get(agentId) as { id: string; role: string } | undefined;
-        const lastProcessed = lastProcessedMessageId.get(agentId);
-        if (lastUserMsg && lastUserMsg.id !== lastProcessed) {
-          logger.info('Processing queued wakeup (new user message found)', { agentId, msgId: lastUserMsg.id }, agentId);
-          this.handleMessage(agentId, '').catch(err => {
-            logger.error('Queued wakeup failed', {
-              agentId,
-              error: err instanceof Error ? err.message : String(err),
-            }, agentId);
-          });
-        } else {
-          logger.debug('Skipping queued wakeup (no new user messages since last run)', { agentId }, agentId);
-        }
+        setTimeout(() => {
+          const lastUserMsg = getDb().prepare(
+            "SELECT id, role FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1"
+          ).get(agentId) as { id: string; role: string } | undefined;
+          const lastProcessed = lastProcessedMessageId.get(agentId);
+          if (lastUserMsg && lastUserMsg.id !== lastProcessed) {
+            logger.info('Processing queued wakeup (new user message found)', { agentId, msgId: lastUserMsg.id }, agentId);
+            this.handleMessage(agentId, '').catch(err => {
+              logger.error('Queued wakeup failed', {
+                agentId,
+                error: err instanceof Error ? err.message : String(err),
+              }, agentId);
+            });
+          } else {
+            logger.debug('Skipping queued wakeup (no new user messages since last run)', { agentId }, agentId);
+          }
+        }, 2000); // 2 second delay to batch rapid messages
       }
     }
   }
@@ -252,6 +255,19 @@ class AgentRuntime {
             content: chunk,
             done: false,
           });
+        }
+      }
+
+      // Dedup check: if the model produced the exact same text as the last assistant message,
+      // skip persisting it. This catches cases where multiple triggers cause the agent to
+      // generate the same response repeatedly.
+      if (result.content && result.toolCalls.length === 0) {
+        const lastAssistant = db.prepare(
+          "SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' ORDER BY created_at DESC, rowid DESC LIMIT 1"
+        ).get(agentId) as { content: string } | undefined;
+        if (lastAssistant && lastAssistant.content === result.content) {
+          logger.warn('Skipping duplicate assistant response (identical to last message)', { agentId }, agentId);
+          break;
         }
       }
 
