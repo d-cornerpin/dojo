@@ -19,9 +19,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ── Poke Thresholds (in seconds) ──
 
 const POKE_THRESHOLDS: Record<string, { first: number; second: number; escalate: number }> = {
-  high:   { first: 60,   second: 180,  escalate: 600 },
-  normal: { first: 120,  second: 300,  escalate: 900 },
-  low:    { first: 300,  second: 600,  escalate: 1200 },
+  high:   { first: 180,  second: 600,   escalate: 1200 },
+  normal: { first: 300,  second: 900,   escalate: 1800 },
+  low:    { first: 600,  second: 1200,  escalate: 2400 },
 };
 
 const POKE_INTERVAL_MS = 60_000; // 60 seconds
@@ -283,81 +283,82 @@ async function runPMReview(): Promise<void> {
   const pmAgent = db.prepare('SELECT id, model_id, status FROM agents WHERE id = ?').get(pmId) as { id: string; model_id: string | null; status: string } | undefined;
   if (!pmAgent || !pmAgent.model_id || pmAgent.status === 'terminated') return;
 
-  // Gather the full tracker state
+  // ── Engine-level checks (fast, deterministic, no LLM needed) ──
   const allTasks = listTasks({});
   const activeTasks = allTasks.filter(t => !['complete', 'fallen'].includes(t.status));
 
-  // Don't run if there's nothing to monitor
   if (activeTasks.length === 0) return;
 
   lastLLMReviewAt = now;
 
-  // Get agent statuses
   const agents = db.prepare(`
     SELECT id, name, status, classification FROM agents WHERE status != 'terminated'
   `).all() as Array<{ id: string; name: string; status: string; classification: string }>;
 
-  // Build situation report with scheduled task awareness
-  const now2 = new Date();
-  const taskLines = allTasks.map(t => {
-    const agentStatus = t.assignedTo
-      ? (agents.find(a => a.id === t.assignedTo)?.status ?? 'UNKNOWN')
-      : 'unassigned';
+  const issues: string[] = [];
+  const nowDate = new Date();
 
-    // Label scheduled tasks clearly so the PM doesn't flag them as stalled
-    let schedLabel = '';
-    if (t.scheduledStart) {
-      const scheduledTime = new Date(t.scheduledStart);
-      const nextRun = t.nextRunAt ? new Date(t.nextRunAt) : null;
-      if (nextRun && nextRun > now2) {
-        schedLabel = ` [SCHEDULED — waiting for ${t.nextRunAt}, do NOT flag as stalled]`;
-      } else if (nextRun && nextRun <= now2) {
-        schedLabel = ` [OVERDUE — was supposed to run at ${t.nextRunAt}, may need attention]`;
-      } else if (scheduledTime > now2) {
-        schedLabel = ` [SCHEDULED — first run at ${t.scheduledStart}, do NOT flag as stalled]`;
+  for (const task of activeTasks) {
+    // 1. Orphaned tasks: assigned to terminated agents
+    if (task.assignedTo) {
+      const agent = agents.find(a => a.id === task.assignedTo);
+      if (!agent) {
+        // Agent is terminated or doesn't exist
+        issues.push(`ORPHANED: "${task.title}" is assigned to a terminated agent. Notify ${primaryName}.`);
       }
-      schedLabel += ` | runs: ${t.runCount}${t.repeatInterval ? `, repeats every ${t.repeatInterval} ${t.repeatUnit}` : ''}`;
     }
 
-    return `- [${t.status.toUpperCase()}] "${t.title}" (${t.id}) → ${t.assignedToName ?? t.assignedTo ?? 'unassigned'} (agent ${agentStatus})${schedLabel}${t.notes ? ' | notes: ' + t.notes.split('\n').pop() : ''}`;
-  }).join('\n');
+    // 2. Overdue scheduled tasks
+    if (task.nextRunAt) {
+      const nextRunTime = new Date(task.nextRunAt.includes('Z') ? task.nextRunAt : task.nextRunAt + 'Z');
+      if (nextRunTime < nowDate && task.scheduleStatus === 'waiting') {
+        const overdueMin = Math.floor((nowDate.getTime() - nextRunTime.getTime()) / 60000);
+        if (overdueMin > 5) { // Give 5 min grace period
+          issues.push(`OVERDUE: "${task.title}" was due ${overdueMin} minutes ago but hasn't fired.`);
+        }
+      }
+    }
 
-  const agentLines = agents.map(a => `- ${a.name} (${a.id}): ${a.status}`).join('\n');
+    // 3. Blocked tasks sitting too long
+    if (task.status === 'blocked') {
+      const updatedTime = new Date(task.updatedAt.includes('Z') ? task.updatedAt : task.updatedAt + 'Z');
+      const blockedMin = Math.floor((nowDate.getTime() - updatedTime.getTime()) / 60000);
+      if (blockedMin > 30) {
+        issues.push(`BLOCKED: "${task.title}" has been blocked for ${blockedMin} minutes. May need ${primaryName}'s attention.`);
+      }
+    }
 
-  const situationReport = `TRACKER STATUS REVIEW — ${now2.toLocaleString()}
+    // 4. Non-scheduled tasks stuck in on_deck with no activity
+    if (task.status === 'on_deck' && !task.scheduledStart && task.assignedTo) {
+      const updatedTime = new Date(task.updatedAt.includes('Z') ? task.updatedAt : task.updatedAt + 'Z');
+      const staleMin = Math.floor((nowDate.getTime() - updatedTime.getTime()) / 60000);
+      if (staleMin > 15) {
+        const agentName = task.assignedToName ?? task.assignedTo;
+        issues.push(`STALE: "${task.title}" has been on_deck for ${staleMin} minutes, assigned to ${agentName} but not started.`);
+      }
+    }
+  }
 
-TASKS:
-${taskLines || '(no tasks)'}
+  // If no issues found, skip LLM entirely -- just log "all clear"
+  if (issues.length === 0) {
+    logger.info('PM review: all clear, no issues found', { activeTasks: activeTasks.length });
+    return;
+  }
 
-AGENTS:
-${agentLines}
+  // Only call the LLM when there are actual issues to act on
+  // Keep the prompt MINIMAL for a small model
+  const situationReport = `Issues found in tracker review:
 
-IMPORTANT — Scheduled tasks:
-- Tasks marked [SCHEDULED — waiting for ...] are NORMAL. They are waiting for their scheduled fire time. Do NOT flag them as stalled, do NOT poke their agents, do NOT reassign them.
-- Only flag a scheduled task if it says [OVERDUE] — meaning its run time has passed and it hasn't executed.
+${issues.map((issue, i) => `${i + 1}. ${issue}`).join('\n')}
 
-CRITICAL RULES:
-- NEVER reassign tasks yourself. If a task is orphaned (assigned to a terminated agent), notify ${primaryName} via send_to_agent and let THEM decide what to do. You are a PM, not an operations commander.
-- NEVER assign ANY task to the Trainer agent. The Trainer ONLY handles technique creation and training. No exceptions.
-- NEVER reassign scheduled tasks that are waiting for their fire time. Those are normal.
+For each issue, take ONE action:
+- ORPHANED tasks: send_to_agent to ${primaryName} saying which task is orphaned
+- OVERDUE tasks: send_to_agent to ${primaryName} saying which task missed its schedule
+- BLOCKED tasks: send_to_agent to ${primaryName} saying which task is blocked
+- STALE tasks: send_to_agent to the assigned agent asking them to start working
 
-Review the tasks above. Look for:
-1. Tasks assigned to terminated agents — notify ${primaryName} about these
-2. NON-scheduled tasks stuck in on_deck with no recent activity (ignore scheduled tasks waiting for fire time)
-3. Blocked tasks that need attention
-4. OVERDUE scheduled tasks that missed their run time
-5. Completed upstream tasks where downstream tasks should now start
+Do NOT reassign tasks. Do NOT touch scheduled tasks that are waiting. Keep messages short.`;
 
-If you find issues:
-- tracker_update_status to change task status (e.g., mark fallen tasks)
-- send_to_agent to notify ${primaryName} about orphaned or stuck tasks — ${primaryName} decides reassignment
-- send_to_agent to poke idle agents who should be working
-
-Do NOT use tracker_reassign_task — that is ${primaryName}'s decision, not yours.
-
-If everything looks fine, just say "All clear" in chat — no further action needed.`;
-
-  // Inject into the PM agent's conversation and trigger the runtime
   const msgId = uuidv4();
   db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`)
     .run(msgId, pmId, situationReport);
