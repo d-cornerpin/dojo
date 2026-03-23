@@ -544,7 +544,7 @@ export const SetupPermissions = () => {
       apiKey: 'screen',
       label: 'Screen Recording',
       description: 'Allows agents to see your screen and take screenshots',
-      hint: 'System Settings → Privacy & Security → Screen Recording. Look for "node" or "screencapture" in the list and toggle it ON. If it\'s not listed, click "+" and navigate to /opt/homebrew/bin/node (or /usr/local/bin/node). You may need to restart the DOJO server after granting this.',
+      hint: 'Click "Open Settings" first — this triggers macOS to add the process to the Screen Recording list. Look for "node" or "screencapture" and toggle it ON. If not listed, click "+", press Cmd+Shift+G, and type the path from running "which node" in Terminal.',
     },
     {
       key: 'accessibility',
@@ -558,7 +558,7 @@ export const SetupPermissions = () => {
       apiKey: 'full-disk-access',
       label: 'Full Disk Access',
       description: 'Allows agents to read protected files like iMessage database',
-      hint: 'System Settings → Privacy & Security → Full Disk Access. Click "+" and add /opt/homebrew/bin/node (Apple Silicon) or /usr/local/bin/node (Intel). You may need to restart the DOJO server after granting this.',
+      hint: 'Click "Open Settings" first — this triggers macOS to add "node" to the Full Disk Access list. Then look for "node" in the list and toggle it ON. If you don\'t see it, click "+", press Cmd+Shift+G, and type the path from running "which node" in Terminal. You may need to restart the DOJO server after granting this.',
     },
     {
       key: 'automation',

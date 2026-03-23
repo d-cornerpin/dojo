@@ -396,9 +396,17 @@ setupDepsRouter.post('/permissions/request/:perm', (c) => {
       case 'accessibility':
         execSync('open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"', { timeout: 5000 });
         break;
-      case 'full-disk-access':
+      case 'full-disk-access': {
+        // First, attempt to read the Messages database — this triggers macOS to register
+        // the Node process in the Full Disk Access list (even though it will fail).
+        // Without this, the user won't see "node" in the FDA list to toggle on.
+        const chatDbPath = path.join(os.homedir(), 'Library', 'Messages', 'chat.db');
+        try { fs.readFileSync(chatDbPath); } catch { /* expected to fail — the attempt is what registers it */ }
+        // Also try via sqlite3 CLI which may register Terminal
+        try { execSync(`sqlite3 "${chatDbPath}" "SELECT 1" 2>/dev/null`, { timeout: 3000, env: execEnv }); } catch { /* expected */ }
         execSync('open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"', { timeout: 5000 });
         break;
+      }
       case 'automation':
         execSync('open "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"', { timeout: 5000 });
         break;
