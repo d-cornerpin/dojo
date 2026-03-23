@@ -371,33 +371,65 @@ export async function runFirstRunProfileBootstrap(): Promise<{ dreamerId: string
 
 # Your Mission (First-Run Bootstrap)
 
-This is the dojo's very first dream. The owner (${ownerName}) just set up the dojo. You have two files to process:
+This is the dojo's very first dream. The owner (${ownerName}) just set up the dojo. You have two files to process. Both files get sent to the agent on EVERY single turn, so every token counts. Your job is to move encyclopedic/reference information into the vault (where it's retrieved only when relevant) while keeping operational instructions and personality in the files (where the agent needs them every turn).
 
-## 1. USER.md (Owner Profile — "${profilePath}")
-This is the "About You" profile. It gets sent to the agent on EVERY turn, burning tokens.
+# THE KEY DISTINCTION
 
-**Extract into the vault:** Every long-term fact (who they are, businesses, family, hobbies, preferences, location, etc.)
-**Keep in the file:** Only what an agent needs on every turn:
-- Communication style preferences (how they like to be talked to)
-- Work context (what they primarily use the dojo for)
-- Critical operational preferences (timezone, key tools)
-**Remove from the file:** Anything now safely in the vault (personal facts, business details, background info)
-**Target:** Under 200 tokens. Start with "# About ${ownerName}". Keep it warm and personal, not robotic.
+Ask yourself for each piece of information: "Does the agent need this to behave correctly on EVERY turn, regardless of topic?"
 
-## 2. SOUL.md (Agent Personality & Instructions — "${soulPath}")
-This is ${agentName}'s personality and instructions. It also gets sent on EVERY turn.
+- YES = stays in the file (personality, tone, formatting rules, work style, how-to-communicate instructions)
+- NO = goes to the vault (facts about the owner's life, family details, business details, vehicle info, hobbies, biographical data)
 
-**Extract into the vault:** Case-by-case instructions, specific project context, situational rules, any factual details about the owner or their work that were mixed into the personality
-**Keep in the file:** Core personality traits, communication style, fundamental rules that apply to every interaction, the agent's identity and role
-**Simplify:** Tighten the language. Remove redundancy. If something is said in 3 sentences that could be said in 1, make it 1. The personality should still feel the same, just more concise.
-**Target:** Keep it as short as possible while preserving the agent's character and core rules.
+## 1. USER.md (Owner Profile -- "${profilePath}")
+
+**MUST STAY in the file (needed every turn):**
+- How the owner wants to be communicated with (tone, directness, formality level)
+- Formatting rules that affect every response (e.g., "hates emdashes", "dark mode", "keep it concise")
+- Work style that affects how the agent should behave (e.g., "prefers results over proposals", "don't hand-hold", "night owl so late messages are normal")
+- Timezone (affects scheduling every turn)
+- Scheduling conflicts that affect availability (e.g., recurring appointments where owner is unavailable)
+- Any "always do this" or "never do that" rules
+
+**EXTRACT to the vault (reference info, not needed every turn):**
+- Biographical details (age, birthday, where they grew up)
+- Family members' names, ages, jobs, vehicles -- vault these as individual entries
+- Business descriptions and details (what the business does, clients, history)
+- Hobbies and interests (fishing, cameras, music preferences, food preferences)
+- Vehicles
+- Extended family
+- Pets
+- Political/religious views
+- Anything that's "about the person" rather than "how to work with the person"
+
+**Target:** The trimmed USER.md should be roughly 150-250 tokens. It should read like a quick operational briefing, not a biography.
+
+## 2. SOUL.md (Agent Personality & Instructions -- "${soulPath}")
+
+**MUST STAY in the file (defines every interaction):**
+- The agent's identity and role (who they are to the owner)
+- The agent's personality and voice (casual, direct, funny, etc.)
+- Communication rules (no corporate speak, swearing OK, no emdashes, etc.)
+- How the agent should approach work (just do it, don't ask permission, use the tracker, etc.)
+- Relationship dynamics (how to interact with the owner, when to push back, when to be low-maintenance)
+- Rules about other agents (how to manage sub-agents, respect the PM, etc.)
+- Rules about the machine/system (be protective, don't run destructive commands, etc.)
+- Any "always" or "never" behavioral rules
+
+**EXTRACT to the vault (situational/reference info mixed into the personality):**
+- Specific facts about the owner that were embedded in the personality text (business details, family info, etc. that are ALSO in USER.md)
+- Specific project context or references to current work
+- Anything that's biographical/factual rather than behavioral/instructional
+
+**DO NOT simplify or shorten the personality voice.** The SOUL.md defines how the agent talks and thinks. If the owner wrote it in a specific voice with specific energy, preserve that energy. You can remove factual content that belongs in the vault, but do NOT rewrite the personality into something generic or corporate. The agent should still sound exactly like the owner intended.
 
 # Rules
 - For each extracted fact, use vault_remember with the appropriate type
 - Mark definitionally stable facts as permanent: true (names, family, businesses, locations)
 - vault_search before saving to avoid duplicates
-- Rewrite BOTH files — read each one, extract, then write the trimmed version back
-- Do NOT lose the personality — the agent should still sound the same, just with less token overhead
+- Rewrite BOTH files -- read each one, extract facts, then write the trimmed version back
+- Do NOT flatten the personality. If the SOUL.md has attitude and voice, keep that attitude and voice.
+- Do NOT vault behavioral rules. "Hates emdashes" is a BEHAVIORAL RULE (stays in file), not a preference to vault.
+- Do NOT vault relationship dynamics. "Right hand man, not an assistant" is IDENTITY (stays in file), not a fact to vault.
 - When done, call complete_task with a summary of what you extracted and how much you trimmed`,
       modelId,
       classification: 'apprentice',
