@@ -122,7 +122,7 @@ export const Sidebar = () => {
             }`}
           >
             <span className="text-sm">{'\u{1F6AA}'}</span>
-            {!collapsed && <span className="text-sm">Hand in your belt</span>}
+            {!collapsed && <span className="text-sm">Leave the Dojo</span>}
           </button>
         </div>
       </aside>
@@ -201,7 +201,7 @@ const MobileTopBar = ({ connectionStatus }: { connectionStatus: ConnectionStatus
               <button onClick={() => { logout(); setMenuOpen(false); }}
                 className="w-full flex items-center gap-3 px-3 py-3 rounded-glass-xs text-white/40 hover:text-white/70 transition-colors">
                 <span>{'\u{1F6AA}'}</span>
-                <span className="text-sm">Hand in your belt</span>
+                <span className="text-sm">Leave the Dojo</span>
               </button>
             </div>
           </div>
