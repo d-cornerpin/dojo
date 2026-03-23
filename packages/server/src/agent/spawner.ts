@@ -285,8 +285,11 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   let taskMessage: string;
 
   if (params.initialMessage) {
-    // Custom initial message provided — use it verbatim
+    // Custom initial message provided — use it, but always remind about complete_task
     taskMessage = params.initialMessage;
+    if (!params.initialMessage.toLowerCase().includes('complete_task')) {
+      taskMessage += '\n\nIMPORTANT: When you are finished, you MUST call complete_task with status="complete" and a summary. Do NOT just stop responding.';
+    }
   } else if (systemPrompt.toLowerCase().includes('complete_task')) {
     // System prompt already mentions complete_task — don't inject default instructions
     taskMessage = `Your task: ${systemPrompt}\n\nBegin working immediately.`;
