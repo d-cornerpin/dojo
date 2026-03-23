@@ -150,9 +150,16 @@ updateRouter.post('/apply', async (c) => {
     await execAsync(`unzip -o "${zipPath}" -d "${tmpDir}"`, { timeout: 60000 });
 
     // 4. Find the extracted platform directory
-    const extractedDir = path.join(tmpDir, 'dojo-platform');
+    // The zip structure is: dojo-platform/platform/{packages,package.json,...}
+    const extractedDir = path.join(tmpDir, 'dojo-platform', 'platform');
     if (!fs.existsSync(extractedDir)) {
-      return c.json({ ok: false, error: 'Extracted zip does not contain dojo-platform directory' }, 500);
+      // Fallback: maybe zip structure changed
+      const fallback = path.join(tmpDir, 'dojo-platform');
+      if (fs.existsSync(path.join(fallback, 'package.json'))) {
+        // package.json at top level means flat structure
+        return c.json({ ok: false, error: 'Unexpected zip structure -- package.json at dojo-platform/ root' }, 500);
+      }
+      return c.json({ ok: false, error: 'Extracted zip does not contain dojo-platform/platform directory' }, 500);
     }
 
     // 5. Backup the current platform
