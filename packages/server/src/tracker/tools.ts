@@ -30,10 +30,15 @@ function notifyPrimaryAgent(message: string, callingAgentId: string, forceNotify
   try {
     const db = getDb();
     const msgId = uuidv4();
+    // Store as 'system' role -- informational, does NOT need a response.
+    // The primary agent will see it in context on its next turn.
+    // We do NOT call handleMessage here -- task updates are informational,
+    // not conversations that require a reply. This prevents the primary
+    // agent from waking up and responding to every sub-agent status change.
     const content = `[Task Update] ${message}`;
     db.prepare(`
       INSERT INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'user', ?, datetime('now'))
+      VALUES (?, ?, 'system', ?, datetime('now'))
     `).run(msgId, primaryId, content);
 
     broadcast({
@@ -42,19 +47,11 @@ function notifyPrimaryAgent(message: string, callingAgentId: string, forceNotify
       message: {
         id: msgId,
         agentId: primaryId,
-        role: 'user' as const,
+        role: 'system' as const,
         content,
         tokenCount: null, modelId: null, cost: null, latencyMs: null,
         createdAt: new Date().toISOString(),
       },
-    });
-
-    // Wake up the primary agent's runtime so it actually processes this message
-    const runtime = getAgentRuntime();
-    runtime.handleMessage(primaryId, content).catch(err => {
-      logger.error('Failed to wake primary agent for task notification', {
-        error: err instanceof Error ? err.message : String(err),
-      });
     });
   } catch { /* best-effort */ }
 }

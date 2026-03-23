@@ -46,6 +46,9 @@ const activeRuns = new Set<string>();
 // Queue for messages that arrive while an agent is busy
 const pendingWakeups = new Set<string>();
 
+// Track the last message ID processed per agent to avoid re-processing
+const lastProcessedMessageId = new Map<string, string>();
+
 const MAX_TOOL_LOOPS = 25; // Maximum tool call loops per turn
 
 class AgentRuntime {
@@ -85,15 +88,15 @@ class AgentRuntime {
       activeRuns.delete(agentId);
 
       // If a message arrived while we were busy, re-trigger the loop
-      // BUT only if there's actually a new user/tool message to process
-      // (prevents the agent from repeating itself when woken up with no new input)
+      // BUT only if there's a genuinely new user message we haven't processed yet
       if (pendingWakeups.has(agentId)) {
         pendingWakeups.delete(agentId);
-        const lastMsg = getDb().prepare(
-          'SELECT role FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
-        ).get(agentId) as { role: string } | undefined;
-        if (lastMsg && lastMsg.role !== 'assistant') {
-          logger.info('Processing queued wakeup (new user/tool message found)', { agentId }, agentId);
+        const lastUserMsg = getDb().prepare(
+          "SELECT id, role FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1"
+        ).get(agentId) as { id: string; role: string } | undefined;
+        const lastProcessed = lastProcessedMessageId.get(agentId);
+        if (lastUserMsg && lastUserMsg.id !== lastProcessed) {
+          logger.info('Processing queued wakeup (new user message found)', { agentId, msgId: lastUserMsg.id }, agentId);
           this.handleMessage(agentId, '').catch(err => {
             logger.error('Queued wakeup failed', {
               agentId,
@@ -101,7 +104,7 @@ class AgentRuntime {
             }, agentId);
           });
         } else {
-          logger.debug('Skipping queued wakeup (last message is assistant, nothing new to process)', { agentId }, agentId);
+          logger.debug('Skipping queued wakeup (no new user messages since last run)', { agentId }, agentId);
         }
       }
     }
@@ -135,6 +138,15 @@ class AgentRuntime {
     let loopCount = 0;
     let consecutiveNoResultTools = 0;
     let lastUsedModelId: string = isAutoRouted ? contextModelId : configuredModelId!;
+    let lastResponseText: string | null = null; // For repetition detection
+
+    // Track the latest user message so wakeup queue knows what we've already seen
+    const latestUserMsg = db.prepare(
+      "SELECT id FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1"
+    ).get(agentId) as { id: string } | undefined;
+    if (latestUserMsg) {
+      lastProcessedMessageId.set(agentId, latestUserMsg.id);
+    }
 
     while (loopCount < MAX_TOOL_LOOPS) {
       loopCount++;
@@ -375,6 +387,16 @@ class AgentRuntime {
         logger.info('Agent called complete_task, exiting loop', { agentId }, agentId);
         break;
       }
+
+      // Detect repetition: if the model produced the same text AND same tool calls as last iteration
+      const currentResponseSig = (result.content ?? '') + '|' + result.toolCalls.map(tc => `${tc.name}:${JSON.stringify(tc.arguments)}`).sort().join(',');
+      if (lastResponseText === currentResponseSig) {
+        logger.warn('Breaking tool loop: agent is repeating itself (same response and tool calls)', {
+          loopCount,
+        }, agentId);
+        break;
+      }
+      lastResponseText = currentResponseSig;
 
       // Detect if the model is stuck retrying searches that return no results
       const allNoResults = toolResults.every(tr =>
