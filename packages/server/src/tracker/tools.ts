@@ -190,9 +190,11 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       phase,
     });
 
-    // Auto-set to in_progress if assigned to an agent and not scheduled
+    // Auto-set to in_progress ONLY if assigned to an agent AND there is NO scheduled start
+    // If a scheduled_start is provided, the task stays on_deck until the scheduler fires it
     const scheduledStart = args.scheduled_start as string | undefined;
-    if (assignedTo && !scheduledStart) {
+    const hasSchedule = !!(scheduledStart || args.repeat_interval);
+    if (assignedTo && !hasSchedule) {
       try {
         updateTask(taskId, { status: 'in_progress' });
       } catch { /* ignore */ }

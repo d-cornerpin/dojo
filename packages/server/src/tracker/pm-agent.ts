@@ -398,6 +398,14 @@ function runPokeCheck(): void {
   for (const task of inProgressTasks) {
     if (!task.assignedTo) continue;
 
+    // Skip tasks with a future scheduled_start -- they're waiting for the scheduler, not stale
+    if (task.scheduledStart) {
+      const scheduledMs = new Date(task.scheduledStart.includes('Z') ? task.scheduledStart : task.scheduledStart + 'Z').getTime();
+      if (scheduledMs > now) continue;
+    }
+    // Skip tasks in a waiting schedule state
+    if (task.scheduleStatus === 'waiting') continue;
+
     const thresholds = POKE_THRESHOLDS[task.priority] ?? POKE_THRESHOLDS.normal;
 
     // Check the assigned agent's LAST ACTIVITY (most recent message), not the task's updatedAt.
