@@ -174,8 +174,9 @@ export function testGwsAuth(): { authenticated: boolean; email: string | null } 
   }
 }
 
-// Extended PATH to find gcloud installed via Homebrew cask
+// Extended PATH to find gcloud and gws (Homebrew, /usr/local, and npm-global fallback)
 const EXTENDED_PATH = [
+  path.join(os.homedir(), '.npm-global', 'bin'),
   '/opt/homebrew/share/google-cloud-sdk/bin',
   '/opt/homebrew/bin',
   '/opt/homebrew/sbin',

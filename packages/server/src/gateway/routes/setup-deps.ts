@@ -18,8 +18,9 @@ export const setupDepsRouter = new Hono();
 
 // ── Helper ──
 
-// Extend PATH to include Homebrew locations (launchd has minimal PATH)
+// Extend PATH to include Homebrew locations and npm-global fallback (launchd has minimal PATH)
 const EXTENDED_PATH = [
+  path.join(os.homedir(), '.npm-global', 'bin'),
   '/opt/homebrew/bin',
   '/opt/homebrew/sbin',
   '/usr/local/bin',
@@ -134,7 +135,22 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
         return c.json({ ok: true, data: { installed: true } });
       }
       case 'gws': {
-        execSync('npm install -g @googleworkspace/cli', { encoding: 'utf-8', timeout: 120000, env: execEnv });
+        // Try global install first (works on Homebrew Apple Silicon where prefix is user-writable).
+        // If EACCES, reconfigure npm to use ~/.npm-global and retry — avoids needing sudo.
+        try {
+          execSync('npm install -g @googleworkspace/cli', { encoding: 'utf-8', timeout: 120000, env: execEnv });
+        } catch (firstErr) {
+          const errMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+          if (errMsg.includes('EACCES')) {
+            const globalDir = path.join(os.homedir(), '.npm-global');
+            execSync(`mkdir -p "${globalDir}"`, { encoding: 'utf-8', env: execEnv });
+            execSync(`npm config set prefix "${globalDir}"`, { encoding: 'utf-8', env: execEnv });
+            const npmGlobalEnv = { ...execEnv, PATH: `${globalDir}/bin:${execEnv.PATH}` };
+            execSync('npm install -g @googleworkspace/cli', { encoding: 'utf-8', timeout: 120000, env: npmGlobalEnv });
+          } else {
+            throw firstErr;
+          }
+        }
         return c.json({ ok: true, data: { installed: true } });
       }
       case 'gcloud': {

@@ -4,6 +4,8 @@
 // ════════════════════════════════════════
 
 import { execSync } from 'node:child_process';
+import path from 'node:path';
+import os from 'node:os';
 import { createLogger } from '../logger.js';
 import { logGoogleActivity } from './activity-log.js';
 import { broadcast } from '../gateway/ws.js';
@@ -11,6 +13,14 @@ import { broadcast } from '../gateway/ws.js';
 const logger = createLogger('gws-client');
 
 const GWS_TIMEOUT_MS = 30_000;
+
+// Extended PATH so gws is found regardless of install method
+const EXTENDED_PATH = [
+  path.join(os.homedir(), '.npm-global', 'bin'),
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin',
+].join(':');
 
 export interface GwsResult {
   ok: boolean;
@@ -28,7 +38,7 @@ export function runGws(command: string): GwsResult {
     const result = execSync(fullCommand, {
       encoding: 'utf-8',
       timeout: GWS_TIMEOUT_MS,
-      env: { ...process.env },
+      env: { ...process.env, PATH: EXTENDED_PATH },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -116,7 +126,7 @@ export function runGwsWrite(
  */
 export function isGwsInstalled(): boolean {
   try {
-    execSync('which gws', { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] });
+    execSync('which gws', { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PATH: EXTENDED_PATH } });
     return true;
   } catch {
     return false;
@@ -128,7 +138,7 @@ export function isGwsInstalled(): boolean {
  */
 export function getGwsVersion(): string | null {
   try {
-    const result = execSync('gws --version', { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] });
+    const result = execSync('gws --version', { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PATH: EXTENDED_PATH } });
     return result.trim();
   } catch {
     return null;
