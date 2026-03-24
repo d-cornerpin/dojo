@@ -24,6 +24,7 @@ import { groupsRouter } from './routes/groups.js';
 import { taskRunsRouter } from './routes/task-runs.js';
 import { vaultRouter } from './routes/vault.js';
 import { updateRouter } from './routes/update.js';
+import { googleRouter } from './routes/google.js';
 import { verifyAndTrackClient, removeClient, handleClientMessage } from './ws.js';
 import { getPrimaryAgentId, getPMAgentId } from '../config/platform.js';
 import { createLogger } from '../logger.js';
@@ -118,6 +119,7 @@ export function createServer() {
   app.route('/api/techniques', techniquesRouter); // /api/techniques, /api/techniques/:id
   app.route('/api/vault', vaultRouter);     // /api/vault/entries, /api/vault/dream, etc.
   app.route('/api/update', updateRouter);   // /api/update/check, /api/update/apply
+  app.route('/api/google', googleRouter);   // /api/google/status, /api/google/connect, etc.
   app.route('/api', taskRunsRouter);        // /api/tasks/:taskId/runs
   app.route('/api', systemRouter);        // /api/health, /api/system/logs
 

@@ -1,12 +1,12 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, useCallback, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Model, Provider } from '@dojo/shared';
 import * as api from '../lib/api';
 import { SetupDeps, SetupPermissions } from '../components/SetupDeps';
 
-type Step = 'welcome' | 'dependencies' | 'permissions' | 'provider' | 'models' | 'your-profile' | 'primary-agent' | 'pm-agent' | 'trainer-agent' | 'dreamer' | 'imessage' | 'web-search' | 'complete';
+type Step = 'welcome' | 'dependencies' | 'permissions' | 'provider' | 'models' | 'your-profile' | 'primary-agent' | 'pm-agent' | 'trainer-agent' | 'dreamer' | 'imessage' | 'workspace' | 'web-search' | 'complete';
 
-const STEPS: Step[] = ['welcome', 'dependencies', 'permissions', 'provider', 'models', 'your-profile', 'primary-agent', 'pm-agent', 'trainer-agent', 'dreamer', 'imessage', 'web-search', 'complete'];
+const STEPS: Step[] = ['welcome', 'dependencies', 'permissions', 'provider', 'models', 'your-profile', 'primary-agent', 'pm-agent', 'trainer-agent', 'dreamer', 'imessage', 'web-search', 'workspace', 'complete'];
 
 const STEP_LABELS: Record<Step, string> = {
   welcome: 'Welcome',
@@ -20,6 +20,7 @@ const STEP_LABELS: Record<Step, string> = {
   'trainer-agent': 'Technique Trainer',
   dreamer: 'Dreamer',
   imessage: 'iMessage',
+  workspace: 'Google Workspace',
   'web-search': 'Web Search',
   complete: 'Enter the Dojo',
 };
@@ -27,18 +28,69 @@ const STEP_LABELS: Record<Step, string> = {
 export const Setup = () => {
   const [currentStep, setCurrentStep] = useState<Step>('welcome');
   const [depsReady, setDepsReady] = useState(false);
+  const [stepReady, setStepReady] = useState<Record<string, boolean>>({});
+  const [visitedSteps, setVisitedSteps] = useState<Set<Step>>(new Set(['welcome']));
   const navigate = useNavigate();
 
+  const markReady = useCallback((step: Step, ready: boolean) => {
+    setStepReady(prev => {
+      if (prev[step] === ready) return prev;
+      return { ...prev, [step]: ready };
+    });
+  }, []);
+
   const currentIndex = STEPS.indexOf(currentStep);
-  const isNextDisabled = currentStep === 'dependencies' && !depsReady;
+
+  // Track visited steps so we can keep them mounted
+  useEffect(() => {
+    setVisitedSteps(prev => {
+      if (prev.has(currentStep)) return prev;
+      const next = new Set(prev);
+      next.add(currentStep);
+      return next;
+    });
+  }, [currentStep]);
+
+  // Steps that require explicit completion before proceeding
+  const gatedSteps: Step[] = ['dependencies', 'your-profile', 'primary-agent', 'pm-agent', 'trainer-agent', 'dreamer', 'imessage', 'web-search'];
+  const isNextDisabled = gatedSteps.includes(currentStep) && !stepReady[currentStep];
+
+  // Stable callbacks for step onReady props (prevents infinite re-render loops)
+  const onDepsReady = useCallback((ready: boolean) => { setDepsReady(ready); markReady('dependencies', ready); }, [markReady]);
+  const onProviderReady = useCallback((r: boolean) => markReady('provider', r), [markReady]);
+  const onProfileReady = useCallback((r: boolean) => markReady('your-profile', r), [markReady]);
+  const onPrimaryReady = useCallback((r: boolean) => markReady('primary-agent', r), [markReady]);
+  const onPMReady = useCallback((r: boolean) => markReady('pm-agent', r), [markReady]);
+  const onTrainerReady = useCallback((r: boolean) => markReady('trainer-agent', r), [markReady]);
+  const onDreamerReady = useCallback((r: boolean) => markReady('dreamer', r), [markReady]);
+  const onImessageReady = useCallback((r: boolean) => markReady('imessage', r), [markReady]);
+  const onWebSearchReady = useCallback((r: boolean) => markReady('web-search', r), [markReady]);
+
+  // Provider step: "are you sure?" when only Ollama is configured
+  const [hasCloudProvider, setHasCloudProvider] = useState(false);
+  const [showProviderConfirm, setShowProviderConfirm] = useState(false);
 
   const goNext = () => {
+    // Intercept the provider step: warn if no cloud provider
+    if (currentStep === 'provider' && !hasCloudProvider) {
+      setShowProviderConfirm(true);
+      return;
+    }
+    setShowProviderConfirm(false);
+    if (currentIndex < STEPS.length - 1) {
+      setCurrentStep(STEPS[currentIndex + 1]);
+    }
+  };
+
+  const goNextForce = () => {
+    setShowProviderConfirm(false);
     if (currentIndex < STEPS.length - 1) {
       setCurrentStep(STEPS[currentIndex + 1]);
     }
   };
 
   const goBack = () => {
+    setShowProviderConfirm(false);
     if (currentIndex > 0) {
       setCurrentStep(STEPS[currentIndex - 1]);
     }
@@ -86,22 +138,70 @@ export const Setup = () => {
           {STEP_LABELS[currentStep]}
         </h2>
 
-        {/* Step Content */}
+        {/* Step Content — steps stay mounted once visited so state is preserved on back/next */}
         <div className="glass-card p-6">
-          {currentStep === 'welcome' && <WelcomeStep />}
-          {currentStep === 'dependencies' && <SetupDeps onReady={(ready) => setDepsReady(ready)} />}
-          {currentStep === 'permissions' && <SetupPermissions />}
-          {currentStep === 'provider' && <ProviderStep />}
-          {currentStep === 'models' && <ModelsStep />}
-          {currentStep === 'your-profile' && <YourProfileStep />}
-          {currentStep === 'primary-agent' && <PrimaryAgentStep />}
-          {currentStep === 'pm-agent' && <PMAgentStep />}
-          {currentStep === 'trainer-agent' && <TrainerAgentStep />}
-          {currentStep === 'dreamer' && <DreamerStep />}
-          {currentStep === 'imessage' && <IMessageStep />}
-          {currentStep === 'web-search' && <WebSearchStep />}
-          {currentStep === 'complete' && <CompleteStep />}
+          <div style={{ display: currentStep === 'welcome' ? 'block' : 'none' }}>
+            {visitedSteps.has('welcome') && <WelcomeStep />}
+          </div>
+          <div style={{ display: currentStep === 'dependencies' ? 'block' : 'none' }}>
+            {visitedSteps.has('dependencies') && <SetupDeps onReady={onDepsReady} />}
+          </div>
+          <div style={{ display: currentStep === 'permissions' ? 'block' : 'none' }}>
+            {visitedSteps.has('permissions') && <SetupPermissions />}
+          </div>
+          <div style={{ display: currentStep === 'provider' ? 'block' : 'none' }}>
+            {visitedSteps.has('provider') && <ProviderStep onReady={onProviderReady} onCloudProviderChange={setHasCloudProvider} />}
+          </div>
+          <div style={{ display: currentStep === 'models' ? 'block' : 'none' }}>
+            {visitedSteps.has('models') && <ModelsStep />}
+          </div>
+          <div style={{ display: currentStep === 'your-profile' ? 'block' : 'none' }}>
+            {visitedSteps.has('your-profile') && <YourProfileStep onReady={onProfileReady} />}
+          </div>
+          <div style={{ display: currentStep === 'primary-agent' ? 'block' : 'none' }}>
+            {visitedSteps.has('primary-agent') && <PrimaryAgentStep onReady={onPrimaryReady} />}
+          </div>
+          <div style={{ display: currentStep === 'pm-agent' ? 'block' : 'none' }}>
+            {visitedSteps.has('pm-agent') && <PMAgentStep onReady={onPMReady} />}
+          </div>
+          <div style={{ display: currentStep === 'trainer-agent' ? 'block' : 'none' }}>
+            {visitedSteps.has('trainer-agent') && <TrainerAgentStep onReady={onTrainerReady} />}
+          </div>
+          <div style={{ display: currentStep === 'dreamer' ? 'block' : 'none' }}>
+            {visitedSteps.has('dreamer') && <DreamerStep onReady={onDreamerReady} />}
+          </div>
+          <div style={{ display: currentStep === 'imessage' ? 'block' : 'none' }}>
+            {visitedSteps.has('imessage') && <IMessageStep onReady={onImessageReady} />}
+          </div>
+          <div style={{ display: currentStep === 'workspace' ? 'block' : 'none' }}>
+            {visitedSteps.has('workspace') && <WorkspaceStep />}
+          </div>
+          <div style={{ display: currentStep === 'web-search' ? 'block' : 'none' }}>
+            {visitedSteps.has('web-search') && <WebSearchStep onReady={onWebSearchReady} />}
+          </div>
+          <div style={{ display: currentStep === 'complete' ? 'block' : 'none' }}>
+            {visitedSteps.has('complete') && <CompleteStep />}
+          </div>
         </div>
+
+        {/* Provider confirmation dialog */}
+        {showProviderConfirm && (
+          <div className="mt-4 px-4 py-3 rounded-lg bg-cp-amber/10 border border-cp-amber/20 space-y-3">
+            <p className="text-sm text-cp-amber">
+              Only the local Ollama provider is configured. The Agent Dojo works much better with a cloud AI provider like Anthropic or OpenAI for complex tasks.
+            </p>
+            <div className="flex gap-2">
+              <button onClick={() => setShowProviderConfirm(false)}
+                className="glass-btn glass-btn-primary text-xs">
+                I'll add one
+              </button>
+              <button onClick={goNextForce}
+                className="glass-btn glass-btn-ghost text-xs">
+                Continue anyway
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Navigation */}
         <div className="flex justify-between mt-6">
@@ -158,7 +258,7 @@ const WelcomeStep = () => {
           Prepare to enter the <strong className="text-white">D.O.J.O.</strong>
         </p>
         <p className="text-sm text-white/40 mt-2">
-          Your training begins here. This will take about 2 minutes.
+          The path to mastery begins with a single step. Take yours.
         </p>
       </div>
 
@@ -266,7 +366,7 @@ const PasswordStep = ({ onComplete }: { onComplete: () => void }) => {
 
 // ── Provider ──
 
-const ProviderStep = () => {
+const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: boolean) => void; onCloudProviderChange?: (has: boolean) => void }) => {
   const [name, setName] = useState('');
   const [type, setType] = useState('anthropic');
   const [authType, setAuthType] = useState('api_key');
@@ -275,6 +375,25 @@ const ProviderStep = () => {
   const [status, setStatus] = useState<'idle' | 'validating' | 'valid' | 'invalid'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [providerId, setProviderId] = useState<string | null>(null);
+  const [hasOllama, setHasOllama] = useState(false);
+  const [hasCloudProvider, setHasCloudProvider] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  // Always allow Next (we handle the "are you sure" in the parent via onReady)
+  useEffect(() => { onReady?.(true); }, [onReady]);
+
+  // Check existing providers on mount
+  useEffect(() => {
+    api.getProviders().then(r => {
+      if (r.ok) {
+        const providers = r.data as Provider[];
+        setHasOllama(providers.some(p => p.type === 'ollama' && p.isValidated));
+        const hasCloud = providers.some(p => p.type !== 'ollama' && p.isValidated);
+        setHasCloudProvider(hasCloud);
+        onCloudProviderChange?.(hasCloud);
+      }
+    });
+  }, []);
 
   const handleAdd = async (e: FormEvent) => {
     e.preventDefault();
@@ -301,6 +420,12 @@ const ProviderStep = () => {
     const valResult = await api.validateProvider(id);
     if (valResult.ok && valResult.data.valid) {
       setStatus('valid');
+      if (type === 'ollama') {
+        setHasOllama(true);
+      } else {
+        setHasCloudProvider(true);
+        onCloudProviderChange?.(true);
+      }
     } else {
       setStatus('invalid');
       setError(`Provider added but validation failed: ${!valResult.ok ? valResult.error : 'Unexpected result'}`);
@@ -308,84 +433,97 @@ const ProviderStep = () => {
   };
 
   return (
-    <form onSubmit={handleAdd} className="space-y-4">
+    <div className="space-y-4">
       <p className="text-sm text-white/55">
-        Connect a cloud AI provider for your primary agent. Ollama (local) was auto-configured in the previous step.
-        You can add more providers later in Settings.
+        Connect a cloud AI provider for your agents. You can add more providers later in Settings.
       </p>
 
-      <div>
-        <label className="block text-sm font-medium white/70 mb-1">Provider Name</label>
-        <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g., My Anthropic"
-          className="glass-input" />
-      </div>
+      {/* Ollama status */}
+      {hasOllama && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cp-teal/10 border border-cp-teal/20">
+          <span className="text-cp-teal">{'\u2713'}</span>
+          <span className="text-sm text-cp-teal">Ollama (local) is configured</span>
+        </div>
+      )}
 
-      <div>
-        <label className="block text-sm font-medium white/70 mb-1">Type</label>
-        <select value={type} onChange={(e) => setType(e.target.value)}
-          className="glass-select w-full">
-          <option value="anthropic">Anthropic</option>
-          <option value="openai">OpenAI</option>
-          <option value="openai-compatible">OpenRouter</option>
-          <option value="ollama">Ollama</option>
-        </select>
-      </div>
+      {/* Cloud provider added confirmation */}
+      {hasCloudProvider && status === 'valid' && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cp-teal/10 border border-cp-teal/20">
+          <span className="text-cp-teal">{'\u2713'}</span>
+          <span className="text-sm text-cp-teal">Cloud provider validated!</span>
+        </div>
+      )}
 
-      {type === 'ollama' && (
+      {/* Add provider form */}
+      <form onSubmit={handleAdd} className="space-y-4">
+        <h3 className="text-sm font-medium text-white/70">{hasCloudProvider ? 'Add Another Provider' : 'Add a Cloud Provider'}</h3>
+
         <div>
-          <label className="block text-sm font-medium white/70 mb-1">Base URL</label>
-          <input type="text" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://localhost:11434"
+          <label className="block text-sm font-medium white/70 mb-1">Provider Name</label>
+          <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g., My Anthropic"
             className="glass-input" />
         </div>
-      )}
 
-      {type !== 'ollama' && (
-        <>
-          {type === 'anthropic' && (
-            <div>
-              <label className="block text-sm font-medium white/70 mb-1">Auth Type</label>
-              <select value={authType} onChange={(e) => setAuthType(e.target.value)}
-                className="glass-select w-full">
-                <option value="api_key">API Key</option>
-                <option value="oauth">OAuth Token</option>
-              </select>
-            </div>
-          )}
+        <div>
+          <label className="block text-sm font-medium white/70 mb-1">Type</label>
+          <select value={type} onChange={(e) => setType(e.target.value)}
+            className="glass-select w-full">
+            <option value="anthropic">Anthropic</option>
+            <option value="openai">OpenAI</option>
+            <option value="openai-compatible">OpenRouter</option>
+            <option value="ollama">Ollama</option>
+          </select>
+        </div>
+
+        {type === 'ollama' && (
           <div>
-            <label className="block text-sm font-medium white/70 mb-1">{authType === 'oauth' && type === 'anthropic' ? 'OAuth Token' : 'API Key'}</label>
-            <input type="password" value={credential} onChange={(e) => setCredential(e.target.value)}
-              placeholder={type === 'openai' ? 'sk-...' : authType === 'oauth' ? 'sk-ant-oat...' : 'sk-...'}
+            <label className="block text-sm font-medium white/70 mb-1">Base URL</label>
+            <input type="text" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://localhost:11434"
               className="glass-input" />
           </div>
+        )}
 
-          {/* OAuth hint for Anthropic */}
-          {type === 'anthropic' && authType === 'oauth' && (
-            <div className="px-3 py-2.5 rounded-lg bg-blue-500/5 border border-blue-500/10 text-[11px] text-blue-300/70 leading-relaxed space-y-1.5">
-              <p className="font-medium text-blue-300/90">How to get your OAuth token:</p>
-              <p>1. Install Claude Code (if you haven't already):</p>
-              <code className="block px-2 py-1 rounded bg-white/[0.05] font-mono text-[10px] text-white/60">curl -fsSL https://claude.ai/install.sh | bash</code>
-              <p>2. Generate your token:</p>
-              <code className="block px-2 py-1 rounded bg-white/[0.05] font-mono text-[10px] text-white/60">claude setup-token</code>
-              <p>3. Copy the token (starts with <span className="font-mono">sk-ant-oat</span>) and paste it above.</p>
+        {type !== 'ollama' && (
+          <>
+            {type === 'anthropic' && (
+              <div>
+                <label className="block text-sm font-medium white/70 mb-1">Auth Type</label>
+                <select value={authType} onChange={(e) => setAuthType(e.target.value)}
+                  className="glass-select w-full">
+                  <option value="api_key">API Key</option>
+                  <option value="oauth">OAuth Token</option>
+                </select>
+              </div>
+            )}
+            <div>
+              <label className="block text-sm font-medium white/70 mb-1">{authType === 'oauth' && type === 'anthropic' ? 'OAuth Token' : 'API Key'}</label>
+              <input type="password" value={credential} onChange={(e) => setCredential(e.target.value)}
+                placeholder={type === 'openai' ? 'sk-...' : authType === 'oauth' ? 'sk-ant-oat...' : 'sk-...'}
+                className="glass-input" />
             </div>
-          )}
-        </>
-      )}
 
-      {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
-      {status === 'valid' && (
-        <div className="px-3 py-2 rounded-lg glass-badge-teal border border-cp-teal/20 text-sm">
-          Provider validated successfully!
-        </div>
-      )}
+            {/* OAuth hint for Anthropic */}
+            {type === 'anthropic' && authType === 'oauth' && (
+              <div className="px-3 py-2.5 rounded-lg bg-blue-500/5 border border-blue-500/10 text-[11px] text-blue-300/70 leading-relaxed space-y-1.5">
+                <p className="font-medium text-blue-300/90">How to get your OAuth token:</p>
+                <p>1. Install Claude Code (if you haven't already):</p>
+                <code className="block px-2 py-1 rounded bg-white/[0.05] font-mono text-[10px] text-white/60">curl -fsSL https://claude.ai/install.sh | bash</code>
+                <p>2. Generate your token:</p>
+                <code className="block px-2 py-1 rounded bg-white/[0.05] font-mono text-[10px] text-white/60">claude setup-token</code>
+                <p>3. Copy the token (starts with <span className="font-mono">sk-ant-oat</span>) and paste it above.</p>
+              </div>
+            )}
+          </>
+        )}
 
-      <button type="submit" disabled={status === 'validating' || status === 'valid' || !name.trim() || (type !== 'ollama' && !credential.trim())}
-        className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
-          status === 'valid' ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
-        }`}>
-        {status === 'validating' ? 'Validating...' : status === 'valid' ? '\u2713 Provider Added' : 'Add & Validate Provider'}
-      </button>
-    </form>
+        {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
+
+        <button type="submit" disabled={status === 'validating' || !name.trim() || (type !== 'ollama' && !credential.trim())}
+          className="px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors glass-btn glass-btn-primary">
+          {status === 'validating' ? 'Validating...' : 'Add & Validate Provider'}
+        </button>
+      </form>
+    </div>
   );
 };
 
@@ -591,10 +729,12 @@ const ModelsStep = () => {
 
 // ── Your Profile ──
 
-const YourProfileStep = () => {
+const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   const [userName, setUserName] = useState('');
   const [aboutYou, setAboutYou] = useState('');
   const [saved, setSaved] = useState(false);
+
+  useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
   const handleSave = async () => {
     if (userName.trim()) {
@@ -646,7 +786,7 @@ const YourProfileStep = () => {
 
 // ── Primary Agent ──
 
-const PrimaryAgentStep = () => {
+const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   const [agentName, setAgentName] = useState('');
   const [models, setModels] = useState<Model[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
@@ -654,6 +794,8 @@ const PrimaryAgentStep = () => {
   const [personality, setPersonality] = useState('');
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
   useEffect(() => {
     api.getModels().then(r => {
@@ -776,11 +918,13 @@ const PrimaryAgentStep = () => {
 
 // ── Project Manager ──
 
-const PMAgentStep = () => {
+const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   const [pmName, setPmName] = useState('');
   const [models, setModels] = useState<Model[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [saved, setSaved] = useState(false);
+
+  useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
   useEffect(() => {
     api.getModels().then(r => {
@@ -857,11 +1001,13 @@ const PMAgentStep = () => {
 
 // ── Trainer Agent ──
 
-const TrainerAgentStep = () => {
+const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   const [trainerName, setTrainerName] = useState('');
   const [models, setModels] = useState<Model[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [saved, setSaved] = useState(false);
+
+  useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
   useEffect(() => {
     api.getModels().then(r => {
@@ -937,12 +1083,14 @@ const TrainerAgentStep = () => {
 
 // ── Dreamer ──
 
-const DreamerStep = () => {
+const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   const [models, setModels] = useState<Model[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [dreamTime, setDreamTime] = useState('03:00');
   const [dreamMode, setDreamMode] = useState<'full' | 'light'>('full');
   const [saved, setSaved] = useState(false);
+
+  useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
   useEffect(() => {
     api.getModels().then(r => {
@@ -1066,13 +1214,15 @@ const DreamerStep = () => {
 
 // ── iMessage ──
 
-const IMessageStep = () => {
+const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   const [enabled, setEnabled] = useState(false);
   const [senders, setSenders] = useState<string[]>([]);
   const [defaultSender, setDefaultSender] = useState<string | null>(null);
   const [newSender, setNewSender] = useState('');
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
   const addSender = () => {
     const s = newSender.trim();
@@ -1205,12 +1355,290 @@ const IMessageStep = () => {
   );
 };
 
+// ── Google Workspace ──
+
+const WorkspaceStep = () => {
+  const [connected, setConnected] = useState(false);
+  const [email, setEmail] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pollTimer, setPollTimer] = useState<ReturnType<typeof setInterval> | null>(null);
+
+  // Step states
+  const [gcloudLoggingIn, setGcloudLoggingIn] = useState(false);
+  const [gcloudEmail, setGcloudEmail] = useState<string | null>(null);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [settingUpProject, setSettingUpProject] = useState(false);
+  const [hasCredentials, setHasCredentials] = useState(false);
+  const [credentialJson, setCredentialJson] = useState('');
+  const [credentialError, setCredentialError] = useState<string | null>(null);
+  const [savingCredentials, setSavingCredentials] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
+
+  useEffect(() => {
+    // Check current state on mount
+    api.request<{ connected: boolean; email: string | null }>('/google/status').then(data => {
+      if (data.ok && data.data.connected) {
+        setConnected(true);
+        setEmail(data.data.email);
+        setSaved(true);
+      }
+    });
+    api.request<{ hasCredentials: boolean }>('/google/credentials-check').then(data => {
+      if (data.ok && data.data.hasCredentials) setHasCredentials(true);
+    });
+    // Check if gcloud is already authed (lightweight GET, no side effects)
+    api.request<{ loggedIn: boolean; email?: string; projectId?: string | null }>('/google/gcloud-status').then(data => {
+      if (data.ok && data.data.loggedIn) {
+        setGcloudEmail(data.data.email ?? null);
+        if (data.data.projectId) setProjectId(data.data.projectId);
+      }
+    });
+    return () => { if (pollTimer) clearInterval(pollTimer); };
+  }, []);
+
+  // Step 1: Sign in to Google Cloud
+  const handleGcloudLogin = async () => {
+    setGcloudLoggingIn(true);
+    setError(null);
+    await api.request('/google/gcloud-login', { method: 'POST' });
+    // Poll for gcloud auth completion — silently ignore errors (expected while auth is in progress)
+    const timer = setInterval(async () => {
+      const data = await api.request<{ loggedIn: boolean; email?: string; projectId?: string | null }>('/google/gcloud-status');
+      if (data.ok && data.data.loggedIn) {
+        // Auth detected — now run project setup
+        const setup = await api.request<{ email: string; projectId: string }>('/google/gcloud-setup', { method: 'POST' });
+        if (setup.ok) {
+          setGcloudEmail(setup.data.email);
+          setProjectId(setup.data.projectId);
+          setGcloudLoggingIn(false);
+          clearInterval(timer);
+        }
+      }
+    }, 5000);
+    setTimeout(() => { clearInterval(timer); setGcloudLoggingIn(false); }, 180000);
+  };
+
+  // Step 2 is manual (user creates OAuth credentials in console)
+
+  // Step 3: Upload client_secret.json
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => { setCredentialJson(reader.result as string); setCredentialError(null); };
+    reader.readAsText(file);
+  };
+
+  const handleSaveCredentials = async () => {
+    setSavingCredentials(true);
+    setCredentialError(null);
+    const result = await api.request<{ saved: boolean }>('/google/credentials', {
+      method: 'POST',
+      body: JSON.stringify({ clientSecret: credentialJson }),
+    });
+    if (result.ok) { setHasCredentials(true); } else { setCredentialError(result.error); }
+    setSavingCredentials(false);
+  };
+
+  // Step 4: Sign in with Google (gws auth login)
+  const handleSignIn = async () => {
+    setSigningIn(true);
+    setError(null);
+    const result = await api.request<{ message: string }>('/google/connect', { method: 'POST' });
+    if (!result.ok) { setError(result.error); setSigningIn(false); return; }
+
+    const timer = setInterval(async () => {
+      const data = await api.request<{ working: boolean; email: string | null }>('/google/test', { method: 'POST' });
+      if (data.ok && data.data.working) {
+        setConnected(true);
+        setEmail(data.data.email);
+        setSigningIn(false);
+        setSaved(true);
+        clearInterval(timer);
+        setPollTimer(null);
+      }
+    }, 3000);
+    setPollTimer(timer);
+    setTimeout(() => { clearInterval(timer); setPollTimer(null); setSigningIn(false); }, 180000);
+  };
+
+  const step1Done = !!gcloudEmail && !!projectId;
+  const step3Done = hasCredentials;
+  const step4Done = connected;
+
+  // Already connected
+  if (connected) {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm text-white/55">
+          Your agents can read and manage Gmail, Calendar, Drive, Docs, Sheets, and Slides.
+        </p>
+        <div className="px-3 py-3 rounded-lg bg-cp-teal/10 border border-cp-teal/20">
+          <div className="flex items-center gap-2">
+            <span className="text-cp-teal">{'\u2713'}</span>
+            <span className="text-sm text-white/80">Connected as <strong className="text-white">{email}</strong></span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (saved) {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm text-white/55">
+          Connect a Google account to let your agents manage Gmail, Calendar, Drive, Docs, Sheets, and Slides.
+        </p>
+        <div className="px-3 py-2 rounded-lg bg-white/[0.05] text-white/40 text-sm">
+          Google Workspace skipped. You can connect later in Settings.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-white/55">
+        Connect a Google account to let your agents read and manage Gmail, Calendar, Drive, Docs, Sheets, and Slides.
+        Your primary agent gets full access; other agents get read-only.
+      </p>
+
+      {/* Step 1: Sign in to Google Cloud */}
+      <div className="glass-nested rounded-xl p-4 space-y-2">
+        <div className="flex items-center gap-2">
+          <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${step1Done ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/[0.1] text-white/50'}`}>
+            {step1Done ? '\u2713' : '1'}
+          </span>
+          <span className="text-sm font-medium text-white/90">Sign in to Google Cloud</span>
+          {step1Done && <span className="text-xs text-white/40">({gcloudEmail})</span>}
+        </div>
+        {!step1Done && (
+          <div className="ml-7 space-y-2">
+            <p className="text-xs text-white/50">Opens your browser to sign in with your Google account.</p>
+            <button onClick={handleGcloudLogin} disabled={gcloudLoggingIn}
+              className="glass-btn glass-btn-primary text-xs">
+              {gcloudLoggingIn ? 'Working...' : 'Sign in with Google'}
+            </button>
+            {gcloudLoggingIn && (
+              <div className="px-3 py-3 rounded-lg bg-cp-amber/10 border border-cp-amber/20 text-xs space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="animate-spin text-cp-amber">{'\u{1F504}'}</span>
+                  <span className="text-cp-amber font-medium">Setting up your Google Cloud connection...</span>
+                </div>
+                <p className="text-white/40">A browser window should open for you to sign in. After you approve, this page needs to configure your project and enable APIs. <strong className="text-white/50">This can take up to a minute</strong> — please don't navigate away.</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Step 2: Create OAuth credentials (manual) */}
+      <div className={`glass-nested rounded-xl p-4 space-y-2 ${!step1Done ? 'opacity-40 pointer-events-none' : ''}`}>
+        <div className="flex items-center gap-2">
+          <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${step3Done ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/[0.1] text-white/50'}`}>
+            {step3Done ? '\u2713' : '2'}
+          </span>
+          <span className="text-sm font-medium text-white/90">Create OAuth Credentials</span>
+        </div>
+        {!step3Done && step1Done && (
+          <div className="ml-7 space-y-3">
+            <ol className="text-xs text-white/50 space-y-2 list-decimal list-inside">
+              <li>
+                <a href={`https://console.cloud.google.com/apis/credentials/consent?project=${projectId}`} target="_blank" rel="noopener noreferrer"
+                  className="text-blue-400 hover:underline">Open the OAuth consent screen</a>
+                {' '}&mdash; click <strong className="text-white/70">Get Started</strong>, enter an app name (e.g. "Agent DOJO") and your email as support email, click <strong className="text-white/70">Next</strong>
+              </li>
+              <li>
+                Select <strong className="text-white/70">External</strong> for audience, click <strong className="text-white/70">Next</strong>
+              </li>
+              <li>
+                Enter your email as the contact address, agree to the data policy, click <strong className="text-white/70">Create</strong>
+              </li>
+              <li>
+                <strong className="text-white/70">Add yourself as a test user:</strong> Go to{' '}
+                <a href={`https://console.cloud.google.com/apis/credentials/consent?project=${projectId}`} target="_blank" rel="noopener noreferrer"
+                  className="text-blue-400 hover:underline">OAuth consent screen</a>
+                {' '}&gt; <strong className="text-white/70">Audience</strong> &gt; <strong className="text-white/70">Add users</strong> &gt; enter your Google email &gt; <strong className="text-white/70">Save</strong>
+              </li>
+              <li>
+                <a href={`https://console.cloud.google.com/apis/credentials?project=${projectId}`} target="_blank" rel="noopener noreferrer"
+                  className="text-blue-400 hover:underline">Go to Credentials</a>
+                {' '}&mdash; click <strong className="text-white/70">Create Credentials</strong> &gt; <strong className="text-white/70">OAuth client ID</strong>
+              </li>
+              <li>
+                Choose <strong className="text-white/70">Desktop app</strong>, give it a name (e.g. "DOJO"), click <strong className="text-white/70">Create</strong>
+              </li>
+              <li>
+                On the confirmation dialog, click <strong className="text-white/70">Download JSON</strong> and upload it below
+              </li>
+            </ol>
+
+            <p className="text-[10px] text-white/30">
+              Note: Google says credentials may take up to 5 minutes to take effect. If step 3 fails, wait a moment and try again.
+            </p>
+
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <label className="flex-1 flex items-center justify-center px-3 py-2 rounded-lg border border-dashed border-white/[0.15] hover:border-white/[0.25] cursor-pointer transition-colors">
+                  <input type="file" accept=".json" onChange={handleFileUpload} className="sr-only" />
+                  <span className="text-xs text-white/40">
+                    {credentialJson ? 'File loaded \u2713 — click Save' : 'Upload client_secret.json'}
+                  </span>
+                </label>
+                <button onClick={handleSaveCredentials}
+                  disabled={!credentialJson || savingCredentials}
+                  className="px-3 py-2 glass-btn glass-btn-primary text-xs shrink-0 disabled:opacity-30">
+                  {savingCredentials ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+              {credentialError && <p className="text-xs text-cp-coral">{credentialError}</p>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Step 3: Authorize access */}
+      <div className={`glass-nested rounded-xl p-4 space-y-2 ${!step3Done ? 'opacity-40 pointer-events-none' : ''}`}>
+        <div className="flex items-center gap-2">
+          <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${step4Done ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/[0.1] text-white/50'}`}>
+            {step4Done ? '\u2713' : '3'}
+          </span>
+          <span className="text-sm font-medium text-white/90">Authorize Access</span>
+        </div>
+        {!step4Done && step3Done && (
+          <div className="ml-7 space-y-2">
+            <p className="text-xs text-white/50">Opens your browser one more time to grant Gmail, Calendar, Drive, Docs, Sheets, and Slides access.</p>
+            <button onClick={handleSignIn} disabled={signingIn}
+              className="glass-btn glass-btn-primary text-xs">
+              {signingIn ? 'Waiting for authorization...' : 'Authorize Google Workspace'}
+            </button>
+            {signingIn && <p className="text-xs text-cp-amber animate-pulse">Approve the permissions in your browser.</p>}
+          </div>
+        )}
+      </div>
+
+      {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
+
+      {/* Skip button */}
+      <button onClick={() => setSaved(true)} disabled={saved}
+        className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
+          saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
+        }`}>
+        {saved ? '\u2713 Skipped' : 'Skip (Set Up Later in Settings)'}
+      </button>
+    </div>
+  );
+};
+
 // ── Web Search ──
 
-const WebSearchStep = () => {
+const WebSearchStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   const [provider, setProvider] = useState('brave');
   const [apiKey, setApiKey] = useState('');
   const [saved, setSaved] = useState(false);
+
+  useEffect(() => { onReady?.(saved); }, [saved, onReady]);
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState<'valid' | 'invalid' | null>(null);
   const [error, setError] = useState<string | null>(null);

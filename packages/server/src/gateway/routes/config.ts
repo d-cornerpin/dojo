@@ -179,10 +179,21 @@ configRouter.post('/providers', async (c) => {
   const { id, name, type, baseUrl, authType, credential } = parsed.data;
   const db = getDb();
 
-  // Check for duplicate ID
+  // If provider already exists, update it instead of erroring
   const existing = db.prepare('SELECT id FROM providers WHERE id = ?').get(id);
   if (existing) {
-    return c.json({ ok: false, error: 'Provider with this ID already exists' }, 409);
+    db.prepare(`
+      UPDATE providers SET name = ?, type = ?, base_url = ?, auth_type = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(name, type, baseUrl ?? null, authType, id);
+
+    if (credential) {
+      setProviderCredential(id, credential, authType as 'api_key' | 'oauth');
+      clearClientCache(id);
+    }
+
+    const updated = db.prepare('SELECT * FROM providers WHERE id = ?').get(id);
+    return c.json({ ok: true, data: updated });
   }
 
   // Store credential securely (skip for Ollama which has no auth)

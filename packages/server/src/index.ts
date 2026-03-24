@@ -146,6 +146,18 @@ async function main(): Promise<void> {
     }
   }
 
+  // 4e. Check Google Workspace CLI status on startup
+  {
+    try {
+      const { checkGwsOnStartup } = await import('./google/auth.js');
+      checkGwsOnStartup();
+    } catch (err) {
+      logger.warn('Google Workspace startup check failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // 5. Set up log broadcast
   setLogBroadcast((entry) => {
     broadcast({ type: 'log:entry', entry });

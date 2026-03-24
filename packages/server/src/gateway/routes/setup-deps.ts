@@ -70,6 +70,10 @@ setupDepsRouter.get('/deps/check', async (c) => {
     catch { return false; }
   });
 
+  // Check gws CLI and gcloud
+  const hasGws = cmdExists('gws');
+  const hasGcloud = cmdExists('gcloud') || fs.existsSync('/opt/homebrew/share/google-cloud-sdk/bin/gcloud');
+
   // Check nomic-embed-text
   let hasNomic = false;
   if (ollamaRunning) {
@@ -91,6 +95,8 @@ setupDepsRouter.get('/deps/check', async (c) => {
       cliclick: { installed: hasCli },
       playwright: { installed: hasPlaywright },
       nomic: { installed: hasNomic },
+      gws: { installed: hasGws },
+      gcloud: { installed: hasGcloud },
     },
   });
 });
@@ -125,6 +131,15 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
       }
       case 'playwright': {
         execSync('npx playwright install chromium', { encoding: 'utf-8', timeout: 180000, cwd: process.cwd(), env: execEnv });
+        return c.json({ ok: true, data: { installed: true } });
+      }
+      case 'gws': {
+        execSync('npm install -g @googleworkspace/cli', { encoding: 'utf-8', timeout: 120000, env: execEnv });
+        return c.json({ ok: true, data: { installed: true } });
+      }
+      case 'gcloud': {
+        if (!cmdExists('brew')) return c.json({ ok: false, error: 'Homebrew required' }, 400);
+        execSync('brew install --cask gcloud-cli', { encoding: 'utf-8', timeout: 300000, env: execEnv });
         return c.json({ ok: true, data: { installed: true } });
       }
       default:

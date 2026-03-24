@@ -53,7 +53,7 @@ function getCsrfToken(): string | null {
   return match ? match[1] : null;
 }
 
-const request = async <T>(
+export const request = async <T>(
   path: string,
   options: RequestInit = {},
 ): Promise<ApiResponse<T>> => {

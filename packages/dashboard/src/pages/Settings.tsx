@@ -4,9 +4,10 @@ import type { Provider, Model } from '@dojo/shared';
 import * as api from '../lib/api';
 import { RouterConfig } from '../components/RouterConfig';
 import { RouterTest } from '../components/RouterTest';
+import { GoogleWorkspaceSettings } from '../components/GoogleWorkspaceSettings';
 import { formatDate } from '../lib/dates';
 
-type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'dreaming' | 'update';
+type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'dreaming' | 'workspace' | 'update';
 
 export const Settings = () => {
   const [searchParams] = useSearchParams();
@@ -21,6 +22,7 @@ export const Settings = () => {
     { key: 'profile', label: 'Profile' },
     { key: 'security', label: 'Security' },
     { key: 'dreaming', label: 'Dreaming' },
+    { key: 'workspace', label: 'Google' },
     { key: 'update', label: 'Update' },
   ];
 
@@ -53,6 +55,7 @@ export const Settings = () => {
       {activeTab === 'profile' && <ProfileTab />}
       {activeTab === 'security' && <SecurityTab />}
       {activeTab === 'dreaming' && <DreamingTab />}
+      {activeTab === 'workspace' && <GoogleWorkspaceSettings />}
       {activeTab === 'update' && <UpdateTab />}
     </div>
   );

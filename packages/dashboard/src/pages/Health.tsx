@@ -115,6 +115,57 @@ const RemoteAccessCard = () => {
   );
 };
 
+const GoogleWorkspaceCard = () => {
+  const [status, setStatus] = useState<{
+    connected: boolean;
+    email: string | null;
+    services: Record<string, boolean>;
+    lastActivity: string | null;
+    todayActivity: { reads: number; writes: number };
+  } | null>(null);
+
+  useEffect(() => {
+    const token = localStorage.getItem('dojo_token');
+    fetch('/api/google/status', {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    }).then(r => r.json()).then(data => {
+      if (data.ok) setStatus(data.data);
+    }).catch(() => {});
+  }, []);
+
+  if (!status || !status.connected) return null;
+
+  const enabledServices = Object.entries(status.services)
+    .filter(([, v]) => v)
+    .map(([k]) => k.charAt(0).toUpperCase() + k.slice(1));
+
+  return (
+    <div className="mb-6">
+      <h3 className="text-sm font-medium white/70 mb-3">Google Workspace</h3>
+      <div className="glass-card p-4">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-cp-teal animate-pulse" />
+            <span className="text-sm white/80">Connected</span>
+          </div>
+          <span className="text-xs white/30">{status.email}</span>
+        </div>
+        <div className="flex flex-wrap gap-1 mb-2">
+          {enabledServices.map(svc => (
+            <span key={svc} className="text-[10px] px-1.5 py-0.5 rounded bg-cp-teal/10 text-cp-teal border border-cp-teal/20">{svc}</span>
+          ))}
+        </div>
+        <div className="flex gap-4 text-xs white/30">
+          <span>Today: {status.todayActivity.reads}R / {status.todayActivity.writes}W</span>
+          {status.lastActivity && (
+            <span>Last: {new Date(status.lastActivity).toLocaleTimeString()}</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const Health = () => {
   const [health, setHealth] = useState<HealthData | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -379,6 +430,9 @@ export const Health = () => {
 
       {/* Remote Access */}
       <RemoteAccessCard />
+
+      {/* Google Workspace */}
+      <GoogleWorkspaceCard />
 
       {/* Watchdog + iMessage status */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">

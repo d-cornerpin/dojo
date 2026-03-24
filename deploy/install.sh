@@ -74,6 +74,16 @@ else
     echo "✅ Node.js v${NODE_VERSION} installed"
 fi
 
+# ── Install Google Workspace CLI (optional) ──
+
+if command -v gws &>/dev/null; then
+    echo "✅ Google Workspace CLI installed"
+else
+    echo ""
+    echo "📦 Installing Google Workspace CLI..."
+    npm install -g @googleworkspace/cli 2>/dev/null || echo "⚠️  gws CLI install failed (optional — can be set up later)"
+fi
+
 # ── Create directory structure ──
 
 echo ""

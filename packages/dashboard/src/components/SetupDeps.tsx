@@ -16,6 +16,8 @@ interface DepState {
   cliclick: DepStatus;
   playwright: DepStatus;
   nomic: DepStatus;
+  gws: DepStatus;
+  gcloud: DepStatus;
 }
 
 interface OllamaModel {
@@ -92,7 +94,7 @@ const DepItem = ({ label, status, detail, error, onRetry }: {
 export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   const [deps, setDeps] = useState<DepState>({
     node: 'checking', brew: 'checking', ollama: 'checking',
-    ollamaRunning: false, cliclick: 'checking', playwright: 'checking', nomic: 'checking',
+    ollamaRunning: false, cliclick: 'checking', playwright: 'checking', nomic: 'checking', gws: 'checking', gcloud: 'checking',
   });
   const [depErrors, setDepErrors] = useState<Record<string, string>>({});
   const [phase, setPhase] = useState<'deps' | 'models'>('deps');
@@ -105,8 +107,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
 
   const [pullElapsed, setPullElapsed] = useState(0);
 
-  // Required deps: node, brew, ollama (installed+running), nomic
-  // Optional deps: cliclick, playwright (nice to have but not blocking)
+  // Required deps: all must be installed before proceeding
   // Also block Next while a model is downloading
   const requiredReady =
     !pulling &&
@@ -114,9 +115,11 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
     deps.brew === 'installed' &&
     deps.ollama === 'installed' &&
     deps.ollamaRunning &&
-    deps.nomic === 'installed';
+    deps.nomic === 'installed' &&
+    deps.gws === 'installed' &&
+    deps.gcloud === 'installed';
 
-  const allInstalling = [deps.ollama, deps.cliclick, deps.playwright, deps.nomic].some(s => s === 'installing');
+  const allInstalling = [deps.ollama, deps.cliclick, deps.playwright, deps.nomic, deps.gws, deps.gcloud].some(s => s === 'installing');
 
   useEffect(() => {
     onReady?.(requiredReady);
@@ -125,7 +128,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
   // ── Check deps (no auto-install) ──
 
   const checkDeps = useCallback(async () => {
-    setDeps(d => ({ ...d, node: 'checking', brew: 'checking', ollama: 'checking', cliclick: 'checking', playwright: 'checking', nomic: 'checking' }));
+    setDeps(d => ({ ...d, node: 'checking', brew: 'checking', ollama: 'checking', cliclick: 'checking', playwright: 'checking', nomic: 'checking', gws: 'checking', gcloud: 'checking' }));
 
     const result = await fetchJson<{
       node: { installed: boolean; version: string };
@@ -134,6 +137,8 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       cliclick: { installed: boolean };
       playwright: { installed: boolean };
       nomic: { installed: boolean };
+      gws: { installed: boolean };
+      gcloud: { installed: boolean };
     }>(`${API}/deps/check`);
 
     if (!result.ok) return;
@@ -147,6 +152,8 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       cliclick: d.cliclick.installed ? 'installed' : 'not-installed',
       playwright: d.playwright.installed ? 'installed' : 'not-installed',
       nomic: d.nomic.installed ? 'installed' : 'not-installed',
+      gws: d.gws.installed ? 'installed' : 'not-installed',
+      gcloud: d.gcloud.installed ? 'installed' : 'not-installed',
     });
 
     if (d.ollama.installed && d.nomic.installed) {
@@ -187,6 +194,14 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       const r = await fetchJson(`${API}/deps/install/playwright`, { method: 'POST' });
       setDeps(d => ({ ...d, playwright: r.ok ? 'installed' : 'failed' }));
       if (!r.ok) setDepErrors(e => ({ ...e, playwright: r.error }));
+    } else if (dep === 'gws') {
+      const r = await fetchJson(`${API}/deps/install/gws`, { method: 'POST' });
+      setDeps(d => ({ ...d, gws: r.ok ? 'installed' : 'failed' }));
+      if (!r.ok) setDepErrors(e => ({ ...e, gws: r.error }));
+    } else if (dep === 'gcloud') {
+      const r = await fetchJson(`${API}/deps/install/gcloud`, { method: 'POST' });
+      setDeps(d => ({ ...d, gcloud: r.ok ? 'installed' : 'failed' }));
+      if (!r.ok) setDepErrors(e => ({ ...e, gcloud: r.error }));
     } else if (dep === 'nomic') {
       const r = await fetchJson(`${API}/ollama/pull`, {
         method: 'POST',
@@ -226,6 +241,8 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
 
     if (!d.cliclick.installed) await installDep('cliclick');
     if (!d.playwright.installed) await installDep('playwright');
+    if (!d.gws.installed) await installDep('gws');
+    if (!d.gcloud.installed) await installDep('gcloud');
 
     // Re-check Ollama running state before pulling nomic
     const recheck = await fetchJson<{ ollama: { running: boolean }; nomic: { installed: boolean } }>(`${API}/deps/check`);
@@ -313,7 +330,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
     await loadInstalledModels();
   };
 
-  const hasFailed = [deps.ollama, deps.cliclick, deps.playwright, deps.nomic].some(s => s === 'failed');
+  const hasFailed = [deps.ollama, deps.cliclick, deps.playwright, deps.nomic, deps.gws, deps.gcloud].some(s => s === 'failed');
 
   return (
     <div className="space-y-6">
@@ -343,6 +360,20 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
             detail="Headless browser for web browsing"
             error={depErrors.playwright}
             onRetry={() => installDep('playwright')}
+          />
+          <DepItem
+            label="Google Workspace CLI"
+            status={deps.gws}
+            detail="Gmail, Calendar, Drive, Docs, Sheets, Slides"
+            error={depErrors.gws}
+            onRetry={() => installDep('gws')}
+          />
+          <DepItem
+            label="Google Cloud SDK"
+            status={deps.gcloud}
+            detail="Required for Google Workspace authentication"
+            error={depErrors.gcloud}
+            onRetry={() => installDep('gcloud')}
           />
           <DepItem
             label="nomic-embed-text"

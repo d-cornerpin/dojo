@@ -6,6 +6,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { toolDefinitions, getFilteredTools } from '../agent/tools.js';
 import { isPrimaryAgent, isPMAgent, isTrainerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName } from '../config/platform.js';
+import { getAgentGoogleAccessLevel } from '../google/auth.js';
 import { assembleGroupContext as _assembleGroupContext } from '../agent/groups.js';
 import { generateTechniqueIndex, generateDraftTechniqueContext } from '../techniques/index-builder.js';
 
@@ -162,6 +163,7 @@ function generateToolsGuidance(agentId: string): string {
     'Communication': agentTools.filter(t => t.name === 'imessage_send'),
     'Techniques': agentTools.filter(t => ['save_technique', 'use_technique', 'list_techniques', 'publish_technique', 'update_technique', 'submit_technique_for_review'].includes(t.name)),
     'Vault (Long-Term Memory)': agentTools.filter(t => t.name.startsWith('vault_')),
+    'Google Workspace': agentTools.filter(t => ['gmail_search', 'gmail_read', 'gmail_inbox', 'gmail_send', 'gmail_reply', 'gmail_forward', 'gmail_label', 'calendar_agenda', 'calendar_search', 'calendar_create', 'calendar_update', 'calendar_delete', 'drive_list', 'drive_read', 'drive_upload', 'drive_share', 'docs_read', 'docs_create', 'docs_edit', 'sheets_read', 'sheets_create', 'sheets_append', 'sheets_write', 'slides_create'].includes(t.name)),
   };
 
   for (const [category, tools] of Object.entries(categories)) {
@@ -349,6 +351,28 @@ When you create projects and tasks, ${pmName} will automatically track them. You
       }
     } catch { /* PM may not be configured */ }
   }
+
+  // Inject Google Workspace awareness based on access level
+  try {
+    const googleAccess = getAgentGoogleAccessLevel(agentId, isPrimaryAgent(agentId), isPMAgent(agentId));
+    if (googleAccess === 'full') {
+      parts.push(`## Google Workspace
+
+You have full access to the connected Google Workspace account. You can send emails, create and edit Google Docs, manage the calendar, upload and share Drive files, create spreadsheets and presentations, and more.
+
+Access levels for other agents:
+- Ronin and Apprentice agents have READ-ONLY Google access. They can search emails, read documents, and check the calendar, but they cannot send, create, edit, or delete anything.
+- The PM agent has no Google access.
+- If you need a sub-agent to review an email thread or research a document, any Ronin or Apprentice can do that.
+- If you need something sent, created, edited, or deleted in Google Workspace, you must do it yourself. You are the only agent with write access.
+
+All Google Workspace actions are logged. The user can see everything you do in the Google Activity log.`);
+    } else if (googleAccess === 'read') {
+      parts.push(`## Google Workspace (Read-Only)
+
+You have read-only access to the dojo's connected Google Workspace account. You can search and read emails, read Google Docs, check the calendar, and browse Drive files. You CANNOT send emails, create documents, edit files, manage calendar events, or share anything. If a task requires modifying Google Workspace, report back to the primary agent and let them handle it.`);
+    }
+  } catch { /* Google module may not be available */ }
 
   // Inject group context if agent is in a group
   try {

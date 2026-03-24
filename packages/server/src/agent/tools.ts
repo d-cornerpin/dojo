@@ -11,7 +11,7 @@ import { broadcast } from '../gateway/ws.js';
 import { memoryGrep, memoryDescribe, memoryExpand, memorySearch } from '../memory/retrieval.js';
 import { shouldIntercept, interceptLargeFile } from '../memory/large-files.js';
 import { checkPermission, getAgentPermissions } from './permissions.js';
-import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
+import { isPrimaryAgent, isPMAgent, getPrimaryAgentId } from '../config/platform.js';
 import { spawnAgent, terminateAgent, completeAgent } from './spawner.js';
 import { getAgentRuntime } from './runtime.js';
 import { sendIMessage, getDefaultSender } from '../services/imessage-bridge.js';
@@ -31,6 +31,9 @@ import { mouseClick, mouseMove, keyboardType, screenRead, applescriptRun } from 
 import { executeWebBrowse } from './browser.js';
 import { createGroup, assignAgentToGroup } from './groups.js';
 import { executeVaultRemember, executeVaultSearch, executeVaultForget } from '../vault/tools.js';
+import { googleReadToolDefinitions, executeGoogleReadTool } from '../google/tools-read.js';
+import { googleWriteToolDefinitions, executeGoogleWriteTool } from '../google/tools-write.js';
+import { getAgentGoogleAccessLevel, getEnabledServices } from '../google/auth.js';
 import type { ToolCall, ToolResult } from '@dojo/shared';
 
 const logger = createLogger('tools');
@@ -105,6 +108,42 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   if (removeTools.length > 0) {
     filtered = filtered.filter(t => !removeTools.includes(t.name));
   }
+
+  // ── Google Workspace tools (access-level gated) ──
+  const isPrimary = isPrimaryAgent(agentId);
+  const isPM = isPMAgent(agentId);
+
+  const googleAccess = getAgentGoogleAccessLevel(agentId, isPrimary, isPM);
+  const enabledSvc = getEnabledServices();
+
+  // Service-to-tool-prefix mapping for filtering by enabled service
+  const serviceToolPrefixes: Record<string, string[]> = {
+    gmail: ['gmail_'],
+    calendar: ['calendar_'],
+    drive: ['drive_'],
+    docs: ['docs_'],
+    sheets: ['sheets_'],
+    slides: ['slides_'],
+  };
+
+  function isToolEnabledByService(toolName: string): boolean {
+    for (const [service, prefixes] of Object.entries(serviceToolPrefixes)) {
+      if (prefixes.some(p => toolName.startsWith(p))) {
+        return enabledSvc[service as keyof typeof enabledSvc] === true;
+      }
+    }
+    return true; // tools not matching any service are always enabled
+  }
+
+  if (googleAccess === 'full') {
+    // Primary agent: all read + write tools, filtered by enabled services
+    const allGoogleTools = [...googleReadToolDefinitions, ...googleWriteToolDefinitions];
+    filtered.push(...allGoogleTools.filter(t => isToolEnabledByService(t.name)));
+  } else if (googleAccess === 'read') {
+    // Read-only agents: only read tools, filtered by enabled services
+    filtered.push(...googleReadToolDefinitions.filter(t => isToolEnabledByService(t.name)));
+  }
+  // googleAccess === 'none': no Google tools added
 
   return filtered;
 }
@@ -2014,6 +2053,51 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       }
       case 'vault_forget': {
         content = executeVaultForget(agentId, args);
+        isError = content.startsWith('Error');
+        break;
+      }
+
+      // ── Google Workspace Tools ──
+
+      case 'gmail_search':
+      case 'gmail_read':
+      case 'gmail_inbox':
+      case 'calendar_agenda':
+      case 'calendar_search':
+      case 'drive_list':
+      case 'drive_read':
+      case 'docs_read':
+      case 'sheets_read': {
+        const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+        content = executeGoogleReadTool(name, args, agentId, agentRow?.name ?? agentId);
+        isError = content.startsWith('Error');
+        break;
+      }
+
+      case 'gmail_send':
+      case 'gmail_reply':
+      case 'gmail_forward':
+      case 'gmail_label':
+      case 'calendar_create':
+      case 'calendar_update':
+      case 'calendar_delete':
+      case 'drive_upload':
+      case 'drive_share':
+      case 'docs_create':
+      case 'docs_edit':
+      case 'sheets_create':
+      case 'sheets_append':
+      case 'sheets_write':
+      case 'slides_create': {
+        // Double-check: only primary agent can use write tools (belt + suspenders)
+        if (!isPrimaryAgent(agentId)) {
+          content = 'Permission denied: only the primary agent can use Google Workspace write tools.';
+          isError = true;
+          auditLog(agentId, name, null, 'denied', 'Google write tool restricted to primary agent');
+          break;
+        }
+        const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+        content = executeGoogleWriteTool(name, args, agentId, agentRow?.name ?? agentId);
         isError = content.startsWith('Error');
         break;
       }
