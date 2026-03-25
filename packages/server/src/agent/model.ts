@@ -4,7 +4,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { createLogger } from '../logger.js';
-import { AgentError } from './errors.js';
+import { AgentError, notifyRateLimitHit } from './errors.js';
+import { scheduleRateLimitRetry } from './rate-limit-retry.js';
 import { toolDefinitions, getFilteredTools } from './tools.js';
 import { recordCost } from '../costs/tracker.js';
 import { checkBudget } from '../costs/budget.js';
@@ -486,6 +487,34 @@ async function callOpenAIModel(
     const isRateLimited = message.includes('rate_limit') || message.includes('429');
     const isOverloaded = message.includes('overloaded') || message.includes('529') || message.includes('503');
 
+    if (isRateLimited) notifyRateLimitHit(agentId, 'rate_limit');
+    if (isOverloaded) notifyRateLimitHit(agentId, 'overloaded');
+
+    // Schedule background retry for rate limits
+    if (isRateLimited || isOverloaded) {
+      // OpenAI and OpenRouter include retry-after headers
+      let retryAfterSeconds: number | null = null;
+      if (err instanceof OpenAI.APIError && err.headers) {
+        const retryAfter = err.headers['retry-after'];
+        if (retryAfter) {
+          const parsed = parseInt(retryAfter, 10);
+          if (!isNaN(parsed)) retryAfterSeconds = parsed;
+        }
+      }
+
+      const lastMsg = (() => {
+        try {
+          const db = getDb();
+          const row = db.prepare(
+            "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1"
+          ).get(agentId) as { content: string } | undefined;
+          return row?.content ?? null;
+        } catch { return null; }
+      })();
+
+      scheduleRateLimitRetry(agentId, retryAfterSeconds, lastMsg);
+    }
+
     throw new AgentError(`OpenAI call failed: ${message}`, agentId, {
       code: 'MODEL_CALL_FAILED',
       retryable: isRateLimited || isOverloaded,
@@ -767,6 +796,35 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     const isRateLimited = message.includes('rate_limit') || message.includes('429');
     const isOverloaded = message.includes('overloaded') || message.includes('529');
     const isServerError = message.includes('500') || message.includes('503');
+
+    if (isRateLimited) notifyRateLimitHit(agentId, 'rate_limit');
+    if (isOverloaded) notifyRateLimitHit(agentId, 'overloaded');
+
+    // Schedule background retry for rate limits
+    if (isRateLimited || isOverloaded) {
+      // Try to extract retry-after header (Anthropic API key responses include this)
+      let retryAfterSeconds: number | null = null;
+      if (err instanceof Anthropic.APIError && err.headers) {
+        const retryAfter = err.headers['retry-after'];
+        if (retryAfter) {
+          const parsed = parseInt(retryAfter, 10);
+          if (!isNaN(parsed)) retryAfterSeconds = parsed;
+        }
+      }
+
+      // Get the last user message to replay on retry
+      const lastMsg = (() => {
+        try {
+          const db = getDb();
+          const row = db.prepare(
+            "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1"
+          ).get(agentId) as { content: string } | undefined;
+          return row?.content ?? null;
+        } catch { return null; }
+      })();
+
+      scheduleRateLimitRetry(agentId, retryAfterSeconds, lastMsg);
+    }
 
     throw new AgentError(`Model call failed: ${message}`, agentId, {
       retryable: isRateLimited || isOverloaded || isServerError,

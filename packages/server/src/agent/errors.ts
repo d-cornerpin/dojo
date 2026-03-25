@@ -1,8 +1,14 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
+import { sendAlert } from '../services/imessage-bridge.js';
+import { isPrimaryAgent } from '../config/platform.js';
 
 const logger = createLogger('agent-errors');
+
+// Track rate limit notifications so we don't spam iMessage
+let lastRateLimitAlert = 0;
+const RATE_LIMIT_ALERT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes between alerts
 
 // ── Custom Error Class ──
 
@@ -53,6 +59,15 @@ export function recordError(agentId: string): boolean {
 
     pauseAgent(agentId);
     agentErrors.delete(agentId); // Reset after pausing
+
+    // Notify owner via iMessage if the primary agent gets paused
+    try {
+      const db = getDb();
+      const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+      const name = agent?.name ?? agentId;
+      sendAlert(`${name} has been paused due to repeated errors (${ERROR_LOOP_THRESHOLD} failures in ${ERROR_LOOP_WINDOW_MS / 1000}s). Check the dashboard.`, 'critical');
+    } catch { /* best effort */ }
+
     return true; // Signal: agent was paused
   }
 
@@ -61,6 +76,26 @@ export function recordError(agentId: string): boolean {
 
 export function clearErrors(agentId: string): void {
   agentErrors.delete(agentId);
+}
+
+/**
+ * Notify the owner via iMessage when a rate limit or overloaded error is hit.
+ * Throttled to one alert per 5 minutes to avoid spam.
+ */
+export function notifyRateLimitHit(agentId: string, errorType: 'rate_limit' | 'overloaded'): void {
+  const now = Date.now();
+  if (now - lastRateLimitAlert < RATE_LIMIT_ALERT_COOLDOWN_MS) return;
+  lastRateLimitAlert = now;
+
+  try {
+    const db = getDb();
+    const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+    const name = agent?.name ?? agentId;
+    const msg = errorType === 'rate_limit'
+      ? `${name} hit an API rate limit. Requests are being throttled. The agent will retry automatically.`
+      : `${name} got an API overloaded error. Anthropic's servers are at capacity. The agent will retry automatically.`;
+    sendAlert(msg, 'warning');
+  } catch { /* best effort */ }
 }
 
 function pauseAgent(agentId: string): void {
