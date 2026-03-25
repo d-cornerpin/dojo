@@ -1,14 +1,18 @@
 import { useState } from 'react';
+import { LinkPreview } from './LinkPreview';
 
 /**
  * Lightweight markdown renderer for chat messages.
- * Supports: fenced code blocks, inline code, bold, italic, and plain text.
+ * Supports: fenced code blocks, inline code, bold, italic, links with OG previews.
  * No external dependencies.
  */
 export const Markdown = ({ content }: { content: string }) => {
   const elements = parseMarkdown(content);
   return <div className="text-sm leading-relaxed break-words">{elements}</div>;
 };
+
+// URL regex — matches http/https URLs
+const URL_REGEX = /https?:\/\/[^\s<>"')\]]+/g;
 
 // ── Parser ──
 
@@ -17,6 +21,9 @@ function parseMarkdown(text: string): React.ReactNode[] {
   const result: React.ReactNode[] = [];
   let i = 0;
   let key = 0;
+
+  // Collect all standalone URLs for preview cards (rendered after text)
+  const previewUrls: string[] = [];
 
   while (i < lines.length) {
     // Fenced code block: ```lang\n...\n```
@@ -40,6 +47,15 @@ function parseMarkdown(text: string): React.ReactNode[] {
         paraLines.push(lines[i]);
         i++;
       }
+
+      // Find URLs that are on their own line (standalone) for preview cards
+      for (const line of paraLines) {
+        const trimmed = line.trim();
+        if (trimmed.match(/^https?:\/\/[^\s]+$/) && !trimmed.includes(' ')) {
+          previewUrls.push(trimmed);
+        }
+      }
+
       result.push(
         <span key={key++}>
           {paraLines.map((line, li) => (
@@ -51,6 +67,11 @@ function parseMarkdown(text: string): React.ReactNode[] {
         </span>,
       );
     }
+  }
+
+  // Render link preview cards for standalone URLs
+  for (const url of previewUrls) {
+    result.push(<LinkPreview key={`preview-${key++}`} url={url} />);
   }
 
   return result;
@@ -86,10 +107,9 @@ const CodeBlock = ({ code, language }: { code: string; language: string }) => {
   );
 };
 
-// ── Inline Markdown (bold, italic, inline code) ──
+// ── Inline Markdown (bold, italic, inline code, links) ──
 
 function InlineMarkdown({ text }: { text: string }): React.ReactNode {
-  // Process inline patterns: `code`, **bold**, *italic*
   const parts: React.ReactNode[] = [];
   let remaining = text;
   let key = 0;
@@ -98,7 +118,7 @@ function InlineMarkdown({ text }: { text: string }): React.ReactNode {
     // Inline code: `...`
     const codeMatch = remaining.match(/^(.*?)`([^`]+)`/);
     if (codeMatch) {
-      if (codeMatch[1]) parts.push(processEmphasis(codeMatch[1], key++));
+      if (codeMatch[1]) parts.push(processInline(codeMatch[1], key++));
       parts.push(
         <code
           key={key++}
@@ -111,49 +131,71 @@ function InlineMarkdown({ text }: { text: string }): React.ReactNode {
       continue;
     }
 
-    // No more inline code — process emphasis on the rest
-    parts.push(processEmphasis(remaining, key++));
+    // No more inline code — process the rest
+    parts.push(processInline(remaining, key++));
     break;
   }
 
   return <>{parts}</>;
 }
 
-function processEmphasis(text: string, baseKey: number): React.ReactNode {
-  // **bold** and *italic*
+// Process emphasis (bold, italic) and URLs within text
+function processInline(text: string, baseKey: number): React.ReactNode {
   const parts: React.ReactNode[] = [];
   let remaining = text;
   let key = baseKey * 1000;
 
   while (remaining.length > 0) {
-    // Bold: **...**
+    // Find the next URL, bold, or italic — whichever comes first
+    const urlMatch = remaining.match(/^(.*?)(https?:\/\/[^\s<>"')\]]+)/);
     const boldMatch = remaining.match(/^(.*?)\*\*(.+?)\*\*/);
-    if (boldMatch) {
-      if (boldMatch[1]) parts.push(boldMatch[1]);
+    const italicMatch = remaining.match(/^(.*?)\*(.+?)\*/);
+
+    // Find which match starts earliest
+    const candidates: Array<{ type: string; index: number; match: RegExpMatchArray }> = [];
+    if (urlMatch) candidates.push({ type: 'url', index: urlMatch[1].length, match: urlMatch });
+    if (boldMatch) candidates.push({ type: 'bold', index: boldMatch[1].length, match: boldMatch });
+    if (italicMatch) candidates.push({ type: 'italic', index: italicMatch[1].length, match: italicMatch });
+
+    if (candidates.length === 0) {
+      parts.push(remaining);
+      break;
+    }
+
+    // Pick the earliest match
+    candidates.sort((a, b) => a.index - b.index);
+    const winner = candidates[0];
+
+    if (winner.type === 'url') {
+      const m = winner.match;
+      if (m[1]) parts.push(m[1]);
+      const url = m[2];
+      parts.push(
+        <a key={key++} href={url} target="_blank" rel="noopener noreferrer"
+          className="text-blue-400 hover:underline break-all">
+          {url}
+        </a>,
+      );
+      remaining = remaining.slice(m[0].length);
+    } else if (winner.type === 'bold') {
+      const m = winner.match;
+      if (m[1]) parts.push(m[1]);
       parts.push(
         <strong key={key++} className="font-semibold text-white">
-          {boldMatch[2]}
+          {m[2]}
         </strong>,
       );
-      remaining = remaining.slice(boldMatch[0].length);
-      continue;
-    }
-
-    // Italic: *...*
-    const italicMatch = remaining.match(/^(.*?)\*(.+?)\*/);
-    if (italicMatch) {
-      if (italicMatch[1]) parts.push(italicMatch[1]);
+      remaining = remaining.slice(m[0].length);
+    } else if (winner.type === 'italic') {
+      const m = winner.match;
+      if (m[1]) parts.push(m[1]);
       parts.push(
         <em key={key++} className="italic">
-          {italicMatch[2]}
+          {m[2]}
         </em>,
       );
-      remaining = remaining.slice(italicMatch[0].length);
-      continue;
+      remaining = remaining.slice(m[0].length);
     }
-
-    parts.push(remaining);
-    break;
   }
 
   return parts.length === 1 && typeof parts[0] === 'string' ? parts[0] : <span key={baseKey}>{parts}</span>;
