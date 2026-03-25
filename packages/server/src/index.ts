@@ -158,6 +158,18 @@ async function main(): Promise<void> {
     }
   }
 
+  // 4f. Start Gmail watcher if Google Workspace is connected
+  {
+    try {
+      const { startGmailWatcher } = await import('./services/gmail-watcher.js');
+      startGmailWatcher();
+    } catch (err) {
+      logger.warn('Gmail watcher failed to start', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // 5. Set up log broadcast
   setLogBroadcast((entry) => {
     broadcast({ type: 'log:entry', entry });
