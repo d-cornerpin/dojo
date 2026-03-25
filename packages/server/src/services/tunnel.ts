@@ -8,6 +8,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getProviderCredential, setProviderCredential } from '../config/loader.js';
 import { broadcast } from '../gateway/ws.js';
+import { sendAlert } from './imessage-bridge.js';
 
 const logger = createLogger('tunnel');
 
@@ -152,6 +153,11 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
         tunnelStartedAt = Date.now();
         logger.info('Quick tunnel active', { url: tunnelUrl });
         broadcastStatus();
+
+        // Send the new URL via iMessage so the owner always has it
+        try {
+          sendAlert(`Dojo is online at ${tunnelUrl}`, 'info');
+        } catch { /* iMessage bridge may not be running yet */ }
       }
     };
 
