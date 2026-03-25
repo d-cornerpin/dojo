@@ -62,12 +62,17 @@ export async function checkAndCompact(
       threshold,
     }, agentId);
 
-    // Archive raw messages to vault BEFORE compaction destroys them
+    // Archive raw messages to vault BEFORE compaction destroys them.
+    // If archival fails, ABORT compaction — better to have a bloated context than lost data.
     const messagesForArchive = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(contextWindow));
     const archiveCompactedIds = getCompactedMessageIds(agentId);
     const uncompactedForArchive = messagesForArchive.filter(m => !archiveCompactedIds.has(m.id));
     if (uncompactedForArchive.length > 0) {
-      archiveMessagesBeforeCompaction(agentId, uncompactedForArchive);
+      const archiveId = archiveMessagesBeforeCompaction(agentId, uncompactedForArchive);
+      if (!archiveId) {
+        logger.error('Archive failed — aborting compaction to prevent data loss', { agentId, messageCount: uncompactedForArchive.length }, agentId);
+        return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
+      }
     }
 
     const tokensBefore = totalTokens;
@@ -105,9 +110,14 @@ export async function checkAndCompact(
       threshold: DEFAULTS.leafChunkTokens,
     }, agentId);
 
-    // Archive raw messages to vault BEFORE proactive compaction
+    // Archive raw messages to vault BEFORE proactive compaction.
+    // If archival fails, ABORT — don't compact without preserving the data.
     if (uncompactedMessages.length > 0) {
-      archiveMessagesBeforeCompaction(agentId, uncompactedMessages);
+      const archiveId = archiveMessagesBeforeCompaction(agentId, uncompactedMessages);
+      if (!archiveId) {
+        logger.error('Archive failed — aborting proactive compaction to prevent data loss', { agentId, messageCount: uncompactedMessages.length }, agentId);
+        return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
+      }
     }
 
     const leafCreated = await runLeafCompaction(agentId, modelId, contextWindow);

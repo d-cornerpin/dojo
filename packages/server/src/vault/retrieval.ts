@@ -14,6 +14,11 @@ import {
 
 const logger = createLogger('vault-retrieval');
 
+// Maximum pinned/permanent entries included in every turn.
+// Beyond this cap, entries are sorted by importance and the overflow
+// is unpinned by the Dreamer during its nightly cycle.
+export const MAX_PINNED_ENTRIES = 20;
+
 // ── Model-Dependent Budgets ──
 
 function getVaultBudget(contextWindow: number): { maxTokens: number; maxEntries: number } {
@@ -40,8 +45,20 @@ export async function retrieveForContext(
 ): Promise<{ section: string; entryIds: string[] }> {
   const budget = getVaultBudget(contextWindow);
 
-  // Get pinned entries (always included, don't count against limit)
-  const pinned = getPinnedEntries();
+  // Get pinned entries, capped at MAX_PINNED_ENTRIES.
+  // Permanent entries get priority, then sort by recency.
+  let pinned = getPinnedEntries();
+  if (pinned.length > MAX_PINNED_ENTRIES) {
+    pinned.sort((a, b) => {
+      // Permanent first
+      if (a.isPermanent && !b.isPermanent) return -1;
+      if (!a.isPermanent && b.isPermanent) return 1;
+      // Then by most recent
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+    pinned = pinned.slice(0, MAX_PINNED_ENTRIES);
+    logger.info(`Pinned entries exceed cap (${pinned.length + (getPinnedEntries().length - MAX_PINNED_ENTRIES)} total), capped at ${MAX_PINNED_ENTRIES}`);
+  }
 
   // Semantic search for relevant entries
   let relevant: Array<VaultEntry & { similarity: number }> = [];

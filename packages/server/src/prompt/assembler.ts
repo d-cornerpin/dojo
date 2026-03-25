@@ -241,20 +241,15 @@ For definitionally stable facts (names, relationships, birth dates, business nam
 
 Do NOT save: routine tool output, temporary debugging state, info already in the vault, trivial small talk.
 
-### URGENT -- save these IMMEDIATELY with vault_remember, do not wait:
-- The user corrects you on any fact -- save the correction RIGHT NOW
-- The user tells you about a schedule change -- save it RIGHT NOW
-- The user shares important personal or business news -- save it RIGHT NOW
-- The user says "remember this" or anything similar -- save it RIGHT NOW
+### SEARCH the vault (vault_search) -- THIS IS CRITICAL:
 
-These cannot wait for the dreaming cycle. Use vault_remember immediately in the same turn.
+Your context window only holds recent messages and a handful of pinned vault entries. Everything else you've ever learned is in the vault. You MUST search it proactively:
 
-### SEARCH the vault (vault_search) -- do this proactively:
-- The user references something you should know but don't see in your current context
-- You're about to start a task and want to check for relevant history or prior decisions
-- The user asks "do you remember..." or "what did we decide about..."
-- You're unsure about a preference or procedure that might have been established before
-- A topic comes up that feels like it has prior context you can't see
+- **Before starting any task**: call vault_search with keywords related to the task. There may be prior decisions, preferences, or context you can't see.
+- **When the user references something you should know**: if it's not in your visible context, vault_search before responding. NEVER say "I don't remember" or "I'm not sure" without searching first.
+- **When the user asks "do you remember..."**: ALWAYS search. The answer is almost certainly in the vault even if you can't see it in context.
+- **When a topic comes up that feels familiar**: search. Your instinct that you've discussed something before is usually right -- the vault has it.
+- **When you need a name, date, preference, or decision**: search. Don't guess or ask the user to repeat themselves.
 
 vault_search is your FIRST choice for recall. If it doesn't have what you need, fall back to memory_grep or memory_expand to search raw conversation history.
 
@@ -264,7 +259,7 @@ vault_search is your FIRST choice for recall. If it doesn't have what you need, 
 - Information has been superseded by newer facts
 
 ### This is not optional.
-The vault is how you maintain continuity across conversations. If something matters, write it down. If you need something you can't see, look it up.
+The vault is how you maintain continuity across conversations. If you need something you can't see, look it up. Never assume your context window has everything.
 `);
   }
 

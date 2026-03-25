@@ -15,6 +15,7 @@ import {
   getVaultStats,
   type VaultConversation,
 } from './store.js';
+import { MAX_PINNED_ENTRIES } from './retrieval.js';
 
 const logger = createLogger('vault-dreaming');
 
@@ -144,6 +145,7 @@ The dojo has ${unprocessed.length} unprocessed conversation archive(s). You have
 # Current Vault State
 
 - Total entries: ${stats.totalEntries} (${stats.pinnedCount} pinned, ${stats.permanentCount} permanent)
+- Pinned entry cap: ${MAX_PINNED_ENTRIES} (currently ${stats.pinnedCount}${stats.pinnedCount > MAX_PINNED_ENTRIES ? ' -- OVER CAP, needs pruning' : ''})
 - Unprocessed archives: ${unprocessed.length}
 
 # Archives to Process
@@ -166,7 +168,11 @@ ${archiveSummary}
    d. Look for information that should update USER.md or SOUL.md (see below)${techniqueInstructions}
 3. **After processing all archives**, check if USER.md or SOUL.md need updates (see below). If so, read the current file with file_read, make targeted edits, and write it back with file_write.
 4. **Deduplicate**: search the vault for entries that say essentially the same thing. Use vault_forget on the less detailed one.
-5. **When done**, call complete_task with a summary.
+5. **Pin cap enforcement**: The dojo allows a maximum of ${MAX_PINNED_ENTRIES} pinned/permanent vault entries (these are included in EVERY agent turn and cost tokens). If the count exceeds ${MAX_PINNED_ENTRIES}, you MUST reduce it:
+   - Permanent entries (names, family, businesses, birth dates, key relationships) take priority. Do NOT unpin these.
+   - Review the remaining pinned entries. Unpin the least critical ones by calling vault_forget with reason "unpinned: over cap" then re-saving them without pin/permanent flags via vault_remember. They'll still be searchable, just not auto-included.
+   - Aim for no more than ${MAX_PINNED_ENTRIES} total pinned+permanent entries after your cycle.
+6. **When done**, call complete_task with a summary.
 
 # When to Update USER.md
 
@@ -226,13 +232,9 @@ ${formatted}
 === END ARCHIVE ===`);
   }
 
-  // Mark archives as processed now -- the Dreamer will handle extraction
-  // If the Dreamer fails, the archives stay in the DB (they just won't be re-queued
-  // unless we add retry logic later)
-  const db = getDb();
-  for (const conv of unprocessed) {
-    db.prepare('UPDATE vault_conversations SET is_processed = 1, processed_at = datetime(\'now\') WHERE id = ?').run(conv.id);
-  }
+  // DO NOT mark archives as processed here. They stay is_processed=0 until the
+  // Dreamer successfully completes. The onDreamerComplete callback marks them.
+  // This way, if the Dreamer crashes, unprocessed archives are retried next cycle.
 
   return `Here are the conversation archives to process. Extract all knowledge into the vault using vault_remember, then call complete_task when done.
 
@@ -335,6 +337,14 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
       initialMessage: buildDreamerInitialMessage(unprocessed),
     });
 
+    // Store archive IDs in the Dreamer's config so we can mark them when it completes
+    const archiveIds = unprocessed.map(c => c.id);
+    const db = getDb();
+    db.prepare(`
+      UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', ?)
+      WHERE id = ?
+    `).run(JSON.stringify(archiveIds), result.agentId);
+
     logger.info('Dreamer agent spawned', {
       dreamerId: result.agentId,
       archives: unprocessed.length,
@@ -346,13 +356,32 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
       error: err instanceof Error ? err.message : String(err),
     });
 
-    // Unmark archives as processed so they can be retried
-    const db = getDb();
-    for (const conv of unprocessed) {
-      db.prepare('UPDATE vault_conversations SET is_processed = 0, processed_at = NULL WHERE id = ?').run(conv.id);
+    return { dreamerId: null };
+  }
+}
+
+// ── Mark Dreamer Archives as Processed ──
+
+/**
+ * Called when the Dreamer agent completes. Marks all its assigned archives as processed.
+ */
+export function markDreamerArchivesProcessed(dreamerAgentId: string): void {
+  const db = getDb();
+  const agent = db.prepare('SELECT config FROM agents WHERE id = ?').get(dreamerAgentId) as { config: string } | undefined;
+  if (!agent) return;
+
+  try {
+    const config = JSON.parse(agent.config || '{}');
+    const archiveIds = config.dreamerArchiveIds as string[] | undefined;
+    if (!archiveIds || archiveIds.length === 0) return;
+
+    for (const id of archiveIds) {
+      db.prepare("UPDATE vault_conversations SET is_processed = 1, processed_at = datetime('now') WHERE id = ?").run(id);
     }
 
-    return { dreamerId: null };
+    logger.info(`Marked ${archiveIds.length} archives as processed after Dreamer completion`, { dreamerAgentId });
+  } catch {
+    // Best effort
   }
 }
 

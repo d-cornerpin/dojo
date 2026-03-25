@@ -8,6 +8,7 @@ import { isPrimaryAgent } from '../config/platform.js';
 import { sendAgentMessage } from './agent-bus.js';
 import { memoryGrep } from '../memory/retrieval.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
+import { archiveAgentConversation } from '../vault/archive.js';
 import type { PermissionManifest, Agent, Message } from '@dojo/shared';
 
 const logger = createLogger('spawner');
@@ -362,6 +363,16 @@ export function terminateAgent(agentId: string, reason?: string): void {
     return;
   }
 
+  // Archive conversation for the Dreamer before terminating
+  try {
+    archiveAgentConversation(agentId);
+  } catch (err) {
+    logger.warn('Failed to archive agent conversation on termination', {
+      agentId,
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+
   // Update status
   db.prepare(`
     UPDATE agents SET status = 'terminated', updated_at = datetime('now') WHERE id = ?
@@ -452,6 +463,16 @@ export async function completeAgent(
     isPersistent = config.persist === true;
   } catch {}
 
+  // Archive conversation for the Dreamer before changing status
+  try {
+    archiveAgentConversation(agentId);
+  } catch (err) {
+    logger.warn('Failed to archive agent conversation on completion', {
+      agentId,
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+
   if (isPersistent) {
     // Persistent agent: set to idle, keep alive for future messages
     db.prepare(`
@@ -514,6 +535,14 @@ export async function completeAgent(
         notes = COALESCE(notes, '') || ? || char(10)
       WHERE id = ?
     `).run(taskStatus, taskStatus, `[${new Date().toISOString()}] Agent completed: ${summary}`, agent.task_id);
+  }
+
+  // If this is the Dreamer completing, mark its archives as processed
+  if (agent.name === 'Dreamer' && status === 'complete') {
+    try {
+      const { markDreamerArchivesProcessed } = await import('../vault/maintenance.js');
+      markDreamerArchivesProcessed(agentId);
+    } catch { /* best effort */ }
   }
 
   logger.info('Agent completed', {

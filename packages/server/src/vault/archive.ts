@@ -12,6 +12,31 @@ import type { Message } from '@dojo/shared';
 const logger = createLogger('vault-archive');
 
 /**
+ * Archive ALL messages for a terminated/completed agent.
+ * Called on agent termination to ensure conversations are preserved for the Dreamer.
+ */
+export function archiveAgentConversation(agentId: string): string | null {
+  const db = getDb();
+
+  // Check if this agent already has an unprocessed archive — avoid duplicates
+  const existing = db.prepare(
+    'SELECT id FROM vault_conversations WHERE agent_id = ? AND is_processed = 0'
+  ).get(agentId) as { id: string } | undefined;
+  if (existing) {
+    logger.debug('Agent already has unprocessed archive, skipping', { agentId }, agentId);
+    return existing.id;
+  }
+
+  const messages = db.prepare(
+    'SELECT * FROM messages WHERE agent_id = ? ORDER BY created_at ASC'
+  ).all(agentId) as Message[];
+
+  if (messages.length === 0) return null;
+
+  return archiveMessagesBeforeCompaction(agentId, messages);
+}
+
+/**
  * Archive raw messages to vault_conversations BEFORE compaction destroys them.
  * This is called from checkAndCompact() before runLeafCompaction().
  */
