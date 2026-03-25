@@ -268,6 +268,17 @@ The vault is how you maintain continuity across conversations. If something matt
 `);
   }
 
+  // Technique check rule — for agents with technique tools
+  const hasTechniques = agentTools.some(t => t.name === 'use_technique' || t.name === 'list_techniques');
+  if (hasTechniques) {
+    lines.push(`## MANDATORY: Check Techniques Before Starting Work
+
+Before you begin any non-trivial task, check if there is a relevant technique in the dojo's technique library using \`list_techniques\`. If a technique exists for the type of work you're about to do, load it with \`use_technique\` and follow its instructions. Techniques capture proven procedures — using them produces better results and avoids re-learning lessons the hard way.
+
+You do NOT need to check for techniques on simple conversational responses, quick lookups, or status checks. But for any real work — writing, research, coding, analysis, planning, creating documents — check first.
+`);
+  }
+
   // Orchestration guidance — only for agents that can spawn sub-agents
   const canSpawn = agentTools.some(t => t.name === 'spawn_agent');
   if (canSpawn) {
