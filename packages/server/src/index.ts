@@ -202,13 +202,15 @@ async function main(): Promise<void> {
   setInterval(cleanupOldUploads, 24 * 60 * 60 * 1000);
   cleanupOldUploads(); // Run once on startup
 
-  // Auto-start tunnel if enabled
-  try {
-    const { autoStartTunnel } = await import('./services/tunnel.js');
-    autoStartTunnel(3000); // Dashboard port
-  } catch (err) {
-    logger.warn('Failed to auto-start tunnel', { error: err instanceof Error ? err.message : String(err) });
-  }
+  // Auto-start tunnel if enabled (delay to ensure HTTP server is fully ready)
+  setTimeout(async () => {
+    try {
+      const { autoStartTunnel } = await import('./services/tunnel.js');
+      autoStartTunnel(PORT);
+    } catch (err) {
+      logger.warn('Failed to auto-start tunnel', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }, 3000);
 
   // Schedule the nightly dreaming cycle for the vault
   try {
