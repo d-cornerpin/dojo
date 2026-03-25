@@ -65,7 +65,7 @@ async function pollForNewEmails(): Promise<void> {
 
     const result = runGwsRead(
       'system', 'Gmail Watcher', 'gmail_inbox_poll',
-      `gmail users messages list --params '{"q": "${query}", "maxResults": 10}'`,
+      `gmail users messages list --params '{"userId": "me", "q": "${query}", "maxResults": 10}'`,
       { query },
     );
 
@@ -106,7 +106,7 @@ async function pollForNewEmails(): Promise<void> {
       // Fetch message metadata
       const detail = runGwsRead(
         'system', 'Gmail Watcher', 'gmail_read',
-        `gmail users messages get --params '{"id": "${msg.id}", "format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]}'`,
+        `gmail users messages get --params '{"userId": "me", "id": "${msg.id}", "format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]}'`,
         { messageId: msg.id },
       );
 

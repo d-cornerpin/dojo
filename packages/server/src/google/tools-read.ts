@@ -132,7 +132,7 @@ export function executeGoogleReadTool(
       const maxResults = (args.max_results as number) ?? 10;
       const result = runGwsRead(
         agentId, agentName, 'gmail_search',
-        `gmail users messages list --params '{"q": "${query}", "maxResults": ${maxResults}}'`,
+        `gmail users messages list --params '{"userId": "me", "q": "${query}", "maxResults": ${maxResults}}'`,
         { query: args.query, maxResults },
       );
       if (!result.ok) return `Error searching Gmail: ${result.error}`;
@@ -145,7 +145,7 @@ export function executeGoogleReadTool(
       for (const msg of data.messages.slice(0, maxResults)) {
         const detail = runGwsRead(
           agentId, agentName, 'gmail_read',
-          `gmail users messages get --params '{"id": "${msg.id}", "format": "metadata", "metadataHeaders": ["From", "To", "Subject", "Date"]}'`,
+          `gmail users messages get --params '{"userId": "me", "id": "${msg.id}", "format": "metadata", "metadataHeaders": ["From", "To", "Subject", "Date"]}'`,
           { messageId: msg.id },
         );
         if (detail.ok) {
@@ -168,7 +168,7 @@ export function executeGoogleReadTool(
       const messageId = escapeForJson(args.message_id as string);
       const result = runGwsRead(
         agentId, agentName, 'gmail_read',
-        `gmail users messages get --params '{"id": "${messageId}", "format": "full"}'`,
+        `gmail users messages get --params '{"userId": "me", "id": "${messageId}", "format": "full"}'`,
         { messageId: args.message_id },
       );
       if (!result.ok) return `Error reading email: ${result.error}`;
@@ -218,7 +218,7 @@ export function executeGoogleReadTool(
       const query = unreadOnly ? 'in:inbox is:unread' : 'in:inbox';
       const result = runGwsRead(
         agentId, agentName, 'gmail_inbox',
-        `gmail users messages list --params '{"q": "${query}", "maxResults": ${maxResults}}'`,
+        `gmail users messages list --params '{"userId": "me", "q": "${query}", "maxResults": ${maxResults}}'`,
         { maxResults, unreadOnly },
       );
       if (!result.ok) return `Error fetching inbox: ${result.error}`;
@@ -230,7 +230,7 @@ export function executeGoogleReadTool(
       for (const msg of data.messages.slice(0, maxResults)) {
         const detail = runGwsRead(
           agentId, agentName, 'gmail_read',
-          `gmail users messages get --params '{"id": "${msg.id}", "format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]}'`,
+          `gmail users messages get --params '{"userId": "me", "id": "${msg.id}", "format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]}'`,
           { messageId: msg.id },
         );
         if (detail.ok) {

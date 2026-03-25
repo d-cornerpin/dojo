@@ -290,7 +290,7 @@ export function executeGoogleWriteTool(
 
       const result = runGwsWrite(
         agentId, agentName, 'gmail_label',
-        `gmail users messages modify --params '{"id": "${messageId}"}' --json '${JSON.stringify({ addLabelIds: addLabels, removeLabelIds: removeLabels })}'`,
+        `gmail users messages modify --params '{"userId": "me", "id": "${messageId}"}' --json '${JSON.stringify({ addLabelIds: addLabels, removeLabelIds: removeLabels })}'`,
         { messageId: args.message_id, addLabels, removeLabels },
       );
       if (!result.ok) return `Error modifying labels: ${result.error}`;
