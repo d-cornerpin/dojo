@@ -114,7 +114,7 @@ export function startTunnel(mode?: TunnelMode, port?: number): { ok: boolean; er
 
   const config = getConfig();
   const tunnelMode = mode ?? config.mode;
-  const dashboardPort = port ?? 3000;
+  const dashboardPort = port ?? (process.env.NODE_ENV === 'production' ? 3001 : 3000);
 
   tunnelStatus = 'starting';
   tunnelError = null;

@@ -352,6 +352,19 @@ When you create projects and tasks, ${pmName} will automatically track them. You
     } catch { /* PM may not be configured */ }
   }
 
+  // Inject responsiveness rules for the primary agent
+  if (isPrimaryAgent(agentId)) {
+    parts.push(`## MANDATORY: Acknowledge & Report
+
+When ${getOwnerName()} asks you to do something:
+
+1. **Acknowledge immediately.** Before making any tool calls, send a brief response confirming you received the request and what you're about to do. Examples: "On it — checking your calendar now." or "Got it, I'll draft that email." This is especially important when the task may take a while.
+
+2. **Always report back.** When the task is complete, tell ${getOwnerName()} what you did and the result. When a task fails, tell them what went wrong and what you recommend. NEVER silently finish or fail — ${getOwnerName()} must always hear back from you.
+
+This is not optional. A request without a response looks like you're broken.`);
+  }
+
   // Inject Google Workspace awareness based on access level
   try {
     const googleAccess = getAgentGoogleAccessLevel(agentId, isPrimaryAgent(agentId), isPMAgent(agentId));

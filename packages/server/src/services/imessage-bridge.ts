@@ -21,21 +21,13 @@ let approvedSenders: string[] = [];
 let lastSeenRowId = 0;
 const POLL_INTERVAL_MS = 5000;
 
-// Track which sender triggered each agent's current turn so we reply to the right person
-// Entries expire after 60 seconds to prevent stale flags from sending unexpected iMessages
-const pendingIMResponseMap = new Map<string, { sender: string; setAt: number }>(); // agentId -> { sender, timestamp }
-
-const IM_RESPONSE_TIMEOUT_MS = 60000; // 60 seconds — flags expire to prevent stale replies
+// Track which sender triggered each agent's current turn so we reply to the right person.
+// No timeout — the flag stays until the agent's response is sent. Slow turns (tool calls,
+// slow models) should still get their iMessage reply.
+const pendingIMResponseMap = new Map<string, { sender: string }>(); // agentId -> sender
 
 export function isAwaitingIMResponse(agentId: string): boolean {
-  const entry = pendingIMResponseMap.get(agentId);
-  if (!entry) return false;
-  // Expire stale flags
-  if (Date.now() - entry.setAt > IM_RESPONSE_TIMEOUT_MS) {
-    pendingIMResponseMap.delete(agentId);
-    return false;
-  }
-  return true;
+  return pendingIMResponseMap.has(agentId);
 }
 
 export function clearIMResponseFlag(agentId: string): void {
@@ -161,7 +153,7 @@ async function pollMessages(): Promise<void> {
           });
 
           // Flag that primary agent's next response should be sent back via iMessage to this sender
-          pendingIMResponseMap.set(primaryId, { sender, setAt: Date.now() });
+          pendingIMResponseMap.set(primaryId, { sender });
 
           const runtime = getAgentRuntime();
           runtime.handleMessage(primaryId, msgContent).catch(err => {

@@ -332,23 +332,22 @@ class AgentRuntime {
 
       // If no tool calls, we're done
       if (result.toolCalls.length === 0) {
-        // Send response back via iMessage if this was triggered by an iMessage
-        let sentViaImessageDirect = false;
-        if (result.content && isAwaitingIMResponse(agentId)) {
-          clearIMResponseFlag(agentId);
-          sendResponseViaIMessage(result.content, agentId);
-          sentViaImessageDirect = true;
-        }
-
-        // Forward to iMessage if user is away from the dojo
-        // (skip if already sent via the direct iMessage reply path above)
-        if (!sentViaImessageDirect) {
+        if (result.content) {
           try {
-            const { maybeForwardToImessage } = await import('../services/presence.js');
-            if (result.content) {
-              maybeForwardToImessage(agentId, result.content);
+            const { getPresence } = await import('../services/presence.js');
+            const { isPrimaryAgent } = await import('../config/platform.js');
+            const presence = getPresence();
+
+            if (presence === 'away' && isPrimaryAgent(agentId)) {
+              // Rule 1: User is "away from the dojo" → always send via iMessage
+              sendResponseViaIMessage(result.content, agentId);
+              clearIMResponseFlag(agentId);
+            } else if (isAwaitingIMResponse(agentId)) {
+              // Rule 2: User is "in the dojo" but this turn was triggered by an iMessage → reply via iMessage
+              sendResponseViaIMessage(result.content, agentId);
+              clearIMResponseFlag(agentId);
             }
-          } catch { /* presence module may not be available */ }
+          } catch { /* presence/imessage module may not be available */ }
         }
 
         break;
