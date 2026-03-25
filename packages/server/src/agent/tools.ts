@@ -736,7 +736,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'get_current_time',
-    description: 'Get the current date, time, and timezone. Call this before scheduling tasks so you can calculate the correct scheduled_start time.',
+    description: 'Get the current date and time in UTC and local. Returns utc (ISO 8601), local (human-readable), and timezone. ALWAYS use the utc value when setting scheduled_start on tasks.',
     input_schema: {
       type: 'object',
       properties: {},
@@ -1727,11 +1727,28 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'get_current_time': {
         const now = new Date();
         const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const utcIso = now.toISOString();
+        const localStr = now.toLocaleString('en-US', { timeZone: tz, weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+
+        // Calculate UTC offset string (e.g., "-06:00") and conversion hint
+        const offsetMin = now.getTimezoneOffset();
+        const offsetSign = offsetMin <= 0 ? '+' : '-';
+        const absMin = Math.abs(offsetMin);
+        const offsetStr = `${offsetSign}${String(Math.floor(absMin / 60)).padStart(2, '0')}:${String(absMin % 60).padStart(2, '0')}`;
+        const offsetHours = Math.abs(offsetMin / 60);
+        const conversionHint = offsetMin > 0
+          ? `To convert local to UTC: add ${offsetHours} hours`
+          : offsetMin < 0
+            ? `To convert local to UTC: subtract ${offsetHours} hours`
+            : 'Local time is UTC';
+
         content = JSON.stringify({
-          datetime: now.toISOString().replace('Z', '') + (now.toTimeString().match(/([+-]\d{4})/)?.[1] ?? ''),
+          utc: utcIso,
+          local: localStr,
           timezone: tz,
-          utc: now.toISOString(),
-          local: now.toLocaleString(),
+          utc_offset: offsetStr,
+          conversion: conversionHint,
+          note: 'ALWAYS use the utc value when setting scheduled_start on tasks. All scheduling is UTC.',
         });
         break;
       }

@@ -192,7 +192,16 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
 
     // Auto-set to in_progress ONLY if assigned to an agent AND there is NO scheduled start
     // If a scheduled_start is provided, the task stays on_deck until the scheduler fires it
-    const scheduledStart = args.scheduled_start as string | undefined;
+    // Normalize scheduled_start to UTC ISO format to prevent timezone mismatches
+    let scheduledStart = args.scheduled_start as string | undefined;
+    if (scheduledStart) {
+      try {
+        const parsed = new Date(scheduledStart);
+        if (!isNaN(parsed.getTime())) {
+          scheduledStart = parsed.toISOString();
+        }
+      } catch { /* keep original if parse fails */ }
+    }
     const hasSchedule = !!(scheduledStart || args.repeat_interval);
     if (assignedTo && !hasSchedule) {
       try {
