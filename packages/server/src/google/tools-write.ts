@@ -389,14 +389,17 @@ export function executeGoogleWriteTool(
       const data = result.data as { documentId?: string; title?: string };
       const docId = data?.documentId;
 
-      // If initial content provided, append it
+      // If initial content provided, write it to the doc
       if (docId && args.content) {
         const content = escapeForJson(args.content as string);
-        runGwsWrite(
+        const writeResult = runGwsWrite(
           agentId, agentName, 'docs_edit',
-          `docs +append --document-id "${docId}" --text "${content}"`,
+          `docs +write --document "${docId}" --text "${content}"`,
           { documentId: docId, contentLength: (args.content as string).length },
         );
+        if (!writeResult.ok) {
+          return `Google Doc "${args.title}" created (ID: ${docId}) but failed to write content: ${writeResult.error}`;
+        }
       }
 
       return `Google Doc "${args.title}" created${docId ? ` (ID: ${docId})` : ''}`;
@@ -408,7 +411,7 @@ export function executeGoogleWriteTool(
 
       const result = runGwsWrite(
         agentId, agentName, 'docs_edit',
-        `docs +append --document-id "${docId}" --text "${content}"`,
+        `docs +write --document "${docId}" --text "${content}"`,
         { documentId: args.document_id, contentLength: (args.content as string).length },
       );
       if (!result.ok) return `Error editing document: ${result.error}`;
