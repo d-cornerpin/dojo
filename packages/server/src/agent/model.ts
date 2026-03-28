@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { createLogger } from '../logger.js';
-import { AgentError, notifyRateLimitHit } from './errors.js';
+import { AgentError } from './errors.js';
 import { scheduleRateLimitRetry } from './rate-limit-retry.js';
 import { toolDefinitions, getFilteredTools } from './tools.js';
 import { recordCost } from '../costs/tracker.js';
@@ -487,10 +487,7 @@ async function callOpenAIModel(
     const isRateLimited = message.includes('rate_limit') || message.includes('429');
     const isOverloaded = message.includes('overloaded') || message.includes('529') || message.includes('503');
 
-    if (isRateLimited) notifyRateLimitHit(agentId, 'rate_limit');
-    if (isOverloaded) notifyRateLimitHit(agentId, 'overloaded');
-
-    // Schedule background retry for rate limits
+    // Schedule background retry for rate limits (alerts handled by retry manager on strike 3)
     if (isRateLimited || isOverloaded) {
       // OpenAI and OpenRouter include retry-after headers
       let retryAfterSeconds: number | null = null;
@@ -797,10 +794,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     const isOverloaded = message.includes('overloaded') || message.includes('529');
     const isServerError = message.includes('500') || message.includes('503');
 
-    if (isRateLimited) notifyRateLimitHit(agentId, 'rate_limit');
-    if (isOverloaded) notifyRateLimitHit(agentId, 'overloaded');
-
-    // Schedule background retry for rate limits
+    // Schedule background retry for rate limits (alerts handled by retry manager on strike 3)
     if (isRateLimited || isOverloaded) {
       // Try to extract retry-after header (Anthropic API key responses include this)
       let retryAfterSeconds: number | null = null;

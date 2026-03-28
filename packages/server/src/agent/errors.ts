@@ -151,6 +151,14 @@ export async function withRetry<T>(
         throw err;
       }
 
+      // Don't inline-retry rate limits — the background retry manager handles those
+      if (err instanceof AgentError && err.code === 'MODEL_CALL_FAILED') {
+        const msg = err.message.toLowerCase();
+        if (msg.includes('rate_limit') || msg.includes('429') || msg.includes('overloaded')) {
+          throw err; // Let the background retry handle it
+        }
+      }
+
       if (attempt < opts.maxRetries) {
         const delay = Math.min(
           opts.baseDelayMs * Math.pow(2, attempt),

@@ -1,10 +1,14 @@
 // ════════════════════════════════════════
 // Rate Limit Retry Manager
-// Handles automatic retries when API rate limits or overloaded errors are hit.
-// Strategy depends on whether we have a retry-after header:
-//   - With header: wait the exact time, then retry
-//   - Without header (OAuth): decaying schedule: 1m, 5m, 30m, 1h, 2h, 3h, 4h, 5h
-//   - After 5h with no success: alert owner that something else may be wrong
+//
+// Three-strike approach:
+//   Strike 1: Transient blip. Retry silently after 10 seconds. No alert.
+//   Strike 2: Might be real. Retry after 30 seconds. Still no alert.
+//   Strike 3: It's real. Alert the owner, set status to rate_limited,
+//             start the decay schedule: 1m, 5m, 30m, 1h, 2h, 3h, 4h, 5h
+//   After 5h: Critical alert — something else is probably wrong.
+//
+// If a retry-after header is present, use its exact value instead.
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
@@ -13,10 +17,14 @@ import { broadcast } from '../gateway/ws.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 import { getDb } from '../db/connection.js';
 import { isPrimaryAgent } from '../config/platform.js';
+import { notifyRateLimitHit } from './errors.js';
 
 const logger = createLogger('rate-limit-retry');
 
-// Decaying retry schedule (in seconds) for when we don't have a retry-after header
+// Silent retry delays for strikes 1 and 2 (seconds)
+const SILENT_RETRIES = [10, 30];
+
+// Decay schedule for strike 3+ (seconds)
 const DECAY_SCHEDULE_SECONDS = [
   60,       // 1 minute
   300,      // 5 minutes
@@ -28,157 +36,157 @@ const DECAY_SCHEDULE_SECONDS = [
   18000,    // 5 hours
 ];
 
-// Track active retry states per agent
-const retryStates = new Map<string, {
+interface RetryState {
   agentId: string;
   timer: ReturnType<typeof setTimeout>;
-  attempt: number;
+  strike: number;        // 0-indexed: 0 = first silent, 1 = second silent, 2+ = decay schedule
   startedAt: number;
   lastMessageContent: string | null;
-}>();
+  alerted: boolean;      // whether the owner has been notified
+}
+
+const retryStates = new Map<string, RetryState>();
 
 /**
- * Schedule a rate-limit retry for an agent.
- * Call this when a model call fails with a rate limit or overloaded error.
- *
- * @param agentId The agent that was rate-limited
- * @param retryAfterSeconds Exact seconds to wait (from retry-after header), or null for decay schedule
- * @param lastMessageContent The last user message content to replay when retrying
+ * Handle a rate limit or overloaded error for an agent.
+ * Called from the model layer when the API returns 429/529.
  */
 export function scheduleRateLimitRetry(
   agentId: string,
   retryAfterSeconds: number | null,
   lastMessageContent: string | null,
 ): void {
-  // If already retrying this agent, advance to next attempt in decay schedule
-  const existing = retryStates.get(agentId);
-  const attempt = existing ? existing.attempt + 1 : 0;
-
-  // If we've exhausted the decay schedule, alert the owner
-  if (!retryAfterSeconds && attempt >= DECAY_SCHEDULE_SECONDS.length) {
-    const agentName = getAgentName(agentId);
-    sendAlert(
-      `${agentName} has been rate-limited for over 5 hours. The rate limit window should have reset by now. Something else may be wrong. Check the dashboard or your API account.`,
-      'critical',
-    );
-    logger.error('Rate limit retry exhausted after full decay schedule', { agentId, attempt });
-    cleanupRetry(agentId);
+  // If already retrying, don't stack
+  if (retryStates.has(agentId)) {
+    logger.debug('Rate limit retry already active, ignoring duplicate', { agentId });
     return;
   }
 
-  // Determine wait time
-  let waitSeconds: number;
-  if (retryAfterSeconds !== null && retryAfterSeconds > 0) {
-    waitSeconds = retryAfterSeconds;
-  } else {
-    waitSeconds = DECAY_SCHEDULE_SECONDS[Math.min(attempt, DECAY_SCHEDULE_SECONDS.length - 1)];
-  }
+  const strike = 0;
+  const startedAt = Date.now();
 
-  // Clear any existing timer
-  if (existing?.timer) clearTimeout(existing.timer);
+  // If we have an exact retry-after, use it (skip silent retries)
+  const waitSeconds = retryAfterSeconds !== null && retryAfterSeconds > 0
+    ? retryAfterSeconds
+    : SILENT_RETRIES[0];
 
   const agentName = getAgentName(agentId);
+  logger.info(`Rate limit hit for ${agentName}, silent retry in ${waitSeconds}s (strike 1)`, { agentId });
 
-  // Log and notify
-  const waitStr = formatDuration(waitSeconds);
-  logger.info(`Scheduling rate-limit retry for ${agentName}`, {
-    agentId,
-    attempt,
-    waitSeconds,
-    waitStr,
-    hasRetryAfter: retryAfterSeconds !== null,
-  });
+  scheduleNextAttempt(agentId, agentName, strike, startedAt, waitSeconds, lastMessageContent, false);
+}
 
-  // Notify dashboard
-  broadcast({
-    type: 'agent:rate_limited',
-    agentId,
-    data: { attempt, waitSeconds, nextRetryAt: new Date(Date.now() + waitSeconds * 1000).toISOString() },
-  } as never);
-
-  // Set the agent status to indicate it's waiting
-  try {
-    const db = getDb();
-    db.prepare(`
-      UPDATE agents SET status = 'rate_limited', updated_at = datetime('now') WHERE id = ?
-    `).run(agentId);
-    broadcast({ type: 'agent:status', agentId, status: 'rate_limited' });
-  } catch { /* best effort */ }
-
-  // Schedule the retry
+function scheduleNextAttempt(
+  agentId: string,
+  agentName: string,
+  strike: number,
+  startedAt: number,
+  waitSeconds: number,
+  lastMessageContent: string | null,
+  alerted: boolean,
+): void {
   const timer = setTimeout(async () => {
-    logger.info(`Rate-limit retry firing for ${agentName}`, { agentId, attempt });
+    logger.info(`Rate limit retry firing for ${agentName} (strike ${strike + 1})`, { agentId, strike });
 
     try {
-      // Set agent back to working
-      const db = getDb();
-      db.prepare(`
-        UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?
-      `).run(agentId);
-      broadcast({ type: 'agent:status', agentId, status: 'idle' });
+      // Try replaying the last message
+      if (lastMessageContent) {
+        const { getAgentRuntime } = await import('./runtime.js');
+        const runtime = getAgentRuntime();
+        await runtime.handleMessage(agentId, lastMessageContent);
+      }
 
-      // Calculate how long the agent was rate-limited
-      const state = retryStates.get(agentId);
-      const downtime = state ? formatDuration(Math.round((Date.now() - state.startedAt) / 1000)) : 'a while';
-
-      // Inject a system message letting the agent know they were rate-limited
-      const isPrimary = isPrimaryAgent(agentId);
-      const noticeContent = isPrimary
-        ? `[System] You were rate-limited by the API for ${downtime}. You're back online now. If you were in the middle of something, pick up where you left off.`
-        : `[System] You were rate-limited by the API for ${downtime}. You're back online now. Let the primary agent know you were temporarily unavailable, then resume your task.`;
-
-      const noticeMsgId = uuidv4();
-      db.prepare(`
-        INSERT INTO messages (id, agent_id, role, content, created_at)
-        VALUES (?, ?, 'user', ?, datetime('now'))
-      `).run(noticeMsgId, agentId, noticeContent);
-
-      broadcast({
-        type: 'chat:message',
-        agentId,
-        message: {
-          id: noticeMsgId,
-          agentId,
-          role: 'user' as const,
-          content: noticeContent,
-          tokenCount: null,
-          modelId: null,
-          cost: null,
-          latencyMs: null,
-          createdAt: new Date().toISOString(),
-        },
-      });
-
-      // Trigger the agent with the notice (which also includes context to resume)
-      const { getAgentRuntime } = await import('./runtime.js');
-      const runtime = getAgentRuntime();
-      await runtime.handleMessage(agentId, noticeContent);
-
-      // If we get here without error, the retry worked — clean up
+      // Success — clean up and notify agent
+      const downtime = formatDuration(Math.round((Date.now() - startedAt) / 1000));
       cleanupRetry(agentId);
+
+      // Only notify the agent if they were in the alerted state (strike 3+)
+      if (alerted) {
+        // Restore agent status
+        try {
+          const db = getDb();
+          db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(agentId);
+          broadcast({ type: 'agent:status', agentId, status: 'idle' });
+        } catch { /* best effort */ }
+
+        // Tell the agent they're back online
+        const isPrimary = isPrimaryAgent(agentId);
+        const noticeContent = isPrimary
+          ? `[System] You were rate-limited by the API for ${downtime}. You're back online now. Pick up where you left off.`
+          : `[System] You were rate-limited by the API for ${downtime}. You're back online now. Let the primary agent know you were temporarily unavailable, then resume your task.`;
+
+        const db = getDb();
+        const noticeMsgId = uuidv4();
+        db.prepare("INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))").run(noticeMsgId, agentId, noticeContent);
+        broadcast({
+          type: 'chat:message',
+          agentId,
+          message: { id: noticeMsgId, agentId, role: 'user' as const, content: noticeContent, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
+        });
+      } else {
+        logger.info(`Transient rate limit resolved silently for ${agentName} after ${downtime}`, { agentId, strike });
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const isStillRateLimited = msg.includes('rate_limit') || msg.includes('429') || msg.includes('overloaded') || msg.includes('529');
+      const isStillLimited = msg.includes('rate_limit') || msg.includes('429') || msg.includes('overloaded') || msg.includes('529');
 
-      if (isStillRateLimited) {
-        // Still rate-limited, schedule next attempt
-        logger.warn(`Rate-limit retry failed, still limited. Scheduling next attempt.`, { agentId, attempt });
-        scheduleRateLimitRetry(agentId, null, lastMessageContent);
-      } else {
-        // Different error — clean up and let normal error handling take over
-        logger.error(`Rate-limit retry failed with non-rate-limit error`, { agentId, error: msg });
+      if (!isStillLimited) {
+        // Different error — not a rate limit anymore, let normal error handling take over
+        logger.error('Rate limit retry got non-rate-limit error', { agentId, error: msg });
         cleanupRetry(agentId);
+        return;
       }
+
+      // Still rate-limited — advance to next strike
+      const nextStrike = strike + 1;
+      const elapsedMs = Date.now() - startedAt;
+      const elapsedHours = elapsedMs / (1000 * 60 * 60);
+
+      // Strike 1 failed → try strike 2 (still silent)
+      if (nextStrike < SILENT_RETRIES.length) {
+        const nextWait = SILENT_RETRIES[nextStrike];
+        logger.info(`Still rate-limited, silent retry ${nextStrike + 1} in ${nextWait}s`, { agentId });
+        cleanupRetry(agentId);
+        scheduleNextAttempt(agentId, agentName, nextStrike, startedAt, nextWait, lastMessageContent, false);
+        return;
+      }
+
+      // Strike 3+ — this is real. Alert the owner (once) and start decay schedule.
+      const decayIndex = nextStrike - SILENT_RETRIES.length;
+
+      if (decayIndex >= DECAY_SCHEDULE_SECONDS.length || elapsedHours >= 5) {
+        // Exhausted the entire schedule
+        sendAlert(
+          `${agentName} has been rate-limited for ${formatDuration(Math.round(elapsedMs / 1000))}. The window should have reset by now. Check your API account.`,
+          'critical',
+        );
+        logger.error('Rate limit retry fully exhausted', { agentId, elapsedHours: elapsedHours.toFixed(1) });
+        cleanupRetry(agentId);
+        return;
+      }
+
+      // First time hitting strike 3 — alert the owner and set status
+      let nowAlerted = alerted;
+      if (!alerted) {
+        notifyRateLimitHit(agentId, 'rate_limit');
+
+        try {
+          const db = getDb();
+          db.prepare("UPDATE agents SET status = 'rate_limited', updated_at = datetime('now') WHERE id = ?").run(agentId);
+          broadcast({ type: 'agent:status', agentId, status: 'rate_limited' });
+        } catch { /* best effort */ }
+
+        nowAlerted = true;
+      }
+
+      const nextWait = DECAY_SCHEDULE_SECONDS[decayIndex];
+      logger.warn(`Rate limit confirmed for ${agentName}, next retry in ${formatDuration(nextWait)}`, { agentId, decayIndex, strike: nextStrike });
+      cleanupRetry(agentId);
+      scheduleNextAttempt(agentId, agentName, nextStrike, startedAt, nextWait, lastMessageContent, nowAlerted);
     }
   }, waitSeconds * 1000);
 
-  retryStates.set(agentId, {
-    agentId,
-    timer,
-    attempt,
-    startedAt: existing?.startedAt ?? Date.now(),
-    lastMessageContent,
-  });
+  retryStates.set(agentId, { agentId, timer, strike, startedAt, lastMessageContent, alerted });
 }
 
 /**
