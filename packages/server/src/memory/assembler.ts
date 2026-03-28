@@ -7,6 +7,7 @@ import { estimateTokens, getRecentMessages } from './store.js';
 import { getContextSummaries } from './dag.js';
 import { getLatestBriefing } from './briefing.js';
 import { retrieveForContext } from '../vault/retrieval.js';
+import { isPMAgent } from '../config/platform.js';
 import type { Summary } from './dag.js';
 import type { Message } from '@dojo/shared';
 
@@ -42,6 +43,34 @@ export async function assembleContext(
   let usedTokens = estimateTokens(systemPrompt);
 
   const messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }> = [];
+
+  // PM agent gets a lightweight context: system prompt + recent messages only.
+  // No briefing, no vault, no summaries. The tracker is its memory.
+  if (isPMAgent(agentId)) {
+    const freshTail = getRecentMessages(agentId, 10);
+    const tailMessages = budgetFreshTail(freshTail, maxTokens - usedTokens);
+    const sanitized = sanitizeToolPairs(tailMessages);
+
+    for (const msg of sanitized) {
+      const parsed = parseMessageContent(msg);
+      if (msg.role === 'tool') {
+        messages.push({ role: 'user', content: parsed as Anthropic.ContentBlockParam[] });
+      } else if (msg.role === 'user' || msg.role === 'assistant') {
+        messages.push({ role: msg.role, content: parsed });
+      }
+    }
+
+    // Ensure starts with user role
+    while (messages.length > 0 && messages[0].role !== 'user') messages.shift();
+
+    logger.debug('PM agent context assembled (lightweight)', {
+      agentId,
+      systemTokens: usedTokens,
+      messageCount: messages.length,
+    }, agentId);
+
+    return { systemPrompt, messages };
+  }
 
   // 2. Morning briefing
   const briefing = getLatestBriefing(agentId);

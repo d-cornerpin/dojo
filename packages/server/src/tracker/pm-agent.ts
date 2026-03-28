@@ -269,12 +269,54 @@ export function stopPokeLoop(): void {
 let lastLLMReviewAt = 0;
 const LLM_REVIEW_INTERVAL_MS = 600_000; // 10 minutes — gives tasks time to settle before reviewing
 
+// How many recent messages to keep for the PM. The PM is a stateless checker —
+// it only needs enough context for a short back-and-forth about a stalled task.
+const PM_MAX_MESSAGES = 10;
+
+/**
+ * Prune old PM messages to keep the context window small.
+ * The PM doesn't need history — the tracker is its memory.
+ */
+function pruneOldPMMessages(pmId: string): void {
+  const db = getDb();
+  try {
+    // Count total messages
+    const countRow = db.prepare('SELECT COUNT(*) as c FROM messages WHERE agent_id = ?').get(pmId) as { c: number };
+    if (countRow.c <= PM_MAX_MESSAGES) return;
+
+    // Get the ID of the Nth most recent message (our cutoff)
+    const cutoff = db.prepare(`
+      SELECT id FROM messages WHERE agent_id = ?
+      ORDER BY created_at DESC, rowid DESC
+      LIMIT 1 OFFSET ?
+    `).get(pmId, PM_MAX_MESSAGES) as { id: string } | undefined;
+
+    if (!cutoff) return;
+
+    // Delete everything older than the cutoff
+    const deleted = db.prepare(`
+      DELETE FROM messages WHERE agent_id = ? AND rowid < (SELECT rowid FROM messages WHERE id = ?)
+    `).run(pmId, cutoff.id);
+
+    if (deleted.changes > 0) {
+      logger.debug('Pruned old PM messages', { pmId, deleted: deleted.changes, kept: PM_MAX_MESSAGES });
+    }
+  } catch (err) {
+    logger.warn('Failed to prune PM messages', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 async function runPMReview(): Promise<void> {
   const now = Date.now();
   if (now - lastLLMReviewAt < LLM_REVIEW_INTERVAL_MS) return;
 
   const db = getDb();
   const pmId = getPMAgentId();
+
+  // Prune old messages before each review to keep context tight
+  pruneOldPMMessages(pmId);
   const pmName = getPMAgentName();
   const primaryName = getPrimaryAgentName();
 

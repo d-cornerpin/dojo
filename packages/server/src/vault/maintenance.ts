@@ -206,39 +206,106 @@ If yes, read the current file, make targeted edits, and write it back. You CAN r
 - Keep each entry under 500 tokens`;
 }
 
-function buildDreamerInitialMessage(unprocessed: VaultConversation[]): string {
-  // Build the initial message with all archive contents
-  const archiveTexts: string[] = [];
+// Rough token estimate: ~4 characters per token
+const CHARS_PER_TOKEN = 4;
 
-  for (const conv of unprocessed) {
-    let parsedMessages: Array<{ role: string; content: string; createdAt?: string }>;
-    try {
-      parsedMessages = JSON.parse(conv.messages);
-    } catch {
-      continue;
-    }
+// Reserve this much of the context window for system prompt, tools, and response
+const CONTEXT_OVERHEAD_TOKENS = 8000;
 
-    const formatted = parsedMessages.map(m => {
-      const role = (m.role ?? 'unknown').toUpperCase();
-      const ts = m.createdAt ? ` [${m.createdAt}]` : '';
-      return `[${role}${ts}] ${m.content}`;
-    }).join('\n\n');
+function formatArchive(conv: VaultConversation): string | null {
+  let parsedMessages: Array<{ role: string; content: string; createdAt?: string }>;
+  try {
+    parsedMessages = JSON.parse(conv.messages);
+  } catch {
+    return null;
+  }
 
-    archiveTexts.push(`=== ARCHIVE: ${conv.agentName ?? conv.agentId} (ID: ${conv.id}) ===
+  const formatted = parsedMessages.map(m => {
+    const role = (m.role ?? 'unknown').toUpperCase();
+    const ts = m.createdAt ? ` [${m.createdAt}]` : '';
+    return `[${role}${ts}] ${m.content}`;
+  }).join('\n\n');
+
+  return `=== ARCHIVE: ${conv.agentName ?? conv.agentId} (ID: ${conv.id}) ===
 ${conv.messageCount} messages, ${conv.earliestAt} to ${conv.latestAt}
 
 ${formatted}
 
-=== END ARCHIVE ===`);
+=== END ARCHIVE ===`;
+}
+
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+/**
+ * Batch archives into chunks that fit within the model's context window.
+ * Returns array of batches, each containing the archive IDs and formatted text.
+ */
+function batchArchives(unprocessed: VaultConversation[], contextWindow: number): Array<{ ids: string[]; text: string }> {
+  const budgetTokens = contextWindow - CONTEXT_OVERHEAD_TOKENS;
+  const batches: Array<{ ids: string[]; text: string }> = [];
+
+  let currentIds: string[] = [];
+  let currentTexts: string[] = [];
+  let currentTokens = 0;
+
+  for (const conv of unprocessed) {
+    const formatted = formatArchive(conv);
+    if (!formatted) continue;
+
+    const archiveTokens = estimateTokens(formatted);
+
+    // If a single archive exceeds the budget, truncate it to fit
+    if (archiveTokens > budgetTokens) {
+      // Flush current batch first
+      if (currentTexts.length > 0) {
+        batches.push({ ids: [...currentIds], text: currentTexts.join('\n\n') });
+        currentIds = [];
+        currentTexts = [];
+        currentTokens = 0;
+      }
+
+      const maxChars = budgetTokens * CHARS_PER_TOKEN;
+      const truncated = formatted.slice(0, maxChars) + '\n\n[TRUNCATED — archive too large for single batch]';
+      batches.push({ ids: [conv.id], text: truncated });
+      logger.warn('Archive truncated to fit context window', {
+        archiveId: conv.id,
+        originalTokens: archiveTokens,
+        budgetTokens,
+      });
+      continue;
+    }
+
+    // If adding this archive would exceed the budget, flush and start new batch
+    if (currentTokens + archiveTokens > budgetTokens && currentTexts.length > 0) {
+      batches.push({ ids: [...currentIds], text: currentTexts.join('\n\n') });
+      currentIds = [];
+      currentTexts = [];
+      currentTokens = 0;
+    }
+
+    currentIds.push(conv.id);
+    currentTexts.push(formatted);
+    currentTokens += archiveTokens;
   }
 
-  // DO NOT mark archives as processed here. They stay is_processed=0 until the
-  // Dreamer successfully completes. The onDreamerComplete callback marks them.
-  // This way, if the Dreamer crashes, unprocessed archives are retried next cycle.
+  // Flush remaining
+  if (currentTexts.length > 0) {
+    batches.push({ ids: [...currentIds], text: currentTexts.join('\n\n') });
+  }
 
-  return `Here are the conversation archives to process. Extract all knowledge into the vault using vault_remember, then call complete_task when done.
+  return batches;
+}
 
-${archiveTexts.join('\n\n')}
+function buildDreamerInitialMessage(batchText: string, batchIndex: number, totalBatches: number): string {
+  const batchNote = totalBatches > 1
+    ? `\n\nNote: This is batch ${batchIndex + 1} of ${totalBatches}. Focus on these archives only. More batches will be processed after you finish.\n`
+    : '';
+
+  return `Here are the conversation archives to process. Extract all knowledge into the vault using vault_remember, then call complete_task when done.${batchNote}
+
+${batchText}
 
 Begin by creating a tracker project, then process each archive systematically.`;
 }
@@ -283,16 +350,36 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
     return { dreamerId: null };
   }
 
-  logger.info(`Spawning Dreamer agent to process ${unprocessed.length} archives`, {
+  // Get model context window for batching
+  const db = getDb();
+  const modelRow = db.prepare('SELECT context_window FROM models WHERE id = ?').get(modelId) as { context_window: number } | undefined;
+  const contextWindow = modelRow?.context_window ?? 32000; // conservative default
+
+  // Batch archives to fit within the model's context window
+  const batches = batchArchives(unprocessed, contextWindow);
+
+  logger.info(`Spawning Dreamer agent to process ${unprocessed.length} archives in ${batches.length} batch(es)`, {
     mode: config.dreamMode,
     modelId,
+    contextWindow,
+    batches: batches.length,
   });
 
-  broadcast({ type: 'dream:started', data: { mode: config.dreamMode, archives: unprocessed.length } } as never);
+  broadcast({ type: 'dream:started', data: { mode: config.dreamMode, archives: unprocessed.length, batches: batches.length } } as never);
 
   const stats = getVaultStats();
 
-  // Step 3: Spawn the Dreamer agent
+  // Step 3: Process batches — spawn Dreamer for the first batch
+  // Subsequent batches are handled by scheduleDreamerBatch after each completes
+  const firstBatch = batches[0];
+  if (!firstBatch) {
+    logger.warn('No valid archive batches to process');
+    return { dreamerId: null };
+  }
+
+  // Store remaining batches for sequential processing
+  pendingBatches.set(primaryId, { batches, currentIndex: 0, config, primaryId, modelId, stats });
+
   try {
     const result = await spawnAgent({
       parentId: primaryId,
@@ -334,20 +421,20 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
         can_assign_permissions: false,
         system_control: [],
       },
-      initialMessage: buildDreamerInitialMessage(unprocessed),
+      initialMessage: buildDreamerInitialMessage(firstBatch.text, 0, batches.length),
     });
 
-    // Store archive IDs in the Dreamer's config so we can mark them when it completes
-    const archiveIds = unprocessed.map(c => c.id);
-    const db = getDb();
+    // Store THIS BATCH's archive IDs so we mark only them when it completes
     db.prepare(`
       UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', ?)
       WHERE id = ?
-    `).run(JSON.stringify(archiveIds), result.agentId);
+    `).run(JSON.stringify(firstBatch.ids), result.agentId);
 
     logger.info('Dreamer agent spawned', {
       dreamerId: result.agentId,
-      archives: unprocessed.length,
+      batch: `1/${batches.length}`,
+      archivesInBatch: firstBatch.ids.length,
+      totalArchives: unprocessed.length,
     });
 
     return { dreamerId: result.agentId };
@@ -360,10 +447,107 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
   }
 }
 
+// ── Batch Processing State ──
+
+interface PendingBatchState {
+  batches: Array<{ ids: string[]; text: string }>;
+  currentIndex: number;
+  config: ReturnType<typeof getDreamingConfig>;
+  primaryId: string;
+  modelId: string;
+  stats: ReturnType<typeof getVaultStats>;
+}
+
+const pendingBatches = new Map<string, PendingBatchState>();
+
+/**
+ * After a Dreamer completes a batch, check if there are more batches to process.
+ * If so, spawn a new Dreamer for the next batch.
+ */
+export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
+  const state = pendingBatches.get(primaryId);
+  if (!state) return;
+
+  const nextIndex = state.currentIndex + 1;
+  if (nextIndex >= state.batches.length) {
+    // All batches done
+    pendingBatches.delete(primaryId);
+    logger.info('All Dreamer batches complete', { totalBatches: state.batches.length });
+    broadcast({ type: 'dream:complete', data: { batches: state.batches.length } } as never);
+    return;
+  }
+
+  state.currentIndex = nextIndex;
+  const batch = state.batches[nextIndex];
+
+  logger.info(`Spawning Dreamer for batch ${nextIndex + 1}/${state.batches.length}`, {
+    archivesInBatch: batch.ids.length,
+  });
+
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
+  const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
+
+  try {
+    const result = await spawnAgent({
+      parentId: primaryId,
+      name: 'Dreamer',
+      systemPrompt: await buildDreamerPrompt([], state.config.dreamMode, state.stats),
+      modelId: state.modelId,
+      classification: 'apprentice',
+      timeout: 3600,
+      persist: false,
+      toolsPolicy: {
+        allow: [
+          'vault_remember', 'vault_search', 'vault_forget',
+          'memory_grep', 'memory_search',
+          'file_read', 'file_write',
+          'tracker_create_project', 'tracker_create_task',
+          'tracker_update_status', 'tracker_add_notes', 'tracker_complete_step',
+          'get_current_time', 'send_to_agent', 'complete_task',
+        ],
+        deny: [],
+      },
+      permissions: {
+        file_read: [profilePath, soulPath],
+        file_write: [profilePath, soulPath],
+        file_delete: 'none',
+        exec_allow: [],
+        exec_deny: ['*'],
+        network_domains: 'none',
+        max_processes: 0,
+        can_spawn_agents: false,
+        can_assign_permissions: false,
+        system_control: [],
+      },
+      initialMessage: buildDreamerInitialMessage(batch.text, nextIndex, state.batches.length),
+    });
+
+    const db = getDb();
+    db.prepare(`
+      UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', ?)
+      WHERE id = ?
+    `).run(JSON.stringify(batch.ids), result.agentId);
+
+    logger.info('Next Dreamer batch spawned', {
+      dreamerId: result.agentId,
+      batch: `${nextIndex + 1}/${state.batches.length}`,
+    });
+  } catch (err) {
+    logger.error('Failed to spawn next Dreamer batch', {
+      error: err instanceof Error ? err.message : String(err),
+      batch: `${nextIndex + 1}/${state.batches.length}`,
+    });
+    pendingBatches.delete(primaryId);
+  }
+}
+
 // ── Mark Dreamer Archives as Processed ──
 
 /**
- * Called when the Dreamer agent completes. Marks all its assigned archives as processed.
+ * Called when the Dreamer agent completes. Marks all its assigned archives as processed,
+ * then spawns the next batch if there are more.
  */
 export function markDreamerArchivesProcessed(dreamerAgentId: string): void {
   const db = getDb();
@@ -380,6 +564,16 @@ export function markDreamerArchivesProcessed(dreamerAgentId: string): void {
     }
 
     logger.info(`Marked ${archiveIds.length} archives as processed after Dreamer completion`, { dreamerAgentId });
+
+    // Check if there are more batches to process
+    const agentRow = db.prepare('SELECT parent_id FROM agents WHERE id = ?').get(dreamerAgentId) as { parent_id: string } | undefined;
+    if (agentRow?.parent_id) {
+      spawnNextDreamerBatch(agentRow.parent_id).catch(err => {
+        logger.error('Failed to spawn next Dreamer batch', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
   } catch {
     // Best effort
   }
