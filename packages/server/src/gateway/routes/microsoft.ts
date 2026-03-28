@@ -36,6 +36,7 @@ microsoftRouter.get('/status', (c) => {
     ok: true,
     data: {
       hasClientId,
+      clientId: getClientId() ?? null,
       enabled: config.enabled,
       connected: config.connected,
       email: config.accountEmail,
@@ -91,11 +92,11 @@ microsoftRouter.get('/callback', async (c) => {
 
   if (error) {
     logger.error('Microsoft OAuth error', { error, errorDesc });
-    return c.redirect(`${dashboardBase}/#/settings?tab=microsoft&error=${encodeURIComponent(errorDesc ?? error)}`);
+    return c.redirect(`${dashboardBase}/settings?tab=microsoft&error=${encodeURIComponent(errorDesc ?? error)}`);
   }
 
   if (!code) {
-    return c.redirect(`${dashboardBase}/#/settings?tab=microsoft&error=No+authorization+code+received`);
+    return c.redirect(`${dashboardBase}/settings?tab=microsoft&error=No+authorization+code+received`);
   }
 
   const redirectUri = storedRedirectUri ?? 'http://localhost:3001/api/microsoft/callback';
@@ -103,10 +104,10 @@ microsoftRouter.get('/callback', async (c) => {
 
   if (result.success) {
     logger.info('Microsoft OAuth successful', { email: result.email, accountType: result.accountType });
-    return c.redirect(`${dashboardBase}/#/settings?tab=microsoft&connected=true`);
+    return c.redirect(`${dashboardBase}/settings?tab=microsoft&connected=true`);
   } else {
     logger.error('Microsoft token exchange failed', { error: result.error });
-    return c.redirect(`${dashboardBase}/#/settings?tab=microsoft&error=${encodeURIComponent(result.error ?? 'Token exchange failed')}`);
+    return c.redirect(`${dashboardBase}/settings?tab=microsoft&error=${encodeURIComponent(result.error ?? 'Token exchange failed')}`);
   }
 });
 

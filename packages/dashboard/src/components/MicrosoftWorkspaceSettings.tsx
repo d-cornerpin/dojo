@@ -4,6 +4,7 @@ import { MicrosoftActivityLog } from './MicrosoftActivityLog';
 
 interface MsStatus {
   hasClientId: boolean;
+  clientId: string | null;
   enabled: boolean;
   connected: boolean;
   email: string | null;
@@ -29,14 +30,18 @@ export const MicrosoftWorkspaceSettings = () => {
   useEffect(() => {
     loadStatus();
     // Check URL params for callback result
-    const params = new URLSearchParams(window.location.hash.split('?')[1] ?? '');
+    const params = new URLSearchParams(window.location.search);
     if (params.get('connected') === 'true') loadStatus();
-    if (params.get('error')) setConfigError(decodeURIComponent(params.get('error') ?? ''));
+    if (params.get('error')) setConfigError(params.get('error'));
   }, []);
 
   const loadStatus = async () => {
     const data = await api.request<MsStatus>('/microsoft/status');
-    if (data.ok) setStatus(data.data);
+    if (data.ok) {
+      setStatus(data.data);
+      // Pre-fill the client ID if saved
+      if (data.data.clientId && !clientId) setClientId(data.data.clientId);
+    }
   };
 
   const handleConfigure = async () => {
@@ -286,7 +291,7 @@ export const MicrosoftWorkspaceSettings = () => {
               </div>
               <div>
                 <label className="block text-xs font-medium text-white/55 mb-1">
-                  Client Secret <span className="text-white/30 font-normal">(recommended)</span>
+                  Client Secret <span className="text-white/30 font-normal">(recommended{status?.hasClientId ? ' — re-enter if changing' : ''})</span>
                 </label>
                 <input type="password" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)}
                   placeholder="Enter client secret value"
