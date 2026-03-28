@@ -24,6 +24,7 @@ export const MicrosoftWorkspaceSettings = () => {
   const [clientSecret, setClientSecret] = useState('');
   const [configuring, setConfiguring] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
+  const [showStep1, setShowStep1] = useState(false);
 
   useEffect(() => {
     loadStatus();
@@ -230,15 +231,23 @@ export const MicrosoftWorkspaceSettings = () => {
       </p>
 
       {/* Step 1: Register Azure App */}
-      <div className={`glass-card p-4 space-y-2 ${status.hasClientId ? 'opacity-60' : ''}`}>
-        <div className="flex items-center gap-2">
-          <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${status.hasClientId ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/[0.1] text-white/50'}`}>
-            {status.hasClientId ? '\u2713' : '1'}
-          </span>
-          <span className="text-sm font-medium text-white/90">Register an Azure App</span>
+      <div className="glass-card p-4 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${status.hasClientId ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/[0.1] text-white/50'}`}>
+              {status.hasClientId ? '\u2713' : '1'}
+            </span>
+            <span className="text-sm font-medium text-white/90">Register an Azure App</span>
+          </div>
+          {status.hasClientId && (
+            <button onClick={() => setShowStep1(!showStep1)}
+              className="text-xs text-white/30 hover:text-white/50 transition-colors">
+              {showStep1 ? 'Collapse' : 'Edit'}
+            </button>
+          )}
         </div>
 
-        {!status.hasClientId && (
+        {(!status.hasClientId || showStep1) && (
           <div className="ml-7 space-y-3">
             <ol className="text-xs text-white/50 space-y-2 list-decimal list-inside">
               <li>
