@@ -1564,6 +1564,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
             }, agentId);
           });
 
+          auditLog(agentId, 'tool_call', 'send_to_agent', 'success', `to:${target.id} (${target.name})`);
           content = `Message sent to agent "${target.name}" (${target.id}). Status: ${target.status}.`;
         }
         break;

@@ -454,8 +454,8 @@ class AgentRuntime {
           // Check if the agent already called send_to_agent targeting this sender during the loop
           const sentReply = db.prepare(`
             SELECT id FROM audit_log
-            WHERE agent_id = ? AND action_type = 'tool_call' AND action = 'send_to_agent'
-              AND details LIKE ? AND created_at >= datetime('now', '-2 minutes')
+            WHERE agent_id = ? AND action_type = 'tool_call' AND target = 'send_to_agent'
+              AND detail LIKE ? AND created_at >= datetime('now', '-2 minutes')
             LIMIT 1
           `).get(agentId, `%${senderId}%`) as { id: string } | undefined;
 
@@ -466,9 +466,43 @@ class AgentRuntime {
             ).get(agentId) as { content: string } | undefined;
 
             if (lastResponse?.content && typeof lastResponse.content === 'string' && lastResponse.content.trim().length > 0) {
-              const { sendAgentMessage } = await import('./agent-bus.js');
-              sendAgentMessage(agentId, senderId, 'reply', lastResponse.content);
-              logger.info('Auto-routed text response to original sender (agent forgot send_to_agent)', {
+              // Get sender agent name for context
+              const senderAgent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+              const senderName = senderAgent?.name ?? agentId;
+
+              // Deliver to the original sender's messages table (same as send_to_agent does)
+              const replyMsgId = uuidv4();
+              const replyContent = `[Message from ${senderName} (agent ID: ${agentId})] ${lastResponse.content}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
+              db.prepare(`
+                INSERT INTO messages (id, agent_id, role, content, created_at)
+                VALUES (?, ?, 'user', ?, datetime('now'))
+              `).run(replyMsgId, senderId, replyContent);
+
+              broadcast({
+                type: 'chat:message',
+                agentId: senderId,
+                message: {
+                  id: replyMsgId,
+                  agentId: senderId,
+                  role: 'user' as const,
+                  content: replyContent,
+                  tokenCount: null,
+                  modelId: null,
+                  cost: null,
+                  latencyMs: null,
+                  createdAt: new Date().toISOString(),
+                },
+              });
+
+              // Trigger the sender's runtime so they process the reply
+              this.handleMessage(senderId, replyContent).catch(err => {
+                logger.error('Auto-route reply delivery failed', {
+                  senderId,
+                  error: err instanceof Error ? err.message : String(err),
+                }, agentId);
+              });
+
+              logger.info('Auto-routed text response to original sender', {
                 agentId,
                 senderId,
                 responseLength: lastResponse.content.length,
