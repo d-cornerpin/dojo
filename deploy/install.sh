@@ -1,5 +1,7 @@
 #!/bin/bash
-set -e
+# Note: intentionally NOT using set -e here. Homebrew and other installers
+# can return non-zero during normal operation, which would kill the script.
+# We handle errors explicitly where they matter.
 
 # ════════════════════════════════════════
 # Agent D.O.J.O. — Installer
@@ -45,12 +47,25 @@ echo "✅ macOS $(sw_vers -productVersion) — ${RAM_GB}GB RAM"
 if ! command -v brew &>/dev/null; then
     echo ""
     echo "📦 Installing Homebrew..."
+    echo ""
+    echo "   ⚠️  Homebrew may ask for your macOS password."
+    echo "   This is normal — type your password and press Enter."
+    echo "   (You won't see the characters as you type)"
+    echo ""
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     # Add to path for this session
     if [[ -f "/opt/homebrew/bin/brew" ]]; then
         eval "$(/opt/homebrew/bin/brew shellenv)"
     elif [[ -f "/usr/local/bin/brew" ]]; then
         eval "$(/usr/local/bin/brew shellenv)"
+    fi
+    # Verify it actually installed
+    if ! command -v brew &>/dev/null; then
+        echo ""
+        echo "❌ Homebrew installation failed."
+        echo "   Install it manually: https://brew.sh"
+        echo "   Then re-run this installer."
+        exit 1
     fi
 else
     echo "✅ Homebrew installed"
@@ -69,6 +84,10 @@ if [[ -z "$NODE_VERSION" ]] || [[ "$NODE_VERSION" -lt 22 ]]; then
     brew install node@22
     # Link if not already linked
     brew link --overwrite node@22 2>/dev/null || true
+    if ! command -v node &>/dev/null; then
+        echo "❌ Node.js installation failed. Cannot continue."
+        exit 1
+    fi
     echo "✅ Node.js $(node -v) installed"
 else
     echo "✅ Node.js v${NODE_VERSION} installed"
@@ -81,7 +100,13 @@ if command -v gws &>/dev/null; then
 else
     echo ""
     echo "📦 Installing Google Workspace CLI..."
-    npm install -g @googleworkspace/cli 2>/dev/null || echo "⚠️  gws CLI install failed (optional — can be set up later)"
+    # Try global install first; if EACCES, use ~/.npm-global prefix
+    if ! npm install -g @googleworkspace/cli 2>/dev/null; then
+        mkdir -p "$HOME/.npm-global"
+        npm config set prefix "$HOME/.npm-global"
+        export PATH="$HOME/.npm-global/bin:$PATH"
+        npm install -g @googleworkspace/cli 2>/dev/null || echo "⚠️  gws CLI install failed (optional — can be set up later)"
+    fi
 fi
 
 # ── Create directory structure ──
@@ -122,6 +147,10 @@ echo ""
 echo "📦 Installing dependencies (this may take a minute)..."
 cd "$PLATFORM_DIR"
 npm ci --production 2>/dev/null || npm install --production
+if [[ ! -d "$PLATFORM_DIR/node_modules" ]]; then
+    echo "❌ npm dependency installation failed. Cannot continue."
+    exit 1
+fi
 
 # Watchdog deps
 if [[ -f "$DOJO_DIR/watchdog/package.json" ]]; then

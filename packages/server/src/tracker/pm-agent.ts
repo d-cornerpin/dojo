@@ -405,14 +405,10 @@ async function runPMReview(): Promise<void> {
 ${taskSummary}
 ${engineIssues}
 
-Review the tasks above. The engine already flagged obvious issues. Your job is to look for things the engine can't catch:
-- Does a task's schedule match what was intended? (e.g., agent said "every 5 minutes" but it's set to every 10)
-- Are there tasks that seem redundant or conflicting?
-- Is an agent working on something that doesn't match their assignment?
-- Anything that looks off or inconsistent?
+IMPORTANT: Always deliver your findings to ${primaryName} using send_to_agent. Do not just write your analysis in chat -- ${primaryName} cannot see your chat. The ONLY way ${primaryName} receives your report is if you call send_to_agent.
 
-If you spot something, notify ${primaryName} via send_to_agent with a short explanation.
-For engine-detected issues, act on them: notify ${primaryName} about orphaned/overdue/blocked tasks, or poke stale agents.
+If you spot issues, call send_to_agent to tell ${primaryName}. You can also message agents directly to ask about stalled tasks.
+For engine-detected issues, act on them: call send_to_agent to notify ${primaryName} or poke the relevant agent.
 If everything looks fine, just say "All clear."
 Keep it brief.`;
 

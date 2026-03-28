@@ -110,7 +110,13 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
     switch (dep) {
       case 'ollama': {
         if (!cmdExists('brew')) return c.json({ ok: false, error: 'Homebrew required' }, 400);
-        execSync('brew install ollama', { encoding: 'utf-8', timeout: 120000, env: execEnv });
+        // Use --cask to install the full macOS app (background service, PATH setup, etc.)
+        // Falls back to formula if cask fails (e.g., headless server)
+        try {
+          execSync('brew install --cask ollama', { encoding: 'utf-8', timeout: 180000, env: execEnv });
+        } catch {
+          execSync('brew install ollama', { encoding: 'utf-8', timeout: 120000, env: execEnv });
+        }
         return c.json({ ok: true, data: { installed: true } });
       }
       case 'ollama-start': {

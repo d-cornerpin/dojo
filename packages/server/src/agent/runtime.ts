@@ -437,6 +437,52 @@ class AgentRuntime {
       logger.warn('Agent hit max tool loop limit', { agentId, maxLoops: MAX_TOOL_LOOPS }, agentId);
     }
 
+    // ── Auto-route: if this turn was triggered by a send_to_agent message and the
+    // agent responded with text but forgot to call send_to_agent back, automatically
+    // deliver the response to the original sender. ──
+    try {
+      // Get the message that triggered this run
+      const triggerMsg = db.prepare(
+        "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1"
+      ).get(agentId) as { content: string } | undefined;
+
+      if (triggerMsg?.content) {
+        const senderMatch = triggerMsg.content.match(/^\[Message from .+? \(agent ID: ([^)]+)\)\]/);
+        if (senderMatch) {
+          const senderId = senderMatch[1];
+
+          // Check if the agent already called send_to_agent targeting this sender during the loop
+          const sentReply = db.prepare(`
+            SELECT id FROM audit_log
+            WHERE agent_id = ? AND action_type = 'tool_call' AND action = 'send_to_agent'
+              AND details LIKE ? AND created_at >= datetime('now', '-2 minutes')
+            LIMIT 1
+          `).get(agentId, `%${senderId}%`) as { id: string } | undefined;
+
+          if (!sentReply) {
+            // Agent didn't call send_to_agent — auto-route the last assistant response
+            const lastResponse = db.prepare(
+              "SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' ORDER BY created_at DESC, rowid DESC LIMIT 1"
+            ).get(agentId) as { content: string } | undefined;
+
+            if (lastResponse?.content && typeof lastResponse.content === 'string' && lastResponse.content.trim().length > 0) {
+              const { sendAgentMessage } = await import('./agent-bus.js');
+              sendAgentMessage(agentId, senderId, 'reply', lastResponse.content);
+              logger.info('Auto-routed text response to original sender (agent forgot send_to_agent)', {
+                agentId,
+                senderId,
+                responseLength: lastResponse.content.length,
+              }, agentId);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      logger.debug('Auto-route check failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      }, agentId);
+    }
+
     // Set agent back to idle — but only if it wasn't already terminated (e.g., by complete_task)
     const currentAgent = db.prepare('SELECT status, task_id FROM agents WHERE id = ?').get(agentId) as { status: string; task_id: string | null } | undefined;
     if (currentAgent && currentAgent.status !== 'terminated') {
