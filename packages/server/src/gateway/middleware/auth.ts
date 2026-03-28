@@ -10,6 +10,7 @@ const logger = createLogger('auth-middleware');
 const PUBLIC_PATHS = [
   '/api/auth/login',
   '/api/health',
+  '/api/microsoft/callback', // OAuth redirect from Microsoft — no JWT available
 ];
 
 const PUBLIC_PREFIXES = [

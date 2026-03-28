@@ -34,6 +34,9 @@ import { executeVaultRemember, executeVaultSearch, executeVaultForget } from '..
 import { googleReadToolDefinitions, executeGoogleReadTool } from '../google/tools-read.js';
 import { googleWriteToolDefinitions, executeGoogleWriteTool } from '../google/tools-write.js';
 import { getAgentGoogleAccessLevel, getEnabledServices } from '../google/auth.js';
+import { microsoftReadToolDefinitions, executeMicrosoftReadTool } from '../microsoft/tools-read.js';
+import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../microsoft/tools-write.js';
+import { getAgentMicrosoftAccessLevel, getEnabledMsServices } from '../microsoft/auth.js';
 import type { ToolCall, ToolResult } from '@dojo/shared';
 
 const logger = createLogger('tools');
@@ -144,6 +147,34 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
     filtered.push(...googleReadToolDefinitions.filter(t => isToolEnabledByService(t.name)));
   }
   // googleAccess === 'none': no Google tools added
+
+  // ── Microsoft 365 tools (access-level gated) ──
+  const msAccess = getAgentMicrosoftAccessLevel(agentId, isPrimary, isPM);
+  const enabledMsSvc = getEnabledMsServices();
+
+  const msServiceToolPrefixes: Record<string, string[]> = {
+    outlook: ['outlook_'],
+    calendar: ['calendar_agenda_ms', 'calendar_search_ms', 'calendar_create_ms', 'calendar_update_ms', 'calendar_delete_ms'],
+    onedrive: ['onedrive_'],
+    teams: ['teams_'],
+  };
+
+  function isMsToolEnabledByService(toolName: string): boolean {
+    for (const [service, patterns] of Object.entries(msServiceToolPrefixes)) {
+      if (patterns.some(p => toolName.startsWith(p) || toolName === p)) {
+        return enabledMsSvc[service as keyof typeof enabledMsSvc] === true;
+      }
+    }
+    return true;
+  }
+
+  if (msAccess === 'full') {
+    const allMsTools = [...microsoftReadToolDefinitions, ...microsoftWriteToolDefinitions];
+    filtered.push(...allMsTools.filter(t => isMsToolEnabledByService(t.name)));
+  } else if (msAccess === 'read') {
+    filtered.push(...microsoftReadToolDefinitions.filter(t => isMsToolEnabledByService(t.name)));
+  }
+  // msAccess === 'none': no Microsoft tools added
 
   return filtered;
 }
@@ -2116,6 +2147,42 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         }
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         content = executeGoogleWriteTool(name, args, agentId, agentRow?.name ?? agentId);
+        isError = content.startsWith('Error');
+        break;
+      }
+
+      // ── Microsoft 365 Tools ──
+
+      case 'outlook_search':
+      case 'outlook_read':
+      case 'outlook_inbox':
+      case 'calendar_agenda_ms':
+      case 'calendar_search_ms':
+      case 'onedrive_list':
+      case 'onedrive_read':
+      case 'teams_read_messages': {
+        const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+        content = await executeMicrosoftReadTool(name, args, agentId, agentRow?.name ?? agentId);
+        isError = content.startsWith('Error');
+        break;
+      }
+
+      case 'outlook_send':
+      case 'outlook_reply':
+      case 'outlook_forward':
+      case 'calendar_create_ms':
+      case 'calendar_update_ms':
+      case 'calendar_delete_ms':
+      case 'onedrive_upload':
+      case 'teams_send_message': {
+        if (!isPrimaryAgent(agentId)) {
+          content = 'Permission denied: only the primary agent can use Microsoft 365 write tools.';
+          isError = true;
+          auditLog(agentId, name, null, 'denied', 'Microsoft write tool restricted to primary agent');
+          break;
+        }
+        const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+        content = await executeMicrosoftWriteTool(name, args, agentId, agentRow?.name ?? agentId);
         isError = content.startsWith('Error');
         break;
       }

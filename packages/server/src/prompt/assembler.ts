@@ -7,6 +7,7 @@ import { createLogger } from '../logger.js';
 import { toolDefinitions, getFilteredTools } from '../agent/tools.js';
 import { isPrimaryAgent, isPMAgent, isTrainerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName } from '../config/platform.js';
 import { getAgentGoogleAccessLevel } from '../google/auth.js';
+import { getAgentMicrosoftAccessLevel, getMsAccountType, getMicrosoftWorkspaceConfig } from '../microsoft/auth.js';
 import { assembleGroupContext as _assembleGroupContext } from '../agent/groups.js';
 import { generateTechniqueIndex, generateDraftTechniqueContext } from '../techniques/index-builder.js';
 
@@ -164,6 +165,7 @@ function generateToolsGuidance(agentId: string): string {
     'Techniques': agentTools.filter(t => ['save_technique', 'use_technique', 'list_techniques', 'publish_technique', 'update_technique', 'submit_technique_for_review'].includes(t.name)),
     'Vault (Long-Term Memory)': agentTools.filter(t => t.name.startsWith('vault_')),
     'Google Workspace': agentTools.filter(t => ['gmail_search', 'gmail_read', 'gmail_inbox', 'gmail_send', 'gmail_reply', 'gmail_forward', 'gmail_label', 'calendar_agenda', 'calendar_search', 'calendar_create', 'calendar_update', 'calendar_delete', 'drive_list', 'drive_read', 'drive_upload', 'drive_share', 'docs_read', 'docs_create', 'docs_edit', 'sheets_read', 'sheets_create', 'sheets_append', 'sheets_write', 'slides_create'].includes(t.name)),
+    'Microsoft 365': agentTools.filter(t => ['outlook_search', 'outlook_read', 'outlook_inbox', 'outlook_send', 'outlook_reply', 'outlook_forward', 'calendar_agenda_ms', 'calendar_search_ms', 'calendar_create_ms', 'calendar_update_ms', 'calendar_delete_ms', 'onedrive_list', 'onedrive_read', 'onedrive_upload', 'teams_read_messages', 'teams_send_message'].includes(t.name)),
   };
 
   for (const [category, tools] of Object.entries(categories)) {
@@ -392,6 +394,34 @@ All Google Workspace actions are logged. The user can see everything you do in t
 You have read-only access to the dojo's connected Google Workspace account. You can search and read emails, read Google Docs, check the calendar, and browse Drive files. You CANNOT send emails, create documents, edit files, manage calendar events, or share anything. If a task requires modifying Google Workspace, report back to the primary agent and let them handle it.`);
     }
   } catch { /* Google module may not be available */ }
+
+  // Inject Microsoft 365 awareness based on access level
+  try {
+    const msAccess = getAgentMicrosoftAccessLevel(agentId, isPrimaryAgent(agentId), isPMAgent(agentId));
+    const msAccountType = getMsAccountType();
+    const teamsNote = msAccountType === 'msa'
+      ? '\n\nNote: Teams is NOT available with this account. The connected Microsoft account is a personal account (outlook.com/hotmail.com/live.com). Teams requires a Microsoft work/school account (Entra ID). If asked to use Teams, explain this to the user.'
+      : '';
+
+    const msEmail = getMicrosoftWorkspaceConfig().accountEmail;
+
+    if (msAccess === 'full') {
+      parts.push(`## Microsoft 365${msEmail ? ` (${msEmail})` : ''}
+
+You have full access to the connected Microsoft 365 account${msEmail ? ` (${msEmail})` : ''}. You can send and read Outlook email, manage the calendar, upload and read OneDrive files${msAccountType !== 'msa' ? ', and send/read Teams messages' : ''}.
+
+Access levels for other agents:
+- Ronin and Apprentice agents have READ-ONLY Microsoft access.
+- The PM agent has no Microsoft access.
+- If you need something sent, created, edited, or deleted in Microsoft 365, you must do it yourself.
+
+All Microsoft 365 actions are logged.${teamsNote}`);
+    } else if (msAccess === 'read') {
+      parts.push(`## Microsoft 365 (Read-Only)
+
+You have read-only access to the dojo's connected Microsoft 365 account. You can search and read Outlook email, check the calendar, browse OneDrive files${msAccountType !== 'msa' ? ', and read Teams messages' : ''}. You CANNOT send emails, create events, upload files, or send Teams messages. If a task requires modifying Microsoft 365, report back to the primary agent.${teamsNote}`);
+    }
+  } catch { /* Microsoft module may not be available */ }
 
   // Inject group context if agent is in a group
   try {

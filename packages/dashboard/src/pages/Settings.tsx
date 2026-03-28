@@ -5,9 +5,10 @@ import * as api from '../lib/api';
 import { RouterConfig } from '../components/RouterConfig';
 import { RouterTest } from '../components/RouterTest';
 import { GoogleWorkspaceSettings } from '../components/GoogleWorkspaceSettings';
+import { MicrosoftWorkspaceSettings } from '../components/MicrosoftWorkspaceSettings';
 import { formatDate } from '../lib/dates';
 
-type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'dreaming' | 'workspace' | 'update';
+type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'dreaming' | 'workspace' | 'microsoft' | 'update';
 
 export const Settings = () => {
   const [searchParams] = useSearchParams();
@@ -23,6 +24,7 @@ export const Settings = () => {
     { key: 'security', label: 'Security' },
     { key: 'dreaming', label: 'Dreaming' },
     { key: 'workspace', label: 'Google' },
+    { key: 'microsoft', label: 'Microsoft' },
     { key: 'update', label: 'Update' },
   ];
 
@@ -56,6 +58,7 @@ export const Settings = () => {
       {activeTab === 'security' && <SecurityTab />}
       {activeTab === 'dreaming' && <DreamingTab />}
       {activeTab === 'workspace' && <GoogleWorkspaceSettings />}
+      {activeTab === 'microsoft' && <MicrosoftWorkspaceSettings />}
       {activeTab === 'update' && <UpdateTab />}
     </div>
   );

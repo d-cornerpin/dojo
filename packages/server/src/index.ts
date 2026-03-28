@@ -158,7 +158,19 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4f. Start Gmail watcher if Google Workspace is connected
+  // 4f. Check Microsoft 365 auth on startup
+  {
+    try {
+      const { checkMicrosoftOnStartup } = await import('./microsoft/auth.js');
+      await checkMicrosoftOnStartup();
+    } catch (err) {
+      logger.warn('Microsoft startup check failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // 4g. Start Gmail watcher if Google Workspace is connected
   {
     try {
       const { startGmailWatcher } = await import('./services/gmail-watcher.js');
