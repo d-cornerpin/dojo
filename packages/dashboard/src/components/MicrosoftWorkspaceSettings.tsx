@@ -258,26 +258,30 @@ export const MicrosoftWorkspaceSettings = () => {
               <li>
                 <a href="https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener noreferrer"
                   className="text-blue-400 hover:underline">Open Azure App Registrations</a>
-                {' '}&gt; <strong className="text-white/70">New registration</strong>
+                {' '}&gt; click <strong className="text-white/70">New registration</strong>
               </li>
               <li>
                 Name: <strong className="text-white/70">Agent DOJO</strong> (or anything you like)
               </li>
               <li>
-                Supported account types: <strong className="text-white/70">Accounts in any organizational directory and personal Microsoft accounts</strong>
+                <strong className="text-cp-amber">Important — set this now, it can't be changed later:</strong>
+                {' '}Supported account types: select <strong className="text-white/70">"Accounts in any organizational directory (Any Microsoft Entra ID tenant - Multitenant) and personal Microsoft accounts (e.g. Skype, Xbox)"</strong>
               </li>
               <li>
-                Redirect URI: select <strong className="text-white/70">Web</strong> and enter:
+                Redirect URI: select <strong className="text-white/70">Web</strong> from the dropdown, then enter:
                 <code className="block mt-1 px-2 py-1 rounded bg-white/[0.05] font-mono text-[10px] text-white/60 select-all">{redirectUri}</code>
               </li>
               <li>
-                Click <strong className="text-white/70">Register</strong>, then copy the <strong className="text-white/70">Application (client) ID</strong>
+                Click <strong className="text-white/70">Register</strong>
               </li>
               <li>
-                Go to <strong className="text-white/70">Certificates & secrets</strong> &gt; <strong className="text-white/70">New client secret</strong> &gt; copy the <strong className="text-white/70">Value</strong>
+                On the Overview page, copy the <strong className="text-white/70">Application (client) ID</strong> and paste it below
               </li>
               <li>
-                Go to <strong className="text-white/70">API permissions</strong> &gt; <strong className="text-white/70">Add a permission</strong> &gt; <strong className="text-white/70">Microsoft Graph</strong> &gt; <strong className="text-white/70">Delegated permissions</strong> &gt; add all of these:
+                Go to <strong className="text-white/70">Certificates & secrets</strong> (left sidebar) &gt; <strong className="text-white/70">New client secret</strong> &gt; add a description, click <strong className="text-white/70">Add</strong> &gt; copy the <strong className="text-white/70">Value</strong> (not the Secret ID) and paste it below
+              </li>
+              <li>
+                Go to <strong className="text-white/70">API permissions</strong> (left sidebar) &gt; <strong className="text-white/70">Add a permission</strong> &gt; <strong className="text-white/70">Microsoft Graph</strong> &gt; <strong className="text-white/70">Delegated permissions</strong> &gt; search for and add each of these:
                 <span className="text-white/60 block mt-1">User.Read, Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, Files.ReadWrite.All, Sites.ReadWrite.All, Chat.ReadWrite, ChannelMessage.Send, Team.ReadBasic.All, Channel.ReadBasic.All, Notes.ReadWrite, Tasks.ReadWrite, Contacts.ReadWrite</span>
               </li>
             </ol>
