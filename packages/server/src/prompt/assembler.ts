@@ -165,7 +165,7 @@ function generateToolsGuidance(agentId: string): string {
     'Techniques': agentTools.filter(t => ['save_technique', 'use_technique', 'list_techniques', 'publish_technique', 'update_technique', 'submit_technique_for_review'].includes(t.name)),
     'Vault (Long-Term Memory)': agentTools.filter(t => t.name.startsWith('vault_')),
     'Google Workspace': agentTools.filter(t => ['gmail_search', 'gmail_read', 'gmail_inbox', 'gmail_send', 'gmail_reply', 'gmail_forward', 'gmail_label', 'calendar_agenda', 'calendar_search', 'calendar_create', 'calendar_update', 'calendar_delete', 'drive_list', 'drive_read', 'drive_upload', 'drive_share', 'docs_read', 'docs_create', 'docs_edit', 'sheets_read', 'sheets_create', 'sheets_append', 'sheets_write', 'slides_create'].includes(t.name)),
-    'Microsoft 365': agentTools.filter(t => ['outlook_search', 'outlook_read', 'outlook_inbox', 'outlook_send', 'outlook_reply', 'outlook_forward', 'calendar_agenda_ms', 'calendar_search_ms', 'calendar_create_ms', 'calendar_update_ms', 'calendar_delete_ms', 'onedrive_list', 'onedrive_read', 'onedrive_upload', 'teams_read_messages', 'teams_send_message'].includes(t.name)),
+    'Microsoft 365': agentTools.filter(t => ['outlook_search', 'outlook_read', 'outlook_inbox', 'outlook_send', 'outlook_reply', 'outlook_forward', 'calendar_agenda_ms', 'calendar_search_ms', 'calendar_create_ms', 'calendar_update_ms', 'calendar_delete_ms', 'onedrive_list', 'onedrive_read', 'onedrive_upload', 'onedrive_share', 'office_create_document', 'teams_read_messages', 'teams_send_message'].includes(t.name)),
   };
 
   for (const [category, tools] of Object.entries(categories)) {
@@ -408,7 +408,7 @@ You have read-only access to the dojo's connected Google Workspace account. You 
     if (msAccess === 'full') {
       parts.push(`## Microsoft 365${msEmail ? ` (${msEmail})` : ''}
 
-You have full access to the connected Microsoft 365 account${msEmail ? ` (${msEmail})` : ''}. You can send and read Outlook email, manage the calendar, upload and read OneDrive files${msAccountType !== 'msa' ? ', and send/read Teams messages' : ''}.
+You have full access to the connected Microsoft 365 account${msEmail ? ` (${msEmail})` : ''}. You can send and read Outlook email, manage the calendar, create and share Word/Excel/PowerPoint documents, upload and read OneDrive files${msAccountType !== 'msa' ? ', and send/read Teams messages' : ''}.
 
 Access levels for other agents:
 - Ronin and Apprentice agents have READ-ONLY Microsoft access.

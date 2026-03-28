@@ -2174,6 +2174,8 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'calendar_update_ms':
       case 'calendar_delete_ms':
       case 'onedrive_upload':
+      case 'onedrive_share':
+      case 'office_create_document':
       case 'teams_send_message': {
         if (!isPrimaryAgent(agentId)) {
           content = 'Permission denied: only the primary agent can use Microsoft 365 write tools.';

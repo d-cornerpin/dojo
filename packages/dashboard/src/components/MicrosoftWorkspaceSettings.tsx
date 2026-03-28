@@ -43,9 +43,17 @@ export const MicrosoftWorkspaceSettings = () => {
     setConfiguring(true);
     setConfigError(null);
 
+    // Use the current browser origin for the redirect URI — this matches however
+    // the user is currently accessing the dojo (localhost, tunnel, custom domain).
+    const callbackUri = `${window.location.origin}/api/microsoft/callback`;
+
     const result = await api.request<{ authUrl: string; redirectUri: string }>('/microsoft/configure', {
       method: 'POST',
-      body: JSON.stringify({ clientId: clientId.trim(), clientSecret: clientSecret.trim() || undefined }),
+      body: JSON.stringify({
+        clientId: clientId.trim(),
+        clientSecret: clientSecret.trim() || undefined,
+        redirectUri: callbackUri,
+      }),
     });
 
     if (result.ok) {
@@ -95,8 +103,8 @@ export const MicrosoftWorkspaceSettings = () => {
     { key: 'teams', label: 'Teams', entraOnly: true },
   ];
 
-  // Detect the port for the redirect URI display
-  const redirectUri = `http://localhost:${window.location.port || '3001'}/api/microsoft/callback`;
+  // Show the redirect URI based on how the user is currently accessing the dojo
+  const redirectUri = `${window.location.origin}/api/microsoft/callback`;
 
   // ═══════════════════════════════════════
   // Connected — show management UI
@@ -193,6 +201,15 @@ export const MicrosoftWorkspaceSettings = () => {
           {showActivity && <MicrosoftActivityLog />}
         </div>
 
+        <div className="glass-card p-3 space-y-1">
+          <p className="text-xs text-white/40">
+            If you need to re-authenticate and your dojo URL has changed (e.g., tunnel URL changed), update the
+            redirect URI in your{' '}
+            <a href="https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">Azure app registration</a>
+            {' '}to match your current URL: <code className="bg-white/[0.05] px-1 rounded text-[10px]">{window.location.origin}/api/microsoft/callback</code>
+          </p>
+        </div>
+
         <div className="text-xs text-white/30">
           <a href="https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">Azure App Registrations</a>
           {' | '}
@@ -246,8 +263,8 @@ export const MicrosoftWorkspaceSettings = () => {
                 Go to <strong className="text-white/70">Certificates & secrets</strong> &gt; <strong className="text-white/70">New client secret</strong> &gt; copy the <strong className="text-white/70">Value</strong>
               </li>
               <li>
-                Go to <strong className="text-white/70">API permissions</strong> &gt; <strong className="text-white/70">Add a permission</strong> &gt; <strong className="text-white/70">Microsoft Graph</strong> &gt; <strong className="text-white/70">Delegated permissions</strong> &gt; add:
-                <span className="text-white/60"> Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, Files.ReadWrite.All, Chat.ReadWrite, User.Read</span>
+                Go to <strong className="text-white/70">API permissions</strong> &gt; <strong className="text-white/70">Add a permission</strong> &gt; <strong className="text-white/70">Microsoft Graph</strong> &gt; <strong className="text-white/70">Delegated permissions</strong> &gt; add all of these:
+                <span className="text-white/60 block mt-1">User.Read, Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, Files.ReadWrite.All, Sites.ReadWrite.All, Chat.ReadWrite, ChannelMessage.Send, Team.ReadBasic.All, Channel.ReadBasic.All, Notes.ReadWrite, Tasks.ReadWrite, Contacts.ReadWrite</span>
               </li>
             </ol>
 

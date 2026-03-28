@@ -22,15 +22,8 @@ const logger = createLogger('ms-routes');
 
 export const microsoftRouter = new Hono<AppEnv>();
 
-// Store the redirect URI used during configure so callback can reuse it
+// Store the redirect URI used during configure so callback can reuse it exactly
 let storedRedirectUri: string | null = null;
-
-function getRedirectUri(c: { req: { url: string } }): string {
-  if (storedRedirectUri) return storedRedirectUri;
-  const url = new URL(c.req.url);
-  const port = url.port || (url.protocol === 'https:' ? '443' : '80');
-  return `${url.protocol}//${url.hostname}:${port}/api/microsoft/callback`;
-}
 
 // GET /api/microsoft/status
 microsoftRouter.get('/status', (c) => {
@@ -58,17 +51,16 @@ microsoftRouter.get('/status', (c) => {
 // POST /api/microsoft/configure — store client credentials and return auth URL
 microsoftRouter.post('/configure', async (c) => {
   try {
-    const body = await c.req.json() as { clientId: string; clientSecret?: string };
+    const body = await c.req.json() as { clientId: string; clientSecret?: string; redirectUri?: string };
     if (!body.clientId?.trim()) {
       return c.json({ ok: false, error: 'clientId is required' }, 400);
     }
 
     setClientCredentials(body.clientId.trim(), body.clientSecret?.trim());
 
-    // Use the production port (3001) for the redirect URI — this is what Microsoft will redirect to.
-    // In dev, Vite proxies /api/* to 3001, so the callback hits 3001 directly.
-    const port = process.env.NODE_ENV === 'production' ? '3001' : '3001'; // Always 3001 — the API server
-    const redirectUri = `http://localhost:${port}/api/microsoft/callback`;
+    // Use the redirect URI from the frontend if provided (it knows the actual URL the user is on).
+    // This handles localhost, tunnels, and any other access method.
+    const redirectUri = body.redirectUri?.trim() || `http://localhost:3001/api/microsoft/callback`;
     storedRedirectUri = redirectUri;
     const authUrl = buildAuthUrl(redirectUri);
 
@@ -85,27 +77,36 @@ microsoftRouter.get('/callback', async (c) => {
   const error = c.req.query('error');
   const errorDesc = c.req.query('error_description');
 
+  // Redirect back to the dashboard using the same origin the user started from
+  const dashboardBase = (() => {
+    if (storedRedirectUri) {
+      try {
+        const url = new URL(storedRedirectUri);
+        // Strip the /api/microsoft/callback path to get just the origin
+        return url.origin;
+      } catch { /* fall through */ }
+    }
+    return process.env.NODE_ENV === 'production' ? 'http://localhost:3001' : 'http://localhost:3000';
+  })();
+
   if (error) {
     logger.error('Microsoft OAuth error', { error, errorDesc });
-    // Redirect to settings with error
-    const port = process.env.NODE_ENV === 'production' ? '3001' : '3000';
-    return c.redirect(`http://localhost:${port}/#/settings?tab=microsoft&error=${encodeURIComponent(errorDesc ?? error)}`);
+    return c.redirect(`${dashboardBase}/#/settings?tab=microsoft&error=${encodeURIComponent(errorDesc ?? error)}`);
   }
 
   if (!code) {
-    return c.redirect('http://localhost:3000/#/settings?tab=microsoft&error=No+authorization+code+received');
+    return c.redirect(`${dashboardBase}/#/settings?tab=microsoft&error=No+authorization+code+received`);
   }
 
   const redirectUri = storedRedirectUri ?? 'http://localhost:3001/api/microsoft/callback';
   const result = await exchangeCodeForTokens(code, redirectUri);
 
-  const port = process.env.NODE_ENV === 'production' ? '3001' : '3000';
   if (result.success) {
     logger.info('Microsoft OAuth successful', { email: result.email, accountType: result.accountType });
-    return c.redirect(`http://localhost:${port}/#/settings?tab=microsoft&connected=true`);
+    return c.redirect(`${dashboardBase}/#/settings?tab=microsoft&connected=true`);
   } else {
     logger.error('Microsoft token exchange failed', { error: result.error });
-    return c.redirect(`http://localhost:${port}/#/settings?tab=microsoft&error=${encodeURIComponent(result.error ?? 'Token exchange failed')}`);
+    return c.redirect(`${dashboardBase}/#/settings?tab=microsoft&error=${encodeURIComponent(result.error ?? 'Token exchange failed')}`);
   }
 });
 
