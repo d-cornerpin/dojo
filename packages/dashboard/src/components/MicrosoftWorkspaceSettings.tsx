@@ -37,7 +37,10 @@ export const MicrosoftWorkspaceSettings = () => {
     setConnecting(true);
     setError(null);
 
-    const redirectUri = `${window.location.origin}/api/microsoft/callback`;
+    // Always use localhost:3001 — the auth callback must hit the API server directly.
+    // This works even when the user accesses the dashboard via a tunnel because
+    // the user is on the same machine as the dojo.
+    const redirectUri = 'http://localhost:3001/api/microsoft/callback';
     const result = await api.request<{ authUrl: string }>('/microsoft/connect', {
       method: 'POST',
       body: JSON.stringify({ redirectUri }),
