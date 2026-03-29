@@ -273,7 +273,7 @@ async function refreshAccessToken(): Promise<string | null> {
 
 // ── OAuth Flow ──
 
-export function buildAuthUrl(redirectUri: string): string {
+export function buildAuthUrl(redirectUri: string, adminConsent = false): string {
   const clientId = getClientId();
   if (!clientId) throw new Error('Microsoft client ID not configured');
 
@@ -282,7 +282,7 @@ export function buildAuthUrl(redirectUri: string): string {
     response_type: 'code',
     redirect_uri: redirectUri,
     scope: SCOPES,
-    prompt: 'consent',
+    prompt: adminConsent ? 'admin_consent' : 'consent',
     response_mode: 'query',
   });
 
