@@ -36,7 +36,9 @@ import { googleWriteToolDefinitions, executeGoogleWriteTool } from '../google/to
 import { getAgentGoogleAccessLevel, getEnabledServices } from '../google/auth.js';
 import { microsoftReadToolDefinitions, executeMicrosoftReadTool } from '../microsoft/tools-read.js';
 import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../microsoft/tools-write.js';
+import { officeToolDefinitions, executeOfficeTool } from '../microsoft/tools-office.js';
 import { getAgentMicrosoftAccessLevel, getEnabledMsServices } from '../microsoft/auth.js';
+import { areOfficePackagesInstalled } from '../microsoft/office-packages.js';
 import type { ToolCall, ToolResult } from '@dojo/shared';
 
 const logger = createLogger('tools');
@@ -175,6 +177,11 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
     filtered.push(...microsoftReadToolDefinitions.filter(t => isMsToolEnabledByService(t.name)));
   }
   // msAccess === 'none': no Microsoft tools added
+
+  // ── Office document tools (primary agent only, requires npm packages) ──
+  if (msAccess === 'full' && areOfficePackagesInstalled()) {
+    filtered.push(...officeToolDefinitions);
+  }
 
   return filtered;
 }
@@ -2175,7 +2182,6 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'calendar_delete_ms':
       case 'onedrive_upload':
       case 'onedrive_share':
-      case 'office_create_document':
       case 'teams_send_message': {
         if (!isPrimaryAgent(agentId)) {
           content = 'Permission denied: only the primary agent can use Microsoft 365 write tools.';
@@ -2185,6 +2191,23 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         }
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         content = await executeMicrosoftWriteTool(name, args, agentId, agentRow?.name ?? agentId);
+        isError = content.startsWith('Error');
+        break;
+      }
+
+      // ── Office Document Tools ──
+
+      case 'office_create_word_document':
+      case 'office_append_to_word_document':
+      case 'office_create_spreadsheet':
+      case 'office_create_presentation': {
+        if (!isPrimaryAgent(agentId)) {
+          content = 'Permission denied: only the primary agent can create Office documents.';
+          isError = true;
+          break;
+        }
+        const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+        content = await executeOfficeTool(name, args, agentId, agentRow?.name ?? agentId);
         isError = content.startsWith('Error');
         break;
       }

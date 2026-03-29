@@ -118,19 +118,6 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     },
   },
   {
-    name: 'office_create_document',
-    description: 'Create a new Word document, Excel spreadsheet, or PowerPoint presentation in OneDrive.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'File name (e.g., "Project Report.docx", "Budget.xlsx", "Pitch Deck.pptx")' },
-        type: { type: 'string', enum: ['word', 'excel', 'powerpoint'], description: 'Document type' },
-        folder_id: { type: 'string', description: 'OneDrive folder ID (omit for root)' },
-      },
-      required: ['name', 'type'],
-    },
-  },
-  {
     name: 'onedrive_share',
     description: 'Share a OneDrive file or folder with someone via a sharing link or direct permission.',
     input_schema: {
@@ -316,67 +303,6 @@ export async function executeMicrosoftWriteTool(
 
       if (!result.ok) return `Error sending Teams message: ${result.error}`;
       return `Teams message sent to chat ${args.chat_id}`;
-    }
-
-    case 'office_create_document': {
-      const docName = args.name as string;
-      const docType = args.type as 'word' | 'excel' | 'powerpoint';
-      const folderId = args.folder_id as string | undefined;
-
-      // Microsoft Graph creates Office docs by uploading an empty file with the right extension
-      const extensions: Record<string, string> = {
-        word: '.docx',
-        excel: '.xlsx',
-        powerpoint: '.pptx',
-      };
-      const mimeTypes: Record<string, string> = {
-        word: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        excel: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        powerpoint: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      };
-
-      // Ensure correct extension
-      let fileName = docName;
-      const ext = extensions[docType];
-      if (!fileName.endsWith(ext)) fileName += ext;
-
-      const endpoint = folderId
-        ? `me/drive/items/${encodeURIComponent(folderId)}:/${encodeURIComponent(fileName)}:/content`
-        : `me/drive/root:/${encodeURIComponent(fileName)}:/content`;
-
-      // Upload empty file to create the document
-      const token = (await import('./auth.js')).getAccessToken();
-      if (!token) return 'Error: Not authenticated with Microsoft';
-
-      try {
-        const resp = await fetch(`https://graph.microsoft.com/v1.0/${endpoint}`, {
-          method: 'PUT',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': mimeTypes[docType],
-          },
-          body: Buffer.alloc(0), // Empty document — Office Online will initialize it
-          signal: AbortSignal.timeout(30000),
-        });
-
-        if (!resp.ok) {
-          const err = await resp.text();
-          return `Error creating ${docType} document: ${err.slice(0, 200)}`;
-        }
-
-        const data = await resp.json() as { id?: string; name?: string; webUrl?: string };
-
-        // Log the write activity
-        (await import('./activity-log.js')).logMicrosoftActivity({
-          agentId, agentName, action: 'office_create_document', actionType: 'write',
-          details: JSON.stringify({ type: docType, name: fileName }),
-          apiEndpoint: endpoint, success: true,
-        });
-
-        return `${docType.charAt(0).toUpperCase() + docType.slice(1)} document "${fileName}" created${data.id ? ` (ID: ${data.id})` : ''}${data.webUrl ? `\nOpen in browser: ${data.webUrl}` : ''}`;
-      } catch (err) {
-        return `Error creating ${docType} document: ${err instanceof Error ? err.message : String(err)}`;
-      }
     }
 
     case 'onedrive_share': {

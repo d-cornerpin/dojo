@@ -12,6 +12,7 @@ interface MsStatus {
   lastVerified: string | null;
   lastActivity: string | null;
   todayActivity: { reads: number; writes: number };
+  officeTools: { status: 'not_installed' | 'installing' | 'installed' | 'failed'; error: string | null };
 }
 
 export const MicrosoftWorkspaceSettings = () => {
@@ -151,6 +152,41 @@ export const MicrosoftWorkspaceSettings = () => {
               );
             })}
           </div>
+        </div>
+
+        {/* Office Document Tools */}
+        <div className="glass-card p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-medium text-white/70">Office Document Tools</h4>
+            <span className={`text-[10px] px-2 py-0.5 rounded-full ${
+              status.officeTools.status === 'installed' ? 'bg-cp-teal/10 text-cp-teal border border-cp-teal/20' :
+              status.officeTools.status === 'installing' ? 'bg-cp-amber/10 text-cp-amber border border-cp-amber/20' :
+              status.officeTools.status === 'failed' ? 'bg-cp-coral/10 text-cp-coral border border-cp-coral/20' :
+              'bg-white/[0.06] text-white/40'
+            }`}>
+              {status.officeTools.status === 'installed' ? 'Ready' :
+               status.officeTools.status === 'installing' ? 'Installing...' :
+               status.officeTools.status === 'failed' ? 'Failed' : 'Not installed'}
+            </span>
+          </div>
+          <p className="text-xs text-white/40">
+            {status.officeTools.status === 'installed'
+              ? 'Word, Excel, and PowerPoint document creation tools are available.'
+              : status.officeTools.status === 'installing'
+                ? 'Installing document creation packages...'
+                : 'Enables creating Word documents, Excel spreadsheets, and PowerPoint presentations.'}
+          </p>
+          {status.officeTools.status === 'failed' && (
+            <div className="space-y-2">
+              {status.officeTools.error && <p className="text-xs text-cp-coral">{status.officeTools.error}</p>}
+              <button onClick={async () => { await api.request('/microsoft/install-office-tools', { method: 'POST' }); setTimeout(loadStatus, 5000); }}
+                className="glass-btn glass-btn-ghost text-xs">Retry Install</button>
+            </div>
+          )}
+          {status.officeTools.status === 'not_installed' && (
+            <button onClick={async () => { await api.request('/microsoft/install-office-tools', { method: 'POST' }); setTimeout(loadStatus, 5000); }}
+              className="glass-btn glass-btn-primary text-xs">Install Office Tools</button>
+          )}
         </div>
 
         <div className="glass-card p-4 space-y-3">

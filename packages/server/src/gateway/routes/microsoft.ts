@@ -18,6 +18,7 @@ import {
   setEnabledMsServices,
 } from '../../microsoft/auth.js';
 import { queryMicrosoftActivity, getTodayMsActivityCounts, getLastMsActivityTimestamp } from '../../microsoft/activity-log.js';
+import { getInstallStatus, installOfficePackages, checkAndUpdateStatus } from '../../microsoft/office-packages.js';
 
 const logger = createLogger('ms-routes');
 
@@ -28,6 +29,9 @@ microsoftRouter.get('/status', (c) => {
   const config = getMicrosoftWorkspaceConfig();
   const todayCounts = getTodayMsActivityCounts();
   const lastActivity = getLastMsActivityTimestamp();
+
+  checkAndUpdateStatus();
+  const officeStatus = getInstallStatus();
 
   return c.json({
     ok: true,
@@ -41,6 +45,7 @@ microsoftRouter.get('/status', (c) => {
       lastVerified: config.lastVerifiedAt,
       lastActivity,
       todayActivity: todayCounts,
+      officeTools: officeStatus,
     },
   });
 });
@@ -115,6 +120,12 @@ microsoftRouter.put('/services', async (c) => {
     setEnabledMsServices(body);
     return c.json({ ok: true });
   } catch { return c.json({ ok: false, error: 'Invalid request body' }, 400); }
+});
+
+// POST /api/microsoft/install-office-tools — retry Office package installation
+microsoftRouter.post('/install-office-tools', (c) => {
+  installOfficePackages();
+  return c.json({ ok: true, data: { message: 'Installation started' } });
 });
 
 // GET /api/microsoft/activity

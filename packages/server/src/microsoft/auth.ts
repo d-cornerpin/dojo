@@ -271,6 +271,13 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
     if (accountType === 'msa') setEnabledMsServices({ teams: false });
 
     logger.info('Microsoft 365 connected', { email, accountType });
+
+    // Install Office document packages in the background
+    try {
+      const { installOfficePackages } = await import('./office-packages.js');
+      installOfficePackages();
+    } catch { /* best effort */ }
+
     return { success: true, email, accountType };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
