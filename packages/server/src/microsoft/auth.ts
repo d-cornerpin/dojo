@@ -1,8 +1,9 @@
 // ════════════════════════════════════════
-// Microsoft 365 Auth — OAuth 2.0 Authorization Code Flow
-// Handles both MSA (personal) and Entra (work/school) accounts
+// Microsoft 365 Auth — Public Client with PKCE
+// Single registered app, no client secret, works for personal + work/school
 // ════════════════════════════════════════
 
+import crypto from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -10,23 +11,14 @@ import { sendAlert } from '../services/imessage-bridge.js';
 
 const logger = createLogger('ms-auth');
 
-// MSA tenant ID — used to detect personal vs work/school accounts
-const MSA_TENANT_ID = '9188040d-6c67-4c5b-b112-36a304b66dad';
+// ── Hardcoded public client — registered once by Cornerpin ──
+const CLIENT_ID = '515c0ff6-31de-489d-a82c-75f5de836c50';
 
+const MSA_TENANT_ID = '9188040d-6c67-4c5b-b112-36a304b66dad';
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 
-function getAuthBase(): string {
-  const accountType = getConfigValue('ms_account_type');
-  if (accountType === 'msa') {
-    return 'https://login.microsoftonline.com/consumers/oauth2/v2.0';
-  }
-  // Work/school — use tenant ID if available, otherwise fall back to organizations
-  const tenantId = getConfigValue('ms_tenant_id');
-  if (tenantId) {
-    return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0`;
-  }
-  return 'https://login.microsoftonline.com/organizations/oauth2/v2.0';
-}
+// Use /common to accept both personal and work/school accounts
+const AUTH_BASE = 'https://login.microsoftonline.com/common/oauth2/v2.0';
 
 const SCOPES = [
   'openid', 'offline_access',
@@ -39,9 +31,6 @@ const SCOPES = [
   'Notes.ReadWrite',
   'Tasks.ReadWrite',
   'Contacts.ReadWrite',
-  // Note: requesting ONLY scopes that don't require admin consent.
-  // ReadWrite implies Read, so separate Read scopes are unnecessary.
-  // Files.ReadWrite (not .All) avoids admin consent requirement.
 ].join(' ');
 
 export interface MicrosoftWorkspaceConfig {
@@ -84,10 +73,7 @@ function setConfigValue(key: string, value: string): void {
 }
 
 function deleteConfigValue(key: string): void {
-  try {
-    const db = getDb();
-    db.prepare('DELETE FROM config WHERE key = ?').run(key);
-  } catch { /* best effort */ }
+  try { getDb().prepare('DELETE FROM config WHERE key = ?').run(key); } catch { /* best effort */ }
 }
 
 // ── Config Getters ──
@@ -98,7 +84,6 @@ export function getMicrosoftWorkspaceConfig(): MicrosoftWorkspaceConfig {
   if (servicesRaw) {
     try { services = { ...DEFAULT_SERVICES, ...JSON.parse(servicesRaw) }; } catch { /* defaults */ }
   }
-
   return {
     enabled: getConfigValue('ms_enabled') === 'true',
     connected: getConfigValue('ms_connected') === 'true',
@@ -109,27 +94,13 @@ export function getMicrosoftWorkspaceConfig(): MicrosoftWorkspaceConfig {
   };
 }
 
-export function isMicrosoftEnabled(): boolean {
-  return getConfigValue('ms_enabled') === 'true';
-}
-
-export function isMicrosoftConnected(): boolean {
-  return getConfigValue('ms_connected') === 'true';
-}
-
-export function getEnabledMsServices(): MicrosoftWorkspaceConfig['enabledServices'] {
-  return getMicrosoftWorkspaceConfig().enabledServices;
-}
-
-export function getMsAccountType(): 'msa' | 'entra' | null {
-  return (getConfigValue('ms_account_type') as 'msa' | 'entra') ?? null;
-}
+export function isMicrosoftEnabled(): boolean { return getConfigValue('ms_enabled') === 'true'; }
+export function isMicrosoftConnected(): boolean { return getConfigValue('ms_connected') === 'true'; }
+export function getEnabledMsServices(): MicrosoftWorkspaceConfig['enabledServices'] { return getMicrosoftWorkspaceConfig().enabledServices; }
+export function getMsAccountType(): 'msa' | 'entra' | null { return (getConfigValue('ms_account_type') as 'msa' | 'entra') ?? null; }
+export function getClientId(): string { return CLIENT_ID; }
 
 // ── Config Setters ──
-
-export function setMicrosoftEnabled(enabled: boolean): void {
-  setConfigValue('ms_enabled', String(enabled));
-}
 
 export function setMicrosoftConnected(connected: boolean, email?: string, accountType?: 'msa' | 'entra'): void {
   setConfigValue('ms_connected', String(connected));
@@ -143,50 +114,18 @@ export function setMicrosoftConnected(connected: boolean, email?: string, accoun
   }
 }
 
+export function setMicrosoftEnabled(enabled: boolean): void { setConfigValue('ms_enabled', String(enabled)); }
+
 export function setEnabledMsServices(services: Partial<MicrosoftWorkspaceConfig['enabledServices']>): void {
   const current = getEnabledMsServices();
-  const updated = { ...current, ...services };
-  setConfigValue('ms_enabled_services', JSON.stringify(updated));
-}
-
-// ── Client ID / Secret ──
-
-export function getClientId(): string | null {
-  return getConfigValue('ms_client_id');
-}
-
-export function getClientSecret(): string | null {
-  return getConfigValue('ms_client_secret');
-}
-
-export function setClientCredentials(clientId: string, clientSecret?: string, tenantId?: string): void {
-  setConfigValue('ms_client_id', clientId);
-  if (clientSecret) setConfigValue('ms_client_secret', clientSecret);
-  if (tenantId) setConfigValue('ms_tenant_id', tenantId);
-}
-
-export function getTenantId(): string | null {
-  return getConfigValue('ms_tenant_id');
-}
-
-export function setAccountType(accountType: 'msa' | 'entra'): void {
-  setConfigValue('ms_account_type', accountType);
+  setConfigValue('ms_enabled_services', JSON.stringify({ ...current, ...services }));
 }
 
 // ── Token Management ──
 
-export function getAccessToken(): string | null {
-  return getConfigValue('ms_access_token');
-}
-
-export function getRefreshToken(): string | null {
-  return getConfigValue('ms_refresh_token');
-}
-
-function getTokenExpiresAt(): number {
-  const val = getConfigValue('ms_token_expires_at');
-  return val ? parseInt(val, 10) : 0;
-}
+export function getAccessToken(): string | null { return getConfigValue('ms_access_token'); }
+function getRefreshToken(): string | null { return getConfigValue('ms_refresh_token'); }
+function getTokenExpiresAt(): number { const v = getConfigValue('ms_token_expires_at'); return v ? parseInt(v, 10) : 0; }
 
 function storeTokens(accessToken: string, refreshToken: string | null, expiresIn: number): void {
   setConfigValue('ms_access_token', accessToken);
@@ -194,49 +133,30 @@ function storeTokens(accessToken: string, refreshToken: string | null, expiresIn
   setConfigValue('ms_token_expires_at', String(Date.now() + expiresIn * 1000));
 }
 
-// Mutex for token refresh to prevent concurrent refreshes
 let refreshPromise: Promise<string | null> | null = null;
 
-/**
- * Get a valid access token, refreshing if expired or about to expire.
- * Uses a mutex so concurrent calls don't race on refresh.
- */
 export async function getValidAccessToken(): Promise<string | null> {
   const token = getAccessToken();
   const expiresAt = getTokenExpiresAt();
-
-  // Still valid (with 5 minute buffer)
-  if (token && Date.now() < expiresAt - 5 * 60 * 1000) {
-    return token;
-  }
-
-  // Need to refresh — use mutex
+  if (token && Date.now() < expiresAt - 5 * 60 * 1000) return token;
   if (refreshPromise) return refreshPromise;
-
   refreshPromise = refreshAccessToken().finally(() => { refreshPromise = null; });
   return refreshPromise;
 }
 
 async function refreshAccessToken(): Promise<string | null> {
   const refreshToken = getRefreshToken();
-  const clientId = getClientId();
-  if (!refreshToken || !clientId) {
-    logger.warn('Cannot refresh Microsoft token: missing refresh token or client ID');
-    return null;
-  }
+  if (!refreshToken) { logger.warn('No refresh token'); return null; }
 
   const params = new URLSearchParams({
-    client_id: clientId,
+    client_id: CLIENT_ID,
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
     scope: SCOPES,
   });
 
-  const clientSecret = getClientSecret();
-  if (clientSecret) params.set('client_secret', clientSecret);
-
   try {
-    const resp = await fetch(`${getAuthBase()}/token`, {
+    const resp = await fetch(`${AUTH_BASE}/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params.toString(),
@@ -244,73 +164,76 @@ async function refreshAccessToken(): Promise<string | null> {
 
     if (!resp.ok) {
       const err = await resp.text();
-      logger.error('Microsoft token refresh failed', { status: resp.status, error: err });
-      // If refresh token is invalid, mark as disconnected and alert the owner
+      logger.error('Token refresh failed', { status: resp.status, error: err });
       if (resp.status === 400 || resp.status === 401) {
         setMicrosoftConnected(false);
-        logger.warn('Microsoft refresh token expired, marking disconnected');
-        try {
-          sendAlert('Microsoft 365 connection expired. Re-authenticate in Settings > Microsoft.', 'warning');
-        } catch { /* iMessage bridge may not be running */ }
+        try { sendAlert('Microsoft 365 connection expired. Re-authenticate in Settings > Microsoft.', 'warning'); } catch {}
       }
       return null;
     }
 
-    const data = await resp.json() as {
-      access_token: string;
-      refresh_token?: string;
-      expires_in: number;
-    };
-
+    const data = await resp.json() as { access_token: string; refresh_token?: string; expires_in: number };
     storeTokens(data.access_token, data.refresh_token ?? null, data.expires_in);
-    logger.debug('Microsoft token refreshed');
     return data.access_token;
   } catch (err) {
-    logger.error('Microsoft token refresh error', { error: err instanceof Error ? err.message : String(err) });
+    logger.error('Token refresh error', { error: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }
 
+// ── PKCE ──
+
+export function generatePKCE(): { verifier: string; challenge: string } {
+  const verifier = crypto.randomBytes(32).toString('base64url');
+  const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+  return { verifier, challenge };
+}
+
+// Store the PKCE verifier so the callback can use it
+let storedVerifier: string | null = null;
+let storedRedirectUri: string | null = null;
+
+export function getStoredVerifier(): string | null { return storedVerifier; }
+export function getStoredRedirectUri(): string | null { return storedRedirectUri; }
+
 // ── OAuth Flow ──
 
-export function buildAuthUrl(redirectUri: string): string {
-  const clientId = getClientId();
-  if (!clientId) throw new Error('Microsoft client ID not configured');
+export function buildAuthUrl(redirectUri: string): { authUrl: string; verifier: string } {
+  const { verifier, challenge } = generatePKCE();
+  storedVerifier = verifier;
+  storedRedirectUri = redirectUri;
 
   const params = new URLSearchParams({
-    client_id: clientId,
+    client_id: CLIENT_ID,
     response_type: 'code',
     redirect_uri: redirectUri,
     scope: SCOPES,
-    prompt: 'consent',
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    prompt: 'select_account',
     response_mode: 'query',
   });
 
-  return `${getAuthBase()}/authorize?${params.toString()}`;
+  return { authUrl: `${AUTH_BASE}/authorize?${params.toString()}`, verifier };
 }
 
-export async function exchangeCodeForTokens(code: string, redirectUri: string): Promise<{
+export async function exchangeCodeForTokens(code: string, redirectUri: string, codeVerifier: string): Promise<{
   success: boolean;
   email?: string;
   accountType?: 'msa' | 'entra';
   error?: string;
 }> {
-  const clientId = getClientId();
-  if (!clientId) return { success: false, error: 'Client ID not configured' };
-
   const params = new URLSearchParams({
-    client_id: clientId,
+    client_id: CLIENT_ID,
     grant_type: 'authorization_code',
     code,
     redirect_uri: redirectUri,
+    code_verifier: codeVerifier,
     scope: SCOPES,
   });
 
-  const clientSecret = getClientSecret();
-  if (clientSecret) params.set('client_secret', clientSecret);
-
   try {
-    const resp = await fetch(`${getAuthBase()}/token`, {
+    const resp = await fetch(`${AUTH_BASE}/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params.toString(),
@@ -318,46 +241,34 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string): 
 
     if (!resp.ok) {
       const errText = await resp.text();
-      return { success: false, error: `Token exchange failed (${resp.status}): ${errText.slice(0, 200)}` };
+      return { success: false, error: `Token exchange failed (${resp.status}): ${errText.slice(0, 300)}` };
     }
 
-    const data = await resp.json() as {
-      access_token: string;
-      refresh_token?: string;
-      expires_in: number;
-      id_token?: string;
-    };
-
+    const data = await resp.json() as { access_token: string; refresh_token?: string; expires_in: number; id_token?: string };
     storeTokens(data.access_token, data.refresh_token ?? null, data.expires_in);
 
-    // Detect account type from id_token claims
+    // Detect account type from id_token
     let accountType: 'msa' | 'entra' = 'entra';
     if (data.id_token) {
       try {
         const payload = JSON.parse(Buffer.from(data.id_token.split('.')[1], 'base64url').toString());
         if (payload.tid === MSA_TENANT_ID) accountType = 'msa';
-      } catch { /* default to entra */ }
+      } catch {}
     }
 
-    // Fetch user email from Graph
+    // Fetch email
     let email = '';
     try {
-      const meResp = await fetch(`${GRAPH_BASE}/me`, {
-        headers: { Authorization: `Bearer ${data.access_token}` },
-      });
+      const meResp = await fetch(`${GRAPH_BASE}/me`, { headers: { Authorization: `Bearer ${data.access_token}` } });
       if (meResp.ok) {
         const me = await meResp.json() as { mail?: string; userPrincipalName?: string };
         email = me.mail ?? me.userPrincipalName ?? '';
       }
-    } catch { /* best effort */ }
+    } catch {}
 
     setMicrosoftConnected(true, email, accountType);
     setMicrosoftEnabled(true);
-
-    // Auto-disable Teams for personal accounts (MSA) — Teams requires Entra
-    if (accountType === 'msa') {
-      setEnabledMsServices({ teams: false });
-    }
+    if (accountType === 'msa') setEnabledMsServices({ teams: false });
 
     logger.info('Microsoft 365 connected', { email, accountType });
     return { success: true, email, accountType };
@@ -371,45 +282,28 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string): 
 export async function testMicrosoftAuth(): Promise<{ authenticated: boolean; email: string | null }> {
   const token = await getValidAccessToken();
   if (!token) return { authenticated: false, email: null };
-
   try {
-    const resp = await fetch(`${GRAPH_BASE}/me`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(10000),
-    });
-
+    const resp = await fetch(`${GRAPH_BASE}/me`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) });
     if (!resp.ok) return { authenticated: false, email: null };
-
     const me = await resp.json() as { mail?: string; userPrincipalName?: string };
-    const email = me.mail ?? me.userPrincipalName ?? null;
     setConfigValue('ms_last_verified_at', new Date().toISOString());
-    return { authenticated: true, email };
-  } catch {
-    return { authenticated: false, email: null };
-  }
+    return { authenticated: true, email: me.mail ?? me.userPrincipalName ?? null };
+  } catch { return { authenticated: false, email: null }; }
 }
 
 export async function checkMicrosoftOnStartup(): Promise<void> {
   if (!isMicrosoftConnected()) return;
-
   const auth = await testMicrosoftAuth();
-  if (auth.authenticated) {
-    logger.info('Microsoft 365 auth verified', { email: auth.email });
-  } else {
-    logger.warn('Microsoft 365 auth expired or invalid, marking disconnected');
-    setMicrosoftConnected(false);
-  }
+  if (auth.authenticated) { logger.info('Microsoft 365 auth verified', { email: auth.email }); }
+  else { logger.warn('Microsoft 365 auth failed, marking disconnected'); setMicrosoftConnected(false); }
 }
 
 // ── Disconnect ──
 
 export function disconnectMicrosoft(): void {
-  const keys = [
-    'ms_enabled', 'ms_connected', 'ms_account_email', 'ms_account_type',
-    'ms_access_token', 'ms_refresh_token', 'ms_token_expires_at',
-    'ms_last_verified_at', 'ms_tenant_id',
-  ];
-  for (const key of keys) deleteConfigValue(key);
+  for (const key of ['ms_enabled', 'ms_connected', 'ms_account_email', 'ms_account_type', 'ms_access_token', 'ms_refresh_token', 'ms_token_expires_at', 'ms_last_verified_at', 'ms_enabled_services']) {
+    deleteConfigValue(key);
+  }
   broadcast({ type: 'microsoft:disconnected' } as never);
   logger.info('Microsoft 365 disconnected');
 }
