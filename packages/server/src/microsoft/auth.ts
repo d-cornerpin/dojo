@@ -29,18 +29,19 @@ function getAuthBase(): string {
 }
 
 const SCOPES = [
-  'openid', 'profile', 'email', 'offline_access',
+  'openid', 'offline_access',
   'User.Read',
-  'Mail.Read', 'Mail.Send', 'Mail.ReadWrite',
-  'Calendars.Read', 'Calendars.ReadWrite',
-  'Files.Read', 'Files.ReadWrite.All',
-  'Chat.Read', 'Chat.ReadWrite',
-  'Notes.ReadWrite',            // OneNote
-  'Tasks.ReadWrite',            // Microsoft To Do / Planner
-  'Contacts.ReadWrite',         // Outlook contacts
-  // Note: Sites.ReadWrite.All, ChannelMessage.Send, Team.ReadBasic.All,
-  // Channel.ReadBasic.All removed — they require admin consent on most
-  // Entra tenants and block non-admin users from signing in.
+  'Mail.ReadWrite',
+  'Mail.Send',
+  'Calendars.ReadWrite',
+  'Files.ReadWrite',
+  'Chat.ReadWrite',
+  'Notes.ReadWrite',
+  'Tasks.ReadWrite',
+  'Contacts.ReadWrite',
+  // Note: requesting ONLY scopes that don't require admin consent.
+  // ReadWrite implies Read, so separate Read scopes are unnecessary.
+  // Files.ReadWrite (not .All) avoids admin consent requirement.
 ].join(' ');
 
 export interface MicrosoftWorkspaceConfig {

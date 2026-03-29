@@ -267,6 +267,18 @@ export const MicrosoftWorkspaceSettings = () => {
 
           {(!status.hasClientId || showStep1) && (
             <div className="ml-7 space-y-3">
+              {accountChoice === 'entra' && (
+                <div className="px-3 py-2.5 rounded-lg bg-blue-500/5 border border-blue-500/10 text-[11px] text-blue-300/70 space-y-1.5">
+                  <p className="font-medium text-blue-300/90">One-time admin setup (do this first):</p>
+                  <p>
+                    Your Entra tenant must allow users to consent to apps registered in your organization.{' '}
+                    <a href="https://portal.azure.com/#blade/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/UserSettings" target="_blank" rel="noopener noreferrer"
+                      className="text-blue-400 hover:underline">Open Consent Settings</a>
+                    {' '}and select <strong className="text-white/60">"Allow user consent for apps from verified publishers, for selected permissions"</strong>.
+                    This only needs to be done once by a tenant admin.
+                  </p>
+                </div>
+              )}
               <ol className="text-xs text-white/50 space-y-2 list-decimal list-inside">
                 <li>
                   <a href="https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener noreferrer"
@@ -296,7 +308,7 @@ export const MicrosoftWorkspaceSettings = () => {
                 </li>
                 <li>
                   Go to <strong className="text-white/70">API permissions</strong> &gt; <strong className="text-white/70">Add a permission</strong> &gt; <strong className="text-white/70">Microsoft Graph</strong> &gt; <strong className="text-white/70">Delegated permissions</strong> &gt; add:
-                  <span className="text-white/60 block mt-1">User.Read, Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, Files.ReadWrite.All, Chat.ReadWrite, Notes.ReadWrite, Tasks.ReadWrite, Contacts.ReadWrite</span>
+                  <span className="text-white/60 block mt-1">User.Read, Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, Files.ReadWrite, Chat.ReadWrite, Notes.ReadWrite, Tasks.ReadWrite, Contacts.ReadWrite</span>
                 </li>
               </ol>
 
