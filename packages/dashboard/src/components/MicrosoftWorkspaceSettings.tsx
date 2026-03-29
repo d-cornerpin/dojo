@@ -29,7 +29,6 @@ export const MicrosoftWorkspaceSettings = () => {
   const [configuring, setConfiguring] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
   const [showStep1, setShowStep1] = useState(false);
-  const [adminConsentDone, setAdminConsentDone] = useState(false);
 
   useEffect(() => {
     loadStatus();
@@ -45,37 +44,6 @@ export const MicrosoftWorkspaceSettings = () => {
       if (data.data.clientId && !clientId) setClientId(data.data.clientId);
       if (data.data.tenantId && !tenantId) setTenantId(data.data.tenantId);
       if (data.data.accountType && !accountChoice) setAccountChoice(data.data.accountType);
-    }
-  };
-
-  const handleAdminConsent = async () => {
-    if (!clientId.trim()) { setConfigError('Save your Client ID first'); return; }
-    setConfiguring(true);
-    setConfigError(null);
-
-    const callbackUri = `${window.location.origin}/api/microsoft/callback`;
-    const result = await api.request<{ authUrl: string }>('/microsoft/configure', {
-      method: 'POST',
-      body: JSON.stringify({
-        clientId: clientId.trim(),
-        clientSecret: clientSecret.trim() || undefined,
-        redirectUri: callbackUri,
-        accountType: accountChoice,
-        tenantId: accountChoice === 'entra' ? tenantId.trim() : undefined,
-        adminConsent: true,
-      }),
-    });
-
-    if (result.ok) {
-      window.open(result.data.authUrl, '_blank');
-      // Just wait for the admin to come back — they'll click "done" or the poll catches it
-      setTimeout(() => {
-        setConfiguring(false);
-        setAdminConsentDone(true);
-      }, 10000);
-    } else {
-      setConfigError(result.error);
-      setConfiguring(false);
     }
   };
 
@@ -299,18 +267,6 @@ export const MicrosoftWorkspaceSettings = () => {
 
           {(!status.hasClientId || showStep1) && (
             <div className="ml-7 space-y-3">
-              {accountChoice === 'entra' && (
-                <div className="px-3 py-2.5 rounded-lg bg-blue-500/5 border border-blue-500/10 text-[11px] text-blue-300/70 space-y-1.5">
-                  <p className="font-medium text-blue-300/90">One-time admin setup (do this first):</p>
-                  <p>
-                    Your Entra tenant must allow users to consent to apps registered in your organization.{' '}
-                    <a href="https://portal.azure.com/#blade/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/UserSettings" target="_blank" rel="noopener noreferrer"
-                      className="text-blue-400 hover:underline">Open Consent Settings</a>
-                    {' '}and select <strong className="text-white/60">"Allow user consent for apps from verified publishers, for selected permissions"</strong>.
-                    This only needs to be done once by a tenant admin.
-                  </p>
-                </div>
-              )}
               <ol className="text-xs text-white/50 space-y-2 list-decimal list-inside">
                 <li>
                   <a href="https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener noreferrer"
@@ -373,50 +329,18 @@ export const MicrosoftWorkspaceSettings = () => {
         </div>
       )}
 
-      {/* Step 2 (Entra only): Admin grants consent */}
-      {accountChoice === 'entra' && (status.hasClientId || clientId.trim()) && (
-        <div className="glass-card p-4 space-y-2">
-          <div className="flex items-center gap-2">
-            <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${adminConsentDone ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/[0.1] text-white/50'}`}>
-              {adminConsentDone ? '\u2713' : '2'}
-            </span>
-            <span className="text-sm font-medium text-white/90">Admin Grants Consent</span>
-          </div>
-          <div className="ml-7 space-y-2">
-            <p className="text-xs text-white/50">
-              A tenant admin must sign in once to approve the app for your organization. Sign in with an <strong className="text-white/70">admin account</strong> and approve the permissions.
-            </p>
-            <button onClick={handleAdminConsent} disabled={configuring}
-              className="glass-btn glass-btn-primary text-xs">
-              {configuring ? 'Waiting for approval...' : 'Sign in as Admin to Approve'}
-            </button>
-            {!adminConsentDone && (
-              <button onClick={() => setAdminConsentDone(true)}
-                className="block text-[10px] text-white/30 hover:text-white/50">
-                I've already done this / I am the admin signing in next
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Step 3 (or 2 for personal): Connect user account */}
+      {/* Step 2: Connect account */}
       {accountChoice && (
-        <div className={`glass-card p-4 space-y-2 ${
-          (!status.hasClientId && !clientId.trim()) || (accountChoice === 'entra' && !adminConsentDone)
-            ? 'opacity-40 pointer-events-none' : ''
-        }`}>
+        <div className={`glass-card p-4 space-y-2 ${!status.hasClientId && !clientId.trim() ? 'opacity-40 pointer-events-none' : ''}`}>
           <div className="flex items-center gap-2">
             <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${status.connected ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/[0.1] text-white/50'}`}>
-              {status.connected ? '\u2713' : accountChoice === 'entra' ? '3' : '2'}
+              {status.connected ? '\u2713' : '2'}
             </span>
-            <span className="text-sm font-medium text-white/90">Connect {accountChoice === 'entra' ? 'User' : 'Your'} Account</span>
+            <span className="text-sm font-medium text-white/90">Connect Your Account</span>
           </div>
           <div className="ml-7 space-y-2">
             <p className="text-xs text-white/50">
-              {accountChoice === 'entra'
-                ? 'Sign in with the Microsoft account that your agent will use (this can be a non-admin account).'
-                : 'Sign in with your personal Microsoft account and approve access.'}
+              Sign in with your {accountChoice === 'msa' ? 'personal' : 'work/school'} Microsoft account and approve access.
             </p>
             <button onClick={handleConfigure} disabled={configuring}
               className="glass-btn glass-btn-primary text-xs">
@@ -433,6 +357,22 @@ export const MicrosoftWorkspaceSettings = () => {
 
       {configError && (
         <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{configError}</div>
+      )}
+
+      {/* Reset everything */}
+      {accountChoice && (
+        <button onClick={async () => {
+          await api.request('/microsoft/disconnect', { method: 'POST' });
+          setAccountChoice(null);
+          setClientId('');
+          setClientSecret('');
+          setTenantId('');
+          setConfigError(null);
+          setShowStep1(false);
+          await loadStatus();
+        }} className="text-xs text-white/30 hover:text-cp-coral transition-colors">
+          Reset Microsoft settings and start over
+        </button>
       )}
 
       <div className="text-xs text-white/30">

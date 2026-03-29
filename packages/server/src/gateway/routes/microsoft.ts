@@ -54,7 +54,7 @@ microsoftRouter.get('/status', (c) => {
 // POST /api/microsoft/configure — store client credentials and return auth URL
 microsoftRouter.post('/configure', async (c) => {
   try {
-    const body = await c.req.json() as { clientId: string; clientSecret?: string; redirectUri?: string; accountType?: 'msa' | 'entra'; tenantId?: string; adminConsent?: boolean };
+    const body = await c.req.json() as { clientId: string; clientSecret?: string; redirectUri?: string; accountType?: 'msa' | 'entra'; tenantId?: string };
     if (!body.clientId?.trim()) {
       return c.json({ ok: false, error: 'clientId is required' }, 400);
     }
@@ -67,11 +67,9 @@ microsoftRouter.post('/configure', async (c) => {
 
     setClientCredentials(body.clientId.trim(), body.clientSecret?.trim(), body.tenantId?.trim());
 
-    // Use the redirect URI from the frontend if provided (it knows the actual URL the user is on).
-    // This handles localhost, tunnels, and any other access method.
     const redirectUri = body.redirectUri?.trim() || `http://localhost:3001/api/microsoft/callback`;
     storedRedirectUri = redirectUri;
-    const authUrl = buildAuthUrl(redirectUri, body.adminConsent === true);
+    const authUrl = buildAuthUrl(redirectUri);
 
     logger.info('Microsoft credentials stored, auth URL generated', { redirectUri });
     return c.json({ ok: true, data: { authUrl, redirectUri } });
