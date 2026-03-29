@@ -282,7 +282,11 @@ export const MicrosoftWorkspaceSettings = () => {
               </li>
               <li>
                 Go to <strong className="text-white/70">API permissions</strong> (left sidebar) &gt; <strong className="text-white/70">Add a permission</strong> &gt; <strong className="text-white/70">Microsoft Graph</strong> &gt; <strong className="text-white/70">Delegated permissions</strong> &gt; search for and add each of these:
-                <span className="text-white/60 block mt-1">User.Read, Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, Files.ReadWrite.All, Sites.ReadWrite.All, Chat.ReadWrite, ChannelMessage.Send, Team.ReadBasic.All, Channel.ReadBasic.All, Notes.ReadWrite, Tasks.ReadWrite, Contacts.ReadWrite</span>
+                <span className="text-white/60 block mt-1">User.Read, Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, Files.ReadWrite.All, Chat.ReadWrite, Notes.ReadWrite, Tasks.ReadWrite, Contacts.ReadWrite</span>
+              </li>
+              <li>
+                <strong className="text-white/70">Work/school accounts only:</strong> Still on the API permissions page, click <strong className="text-white/70">"Grant admin consent for [your org]"</strong>. This is required because Microsoft blocks unverified multi-tenant apps by default. If you're not an admin, ask your IT admin to do this step.
+                <span className="block mt-1 text-[10px] text-white/30">Personal Microsoft accounts (outlook.com, hotmail.com) don't need this step.</span>
               </li>
             </ol>
 
@@ -306,11 +310,36 @@ export const MicrosoftWorkspaceSettings = () => {
         )}
       </div>
 
-      {/* Step 2: Connect */}
+      {/* Step 2: Admin Approval (work/school accounts only) */}
+      <div className={`glass-card p-4 space-y-2 ${!status.hasClientId && !clientId.trim() ? 'opacity-40 pointer-events-none' : ''}`}>
+        <div className="flex items-center gap-2">
+          <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold bg-white/[0.1] text-white/50">2</span>
+          <span className="text-sm font-medium text-white/90">Admin Approval</span>
+          <span className="text-[10px] text-white/30">(work/school accounts only)</span>
+        </div>
+        <div className="ml-7 space-y-2">
+          <p className="text-xs text-white/50">
+            Microsoft requires an admin to approve the app before users can sign in. This only needs to happen once.
+            If you're the admin, click the link below and approve. If not, send this link to your IT admin.
+          </p>
+          <p className="text-[10px] text-white/30">
+            Personal Microsoft accounts (outlook.com, hotmail.com, live.com) can skip this step.
+          </p>
+          {(status.hasClientId || clientId.trim()) && (
+            <a href={`https://login.microsoftonline.com/common/adminconsent?client_id=${status.clientId || clientId.trim()}&redirect_uri=${encodeURIComponent(window.location.origin + '/api/microsoft/callback')}`}
+              target="_blank" rel="noopener noreferrer"
+              className="inline-block glass-btn glass-btn-primary text-xs">
+              Open Admin Approval Page
+            </a>
+          )}
+        </div>
+      </div>
+
+      {/* Step 3: Connect */}
       <div className={`glass-card p-4 space-y-2 ${!status.hasClientId && !clientId.trim() ? 'opacity-40 pointer-events-none' : ''}`}>
         <div className="flex items-center gap-2">
           <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${status.connected ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/[0.1] text-white/50'}`}>
-            {status.connected ? '\u2713' : '2'}
+            {status.connected ? '\u2713' : '3'}
           </span>
           <span className="text-sm font-medium text-white/90">Connect Your Account</span>
         </div>

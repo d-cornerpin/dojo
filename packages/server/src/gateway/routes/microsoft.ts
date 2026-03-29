@@ -77,6 +77,18 @@ microsoftRouter.get('/callback', async (c) => {
   const code = c.req.query('code');
   const error = c.req.query('error');
   const errorDesc = c.req.query('error_description');
+  const adminConsent = c.req.query('admin_consent');
+
+  // Handle admin consent callback (no code, just approval confirmation)
+  if (adminConsent) {
+    const dashboardBase = process.env.NODE_ENV === 'production' ? 'http://localhost:3001' : 'http://localhost:3000';
+    if (adminConsent === 'True') {
+      logger.info('Microsoft admin consent granted');
+      return c.redirect(`${dashboardBase}/settings?tab=microsoft&admin_consent=granted`);
+    } else {
+      return c.redirect(`${dashboardBase}/settings?tab=microsoft&error=Admin+consent+was+denied`);
+    }
+  }
 
   // Redirect back to the dashboard using the same origin the user started from
   const dashboardBase = (() => {

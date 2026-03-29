@@ -22,14 +22,13 @@ const SCOPES = [
   'Mail.Read', 'Mail.Send', 'Mail.ReadWrite',
   'Calendars.Read', 'Calendars.ReadWrite',
   'Files.Read', 'Files.ReadWrite.All',
-  'Sites.ReadWrite.All',        // SharePoint (Entra only)
   'Chat.Read', 'Chat.ReadWrite',
-  'ChannelMessage.Send',        // Teams channel messages (Entra only)
-  'Team.ReadBasic.All',         // List Teams (Entra only)
-  'Channel.ReadBasic.All',      // List channels (Entra only)
   'Notes.ReadWrite',            // OneNote
   'Tasks.ReadWrite',            // Microsoft To Do / Planner
   'Contacts.ReadWrite',         // Outlook contacts
+  // Note: Sites.ReadWrite.All, ChannelMessage.Send, Team.ReadBasic.All,
+  // Channel.ReadBasic.All removed — they require admin consent on most
+  // Entra tenants and block non-admin users from signing in.
 ].join(' ');
 
 export interface MicrosoftWorkspaceConfig {
