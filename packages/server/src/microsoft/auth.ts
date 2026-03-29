@@ -13,8 +13,20 @@ const logger = createLogger('ms-auth');
 // MSA tenant ID — used to detect personal vs work/school accounts
 const MSA_TENANT_ID = '9188040d-6c67-4c5b-b112-36a304b66dad';
 
-const MS_AUTH_BASE = 'https://login.microsoftonline.com/common/oauth2/v2.0';
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
+
+function getAuthBase(): string {
+  const accountType = getConfigValue('ms_account_type');
+  if (accountType === 'msa') {
+    return 'https://login.microsoftonline.com/consumers/oauth2/v2.0';
+  }
+  // Work/school — use tenant ID if available, otherwise fall back to organizations
+  const tenantId = getConfigValue('ms_tenant_id');
+  if (tenantId) {
+    return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0`;
+  }
+  return 'https://login.microsoftonline.com/organizations/oauth2/v2.0';
+}
 
 const SCOPES = [
   'openid', 'profile', 'email', 'offline_access',
@@ -146,9 +158,18 @@ export function getClientSecret(): string | null {
   return getConfigValue('ms_client_secret');
 }
 
-export function setClientCredentials(clientId: string, clientSecret?: string): void {
+export function setClientCredentials(clientId: string, clientSecret?: string, tenantId?: string): void {
   setConfigValue('ms_client_id', clientId);
   if (clientSecret) setConfigValue('ms_client_secret', clientSecret);
+  if (tenantId) setConfigValue('ms_tenant_id', tenantId);
+}
+
+export function getTenantId(): string | null {
+  return getConfigValue('ms_tenant_id');
+}
+
+export function setAccountType(accountType: 'msa' | 'entra'): void {
+  setConfigValue('ms_account_type', accountType);
 }
 
 // ── Token Management ──
@@ -214,7 +235,7 @@ async function refreshAccessToken(): Promise<string | null> {
   if (clientSecret) params.set('client_secret', clientSecret);
 
   try {
-    const resp = await fetch(`${MS_AUTH_BASE}/token`, {
+    const resp = await fetch(`${getAuthBase()}/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params.toString(),
@@ -264,7 +285,7 @@ export function buildAuthUrl(redirectUri: string): string {
     response_mode: 'query',
   });
 
-  return `${MS_AUTH_BASE}/authorize?${params.toString()}`;
+  return `${getAuthBase()}/authorize?${params.toString()}`;
 }
 
 export async function exchangeCodeForTokens(code: string, redirectUri: string): Promise<{
@@ -288,7 +309,7 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string): 
   if (clientSecret) params.set('client_secret', clientSecret);
 
   try {
-    const resp = await fetch(`${MS_AUTH_BASE}/token`, {
+    const resp = await fetch(`${getAuthBase()}/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: params.toString(),
@@ -385,7 +406,7 @@ export function disconnectMicrosoft(): void {
   const keys = [
     'ms_enabled', 'ms_connected', 'ms_account_email', 'ms_account_type',
     'ms_access_token', 'ms_refresh_token', 'ms_token_expires_at',
-    'ms_last_verified_at',
+    'ms_last_verified_at', 'ms_tenant_id',
   ];
   for (const key of keys) deleteConfigValue(key);
   broadcast({ type: 'microsoft:disconnected' } as never);

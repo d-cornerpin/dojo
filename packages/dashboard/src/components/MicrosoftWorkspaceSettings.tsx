@@ -5,6 +5,7 @@ import { MicrosoftActivityLog } from './MicrosoftActivityLog';
 interface MsStatus {
   hasClientId: boolean;
   clientId: string | null;
+  tenantId: string | null;
   enabled: boolean;
   connected: boolean;
   email: string | null;
@@ -20,16 +21,17 @@ export const MicrosoftWorkspaceSettings = () => {
   const [testing, setTesting] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
 
-  // Setup flow states
+  // Setup flow
+  const [accountChoice, setAccountChoice] = useState<'msa' | 'entra' | null>(null);
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
+  const [tenantId, setTenantId] = useState('');
   const [configuring, setConfiguring] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
   const [showStep1, setShowStep1] = useState(false);
 
   useEffect(() => {
     loadStatus();
-    // Check URL params for callback result
     const params = new URLSearchParams(window.location.search);
     if (params.get('connected') === 'true') loadStatus();
     if (params.get('error')) setConfigError(params.get('error'));
@@ -39,18 +41,19 @@ export const MicrosoftWorkspaceSettings = () => {
     const data = await api.request<MsStatus>('/microsoft/status');
     if (data.ok) {
       setStatus(data.data);
-      // Pre-fill the client ID if saved
       if (data.data.clientId && !clientId) setClientId(data.data.clientId);
+      if (data.data.tenantId && !tenantId) setTenantId(data.data.tenantId);
+      if (data.data.accountType && !accountChoice) setAccountChoice(data.data.accountType);
     }
   };
 
   const handleConfigure = async () => {
     if (!clientId.trim()) { setConfigError('Client ID is required'); return; }
+    if (accountChoice === 'entra' && !tenantId.trim()) { setConfigError('Tenant ID is required for work/school accounts'); return; }
+
     setConfiguring(true);
     setConfigError(null);
 
-    // Use the current browser origin for the redirect URI — this matches however
-    // the user is currently accessing the dojo (localhost, tunnel, custom domain).
     const callbackUri = `${window.location.origin}/api/microsoft/callback`;
 
     const result = await api.request<{ authUrl: string; redirectUri: string }>('/microsoft/configure', {
@@ -59,13 +62,13 @@ export const MicrosoftWorkspaceSettings = () => {
         clientId: clientId.trim(),
         clientSecret: clientSecret.trim() || undefined,
         redirectUri: callbackUri,
+        accountType: accountChoice,
+        tenantId: accountChoice === 'entra' ? tenantId.trim() : undefined,
       }),
     });
 
     if (result.ok) {
-      // Open the Microsoft auth URL in the browser
       window.open(result.data.authUrl, '_blank');
-      // Poll for connection
       const poll = setInterval(async () => {
         const s = await api.request<MsStatus>('/microsoft/status');
         if (s.ok && s.data.connected) {
@@ -90,6 +93,10 @@ export const MicrosoftWorkspaceSettings = () => {
 
   const handleDisconnect = async () => {
     await api.request('/microsoft/disconnect', { method: 'POST' });
+    setAccountChoice(null);
+    setClientId('');
+    setClientSecret('');
+    setTenantId('');
     await loadStatus();
   };
 
@@ -109,18 +116,16 @@ export const MicrosoftWorkspaceSettings = () => {
     { key: 'teams', label: 'Teams', entraOnly: true },
   ];
 
-  // Show the redirect URI based on how the user is currently accessing the dojo
   const redirectUri = `${window.location.origin}/api/microsoft/callback`;
 
   // ═══════════════════════════════════════
-  // Connected — show management UI
+  // Connected — management UI
   // ═══════════════════════════════════════
   if (status.connected) {
     return (
       <div className="space-y-6">
         <h3 className="text-sm font-semibold text-white/80 uppercase tracking-wider">Microsoft 365</h3>
 
-        {/* Connection Status */}
         <div className="glass-card p-4 space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -140,30 +145,24 @@ export const MicrosoftWorkspaceSettings = () => {
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-cp-teal/10 text-cp-teal border border-cp-teal/20">Connected</span>
             </div>
           </div>
-
           {status.lastVerified && (
             <p className="text-xs text-white/30">Last verified: {new Date(status.lastVerified).toLocaleString()}</p>
           )}
-
           <div className="flex gap-2">
-            <button onClick={handleTest} disabled={testing}
-              className="glass-btn glass-btn-ghost text-xs">
+            <button onClick={handleTest} disabled={testing} className="glass-btn glass-btn-ghost text-xs">
               {testing ? 'Testing...' : 'Test Connection'}
             </button>
-            <button onClick={handleDisconnect}
-              className="glass-btn glass-btn-ghost text-xs text-cp-coral hover:text-cp-coral">
+            <button onClick={handleDisconnect} className="glass-btn glass-btn-ghost text-xs text-cp-coral hover:text-cp-coral">
               Disconnect
             </button>
           </div>
         </div>
 
-        {/* Enabled Services */}
         <div className="glass-card p-4 space-y-3">
           <h4 className="text-sm font-medium text-white/70">Enabled Services</h4>
           <div className="grid grid-cols-2 gap-2">
             {serviceList.map(svc => {
-              const isMsa = status.accountType === 'msa';
-              const blocked = svc.entraOnly && isMsa;
+              const blocked = svc.entraOnly && status.accountType === 'msa';
               return (
                 <div key={svc.key}>
                   <label className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
@@ -182,21 +181,17 @@ export const MicrosoftWorkspaceSettings = () => {
                     </span>
                     <span className="text-sm text-white/70">{svc.label}</span>
                   </label>
-                  {blocked && (
-                    <p className="text-[10px] text-cp-amber/70 mt-1 ml-1">Requires work/school account</p>
-                  )}
+                  {blocked && <p className="text-[10px] text-cp-amber/70 mt-1 ml-1">Requires work/school account</p>}
                 </div>
               );
             })}
           </div>
         </div>
 
-        {/* Activity Log */}
         <div className="glass-card p-4 space-y-3">
           <div className="flex items-center justify-between">
             <h4 className="text-sm font-medium text-white/70">Microsoft Activity Log</h4>
-            <button onClick={() => setShowActivity(!showActivity)}
-              className="text-xs text-cp-teal hover:text-cp-teal/80">
+            <button onClick={() => setShowActivity(!showActivity)} className="text-xs text-cp-teal hover:text-cp-teal/80">
               {showActivity ? 'Hide' : 'Show'} Activity
             </button>
           </div>
@@ -207,26 +202,19 @@ export const MicrosoftWorkspaceSettings = () => {
           {showActivity && <MicrosoftActivityLog />}
         </div>
 
-        <div className="glass-card p-3 space-y-1">
+        <div className="glass-card p-3">
           <p className="text-xs text-white/40">
-            If you need to re-authenticate and your dojo URL has changed (e.g., tunnel URL changed), update the
-            redirect URI in your{' '}
+            If you need to re-authenticate and your dojo URL has changed, update the redirect URI in your{' '}
             <a href="https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">Azure app registration</a>
-            {' '}to match your current URL: <code className="bg-white/[0.05] px-1 rounded text-[10px]">{window.location.origin}/api/microsoft/callback</code>
+            {' '}to: <code className="bg-white/[0.05] px-1 rounded text-[10px]">{redirectUri}</code>
           </p>
-        </div>
-
-        <div className="text-xs text-white/30">
-          <a href="https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">Azure App Registrations</a>
-          {' | '}
-          <a href="https://myaccount.microsoft.com/settingsandprivacy/privacy" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">Manage Permissions</a>
         </div>
       </div>
     );
   }
 
   // ═══════════════════════════════════════
-  // Not connected — show setup flow
+  // Not connected — setup flow
   // ═══════════════════════════════════════
   return (
     <div className="space-y-6">
@@ -235,134 +223,140 @@ export const MicrosoftWorkspaceSettings = () => {
         Connect a Microsoft account to let your agents read and send Outlook email, manage the calendar, use OneDrive, and send Teams messages.
       </p>
 
-      {/* Step 1: Register Azure App */}
-      <div className="glass-card p-4 space-y-2">
-        <div className="flex items-center justify-between">
+      {/* Step 1: Choose account type */}
+      {!accountChoice && (
+        <div className="glass-card p-4 space-y-3">
           <div className="flex items-center gap-2">
-            <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${status.hasClientId ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/[0.1] text-white/50'}`}>
-              {status.hasClientId ? '\u2713' : '1'}
-            </span>
-            <span className="text-sm font-medium text-white/90">Register an Azure App</span>
+            <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold bg-white/[0.1] text-white/50">1</span>
+            <span className="text-sm font-medium text-white/90">What type of Microsoft account?</span>
           </div>
-          {status.hasClientId && (
-            <button onClick={() => setShowStep1(!showStep1)}
-              className="text-xs text-white/30 hover:text-white/50 transition-colors">
-              {showStep1 ? 'Collapse' : 'Edit'}
+          <div className="ml-7 grid grid-cols-2 gap-3">
+            <button onClick={() => setAccountChoice('msa')}
+              className="glass-card p-4 text-left hover:border-cp-teal/30 transition-colors">
+              <p className="text-sm font-medium text-white/90">Personal</p>
+              <p className="text-[10px] text-white/40 mt-1">outlook.com, hotmail.com, live.com, or any personal Microsoft account</p>
             </button>
-          )}
+            <button onClick={() => setAccountChoice('entra')}
+              className="glass-card p-4 text-left hover:border-cp-teal/30 transition-colors">
+              <p className="text-sm font-medium text-white/90">Work / School</p>
+              <p className="text-[10px] text-white/40 mt-1">Your company or organization Microsoft account (Entra ID / Azure AD)</p>
+            </button>
+          </div>
         </div>
+      )}
 
-        {(!status.hasClientId || showStep1) && (
-          <div className="ml-7 space-y-3">
-            <ol className="text-xs text-white/50 space-y-2 list-decimal list-inside">
-              <li>
-                <a href="https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener noreferrer"
-                  className="text-blue-400 hover:underline">Open Azure App Registrations</a>
-                {' '}&gt; click <strong className="text-white/70">New registration</strong>
-              </li>
-              <li>
-                Name: <strong className="text-white/70">Agent DOJO</strong> (or anything you like)
-              </li>
-              <li>
-                <strong className="text-cp-amber">Important — set this now, it can't be changed later:</strong>
-                {' '}Supported account types: select <strong className="text-white/70">"Accounts in any organizational directory (Any Microsoft Entra ID tenant - Multitenant) and personal Microsoft accounts (e.g. Skype, Xbox)"</strong>
-              </li>
-              <li>
-                Redirect URI: select <strong className="text-white/70">Web</strong> from the dropdown, then enter:
-                <code className="block mt-1 px-2 py-1 rounded bg-white/[0.05] font-mono text-[10px] text-white/60 select-all">{redirectUri}</code>
-              </li>
-              <li>
-                Click <strong className="text-white/70">Register</strong>
-              </li>
-              <li>
-                On the Overview page, copy the <strong className="text-white/70">Application (client) ID</strong> and paste it below
-              </li>
-              <li>
-                Go to <strong className="text-white/70">Certificates & secrets</strong> (left sidebar) &gt; <strong className="text-white/70">New client secret</strong> &gt; add a description, click <strong className="text-white/70">Add</strong> &gt; copy the <strong className="text-white/70">Value</strong> (not the Secret ID) and paste it below
-              </li>
-              <li>
-                Go to <strong className="text-white/70">API permissions</strong> (left sidebar) &gt; <strong className="text-white/70">Add a permission</strong> &gt; <strong className="text-white/70">Microsoft Graph</strong> &gt; <strong className="text-white/70">Delegated permissions</strong> &gt; search for and add each of these:
-                <span className="text-white/60 block mt-1">User.Read, Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, Files.ReadWrite.All, Chat.ReadWrite, Notes.ReadWrite, Tasks.ReadWrite, Contacts.ReadWrite</span>
-              </li>
-              <li>
-                <strong className="text-white/70">Work/school accounts only:</strong> Still on the API permissions page, click <strong className="text-white/70">"Grant admin consent for [your org]"</strong>. This is required because Microsoft blocks unverified multi-tenant apps by default. If you're not an admin, ask your IT admin to do this step.
-                <span className="block mt-1 text-[10px] text-white/30">Personal Microsoft accounts (outlook.com, hotmail.com) don't need this step.</span>
-              </li>
-            </ol>
+      {/* Step 2: Register app */}
+      {accountChoice && (
+        <div className="glass-card p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${status.hasClientId ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/[0.1] text-white/50'}`}>
+                {status.hasClientId ? '\u2713' : '1'}
+              </span>
+              <span className="text-sm font-medium text-white/90">Register an Azure App</span>
+              <button onClick={() => setAccountChoice(null)} className="text-[10px] text-white/30 hover:text-white/50 ml-2">
+                ({accountChoice === 'msa' ? 'Personal' : 'Work/School'} — change)
+              </button>
+            </div>
+            {status.hasClientId && (
+              <button onClick={() => setShowStep1(!showStep1)} className="text-xs text-white/30 hover:text-white/50 transition-colors">
+                {showStep1 ? 'Collapse' : 'Edit'}
+              </button>
+            )}
+          </div>
 
-            <div className="space-y-2">
-              <div>
-                <label className="block text-xs font-medium text-white/55 mb-1">Application (Client) ID</label>
-                <input type="text" value={clientId} onChange={(e) => setClientId(e.target.value)}
-                  placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                  className="glass-input font-mono text-xs" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-white/55 mb-1">
-                  Client Secret <span className="text-white/30 font-normal">(recommended{status?.hasClientId ? ' — re-enter if changing' : ''})</span>
-                </label>
-                <input type="password" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)}
-                  placeholder="Enter client secret value"
-                  className="glass-input text-xs" />
+          {(!status.hasClientId || showStep1) && (
+            <div className="ml-7 space-y-3">
+              <ol className="text-xs text-white/50 space-y-2 list-decimal list-inside">
+                <li>
+                  <a href="https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener noreferrer"
+                    className="text-blue-400 hover:underline">Open Azure App Registrations</a>
+                  {' '}&gt; click <strong className="text-white/70">New registration</strong>
+                </li>
+                <li>Name: <strong className="text-white/70">Agent DOJO</strong></li>
+                <li>
+                  Supported account types: select{' '}
+                  {accountChoice === 'msa' ? (
+                    <strong className="text-white/70">"Personal Microsoft accounts only"</strong>
+                  ) : (
+                    <strong className="text-white/70">"Accounts in this organizational directory only (Single tenant)"</strong>
+                  )}
+                </li>
+                <li>
+                  Redirect URI: select <strong className="text-white/70">Web</strong>, enter:
+                  <code className="block mt-1 px-2 py-1 rounded bg-white/[0.05] font-mono text-[10px] text-white/60 select-all">{redirectUri}</code>
+                </li>
+                <li>Click <strong className="text-white/70">Register</strong></li>
+                <li>
+                  On the Overview page, copy the <strong className="text-white/70">Application (client) ID</strong>
+                  {accountChoice === 'entra' && <> and the <strong className="text-white/70">Directory (tenant) ID</strong></>}
+                </li>
+                <li>
+                  Go to <strong className="text-white/70">Certificates & secrets</strong> &gt; <strong className="text-white/70">New client secret</strong> &gt; copy the <strong className="text-white/70">Value</strong> (not Secret ID)
+                </li>
+                <li>
+                  Go to <strong className="text-white/70">API permissions</strong> &gt; <strong className="text-white/70">Add a permission</strong> &gt; <strong className="text-white/70">Microsoft Graph</strong> &gt; <strong className="text-white/70">Delegated permissions</strong> &gt; add:
+                  <span className="text-white/60 block mt-1">User.Read, Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, Files.ReadWrite.All, Chat.ReadWrite, Notes.ReadWrite, Tasks.ReadWrite, Contacts.ReadWrite</span>
+                </li>
+              </ol>
+
+              <div className="space-y-2">
+                <div>
+                  <label className="block text-xs font-medium text-white/55 mb-1">Application (Client) ID</label>
+                  <input type="text" value={clientId} onChange={(e) => setClientId(e.target.value)}
+                    placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                    className="glass-input font-mono text-xs" />
+                </div>
+                {accountChoice === 'entra' && (
+                  <div>
+                    <label className="block text-xs font-medium text-white/55 mb-1">Directory (Tenant) ID</label>
+                    <input type="text" value={tenantId} onChange={(e) => setTenantId(e.target.value)}
+                      placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                      className="glass-input font-mono text-xs" />
+                  </div>
+                )}
+                <div>
+                  <label className="block text-xs font-medium text-white/55 mb-1">
+                    Client Secret <span className="text-white/30 font-normal">(recommended{status.hasClientId ? ' — re-enter if changing' : ''})</span>
+                  </label>
+                  <input type="password" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)}
+                    placeholder="Enter client secret value"
+                    className="glass-input text-xs" />
+                </div>
               </div>
             </div>
-          </div>
-        )}
-      </div>
-
-      {/* Step 2: Admin Approval (work/school accounts only) */}
-      <div className={`glass-card p-4 space-y-2 ${!status.hasClientId && !clientId.trim() ? 'opacity-40 pointer-events-none' : ''}`}>
-        <div className="flex items-center gap-2">
-          <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold bg-white/[0.1] text-white/50">2</span>
-          <span className="text-sm font-medium text-white/90">Admin Approval</span>
-          <span className="text-[10px] text-white/30">(work/school accounts only)</span>
-        </div>
-        <div className="ml-7 space-y-2">
-          <p className="text-xs text-white/50">
-            Microsoft requires an admin to approve the app before users can sign in. This only needs to happen once.
-            If you're the admin, click the link below and approve. If not, send this link to your IT admin.
-          </p>
-          <p className="text-[10px] text-white/30">
-            Personal Microsoft accounts (outlook.com, hotmail.com, live.com) can skip this step.
-          </p>
-          {(status.hasClientId || clientId.trim()) && (
-            <a href={`https://login.microsoftonline.com/common/adminconsent?client_id=${status.clientId || clientId.trim()}&redirect_uri=${encodeURIComponent(window.location.origin + '/api/microsoft/callback')}`}
-              target="_blank" rel="noopener noreferrer"
-              className="inline-block glass-btn glass-btn-primary text-xs">
-              Open Admin Approval Page
-            </a>
           )}
         </div>
-      </div>
+      )}
 
       {/* Step 3: Connect */}
-      <div className={`glass-card p-4 space-y-2 ${!status.hasClientId && !clientId.trim() ? 'opacity-40 pointer-events-none' : ''}`}>
-        <div className="flex items-center gap-2">
-          <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${status.connected ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/[0.1] text-white/50'}`}>
-            {status.connected ? '\u2713' : '3'}
-          </span>
-          <span className="text-sm font-medium text-white/90">Connect Your Account</span>
+      {accountChoice && (
+        <div className={`glass-card p-4 space-y-2 ${!status.hasClientId && !clientId.trim() ? 'opacity-40 pointer-events-none' : ''}`}>
+          <div className="flex items-center gap-2">
+            <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${status.connected ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/[0.1] text-white/50'}`}>
+              {status.connected ? '\u2713' : '2'}
+            </span>
+            <span className="text-sm font-medium text-white/90">Connect Your Account</span>
+          </div>
+          <div className="ml-7 space-y-2">
+            <p className="text-xs text-white/50">
+              Sign in with your {accountChoice === 'msa' ? 'personal' : 'work/school'} Microsoft account and approve access.
+            </p>
+            <button onClick={handleConfigure} disabled={configuring}
+              className="glass-btn glass-btn-primary text-xs">
+              {configuring ? 'Waiting for sign-in...' : 'Connect Microsoft Account'}
+            </button>
+            {configuring && (
+              <div className="px-3 py-2 rounded-lg bg-cp-amber/10 border border-cp-amber/20 text-xs text-cp-amber animate-pulse">
+                Complete the sign-in in your browser. This page will update automatically.
+              </div>
+            )}
+          </div>
         </div>
-        <div className="ml-7 space-y-2">
-          <p className="text-xs text-white/50">
-            Click below to sign in with Microsoft. A browser window will open for you to approve access.
-          </p>
-          <button onClick={handleConfigure} disabled={configuring}
-            className="glass-btn glass-btn-primary text-xs">
-            {configuring ? 'Waiting for sign-in...' : 'Connect Microsoft Account'}
-          </button>
-          {configuring && (
-            <div className="px-3 py-2 rounded-lg bg-cp-amber/10 border border-cp-amber/20 text-xs text-cp-amber animate-pulse">
-              Complete the sign-in in your browser. This page will update automatically.
-            </div>
-          )}
-        </div>
-      </div>
+      )}
 
       {configError && (
-        <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">
-          {configError}
-        </div>
+        <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{configError}</div>
       )}
 
       <div className="text-xs text-white/30">
