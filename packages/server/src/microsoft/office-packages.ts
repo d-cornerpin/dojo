@@ -4,6 +4,7 @@
 // ════════════════════════════════════════
 
 import { exec } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createLogger } from '../logger.js';
@@ -18,21 +19,23 @@ let installError: string | null = null;
 
 // ── Availability Check ──
 
+let packagesVerified = false;
+
 export function areOfficePackagesInstalled(): boolean {
+  if (packagesVerified) return true;
+
+  // Check if the packages exist in node_modules by looking for their package.json
   for (const pkg of REQUIRED_PACKAGES) {
-    try {
-      require.resolve(pkg);
-    } catch {
-      // Try resolving from the platform directory
-      try {
-        const platformDir = path.resolve(process.cwd(), 'node_modules', pkg);
-        require.resolve(platformDir);
-      } catch {
-        return false;
-      }
-    }
+    const pkgPath = path.resolve(process.cwd(), 'node_modules', pkg, 'package.json');
+    if (!fs.existsSync(pkgPath)) return false;
   }
+
+  packagesVerified = true;
   return true;
+}
+
+export function resetPackageCache(): void {
+  packagesVerified = false;
 }
 
 export function checkAndUpdateStatus(): void {
@@ -91,7 +94,8 @@ export function installOfficePackages(): void {
         return;
       }
 
-      // Verify they're actually available
+      // Reset cache and verify
+      resetPackageCache();
       if (areOfficePackagesInstalled()) {
         installStatus = 'installed';
         installError = null;
