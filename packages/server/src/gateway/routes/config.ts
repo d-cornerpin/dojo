@@ -50,13 +50,24 @@ function getModelUsage(modelId: string): ModelUsage {
 }
 
 function reassignAffectedAgents(modelIds: string[]): number {
+  if (modelIds.length === 0) return 0;
+
   const db = getDb();
   let reassigned = 0;
 
-  // Find a fallback model — first enabled model not in the deleted set
-  const fallback = db.prepare(
-    `SELECT id FROM models WHERE is_enabled = 1 AND id NOT IN (${modelIds.map(() => '?').join(',')}) ORDER BY input_cost_per_m ASC LIMIT 1`
-  ).get(...modelIds) as { id: string } | undefined;
+  // Find a fallback model — first enabled model not in the affected set
+  let fallback: { id: string } | undefined;
+  try {
+    const placeholders = modelIds.map(() => '?').join(',');
+    fallback = db.prepare(
+      `SELECT id FROM models WHERE is_enabled = 1 AND id NOT IN (${placeholders}) ORDER BY input_cost_per_m ASC LIMIT 1`
+    ).get(...modelIds) as { id: string } | undefined;
+  } catch {
+    // If query fails, try without the exclusion
+    fallback = db.prepare(
+      'SELECT id FROM models WHERE is_enabled = 1 ORDER BY input_cost_per_m ASC LIMIT 1'
+    ).get() as { id: string } | undefined;
+  }
 
   const fallbackId = fallback?.id ?? null;
 
@@ -388,27 +399,42 @@ configRouter.post('/providers', async (c) => {
 
 // DELETE /providers/:id
 configRouter.delete('/providers/:id', (c) => {
-  const db = getDb();
-  const id = c.req.param('id');
+  try {
+    const db = getDb();
+    const id = c.req.param('id');
 
-  const existing = db.prepare('SELECT id FROM providers WHERE id = ?').get(id);
-  if (!existing) {
-    return c.json({ ok: false, error: 'Provider not found' }, 404);
+    const existing = db.prepare('SELECT id FROM providers WHERE id = ?').get(id);
+    if (!existing) {
+      return c.json({ ok: false, error: 'Provider not found' }, 404);
+    }
+
+    // Find all models from this provider and reassign affected agents
+    const providerModels = db.prepare('SELECT id FROM models WHERE provider_id = ?').all(id) as Array<{ id: string }>;
+    const modelIds = providerModels.map(m => m.id);
+
+    // Nullify agent model references first (handles FK constraints)
+    for (const mid of modelIds) {
+      db.prepare("UPDATE agents SET model_id = NULL WHERE model_id = ?").run(mid);
+    }
+
+    // Clear PM and Dreamer model configs if they reference these models
+    for (const mid of modelIds) {
+      db.prepare("DELETE FROM config WHERE key = 'pm_agent_model' AND value = ?").run(mid);
+      db.prepare("DELETE FROM config WHERE key = 'dreaming_model_id' AND value = ?").run(mid);
+    }
+
+    // Delete models, then provider
+    db.prepare('DELETE FROM models WHERE provider_id = ?').run(id);
+    db.prepare('DELETE FROM providers WHERE id = ?').run(id);
+    clearClientCache(id);
+    clearSecretsCache();
+    logger.info('Provider deleted', { providerId: id, modelsRemoved: modelIds.length });
+
+    return c.json({ ok: true, data: { message: 'Provider deleted' } });
+  } catch (err) {
+    logger.error('Failed to delete provider', { error: err instanceof Error ? err.message : String(err) });
+    return c.json({ ok: false, error: err instanceof Error ? err.message : 'Delete failed' }, 500);
   }
-
-  // Find all models from this provider and reassign affected agents
-  const providerModels = db.prepare('SELECT id FROM models WHERE provider_id = ?').all(id) as Array<{ id: string }>;
-  const modelIds = providerModels.map(m => m.id);
-  const reassigned = modelIds.length > 0 ? reassignAffectedAgents(modelIds) : 0;
-
-  // Delete models, then provider
-  db.prepare('DELETE FROM models WHERE provider_id = ?').run(id);
-  db.prepare('DELETE FROM providers WHERE id = ?').run(id);
-  clearClientCache(id);
-  clearSecretsCache(); // Force re-read from disk on next access
-  logger.info('Provider deleted', { providerId: id, modelsRemoved: modelIds.length, agentsReassigned: reassigned });
-
-  return c.json({ ok: true, data: { message: 'Provider deleted' } });
 });
 
 // POST /providers/:id/validate
