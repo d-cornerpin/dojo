@@ -13,6 +13,76 @@ import { DEFAULT_SOUL_MD as DEFAULT_SOUL, DEFAULT_USER_MD as DEFAULT_USER } from
 import { getOllamaModelInfo } from '../../services/ollama.js';
 import type { Provider, Model } from '@dojo/shared';
 
+// ── Model Usage Helper ──
+
+interface ModelUsage {
+  modelId: string;
+  modelName: string;
+  usedBy: Array<{ type: 'agent' | 'pm_model' | 'dreamer_model'; id: string; name: string }>;
+}
+
+function getModelUsage(modelId: string): ModelUsage {
+  const db = getDb();
+  const model = db.prepare('SELECT id, name FROM models WHERE id = ?').get(modelId) as { id: string; name: string } | undefined;
+  const usedBy: ModelUsage['usedBy'] = [];
+
+  // Check agents
+  const agents = db.prepare(
+    "SELECT id, name FROM agents WHERE model_id = ? AND status != 'terminated'"
+  ).all(modelId) as Array<{ id: string; name: string }>;
+  for (const a of agents) {
+    usedBy.push({ type: 'agent', id: a.id, name: a.name });
+  }
+
+  // Check PM model config
+  const pmModel = db.prepare("SELECT value FROM config WHERE key = 'pm_agent_model'").get() as { value: string } | undefined;
+  if (pmModel?.value === modelId) {
+    usedBy.push({ type: 'pm_model', id: 'pm_agent_model', name: 'PM Agent Default Model' });
+  }
+
+  // Check dreamer model config
+  const dreamerModel = db.prepare("SELECT value FROM config WHERE key = 'dreaming_model_id'").get() as { value: string } | undefined;
+  if (dreamerModel?.value === modelId) {
+    usedBy.push({ type: 'dreamer_model', id: 'dreaming_model_id', name: 'Dreamer Model' });
+  }
+
+  return { modelId, modelName: model?.name ?? modelId, usedBy };
+}
+
+function reassignAffectedAgents(modelIds: string[]): number {
+  const db = getDb();
+  let reassigned = 0;
+
+  // Find a fallback model — first enabled model not in the deleted set
+  const fallback = db.prepare(
+    `SELECT id FROM models WHERE is_enabled = 1 AND id NOT IN (${modelIds.map(() => '?').join(',')}) ORDER BY input_cost_per_m ASC LIMIT 1`
+  ).get(...modelIds) as { id: string } | undefined;
+
+  const fallbackId = fallback?.id ?? null;
+
+  for (const mid of modelIds) {
+    // Reassign agents
+    const result = db.prepare(
+      "UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE model_id = ? AND status != 'terminated'"
+    ).run(fallbackId, mid);
+    reassigned += result.changes;
+
+    // Clear PM model if it matches
+    const pmModel = db.prepare("SELECT value FROM config WHERE key = 'pm_agent_model'").get() as { value: string } | undefined;
+    if (pmModel?.value === mid && fallbackId) {
+      db.prepare("UPDATE config SET value = ?, updated_at = datetime('now') WHERE key = 'pm_agent_model'").run(fallbackId);
+    }
+
+    // Clear dreamer model if it matches
+    const dreamerModel = db.prepare("SELECT value FROM config WHERE key = 'dreaming_model_id'").get() as { value: string } | undefined;
+    if (dreamerModel?.value === mid && fallbackId) {
+      db.prepare("UPDATE config SET value = ?, updated_at = datetime('now') WHERE key = 'dreaming_model_id'").run(fallbackId);
+    }
+  }
+
+  return reassigned;
+}
+
 const logger = createLogger('config-routes');
 
 // Fallback Anthropic models — used only if models.list() API call fails
@@ -326,21 +396,17 @@ configRouter.delete('/providers/:id', (c) => {
     return c.json({ ok: false, error: 'Provider not found' }, 404);
   }
 
-  // Clear agent model references that point to models from this provider
+  // Find all models from this provider and reassign affected agents
   const providerModels = db.prepare('SELECT id FROM models WHERE provider_id = ?').all(id) as Array<{ id: string }>;
   const modelIds = providerModels.map(m => m.id);
-  if (modelIds.length > 0) {
-    for (const mid of modelIds) {
-      db.prepare("UPDATE agents SET model_id = NULL WHERE model_id = ?").run(mid);
-    }
-  }
+  const reassigned = modelIds.length > 0 ? reassignAffectedAgents(modelIds) : 0;
 
   // Delete models, then provider
   db.prepare('DELETE FROM models WHERE provider_id = ?').run(id);
   db.prepare('DELETE FROM providers WHERE id = ?').run(id);
   clearClientCache(id);
   clearSecretsCache(); // Force re-read from disk on next access
-  logger.info('Provider deleted', { providerId: id, modelsRemoved: modelIds.length });
+  logger.info('Provider deleted', { providerId: id, modelsRemoved: modelIds.length, agentsReassigned: reassigned });
 
   return c.json({ ok: true, data: { message: 'Provider deleted' } });
 });
@@ -805,6 +871,16 @@ configRouter.post('/models/enable', async (c) => {
   return c.json({ ok: true, data: { enabled: modelIds.length } });
 });
 
+// POST /models/check-usage — check which agents use these models before disabling/deleting
+configRouter.post('/models/check-usage', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const parsed = EnableModelsSchema.safeParse(body);
+  if (!parsed.success) return c.json({ ok: false, error: 'modelIds array required' }, 400);
+
+  const usages = parsed.data.modelIds.map(id => getModelUsage(id)).filter(u => u.usedBy.length > 0);
+  return c.json({ ok: true, data: { usages } });
+});
+
 // POST /models/disable
 configRouter.post('/models/disable', async (c) => {
   const body = await c.req.json().catch(() => null);
@@ -827,9 +903,13 @@ configRouter.post('/models/disable', async (c) => {
   });
 
   disableMany(modelIds);
-  logger.info('Models disabled', { count: modelIds.length });
 
-  return c.json({ ok: true, data: { disabled: modelIds.length } });
+  // Reassign any agents using the disabled models to a fallback
+  const reassigned = reassignAffectedAgents(modelIds);
+
+  logger.info('Models disabled', { count: modelIds.length, agentsReassigned: reassigned });
+
+  return c.json({ ok: true, data: { disabled: modelIds.length, agentsReassigned: reassigned } });
 });
 
 // ── Identity (Prompt Files) ──

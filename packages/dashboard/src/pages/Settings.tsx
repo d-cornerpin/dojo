@@ -892,7 +892,23 @@ const ProvidersTab = () => {
   const [syncing, setSyncing] = useState<string | null>(null);
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Delete this provider? This will also remove its models.')) return;
+    // Fetch models for this provider to check usage
+    const modelsResult = await api.getModels();
+    const providerModelIds = modelsResult.ok
+      ? (modelsResult.data as Array<{ id: string; providerId: string }>).filter(m => m.providerId === id).map(m => m.id)
+      : [];
+
+    let warning = 'Delete this provider? This will also remove its models.';
+    if (providerModelIds.length > 0) {
+      const usage = await api.checkModelUsage(providerModelIds);
+      if (usage.ok && usage.data.usages.length > 0) {
+        const affected = usage.data.usages.flatMap(u => u.usedBy.map((a: { name: string }) => a.name));
+        const unique = [...new Set(affected)];
+        warning += `\n\nCurrently used by: ${unique.join(', ')}. They will be reassigned to another model.`;
+      }
+    }
+
+    if (!confirm(warning)) return;
     const result = await api.deleteProvider(id);
     if (result.ok) {
       setProviders((prev) => prev.filter((p) => p.id !== id));
@@ -1345,6 +1361,14 @@ const ModelsTab = () => {
 
   const toggleModel = async (model: Model) => {
     if (model.isEnabled) {
+      // Check if any agents are using this model before disabling
+      const usage = await api.checkModelUsage([model.id]);
+      if (usage.ok && usage.data.usages.length > 0) {
+        const affected = usage.data.usages[0].usedBy.map(u => u.name).join(', ');
+        if (!window.confirm(`This model is currently used by: ${affected}.\n\nDisabling it will reassign them to the next available model. Continue?`)) {
+          return;
+        }
+      }
       const result = await api.disableModels([model.id]);
       if (result.ok) {
         setModels((prev) =>

@@ -201,8 +201,15 @@ export const enableModels = async (modelIds: string[]): Promise<ApiResponse<void
   });
 };
 
-export const disableModels = async (modelIds: string[]): Promise<ApiResponse<void>> => {
-  return request<void>('/config/models/disable', {
+export const disableModels = async (modelIds: string[]): Promise<ApiResponse<{ disabled: number; agentsReassigned: number }>> => {
+  return request<{ disabled: number; agentsReassigned: number }>('/config/models/disable', {
+    method: 'POST',
+    body: JSON.stringify({ modelIds }),
+  });
+};
+
+export const checkModelUsage = async (modelIds: string[]): Promise<ApiResponse<{ usages: Array<{ modelId: string; modelName: string; usedBy: Array<{ type: string; id: string; name: string }> }> }>> => {
+  return request<{ usages: Array<{ modelId: string; modelName: string; usedBy: Array<{ type: string; id: string; name: string }> }> }>('/config/models/check-usage', {
     method: 'POST',
     body: JSON.stringify({ modelIds }),
   });
