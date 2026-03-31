@@ -405,7 +405,10 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
     const id = name.toLowerCase().replace(/[^a-z0-9]/g, '-');
     const result = await api.createProvider({
       id, name, type,
-      baseUrl: type === 'ollama' ? (baseUrl || 'http://localhost:11434') : undefined,
+      baseUrl: type === 'ollama' ? (baseUrl || 'http://localhost:11434')
+        : type === 'openai-compatible' ? (baseUrl || 'https://openrouter.ai/api')
+        : type === 'openai' ? (baseUrl || 'https://api.openai.com')
+        : undefined,
       authType: type === 'ollama' ? 'none' : authType,
       credential: type === 'ollama' ? undefined : credential,
     });

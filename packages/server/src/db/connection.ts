@@ -24,6 +24,13 @@ export function getDb(): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 
+  // Verify foreign keys are actually enabled
+  const fkStatus = db.pragma('foreign_keys', { simple: true });
+  if (fkStatus !== 1) {
+    logger.warn('Foreign keys not enabled, forcing ON', { status: fkStatus });
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+
   logger.info('Database connection established', { path: DB_PATH });
 
   return db;

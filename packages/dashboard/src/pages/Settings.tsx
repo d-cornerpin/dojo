@@ -986,7 +986,10 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
       id,
       name,
       type,
-      baseUrl: type === 'ollama' ? (baseUrl || 'http://localhost:11434') : undefined,
+      baseUrl: type === 'ollama' ? (baseUrl || 'http://localhost:11434')
+        : type === 'openai-compatible' ? (baseUrl || 'https://openrouter.ai/api')
+        : type === 'openai' ? (baseUrl || 'https://api.openai.com')
+        : undefined,
       authType: type === 'ollama' ? 'none' : authType,
       credential: type === 'ollama' ? undefined : credential,
     });

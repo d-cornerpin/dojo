@@ -326,11 +326,21 @@ configRouter.delete('/providers/:id', (c) => {
     return c.json({ ok: false, error: 'Provider not found' }, 404);
   }
 
+  // Clear agent model references that point to models from this provider
+  const providerModels = db.prepare('SELECT id FROM models WHERE provider_id = ?').all(id) as Array<{ id: string }>;
+  const modelIds = providerModels.map(m => m.id);
+  if (modelIds.length > 0) {
+    for (const mid of modelIds) {
+      db.prepare("UPDATE agents SET model_id = NULL WHERE model_id = ?").run(mid);
+    }
+  }
+
+  // Delete models, then provider
   db.prepare('DELETE FROM models WHERE provider_id = ?').run(id);
   db.prepare('DELETE FROM providers WHERE id = ?').run(id);
   clearClientCache(id);
   clearSecretsCache(); // Force re-read from disk on next access
-  logger.info('Provider deleted', { providerId: id });
+  logger.info('Provider deleted', { providerId: id, modelsRemoved: modelIds.length });
 
   return c.json({ ok: true, data: { message: 'Provider deleted' } });
 });
