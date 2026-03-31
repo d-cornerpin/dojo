@@ -277,9 +277,17 @@ function getOpenAIClient(providerId: string, baseUrl?: string | null): OpenAI {
     });
   }
 
+  const resolvedBaseUrl = baseUrl
+    ? (baseUrl.replace(/\/+$/, '').endsWith('/v1')
+        ? baseUrl.replace(/\/+$/, '')
+        : baseUrl.replace(/\/+$/, '') + '/v1')
+    : undefined;
+
+  logger.info('Creating OpenAI-compatible client', { providerId, baseUrl, resolvedBaseUrl: resolvedBaseUrl ?? 'https://api.openai.com/v1 (default)' });
+
   const client = new OpenAI({
     apiKey: credential,
-    ...(baseUrl ? { baseURL: baseUrl.replace(/\/+$/, '') + '/v1' } : {}),
+    ...(resolvedBaseUrl ? { baseURL: resolvedBaseUrl } : {}),
   });
 
   openaiClientCache.set(cacheKey, client);
