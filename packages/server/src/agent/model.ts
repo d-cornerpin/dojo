@@ -376,13 +376,21 @@ async function callOpenAIModel(
   // o-series models use max_completion_tokens, others use max_tokens
   const isReasoningModel = modelInfo.apiModelId.match(/^o[1-4]/);
 
+  // Estimate input tokens to cap output so we don't exceed context window
+  const inputEstimate = openaiMessages.reduce((sum, m) => {
+    const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
+    return sum + Math.ceil(content.length / 4);
+  }, 0) + Math.ceil(JSON.stringify(openaiTools ?? []).length / 4);
+  const availableForOutput = Math.max(1024, modelInfo.contextWindow - inputEstimate - 500);
+  const effectiveMaxTokens = Math.min(modelInfo.maxOutputTokens, availableForOutput);
+
   const requestParams: OpenAI.ChatCompletionCreateParams = {
     model: modelInfo.apiModelId,
     messages: openaiMessages,
     stream: true,
     ...(isReasoningModel
-      ? { max_completion_tokens: modelInfo.maxOutputTokens }
-      : { max_tokens: modelInfo.maxOutputTokens }),
+      ? { max_completion_tokens: effectiveMaxTokens }
+      : { max_tokens: effectiveMaxTokens }),
     ...(openaiTools && openaiTools.length > 0 ? { tools: openaiTools } : {}),
   };
 
@@ -577,9 +585,17 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
       ]
     : systemPrompt;
 
+  // Cap max_tokens so input + output doesn't exceed context window
+  const anthropicInputEstimate = anthropicMessages.reduce((sum, m) => {
+    const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+    return sum + Math.ceil(content.length / 4);
+  }, 0) + Math.ceil(systemPrompt.length / 4);
+  const anthropicAvailable = Math.max(1024, modelInfo.contextWindow - anthropicInputEstimate - 500);
+  const anthropicMaxTokens = Math.min(modelInfo.maxOutputTokens, anthropicAvailable);
+
   const requestParams: Anthropic.MessageCreateParams = {
     model: modelInfo.apiModelId,
-    max_tokens: modelInfo.maxOutputTokens,
+    max_tokens: anthropicMaxTokens,
     system: systemParam,
     messages: anthropicMessages,
     ...(tools ? { tools: getFilteredTools(agentId).map(t => ({
