@@ -36,7 +36,10 @@ export async function assembleContext(
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>;
 }> {
   const contextWindow = getContextWindow(modelId);
-  const maxTokens = Math.floor(DEFAULTS.contextThreshold * contextWindow);
+  // Reserve 10K tokens for tool definitions (they're added by the model layer, not here)
+  // and output tokens. The assembler only controls system prompt + messages.
+  const toolAndOutputReserve = 15000;
+  const maxTokens = Math.floor(DEFAULTS.contextThreshold * contextWindow) - toolAndOutputReserve;
 
   // 1. System prompt
   const systemPrompt = assembleSystemPrompt(agentId, modelId);

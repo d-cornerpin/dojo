@@ -376,12 +376,16 @@ async function callOpenAIModel(
   // o-series models use max_completion_tokens, others use max_tokens
   const isReasoningModel = modelInfo.apiModelId.match(/^o[1-4]/);
 
-  // Estimate input tokens to cap output so we don't exceed context window
+  // Estimate input tokens to cap output so we don't exceed context window.
+  // Use ~3 chars/token (conservative) to avoid underestimating.
   const inputEstimate = openaiMessages.reduce((sum, m) => {
     const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
-    return sum + Math.ceil(content.length / 4);
-  }, 0) + Math.ceil(JSON.stringify(openaiTools ?? []).length / 4);
-  const availableForOutput = Math.max(1024, modelInfo.contextWindow - inputEstimate - 500);
+    return sum + Math.ceil(content.length / 3);
+  }, 0) + Math.ceil(JSON.stringify(openaiTools ?? []).length / 3);
+
+  // Reserve at most 25% of context for output, or whatever's left after input
+  const maxOutputBudget = Math.floor(modelInfo.contextWindow * 0.25);
+  const availableForOutput = Math.max(1024, Math.min(maxOutputBudget, modelInfo.contextWindow - inputEstimate - 1000));
   const effectiveMaxTokens = Math.min(modelInfo.maxOutputTokens, availableForOutput);
 
   const requestParams: OpenAI.ChatCompletionCreateParams = {
