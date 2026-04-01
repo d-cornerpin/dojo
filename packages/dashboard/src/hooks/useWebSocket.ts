@@ -126,11 +126,20 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         wsRef.current = null;
         if (heartbeatTimeoutRef.current) {
           clearTimeout(heartbeatTimeoutRef.current);
           heartbeatTimeoutRef.current = null;
+        }
+
+        // If server rejected due to invalid/expired token, redirect to login
+        // instead of endlessly reconnecting with the same bad token
+        if (event.code === 1008) {
+          setStatus('disconnected');
+          localStorage.removeItem('dojo_token');
+          window.location.href = '/login';
+          return;
         }
 
         if (!dismountedRef.current) {
