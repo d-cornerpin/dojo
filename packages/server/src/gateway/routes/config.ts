@@ -412,7 +412,7 @@ configRouter.delete('/providers/:id', (c) => {
     const providerModels = db.prepare('SELECT id FROM models WHERE provider_id = ?').all(id) as Array<{ id: string }>;
     const modelIds = providerModels.map(m => m.id);
 
-    // Nullify agent model references first (handles FK constraints)
+    // Nullify agent model references first
     for (const mid of modelIds) {
       db.prepare("UPDATE agents SET model_id = NULL WHERE model_id = ?").run(mid);
     }
@@ -423,9 +423,11 @@ configRouter.delete('/providers/:id', (c) => {
       db.prepare("DELETE FROM config WHERE key = 'dreaming_model_id' AND value = ?").run(mid);
     }
 
-    // Delete models, then provider
+    // Temporarily disable FK constraints, delete everything, re-enable
+    db.exec('PRAGMA foreign_keys = OFF');
     db.prepare('DELETE FROM models WHERE provider_id = ?').run(id);
     db.prepare('DELETE FROM providers WHERE id = ?').run(id);
+    db.exec('PRAGMA foreign_keys = ON');
     clearClientCache(id);
     clearSecretsCache();
     logger.info('Provider deleted', { providerId: id, modelsRemoved: modelIds.length });
