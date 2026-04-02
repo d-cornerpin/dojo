@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import type { Model, Provider } from '@dojo/shared';
 import * as api from '../lib/api';
 import { SetupDeps, SetupPermissions } from '../components/SetupDeps';
+import { MigrationImport } from '../components/MigrationImport';
 
 type Step = 'welcome' | 'dependencies' | 'permissions' | 'provider' | 'models' | 'your-profile' | 'primary-agent' | 'pm-agent' | 'trainer-agent' | 'dreamer' | 'imessage' | 'workspace' | 'web-search' | 'complete';
 
@@ -236,6 +237,8 @@ export const Setup = () => {
 const WelcomeStep = () => {
   const [health, setHealth] = useState<{ backend: boolean; db: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showImport, setShowImport] = useState(false);
+  const navigate = useNavigate();
 
   useEffect(() => {
     const check = async () => {
@@ -249,6 +252,20 @@ const WelcomeStep = () => {
     };
     check();
   }, []);
+
+  if (showImport) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-3 mb-4">
+          <button onClick={() => setShowImport(false)} className="text-white/40 hover:text-white/60 text-sm">
+            &larr; Back
+          </button>
+          <h3 className="text-sm font-bold text-white">Import Your Dojo</h3>
+        </div>
+        <MigrationImport isOobe onComplete={() => navigate('/')} />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -279,6 +296,18 @@ const WelcomeStep = () => {
           ))}
         </div>
       )}
+
+      <div className="border-t border-white/10 pt-4 text-center">
+        <p className="text-xs text-white/30">
+          Migrating from another machine?{' '}
+          <button
+            onClick={() => setShowImport(true)}
+            className="text-blue-400 hover:text-blue-300 transition-colors"
+          >
+            Import your dojo &rarr;
+          </button>
+        </p>
+      </div>
     </div>
   );
 };

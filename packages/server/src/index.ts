@@ -78,6 +78,12 @@ async function main(): Promise<void> {
   // 3. Run database migrations
   runMigrations();
 
+  // 3a. Load saved migration checks (if any from a recent import)
+  try {
+    const { loadSavedChecks } = await import('./migration/checks.js');
+    loadSavedChecks();
+  } catch { /* ignore — migration module may not exist yet */ }
+
   // 4. Ensure primary agent exists (skips if OOBE hasn't completed yet)
   ensurePrimaryAgent();
 

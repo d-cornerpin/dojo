@@ -26,6 +26,7 @@ import { vaultRouter } from './routes/vault.js';
 import { updateRouter } from './routes/update.js';
 import { googleRouter } from './routes/google.js';
 import { microsoftRouter } from './routes/microsoft.js';
+import { migrationRouter } from './routes/migration.js';
 import { verifyAndTrackClient, removeClient, handleClientMessage } from './ws.js';
 import { getPrimaryAgentId, getPMAgentId } from '../config/platform.js';
 import { createLogger } from '../logger.js';
@@ -91,9 +92,13 @@ export function createServer() {
       const rest = aliasMatch[2] ?? '';
       const isPm = path.includes('/pm/') || path.endsWith('/pm');
       const realId = isPm ? getPMAgentId() : getPrimaryAgentId();
-      const newPath = `/api/${segment}/${realId}${rest}`;
 
-      // Redirect internally by rewriting the URL
+      // Prevent redirect loop if the real ID is the same as the alias
+      if (realId === 'primary' || realId === 'pm') {
+        return c.json({ ok: false, error: 'Agent not configured yet' }, 404);
+      }
+
+      const newPath = `/api/${segment}/${realId}${rest}`;
       const newUrl = new URL(newPath, url.origin);
       newUrl.search = url.search;
       return c.redirect(newUrl.pathname + newUrl.search, 307);
@@ -122,6 +127,8 @@ export function createServer() {
   app.route('/api/update', updateRouter);   // /api/update/check, /api/update/apply
   app.route('/api/google', googleRouter);   // /api/google/status, /api/google/connect, etc.
   app.route('/api/microsoft', microsoftRouter); // /api/microsoft/status, /api/microsoft/callback, etc.
+  app.route('/api/migration', migrationRouter); // /api/migration/export, /api/migration/import, etc.
+  app.route('/api/setup/migration', migrationRouter); // Same routes, public for OOBE import
   app.route('/api', taskRunsRouter);        // /api/tasks/:taskId/runs
   app.route('/api', systemRouter);        // /api/health, /api/system/logs
 

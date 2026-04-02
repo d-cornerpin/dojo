@@ -18,6 +18,7 @@ import { Health } from './pages/Health';
 import { Settings } from './pages/Settings';
 import { Costs } from './pages/Costs';
 import * as api from './lib/api';
+import { PostMigrationBanner } from './components/PostMigrationBanner';
 
 // ── Auth guard — redirects to login if not authenticated ──
 
@@ -99,6 +100,7 @@ const DashboardLayout = () => {
       <div className="h-screen flex overflow-hidden relative z-[1]" style={{ backgroundColor: 'transparent' }}>
         <Sidebar />
         <main className="flex-1 flex flex-col h-full overflow-hidden">
+          <PostMigrationBanner />
           <Outlet />
         </main>
       </div>

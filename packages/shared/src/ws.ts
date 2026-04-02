@@ -190,7 +190,9 @@ export type WsEvent =
   | TechniquePublishedEvent
   | TechniqueUpdatedEvent
   | TechniqueUsedEvent
-  | TechniqueStateChangedEvent;
+  | TechniqueStateChangedEvent
+  | MigrationProgressEvent
+  | MigrationChecksEvent;
 
 export interface OllamaStatusEvent {
   type: 'ollama:status';
@@ -225,4 +227,14 @@ export interface TechniqueUsedEvent {
 export interface TechniqueStateChangedEvent {
   type: 'technique:state_changed';
   data: { id: string; name: string; oldState: string | undefined; newState: string };
+}
+
+export interface MigrationProgressEvent {
+  type: 'migration:progress';
+  data: { stage: string; progress: number; message: string };
+}
+
+export interface MigrationChecksEvent {
+  type: 'migration:checks';
+  data: { checks: Array<{ id: string; label: string; status: string; action?: string; detail?: string }>; dismissed: boolean };
 }

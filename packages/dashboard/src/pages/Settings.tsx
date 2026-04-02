@@ -7,6 +7,8 @@ import { RouterTest } from '../components/RouterTest';
 import { GoogleWorkspaceSettings } from '../components/GoogleWorkspaceSettings';
 import { MicrosoftWorkspaceSettings } from '../components/MicrosoftWorkspaceSettings';
 import { formatDate } from '../lib/dates';
+import { MigrationExport } from '../components/MigrationExport';
+import { MigrationImport } from '../components/MigrationImport';
 
 type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'dreaming' | 'workspace' | 'microsoft' | 'update';
 
@@ -323,6 +325,40 @@ const PlatformTab = () => {
 
       {/* Web Search */}
       <SearchSettings />
+
+      {/* Migration */}
+      <MigrationSettings />
+    </div>
+  );
+};
+
+// ── Migration (Export/Import) ──
+
+const MigrationSettings = () => {
+  const [showImport, setShowImport] = useState(false);
+
+  return (
+    <div className="bg-white/[0.03] border border-white/10 rounded-xl p-5 space-y-4">
+      <h3 className="text-sm font-bold text-white/90">Migration</h3>
+      <p className="text-xs text-white/40">
+        Export your entire dojo to move it to another machine, or import from a previous export.
+      </p>
+
+      <div className="flex gap-3">
+        <MigrationExport />
+        <button
+          onClick={() => setShowImport(!showImport)}
+          className="px-4 py-2 bg-white/5 hover:bg-white/10 text-white/70 text-sm font-medium rounded-lg transition-colors"
+        >
+          {showImport ? 'Cancel Import' : 'Import Dojo'}
+        </button>
+      </div>
+
+      {showImport && (
+        <div className="mt-4">
+          <MigrationImport />
+        </div>
+      )}
     </div>
   );
 };
