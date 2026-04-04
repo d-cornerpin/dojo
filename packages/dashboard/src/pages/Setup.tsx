@@ -1394,21 +1394,9 @@ const WorkspaceStep = () => {
   const [email, setEmail] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [pollTimer, setPollTimer] = useState<ReturnType<typeof setInterval> | null>(null);
-
-  // Step states
-  const [gcloudLoggingIn, setGcloudLoggingIn] = useState(false);
-  const [gcloudEmail, setGcloudEmail] = useState<string | null>(null);
-  const [projectId, setProjectId] = useState<string | null>(null);
-  const [settingUpProject, setSettingUpProject] = useState(false);
-  const [hasCredentials, setHasCredentials] = useState(false);
-  const [credentialJson, setCredentialJson] = useState('');
-  const [credentialError, setCredentialError] = useState<string | null>(null);
-  const [savingCredentials, setSavingCredentials] = useState(false);
-  const [signingIn, setSigningIn] = useState(false);
+  const [connecting, setConnecting] = useState(false);
 
   useEffect(() => {
-    // Check current state on mount
     api.request<{ connected: boolean; email: string | null }>('/google/status').then(data => {
       if (data.ok && data.data.connected) {
         setConnected(true);
@@ -1416,90 +1404,35 @@ const WorkspaceStep = () => {
         setSaved(true);
       }
     });
-    api.request<{ hasCredentials: boolean }>('/google/credentials-check').then(data => {
-      if (data.ok && data.data.hasCredentials) setHasCredentials(true);
-    });
-    // Check if gcloud is already authed (lightweight GET, no side effects)
-    api.request<{ loggedIn: boolean; email?: string; projectId?: string | null }>('/google/gcloud-status').then(data => {
-      if (data.ok && data.data.loggedIn) {
-        setGcloudEmail(data.data.email ?? null);
-        if (data.data.projectId) setProjectId(data.data.projectId);
-      }
-    });
-    return () => { if (pollTimer) clearInterval(pollTimer); };
   }, []);
 
-  // Step 1: Sign in to Google Cloud
-  const handleGcloudLogin = async () => {
-    setGcloudLoggingIn(true);
-    setError(null);
-    await api.request('/google/gcloud-login', { method: 'POST' });
-    // Poll for gcloud auth completion — silently ignore errors (expected while auth is in progress)
-    const timer = setInterval(async () => {
-      const data = await api.request<{ loggedIn: boolean; email?: string; projectId?: string | null }>('/google/gcloud-status');
-      if (data.ok && data.data.loggedIn) {
-        // Auth detected — now run project setup
-        const setup = await api.request<{ email: string; projectId: string }>('/google/gcloud-setup', { method: 'POST' });
-        if (setup.ok) {
-          setGcloudEmail(setup.data.email);
-          setProjectId(setup.data.projectId);
-          setGcloudLoggingIn(false);
-          clearInterval(timer);
-        }
-      }
-    }, 5000);
-    setTimeout(() => { clearInterval(timer); setGcloudLoggingIn(false); }, 180000);
-  };
-
-  // Step 2 is manual (user creates OAuth credentials in console)
-
-  // Step 3: Upload client_secret.json
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => { setCredentialJson(reader.result as string); setCredentialError(null); };
-    reader.readAsText(file);
-  };
-
-  const handleSaveCredentials = async () => {
-    setSavingCredentials(true);
-    setCredentialError(null);
-    const result = await api.request<{ saved: boolean }>('/google/credentials', {
-      method: 'POST',
-      body: JSON.stringify({ clientSecret: credentialJson }),
-    });
-    if (result.ok) { setHasCredentials(true); } else { setCredentialError(result.error); }
-    setSavingCredentials(false);
-  };
-
-  // Step 4: Sign in with Google (gws auth login)
-  const handleSignIn = async () => {
-    setSigningIn(true);
-    setError(null);
-    const result = await api.request<{ message: string }>('/google/connect', { method: 'POST' });
-    if (!result.ok) { setError(result.error); setSigningIn(false); return; }
-
-    const timer = setInterval(async () => {
-      const data = await api.request<{ working: boolean; email: string | null }>('/google/test', { method: 'POST' });
-      if (data.ok && data.data.working) {
+  // Poll while connecting (user is in browser doing OAuth)
+  useEffect(() => {
+    if (!connecting) return;
+    const interval = setInterval(async () => {
+      const data = await api.request<{ connected: boolean; email: string | null }>('/google/status');
+      if (data.ok && data.data.connected) {
         setConnected(true);
         setEmail(data.data.email);
-        setSigningIn(false);
+        setConnecting(false);
         setSaved(true);
-        clearInterval(timer);
-        setPollTimer(null);
       }
     }, 3000);
-    setPollTimer(timer);
-    setTimeout(() => { clearInterval(timer); setPollTimer(null); setSigningIn(false); }, 180000);
+    return () => clearInterval(interval);
+  }, [connecting]);
+
+  const handleConnect = async () => {
+    setConnecting(true);
+    setError(null);
+    const result = await api.request<{ authUrl: string }>('/google/connect', { method: 'POST' });
+    if (result.ok) {
+      window.open(result.data.authUrl, '_blank', 'width=600,height=700');
+    } else {
+      setError(result.error);
+      setConnecting(false);
+    }
   };
 
-  const step1Done = !!gcloudEmail && !!projectId;
-  const step3Done = hasCredentials;
-  const step4Done = connected;
-
-  // Already connected
   if (connected) {
     return (
       <div className="space-y-4">
@@ -1516,7 +1449,7 @@ const WorkspaceStep = () => {
     );
   }
 
-  if (saved) {
+  if (saved && !connected) {
     return (
       <div className="space-y-4">
         <p className="text-sm text-white/55">
@@ -1536,123 +1469,22 @@ const WorkspaceStep = () => {
         Your primary agent gets full access; other agents get read-only.
       </p>
 
-      {/* Step 1: Sign in to Google Cloud */}
-      <div className="glass-nested rounded-xl p-4 space-y-2">
-        <div className="flex items-center gap-2">
-          <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${step1Done ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/[0.1] text-white/50'}`}>
-            {step1Done ? '\u2713' : '1'}
-          </span>
-          <span className="text-sm font-medium text-white/90">Sign in to Google Cloud</span>
-          {step1Done && <span className="text-xs text-white/40">({gcloudEmail})</span>}
-        </div>
-        {!step1Done && (
-          <div className="ml-7 space-y-2">
-            <p className="text-xs text-white/50">Opens your browser to sign in with your Google account.</p>
-            <button onClick={handleGcloudLogin} disabled={gcloudLoggingIn}
-              className="glass-btn glass-btn-primary text-xs">
-              {gcloudLoggingIn ? 'Working...' : 'Sign in with Google'}
-            </button>
-            {gcloudLoggingIn && (
-              <div className="px-3 py-3 rounded-lg bg-cp-amber/10 border border-cp-amber/20 text-xs space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="animate-spin text-cp-amber">{'\u{1F504}'}</span>
-                  <span className="text-cp-amber font-medium">Setting up your Google Cloud connection...</span>
-                </div>
-                <p className="text-white/40">A browser window should open for you to sign in. After you approve, this page needs to configure your project and enable APIs. <strong className="text-white/50">This can take up to a minute</strong> — please don't navigate away.</p>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+      <button
+        onClick={handleConnect}
+        disabled={connecting}
+        className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
+      >
+        {connecting ? 'Waiting for sign-in...' : 'Sign in with Google'}
+      </button>
 
-      {/* Step 2: Create OAuth credentials (manual) */}
-      <div className={`glass-nested rounded-xl p-4 space-y-2 ${!step1Done ? 'opacity-40 pointer-events-none' : ''}`}>
-        <div className="flex items-center gap-2">
-          <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${step3Done ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/[0.1] text-white/50'}`}>
-            {step3Done ? '\u2713' : '2'}
-          </span>
-          <span className="text-sm font-medium text-white/90">Create OAuth Credentials</span>
-        </div>
-        {!step3Done && step1Done && (
-          <div className="ml-7 space-y-3">
-            <ol className="text-xs text-white/50 space-y-2 list-decimal list-inside">
-              <li>
-                <a href={`https://console.cloud.google.com/apis/credentials/consent?project=${projectId}`} target="_blank" rel="noopener noreferrer"
-                  className="text-blue-400 hover:underline">Open the OAuth consent screen</a>
-                {' '}&mdash; click <strong className="text-white/70">Get Started</strong>, enter an app name (e.g. "Agent DOJO") and your email as support email, click <strong className="text-white/70">Next</strong>
-              </li>
-              <li>
-                Select <strong className="text-white/70">External</strong> for audience, click <strong className="text-white/70">Next</strong>
-              </li>
-              <li>
-                Enter your email as the contact address, agree to the data policy, click <strong className="text-white/70">Create</strong>
-              </li>
-              <li>
-                <strong className="text-white/70">Add yourself as a test user:</strong> Go to{' '}
-                <a href={`https://console.cloud.google.com/apis/credentials/consent?project=${projectId}`} target="_blank" rel="noopener noreferrer"
-                  className="text-blue-400 hover:underline">OAuth consent screen</a>
-                {' '}&gt; <strong className="text-white/70">Audience</strong> &gt; <strong className="text-white/70">Add users</strong> &gt; enter your Google email &gt; <strong className="text-white/70">Save</strong>
-              </li>
-              <li>
-                <a href={`https://console.cloud.google.com/apis/credentials?project=${projectId}`} target="_blank" rel="noopener noreferrer"
-                  className="text-blue-400 hover:underline">Go to Credentials</a>
-                {' '}&mdash; click <strong className="text-white/70">Create Credentials</strong> &gt; <strong className="text-white/70">OAuth client ID</strong>
-              </li>
-              <li>
-                Choose <strong className="text-white/70">Desktop app</strong>, give it a name (e.g. "DOJO"), click <strong className="text-white/70">Create</strong>
-              </li>
-              <li>
-                On the confirmation dialog, click <strong className="text-white/70">Download JSON</strong> and upload it below
-              </li>
-            </ol>
-
-            <p className="text-[10px] text-white/30">
-              Note: Google says credentials may take up to 5 minutes to take effect. If step 3 fails, wait a moment and try again.
-            </p>
-
-            <div className="space-y-2">
-              <div className="flex gap-2">
-                <label className="flex-1 flex items-center justify-center px-3 py-2 rounded-lg border border-dashed border-white/[0.15] hover:border-white/[0.25] cursor-pointer transition-colors">
-                  <input type="file" accept=".json" onChange={handleFileUpload} className="sr-only" />
-                  <span className="text-xs text-white/40">
-                    {credentialJson ? 'File loaded \u2713 — click Save' : 'Upload client_secret.json'}
-                  </span>
-                </label>
-                <button onClick={handleSaveCredentials}
-                  disabled={!credentialJson || savingCredentials}
-                  className="px-3 py-2 glass-btn glass-btn-primary text-xs shrink-0 disabled:opacity-30">
-                  {savingCredentials ? 'Saving...' : 'Save'}
-                </button>
-              </div>
-              {credentialError && <p className="text-xs text-cp-coral">{credentialError}</p>}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Step 3: Authorize access */}
-      <div className={`glass-nested rounded-xl p-4 space-y-2 ${!step3Done ? 'opacity-40 pointer-events-none' : ''}`}>
-        <div className="flex items-center gap-2">
-          <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${step4Done ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/[0.1] text-white/50'}`}>
-            {step4Done ? '\u2713' : '3'}
-          </span>
-          <span className="text-sm font-medium text-white/90">Authorize Access</span>
-        </div>
-        {!step4Done && step3Done && (
-          <div className="ml-7 space-y-2">
-            <p className="text-xs text-white/50">Opens your browser one more time to grant Gmail, Calendar, Drive, Docs, Sheets, and Slides access.</p>
-            <button onClick={handleSignIn} disabled={signingIn}
-              className="glass-btn glass-btn-primary text-xs">
-              {signingIn ? 'Waiting for authorization...' : 'Authorize Google Workspace'}
-            </button>
-            {signingIn && <p className="text-xs text-cp-amber animate-pulse">Approve the permissions in your browser.</p>}
-          </div>
-        )}
-      </div>
+      {connecting && (
+        <p className="text-xs text-white/30">
+          Complete the sign-in in the browser window that opened. This page will update automatically.
+        </p>
+      )}
 
       {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
 
-      {/* Skip button */}
       <button onClick={() => setSaved(true)} disabled={saved}
         className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
           saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'

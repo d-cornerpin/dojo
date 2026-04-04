@@ -1,153 +1,125 @@
 // ════════════════════════════════════════
-// Google Workspace CLI (gws) Client Wrapper
-// All gws calls go through here for logging and error handling
+// Google API Client — Native REST with auto-refresh
+// All Google API calls go through here. No CLI dependency.
+// Mirrors the Microsoft client.ts pattern.
 // ════════════════════════════════════════
 
-import { execSync } from 'node:child_process';
-import path from 'node:path';
-import os from 'node:os';
 import { createLogger } from '../logger.js';
+import { getValidAccessToken } from './auth.js';
 import { logGoogleActivity } from './activity-log.js';
 import { broadcast } from '../gateway/ws.js';
 
-const logger = createLogger('gws-client');
+const logger = createLogger('google-client');
 
-const GWS_TIMEOUT_MS = 30_000;
+const TIMEOUT_MS = 30_000;
 
-// Extended PATH so gws is found regardless of install method
-const EXTENDED_PATH = [
-  path.join(os.homedir(), '.npm-global', 'bin'),
-  '/opt/homebrew/bin',
-  '/usr/local/bin',
-  process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin',
-].join(':');
-
-export interface GwsResult {
+export interface GoogleApiResult {
   ok: boolean;
   data: unknown;
   error?: string;
-  command: string;
+  apiEndpoint: string;
 }
 
-/**
- * Run a raw gws CLI command and return parsed JSON output.
- */
-export function runGws(command: string): GwsResult {
-  const fullCommand = `gws ${command}`;
+async function googleFetch(
+  method: string,
+  url: string,
+  body?: unknown,
+  contentType?: string,
+): Promise<GoogleApiResult> {
+  const token = await getValidAccessToken();
+
+  if (!token) {
+    return { ok: false, data: null, error: 'Not authenticated with Google. Connect in Settings > Google.', apiEndpoint: url };
+  }
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+  };
+
+  if (contentType) {
+    headers['Content-Type'] = contentType;
+  } else if (body) {
+    headers['Content-Type'] = 'application/json';
+  }
+
   try {
-    const result = execSync(fullCommand, {
-      encoding: 'utf-8',
-      timeout: GWS_TIMEOUT_MS,
-      env: { ...process.env, PATH: EXTENDED_PATH },
-      stdio: ['pipe', 'pipe', 'pipe'],
+    const resp = await fetch(url, {
+      method,
+      headers,
+      body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(result.trim());
-    } catch {
-      // Some gws commands return plain text
-      parsed = result.trim();
+    if (!resp.ok) {
+      let errorMsg: string;
+      try {
+        const errBody = await resp.json() as { error?: { code?: number; message?: string; status?: string } };
+        errorMsg = errBody?.error?.message ?? `HTTP ${resp.status}`;
+      } catch {
+        errorMsg = `HTTP ${resp.status}`;
+      }
+      return { ok: false, data: null, error: errorMsg, apiEndpoint: url };
     }
 
-    logger.debug('gws command succeeded', { command: fullCommand, outputLength: result.length });
-    return { ok: true, data: parsed, command: fullCommand };
+    // Some endpoints return 204 No Content
+    if (resp.status === 204) {
+      return { ok: true, data: null, apiEndpoint: url };
+    }
+
+    const data = await resp.json();
+    return { ok: true, data, apiEndpoint: url };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    // Extract stderr if available
-    const stderr = (err as { stderr?: string })?.stderr?.trim() ?? '';
-    const errorDetail = stderr || message;
-
-    logger.error('gws command failed', { command: fullCommand, error: errorDetail });
-    return { ok: false, data: null, error: errorDetail, command: fullCommand };
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Google API call failed', { method, url, error: msg });
+    return { ok: false, data: null, error: msg, apiEndpoint: url };
   }
 }
 
-/**
- * Run a gws read command and log the activity.
- */
-export function runGwsRead(
+// ── Public API ──
+
+export function googleRead(
+  url: string,
   agentId: string,
   agentName: string,
   action: string,
-  command: string,
   details: Record<string, unknown>,
-): GwsResult {
-  const result = runGws(command);
-
-  logGoogleActivity({
-    agentId,
-    agentName,
-    action,
-    actionType: 'read',
-    details: JSON.stringify(details),
-    gwsCommand: result.command,
-    success: result.ok,
-    error: result.error,
+): Promise<GoogleApiResult> {
+  return googleFetch('GET', url).then(result => {
+    logGoogleActivity({
+      agentId, agentName, action, actionType: 'read',
+      details: JSON.stringify(details),
+      gwsCommand: result.apiEndpoint,
+      success: result.ok,
+      error: result.error,
+    });
+    return result;
   });
-
-  return result;
 }
 
-/**
- * Run a gws write command, log the activity, and broadcast a WebSocket event.
- */
-export function runGwsWrite(
+export function googleWrite(
+  method: 'POST' | 'PATCH' | 'PUT' | 'DELETE',
+  url: string,
+  body: unknown | undefined,
   agentId: string,
   agentName: string,
   action: string,
-  command: string,
   details: Record<string, unknown>,
-): GwsResult {
-  const result = runGws(command);
+  contentType?: string,
+): Promise<GoogleApiResult> {
+  return googleFetch(method, url, body, contentType).then(result => {
+    logGoogleActivity({
+      agentId, agentName, action, actionType: 'write',
+      details: JSON.stringify(details),
+      gwsCommand: result.apiEndpoint,
+      success: result.ok,
+      error: result.error,
+    });
 
-  logGoogleActivity({
-    agentId,
-    agentName,
-    action,
-    actionType: 'write',
-    details: JSON.stringify(details),
-    gwsCommand: result.command,
-    success: result.ok,
-    error: result.error,
+    broadcast({
+      type: 'google:activity',
+      data: { agentId, agentName, action, actionType: 'write', details },
+    } as never);
+
+    return result;
   });
-
-  // Write actions broadcast to the dashboard in real time
-  broadcast({
-    type: 'google:activity',
-    data: { agentId, agentName, action, actionType: 'write', details },
-  } as never);
-
-  return result;
-}
-
-/**
- * Check if the gws CLI is installed and accessible.
- */
-export function isGwsInstalled(): boolean {
-  try {
-    execSync('which gws', { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PATH: EXTENDED_PATH } });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Get the installed gws version.
- */
-export function getGwsVersion(): string | null {
-  try {
-    const result = execSync('gws --version', { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PATH: EXTENDED_PATH } });
-    return result.trim();
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Escape a string for safe use in gws CLI JSON params.
- */
-export function escapeForJson(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }

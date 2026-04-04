@@ -1,17 +1,37 @@
 // ════════════════════════════════════════
-// Google Workspace Auth Status & Connection Management
+// Google Workspace Auth — Native OAuth 2.0
+// No gws CLI dependency. Direct REST API with auto-refresh.
+// Mirrors the Microsoft auth.ts pattern.
 // ════════════════════════════════════════
 
-import { execSync, spawn } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
+import crypto from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { isGwsInstalled } from './client.js';
 import { broadcast } from '../gateway/ws.js';
+import { sendAlert } from '../services/imessage-bridge.js';
 
-const logger = createLogger('gws-auth');
+const logger = createLogger('google-auth');
+
+// ── Hardcoded OAuth client — registered once by Cornerpin ──
+const CLIENT_ID = '910593387780-tasrtdi6f1r4dktt7arg9bqfeq89vvrj.apps.googleusercontent.com';
+const CLIENT_SECRET = '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';
+
+const AUTH_BASE = 'https://accounts.google.com/o/oauth2/v2/auth';
+const TOKEN_URL = 'https://oauth2.googleapis.com/token';
+
+const SCOPES = [
+  'openid',
+  'email',
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/gmail.compose',
+  'https://www.googleapis.com/auth/gmail.modify',
+  'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/drive',
+  'https://www.googleapis.com/auth/documents',
+  'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/presentations',
+].join(' ');
 
 export interface GoogleWorkspaceConfig {
   enabled: boolean;
@@ -37,7 +57,7 @@ const DEFAULT_SERVICES = {
   slides: true,
 };
 
-// ── Config Getters ──
+// ── Config Helpers ──
 
 function getConfigValue(key: string): string | null {
   try {
@@ -57,13 +77,17 @@ function setConfigValue(key: string, value: string): void {
   `).run(key, value, value);
 }
 
+function deleteConfigValue(key: string): void {
+  try { getDb().prepare('DELETE FROM config WHERE key = ?').run(key); } catch { /* best effort */ }
+}
+
+// ── Config Getters ──
+
 export function getGoogleWorkspaceConfig(): GoogleWorkspaceConfig {
   const servicesRaw = getConfigValue('gws_enabled_services');
   let services = { ...DEFAULT_SERVICES };
   if (servicesRaw) {
-    try {
-      services = { ...DEFAULT_SERVICES, ...JSON.parse(servicesRaw) };
-    } catch { /* use defaults */ }
+    try { services = { ...DEFAULT_SERVICES, ...JSON.parse(servicesRaw) }; } catch { /* defaults */ }
   }
 
   return {
@@ -84,8 +108,7 @@ export function isGoogleConnected(): boolean {
 }
 
 export function getEnabledServices(): GoogleWorkspaceConfig['enabledServices'] {
-  const config = getGoogleWorkspaceConfig();
-  return config.enabledServices;
+  return getGoogleWorkspaceConfig().enabledServices;
 }
 
 // ── Config Setters ──
@@ -109,272 +132,199 @@ export function setGoogleConnected(connected: boolean, email?: string): void {
 
 export function setEnabledServices(services: Partial<GoogleWorkspaceConfig['enabledServices']>): void {
   const current = getEnabledServices();
-  const updated = { ...current, ...services };
-  setConfigValue('gws_enabled_services', JSON.stringify(updated));
+  setConfigValue('gws_enabled_services', JSON.stringify({ ...current, ...services }));
 }
 
-// ── Auth Verification ──
+// ── Token Management ──
 
-/**
- * Test whether gws is authenticated by making a lightweight Drive API call.
- * Returns the account email if authenticated, null otherwise.
- */
-export function testGwsAuth(): { authenticated: boolean; email: string | null } {
-  if (!isGwsInstalled()) {
-    return { authenticated: false, email: null };
+function getAccessToken(): string | null { return getConfigValue('gws_access_token'); }
+function getRefreshToken(): string | null { return getConfigValue('gws_refresh_token'); }
+function getTokenExpiresAt(): number { const v = getConfigValue('gws_token_expires_at'); return v ? parseInt(v, 10) : 0; }
+
+function storeTokens(accessToken: string, refreshToken: string | null, expiresIn: number): void {
+  setConfigValue('gws_access_token', accessToken);
+  if (refreshToken) setConfigValue('gws_refresh_token', refreshToken);
+  setConfigValue('gws_token_expires_at', String(Date.now() + expiresIn * 1000));
+}
+
+// Mutex to prevent concurrent refresh
+let refreshPromise: Promise<string | null> | null = null;
+
+export async function getValidAccessToken(): Promise<string | null> {
+  const token = getAccessToken();
+  const expiresAt = getTokenExpiresAt();
+  // Return current token if valid with 5-minute buffer
+  if (token && Date.now() < expiresAt - 5 * 60 * 1000) return token;
+  // Deduplicate concurrent refresh calls
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = refreshAccessToken().finally(() => { refreshPromise = null; });
+  return refreshPromise;
+}
+
+async function refreshAccessToken(): Promise<string | null> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) {
+    logger.warn('No Google refresh token available');
+    return null;
   }
 
+  const params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    client_secret: CLIENT_SECRET,
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+  });
+
   try {
-    // Use gws auth status to check if authenticated — doesn't make any API calls,
-    // just checks local credential state. More reliable than making a Drive API call
-    // which can fail due to scope issues, API not enabled, etc.
-    const result = execSync(
-      'gws auth status',
-      { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, PATH: EXTENDED_PATH } },
-    );
-
-    // gws auth status outputs to stderr first ("Using keyring backend: keyring"), then JSON to stdout
-    // Try to parse JSON from the output
-    const jsonMatch = result.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return { authenticated: false, email: null };
-
-    const parsed = JSON.parse(jsonMatch[0]);
-    const email = parsed?.user ?? null;
-    const hasToken = parsed?.token_valid === true || parsed?.has_refresh_token === true;
-    const isAuthed = parsed?.auth_method === 'oauth2' && hasToken;
-
-    if (isAuthed && email) {
-      setConfigValue('gws_last_verified_at', new Date().toISOString());
-      return { authenticated: true, email };
-    }
-
-    return { authenticated: false, email: null };
-  } catch (err) {
-    // gws auth status may output JSON on stderr — try capturing that
-    const stderr = (err as { stderr?: string })?.stderr ?? '';
-    const stdout = (err as { stdout?: string })?.stdout ?? '';
-    const combined = stdout + stderr;
-    try {
-      const jsonMatch = combined.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        const email = parsed?.user ?? null;
-        const hasToken = parsed?.token_valid === true || parsed?.has_refresh_token === true;
-        if (parsed?.auth_method === 'oauth2' && hasToken && email) {
-          setConfigValue('gws_last_verified_at', new Date().toISOString());
-          return { authenticated: true, email };
-        }
-      }
-    } catch { /* ignore parse errors */ }
-
-    logger.warn('gws auth test failed', {
-      error: err instanceof Error ? err.message : String(err),
+    const resp = await fetch(TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
     });
-    return { authenticated: false, email: null };
+
+    if (!resp.ok) {
+      const err = await resp.text();
+      logger.error('Google token refresh failed', { status: resp.status, error: err });
+      if (resp.status === 400 || resp.status === 401) {
+        setGoogleConnected(false);
+        try { sendAlert('Google Workspace connection expired. Re-authenticate in Settings > Google.', 'warning'); } catch {}
+      }
+      return null;
+    }
+
+    const data = await resp.json() as { access_token: string; refresh_token?: string; expires_in: number };
+    storeTokens(data.access_token, data.refresh_token ?? null, data.expires_in);
+    logger.debug('Google access token refreshed');
+    return data.access_token;
+  } catch (err) {
+    logger.error('Google token refresh error', { error: err instanceof Error ? err.message : String(err) });
+    return null;
   }
 }
 
-// Extended PATH to find gcloud and gws (Homebrew, /usr/local, and npm-global fallback)
-const EXTENDED_PATH = [
-  path.join(os.homedir(), '.npm-global', 'bin'),
-  '/opt/homebrew/share/google-cloud-sdk/bin',
-  '/opt/homebrew/bin',
-  '/opt/homebrew/sbin',
-  '/usr/local/bin',
-  '/usr/local/sbin',
-  process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin',
-].join(':');
+// ── OAuth Flow ──
 
-/**
- * Start the gws auth login flow (assumes client_secret.json is already in place).
- * Captures stdout to detect the OAuth URL and opens it in the browser manually,
- * since gws can't always open the browser from a child process.
- */
-export function startAuthLogin(): { pid: number | undefined } {
-  const env = { ...process.env, PATH: EXTENDED_PATH };
+// Store state + redirect URI for the callback
+let storedState: string | null = null;
+let storedRedirectUri: string | null = null;
 
-  const child = spawn('gws', ['auth', 'login'], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: false,
-    env,
+export function getStoredState(): string | null { return storedState; }
+export function getStoredRedirectUri(): string | null { return storedRedirectUri; }
+
+export function buildAuthUrl(redirectUri: string): { authUrl: string } {
+  const state = crypto.randomBytes(16).toString('hex');
+  storedState = state;
+  storedRedirectUri = redirectUri;
+
+  const params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: SCOPES,
+    access_type: 'offline',
+    prompt: 'consent',
+    state,
   });
 
-  let urlOpened = false;
-
-  const handleOutput = (data: Buffer) => {
-    const text = data.toString();
-    // Log output so it's visible in server console
-    process.stderr.write(text);
-
-    // Detect OAuth URL and open it in the browser
-    if (!urlOpened) {
-      const urlMatch = text.match(/(https:\/\/accounts\.google\.com\/o\/oauth2\/auth[^\s]+)/);
-      if (urlMatch) {
-        urlOpened = true;
-        const url = urlMatch[1];
-        logger.info('Opening Google OAuth URL in browser', { url: url.slice(0, 80) + '...' });
-        try {
-          execSync(`open "${url}"`, { timeout: 5000 });
-        } catch (err) {
-          logger.error('Failed to open browser', { error: err instanceof Error ? err.message : String(err) });
-        }
-      }
-    }
-  };
-
-  child.stdout?.on('data', handleOutput);
-  child.stderr?.on('data', handleOutput);
-
-  child.on('error', (err) => {
-    logger.error('gws auth login failed to start', { error: err.message });
-  });
-
-  child.on('exit', (code) => {
-    logger.info('gws auth login exited', { code });
-    const auth = testGwsAuth();
-    if (auth.authenticated) {
-      setGoogleConnected(true, auth.email ?? undefined);
-      setGoogleEnabled(true);
-      logger.info('Google Workspace connected after auth login', { email: auth.email });
-    }
-  });
-
-  return { pid: child.pid };
+  return { authUrl: `${AUTH_BASE}?${params.toString()}` };
 }
 
-/**
- * Run `gws auth setup` to log into Google Cloud and select/create a project.
- * Returns the project ID and project-specific console URLs for the user.
- */
-export function runGcloudSetup(): { success: boolean; email?: string; projectId?: string; error?: string } {
-  const env = { ...process.env, PATH: EXTENDED_PATH };
+export async function exchangeCodeForTokens(code: string, redirectUri: string): Promise<{
+  success: boolean;
+  email?: string;
+  error?: string;
+}> {
+  const params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    client_secret: CLIENT_SECRET,
+    code,
+    grant_type: 'authorization_code',
+    redirect_uri: redirectUri,
+  });
 
-  // Check if gcloud is already authed
   try {
-    const account = execSync('gcloud auth list --filter=status:ACTIVE --format="value(account)"', {
-      encoding: 'utf-8', timeout: 10000, env, stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
+    const resp = await fetch(TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+    });
 
-    if (!account) {
-      // Not logged in — need interactive login, can't do from API
-      return { success: false, error: 'not_logged_in' };
+    if (!resp.ok) {
+      const errText = await resp.text();
+      return { success: false, error: `Token exchange failed (${resp.status}): ${errText.slice(0, 300)}` };
     }
 
-    // Get current project
-    let projectId = execSync('gcloud config get-value project', {
-      encoding: 'utf-8', timeout: 10000, env, stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
+    const data = await resp.json() as { access_token: string; refresh_token?: string; expires_in: number; id_token?: string };
+    storeTokens(data.access_token, data.refresh_token ?? null, data.expires_in);
 
-    // If no project, try to find one or create one
-    if (!projectId || projectId === '(unset)') {
-      const projects = execSync('gcloud projects list --format="value(projectId)" --limit=1', {
-        encoding: 'utf-8', timeout: 15000, env, stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim();
-
-      if (projects) {
-        projectId = projects.split('\n')[0];
-        execSync(`gcloud config set project ${projectId}`, {
-          encoding: 'utf-8', timeout: 10000, env, stdio: ['pipe', 'pipe', 'pipe'],
-        });
-      } else {
-        // Create a new project
-        projectId = `dojo-${Date.now().toString(36)}`;
-        try {
-          execSync(`gcloud projects create ${projectId} --name="Agent DOJO"`, {
-            encoding: 'utf-8', timeout: 30000, env, stdio: ['pipe', 'pipe', 'pipe'],
-          });
-          execSync(`gcloud config set project ${projectId}`, {
-            encoding: 'utf-8', timeout: 10000, env, stdio: ['pipe', 'pipe', 'pipe'],
-          });
-        } catch (err) {
-          return { success: false, error: `Failed to create project: ${err instanceof Error ? err.message : String(err)}` };
-        }
+    // Get email from userinfo
+    let email = '';
+    try {
+      const userResp = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: { Authorization: `Bearer ${data.access_token}` },
+      });
+      if (userResp.ok) {
+        const user = await userResp.json() as { email?: string };
+        email = user.email ?? '';
       }
-    }
+    } catch {}
 
-    // Enable required APIs
-    const apis = ['gmail.googleapis.com', 'calendar-json.googleapis.com', 'drive.googleapis.com', 'docs.googleapis.com', 'sheets.googleapis.com', 'slides.googleapis.com'];
-    for (const api of apis) {
-      try {
-        execSync(`gcloud services enable ${api}`, {
-          encoding: 'utf-8', timeout: 30000, env, stdio: ['pipe', 'pipe', 'pipe'],
-        });
-      } catch { /* may already be enabled or billing not set up — continue */ }
-    }
+    setGoogleConnected(true, email);
+    setGoogleEnabled(true);
 
-    return { success: true, email: account, projectId };
+    logger.info('Google Workspace connected', { email });
+    return { success: true, email };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
-/**
- * Start interactive gcloud auth login (opens browser itself).
- */
-export function startGcloudLogin(): { pid: number | undefined } {
-  const env = { ...process.env, PATH: EXTENDED_PATH };
-  const child = spawn('gcloud', ['auth', 'login'], {
-    stdio: ['ignore', 'inherit', 'inherit'],
-    detached: false,
-    env,
-  });
+// ── Auth Verification ──
 
-  child.on('error', (err) => {
-    logger.error('gcloud auth login failed', { error: err.message });
-  });
-  return { pid: child.pid };
-}
+export async function testGoogleAuth(): Promise<{ authenticated: boolean; email: string | null }> {
+  const token = await getValidAccessToken();
+  if (!token) return { authenticated: false, email: null };
 
-/**
- * Check if client_secret.json exists at the expected path.
- */
-export function hasClientSecret(): boolean {
-  const secretPath = path.join(os.homedir(), '.config', 'gws', 'client_secret.json');
-  return fs.existsSync(secretPath);
-}
-
-/**
- * Check gws auth on startup and log status.
- */
-export function checkGwsOnStartup(): void {
-  if (!isGwsInstalled()) {
-    logger.warn('gws CLI is not installed — Google Workspace integration unavailable. Install with: npm install -g @googleworkspace/cli');
-    return;
-  }
-
-  const version = (() => {
-    try {
-      return execSync('gws --version', { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-    } catch { return 'unknown'; }
-  })();
-  logger.info('gws CLI detected', { version });
-
-  // If previously connected, verify auth is still valid
-  if (isGoogleConnected()) {
-    const auth = testGwsAuth();
-    if (auth.authenticated) {
-      logger.info('Google Workspace auth verified', { email: auth.email });
-    } else {
-      logger.warn('Google Workspace auth expired or invalid — marking as disconnected');
-      setGoogleConnected(false);
-    }
+  try {
+    const resp = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!resp.ok) return { authenticated: false, email: null };
+    const user = await resp.json() as { email?: string };
+    setConfigValue('gws_last_verified_at', new Date().toISOString());
+    return { authenticated: true, email: user.email ?? null };
+  } catch {
+    return { authenticated: false, email: null };
   }
 }
 
-/**
- * Get the Google Workspace access level for a given agent.
- * - "full": primary agent — all read + write tools
- * - "read": trainer, ronin, apprentice — read-only tools
- * - "none": PM agent — no Google tools
- *
- * Caller must pass isPrimary/isPM booleans to avoid circular imports.
- */
+export async function checkGoogleOnStartup(): Promise<void> {
+  if (!isGoogleConnected()) return;
+  const auth = await testGoogleAuth();
+  if (auth.authenticated) {
+    logger.info('Google Workspace auth verified', { email: auth.email });
+  } else {
+    logger.warn('Google Workspace auth expired, marking disconnected');
+    setGoogleConnected(false);
+  }
+}
+
+// ── Disconnect ──
+
+export function disconnectGoogle(): void {
+  for (const key of ['gws_enabled', 'gws_connected', 'gws_account_email', 'gws_access_token', 'gws_refresh_token', 'gws_token_expires_at', 'gws_last_verified_at', 'gws_enabled_services']) {
+    deleteConfigValue(key);
+  }
+  broadcast({ type: 'google:disconnected' } as never);
+  logger.info('Google Workspace disconnected');
+}
+
+// ── Access Level ──
+
 export function getAgentGoogleAccessLevel(agentId: string, isPrimary: boolean, isPM: boolean): 'full' | 'read' | 'none' {
   if (!isGoogleEnabled() || !isGoogleConnected()) return 'none';
-
   if (isPM) return 'none';
   if (isPrimary) return 'full';
-
-  // All other agents (trainer, ronin, apprentice) get read-only
   return 'read';
 }

@@ -2213,7 +2213,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'docs_read':
       case 'sheets_read': {
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-        content = executeGoogleReadTool(name, args, agentId, agentRow?.name ?? agentId);
+        content = await executeGoogleReadTool(name, args, agentId, agentRow?.name ?? agentId);
         isError = content.startsWith('Error');
         break;
       }
@@ -2241,7 +2241,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           break;
         }
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-        content = executeGoogleWriteTool(name, args, agentId, agentRow?.name ?? agentId);
+        content = await executeGoogleWriteTool(name, args, agentId, agentRow?.name ?? agentId);
         isError = content.startsWith('Error');
         break;
       }

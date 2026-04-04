@@ -11,6 +11,7 @@ const PUBLIC_PATHS = [
   '/api/auth/login',
   '/api/health',
   '/api/microsoft/callback', // OAuth redirect from Microsoft — no JWT available
+  '/api/google/callback',    // OAuth redirect from Google — no JWT available
 ];
 
 const PUBLIC_PREFIXES = [

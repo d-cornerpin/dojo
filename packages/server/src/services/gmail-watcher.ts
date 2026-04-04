@@ -9,7 +9,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getOwnerName } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
-import { runGwsRead } from '../google/client.js';
+import { googleRead } from '../google/client.js';
 import { isGoogleEnabled, isGoogleConnected, getEnabledServices } from '../google/auth.js';
 
 const logger = createLogger('gmail-watcher');
@@ -63,11 +63,9 @@ async function pollForNewEmails(): Promise<void> {
       query += ` after:${dateStr}`;
     }
 
-    const result = runGwsRead(
-      'system', 'Gmail Watcher', 'gmail_inbox_poll',
-      `gmail users messages list --params '{"userId": "me", "q": "${query}", "maxResults": 10}'`,
-      { query },
-    );
+    const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
+    const listUrl = `${GMAIL_BASE}/messages?q=${encodeURIComponent(query)}&maxResults=10`;
+    const result = await googleRead(listUrl, 'system', 'Gmail Watcher', 'gmail_inbox_poll', { query });
 
     if (!result.ok) {
       // Don't log on every poll failure — could be transient
@@ -104,11 +102,8 @@ async function pollForNewEmails(): Promise<void> {
       if (notifiedIds.has(msg.id)) continue;
 
       // Fetch message metadata
-      const detail = runGwsRead(
-        'system', 'Gmail Watcher', 'gmail_read',
-        `gmail users messages get --params '{"userId": "me", "id": "${msg.id}", "format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]}'`,
-        { messageId: msg.id },
-      );
+      const detailUrl = `${GMAIL_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`;
+      const detail = await googleRead(detailUrl, 'system', 'Gmail Watcher', 'gmail_read', { messageId: msg.id });
 
       if (!detail.ok) continue;
 

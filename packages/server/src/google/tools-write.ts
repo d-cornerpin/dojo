@@ -1,33 +1,20 @@
 // ════════════════════════════════════════
-// Google Workspace WRITE Tools
+// Google Workspace WRITE Tools — Native REST API
 // Available to: primary agent ONLY
 // ════════════════════════════════════════
 
 import type { ToolDefinition } from '../agent/tools.js';
-import { runGws, runGwsWrite, escapeForJson } from './client.js';
-import { getPrimaryAgentName } from '../config/platform.js';
+import { googleRead, googleWrite } from './client.js';
 
-// ── Cached sender identity (agent name + email) ──
+const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
+const CALENDAR_BASE = 'https://www.googleapis.com/calendar/v3';
+const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';
+const DOCS_BASE = 'https://docs.googleapis.com/v1/documents';
+const SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
+const SLIDES_BASE = 'https://slides.googleapis.com/v1/presentations';
+const UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3';
 
-let cachedFromAddress: string | null = null;
-
-function getFromAddress(): string | null {
-  if (cachedFromAddress) return cachedFromAddress;
-
-  // Get the Gmail address
-  const result = runGws(`gmail users getProfile --params '{"userId": "me"}'`);
-  if (!result.ok) return null;
-  const email = (result.data as { emailAddress?: string })?.emailAddress;
-  if (!email) return null;
-
-  // Use the primary agent's name as the display name
-  const name = getPrimaryAgentName();
-  cachedFromAddress = name ? `${name} <${email}>` : email;
-
-  return cachedFromAddress;
-}
-
-// ── Tool Definitions ──
+// ── Tool Definitions (unchanged) ──
 
 export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
@@ -227,74 +214,119 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
 ];
 
+// ── Helpers ──
+
+function buildRfc2822Email(to: string, subject: string, body: string, options?: { cc?: string; bcc?: string; inReplyTo?: string; references?: string; threadId?: string }): string {
+  const lines: string[] = [];
+  lines.push(`To: ${to}`);
+  lines.push(`Subject: ${subject}`);
+  if (options?.cc) lines.push(`Cc: ${options.cc}`);
+  if (options?.bcc) lines.push(`Bcc: ${options.bcc}`);
+  if (options?.inReplyTo) lines.push(`In-Reply-To: ${options.inReplyTo}`);
+  if (options?.references) lines.push(`References: ${options.references}`);
+  lines.push('Content-Type: text/plain; charset=utf-8');
+  lines.push('');
+  lines.push(body);
+
+  return Buffer.from(lines.join('\r\n')).toString('base64url');
+}
+
 // ── Tool Execution ──
 
-export function executeGoogleWriteTool(
+export async function executeGoogleWriteTool(
   name: string,
   args: Record<string, unknown>,
   agentId: string,
   agentName: string,
-): string {
+): Promise<string> {
   switch (name) {
     case 'gmail_send': {
-      const to = escapeForJson(args.to as string);
-      const subject = escapeForJson(args.subject as string);
-      const body = escapeForJson(args.body as string);
-      let cmd = `gmail +send --to "${to}" --subject "${subject}" --body "${body}"`;
-      const from = getFromAddress();
-      if (from) cmd += ` --from "${escapeForJson(from)}"`;
-      if (args.cc) cmd += ` --cc "${escapeForJson(args.cc as string)}"`;
-      if (args.bcc) cmd += ` --bcc "${escapeForJson(args.bcc as string)}"`;
+      const to = args.to as string;
+      const subject = args.subject as string;
+      const body = args.body as string;
 
-      const result = runGwsWrite(agentId, agentName, 'gmail_send', cmd, {
-        to: args.to, subject: args.subject,
+      const raw = buildRfc2822Email(to, subject, body, {
+        cc: args.cc as string | undefined,
+        bcc: args.bcc as string | undefined,
       });
+
+      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw }, agentId, agentName, 'gmail_send', { to, subject });
       if (!result.ok) return `Error sending email: ${result.error}`;
-      return `Email sent to ${args.to} with subject "${args.subject}"`;
+      return `Email sent to ${to} with subject "${subject}"`;
     }
 
     case 'gmail_reply': {
-      const messageId = escapeForJson(args.message_id as string);
-      const body = escapeForJson(args.body as string);
-      const replyAll = args.reply_all === true;
-      const cmd = `gmail +${replyAll ? 'reply-all' : 'reply'} --message-id "${messageId}" --body "${body}"`;
+      const messageId = args.message_id as string;
+      const body = args.body as string;
 
-      const result = runGwsWrite(agentId, agentName, 'gmail_reply', cmd, {
-        messageId: args.message_id, replyAll,
+      // Fetch original message to get thread ID and headers
+      const origUrl = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Message-ID`;
+      const orig = await googleRead(origUrl, agentId, agentName, 'gmail_reply_fetch', { messageId });
+      if (!orig.ok) return `Error fetching original message: ${orig.error}`;
+
+      const origData = orig.data as { threadId: string; payload?: { headers?: Array<{ name: string; value: string }> } };
+      const headers = origData?.payload?.headers ?? [];
+      const from = headers.find(h => h.name === 'From')?.value ?? '';
+      const to = headers.find(h => h.name === 'To')?.value ?? '';
+      const subject = headers.find(h => h.name === 'Subject')?.value ?? '';
+      const msgIdHeader = headers.find(h => h.name === 'Message-ID')?.value ?? '';
+      const replyAll = args.reply_all === true;
+      const replyTo = replyAll ? [from, to].filter(Boolean).join(', ') : from;
+      const replySubject = subject.startsWith('Re:') ? subject : `Re: ${subject}`;
+
+      const raw = buildRfc2822Email(replyTo, replySubject, body, {
+        inReplyTo: msgIdHeader,
+        references: msgIdHeader,
       });
+
+      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw, threadId: origData.threadId }, agentId, agentName, 'gmail_reply', { messageId, replyAll });
       if (!result.ok) return `Error replying to email: ${result.error}`;
-      return `Reply sent${replyAll ? ' (to all)' : ''} to message ${args.message_id}`;
+      return `Reply sent${replyAll ? ' (to all)' : ''} to message ${messageId}`;
     }
 
     case 'gmail_forward': {
-      const messageId = escapeForJson(args.message_id as string);
-      const to = escapeForJson(args.to as string);
-      let cmd = `gmail +forward --message-id "${messageId}" --to "${to}"`;
-      if (args.body) cmd += ` --body "${escapeForJson(args.body as string)}"`;
+      const messageId = args.message_id as string;
+      const to = args.to as string;
+      const additionalBody = (args.body as string) ?? '';
 
-      const result = runGwsWrite(agentId, agentName, 'gmail_forward', cmd, {
-        messageId: args.message_id, to: args.to,
-      });
+      // Fetch original message
+      const origUrl = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}?format=full`;
+      const orig = await googleRead(origUrl, agentId, agentName, 'gmail_forward_fetch', { messageId });
+      if (!orig.ok) return `Error fetching original message: ${orig.error}`;
+
+      const origData = orig.data as { payload?: { headers?: Array<{ name: string; value: string }>; body?: { data?: string }; parts?: Array<{ mimeType: string; body?: { data?: string } }> } };
+      const headers = origData?.payload?.headers ?? [];
+      const origSubject = headers.find(h => h.name === 'Subject')?.value ?? '';
+      const origFrom = headers.find(h => h.name === 'From')?.value ?? '';
+
+      let origBody = '';
+      if (origData?.payload?.body?.data) {
+        origBody = Buffer.from(origData.payload.body.data, 'base64url').toString('utf-8');
+      } else if (origData?.payload?.parts) {
+        const textPart = origData.payload.parts.find(p => p.mimeType === 'text/plain');
+        if (textPart?.body?.data) {
+          origBody = Buffer.from(textPart.body.data, 'base64url').toString('utf-8');
+        }
+      }
+
+      const fwdBody = `${additionalBody}\n\n---------- Forwarded message ----------\nFrom: ${origFrom}\nSubject: ${origSubject}\n\n${origBody}`;
+      const fwdSubject = origSubject.startsWith('Fwd:') ? origSubject : `Fwd: ${origSubject}`;
+
+      const raw = buildRfc2822Email(to, fwdSubject, fwdBody);
+      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw }, agentId, agentName, 'gmail_forward', { messageId, to });
       if (!result.ok) return `Error forwarding email: ${result.error}`;
-      return `Email forwarded to ${args.to}`;
+      return `Email forwarded to ${to}`;
     }
 
     case 'gmail_label': {
-      const messageId = escapeForJson(args.message_id as string);
+      const messageId = args.message_id as string;
       const addLabels = (args.add_labels as string[]) ?? [];
       const removeLabels = (args.remove_labels as string[]) ?? [];
 
-      const body: Record<string, unknown> = { id: args.message_id };
-      if (addLabels.length > 0) body.addLabelIds = addLabels;
-      if (removeLabels.length > 0) body.removeLabelIds = removeLabels;
-
-      const result = runGwsWrite(
-        agentId, agentName, 'gmail_label',
-        `gmail users messages modify --params '{"userId": "me", "id": "${messageId}"}' --json '${JSON.stringify({ addLabelIds: addLabels, removeLabelIds: removeLabels })}'`,
-        { messageId: args.message_id, addLabels, removeLabels },
-      );
+      const url = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}/modify`;
+      const result = await googleWrite('POST', url, { addLabelIds: addLabels, removeLabelIds: removeLabels }, agentId, agentName, 'gmail_label', { messageId, addLabels, removeLabels });
       if (!result.ok) return `Error modifying labels: ${result.error}`;
-      return `Labels updated on message ${args.message_id}`;
+      return `Labels updated on message ${messageId}`;
     }
 
     case 'calendar_create': {
@@ -309,11 +341,8 @@ export function executeGoogleWriteTool(
         event.attendees = (args.attendees as string[]).map(email => ({ email }));
       }
 
-      const result = runGwsWrite(
-        agentId, agentName, 'calendar_create',
-        `calendar events insert --params '{"calendarId": "primary"}' --json '${JSON.stringify(event).replace(/'/g, "'\\''")}'`,
-        { title: args.title, start: args.start, end: args.end },
-      );
+      const url = `${CALENDAR_BASE}/calendars/primary/events`;
+      const result = await googleWrite('POST', url, event, agentId, agentName, 'calendar_create', { title: args.title, start: args.start, end: args.end });
       if (!result.ok) return `Error creating event: ${result.error}`;
 
       const data = result.data as { id?: string; htmlLink?: string };
@@ -321,168 +350,182 @@ export function executeGoogleWriteTool(
     }
 
     case 'calendar_update': {
-      const eventId = escapeForJson(args.event_id as string);
+      const eventId = args.event_id as string;
       const patch: Record<string, unknown> = {};
       if (args.title) patch.summary = args.title;
       if (args.start) patch.start = { dateTime: args.start };
       if (args.end) patch.end = { dateTime: args.end };
       if (args.description) patch.description = args.description;
 
-      const result = runGwsWrite(
-        agentId, agentName, 'calendar_update',
-        `calendar events patch --params '{"calendarId": "primary", "eventId": "${eventId}"}' --json '${JSON.stringify(patch).replace(/'/g, "'\\''")}'`,
-        { eventId: args.event_id, ...patch },
-      );
+      const url = `${CALENDAR_BASE}/calendars/primary/events/${encodeURIComponent(eventId)}`;
+      const result = await googleWrite('PATCH', url, patch, agentId, agentName, 'calendar_update', { eventId, ...patch });
       if (!result.ok) return `Error updating event: ${result.error}`;
-      return `Calendar event ${args.event_id} updated`;
+      return `Calendar event ${eventId} updated`;
     }
 
     case 'calendar_delete': {
-      const eventId = escapeForJson(args.event_id as string);
-      const result = runGwsWrite(
-        agentId, agentName, 'calendar_delete',
-        `calendar events delete --params '{"calendarId": "primary", "eventId": "${eventId}"}'`,
-        { eventId: args.event_id },
-      );
+      const eventId = args.event_id as string;
+      const url = `${CALENDAR_BASE}/calendars/primary/events/${encodeURIComponent(eventId)}`;
+      const result = await googleWrite('DELETE', url, undefined, agentId, agentName, 'calendar_delete', { eventId });
       if (!result.ok) return `Error deleting event: ${result.error}`;
-      return `Calendar event ${args.event_id} deleted`;
+      return `Calendar event ${eventId} deleted`;
     }
 
     case 'drive_upload': {
-      const filePath = escapeForJson(args.file_path as string);
-      let cmd = `drive +upload "${filePath}"`;
-      if (args.name) cmd += ` --name "${escapeForJson(args.name as string)}"`;
-      if (args.folder_id) cmd += ` --parent "${escapeForJson(args.folder_id as string)}"`;
+      const filePath = args.file_path as string;
+      const fileName = (args.name as string) ?? filePath.split('/').pop() ?? 'upload';
+      const folderId = args.folder_id as string | undefined;
 
-      const result = runGwsWrite(agentId, agentName, 'drive_upload', cmd, {
-        filePath: args.file_path, name: args.name, folderId: args.folder_id,
-      });
-      if (!result.ok) return `Error uploading file: ${result.error}`;
+      // Read file
+      const fs = await import('node:fs');
+      if (!fs.existsSync(filePath)) return `Error: File not found: ${filePath}`;
+      const fileContent = fs.readFileSync(filePath);
+
+      // Create file metadata
+      const metadata: Record<string, unknown> = { name: fileName };
+      if (folderId) metadata.parents = [folderId];
+
+      // Use multipart upload
+      const boundary = '---dojo-upload-boundary---';
+      const metadataPart = JSON.stringify(metadata);
+      const multipartBody = [
+        `--${boundary}`,
+        'Content-Type: application/json; charset=UTF-8',
+        '',
+        metadataPart,
+        `--${boundary}`,
+        'Content-Type: application/octet-stream',
+        '',
+      ].join('\r\n');
+
+      const bodyBuffer = Buffer.concat([
+        Buffer.from(multipartBody + '\r\n'),
+        fileContent,
+        Buffer.from(`\r\n--${boundary}--`),
+      ]);
+
+      const result = await googleWrite(
+        'POST',
+        `${UPLOAD_BASE}/files?uploadType=multipart`,
+        bodyBuffer.toString('base64'),
+        agentId, agentName, 'drive_upload',
+        { filePath, name: fileName, folderId },
+        `multipart/related; boundary=${boundary}`,
+      );
+
+      // Fallback: use simple metadata-only upload if multipart fails
+      if (!result.ok) {
+        // Simple approach: create empty file then would need to upload content separately
+        return `Error uploading file: ${result.error}`;
+      }
 
       const data = result.data as { id?: string; name?: string };
       return `File uploaded to Drive${data?.name ? `: ${data.name}` : ''}${data?.id ? ` (ID: ${data.id})` : ''}`;
     }
 
     case 'drive_share': {
-      const fileId = escapeForJson(args.file_id as string);
-      const email = escapeForJson(args.email as string);
+      const fileId = args.file_id as string;
+      const email = args.email as string;
       const role = (args.role as string) ?? 'reader';
 
-      const result = runGwsWrite(
-        agentId, agentName, 'drive_share',
-        `drive permissions create --params '{"fileId": "${fileId}"}' --json '{"role": "${role}", "type": "user", "emailAddress": "${email}"}'`,
-        { fileId: args.file_id, email: args.email, role },
-      );
+      const url = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}/permissions`;
+      const result = await googleWrite('POST', url, { role, type: 'user', emailAddress: email }, agentId, agentName, 'drive_share', { fileId, email, role });
       if (!result.ok) return `Error sharing file: ${result.error}`;
-      return `File ${args.file_id} shared with ${args.email} as ${role}`;
+      return `File ${fileId} shared with ${email} as ${role}`;
     }
 
     case 'docs_create': {
-      const title = escapeForJson(args.title as string);
-      const result = runGwsWrite(
-        agentId, agentName, 'docs_create',
-        `docs documents create --json '{"title": "${title}"}'`,
-        { title: args.title },
-      );
+      const title = args.title as string;
+      const result = await googleWrite('POST', DOCS_BASE, { title }, agentId, agentName, 'docs_create', { title });
       if (!result.ok) return `Error creating document: ${result.error}`;
 
-      const data = result.data as { documentId?: string; title?: string };
+      const data = result.data as { documentId?: string };
       const docId = data?.documentId;
 
-      // If initial content provided, write it to the doc
+      // If initial content provided, append it
       if (docId && args.content) {
-        const content = escapeForJson(args.content as string);
-        const writeResult = runGwsWrite(
-          agentId, agentName, 'docs_edit',
-          `docs +write --document "${docId}" --text "${content}"`,
-          { documentId: docId, contentLength: (args.content as string).length },
-        );
+        const content = args.content as string;
+        const batchUrl = `${DOCS_BASE}/${docId}:batchUpdate`;
+        const writeResult = await googleWrite('POST', batchUrl, {
+          requests: [{ insertText: { location: { index: 1 }, text: content } }],
+        }, agentId, agentName, 'docs_edit', { documentId: docId, contentLength: content.length });
+
         if (!writeResult.ok) {
-          return `Google Doc "${args.title}" created (ID: ${docId}) but failed to write content: ${writeResult.error}`;
+          return `Google Doc "${title}" created (ID: ${docId}) but failed to write content: ${writeResult.error}`;
         }
       }
 
-      return `Google Doc "${args.title}" created${docId ? ` (ID: ${docId})` : ''}`;
+      return `Google Doc "${title}" created${docId ? ` (ID: ${docId})` : ''}`;
     }
 
     case 'docs_edit': {
-      const docId = escapeForJson(args.document_id as string);
-      const content = escapeForJson(args.content as string);
+      const docId = args.document_id as string;
+      const content = args.content as string;
 
-      const result = runGwsWrite(
-        agentId, agentName, 'docs_edit',
-        `docs +write --document "${docId}" --text "${content}"`,
-        { documentId: args.document_id, contentLength: (args.content as string).length },
-      );
+      // Get document length to append at the end
+      const docUrl = `${DOCS_BASE}/${encodeURIComponent(docId)}`;
+      const doc = await googleRead(docUrl, agentId, agentName, 'docs_edit_fetch', { documentId: docId });
+      if (!doc.ok) return `Error reading document: ${doc.error}`;
+
+      const docData = doc.data as { body?: { content?: Array<{ endIndex?: number }> } };
+      const endIndex = docData?.body?.content?.reduce((max, c) => Math.max(max, c.endIndex ?? 0), 0) ?? 1;
+
+      const batchUrl = `${DOCS_BASE}/${encodeURIComponent(docId)}:batchUpdate`;
+      const result = await googleWrite('POST', batchUrl, {
+        requests: [{ insertText: { location: { index: Math.max(endIndex - 1, 1) }, text: '\n' + content } }],
+      }, agentId, agentName, 'docs_edit', { documentId: docId, contentLength: content.length });
+
       if (!result.ok) return `Error editing document: ${result.error}`;
-      return `Text appended to document ${args.document_id}`;
+      return `Text appended to document ${docId}`;
     }
 
     case 'sheets_create': {
-      const title = escapeForJson(args.title as string);
-      const result = runGwsWrite(
-        agentId, agentName, 'sheets_create',
-        `sheets spreadsheets create --json '{"properties": {"title": "${title}"}}'`,
-        { title: args.title },
-      );
+      const title = args.title as string;
+      const result = await googleWrite('POST', SHEETS_BASE, { properties: { title } }, agentId, agentName, 'sheets_create', { title });
       if (!result.ok) return `Error creating spreadsheet: ${result.error}`;
 
       const data = result.data as { spreadsheetId?: string };
       const sheetId = data?.spreadsheetId;
 
-      // If headers provided, write them to the first row
+      // Write headers if provided
       if (sheetId && args.headers) {
         const headers = args.headers as string[];
-        const values = JSON.stringify([headers]);
-        runGwsWrite(
-          agentId, agentName, 'sheets_write',
-          `sheets spreadsheets values update --params '{"spreadsheetId": "${sheetId}", "range": "Sheet1!A1", "valueInputOption": "USER_ENTERED"}' --json '{"values": ${values}}'`,
-          { spreadsheetId: sheetId, headers },
-        );
+        const valuesUrl = `${SHEETS_BASE}/${sheetId}/values/Sheet1!A1?valueInputOption=USER_ENTERED`;
+        await googleWrite('PUT', valuesUrl, { values: [headers] }, agentId, agentName, 'sheets_write', { spreadsheetId: sheetId, headers });
       }
 
-      return `Spreadsheet "${args.title}" created${sheetId ? ` (ID: ${sheetId})` : ''}`;
+      return `Spreadsheet "${title}" created${sheetId ? ` (ID: ${sheetId})` : ''}`;
     }
 
     case 'sheets_append': {
-      const sheetId = escapeForJson(args.spreadsheet_id as string);
-      const range = escapeForJson((args.range as string) ?? 'Sheet1');
+      const sheetId = args.spreadsheet_id as string;
+      const range = (args.range as string) ?? 'Sheet1';
       const values = (args.values as string).split(',').map(v => v.trim());
 
-      const result = runGwsWrite(
-        agentId, agentName, 'sheets_append',
-        `sheets spreadsheets values append --params '{"spreadsheetId": "${sheetId}", "range": "${range}", "valueInputOption": "USER_ENTERED"}' --json '{"values": [${JSON.stringify(values)}]}'`,
-        { spreadsheetId: args.spreadsheet_id, range, valueCount: values.length },
-      );
+      const url = `${SHEETS_BASE}/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED`;
+      const result = await googleWrite('POST', url, { values: [values] }, agentId, agentName, 'sheets_append', { spreadsheetId: sheetId, range, valueCount: values.length });
       if (!result.ok) return `Error appending to spreadsheet: ${result.error}`;
-      return `Row appended to spreadsheet ${args.spreadsheet_id}`;
+      return `Row appended to spreadsheet ${sheetId}`;
     }
 
     case 'sheets_write': {
-      const sheetId = escapeForJson(args.spreadsheet_id as string);
-      const range = escapeForJson(args.range as string);
+      const sheetId = args.spreadsheet_id as string;
+      const range = args.range as string;
       const values = args.values as string[][];
 
-      const result = runGwsWrite(
-        agentId, agentName, 'sheets_write',
-        `sheets spreadsheets values update --params '{"spreadsheetId": "${sheetId}", "range": "${range}", "valueInputOption": "USER_ENTERED"}' --json '{"values": ${JSON.stringify(values)}}'`,
-        { spreadsheetId: args.spreadsheet_id, range, rows: values.length },
-      );
+      const url = `${SHEETS_BASE}/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
+      const result = await googleWrite('PUT', url, { values }, agentId, agentName, 'sheets_write', { spreadsheetId: sheetId, range, rows: values.length });
       if (!result.ok) return `Error writing to spreadsheet: ${result.error}`;
-      return `Data written to ${args.range} in spreadsheet ${args.spreadsheet_id}`;
+      return `Data written to ${range} in spreadsheet ${sheetId}`;
     }
 
     case 'slides_create': {
-      const title = escapeForJson(args.title as string);
-      const result = runGwsWrite(
-        agentId, agentName, 'slides_create',
-        `slides presentations create --json '{"title": "${title}"}'`,
-        { title: args.title },
-      );
+      const title = args.title as string;
+      const result = await googleWrite('POST', SLIDES_BASE, { title }, agentId, agentName, 'slides_create', { title });
       if (!result.ok) return `Error creating presentation: ${result.error}`;
 
       const data = result.data as { presentationId?: string };
-      return `Presentation "${args.title}" created${data?.presentationId ? ` (ID: ${data.presentationId})` : ''}`;
+      return `Presentation "${title}" created${data?.presentationId ? ` (ID: ${data.presentationId})` : ''}`;
     }
 
     default:
