@@ -191,6 +191,26 @@ export async function assembleContext(
     merged.push({ role: 'user', content: 'Continue with your current task.' });
   }
 
+  // If this is a new session, inject a brief context note into the first user message
+  // so the agent understands the conversation was intentionally reset.
+  // This only fires once — after the agent responds, there will be assistant messages
+  // in the session and this won't trigger again.
+  try {
+    const db = getDb();
+    const sessionRow = db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined;
+    if (sessionRow?.session_started_at) {
+      const assistantInSession = db.prepare(
+        "SELECT COUNT(*) as cnt FROM messages WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?"
+      ).get(agentId, sessionRow.session_started_at) as { cnt: number };
+      if (assistantInSession.cnt === 0 && merged.length > 0 && merged[merged.length - 1].role === 'user') {
+        const lastMsg = merged[merged.length - 1];
+        if (typeof lastMsg.content === 'string') {
+          lastMsg.content = `[Note: The user started a fresh session. Your earlier conversations have been moved to the vault to keep things light. You still have all your long-term knowledge. Just respond naturally.]\n\n${lastMsg.content}`;
+        }
+      }
+    }
+  } catch { /* session_started_at column may not exist yet */ }
+
   logger.info('Context assembled', {
     systemPromptTokens: estimateTokens(systemPrompt),
     summaryCount: summaries.length,

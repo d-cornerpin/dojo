@@ -7,6 +7,9 @@ import { SendMessageSchema } from '../../config/schema.js';
 import { createLogger } from '../../logger.js';
 import { getAgentRuntime } from '../../agent/runtime.js';
 import { queueEmbedding } from '../../memory/embeddings.js';
+import { archiveAgentConversation } from '../../vault/archive.js';
+import { replaceContextItems } from '../../memory/dag.js';
+import { broadcast } from '../ws.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('chat-routes');
@@ -152,5 +155,70 @@ function rowToMessage(row: Record<string, unknown>): Message {
     attachments: row.attachments ? JSON.parse(row.attachments as string) : undefined,
   };
 }
+
+// POST /chat/:agentId/new-session — start a fresh session
+chatRouter.post('/:agentId/new-session', async (c) => {
+  const agentId = c.req.param('agentId');
+  const db = getDb();
+
+  // Verify agent exists
+  const agent = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(agentId) as { id: string; name: string; status: string } | undefined;
+  if (!agent) {
+    return c.json({ ok: false, error: 'Agent not found' }, 404);
+  }
+
+  // Don't allow new session while agent is working
+  if (agent.status === 'working') {
+    return c.json({ ok: false, error: 'Cannot start new session while agent is working' }, 400);
+  }
+
+  try {
+    // 1. Archive current conversation to vault (for Dreamer to process later)
+    const archiveId = archiveAgentConversation(agentId);
+    logger.info('Session archived for new session', { agentId, archiveId });
+
+    // 2. Clear context items (summaries) — shed the accumulated conversation weight
+    replaceContextItems(agentId, []);
+
+    // 3. Set session boundary — messages before this are excluded from context
+    //    Use SQLite datetime format (not ISO) to match the messages table format
+    const now = new Date();
+    const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+    db.prepare('UPDATE agents SET session_started_at = ?, updated_at = ? WHERE id = ?').run(boundary, boundary, agentId);
+
+    // 4. Insert session marker for the UI divider only
+    const markerId = uuidv4();
+
+    db.prepare(`
+      INSERT INTO messages (id, agent_id, role, content, created_at)
+      VALUES (?, ?, 'system', ?, ?)
+    `).run(markerId, agentId, '── New Session ──', boundary);
+
+    // 5. Broadcast the divider so the chat UI updates in real time
+    broadcast({
+      type: 'chat:message',
+      agentId,
+      message: {
+        id: markerId,
+        agentId,
+        role: 'system',
+        content: '── New Session ──',
+        tokenCount: null,
+        modelId: null,
+        cost: null,
+        latencyMs: null,
+        createdAt: boundary,
+      },
+    });
+
+    logger.info('New session started', { agentId, agentName: agent.name, archiveId });
+
+    return c.json({ ok: true, data: { archiveId, sessionStartedAt: boundary } });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Failed to start new session', { agentId, error: msg });
+    return c.json({ ok: false, error: msg }, 500);
+  }
+});
 
 export { chatRouter };

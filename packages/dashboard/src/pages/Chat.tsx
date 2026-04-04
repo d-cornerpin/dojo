@@ -494,7 +494,17 @@ export const Chat = () => {
             return <ToolResultBubble key={msg.id} msg={msg} />;
           }
           if (msg.role === 'system') {
-            if (!wordyMode) return null; // Hide system messages in non-wordy mode
+            // Always show session dividers
+            if (msg.content.includes('New Session')) {
+              return (
+                <div key={msg.id} className="flex items-center gap-3 my-4 px-4">
+                  <div className="flex-1 h-px bg-white/10" />
+                  <span className="text-xs text-white/30 shrink-0">New Session</span>
+                  <div className="flex-1 h-px bg-white/10" />
+                </div>
+              );
+            }
+            if (!wordyMode) return null; // Hide other system messages in non-wordy mode
           }
           // For assistant messages, hide tool-only messages in non-wordy mode
           if (msg.role === 'assistant' && !wordyMode) {
@@ -528,6 +538,17 @@ export const Chat = () => {
           const next = !wordyMode;
           setWordyMode(next);
           localStorage.setItem('dojo_wordy_mode', String(next));
+        }}
+        onNewSession={async () => {
+          if (!confirm('Start a new session? The current conversation will be archived to the vault. Your agent won\'t lose any knowledge.')) return;
+          const res = await api.request<{ archiveId: string; sessionStartedAt: string }>(`/chat/${AGENT_ID}/new-session`, { method: 'POST' });
+          if (res.ok) {
+            // Reload messages — the session boundary means only new messages will show
+            const result = await api.getChatHistory(AGENT_ID, 50);
+            if (result.ok) {
+              setMessages(result.data.map((m: Message) => ({ ...m, isStreaming: false })));
+            }
+          }
         }}
       />
     </div>

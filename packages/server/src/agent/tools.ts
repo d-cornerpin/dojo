@@ -99,9 +99,9 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
     removeTools.push('update_agent_permissions');
   }
 
-  // Only primary-level agents should have group management tools
+  // Only primary-level agents should have group management, session, and presence tools
   if (!isPrimaryAgent(agentId)) {
-    removeTools.push('create_agent_group', 'assign_to_group', 'delete_group');
+    removeTools.push('create_agent_group', 'assign_to_group', 'delete_group', 'reset_session', 'set_user_presence');
   }
 
   // Technique tools: only Sensei can save/publish/update, everyone can use/list
@@ -775,6 +775,32 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'get_current_time',
     description: 'Get the current date and time in UTC and local. Returns utc (ISO 8601), local (human-readable), and timezone. ALWAYS use the utc value when setting scheduled_start on tasks.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  // ── Presence ──
+  {
+    name: 'set_user_presence',
+    description: 'Set whether the user is "in the dojo" (at their computer, using the dashboard) or "away" (not at the computer, route messages via iMessage). Only use this when the user explicitly asks you to mark them as away or back.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        status: {
+          type: 'string',
+          enum: ['in_dojo', 'away'],
+          description: '"in_dojo" = user is at the dashboard, "away" = route messages through iMessage',
+        },
+      },
+      required: ['status'],
+    },
+  },
+  // ── Session Management ──
+  {
+    name: 'reset_session',
+    description: 'Start a fresh conversation session. Archives the current conversation to the vault and clears the context. Only use this when the user explicitly asks to start fresh, reset the session, or clear the conversation. Never call this on your own.',
     input_schema: {
       type: 'object',
       properties: {},
@@ -1789,6 +1815,68 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           conversion: conversionHint,
           note: 'ALWAYS use the utc value when setting scheduled_start on tasks. All scheduling is UTC.',
         });
+        break;
+      }
+
+      // ── Presence ──
+      case 'set_user_presence': {
+        try {
+          const status = args.status as string;
+          if (status !== 'in_dojo' && status !== 'away') {
+            content = 'Error: status must be "in_dojo" or "away"';
+            isError = true;
+            break;
+          }
+          const { setPresence, getPresence } = await import('../services/presence.js');
+          const previous = getPresence();
+          setPresence(status);
+          broadcast({ type: 'agent:status', agentId, status: `presence:${status}` });
+          content = status === 'away'
+            ? `Done. User marked as away. Messages will be forwarded via iMessage. (Was: ${previous})`
+            : `Done. User marked as in the dojo. Messages will go to the dashboard. (Was: ${previous})`;
+        } catch (err) {
+          content = `Error setting presence: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
+        break;
+      }
+
+      // ── Session Management ──
+      case 'reset_session': {
+        try {
+          const db = getDb();
+          const agent = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(agentId) as { id: string; name: string; status: string } | undefined;
+          if (!agent) {
+            content = 'Error: Agent not found';
+            isError = true;
+            break;
+          }
+
+          // Archive current conversation to vault
+          const { archiveAgentConversation } = await import('../vault/archive.js');
+          const archiveId = archiveAgentConversation(agentId);
+
+          // Clear context items (summaries)
+          const { replaceContextItems } = await import('../memory/dag.js');
+          replaceContextItems(agentId, []);
+
+          // Set session boundary
+          const now = new Date();
+          const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+          db.prepare('UPDATE agents SET session_started_at = ?, updated_at = ? WHERE id = ?').run(boundary, boundary, agentId);
+
+          // Insert UI divider
+          const markerId = uuidv4();
+          db.prepare("INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', '── New Session ──', ?)").run(markerId, agentId, boundary);
+
+          broadcast({ type: 'chat:message', agentId, message: { id: markerId, agentId, role: 'system', content: '── New Session ──', tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
+
+          content = 'Session reset complete. Previous conversation archived to vault. Fresh session started.';
+          logger.info('Agent-initiated session reset', { agentId, archiveId }, agentId);
+        } catch (err) {
+          content = `Error resetting session: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
         break;
       }
 

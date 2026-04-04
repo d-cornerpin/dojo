@@ -4,6 +4,14 @@ import type { Message } from '@dojo/shared';
 
 const logger = createLogger('memory-store');
 
+// ── Session Boundary ──
+
+function getSessionBoundary(agentId: string): string | null {
+  const db = getDb();
+  const row = db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined;
+  return row?.session_started_at ?? null;
+}
+
 // ── Token Estimation ──
 
 export function estimateTokens(text: string): number {
@@ -70,19 +78,23 @@ export function getMessagesByAgent(
 
 export function getMessagesOutsideFreshTail(agentId: string, freshTailCount: number): Message[] {
   const db = getDb();
+  const sessionBoundary = getSessionBoundary(agentId);
+  const boundaryClause = sessionBoundary ? 'AND created_at >= ?' : '';
+  const boundaryParams = sessionBoundary ? [sessionBoundary] : [];
 
   // Get all messages except the last N, ordered by created_at ASC
+  // Respects session boundary — only considers current session messages
   const rows = db.prepare(`
     SELECT * FROM messages
-    WHERE agent_id = ?
+    WHERE agent_id = ? ${boundaryClause}
       AND id NOT IN (
         SELECT id FROM messages
-        WHERE agent_id = ?
+        WHERE agent_id = ? ${boundaryClause}
         ORDER BY created_at DESC, rowid DESC
         LIMIT ?
       )
     ORDER BY created_at ASC, rowid ASC
-  `).all(agentId, agentId, freshTailCount) as MessageRow[];
+  `).all(agentId, ...boundaryParams, agentId, ...boundaryParams, freshTailCount) as MessageRow[];
 
   return rows.map(rowToMessage);
 }
@@ -101,18 +113,30 @@ export function getMessagesByIds(ids: string[]): Message[] {
 
 export function getRecentMessages(agentId: string, count: number): Message[] {
   const db = getDb();
+  const sessionBoundary = getSessionBoundary(agentId);
 
   // Get the last N messages, then return in ASC order
   // Use rowid as tiebreaker to preserve insertion order when timestamps match
-  const rows = db.prepare(`
-    SELECT * FROM (
-      SELECT *, rowid as _rowid FROM messages
-      WHERE agent_id = ?
-      ORDER BY created_at DESC, rowid DESC
-      LIMIT ?
-    ) sub
-    ORDER BY created_at ASC, _rowid ASC
-  `).all(agentId, count) as MessageRow[];
+  // If a session boundary is set, only include messages from the current session
+  const rows = sessionBoundary
+    ? db.prepare(`
+        SELECT * FROM (
+          SELECT *, rowid as _rowid FROM messages
+          WHERE agent_id = ? AND created_at >= ?
+          ORDER BY created_at DESC, rowid DESC
+          LIMIT ?
+        ) sub
+        ORDER BY created_at ASC, _rowid ASC
+      `).all(agentId, sessionBoundary, count) as MessageRow[]
+    : db.prepare(`
+        SELECT * FROM (
+          SELECT *, rowid as _rowid FROM messages
+          WHERE agent_id = ?
+          ORDER BY created_at DESC, rowid DESC
+          LIMIT ?
+        ) sub
+        ORDER BY created_at ASC, _rowid ASC
+      `).all(agentId, count) as MessageRow[];
 
   return rows.map(rowToMessage);
 }
@@ -127,16 +151,19 @@ export function getMessageCountByAgent(agentId: string): number {
 
 export function getTotalTokensByAgent(agentId: string): number {
   const db = getDb();
+  const sessionBoundary = getSessionBoundary(agentId);
+  const boundaryClause = sessionBoundary ? 'AND created_at >= ?' : '';
+  const boundaryParams = sessionBoundary ? [sessionBoundary] : [];
 
-  // Sum known token counts
+  // Sum known token counts (current session only)
   const knownRow = db.prepare(
-    'SELECT COALESCE(SUM(token_count), 0) as total FROM messages WHERE agent_id = ? AND token_count IS NOT NULL',
-  ).get(agentId) as { total: number };
+    `SELECT COALESCE(SUM(token_count), 0) as total FROM messages WHERE agent_id = ? ${boundaryClause} AND token_count IS NOT NULL`,
+  ).get(agentId, ...boundaryParams) as { total: number };
 
   // Estimate tokens for messages with null token_count
   const nullRows = db.prepare(
-    'SELECT content FROM messages WHERE agent_id = ? AND token_count IS NULL',
-  ).all(agentId) as Array<{ content: string }>;
+    `SELECT content FROM messages WHERE agent_id = ? ${boundaryClause} AND token_count IS NULL`,
+  ).all(agentId, ...boundaryParams) as Array<{ content: string }>;
 
   const estimatedTotal = nullRows.reduce(
     (sum, row) => sum + estimateTokens(row.content),

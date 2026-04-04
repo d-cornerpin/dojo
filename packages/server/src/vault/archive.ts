@@ -27,11 +27,25 @@ export function archiveAgentConversation(agentId: string): string | null {
     return existing.id;
   }
 
-  const messages = db.prepare(
+  const rows = db.prepare(
     'SELECT * FROM messages WHERE agent_id = ? ORDER BY created_at ASC'
-  ).all(agentId) as Message[];
+  ).all(agentId) as Array<Record<string, unknown>>;
 
-  if (messages.length === 0) return null;
+  if (rows.length === 0) return null;
+
+  // Map raw DB rows to Message interface (created_at → createdAt, etc.)
+  const messages: Message[] = rows.map(r => ({
+    id: r.id as string,
+    agentId: r.agent_id as string,
+    role: r.role as Message['role'],
+    content: r.content as string,
+    tokenCount: r.token_count as number | null ?? null,
+    modelId: r.model_id as string | null ?? null,
+    cost: r.cost as number | null ?? null,
+    latencyMs: r.latency_ms as number | null ?? null,
+    createdAt: r.created_at as string,
+    attachments: r.attachments ? JSON.parse(r.attachments as string) : undefined,
+  }));
 
   return archiveMessagesBeforeCompaction(agentId, messages);
 }

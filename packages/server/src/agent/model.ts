@@ -589,12 +589,47 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
       ]
     : systemPrompt;
 
-  // Cap max_tokens so input + output doesn't exceed context window
-  const anthropicInputEstimate = anthropicMessages.reduce((sum, m) => {
-    const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-    return sum + Math.ceil(content.length / 4);
-  }, 0) + Math.ceil(systemPrompt.length / 4);
-  const anthropicAvailable = Math.max(1024, modelInfo.contextWindow - anthropicInputEstimate - 500);
+  // Estimate input tokens and enforce hard cap.
+  // Use ~3.5 chars/token (conservative) to avoid underestimating.
+  const filteredTools = tools ? getFilteredTools(agentId) : [];
+  const toolsJson = tools ? JSON.stringify(filteredTools) : '';
+  const toolTokenEstimate = Math.ceil(toolsJson.length / 3.5);
+
+  const estimateMessageTokens = (msgs: Anthropic.MessageParam[]) =>
+    msgs.reduce((sum, m) => {
+      const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+      return sum + Math.ceil(content.length / 3.5);
+    }, 0);
+
+  const systemTokenEstimate = Math.ceil(systemPrompt.length / 3.5);
+
+  // Hard cap: input (system + messages + tools) must leave room for output
+  const minOutputReserve = 4096;
+  const hardInputLimit = modelInfo.contextWindow - minOutputReserve;
+  let inputEstimate = systemTokenEstimate + estimateMessageTokens(anthropicMessages) + toolTokenEstimate;
+
+  // If over budget, drop oldest messages (after any briefing/vault/summary preamble)
+  // Keep at least the last 4 messages so the agent has immediate context
+  while (inputEstimate > hardInputLimit && anthropicMessages.length > 4) {
+    anthropicMessages.splice(0, 1);
+    // Ensure we don't leave an orphaned assistant message at the start
+    while (anthropicMessages.length > 0 && anthropicMessages[0].role !== 'user') {
+      anthropicMessages.splice(0, 1);
+    }
+    inputEstimate = systemTokenEstimate + estimateMessageTokens(anthropicMessages) + toolTokenEstimate;
+  }
+
+  if (inputEstimate > hardInputLimit) {
+    logger.warn('Input still exceeds context window after trimming', {
+      agentId,
+      inputEstimate,
+      hardInputLimit,
+      contextWindow: modelInfo.contextWindow,
+      messageCount: anthropicMessages.length,
+    }, agentId);
+  }
+
+  const anthropicAvailable = Math.max(1024, modelInfo.contextWindow - inputEstimate - 500);
   const anthropicMaxTokens = Math.min(modelInfo.maxOutputTokens, anthropicAvailable);
 
   const requestParams: Anthropic.MessageCreateParams = {
@@ -602,7 +637,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     max_tokens: anthropicMaxTokens,
     system: systemParam,
     messages: anthropicMessages,
-    ...(tools ? { tools: getFilteredTools(agentId).map(t => ({
+    ...(filteredTools.length > 0 ? { tools: filteredTools.map(t => ({
       name: t.name,
       description: t.description,
       input_schema: t.input_schema as Anthropic.Tool['input_schema'],

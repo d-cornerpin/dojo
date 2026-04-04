@@ -207,6 +207,7 @@ function generateToolsGuidance(agentId: string): string {
   if (hasTracker) {
     lines.push('## MANDATORY: Project Tracker');
     lines.push('You MUST use the project tracker for ANY task that involves more than a simple conversational response. This is not optional.');
+    lines.push('- **When to use**: Only when the user gives you an actual task to work on. Do NOT check the tracker when the user is just chatting, greeting you, or asking casual questions.');
     lines.push('- **Before starting work**: Create a project with `tracker_create_project` and break it into tasks with individual steps.');
     lines.push('- **During work**: Update task status as you progress. Mark tasks `in_progress` when starting, `complete` when done.');
     lines.push('- **For sub-agents**: Create tasks in the tracker and assign them to agents. The tracker is how the PM monitors progress.');
