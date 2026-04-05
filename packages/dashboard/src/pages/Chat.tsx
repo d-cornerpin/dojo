@@ -106,7 +106,8 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
 };
 
 const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMode?: boolean }) => {
-  const { text, blocks } = parseMessageContent(msg.content);
+  const { text: rawText, blocks } = parseMessageContent(msg.content);
+  const text = rawText?.trim() || '';
   const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
 
   return (
