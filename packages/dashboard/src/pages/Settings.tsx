@@ -932,24 +932,43 @@ const AgentSdkSetup = () => {
   return (
     <div className="space-y-3">
       <p className="text-xs text-white/40">
-        Use your Claude Pro or Max subscription through the Agent SDK. Requires Claude Code CLI to be installed and logged in.
+        Use your Claude Pro or Max subscription through the Agent SDK. Requires two things: the Claude Code CLI installed, and a signed-in Claude account.
       </p>
 
       <div className="space-y-2 text-xs">
+        {/* Step 1: CLI installed */}
         <div className="flex items-center gap-2">
           <span className={status?.cliInstalled ? 'text-green-400' : 'text-amber-400'}>
-            {status?.cliInstalled ? '\u2713' : '\u2717'}
+            {status?.cliInstalled ? '\u2713' : '1.'}
           </span>
           <span className="text-white/60">
-            Claude Code CLI {status?.cliInstalled ? `installed (${status.version})` : 'not found'}
+            {status?.cliInstalled
+              ? `Claude Code CLI installed (${status.version})`
+              : 'Install Claude Code CLI'}
           </span>
         </div>
-
         {!status?.cliInstalled && (
-          <p className="text-white/30 ml-5">
-            Install with: <code className="bg-white/5 px-1 rounded">npm install -g @anthropic-ai/claude-agent-sdk</code>
-            <br />Then run <code className="bg-white/5 px-1 rounded">claude</code> in your terminal and log in.
-          </p>
+          <div className="text-white/30 ml-5 space-y-1">
+            <p>Run this in your terminal:</p>
+            <code className="block bg-white/5 px-2 py-1 rounded text-[11px]">curl -fsSL https://claude.ai/install.sh | bash</code>
+          </div>
+        )}
+
+        {/* Step 2: Signed in */}
+        <div className="flex items-center gap-2">
+          <span className={authResult?.authenticated ? 'text-green-400' : status?.cliInstalled ? 'text-amber-400' : 'text-white/20'}>
+            {authResult?.authenticated ? '\u2713' : '2.'}
+          </span>
+          <span className={status?.cliInstalled ? 'text-white/60' : 'text-white/20'}>
+            {authResult?.authenticated ? 'Signed in to Claude' : 'Sign in to your Claude account'}
+          </span>
+        </div>
+        {status?.cliInstalled && !authResult?.authenticated && (
+          <div className="text-white/30 ml-5 space-y-1">
+            <p>Run this in your terminal and sign in with your Claude Pro/Max account:</p>
+            <code className="block bg-white/5 px-2 py-1 rounded text-[11px]">claude</code>
+            <p>Then click Verify below.</p>
+          </div>
         )}
       </div>
 
@@ -962,9 +981,9 @@ const AgentSdkSetup = () => {
           >
             {verifying ? 'Verifying...' : 'Verify Connection'}
           </button>
-          {authResult && (
-            <span className={`text-xs ${authResult.authenticated ? 'text-green-400' : 'text-red-400'}`}>
-              {authResult.authenticated ? '\u2713 Authenticated' : authResult.error ?? 'Not authenticated'}
+          {authResult && !authResult.authenticated && (
+            <span className="text-xs text-red-400">
+              {authResult.error ?? 'Not authenticated. Run `claude` in your terminal and sign in.'}
             </span>
           )}
         </div>

@@ -532,12 +532,23 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
             {authType === 'agent-sdk' && type === 'anthropic' ? (
               <div className="space-y-3">
                 <p className="text-xs text-white/40">
-                  Use your Claude Pro or Max subscription. Requires Claude Code CLI installed and logged in.
+                  Use your Claude Pro or Max subscription. Two steps needed before adding this provider:
                 </p>
-                <div className="text-xs text-white/50 space-y-1">
-                  <p>1. Install: <code className="bg-white/5 px-1 rounded">npm install -g @anthropic-ai/claude-agent-sdk</code></p>
-                  <p>2. Run <code className="bg-white/5 px-1 rounded">claude</code> in your terminal and log in with your Claude account</p>
+                <div className="text-xs text-white/50 space-y-2">
+                  <div>
+                    <p className="font-medium text-white/70">Step 1: Install Claude Code CLI</p>
+                    <p className="text-white/40 mt-0.5">Run this in your terminal:</p>
+                    <code className="block bg-white/5 px-2 py-1 rounded text-[11px] mt-1">curl -fsSL https://claude.ai/install.sh | bash</code>
+                  </div>
+                  <div>
+                    <p className="font-medium text-white/70">Step 2: Sign in to Claude</p>
+                    <p className="text-white/40 mt-0.5">Run this in your terminal and sign in with your Claude Pro/Max account:</p>
+                    <code className="block bg-white/5 px-2 py-1 rounded text-[11px] mt-1">claude</code>
+                  </div>
                 </div>
+                <p className="text-[11px] text-white/30">
+                  Once both steps are done, click "Add & Validate Provider" below. The dojo will verify your connection.
+                </p>
                 <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
                   <p className="text-[10px] text-amber-400/70">
                     Agent SDK billing is subject to Anthropic's usage policies. If you experience issues, switch to API Key.
