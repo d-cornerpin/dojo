@@ -49,16 +49,23 @@ export function clearDimensionCache(): void {
 // The system prompt and older messages just add noise.
 
 function extractScoringText(systemPrompt: string, messages: Array<{ role: string; content: string | object[] }>): string {
-  // Get the last 2 user messages — most representative of current task
-  const userMessages = messages.filter(m => m.role === 'user').slice(-2);
+  // Score based on recent conversation context — not just the user's latest message.
+  // Include assistant messages because the user might respond to a complex plan
+  // with a simple "go for it". The assistant's plan is the real complexity indicator.
+  const recent = messages.slice(-6); // last 3 exchanges
   const parts: string[] = [];
-  for (const msg of userMessages) {
+  for (const msg of recent) {
+    if (msg.role !== 'user' && msg.role !== 'assistant') continue;
     if (typeof msg.content === 'string') {
       parts.push(msg.content);
     } else if (Array.isArray(msg.content)) {
       for (const block of msg.content) {
         if (typeof block === 'object' && block !== null && 'text' in block) {
           parts.push((block as { text: string }).text);
+        }
+        // Detect tool_use blocks — their presence means multi-step work
+        if (typeof block === 'object' && block !== null && 'type' in block && (block as { type: string }).type === 'tool_use') {
+          parts.push('[TOOL_CALL]');
         }
       }
     }
@@ -329,6 +336,40 @@ function scoreAgenticIndicators(text: string): number {
   return 0.8;
 }
 
+function scoreToolCallPresence(text: string): number {
+  // If recent context includes tool calls, the agent is mid-task — needs a capable model
+  const toolCalls = (text.match(/\[TOOL_CALL\]/g) ?? []).length;
+  if (toolCalls === 0) return 0.0;
+  if (toolCalls < 3) return 0.3;
+  if (toolCalls < 6) return 0.6;
+  return 0.9; // Heavy tool use — definitely needs a strong model
+}
+
+function scoreConversationMomentum(text: string, messages: Array<{ role: string; content: string | object[] }>): number {
+  // If the user's latest message is very short but the conversation has been complex,
+  // maintain momentum — don't drop tiers on "yes", "do it", "go ahead", etc.
+  const userMessages = messages.filter(m => m.role === 'user');
+  if (userMessages.length === 0) return 0.0;
+
+  const lastUser = userMessages[userMessages.length - 1];
+  const lastContent = typeof lastUser.content === 'string' ? lastUser.content : '';
+  const isShortConfirmation = lastContent.length < 30 && /\b(yes|yeah|yep|go|do\s+it|go\s+for\s+it|proceed|ok|okay|sure|approved|confirmed|sounds\s+good|let'?s\s+go|go\s+ahead)\b/i.test(lastContent);
+
+  if (!isShortConfirmation) return 0.0;
+
+  // Short confirmation detected — check if the preceding assistant message was substantial
+  const assistantMessages = messages.filter(m => m.role === 'assistant');
+  if (assistantMessages.length === 0) return 0.0;
+
+  const lastAssistant = assistantMessages[assistantMessages.length - 1];
+  const assistantContent = typeof lastAssistant.content === 'string' ? lastAssistant.content : JSON.stringify(lastAssistant.content);
+
+  // If the assistant wrote a long response (plan, code, analysis), boost the score
+  if (assistantContent.length > 1000) return 0.6;
+  if (assistantContent.length > 400) return 0.3;
+  return 0.0;
+}
+
 function scoreVisionMultimodal(messages: Array<{ role: string; content: string | object[] }>): number {
   for (const msg of messages) {
     if (Array.isArray(msg.content)) {
@@ -359,6 +400,8 @@ const DIMENSION_SCORERS: Record<string, (text: string, systemPrompt: string, mes
   constraint_count: (text) => scoreConstraintCount(text),
   output_format: (text) => scoreOutputFormat(text),
   agentic_indicators: (text) => scoreAgenticIndicators(text),
+  tool_call_presence: (text) => scoreToolCallPresence(text),
+  conversation_momentum: (text, _sys, messages) => scoreConversationMomentum(text, messages),
   vision_multimodal: (_text, _sys, messages) => scoreVisionMultimodal(messages),
 };
 
