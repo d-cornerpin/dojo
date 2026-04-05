@@ -124,7 +124,30 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
     logger.info(`Running migration: ${file}`);
 
     try {
-      db.exec(sql);
+      // Special handling for migrations that need FK checks disabled
+      // (e.g., table recreation with FK references from other tables)
+      if (file === '019_agent_sdk_auth.sql') {
+        db.pragma('foreign_keys = OFF');
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS providers_new (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            type TEXT NOT NULL CHECK(type IN ('anthropic', 'openai', 'openai-compatible', 'ollama')),
+            base_url TEXT,
+            auth_type TEXT NOT NULL CHECK(auth_type IN ('api_key', 'oauth', 'none', 'agent-sdk')),
+            is_validated INTEGER NOT NULL DEFAULT 0,
+            validated_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+          INSERT OR IGNORE INTO providers_new SELECT * FROM providers;
+          DROP TABLE IF EXISTS providers;
+          ALTER TABLE providers_new RENAME TO providers;
+        `);
+        db.pragma('foreign_keys = ON');
+      } else {
+        db.exec(sql);
+      }
       db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(file);
       logger.info(`Migration applied: ${file}`);
     } catch (err) {
