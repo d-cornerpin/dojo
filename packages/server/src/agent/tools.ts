@@ -107,7 +107,7 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   // Technique tools: only Sensei can save/publish/update, everyone can use/list
   const agentClassification = (getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined)?.classification;
   if (agentClassification !== 'sensei') {
-    removeTools.push('save_technique', 'publish_technique', 'update_technique', 'submit_technique_for_review');
+    removeTools.push('save_technique', 'publish_technique', 'update_technique', 'submit_technique_for_review', 'delete_technique');
   }
 
   if (removeTools.length > 0) {
@@ -1109,6 +1109,17 @@ export const toolDefinitions: ToolDefinition[] = [
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Technique ID to submit for review' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'delete_technique',
+    description: 'Permanently delete a technique and all its files. Only use when the user explicitly asks to delete a technique. This cannot be undone.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Technique ID (slug) to delete' },
       },
       required: ['name'],
     },
@@ -2250,6 +2261,21 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         const { executeSubmitForReview } = await import('../techniques/tools.js');
         content = executeSubmitForReview(agentId, args);
         isError = content.startsWith('Error');
+        break;
+      }
+
+      case 'delete_technique': {
+        const techName = args.name as string;
+        if (!techName) { content = 'Error: technique name is required'; isError = true; break; }
+        const { deleteTechnique } = await import('../techniques/store.js');
+        const deleted = deleteTechnique(techName);
+        if (deleted) {
+          content = `Technique "${techName}" has been permanently deleted.`;
+          logger.info('Technique deleted via tool', { techniqueId: techName }, agentId);
+        } else {
+          content = `Error: technique "${techName}" not found.`;
+          isError = true;
+        }
         break;
       }
 
