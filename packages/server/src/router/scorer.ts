@@ -48,28 +48,49 @@ export function clearDimensionCache(): void {
 // Focus on the user's LAST message (the actual query) for scoring.
 // The system prompt and older messages just add noise.
 
-function extractScoringText(systemPrompt: string, messages: Array<{ role: string; content: string | object[] }>): string {
-  // Score based on recent conversation context — not just the user's latest message.
-  // Include assistant messages because the user might respond to a complex plan
-  // with a simple "go for it". The assistant's plan is the real complexity indicator.
-  const recent = messages.slice(-6); // last 3 exchanges
-  const parts: string[] = [];
-  for (const msg of recent) {
-    if (msg.role !== 'user' && msg.role !== 'assistant') continue;
-    if (typeof msg.content === 'string') {
-      parts.push(msg.content);
-    } else if (Array.isArray(msg.content)) {
-      for (const block of msg.content) {
-        if (typeof block === 'object' && block !== null && 'text' in block) {
-          parts.push((block as { text: string }).text);
-        }
-        // Detect tool_use blocks — their presence means multi-step work
-        if (typeof block === 'object' && block !== null && 'type' in block && (block as { type: string }).type === 'tool_use') {
-          parts.push('[TOOL_CALL]');
-        }
+function extractMessageText(msg: { role: string; content: string | object[] }): string {
+  if (typeof msg.content === 'string') return msg.content;
+  if (Array.isArray(msg.content)) {
+    const parts: string[] = [];
+    for (const block of msg.content) {
+      if (typeof block === 'object' && block !== null && 'text' in block) {
+        parts.push((block as { text: string }).text);
+      }
+      if (typeof block === 'object' && block !== null && 'type' in block && (block as { type: string }).type === 'tool_use') {
+        parts.push('[TOOL_CALL]');
       }
     }
+    return parts.join('\n');
   }
+  return '';
+}
+
+function extractScoringText(systemPrompt: string, messages: Array<{ role: string; content: string | object[] }>): string {
+  // Weighted scoring: the user's latest message is the primary signal.
+  // Prior context is included but repeated fewer times so its keywords
+  // have less influence on the regex scorers.
+  //
+  // User's latest message: included 3x (dominant signal)
+  // Last assistant message: included 1x (catches "go for it" after complex plan)
+  // Older messages: not included (prevents stale context from inflating scores)
+
+  const userMessages = messages.filter(m => m.role === 'user');
+  const assistantMessages = messages.filter(m => m.role === 'assistant');
+  if (userMessages.length === 0) return '';
+
+  const lastUserText = extractMessageText(userMessages[userMessages.length - 1]);
+  const lastAssistantText = assistantMessages.length > 0
+    ? extractMessageText(assistantMessages[assistantMessages.length - 1])
+    : '';
+
+  // Repeat the user's message so its keywords dominate the score
+  const parts = [lastUserText, lastUserText, lastUserText];
+
+  // Include last assistant message once for context
+  if (lastAssistantText) {
+    parts.push(lastAssistantText);
+  }
+
   return parts.join('\n');
 }
 
