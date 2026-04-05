@@ -106,7 +106,7 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
   );
 };
 
-const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMode?: boolean }) => {
+const AssistantBubble = ({ msg, wordyMode = true, modelNames = {} }: { msg: ChatMessage; wordyMode?: boolean; modelNames?: Record<string, string> }) => {
   const { text: rawText, blocks } = parseMessageContent(msg.content);
   const text = rawText?.trim() || '';
   const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
@@ -118,7 +118,7 @@ const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMod
         {text && (
           <div className="px-4 py-3 whitespace-pre-wrap" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '16px 16px 16px 4px', backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)', color: 'rgba(255,255,255,0.92)', boxShadow: '0 4px 16px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)' }}>
             {wordyMode && msg.modelId && (
-              <div className="text-[10px] text-white/25 mb-1">{msg.modelId}</div>
+              <div className="text-[10px] text-white/25 mb-1">{modelNames[msg.modelId] ?? msg.modelId}</div>
             )}
             <Markdown content={text} />
             {msg.isStreaming && (
@@ -223,6 +223,7 @@ export const Chat = () => {
   agentIdRef.current = AGENT_ID; // always up to date for closures
 
   const [agentName, setAgentName] = useState('');
+  const [modelNames, setModelNames] = useState<Record<string, string>>({});
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isWorking, setIsWorking] = useState(false);
@@ -267,6 +268,16 @@ export const Chat = () => {
       const agentResult = await api.getAgent(AGENT_ID);
       if (agentResult.ok && agentResult.data.status === 'working') {
         setIsWorking(true);
+      }
+
+      // Load model name lookup for wordy mode display
+      const modelsResult = await api.getModels();
+      if (modelsResult.ok) {
+        const lookup: Record<string, string> = {};
+        for (const m of modelsResult.data) {
+          lookup[m.id] = m.name;
+        }
+        setModelNames(lookup);
       }
 
       const result = await api.getChatHistory(AGENT_ID, 50);
@@ -531,7 +542,7 @@ export const Chat = () => {
             // If the message has ONLY tool calls and no text, skip it
             if (!text && hasToolUse) return null;
           }
-          return <AssistantBubble key={msg.id} msg={msg} wordyMode={wordyMode} />;
+          return <AssistantBubble key={msg.id} msg={msg} wordyMode={wordyMode} modelNames={modelNames} />;
         })}
         {isWorking && !messages.some(m => m.isStreaming) && <ThinkingBubble />}
         <div ref={messagesEndRef} />
