@@ -543,12 +543,16 @@ export const Chat = () => {
           if (!confirm('Start a new session? The current conversation will be archived to the vault. Your agent won\'t lose any knowledge.')) return;
           const res = await api.request<{ archiveId: string; sessionStartedAt: string }>(`/chat/${AGENT_ID}/new-session`, { method: 'POST' });
           if (res.ok) {
-            // Reload messages — the session boundary means only new messages will show
             const result = await api.getChatHistory(AGENT_ID, 50);
             if (result.ok) {
               setMessages(result.data.map((m: Message) => ({ ...m, isStreaming: false })));
             }
           }
+        }}
+        isWorking={isWorking}
+        onStop={async () => {
+          await api.stopAgent(AGENT_ID);
+          setIsWorking(false);
         }}
       />
     </div>

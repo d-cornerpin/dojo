@@ -107,6 +107,15 @@ export const AgentCard = ({ agent, models, onModelChanged }: AgentCardProps) => 
         </div>
         <div className="flex items-center gap-1.5">
           <StatusBadge status={agent.status} />
+          {agent.status === 'working' && (
+            <button
+              onClick={async (e) => { e.stopPropagation(); await api.stopAgent(agent.id); onModelChanged(); }}
+              className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-amber-400 transition-all p-0.5"
+              title="Stop agent"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>
+            </button>
+          )}
           {agent.classification !== 'sensei' && agent.status !== 'terminated' && (
             <button
               onClick={(e) => { e.stopPropagation(); setConfirmTerminate(true); }}

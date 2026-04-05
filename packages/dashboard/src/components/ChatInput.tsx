@@ -22,6 +22,8 @@ interface ChatInputProps {
   wordyMode?: boolean;
   onToggleWordyMode?: () => void;
   onNewSession?: () => void;
+  isWorking?: boolean;
+  onStop?: () => void;
 }
 
 function formatFileSize(bytes: number): string {
@@ -30,7 +32,7 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'primary', wordyMode, onToggleWordyMode, onNewSession }: ChatInputProps) => {
+export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'primary', wordyMode, onToggleWordyMode, onNewSession, isWorking, onStop }: ChatInputProps) => {
   const [input, setInput] = useState('');
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -286,18 +288,31 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
           />
         </div>
 
-        {/* Send button */}
+        {/* Send / Stop button */}
         {isPrimary ? (
-          <button
-            onClick={handleSend}
-            disabled={disabled || uploading || (!input.trim() && pendingFiles.length === 0)}
-            className="shrink-0 flex items-center justify-center text-xl font-bold transition-all disabled:opacity-30"
-            style={{ background: '#F5A623', color: '#0B0F1A', borderRadius: '50%', width: '44px', height: '44px' }}
-            onMouseEnter={(e) => { if (input.trim() || pendingFiles.length > 0) { e.currentTarget.style.background = '#FFBA42'; e.currentTarget.style.boxShadow = '0 0 16px rgba(245,166,35,0.3)'; } }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = '#F5A623'; e.currentTarget.style.boxShadow = 'none'; }}
-          >
-            {uploading ? '\u23F3' : '\u2191'}
-          </button>
+          isWorking && onStop ? (
+            <button
+              onClick={onStop}
+              className="shrink-0 flex items-center justify-center transition-all"
+              style={{ background: '#EF4444', color: '#ffffff', borderRadius: '50%', width: '44px', height: '44px' }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = '#DC2626'; e.currentTarget.style.boxShadow = '0 0 16px rgba(239,68,68,0.3)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = '#EF4444'; e.currentTarget.style.boxShadow = 'none'; }}
+              title="Stop agent"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+            </button>
+          ) : (
+            <button
+              onClick={handleSend}
+              disabled={disabled || uploading || (!input.trim() && pendingFiles.length === 0)}
+              className="shrink-0 flex items-center justify-center text-xl font-bold transition-all disabled:opacity-30"
+              style={{ background: '#F5A623', color: '#0B0F1A', borderRadius: '50%', width: '44px', height: '44px' }}
+              onMouseEnter={(e) => { if (input.trim() || pendingFiles.length > 0) { e.currentTarget.style.background = '#FFBA42'; e.currentTarget.style.boxShadow = '0 0 16px rgba(245,166,35,0.3)'; } }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = '#F5A623'; e.currentTarget.style.boxShadow = 'none'; }}
+            >
+              {uploading ? '\u23F3' : '\u2191'}
+            </button>
+          )
         ) : (
           <button
             onClick={handleSend}

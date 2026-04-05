@@ -559,6 +559,12 @@ export const terminateAgent = async (id: string): Promise<ApiResponse<void>> => 
   });
 };
 
+export const stopAgent = async (id: string): Promise<ApiResponse<void>> => {
+  return request<void>(`/agents/${id}/stop`, {
+    method: 'POST',
+  });
+};
+
 export const getAgentSystemPrompt = async (id: string): Promise<ApiResponse<{ content: string }>> => {
   return request<{ content: string }>(`/agents/${id}/system-prompt`);
 };

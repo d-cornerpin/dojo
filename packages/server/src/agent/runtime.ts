@@ -49,6 +49,24 @@ const pendingWakeups = new Set<string>();
 // Track the last message ID processed per agent to avoid re-processing
 const lastProcessedMessageId = new Map<string, string>();
 
+// Agents that should halt on the next loop iteration
+const stoppedAgents = new Set<string>();
+
+// AbortControllers for in-flight API calls — aborting these kills the request immediately
+const activeAbortControllers = new Map<string, AbortController>();
+
+/** Stop a running agent — aborts in-flight API call and halts the loop */
+export function stopAgent(agentId: string): void {
+  stoppedAgents.add(agentId);
+  // Abort any in-flight API call
+  const controller = activeAbortControllers.get(agentId);
+  if (controller) {
+    controller.abort();
+    activeAbortControllers.delete(agentId);
+  }
+  logger.info('Agent stop requested', {}, agentId);
+}
+
 const MAX_TOOL_LOOPS = 25; // Maximum tool call loops per turn
 
 class AgentRuntime {
@@ -151,6 +169,14 @@ class AgentRuntime {
     while (loopCount < MAX_TOOL_LOOPS) {
       loopCount++;
 
+      // Check if agent was stopped
+      if (stoppedAgents.has(agentId)) {
+        stoppedAgents.delete(agentId);
+        logger.info('Agent stopped by user', {}, agentId);
+        this.setAgentStatus(agentId, 'idle');
+        break;
+      }
+
       // Assemble context: system prompt + summaries + fresh tail
       const context = await assembleContext(agentId, contextModelId);
       const systemPrompt = context.systemPrompt;
@@ -201,25 +227,41 @@ class AgentRuntime {
 
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         try {
+          // Set up abort controller so stopAgent() can kill the in-flight request
+          const abortController = new AbortController();
+          activeAbortControllers.set(agentId, abortController);
+
           result = await withRetry(
-            () => callModel({
-              agentId,
-              modelId,
-              messages,
-              systemPrompt,
-              tools: true,
-              routerTier: routerTier ?? undefined,
-              onChunk: (chunk) => {
-            // Buffer chunks — we'll send them only if this is the final response (no tool calls)
-            streamedChunks.push(chunk);
-          },
-            }),
+            () => {
+              if (abortController.signal.aborted) throw new Error('Agent stopped');
+              return callModel({
+                agentId,
+                modelId,
+                messages,
+                systemPrompt,
+                tools: true,
+                routerTier: routerTier ?? undefined,
+                onChunk: (chunk) => {
+                  if (abortController.signal.aborted) return;
+                  streamedChunks.push(chunk);
+                },
+              });
+            },
             agentId,
             { maxRetries: 2 },
           );
+
+          activeAbortControllers.delete(agentId);
           callSucceeded = true;
           break; // success, exit retry loop
         } catch (err) {
+          // If agent was stopped, break out cleanly
+          if (stoppedAgents.has(agentId)) {
+            stoppedAgents.delete(agentId);
+            activeAbortControllers.delete(agentId);
+            this.setAgentStatus(agentId, 'idle');
+            return;
+          }
           if (!isAutoRouted || attempt >= maxAttempts - 1) throw err;
 
           // Auto-routed: try the next model in the fallback chain

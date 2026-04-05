@@ -6,6 +6,7 @@ import os from 'node:os';
 import { getDb } from '../../db/connection.js';
 import { getAgentRuntime } from '../../agent/runtime.js';
 import { spawnAgent, terminateAgent } from '../../agent/spawner.js';
+import { stopAgent } from '../../agent/runtime.js';
 import { getAgentMessages } from '../../agent/agent-bus.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../ws.js';
@@ -307,6 +308,31 @@ agentsRouter.delete('/:id', (c) => {
 
   terminateAgent(id, 'Terminated via dashboard');
   return c.json({ ok: true, data: { agentId: id, status: 'terminated' } });
+});
+
+// POST /:id/stop — halt a working agent and set to idle
+agentsRouter.post('/:id/stop', (c) => {
+  const id = c.req.param('id');
+  const db = getDb();
+
+  const agent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(id) as { id: string; status: string } | undefined;
+  if (!agent) {
+    return c.json({ ok: false, error: 'Agent not found' }, 404);
+  }
+
+  if (agent.status !== 'working') {
+    return c.json({ ok: false, error: 'Agent is not currently working' }, 400);
+  }
+
+  stopAgent(id);
+
+  // Also set to idle immediately in the DB so the UI updates right away
+  // (the runtime loop will also set it when it catches the stop flag)
+  db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(id);
+  broadcast({ type: 'agent:status', agentId: id, status: 'idle' });
+
+  logger.info('Agent stopped via dashboard', { agentId: id });
+  return c.json({ ok: true, data: { agentId: id, status: 'idle' } });
 });
 
 // POST /:id/purge — permanently delete a terminated agent and all its data
