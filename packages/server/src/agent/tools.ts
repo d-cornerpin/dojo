@@ -101,7 +101,7 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
 
   // Only primary-level agents should have group management, session, and presence tools
   if (!isPrimaryAgent(agentId)) {
-    removeTools.push('create_agent_group', 'assign_to_group', 'delete_group', 'reset_session', 'set_user_presence');
+    removeTools.push('create_agent_group', 'assign_to_group', 'delete_group', 'reset_session', 'set_user_presence', 'update_agent_model');
   }
 
   // Technique tools: only Sensei can save/publish/update, everyone can use/list
@@ -800,11 +800,25 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Session Management ──
   {
     name: 'reset_session',
-    description: 'Start a fresh conversation session. Archives the current conversation to the vault and clears the context. Only use this when the user explicitly asks to start fresh, reset the session, or clear the conversation. Never call this on your own.',
+    description: 'Start a fresh conversation session for yourself or a sub-agent. Archives the conversation to the vault and clears the context. Only use when the user explicitly asks, or when a sub-agent is stuck/looping and needs a fresh start.',
     input_schema: {
       type: 'object',
-      properties: {},
+      properties: {
+        agent_id: { type: 'string', description: 'Optional agent ID to reset. If omitted, resets your own session. Use this to reset a sub-agent\'s session.' },
+      },
       required: [],
+    },
+  },
+  {
+    name: 'update_agent_model',
+    description: 'Change the model assigned to a sub-agent. The agent will use the new model on its next turn. You can also set "auto" to enable auto-routing for the agent.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The agent ID to update' },
+        model_id: { type: 'string', description: 'The new model ID to assign, or "auto" for auto-routing' },
+      },
+      required: ['agent_id', 'model_id'],
     },
   },
   // ── Group Tools (Phase 6) ──
@@ -1845,36 +1859,93 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'reset_session': {
         try {
           const db = getDb();
-          const agent = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(agentId) as { id: string; name: string; status: string } | undefined;
+          const targetId = (args.agent_id as string) || agentId;
+
+          const agent = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(targetId) as { id: string; name: string; status: string } | undefined;
           if (!agent) {
-            content = 'Error: Agent not found';
-            isError = true;
-            break;
+            // Try by name
+            const byName = db.prepare("SELECT id, name, status FROM agents WHERE name = ? AND status != 'terminated'").get(targetId) as { id: string; name: string; status: string } | undefined;
+            if (!byName) {
+              content = `Error: Agent "${targetId}" not found`;
+              isError = true;
+              break;
+            }
+            Object.assign(agent ?? {}, byName);
           }
+
+          const resolvedId = agent?.id ?? targetId;
 
           // Archive current conversation to vault
           const { archiveAgentConversation } = await import('../vault/archive.js');
-          const archiveId = archiveAgentConversation(agentId);
+          const archiveId = archiveAgentConversation(resolvedId);
 
           // Clear context items (summaries)
           const { replaceContextItems } = await import('../memory/dag.js');
-          replaceContextItems(agentId, []);
+          replaceContextItems(resolvedId, []);
 
           // Set session boundary
           const now = new Date();
           const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-          db.prepare('UPDATE agents SET session_started_at = ?, updated_at = ? WHERE id = ?').run(boundary, boundary, agentId);
+          db.prepare('UPDATE agents SET session_started_at = ?, updated_at = ? WHERE id = ?').run(boundary, boundary, resolvedId);
 
           // Insert UI divider
           const markerId = uuidv4();
-          db.prepare("INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', '── New Session ──', ?)").run(markerId, agentId, boundary);
+          db.prepare("INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', '── New Session ──', ?)").run(markerId, resolvedId, boundary);
 
-          broadcast({ type: 'chat:message', agentId, message: { id: markerId, agentId, role: 'system', content: '── New Session ──', tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
+          broadcast({ type: 'chat:message', agentId: resolvedId, message: { id: markerId, agentId: resolvedId, role: 'system', content: '── New Session ──', tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
 
-          content = 'Session reset complete. Previous conversation archived to vault. Fresh session started.';
-          logger.info('Agent-initiated session reset', { agentId, archiveId }, agentId);
+          const targetLabel = resolvedId === agentId ? 'your' : `${agent?.name ?? resolvedId}'s`;
+          content = `Session reset complete for ${targetLabel} session. Previous conversation archived to vault.`;
+          logger.info('Session reset via tool', { callerAgentId: agentId, targetAgentId: resolvedId, archiveId }, agentId);
         } catch (err) {
           content = `Error resetting session: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
+        break;
+      }
+
+      case 'update_agent_model': {
+        try {
+          const db = getDb();
+          const targetId = args.agent_id as string;
+          const newModelId = args.model_id as string;
+
+          // Resolve agent by ID or name
+          let agent = db.prepare('SELECT id, name, model_id FROM agents WHERE id = ?').get(targetId) as { id: string; name: string; model_id: string | null } | undefined;
+          if (!agent) {
+            agent = db.prepare("SELECT id, name, model_id FROM agents WHERE name = ? AND status != 'terminated'").get(targetId) as { id: string; name: string; model_id: string | null } | undefined;
+          }
+          if (!agent) {
+            content = `Error: Agent "${targetId}" not found`;
+            isError = true;
+            break;
+          }
+
+          if (newModelId === 'auto') {
+            // Enable auto-routing
+            db.prepare("UPDATE agents SET model_id = NULL, config = json_set(COALESCE(config, '{}'), '$.autoRoute', json('true')), updated_at = datetime('now') WHERE id = ?").run(agent.id);
+            content = `${agent.name} switched to auto-routing. The router will select the best model per query.`;
+          } else {
+            // Verify model exists and is enabled
+            const model = db.prepare('SELECT id, name, is_enabled FROM models WHERE id = ?').get(newModelId) as { id: string; name: string; is_enabled: number } | undefined;
+            if (!model) {
+              content = `Error: Model "${newModelId}" not found. Use a valid model ID.`;
+              isError = true;
+              break;
+            }
+            if (!model.is_enabled) {
+              content = `Error: Model "${model.name}" is disabled. Enable it in Settings > Models first.`;
+              isError = true;
+              break;
+            }
+
+            db.prepare("UPDATE agents SET model_id = ?, config = json_set(COALESCE(config, '{}'), '$.autoRoute', json('false')), updated_at = datetime('now') WHERE id = ?").run(newModelId, agent.id);
+            content = `${agent.name}'s model changed from ${agent.model_id ?? 'auto'} to ${model.name} (${newModelId}).`;
+          }
+
+          logger.info('Agent model updated via tool', { callerAgentId: agentId, targetAgentId: agent.id, newModelId }, agentId);
+        } catch (err) {
+          content = `Error updating agent model: ${err instanceof Error ? err.message : String(err)}`;
           isError = true;
         }
         break;
