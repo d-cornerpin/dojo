@@ -522,7 +522,7 @@ export const Health = () => {
       </div>
 
       {/* Log Viewer */}
-      <div className="flex-1 flex flex-col min-h-[300px] glass-card overflow-hidden">
+      <div className="flex-1 flex flex-col min-h-[1200px] glass-card overflow-hidden">
         {/* Log Filters */}
         <div className="flex items-center gap-3 px-4 py-3 border-b white/[0.06]">
           <span className="text-sm font-medium white/55">Logs</span>

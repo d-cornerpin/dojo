@@ -1267,6 +1267,56 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
 
 // ── Models Tab ──
 
+const ProviderModelGroup = ({
+  providerName,
+  providerType,
+  models,
+  primaryModelId,
+  onToggle,
+  onPricingChange,
+  browseSection,
+}: {
+  providerName: string;
+  providerType: string;
+  models: Model[];
+  primaryModelId: string | null;
+  onToggle: (model: Model) => void;
+  onPricingChange: () => void;
+  browseSection?: React.ReactNode;
+}) => {
+  const [open, setOpen] = useState(true);
+  const enabledCount = models.filter(m => m.isEnabled).length;
+
+  return (
+    <div className="glass-card overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full px-4 py-3 flex items-center justify-between text-sm font-medium white/70 hover:bg-white/[0.03] transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span>{providerName}</span>
+          <span className="text-xs white/30">{enabledCount}/{models.length} enabled</span>
+        </div>
+        <span className="white/40">{open ? '[-]' : '[+]'}</span>
+      </button>
+      {open && (
+        <div className="px-4 pb-4 space-y-2">
+          {models.map(model => (
+            <ModelRow
+              key={model.id}
+              model={model}
+              isPrimaryModel={model.id === primaryModelId}
+              onToggle={() => onToggle(model)}
+              onPricingChange={onPricingChange}
+            />
+          ))}
+          {browseSection}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const ModelRow = ({
   model,
   isPrimaryModel,
@@ -1560,29 +1610,32 @@ const ModelsTab = () => {
       {models.length === 0 ? (
         <p className="white/40 text-sm">No models available. Add a provider first.</p>
       ) : (
-        models.map((model) => (
-          <ModelRow
-            key={model.id}
-            model={model}
-            isPrimaryModel={model.id === primaryModelId}
-            onToggle={() => toggleModel(model)}
-            onPricingChange={loadData}
-          />
-        ))
+        providers.map(provider => {
+          const providerModels = models
+            .filter(m => m.providerId === provider.id)
+            .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+          if (providerModels.length === 0) return null;
+          const isAggregator = provider.type === 'openai-compatible' && provider.isValidated;
+          return (
+            <ProviderModelGroup
+              key={provider.id}
+              providerName={provider.name}
+              providerType={provider.type}
+              models={providerModels}
+              primaryModelId={primaryModelId}
+              onToggle={toggleModel}
+              onPricingChange={loadData}
+              browseSection={isAggregator ? (
+                <BrowseModels
+                  providerId={provider.id}
+                  providerName={provider.name}
+                  onModelAdded={loadData}
+                />
+              ) : undefined}
+            />
+          );
+        })
       )}
-
-      {/* Browse models for aggregator providers (OpenRouter, etc.) */}
-      {providers
-        .filter(p => p.type === 'openai-compatible' && p.isValidated)
-        .map(p => (
-          <BrowseModels
-            key={p.id}
-            providerId={p.id}
-            providerName={p.name}
-            onModelAdded={loadData}
-          />
-        ))
-      }
     </div>
   );
 };

@@ -37,6 +37,7 @@ interface ChatMessage {
   content: string;        // raw content from DB (may be JSON)
   blocks?: ContentBlock[]; // parsed content blocks (if JSON array)
   createdAt: string;
+  modelId?: string | null;
   toolCalls?: ToolCallData[];
   isStreaming?: boolean;
   attachments?: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: string }>;
@@ -116,6 +117,9 @@ const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMod
         {/* Text content */}
         {text && (
           <div className="px-4 py-3 whitespace-pre-wrap" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '16px 16px 16px 4px', backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)', color: 'rgba(255,255,255,0.92)', boxShadow: '0 4px 16px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)' }}>
+            {wordyMode && msg.modelId && (
+              <div className="text-[10px] text-white/25 mb-1">{msg.modelId}</div>
+            )}
             <Markdown content={text} />
             {msg.isStreaming && (
               <span className="inline-flex gap-1 ml-1 align-middle">
@@ -273,6 +277,7 @@ export const Chat = () => {
             role: m.role,
             content: m.content,
             createdAt: m.createdAt,
+            modelId: m.modelId,
             attachments: m.attachments,
           })),
         );
