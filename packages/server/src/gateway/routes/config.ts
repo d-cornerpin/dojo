@@ -99,7 +99,7 @@ const logger = createLogger('config-routes');
 // Fallback Anthropic models — used only if models.list() API call fails
 const ANTHROPIC_MODELS_FALLBACK = [
   {
-    name: 'Claude Opus 4',
+    name: 'Claude Opus 4.6',
     apiModelId: 'claude-opus-4-6',
     capabilities: ['chat', 'code', 'analysis', 'tools'],
     contextWindow: 200000,
@@ -108,7 +108,16 @@ const ANTHROPIC_MODELS_FALLBACK = [
     outputCostPerM: 75.0,
   },
   {
-    name: 'Claude Sonnet 4',
+    name: 'Claude Opus 4',
+    apiModelId: 'claude-opus-4-0-20250415',
+    capabilities: ['chat', 'code', 'analysis', 'tools'],
+    contextWindow: 200000,
+    maxOutputTokens: 32768,
+    inputCostPerM: 15.0,
+    outputCostPerM: 75.0,
+  },
+  {
+    name: 'Claude Sonnet 4.6',
     apiModelId: 'claude-sonnet-4-6',
     capabilities: ['chat', 'code', 'analysis', 'tools'],
     contextWindow: 200000,
@@ -117,8 +126,26 @@ const ANTHROPIC_MODELS_FALLBACK = [
     outputCostPerM: 15.0,
   },
   {
-    name: 'Claude Haiku 3.5',
-    apiModelId: 'claude-haiku-4-5',
+    name: 'Claude Sonnet 4',
+    apiModelId: 'claude-sonnet-4-0-20250514',
+    capabilities: ['chat', 'code', 'analysis', 'tools'],
+    contextWindow: 200000,
+    maxOutputTokens: 64000,
+    inputCostPerM: 3.0,
+    outputCostPerM: 15.0,
+  },
+  {
+    name: 'Claude Sonnet 3.5 v2',
+    apiModelId: 'claude-3-5-sonnet-20241022',
+    capabilities: ['chat', 'code', 'analysis', 'tools'],
+    contextWindow: 200000,
+    maxOutputTokens: 8192,
+    inputCostPerM: 3.0,
+    outputCostPerM: 15.0,
+  },
+  {
+    name: 'Claude Haiku 4.5',
+    apiModelId: 'claude-haiku-4-5-20251001',
     capabilities: ['chat', 'code', 'tools'],
     contextWindow: 200000,
     maxOutputTokens: 8192,
@@ -461,7 +488,7 @@ configRouter.post('/providers/:id/validate', async (c) => {
     credentialPrefix: credential ? credential.slice(0, 10) + '...' : 'none',
   });
 
-  if (!credential && provider.type !== 'ollama') {
+  if (!credential && provider.type !== 'ollama' && provider.authType !== 'agent-sdk') {
     return c.json({ ok: false, error: 'No credential found for this provider' }, 400);
   }
 
@@ -514,6 +541,30 @@ configRouter.post('/providers/:id/validate', async (c) => {
         }
       }
       logger.info('Ollama models synced', { providerId: id, count: ollamaModels.length });
+    } else if (provider.type === 'anthropic' && provider.authType === 'agent-sdk') {
+      // Agent SDK validation — use the SDK auth checker
+      logger.info('Provider validation: checking Agent SDK auth', { providerId: id });
+      const { checkSdkAuth } = await import('../../providers/anthropic-sdk-auth.js');
+      const sdkResult = await checkSdkAuth();
+      if (!sdkResult.authenticated) {
+        return c.json({ ok: false, error: `Agent SDK auth failed: ${sdkResult.error ?? 'not authenticated'}` }, 400);
+      }
+      logger.info('Provider validation: Agent SDK auth verified', { providerId: id });
+
+      // Agent SDK models: family-level only (SDK always uses the latest version)
+      const sdkModels = [
+        { name: 'Claude Opus (latest)', apiModelId: 'opus', contextWindow: 200000, maxOutputTokens: 32768, inputCostPerM: 15.0, outputCostPerM: 75.0 },
+        { name: 'Claude Sonnet (latest)', apiModelId: 'sonnet', contextWindow: 200000, maxOutputTokens: 64000, inputCostPerM: 3.0, outputCostPerM: 15.0 },
+        { name: 'Claude Haiku (latest)', apiModelId: 'haiku', contextWindow: 200000, maxOutputTokens: 8192, inputCostPerM: 0.80, outputCostPerM: 4.0 },
+      ];
+      const insertModel = db.prepare(`
+        INSERT OR IGNORE INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, is_enabled, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+      `);
+      for (const m of sdkModels) {
+        const modelId = `${id}_${m.apiModelId}`;
+        insertModel.run(modelId, id, m.name, m.apiModelId, JSON.stringify(['chat', 'code', 'analysis', 'tools']), m.contextWindow, m.maxOutputTokens, m.inputCostPerM, m.outputCostPerM);
+      }
     } else if (provider.type === 'anthropic') {
       const useOAuth = provider.authType === 'oauth' || credential!.includes('sk-ant-oat');
       logger.info('Provider validation: calling Anthropic API', { providerId: id, authType: useOAuth ? 'oauth' : 'api_key' });
@@ -1188,5 +1239,39 @@ function rowToModel(row: Record<string, unknown>): Model {
     updatedAt: row.updated_at as string,
   };
 }
+
+// ── Agent SDK Routes ──
+
+// GET /api/config/agent-sdk/status — check if Claude CLI is installed and authenticated
+configRouter.get('/agent-sdk/status', async (c) => {
+  try {
+    const { isClaudeCliInstalled, getClaudeCliVersion, isSdkPackageAvailable } = await import('../../providers/anthropic-sdk-auth.js');
+    const cliInstalled = isClaudeCliInstalled();
+    const version = cliInstalled ? getClaudeCliVersion() : null;
+    const packageAvailable = isSdkPackageAvailable();
+
+    return c.json({
+      ok: true,
+      data: {
+        cliInstalled,
+        version,
+        packageAvailable,
+      },
+    });
+  } catch (err) {
+    return c.json({ ok: true, data: { cliInstalled: false, version: null, packageAvailable: false } });
+  }
+});
+
+// POST /api/config/agent-sdk/verify — test auth by running a minimal query
+configRouter.post('/agent-sdk/verify', async (c) => {
+  try {
+    const { checkSdkAuth } = await import('../../providers/anthropic-sdk-auth.js');
+    const result = await checkSdkAuth();
+    return c.json({ ok: true, data: result });
+  } catch (err) {
+    return c.json({ ok: true, data: { authenticated: false, error: err instanceof Error ? err.message : String(err) } });
+  }
+});
 
 export { configRouter };

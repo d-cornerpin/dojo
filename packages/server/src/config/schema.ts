@@ -22,7 +22,7 @@ export const CreateProviderSchema = z.object({
   name: z.string().min(1).max(128),
   type: z.enum(['anthropic', 'openai', 'openai-compatible', 'ollama']),
   baseUrl: z.string().url().optional().nullable(),
-  authType: z.enum(['api_key', 'oauth', 'none']),
+  authType: z.enum(['api_key', 'oauth', 'none', 'agent-sdk']),
   credential: z.string().optional(),
 });
 

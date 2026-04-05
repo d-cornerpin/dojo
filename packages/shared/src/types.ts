@@ -7,7 +7,7 @@ export interface Provider {
   name: string;
   type: 'anthropic' | 'openai' | 'openai-compatible' | 'ollama';
   baseUrl: string | null;
-  authType: 'api_key' | 'oauth';
+  authType: 'api_key' | 'oauth' | 'agent-sdk';
   isValidated: boolean;
   validatedAt: string | null;
   createdAt: string;

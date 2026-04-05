@@ -908,6 +908,77 @@ const SearchSettings = () => {
   );
 };
 
+// ── Agent SDK Setup (inline in provider form) ──
+
+const AgentSdkSetup = () => {
+  const [status, setStatus] = useState<{ cliInstalled: boolean; version: string | null; packageAvailable: boolean } | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [authResult, setAuthResult] = useState<{ authenticated: boolean; error?: string } | null>(null);
+
+  useEffect(() => {
+    api.request<{ cliInstalled: boolean; version: string | null; packageAvailable: boolean }>('/config/agent-sdk/status').then(res => {
+      if (res.ok) setStatus(res.data);
+    });
+  }, []);
+
+  const handleVerify = async () => {
+    setVerifying(true);
+    setAuthResult(null);
+    const res = await api.request<{ authenticated: boolean; error?: string }>('/config/agent-sdk/verify', { method: 'POST' });
+    if (res.ok) setAuthResult(res.data);
+    setVerifying(false);
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-white/40">
+        Use your Claude Pro or Max subscription through the Agent SDK. Requires Claude Code CLI to be installed and logged in.
+      </p>
+
+      <div className="space-y-2 text-xs">
+        <div className="flex items-center gap-2">
+          <span className={status?.cliInstalled ? 'text-green-400' : 'text-amber-400'}>
+            {status?.cliInstalled ? '\u2713' : '\u2717'}
+          </span>
+          <span className="text-white/60">
+            Claude Code CLI {status?.cliInstalled ? `installed (${status.version})` : 'not found'}
+          </span>
+        </div>
+
+        {!status?.cliInstalled && (
+          <p className="text-white/30 ml-5">
+            Install with: <code className="bg-white/5 px-1 rounded">npm install -g @anthropic-ai/claude-agent-sdk</code>
+            <br />Then run <code className="bg-white/5 px-1 rounded">claude</code> in your terminal and log in.
+          </p>
+        )}
+      </div>
+
+      {status?.cliInstalled && (
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleVerify}
+            disabled={verifying}
+            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-medium rounded-lg transition-colors"
+          >
+            {verifying ? 'Verifying...' : 'Verify Connection'}
+          </button>
+          {authResult && (
+            <span className={`text-xs ${authResult.authenticated ? 'text-green-400' : 'text-red-400'}`}>
+              {authResult.authenticated ? '\u2713 Authenticated' : authResult.error ?? 'Not authenticated'}
+            </span>
+          )}
+        </div>
+      )}
+
+      <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
+        <p className="text-[10px] text-amber-400/70">
+          Agent SDK subscription billing is subject to Anthropic's usage policies. If you experience issues, switch to API Key.
+        </p>
+      </div>
+    </div>
+  );
+};
+
 // ── Providers Tab ──
 
 const ProvidersTab = () => {
@@ -974,7 +1045,7 @@ const ProvidersTab = () => {
               <div>
                 <h3 className="text-sm font-medium text-white">{provider.name}</h3>
                 <p className="text-xs white/40 mt-0.5">
-                  {provider.type} &middot; {provider.authType === 'oauth' ? 'OAuth' : 'API Key'} {provider.isValidated ? '(validated)' : '(not validated)'}
+                  {provider.type} &middot; {provider.authType === 'agent-sdk' ? 'Agent SDK' : provider.authType === 'oauth' ? 'OAuth' : 'API Key'} {provider.isValidated ? '(validated)' : '(not validated)'}
                 </p>
               </div>
               <div className="flex items-center gap-3">
@@ -1021,7 +1092,7 @@ const ProvidersTab = () => {
 const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel: () => void }) => {
   const [name, setName] = useState('');
   const [type, setType] = useState('anthropic');
-  const [authType, setAuthType] = useState('api_key');
+  const [authType, setAuthType] = useState<'api_key' | 'oauth' | 'agent-sdk'>('api_key');
   const [credential, setCredential] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -1113,27 +1184,32 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
               <label className="block text-xs font-medium white/55 mb-1">Auth Type</label>
               <select
                 value={authType}
-                onChange={(e) => setAuthType(e.target.value)}
+                onChange={(e) => setAuthType(e.target.value as 'api_key' | 'oauth' | 'agent-sdk')}
                 className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="api_key">API Key</option>
                 <option value="oauth">OAuth Token</option>
+                <option value="agent-sdk">Agent SDK (Subscription)</option>
               </select>
             </div>
           )}
 
-          <div>
-            <label className="block text-xs font-medium white/55 mb-1">
-              {authType === 'oauth' && type === 'anthropic' ? 'OAuth Token' : 'API Key'}
-            </label>
-            <input
-              type="password"
-              value={credential}
-              onChange={(e) => setCredential(e.target.value)}
-              placeholder={type === 'openai' ? 'sk-...' : authType === 'oauth' ? 'Bearer token...' : 'sk-...'}
-              className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
+          {authType === 'agent-sdk' && type === 'anthropic' ? (
+            <AgentSdkSetup />
+          ) : (
+            <div>
+              <label className="block text-xs font-medium white/55 mb-1">
+                {authType === 'oauth' && type === 'anthropic' ? 'OAuth Token' : 'API Key'}
+              </label>
+              <input
+                type="password"
+                value={credential}
+                onChange={(e) => setCredential(e.target.value)}
+                placeholder={type === 'openai' ? 'sk-...' : authType === 'oauth' ? 'Bearer token...' : 'sk-...'}
+                className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          )}
         </>
       )}
 
@@ -1152,7 +1228,7 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
       <div className="flex gap-2">
         <button
           type="submit"
-          disabled={status === 'saving' || status === 'validating' || status === 'valid' || !name.trim() || (type !== 'ollama' && !credential.trim())}
+          disabled={status === 'saving' || status === 'validating' || status === 'valid' || !name.trim() || (type !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())}
           className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-sm font-medium rounded-lg transition-colors"
         >
           {status === 'saving' ? 'Adding...' : status === 'validating' ? 'Validating...' : 'Add & Validate'}

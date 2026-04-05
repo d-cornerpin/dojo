@@ -524,33 +524,54 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
                   className="glass-select w-full">
                   <option value="api_key">API Key</option>
                   <option value="oauth">OAuth Token</option>
+                  <option value="agent-sdk">Agent SDK (Subscription)</option>
                 </select>
               </div>
             )}
-            <div>
-              <label className="block text-sm font-medium white/70 mb-1">{authType === 'oauth' && type === 'anthropic' ? 'OAuth Token' : 'API Key'}</label>
-              <input type="password" value={credential} onChange={(e) => setCredential(e.target.value)}
-                placeholder={type === 'openai' ? 'sk-...' : authType === 'oauth' ? 'sk-ant-oat...' : 'sk-...'}
-                className="glass-input" />
-            </div>
 
-            {/* OAuth hint for Anthropic */}
-            {type === 'anthropic' && authType === 'oauth' && (
-              <div className="px-3 py-2.5 rounded-lg bg-blue-500/5 border border-blue-500/10 text-[11px] text-blue-300/70 leading-relaxed space-y-1.5">
-                <p className="font-medium text-blue-300/90">How to get your OAuth token:</p>
-                <p>1. Install Claude Code (if you haven't already):</p>
-                <code className="block px-2 py-1 rounded bg-white/[0.05] font-mono text-[10px] text-white/60">curl -fsSL https://claude.ai/install.sh | bash</code>
-                <p>2. Generate your token:</p>
-                <code className="block px-2 py-1 rounded bg-white/[0.05] font-mono text-[10px] text-white/60">claude setup-token</code>
-                <p>3. Copy the token (starts with <span className="font-mono">sk-ant-oat</span>) and paste it above.</p>
+            {authType === 'agent-sdk' && type === 'anthropic' ? (
+              <div className="space-y-3">
+                <p className="text-xs text-white/40">
+                  Use your Claude Pro or Max subscription. Requires Claude Code CLI installed and logged in.
+                </p>
+                <div className="text-xs text-white/50 space-y-1">
+                  <p>1. Install: <code className="bg-white/5 px-1 rounded">npm install -g @anthropic-ai/claude-agent-sdk</code></p>
+                  <p>2. Run <code className="bg-white/5 px-1 rounded">claude</code> in your terminal and log in with your Claude account</p>
+                </div>
+                <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
+                  <p className="text-[10px] text-amber-400/70">
+                    Agent SDK billing is subject to Anthropic's usage policies. If you experience issues, switch to API Key.
+                  </p>
+                </div>
               </div>
+            ) : (
+              <>
+                <div>
+                  <label className="block text-sm font-medium white/70 mb-1">{authType === 'oauth' && type === 'anthropic' ? 'OAuth Token' : 'API Key'}</label>
+                  <input type="password" value={credential} onChange={(e) => setCredential(e.target.value)}
+                    placeholder={type === 'openai' ? 'sk-...' : authType === 'oauth' ? 'sk-ant-oat...' : 'sk-...'}
+                    className="glass-input" />
+                </div>
+
+                {/* OAuth hint for Anthropic */}
+                {type === 'anthropic' && authType === 'oauth' && (
+                  <div className="px-3 py-2.5 rounded-lg bg-blue-500/5 border border-blue-500/10 text-[11px] text-blue-300/70 leading-relaxed space-y-1.5">
+                    <p className="font-medium text-blue-300/90">How to get your OAuth token:</p>
+                    <p>1. Install Claude Code (if you haven't already):</p>
+                    <code className="block px-2 py-1 rounded bg-white/[0.05] font-mono text-[10px] text-white/60">curl -fsSL https://claude.ai/install.sh | bash</code>
+                    <p>2. Generate your token:</p>
+                    <code className="block px-2 py-1 rounded bg-white/[0.05] font-mono text-[10px] text-white/60">claude setup-token</code>
+                    <p>3. Copy the token (starts with <span className="font-mono">sk-ant-oat</span>) and paste it above.</p>
+                  </div>
+                )}
+              </>
             )}
           </>
         )}
 
         {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
 
-        <button type="submit" disabled={status === 'validating' || !name.trim() || (type !== 'ollama' && !credential.trim())}
+        <button type="submit" disabled={status === 'validating' || !name.trim() || (type !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())}
           className="px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors glass-btn glass-btn-primary">
           {status === 'validating' ? 'Validating...' : 'Add & Validate Provider'}
         </button>

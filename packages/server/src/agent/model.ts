@@ -50,9 +50,10 @@ function isOAuthToken(credential: string): boolean {
   return credential.includes('sk-ant-oat');
 }
 
-function getProviderAuthType(providerId: string): 'api_key' | 'oauth' {
+function getProviderAuthType(providerId: string): 'api_key' | 'oauth' | 'agent-sdk' {
   const db = getDb();
   const row = db.prepare('SELECT auth_type FROM providers WHERE id = ?').get(providerId) as { auth_type: string } | undefined;
+  if (row?.auth_type === 'agent-sdk') return 'agent-sdk';
   return (row?.auth_type === 'oauth' ? 'oauth' : 'api_key');
 }
 
@@ -557,6 +558,67 @@ function getOpenAICost(apiModelId: string): { input: number; output: number } {
   return { input: 2.50, output: 10.0 }; // default to gpt-4o pricing
 }
 
+// ── Agent SDK Call Path ──
+
+async function callAnthropicSdkModel(
+  params: ModelCallParams,
+  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null },
+): Promise<ModelCallResult> {
+  const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
+
+  // Dynamic import — gracefully fail if SDK not installed
+  const { callAnthropicViaSdk } = await import('../providers/anthropic-sdk.js');
+
+  // Get tools for prompt-based formatting (if tools are enabled)
+  const toolDefs = tools ? getFilteredTools(agentId) : [];
+
+  const startTime = Date.now();
+  const streamedChunks: string[] = [];
+
+  const result = await callAnthropicViaSdk({
+    agentId,
+    apiModelId: modelInfo.apiModelId,
+    systemPrompt,
+    messages: messages as Array<{ role: string; content: string | object[] }>,
+    tools: toolDefs,
+    onChunk: (chunk) => {
+      streamedChunks.push(chunk);
+      onChunk?.(chunk);
+    },
+  });
+
+  const latencyMs = Date.now() - startTime;
+
+  // Record cost (estimated for subscription)
+  try {
+    const { recordCost } = await import('../costs/tracker.js');
+    recordCost({
+      agentId,
+      modelId,
+      providerId: modelInfo.providerId,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      latencyMs,
+      requestType: routerTier ?? 'agent-sdk',
+    });
+  } catch { /* cost tracking is best-effort */ }
+
+  // Map SDK tool calls to our format
+  const toolCalls = result.toolCalls.map(tc => ({
+    id: tc.id,
+    name: tc.name,
+    arguments: tc.arguments,
+  }));
+
+  return {
+    content: result.content,
+    toolCalls,
+    inputTokens: result.inputTokens,
+    outputTokens: result.outputTokens,
+    stopReason: result.stopReason,
+  };
+}
+
 export async function callModel(params: ModelCallParams): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
 
@@ -570,6 +632,12 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
   // OpenAI and OpenAI-compatible providers
   if (modelInfo.providerType === 'openai' || modelInfo.providerType === 'openai-compatible') {
     return callOpenAIModel(params, modelInfo);
+  }
+
+  // Agent SDK transport — uses query() instead of the Anthropic Messages API
+  const authType = getProviderAuthType(modelInfo.providerId);
+  if (authType === 'agent-sdk') {
+    return callAnthropicSdkModel(params, modelInfo);
   }
 
   const { client, isOAuth } = getClient(modelInfo.providerId);
