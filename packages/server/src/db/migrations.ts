@@ -124,6 +124,11 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
     .filter(f => f.endsWith('.sql'))
     .sort();
 
+  // Disable FK checks for the entire migration run.
+  // Migrations may drop/recreate tables or insert into tables with cross-references.
+  // FK checks are re-enabled after all migrations complete.
+  db.pragma('foreign_keys = OFF');
+
   for (const file of files) {
     const applied = db.prepare('SELECT name FROM _migrations WHERE name = ?').get(file);
     if (applied) continue;
@@ -132,10 +137,8 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
     logger.info(`Running migration: ${file}`);
 
     try {
-      // Special handling for migrations that need FK checks disabled
-      // (e.g., table recreation with FK references from other tables)
+      // Migration 019 needs special inline SQL (the .sql file is a no-op marker)
       if (file === '019_agent_sdk_auth.sql') {
-        db.pragma('foreign_keys = OFF');
         db.exec(`
           CREATE TABLE IF NOT EXISTS providers_new (
             id TEXT PRIMARY KEY,
@@ -152,7 +155,6 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
           DROP TABLE IF EXISTS providers;
           ALTER TABLE providers_new RENAME TO providers;
         `);
-        db.pragma('foreign_keys = ON');
       } else {
         db.exec(sql);
       }
@@ -162,9 +164,13 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
       logger.error(`Migration failed: ${file}`, {
         error: err instanceof Error ? err.message : String(err),
       });
+      db.pragma('foreign_keys = ON');
       throw err;
     }
   }
+
+  // Re-enable FK checks after all migrations
+  db.pragma('foreign_keys = ON');
 
   // Backfill FTS index for existing messages that predate the trigger
   const ftsCount = (db.prepare('SELECT COUNT(*) as count FROM messages_fts').get() as { count: number }).count;
