@@ -354,6 +354,7 @@ export const Chat = () => {
           const updated = { ...last, content: last.content + e.content };
           if (e.done) {
             updated.isStreaming = false;
+            updated.modelId = (e as any).modelId ?? null;
             updated.toolCalls = currentToolCallsRef.current.length > 0
               ? [...currentToolCallsRef.current]
               : undefined;
@@ -373,6 +374,7 @@ export const Chat = () => {
               role: 'assistant' as const,
               content: e.content,
               createdAt: new Date().toISOString(),
+              modelId: (e as any).modelId ?? null,
               isStreaming: !e.done,
             },
           ];

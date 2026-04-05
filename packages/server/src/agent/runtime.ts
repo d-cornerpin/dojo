@@ -17,7 +17,7 @@ import { queueEmbedding } from '../memory/embeddings.js';
 import type { Message } from '@dojo/shared';
 
 // Broadcast a persisted message to the dashboard so it appears in real-time
-function broadcastMessage(agentId: string, msg: { id: string; role: string; content: string; createdAt?: string }) {
+function broadcastMessage(agentId: string, msg: { id: string; role: string; content: string; createdAt?: string; modelId?: string | null }) {
   broadcast({
     type: 'chat:message',
     agentId,
@@ -27,7 +27,7 @@ function broadcastMessage(agentId: string, msg: { id: string; role: string; cont
       role: msg.role as Message['role'],
       content: msg.content,
       tokenCount: null,
-      modelId: null,
+      modelId: msg.modelId ?? null,
       cost: null,
       latencyMs: null,
       createdAt: msg.createdAt ?? new Date().toISOString(),
@@ -362,7 +362,7 @@ class AgentRuntime {
           modelId,
           null,
         );
-        broadcastMessage(agentId, { id: messageId, role: 'assistant', content: JSON.stringify(assistantContent) });
+        broadcastMessage(agentId, { id: messageId, role: 'assistant', content: JSON.stringify(assistantContent), modelId });
       } else if (result.content) {
         // Text-only response, no tool calls
         db.prepare(`
@@ -382,13 +382,14 @@ class AgentRuntime {
         queueEmbedding('message', messageId, agentId, result.content);
       }
 
-      // Broadcast completion for streaming
+      // Broadcast completion for streaming (include modelId so UI can show it)
       broadcast({
         type: 'chat:chunk',
         agentId,
         messageId,
         content: '',
         done: true,
+        modelId,
       });
 
       // If no tool calls, we're done

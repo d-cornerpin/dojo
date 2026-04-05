@@ -16,6 +16,7 @@ export interface ChatChunkEvent {
   messageId: string;
   content: string;
   done: boolean;
+  modelId?: string | null;
 }
 
 export interface ChatToolCallEvent {
