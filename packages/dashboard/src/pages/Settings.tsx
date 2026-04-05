@@ -1119,7 +1119,7 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || (type !== 'ollama' && !credential.trim())) return;
+    if (!name.trim() || (type !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())) return;
     setStatus('saving');
     setError(null);
 
@@ -1133,7 +1133,7 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
         : type === 'openai' ? (baseUrl || 'https://api.openai.com')
         : undefined,
       authType: type === 'ollama' ? 'none' : authType,
-      credential: type === 'ollama' ? undefined : credential,
+      credential: type === 'ollama' || authType === 'agent-sdk' ? undefined : credential,
     });
 
     if (!result.ok) {
