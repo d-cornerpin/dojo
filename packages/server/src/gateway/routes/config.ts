@@ -257,7 +257,7 @@ const configRouter = new Hono();
 // GET /providers
 configRouter.get('/providers', (c) => {
   const db = getDb();
-  const rows = db.prepare('SELECT * FROM providers ORDER BY created_at DESC').all() as Array<Record<string, unknown>>;
+  const rows = db.prepare("SELECT * FROM providers WHERE id != '__system__' ORDER BY created_at DESC").all() as Array<Record<string, unknown>>;
 
   const providers: Provider[] = rows.map(rowToProvider);
   return c.json({ ok: true, data: providers });
@@ -762,7 +762,7 @@ configRouter.get('/providers/:id/models', (c) => {
 // GET /models (all enabled models)
 configRouter.get('/models', (c) => {
   const db = getDb();
-  const rows = db.prepare('SELECT * FROM models ORDER BY name').all() as Array<Record<string, unknown>>;
+  const rows = db.prepare("SELECT * FROM models WHERE id != 'auto' ORDER BY name").all() as Array<Record<string, unknown>>;
   const models: Model[] = rows.map(rowToModel);
 
   return c.json({ ok: true, data: models });

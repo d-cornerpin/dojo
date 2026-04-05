@@ -1922,8 +1922,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           }
 
           if (newModelId === 'auto') {
-            // Enable auto-routing
-            db.prepare("UPDATE agents SET model_id = NULL, config = json_set(COALESCE(config, '{}'), '$.autoRoute', json('true')), updated_at = datetime('now') WHERE id = ?").run(agent.id);
+            db.prepare("UPDATE agents SET model_id = 'auto', updated_at = datetime('now') WHERE id = ?").run(agent.id);
             content = `${agent.name} switched to auto-routing. The router will select the best model per query.`;
           } else {
             // Verify model exists and is enabled
@@ -1939,7 +1938,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
               break;
             }
 
-            db.prepare("UPDATE agents SET model_id = ?, config = json_set(COALESCE(config, '{}'), '$.autoRoute', json('false')), updated_at = datetime('now') WHERE id = ?").run(newModelId, agent.id);
+            db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?").run(newModelId, agent.id);
             content = `${agent.name}'s model changed from ${agent.model_id ?? 'auto'} to ${model.name} (${newModelId}).`;
           }
 

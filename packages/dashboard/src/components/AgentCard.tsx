@@ -140,7 +140,7 @@ export const AgentCard = ({ agent, models, onModelChanged }: AgentCardProps) => 
           <span style={{ color: 'var(--text-secondary)' }}>Model</span>
           {changingModel ? (
             <select
-              value={(agent.config as Record<string, unknown>)?.autoRouted ? 'auto' : (agent.modelId ?? '')}
+              value={agent.modelId === 'auto' ? 'auto' : (agent.modelId ?? '')}
               onChange={(e) => { e.stopPropagation(); handleModelChange(e.target.value); }}
               disabled={saving}
               autoFocus
@@ -156,7 +156,7 @@ export const AgentCard = ({ agent, models, onModelChanged }: AgentCardProps) => 
               onClick={(e) => { e.stopPropagation(); setChangingModel(true); }}
               className="text-white/80 hover:text-cp-amber transition-colors text-right truncate max-w-[160px]"
             >
-              {(agent.config as Record<string, unknown>)?.autoRouted
+              {agent.modelId === 'auto'
                 ? <span className="text-cp-purple">Auto (Router)</span>
                 : agent.model?.name || <span className="text-cp-amber">Not set</span>}
             </button>

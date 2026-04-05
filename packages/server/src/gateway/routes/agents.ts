@@ -56,27 +56,14 @@ agentsRouter.patch('/:id/model', async (c) => {
   const { modelId } = body;
 
   if (modelId === 'auto') {
-    // Auto-routing: store null model_id + autoRouted flag in config
-    const existingConfig = db.prepare('SELECT config FROM agents WHERE id = ?').get(id) as { config: string } | undefined;
-    const config = JSON.parse(existingConfig?.config || '{}');
-    config.autoRouted = true;
-    db.prepare("UPDATE agents SET model_id = NULL, config = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(config), id);
+    db.prepare("UPDATE agents SET model_id = 'auto', updated_at = datetime('now') WHERE id = ?").run(id);
     logger.info('Agent model set to auto-router', { agentId: id });
   } else {
-    // Verify the model exists and is enabled
     const model = db.prepare('SELECT id, name FROM models WHERE id = ? AND is_enabled = 1').get(modelId) as { id: string; name: string } | undefined;
     if (!model) {
       return c.json({ ok: false, error: 'Model not found or not enabled' }, 400);
     }
-    // Clear autoRouted flag when setting a specific model
-    const existingConfig2 = db.prepare('SELECT config FROM agents WHERE id = ?').get(id) as { config: string } | undefined;
-    const config2 = JSON.parse(existingConfig2?.config || '{}');
-    if (config2.autoRouted) {
-      delete config2.autoRouted;
-      db.prepare("UPDATE agents SET model_id = ?, config = ?, updated_at = datetime('now') WHERE id = ?").run(modelId, JSON.stringify(config2), id);
-    } else {
-      db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?").run(modelId, id);
-    }
+    db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?").run(modelId, id);
     logger.info('Agent model updated', { agentId: id, modelId, modelName: model.name });
   }
 
@@ -96,10 +83,8 @@ agentsRouter.post('/', async (c) => {
   try {
     const db = getDb();
     const agentId = uuidv4();
-    const isAutoRouted = body.modelId === 'auto';
-    const resolvedModelId = isAutoRouted ? null : (body.modelId || null);
+    const resolvedModelId = body.modelId || null;
     const config = JSON.stringify({
-      autoRouted: isAutoRouted || undefined,
       shareUserProfile: body.shareUserProfile || undefined,
     });
     const timeoutSeconds = body.timeout ? Number(body.timeout) : null;
@@ -233,13 +218,7 @@ agentsRouter.put('/:id', async (c) => {
 
   if (typeof body.modelId === 'string') {
     if (body.modelId === 'auto') {
-      updates.push('model_id = NULL');
-      // Set autoRouted flag in config
-      const existingCfg = db.prepare('SELECT config FROM agents WHERE id = ?').get(id) as { config: string } | undefined;
-      const cfg = JSON.parse(existingCfg?.config || '{}');
-      cfg.autoRouted = true;
-      updates.push('config = ?');
-      params.push(JSON.stringify(cfg));
+      updates.push("model_id = 'auto'");
     } else {
       const model = db.prepare('SELECT id FROM models WHERE id = ? AND is_enabled = 1').get(body.modelId);
       if (!model) {
@@ -247,14 +226,6 @@ agentsRouter.put('/:id', async (c) => {
       }
       updates.push('model_id = ?');
       params.push(body.modelId);
-      // Clear autoRouted flag
-      const existingCfg2 = db.prepare('SELECT config FROM agents WHERE id = ?').get(id) as { config: string } | undefined;
-      const cfg2 = JSON.parse(existingCfg2?.config || '{}');
-      if (cfg2.autoRouted) {
-        delete cfg2.autoRouted;
-        updates.push('config = ?');
-        params.push(JSON.stringify(cfg2));
-      }
     }
   }
 
@@ -287,7 +258,7 @@ agentsRouter.put('/:id', async (c) => {
   }
 
   if (body.config !== undefined && typeof body.config === 'object') {
-    // Merge with existing config (don't overwrite autoRouted etc.)
+    // Merge with existing config
     const existingCfg = db.prepare('SELECT config FROM agents WHERE id = ?').get(id) as { config: string } | undefined;
     const merged = { ...JSON.parse(existingCfg?.config || '{}'), ...body.config };
     updates.push('config = ?');

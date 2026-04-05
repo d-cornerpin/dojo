@@ -123,24 +123,21 @@ class AgentRuntime {
     }
 
     const configuredModelId = agent.model_id as string | null;
-    // Check config for autoRouted flag (null model_id + autoRouted = use router)
-    let agentConfig: Record<string, unknown> = {};
-    try { agentConfig = JSON.parse((agent.config as string) || '{}'); } catch {}
-    const isAutoRouted = !configuredModelId && agentConfig.autoRouted === true;
+    const isAutoRouted = configuredModelId === 'auto';
 
-    if (!configuredModelId && !isAutoRouted) {
+    if (!configuredModelId) {
       throw new AgentError('Agent has no model configured', agentId, { code: 'NO_MODEL' });
     }
 
     // For context assembly, use a placeholder for window size estimation when auto-routing
-    const contextModelId: string = isAutoRouted ? '__auto__' : configuredModelId!;
+    const contextModelId: string = isAutoRouted ? '__auto__' : configuredModelId;
 
     // Set agent to working
     this.setAgentStatus(agentId, 'working');
 
     let loopCount = 0;
     let consecutiveNoResultTools = 0;
-    let lastUsedModelId: string = isAutoRouted ? contextModelId : configuredModelId!;
+    let lastUsedModelId: string = isAutoRouted ? contextModelId : configuredModelId;
     let lastResponseText: string | null = null; // For repetition detection
 
     // Track the latest user message so wakeup queue knows what we've already seen

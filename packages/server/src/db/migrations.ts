@@ -97,6 +97,14 @@ export function runMigrations(): void {
   // Run SQL file migrations
   runSqlMigrations(db);
 
+  // Ensure the 'auto' sentinel model exists for auto-routing FK compliance
+  db.exec(`
+    INSERT OR IGNORE INTO providers (id, name, type, base_url, auth_type, is_validated, created_at, updated_at)
+    VALUES ('__system__', 'System', 'anthropic', NULL, 'none', 1, datetime('now'), datetime('now'));
+    INSERT OR IGNORE INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, is_enabled, created_at, updated_at)
+    VALUES ('auto', '__system__', 'Auto (Smart Router)', 'auto', '[]', 200000, 64000, 0, 0, 1, datetime('now'), datetime('now'));
+  `);
+
   logger.info('Database migrations completed');
 }
 

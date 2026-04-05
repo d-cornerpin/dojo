@@ -447,7 +447,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
   const [models, setModels] = useState<Model[]>([]);
   const [systemPrompt, setSystemPrompt] = useState('');
   const [selectedModelId, setSelectedModelId] = useState(
-    (agent.config as Record<string, unknown>)?.autoRouted ? 'auto' : (agent.modelId ?? ''),
+    agent.modelId === 'auto' ? 'auto' : (agent.modelId ?? ''),
   );
   const [editedPerms, setEditedPerms] = useState<Partial<PermissionManifest>>(agent.permissions as Partial<PermissionManifest>);
   const [editedToolsPolicy, setEditedToolsPolicy] = useState<{ allow: string[]; deny: string[] }>(
@@ -588,7 +588,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
             </select>
             <button
               onClick={saveModel}
-              disabled={selectedModelId === ((agent.config as Record<string, unknown>)?.autoRouted ? 'auto' : (agent.modelId ?? ''))}
+              disabled={selectedModelId === (agent.modelId === 'auto' ? 'auto' : (agent.modelId ?? ''))}
               className="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white rounded-lg transition-colors"
             >
               Save
@@ -989,7 +989,7 @@ export const AgentDetailPage = () => {
 
           <div className="flex items-center gap-4">
             <div className="text-sm white/55 flex items-center gap-4">
-              <span>Model: <span className="white/90">{(agent.config as Record<string, unknown>)?.autoRouted ? 'Auto (Smart Router)' : (agent.model?.name || 'None')}</span></span>
+              <span>Model: <span className="white/90">{agent.modelId === 'auto' ? 'Auto (Smart Router)' : (agent.model?.name || 'None')}</span></span>
               <span>Uptime: <span className="white/90">{formatUptime(agent.uptime)}</span></span>
               {agent.parentAgent && (
                 <span>

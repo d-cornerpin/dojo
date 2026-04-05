@@ -152,10 +152,9 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     }
   }
 
-  // Resolve model: "auto" means use the router (store null in DB)
-  const isAutoRouted = modelId === 'auto';
-  const resolvedModelId = isAutoRouted ? null : (modelId ?? parent.model_id);
-  if (!resolvedModelId && !isAutoRouted) {
+  // Resolve model: "auto" means use the router
+  const resolvedModelId = modelId === 'auto' ? 'auto' : (modelId ?? parent.model_id);
+  if (!resolvedModelId) {
     throw new Error('No model specified and parent has no model configured');
   }
 
@@ -207,7 +206,7 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     agentId,
     name,
     resolvedModelId,
-    JSON.stringify({ persist, autoRouted: isAutoRouted, shareUserProfile: shareUserProfile || undefined }),
+    JSON.stringify({ persist, shareUserProfile: shareUserProfile || undefined }),
     parentId,
     parentId,
     newDepth,
