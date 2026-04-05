@@ -55,6 +55,86 @@ const TIER_COLORS: Record<string, string> = {
 
 const MODEL_COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f97316', '#06b6d4', '#84cc16'];
 
+// ── OpenRouter Budget ──
+
+const OpenRouterBudget = () => {
+  const [credits, setCredits] = useState<{ total_credits: number; total_usage: number; balance: number } | null>(null);
+  const [visible, setVisible] = useState(false);
+  const [threshold, setThreshold] = useState('');
+  const [savingThreshold, setSavingThreshold] = useState(false);
+  const [savedThreshold, setSavedThreshold] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    api.request<{ total_credits: number; total_usage: number; balance: number }>('/config/openrouter/credits')
+      .then(res => {
+        if (mounted && res.ok && res.data) {
+          setCredits(res.data);
+          setVisible(true);
+        }
+      })
+      .catch(() => { /* silently hide if anything fails */ });
+    // Load saved threshold (default $5)
+    api.request<{ value: string }>('/config/openrouter/threshold')
+      .then(res => {
+        if (mounted) {
+          setThreshold(res.ok && res.data?.value ? res.data.value : '5');
+        }
+      })
+      .catch(() => { if (mounted) setThreshold('5'); });
+    return () => { mounted = false; };
+  }, []);
+
+  const handleSaveThreshold = async () => {
+    const val = parseFloat(threshold);
+    if (isNaN(val) || val < 0) return;
+    setSavingThreshold(true);
+    await api.request('/config/openrouter/threshold', {
+      method: 'POST',
+      body: JSON.stringify({ threshold: val }),
+    });
+    setSavingThreshold(false);
+    setSavedThreshold(true);
+    setTimeout(() => setSavedThreshold(false), 2000);
+  };
+
+  if (!visible || !credits) return null;
+
+  const balance = Math.round((credits.balance ?? 0) * 100) / 100;
+  const totalUsage = Math.round((credits.total_usage ?? 0) * 100) / 100;
+  const balanceColor = balance >= 100 ? 'text-green-400' : balance >= 25 ? 'text-amber-400' : 'text-red-400';
+
+  return (
+    <div className="glass-card p-4 mb-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-medium white/70">OpenRouter Balance</h2>
+        <p className={`text-lg font-semibold ${balanceColor}`}>${balance.toFixed(2)}</p>
+      </div>
+      <p className="text-xs white/30 mt-1">Lifetime spend: ${totalUsage.toFixed(2)}</p>
+      <div className="flex items-center gap-2 mt-3 pt-3 border-t border-white/[0.06]">
+        <span className="text-xs white/40">Warning threshold: $</span>
+        <input
+          type="number"
+          step="1"
+          min="0"
+          value={threshold}
+          onChange={(e) => setThreshold(e.target.value)}
+          placeholder="e.g., 10"
+          className="w-20 px-2 py-1 bg-white/[0.05] border white/[0.08] rounded text-xs white/90 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        />
+        <button
+          onClick={handleSaveThreshold}
+          disabled={savingThreshold || !threshold}
+          className="px-2 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-xs font-medium rounded transition-colors"
+        >
+          {savingThreshold ? '...' : 'Save'}
+        </button>
+        {savedThreshold && <span className="text-xs text-green-400">Saved</span>}
+      </div>
+    </div>
+  );
+};
+
 export const Costs = () => {
   const [period, setPeriod] = useState<Period>('24h');
   const [summary, setSummary] = useState<CostSummary | null>(null);
@@ -291,17 +371,10 @@ export const Costs = () => {
         </div>
       </div>
 
-      {/* Budget config (collapsible) */}
-      <div className="glass-card overflow-hidden mb-6">
-        <button
-          onClick={() => setBudgetOpen(!budgetOpen)}
-          className="w-full px-4 py-3 flex items-center justify-between text-sm font-medium white/70 hover:white/[0.03] transition-colors"
-        >
-          <span>Budget Configuration</span>
-          <span className="white/40">{budgetOpen ? '[-]' : '[+]'}</span>
-        </button>
-        {budgetOpen && budgets && (
-          <div className="px-4 pb-4">
+      {/* Budget config */}
+      {budgets && (
+        <div className="glass-card p-4 mb-6">
+          <h2 className="text-sm font-medium white/70 mb-3">Budget Configuration</h2>
             <BudgetConfig
               budgets={budgets}
               agents={agents}
@@ -314,9 +387,11 @@ export const Costs = () => {
                 loadData();
               }}
             />
-          </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {/* OpenRouter Budget */}
+      <OpenRouterBudget />
 
       {/* Recent API calls table */}
       <div className="glass-card overflow-hidden">

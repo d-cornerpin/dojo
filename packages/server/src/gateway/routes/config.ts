@@ -1274,4 +1274,91 @@ configRouter.post('/agent-sdk/verify', async (c) => {
   }
 });
 
+// GET /api/config/openrouter/credits — fetch OpenRouter account balance
+configRouter.get('/openrouter/credits', async (c) => {
+  const db = getDb();
+
+  // Find an openai-compatible provider with an OpenRouter base URL
+  const provider = db.prepare(
+    "SELECT id, base_url FROM providers WHERE type = 'openai-compatible' AND base_url LIKE '%openrouter%'"
+  ).get() as { id: string; base_url: string } | undefined;
+
+  if (!provider) {
+    return c.json({ ok: false, error: 'No OpenRouter provider configured' }, 404);
+  }
+
+  const credential = getProviderCredential(provider.id);
+  if (!credential) {
+    return c.json({ ok: false, error: 'No API key found for OpenRouter provider' }, 400);
+  }
+
+  try {
+    const resp = await fetch('https://openrouter.ai/api/v1/credits', {
+      headers: { Authorization: `Bearer ${credential}` },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!resp.ok) {
+      return c.json({ ok: false, error: `OpenRouter returned ${resp.status}` }, 502);
+    }
+
+    const raw = await resp.json() as Record<string, unknown>;
+    logger.info('OpenRouter credits raw response', { raw: JSON.stringify(raw) });
+
+    // Normalize — response might be { data: { ... } } or flat
+    const src = (raw.data ?? raw) as Record<string, unknown>;
+
+    // OpenRouter may use different field names or nesting
+    const totalCredits = (src.total_credits ?? src.totalCredits ?? src.limit ?? 0) as number;
+    const totalUsage = (src.total_usage ?? src.totalUsage ?? src.usage ?? 0) as number;
+    const balance = (src.balance ?? src.remaining ?? (totalCredits - totalUsage)) as number;
+
+    // Check warning threshold and send iMessage alert if below
+    try {
+      const thresholdRow = (db.prepare("SELECT value FROM config WHERE key = 'openrouter_warning_threshold'").get() as { value: string } | undefined) ?? { value: '5' };
+      const alertedRow = db.prepare("SELECT value FROM config WHERE key = 'openrouter_threshold_alerted'").get() as { value: string } | undefined;
+      if (thresholdRow?.value) {
+        const thresholdVal = parseFloat(thresholdRow.value);
+        const alreadyAlerted = alertedRow?.value === 'true';
+        if (balance <= thresholdVal && !alreadyAlerted) {
+          // Send iMessage alert
+          const { sendAlert } = await import('../../services/imessage-bridge.js');
+          sendAlert(`OpenRouter balance is $${balance.toFixed(2)}, below your $${thresholdVal.toFixed(0)} warning threshold. Add credits at openrouter.ai`, 'warning');
+          // Mark as alerted so we don't spam
+          db.prepare("INSERT INTO config (key, value, updated_at) VALUES ('openrouter_threshold_alerted', 'true', datetime('now')) ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = datetime('now')").run();
+          logger.info('OpenRouter low balance alert sent', { balance, threshold: thresholdVal });
+        } else if (balance > thresholdVal && alreadyAlerted) {
+          // Reset alert flag when balance goes back above threshold
+          db.prepare("DELETE FROM config WHERE key = 'openrouter_threshold_alerted'").run();
+        }
+      }
+    } catch { /* alert is best-effort */ }
+
+    return c.json({ ok: true, data: { total_credits: totalCredits, total_usage: totalUsage, balance } });
+  } catch (err) {
+    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// GET /api/config/openrouter/threshold — get saved warning threshold
+configRouter.get('/openrouter/threshold', (c) => {
+  const db = getDb();
+  const row = db.prepare("SELECT value FROM config WHERE key = 'openrouter_warning_threshold'").get() as { value: string } | undefined;
+  return c.json({ ok: true, data: { value: row?.value ?? '' } });
+});
+
+// POST /api/config/openrouter/threshold — save warning threshold
+configRouter.post('/openrouter/threshold', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body.threshold !== 'number') {
+    return c.json({ ok: false, error: 'threshold (number) is required' }, 400);
+  }
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO config (key, value, updated_at) VALUES ('openrouter_warning_threshold', ?, datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
+  `).run(String(body.threshold), String(body.threshold));
+  return c.json({ ok: true });
+});
+
 export { configRouter };

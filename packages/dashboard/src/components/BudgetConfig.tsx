@@ -30,6 +30,7 @@ export const BudgetConfig = ({ budgets, agents, onUpdateGlobal, onUpdateAgent }:
   );
   const [savingGlobal, setSavingGlobal] = useState(false);
   const [savedGlobal, setSavedGlobal] = useState(false);
+  const [agentBudgetsOpen, setAgentBudgetsOpen] = useState(false);
 
   const handleSaveGlobal = async () => {
     const val = parseFloat(globalLimit);
@@ -77,37 +78,47 @@ export const BudgetConfig = ({ budgets, agents, onUpdateGlobal, onUpdateAgent }:
         </div>
       </div>
 
-      {/* Per-agent budgets */}
-      <div className="glass-card p-4">
-        <h3 className="text-sm font-medium white/70 mb-3">Per-Agent Budgets</h3>
-        {budgets.agents.length === 0 && agents.length === 0 ? (
-          <p className="text-sm white/30">No agents configured.</p>
-        ) : (
-          <div className="space-y-3">
-            {budgets.agents.map((ab) => (
-              <AgentBudgetRow
-                key={ab.agentId}
-                agentId={ab.agentId}
-                agentName={ab.agentName}
-                limitUsd={ab.limitUsd}
-                period={ab.period}
-                spentUsd={ab.spentUsd}
-                onSave={onUpdateAgent}
-              />
-            ))}
-            {agents
-              .filter((a) => !budgets.agents.find((ab) => ab.agentId === a.id))
-              .map((a) => (
-                <AgentBudgetRow
-                  key={a.id}
-                  agentId={a.id}
-                  agentName={a.name}
-                  limitUsd={0}
-                  period="daily"
-                  spentUsd={0}
-                  onSave={onUpdateAgent}
-                />
-              ))}
+      {/* Per-agent budgets (collapsible) */}
+      <div className="glass-card overflow-hidden">
+        <button
+          onClick={() => setAgentBudgetsOpen(!agentBudgetsOpen)}
+          className="w-full px-4 py-3 flex items-center justify-between text-sm font-medium white/70 hover:bg-white/[0.03] transition-colors"
+        >
+          <span>Per-Agent Budgets</span>
+          <span className="white/40">{agentBudgetsOpen ? '[-]' : '[+]'}</span>
+        </button>
+        {agentBudgetsOpen && (
+          <div className="px-4 pb-4">
+            {budgets.agents.length === 0 && agents.length === 0 ? (
+              <p className="text-sm white/30">No agents configured.</p>
+            ) : (
+              <div className="space-y-3">
+                {budgets.agents.map((ab) => (
+                  <AgentBudgetRow
+                    key={ab.agentId}
+                    agentId={ab.agentId}
+                    agentName={ab.agentName}
+                    limitUsd={ab.limitUsd}
+                    period={ab.period}
+                    spentUsd={ab.spentUsd}
+                    onSave={onUpdateAgent}
+                  />
+                ))}
+                {agents
+                  .filter((a) => !budgets.agents.find((ab) => ab.agentId === a.id))
+                  .map((a) => (
+                    <AgentBudgetRow
+                      key={a.id}
+                      agentId={a.id}
+                      agentName={a.name}
+                      limitUsd={0}
+                      period="daily"
+                      spentUsd={0}
+                      onSave={onUpdateAgent}
+                    />
+                  ))}
+              </div>
+            )}
           </div>
         )}
       </div>
