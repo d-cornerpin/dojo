@@ -157,6 +157,7 @@ class AgentRuntime {
     let consecutiveNoResultTools = 0;
     let lastUsedModelId: string = isAutoRouted ? contextModelId : configuredModelId;
     let lastResponseText: string | null = null; // For repetition detection
+    let lockedModelId: string | null = null; // For auto-routed agents: lock model during tool loops
 
     // Track the latest user message so wakeup queue knows what we've already seen
     const latestUserMsg = db.prepare(
@@ -191,29 +192,35 @@ class AgentRuntime {
       const excludedModels: string[] = [];
 
       if (isAutoRouted) {
-        const scoringResult = scoreQuery(systemPrompt, messages as Array<{ role: string; content: string | object[] }>);
-        routerTier = scoringResult.tier;
-        const selected = selectModel(scoringResult.tier, agentId, excludedModels.length > 0 ? excludedModels : undefined);
-        if (!selected) {
-          throw new AgentError('Auto-router: no models available in any tier', agentId, { code: 'NO_MODEL' });
+        // If we're mid-tool-loop, keep the same model for consistency
+        if (lockedModelId && loopCount > 1) {
+          modelId = lockedModelId;
+          logger.info(`Auto-router: using locked model (mid-task)`, { modelId: lockedModelId }, agentId);
+        } else {
+          const scoringResult = scoreQuery(systemPrompt, messages as Array<{ role: string; content: string | object[] }>);
+          routerTier = scoringResult.tier;
+          const selected = selectModel(scoringResult.tier, agentId, excludedModels.length > 0 ? excludedModels : undefined);
+          if (!selected) {
+            throw new AgentError('Auto-router: no models available in any tier', agentId, { code: 'NO_MODEL' });
+          }
+          modelId = selected.modelId;
+          // Log detailed scoring for debugging
+          const topScores = scoringResult.scores
+            .filter(s => Math.abs(s.weighted) > 0.05)
+            .sort((a, b) => Math.abs(b.weighted) - Math.abs(a.weighted))
+            .slice(0, 5)
+            .map(s => `${s.dimension}=${s.weighted.toFixed(2)}`);
+          logger.info(`Auto-router: tier=${scoringResult.tier} score=${scoringResult.rawScore.toFixed(2)} [${topScores.join(', ')}]`, {
+            tier: scoringResult.tier,
+            rawScore: scoringResult.rawScore,
+            confidence: scoringResult.confidence,
+            modelId,
+            fallback: selected.fallbackUsed,
+            topDimensions: topScores,
+          }, agentId);
         }
-        modelId = selected.modelId;
-        // Log detailed scoring for debugging
-        const topScores = scoringResult.scores
-          .filter(s => Math.abs(s.weighted) > 0.05)
-          .sort((a, b) => Math.abs(b.weighted) - Math.abs(a.weighted))
-          .slice(0, 5)
-          .map(s => `${s.dimension}=${s.weighted.toFixed(2)}`);
-        logger.info(`Auto-router: tier=${scoringResult.tier} score=${scoringResult.rawScore.toFixed(2)} [${topScores.join(', ')}]`, {
-          tier: scoringResult.tier,
-          rawScore: scoringResult.rawScore,
-          confidence: scoringResult.confidence,
-          modelId,
-          fallback: selected.fallbackUsed,
-          topDimensions: topScores,
-        }, agentId);
       } else {
-        modelId = configuredModelId!;
+        modelId = configuredModelId;
       }
       lastUsedModelId = modelId;
 
@@ -248,7 +255,7 @@ class AgentRuntime {
               });
             },
             agentId,
-            { maxRetries: 2 },
+            { maxRetries: isAutoRouted ? 1 : 2 },
           );
 
           activeAbortControllers.delete(agentId);
@@ -266,6 +273,8 @@ class AgentRuntime {
 
           // Auto-routed: try the next model in the fallback chain
           excludedModels.push(modelId);
+          // Clear the model lock so fallback can use a different model
+          lockedModelId = null;
           const fallback = selectModel(routerTier!, agentId, excludedModels);
           if (!fallback) throw err; // no more models to try
 
@@ -389,7 +398,15 @@ class AgentRuntime {
           } catch { /* presence/imessage module may not be available */ }
         }
 
+        // Final response — unlock model for next user message
+        lockedModelId = null;
         break;
+      }
+
+      // Tool calls present — lock the model for the rest of this turn's tool loop
+      if (isAutoRouted && !lockedModelId) {
+        lockedModelId = modelId;
+        logger.info('Auto-router: locking model for tool loop', { modelId }, agentId);
       }
 
       // Execute each tool call

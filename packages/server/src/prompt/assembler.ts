@@ -206,12 +206,19 @@ function generateToolsGuidance(agentId: string): string {
   const hasTracker = agentTools.some(t => t.name.startsWith('tracker_'));
   if (hasTracker) {
     lines.push('## MANDATORY: Project Tracker');
-    lines.push('You MUST use the project tracker for ANY task that involves more than a simple conversational response. This is not optional.');
-    lines.push('- **When to use**: Only when the user gives you an actual task to work on. Do NOT check the tracker when the user is just chatting, greeting you, or asking casual questions.');
-    lines.push('- **Before starting work**: Create a project with `tracker_create_project` and break it into tasks with individual steps.');
-    lines.push('- **During work**: Update task status as you progress. Mark tasks `in_progress` when starting, `complete` when done.');
-    lines.push('- **For sub-agents**: Create tasks in the tracker and assign them to agents. The tracker is how the PM monitors progress.');
-    lines.push('- **For scheduled work**: Use `get_current_time` first, then set `scheduled_start` on the task. Add `repeat_interval` + `repeat_unit` for recurring tasks.');
+    lines.push('You MUST use the project tracker any time you are going to make two or more tool calls to complete a request. This is not optional.');
+    lines.push('');
+    lines.push('**When to use:**');
+    lines.push('- If you need to call 2+ tools to fulfill the request, create a tracker task FIRST');
+    lines.push('- If the user asks you to do something (not just chat), track it');
+    lines.push('- Do NOT check the tracker when the user is just chatting, greeting you, or asking casual questions');
+    lines.push('');
+    lines.push('**How to use:**');
+    lines.push('- **Quick tasks (2-5 tool calls)**: Use `tracker_create_task` with a clear title. No project needed.');
+    lines.push('- **Bigger work (multiple steps, sub-agents)**: Use `tracker_create_project` with tasks broken into steps.');
+    lines.push('- **During work**: Call `tracker_complete_step` after each step. Mark tasks `in_progress` when starting, `complete` when done.');
+    lines.push('- **For sub-agents**: Create tasks in the tracker and assign them. The tracker is how the PM monitors progress.');
+    lines.push('- **For scheduled work**: Use `get_current_time` first, then set `scheduled_start`. Add `repeat_interval` + `repeat_unit` for recurring tasks.');
     lines.push('- Do NOT rely on memory to track work. The tracker is the single source of truth.');
     lines.push('');
   }
