@@ -102,6 +102,19 @@ class AgentRuntime {
         agentId,
         error: message,
       });
+
+      // For rate limit errors, inject a visible system message into the chat
+      // so the user knows what's happening (the error banner can be missed)
+      const isRateLimit = message.toLowerCase().includes('429') || message.toLowerCase().includes('rate_limit') || message.toLowerCase().includes('overloaded');
+      if (isRateLimit) {
+        const msgId = uuidv4();
+        const now = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+        const errDb = getDb();
+        errDb.prepare("INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, ?)").run(
+          msgId, agentId, '[Rate limited] The model provider returned a rate limit error. Retrying shortly...', now
+        );
+        broadcast({ type: 'chat:message', agentId, message: { id: msgId, agentId, role: 'system', content: '[Rate limited] The model provider returned a rate limit error. Retrying shortly...', tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: now } });
+      }
     } finally {
       activeRuns.delete(agentId);
 

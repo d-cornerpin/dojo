@@ -258,6 +258,12 @@ export const Chat = () => {
   // Load chat history
   useEffect(() => {
     const loadHistory = async () => {
+      // Check if agent is currently working (e.g. user navigated away and came back)
+      const agentResult = await api.getAgent(AGENT_ID);
+      if (agentResult.ok && agentResult.data.status === 'working') {
+        setIsWorking(true);
+      }
+
       const result = await api.getChatHistory(AGENT_ID, 50);
       if (result.ok) {
         setMessages(
@@ -390,7 +396,11 @@ export const Chat = () => {
       const e = event as ChatErrorEvent;
       if (e.agentId !== agentIdRef.current) return;
       setError(e.error);
-      setIsWorking(false);
+      // Don't clear isWorking for rate limits — the background retry is handling it
+      const isRateLimit = e.error.includes('429') || e.error.toLowerCase().includes('rate_limit') || e.error.toLowerCase().includes('overloaded');
+      if (!isRateLimit) {
+        setIsWorking(false);
+      }
     });
 
     // Subscribe to full message events (tool results, system messages, etc.)
