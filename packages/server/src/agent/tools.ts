@@ -101,7 +101,7 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
 
   // Only primary-level agents should have group management, session, and presence tools
   if (!isPrimaryAgent(agentId)) {
-    removeTools.push('create_agent_group', 'assign_to_group', 'delete_group', 'reset_session', 'set_user_presence', 'update_agent_model');
+    removeTools.push('create_agent_group', 'assign_to_group', 'delete_group', 'reset_session', 'set_user_presence', 'update_agent_model', 'tunnel_start', 'tunnel_stop', 'tunnel_restart');
   }
 
   // Technique tools: only Sensei can save/publish/update, everyone can use/list
@@ -782,6 +782,33 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   // ── Presence ──
+  // ── Tunnel (Remote Access) ──
+  {
+    name: 'tunnel_status',
+    description: 'Get the current Cloudflare tunnel status and public URL. Use this when the user asks for the dojo URL or wants to know if remote access is running.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'tunnel_start',
+    description: 'Start the Cloudflare tunnel for remote access. Only use when the user explicitly asks to start/enable the tunnel.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['quick', 'named'], description: 'Optional mode: "quick" for a random URL, "named" for a configured persistent tunnel. Defaults to the saved config.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'tunnel_stop',
+    description: 'Stop the Cloudflare tunnel. Only use when the user explicitly asks to stop/disable remote access.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'tunnel_restart',
+    description: 'Restart the Cloudflare tunnel. Useful when the tunnel is stuck or the user asks for a fresh URL.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
   {
     name: 'set_user_presence',
     description: 'Set whether the user is "in the dojo" (at their computer, using the dashboard) or "away" (not at the computer, route messages via iMessage). Only use this when the user explicitly asks you to mark them as away or back.',
@@ -1364,7 +1391,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
   logger.info('Executing tool', { tool: name, args }, agentId);
 
-  let content: string;
+  let content: string = '';
   let isError = false;
 
   // ── Permission checks for file/exec tools ──
@@ -1844,6 +1871,94 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       }
 
       // ── Presence ──
+      // ── Tunnel ──
+      case 'tunnel_status': {
+        try {
+          const { getTunnelStatus } = await import('../services/tunnel.js');
+          const status = getTunnelStatus();
+          if (!status.cloudflaredInstalled) {
+            content = 'cloudflared is not installed. Install with: brew install cloudflare/cloudflare/cloudflared';
+          } else if (status.status === 'active' && status.url) {
+            content = `Tunnel is running. Public URL: ${status.url} (mode: ${status.mode})`;
+          } else if (status.status === 'starting') {
+            content = 'Tunnel is starting up. Check back in a few seconds for the URL.';
+          } else if (status.status === 'error') {
+            content = `Tunnel error: ${status.error ?? 'unknown'}`;
+          } else {
+            content = 'Tunnel is not running.';
+          }
+        } catch (err) {
+          content = `Error getting tunnel status: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
+        break;
+      }
+      case 'tunnel_start': {
+        try {
+          const { startTunnel, getTunnelStatus } = await import('../services/tunnel.js');
+          const mode = (args.mode as 'quick' | 'named' | undefined);
+          const result = startTunnel(mode);
+          if (!result.ok) {
+            content = `Error starting tunnel: ${result.error ?? 'unknown'}`;
+            isError = true;
+            break;
+          }
+          // Poll briefly for the URL to appear
+          let url: string | null = null;
+          for (let i = 0; i < 10; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            const s = getTunnelStatus();
+            if (s.status === 'active' && s.url) { url = s.url; break; }
+            if (s.status === 'error') { content = `Tunnel failed to start: ${s.error ?? 'unknown'}`; isError = true; break; }
+          }
+          if (!isError) {
+            content = url ? `Tunnel started. Public URL: ${url}` : 'Tunnel is starting. Check tunnel_status in a moment for the URL.';
+          }
+        } catch (err) {
+          content = `Error starting tunnel: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
+        break;
+      }
+      case 'tunnel_stop': {
+        try {
+          const { stopTunnel } = await import('../services/tunnel.js');
+          stopTunnel();
+          content = 'Tunnel stopped.';
+        } catch (err) {
+          content = `Error stopping tunnel: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
+        break;
+      }
+      case 'tunnel_restart': {
+        try {
+          const { stopTunnel, startTunnel, getTunnelStatus } = await import('../services/tunnel.js');
+          stopTunnel();
+          await new Promise(r => setTimeout(r, 1500));
+          const result = startTunnel();
+          if (!result.ok) {
+            content = `Error restarting tunnel: ${result.error ?? 'unknown'}`;
+            isError = true;
+            break;
+          }
+          let url: string | null = null;
+          for (let i = 0; i < 10; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            const s = getTunnelStatus();
+            if (s.status === 'active' && s.url) { url = s.url; break; }
+            if (s.status === 'error') { content = `Tunnel failed to restart: ${s.error ?? 'unknown'}`; isError = true; break; }
+          }
+          if (!isError) {
+            content = url ? `Tunnel restarted. New public URL: ${url}` : 'Tunnel is restarting. Check tunnel_status in a moment for the URL.';
+          }
+        } catch (err) {
+          content = `Error restarting tunnel: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
+        break;
+      }
+
       case 'set_user_presence': {
         try {
           const status = args.status as string;
