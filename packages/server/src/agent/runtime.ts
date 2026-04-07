@@ -58,6 +58,8 @@ const activeAbortControllers = new Map<string, AbortController>();
 /** Stop a running agent — aborts in-flight API call and halts the loop */
 export function stopAgent(agentId: string): void {
   stoppedAgents.add(agentId);
+  // Clear any queued wakeup so the agent doesn't immediately restart after stopping
+  pendingWakeups.delete(agentId);
   // Abort any in-flight API call
   const controller = activeAbortControllers.get(agentId);
   if (controller) {
@@ -423,10 +425,28 @@ class AgentRuntime {
         logger.info('Auto-router: locking model for tool loop', { modelId }, agentId);
       }
 
-      // Execute each tool call
+      // Execute each tool call — check stop flag between each one
       const toolResults: Array<{ toolCallId: string; content: string; isError: boolean }> = [];
+      let stoppedMidToolLoop = false;
 
       for (const toolCall of result.toolCalls) {
+        // Check stop flag before each tool execution
+        if (stoppedAgents.has(agentId)) {
+          stoppedAgents.delete(agentId);
+          logger.info('Agent stopped mid-tool-loop by user', { executed: toolResults.length, remaining: result.toolCalls.length - toolResults.length }, agentId);
+          // Fill in synthetic "cancelled" results for any remaining tool calls
+          // so the conversation history stays valid (tool_use blocks need matching tool_results)
+          for (const remaining of result.toolCalls.slice(toolResults.length)) {
+            toolResults.push({
+              toolCallId: remaining.id,
+              content: 'Cancelled by user (agent stopped).',
+              isError: true,
+            });
+          }
+          stoppedMidToolLoop = true;
+          break;
+        }
+
         // Broadcast tool call to dashboard
         broadcast({
           type: 'chat:tool_call',
@@ -465,6 +485,12 @@ class AgentRuntime {
 
       // Clear error records on successful tool execution
       clearErrors(agentId);
+
+      // If we were stopped mid-tool-loop, exit now after persisting results
+      if (stoppedMidToolLoop) {
+        this.setAgentStatus(agentId, 'idle');
+        break;
+      }
 
       // If complete_task was called, the agent is done — stop the loop
       const calledCompleteTask = result.toolCalls.some(tc => tc.name === 'complete_task');
