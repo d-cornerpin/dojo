@@ -414,7 +414,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Multi-Agent Tools ──
   {
     name: 'spawn_agent',
-    description: 'Spawn a new sub-agent to work on a task. BEFORE spawning, check if an agent with that name already exists and is still running — use send_to_agent instead of spawning a duplicate. Returns the new agent ID for tracking.',
+    description: 'Create a new sub-agent to work on a task. This is THE tool for spawning sub-agents — do NOT try to create agents by writing files or inserting into the database. BEFORE spawning, call list_agents to check whether an agent with that name already exists and is still running; if so, use send_to_agent instead of spawning a duplicate. Returns the new agent ID for tracking.',
     input_schema: {
       type: 'object',
       properties: {
@@ -500,7 +500,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'kill_agent',
-    description: 'Terminate a sub-agent immediately. Also terminates any of its children. Use when a sub-agent is stuck, no longer needed, or misbehaving.',
+    description: 'Terminate, kill, delete, or remove a sub-agent immediately. This is THE tool for ending a sub-agent\'s life — do NOT try to delete database rows or kill processes manually. Also terminates any of its children. Use when a sub-agent is stuck, no longer needed, or misbehaving.',
     input_schema: {
       type: 'object',
       properties: {
@@ -514,7 +514,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'send_to_agent',
-    description: 'Send a message to any agent in the dojo by ID or name. Works for any direction: parent to sub-agent, sub-agent to parent, peer to peer, or to the PM. The recipient will see who sent the message and can reply.',
+    description: 'Send a direct message to another agent by ID or name. This is THE tool for agent-to-agent messaging — do NOT try to write to databases or files to communicate. Works in any direction: parent to sub-agent, sub-agent to parent, peer to peer, or to the PM. The recipient sees who sent the message and can reply.',
     input_schema: {
       type: 'object',
       properties: {
@@ -532,7 +532,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'broadcast_to_group',
-    description: 'Send a message to ALL agents in a group simultaneously. Useful for announcements, status updates, or coordinating a squad.',
+    description: 'Send a message to every agent in a group at once. This is THE tool for group-wide announcements, status updates, or coordinating a squad. Each member receives it as if via send_to_agent.',
     input_schema: {
       type: 'object',
       properties: {
@@ -852,7 +852,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Session Management ──
   {
     name: 'reset_session',
-    description: 'Start a fresh conversation session for yourself or a sub-agent. Archives the conversation to the vault and clears the context. Only use when the user explicitly asks, or when a sub-agent is stuck/looping and needs a fresh start.',
+    description: 'Wipe a sub-agent\'s (or your own) conversation context and start fresh. This is THE tool for clearing an agent\'s memory when it\'s stuck in a loop, confused, or when the user explicitly asks for a clean slate. Archives the existing conversation to the vault first so nothing is lost.',
     input_schema: {
       type: 'object',
       properties: {
@@ -889,7 +889,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Group Tools (Phase 6) ──
   {
     name: 'create_agent_group',
-    description: 'Create a new group for organizing agents around a shared purpose. The group description is injected into all member agents\' prompts.',
+    description: 'Create a new group of sub-agents around a shared purpose (a team, a squad, a project crew). This is THE tool for making a new agent group — do NOT try to insert rows into the database. The group description is injected into every member agent\'s system prompt as shared context.',
     input_schema: {
       type: 'object',
       properties: {
@@ -914,12 +914,12 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'assign_to_group',
-    description: 'Add an agent to a group.',
+    description: 'Add a sub-agent to a group, or remove a sub-agent from its current group. This is THE tool for moving agents between groups — do NOT try to update the database directly. Pass null as group_id to remove the agent from any group and leave it ungrouped.',
     input_schema: {
       type: 'object',
       properties: {
         agent_id: { type: 'string', description: 'Agent ID to assign' },
-        group_id: { type: 'string', description: 'Group ID to assign to (or null to remove from group)' },
+        group_id: { type: 'string', description: 'Group ID to assign to, or null to remove the agent from its current group' },
       },
       required: ['agent_id', 'group_id'],
     },
@@ -927,7 +927,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Agent & Group Visibility Tools ──
   {
     name: 'list_agents',
-    description: 'List all active agents with their name, ID, status, group, and classification. Use to find agent IDs for task assignment or messaging.',
+    description: 'List every active sub-agent with their name, ID, status, group, and classification. This is THE tool for seeing what sub-agents exist right now — call this first to find an agent\'s ID before editing, messaging, or killing it.',
     input_schema: {
       type: 'object',
       properties: {
@@ -947,7 +947,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'delete_group',
-    description: 'Delete an agent group. All member agents are moved to ungrouped (not terminated). Use this after a group has completed its work and agents have been terminated. Cannot delete the System group.',
+    description: 'Delete an agent group entirely. This is THE tool for removing a group — do NOT try to update the database directly. By default, member agents are moved to ungrouped (not terminated). Pass terminate_members=true to also kill every member in the group as part of the cleanup. Cannot delete the System group.',
     input_schema: {
       type: 'object',
       properties: {
@@ -959,7 +959,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'list_groups',
-    description: 'List all agent groups with their name, ID, description, and member count.',
+    description: 'List every agent group with its name, ID, description, and member count. This is THE tool for seeing what groups exist — call this before assigning agents to groups, editing a group, or deleting one.',
     input_schema: {
       type: 'object',
       properties: {},

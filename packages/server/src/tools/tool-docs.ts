@@ -22,11 +22,8 @@ export const DEFAULT_ALWAYS_LOADED_TOOLS = [
   'get_current_time',
 ];
 
-// Primary agent: needs file/exec + tracker + vault + communication basics
-// + core agent management. These are the tools the primary agent uses on
-// nearly every meaningful turn, OR tools that must be directly callable
-// without a load_tool_docs round-trip when the user asks the primary
-// agent to reconfigure sub-agents in natural language.
+// Primary agent: needs file/exec + tracker + vault + communication basics.
+// These are the tools the primary agent uses on nearly every meaningful turn.
 export const PRIMARY_AGENT_ALWAYS_LOADED = [
   ...DEFAULT_ALWAYS_LOADED_TOOLS,
   'exec',
@@ -40,14 +37,6 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'send_to_agent',
   'list_agents',
   'imessage_send',
-  // Agent / group editing — keep these hot because the user phrases these
-  // as direct commands ("change X's role", "switch Y to Haiku", "rename Z")
-  // and the primary agent must respond without improvising with file_read
-  // or SQL against the agents table.
-  'update_agent_profile',
-  'update_agent_model',
-  'update_agent_permissions',
-  'update_group',
 ];
 
 // PM agent: tracker-focused, monitors tasks and sends messages to other agents.

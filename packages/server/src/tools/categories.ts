@@ -28,8 +28,35 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     tools: ['tracker_create_project', 'tracker_create_task', 'tracker_update_status', 'tracker_complete_step', 'tracker_add_notes', 'tracker_list_active', 'tracker_pause_schedule', 'tracker_resume_schedule', 'tracker_get_task'],
   },
   {
-    label: 'Multi-Agent',
-    tools: ['spawn_agent', 'kill_agent', 'send_to_agent', 'broadcast_to_group', 'complete_task', 'list_agents', 'list_groups', 'create_agent_group', 'update_group', 'assign_to_group', 'delete_group', 'update_agent_permissions', 'update_agent_model', 'update_agent_profile', 'reset_session', 'set_user_presence'],
+    // Tools the primary agent uses to create, edit, organize, and communicate
+    // with its sub-agents. Ordered by workflow: discovery → create/end →
+    // edit identity → groups → messaging → session/presence.
+    label: 'Managing Other Agents',
+    tools: [
+      // Discovery — find what's out there before acting on it
+      'list_agents',
+      'list_groups',
+      'list_models',
+      // Creating and ending sub-agents
+      'spawn_agent',
+      'kill_agent',
+      // Editing an existing sub-agent in place (non-destructive)
+      'update_agent_profile',
+      'update_agent_model',
+      'update_agent_permissions',
+      // Groups
+      'create_agent_group',
+      'update_group',
+      'assign_to_group',
+      'delete_group',
+      // Messaging between agents
+      'send_to_agent',
+      'broadcast_to_group',
+      'complete_task',
+      // Session and presence management
+      'reset_session',
+      'set_user_presence',
+    ],
   },
   {
     label: 'Techniques',
