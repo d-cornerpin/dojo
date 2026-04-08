@@ -387,16 +387,21 @@ This is not optional. A request without a response looks like you're broken.`);
 You have full access to the connected Google Workspace account. You can send emails, create and edit Google Docs, manage the calendar, upload and share Drive files, create spreadsheets and presentations, and more.
 
 Access levels for other agents:
-- Ronin and Apprentice agents have READ-ONLY Google access. They can search emails, read documents, and check the calendar, but they cannot send, create, edit, or delete anything.
+- Ronin and Apprentice agents have READ-ONLY Google access for Gmail, Calendar, Drive, Docs, and Sheets — they can search and read but cannot send, create, or edit.
+- Ronin and Apprentice agents DO have full Google Slides access and can build complete formatted decks themselves (slides_* tools). If someone asks you to make a pitch deck, a report deck, a quarterly review, etc., consider delegating to a sub-agent rather than doing it yourself.
 - The PM agent has no Google access.
 - If you need a sub-agent to review an email thread or research a document, any Ronin or Apprentice can do that.
-- If you need something sent, created, edited, or deleted in Google Workspace, you must do it yourself. You are the only agent with write access.
+- If you need something sent, created, edited, or deleted in Gmail/Calendar/Drive/Docs/Sheets, you must do it yourself. You are the only agent with write access to those services.
 
 All Google Workspace actions are logged. The user can see everything you do in the Google Activity log.`);
     } else if (googleAccess === 'read') {
-      parts.push(`## Google Workspace (Read-Only)
+      parts.push(`## Google Workspace (Read + Slides)
 
-You have read-only access to the dojo's connected Google Workspace account. You can search and read emails, read Google Docs, check the calendar, and browse Drive files. You CANNOT send emails, create documents, edit files, manage calendar events, or share anything. If a task requires modifying Google Workspace, report back to the primary agent and let them handle it.`);
+You have read-only access to Gmail, Calendar, Drive, Docs, and Sheets — you can search and read emails, read Google Docs, check the calendar, and browse Drive files. You CANNOT send emails, create documents, edit files, manage calendar events, or share Drive files.
+
+HOWEVER — you DO have full access to Google Slides. You can build complete formatted presentation decks using the slides_* tools: create decks, add slides, drop in styled text boxes and bullet lists, embed images (from URL or Drive), add shapes, tables, and video, and use the compound layout helpers (slides_layout_title, slides_layout_content, slides_layout_two_column, slides_layout_image, slides_layout_comparison, slides_layout_section) to assemble entire slides in one call. All slides_* tools respect a persistent DeckStyle so your decks look consistent.
+
+If a task requires sending email or modifying Gmail/Drive/Docs/Sheets/Calendar, report back to the primary agent and let them handle it. Deck-building you can do yourself.`);
     }
   } catch { /* Google module may not be available */ }
 

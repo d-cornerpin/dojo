@@ -52,8 +52,27 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     tools: ['calendar_agenda', 'calendar_search', 'calendar_create', 'calendar_update', 'calendar_delete'],
   },
   {
-    label: 'Google Drive / Docs / Sheets / Slides',
-    tools: ['drive_list', 'drive_read', 'drive_upload', 'drive_share', 'docs_read', 'docs_create', 'docs_edit', 'sheets_read', 'sheets_create', 'sheets_append', 'sheets_write', 'slides_create'],
+    label: 'Google Drive / Docs / Sheets',
+    tools: ['drive_list', 'drive_read', 'drive_upload', 'drive_share', 'docs_read', 'docs_create', 'docs_edit', 'sheets_read', 'sheets_create', 'sheets_append', 'sheets_write'],
+  },
+  {
+    label: 'Google Slides',
+    tools: [
+      // Style & deck management
+      'slides_create_presentation', 'slides_set_style', 'slides_get_style', 'slides_list_presets',
+      // Slide ops
+      'slides_add_slide', 'slides_duplicate_slide', 'slides_delete_slide', 'slides_reorder_slides', 'slides_set_background',
+      // Text
+      'slides_add_text_box', 'slides_add_bullet_list', 'slides_update_text', 'slides_style_text_range',
+      // Layout helpers (compound)
+      'slides_layout_title', 'slides_layout_section', 'slides_layout_content', 'slides_layout_two_column', 'slides_layout_image', 'slides_layout_comparison',
+      // Media
+      'slides_add_image', 'slides_add_image_from_drive', 'slides_replace_shape_with_image', 'slides_add_video',
+      // Shapes & tables
+      'slides_add_shape', 'slides_add_line', 'slides_add_table', 'slides_populate_table',
+      // Utility
+      'slides_get_slides', 'slides_get_elements', 'slides_delete_element', 'slides_move_element', 'slides_resize_element', 'slides_find_replace',
+    ],
   },
   {
     label: 'Outlook',

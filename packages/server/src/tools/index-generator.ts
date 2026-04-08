@@ -66,6 +66,7 @@ export async function generateToolDocs(): Promise<{ count: number }> {
   const { toolDefinitions } = await import('../agent/tools.js');
   const { googleReadToolDefinitions } = await import('../google/tools-read.js');
   const { googleWriteToolDefinitions } = await import('../google/tools-write.js');
+  const { slidesToolDefinitions } = await import('../google/tools-slides.js');
   const { microsoftReadToolDefinitions } = await import('../microsoft/tools-read.js');
   const { microsoftWriteToolDefinitions } = await import('../microsoft/tools-write.js');
   const { officeToolDefinitions } = await import('../microsoft/tools-office.js');
@@ -74,6 +75,7 @@ export async function generateToolDocs(): Promise<{ count: number }> {
     ...toolDefinitions,
     ...googleReadToolDefinitions,
     ...googleWriteToolDefinitions,
+    ...slidesToolDefinitions,
     ...microsoftReadToolDefinitions,
     ...microsoftWriteToolDefinitions,
     ...officeToolDefinitions,

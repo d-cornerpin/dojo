@@ -33,6 +33,7 @@ import { createGroup, assignAgentToGroup } from './groups.js';
 import { executeVaultRemember, executeVaultSearch, executeVaultForget } from '../vault/tools.js';
 import { googleReadToolDefinitions, executeGoogleReadTool } from '../google/tools-read.js';
 import { googleWriteToolDefinitions, executeGoogleWriteTool } from '../google/tools-write.js';
+import { slidesToolDefinitions, slidesToolNames, executeGoogleSlidesTool } from '../google/tools-slides.js';
 import { getAgentGoogleAccessLevel, getEnabledServices } from '../google/auth.js';
 import { microsoftReadToolDefinitions, executeMicrosoftReadTool } from '../microsoft/tools-read.js';
 import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../microsoft/tools-write.js';
@@ -142,11 +143,15 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
 
   if (googleAccess === 'full') {
     // Primary agent: all read + write tools, filtered by enabled services
-    const allGoogleTools = [...googleReadToolDefinitions, ...googleWriteToolDefinitions];
+    const allGoogleTools = [...googleReadToolDefinitions, ...googleWriteToolDefinitions, ...slidesToolDefinitions];
     filtered.push(...allGoogleTools.filter(t => isToolEnabledByService(t.name)));
   } else if (googleAccess === 'read') {
-    // Read-only agents: only read tools, filtered by enabled services
+    // Read-only agents (Ronin/Apprentice): read-only tools for Gmail/Calendar/
+    // Drive/Docs/Sheets — PLUS the full Slides toolkit, because slides decks
+    // are a standalone creative output that's safe for sub-agents to produce.
+    // They still cannot send email, edit docs, or modify Drive files directly.
     filtered.push(...googleReadToolDefinitions.filter(t => isToolEnabledByService(t.name)));
+    filtered.push(...slidesToolDefinitions.filter(t => isToolEnabledByService(t.name)));
   }
   // googleAccess === 'none': no Google tools added
 
@@ -1533,6 +1538,24 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
   }
 
   try {
+    // ── Google Slides tools (many — dispatched before switch to avoid enumerating every case) ──
+    // Available to both primary AND read-level agents (Ronin/Apprentice). PM agents
+    // (googleAccess === 'none') are blocked because the tool isn't in their registry
+    // at all, so they'd fall through to the unknown-tool path.
+    if (slidesToolNames.includes(name)) {
+      const slidesAccess = getAgentGoogleAccessLevel(agentId, isPrimaryAgent(agentId), isPMAgent(agentId));
+      if (slidesAccess === 'none') {
+        content = 'Permission denied: this agent does not have Google Slides access.';
+        isError = true;
+        auditLog(agentId, name, null, 'denied', 'Google Slides tool blocked: no Google access');
+      } else {
+        const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+        content = await executeGoogleSlidesTool(name, args, agentId, agentRow?.name ?? agentId);
+        isError = content.startsWith('Error');
+      }
+      return { toolCallId: id, name, content, isError };
+    }
+
     switch (name) {
       case 'load_tool_docs': {
         const { executeLoadToolDocs } = await import('../tools/tool-docs.js');
@@ -2470,8 +2493,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'docs_edit':
       case 'sheets_create':
       case 'sheets_append':
-      case 'sheets_write':
-      case 'slides_create': {
+      case 'sheets_write': {
         // Double-check: only primary agent can use write tools (belt + suspenders)
         if (!isPrimaryAgent(agentId)) {
           content = 'Permission denied: only the primary agent can use Google Workspace write tools.';

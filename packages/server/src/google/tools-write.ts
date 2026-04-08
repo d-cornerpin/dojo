@@ -11,7 +11,6 @@ const CALENDAR_BASE = 'https://www.googleapis.com/calendar/v3';
 const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';
 const DOCS_BASE = 'https://docs.googleapis.com/v1/documents';
 const SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
-const SLIDES_BASE = 'https://slides.googleapis.com/v1/presentations';
 const UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3';
 
 // ── Tool Definitions (unchanged) ──
@@ -201,17 +200,8 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
       required: ['spreadsheet_id', 'range', 'values'],
     },
   },
-  {
-    name: 'slides_create',
-    description: 'Create a new Google Slides presentation.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        title: { type: 'string', description: 'Presentation title' },
-      },
-      required: ['title'],
-    },
-  },
+  // NOTE: slides_create has been migrated to tools-slides.ts as slides_create_presentation.
+  // See packages/server/src/google/tools-slides.ts for the full slides toolkit.
 ];
 
 // ── Helpers ──
@@ -519,14 +509,7 @@ export async function executeGoogleWriteTool(
       return `Data written to ${range} in spreadsheet ${sheetId}`;
     }
 
-    case 'slides_create': {
-      const title = args.title as string;
-      const result = await googleWrite('POST', SLIDES_BASE, { title }, agentId, agentName, 'slides_create', { title });
-      if (!result.ok) return `Error creating presentation: ${result.error}`;
-
-      const data = result.data as { presentationId?: string };
-      return `Presentation "${title}" created${data?.presentationId ? ` (ID: ${data.presentationId})` : ''}`;
-    }
+    // slides_create → migrated to tools-slides.ts (see executeGoogleSlidesTool).
 
     default:
       return `Unknown Google write tool: ${name}`;
