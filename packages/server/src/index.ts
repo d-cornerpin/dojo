@@ -84,6 +84,17 @@ async function main(): Promise<void> {
     loadSavedChecks();
   } catch { /* ignore — migration module may not exist yet */ }
 
+  // 3b. Generate tool documentation files for load_tool_docs
+  try {
+    const { generateToolDocs } = await import('./tools/index-generator.js');
+    const result = await generateToolDocs();
+    logger.info('Tool docs generated', { count: result.count });
+  } catch (err) {
+    logger.warn('Tool docs generation failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   // 4. Ensure primary agent exists (skips if OOBE hasn't completed yet)
   ensurePrimaryAgent();
 
@@ -183,6 +194,18 @@ async function main(): Promise<void> {
       startGmailWatcher();
     } catch (err) {
       logger.warn('Gmail watcher failed to start', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // 4h. Start Outlook watcher if Microsoft 365 is connected
+  {
+    try {
+      const { startOutlookWatcher } = await import('./services/outlook-watcher.js');
+      startOutlookWatcher();
+    } catch (err) {
+      logger.warn('Outlook watcher failed to start', {
         error: err instanceof Error ? err.message : String(err),
       });
     }

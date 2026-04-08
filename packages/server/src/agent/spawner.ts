@@ -85,6 +85,8 @@ export interface SpawnParams {
   initialMessage?: string;
   /** Technique IDs to equip on this agent (pre-loaded into context) */
   equippedTechniques?: string[];
+  /** Custom always-loaded tools for this agent (overrides role defaults) */
+  alwaysLoadedTools?: string[];
 }
 
 export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string; name: string; status: string; persist: boolean }> {
@@ -103,6 +105,7 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     shareUserProfile = false,
     groupId,
     equippedTechniques = [],
+    alwaysLoadedTools,
   } = params;
 
   const db = getDb();
@@ -219,6 +222,13 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     JSON.stringify(equippedTechniques),
     taskId ?? null,
   );
+
+  // Set custom always_loaded_tools if provided by the parent
+  if (alwaysLoadedTools && alwaysLoadedTools.length > 0) {
+    try {
+      db.prepare('UPDATE agents SET always_loaded_tools = ? WHERE id = ?').run(JSON.stringify(alwaysLoadedTools), agentId);
+    } catch { /* column may not exist on very old databases */ }
+  }
 
   logger.info('Agent spawned', {
     agentId,
@@ -517,7 +527,7 @@ export async function completeAgent(
 
     // Also insert as a system message into parent's messages for context assembly
     const completionMsgId = uuidv4();
-    const completionContent = `[Sub-agent "${agent.name}" completed: ${status}] ${summary}`;
+    const completionContent = `[SOURCE: SUB-AGENT COMPLETION — automated notification that a sub-agent you spawned has finished, not a message from the user] Sub-agent "${agent.name}" completed: ${status}. ${summary}`;
     db.prepare(`
       INSERT INTO messages (id, agent_id, role, content, created_at)
       VALUES (?, ?, 'system', ?, datetime('now'))

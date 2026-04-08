@@ -200,6 +200,21 @@ export interface ToolDefinition {
 
 export const toolDefinitions: ToolDefinition[] = [
   {
+    name: 'load_tool_docs',
+    description: 'Load the full documentation for one or more tools before using them. Call this when you need to review a tool\'s parameters or usage details. After loading, the tools become callable on subsequent turns. Your always-loaded tools are already available without needing this.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tools: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Array of tool names to load documentation for (e.g., ["gmail_send", "calendar_create"])',
+        },
+      },
+      required: ['tools'],
+    },
+  },
+  {
     name: 'exec',
     description: 'Execute a shell command and return its output. Has a 30-second timeout. Use for running scripts, checking system status, installing packages, etc.',
     input_schema: {
@@ -468,6 +483,11 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'array',
           items: { type: 'string' },
           description: 'Technique IDs to equip on this agent. Equipped techniques are pre-loaded into the agent\'s context so it can follow them without calling use_technique. Example: ["website-uptime-check"]',
+        },
+        always_loaded_tools: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional custom always-loaded tool list for this sub-agent. Saves round-trips when you know exactly which tools the agent will need. Example: for a web research agent: ["web_search", "web_fetch", "vault_remember"]. Omit to use sensible role-based defaults.',
         },
       },
       required: ['name', 'system_prompt'],
@@ -1514,6 +1534,13 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
   try {
     switch (name) {
+      case 'load_tool_docs': {
+        const { executeLoadToolDocs } = await import('../tools/tool-docs.js');
+        const toolNames = (args.tools as string[]) ?? [];
+        content = executeLoadToolDocs(agentId, toolNames);
+        isError = content.startsWith('Error');
+        break;
+      }
       case 'exec':
         content = await executeExec(agentId, args);
         isError = content.startsWith('Error');
@@ -1601,6 +1628,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           groupId: args.group_id as string | undefined,
           initialMessage: args.initial_message as string | undefined,
           equippedTechniques: args.techniques as string[] | undefined,
+          alwaysLoadedTools: args.always_loaded_tools as string[] | undefined,
         });
         content = `Agent spawned successfully.\nAgent ID: ${result.agentId}\nName: ${result.name}\nStatus: ${result.status}\nPersistent: ${result.persist ? 'yes' : 'no'}`;
         break;
@@ -1648,7 +1676,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
           // Persist as a user message with sender context and reply instructions
           const msgId = uuidv4();
-          const contextMessage = `[Message from ${senderName} (agent ID: ${agentId})] ${message}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
+          const contextMessage = `[SOURCE: AGENT MESSAGE FROM ${senderName.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's from another agent] ${message}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
           db.prepare(`
             INSERT INTO messages (id, agent_id, role, content, created_at)
             VALUES (?, ?, 'user', ?, datetime('now'))
@@ -1710,7 +1738,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
         for (const member of groupMembers) {
           const bcMsgId = uuidv4();
-          const bcContextMsg = `[Broadcast from ${senderName2} to group] ${broadcastMsg}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
+          const bcContextMsg = `[SOURCE: GROUP BROADCAST FROM ${senderName2.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's a broadcast from another agent to your group] ${broadcastMsg}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
           bcDb.prepare(`
             INSERT INTO messages (id, agent_id, role, content, created_at)
             VALUES (?, ?, 'user', ?, datetime('now'))

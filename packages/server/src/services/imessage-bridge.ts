@@ -130,7 +130,7 @@ async function pollMessages(): Promise<void> {
           const primaryId = getPrimaryAgentId();
           const ownerName = getOwnerName();
           const msgId = uuidv4();
-          const msgContent = `[iMessage from ${ownerName}] ${msg.text}`;
+          const msgContent = `[SOURCE: IMESSAGE FROM ${ownerName.toUpperCase()} — this message came from iMessage, not the dashboard chat] ${msg.text}`;
           db.prepare(`
             INSERT INTO messages (id, agent_id, role, content, created_at)
             VALUES (?, ?, 'user', ?, datetime('now'))

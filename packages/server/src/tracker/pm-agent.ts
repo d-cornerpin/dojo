@@ -521,7 +521,7 @@ function runPokeCheck(): void {
     db.prepare(`
       INSERT INTO messages (id, agent_id, role, content, created_at)
       VALUES (?, ?, 'user', ?, datetime('now'))
-    `).run(pokeMsgId, recipient, `[${pmName} — Project Manager] ${pokeMessage}`);
+    `).run(pokeMsgId, recipient, `[SOURCE: PM AGENT POKE FROM ${pmName.toUpperCase()} — this is NOT a message from the user, it's an automated poke from the PM agent checking on your progress] ${pokeMessage}`);
 
     // Broadcast so dashboard updates
     broadcast({

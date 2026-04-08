@@ -135,7 +135,7 @@ export async function checkScheduledTasks(): Promise<void> {
     db.prepare(`
       INSERT INTO messages (id, agent_id, role, content, created_at)
       VALUES (?, ?, 'user', ?, datetime('now'))
-    `).run(msgId, assignedAgent, `[${getPMAgentId()} — Scheduler] ${message}`);
+    `).run(msgId, assignedAgent, `[SOURCE: SCHEDULER — automated scheduled task trigger, not a message from the user] ${message}`);
 
     broadcast({
       type: 'chat:message',
@@ -144,7 +144,7 @@ export async function checkScheduledTasks(): Promise<void> {
         id: msgId,
         agentId: assignedAgent,
         role: 'user' as const,
-        content: `[${getPMAgentId()} — Scheduler] ${message}`,
+        content: `[SOURCE: SCHEDULER — automated scheduled task trigger, not a message from the user] ${message}`,
         tokenCount: null, modelId: null, cost: null, latencyMs: null,
         createdAt: new Date().toISOString(),
       },

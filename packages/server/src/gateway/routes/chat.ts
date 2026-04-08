@@ -180,6 +180,12 @@ chatRouter.post('/:agentId/new-session', async (c) => {
     // 2. Clear context items (summaries) — shed the accumulated conversation weight
     replaceContextItems(agentId, []);
 
+    // Clear session-loaded tool docs
+    try {
+      const { clearSessionLoadedTools } = await import('../../tools/tool-docs.js');
+      clearSessionLoadedTools(agentId);
+    } catch { /* ignore */ }
+
     // 3. Set session boundary — messages before this are excluded from context
     //    Use SQLite datetime format (not ISO) to match the messages table format
     const now = new Date();

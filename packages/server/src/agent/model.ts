@@ -6,7 +6,7 @@ import { getProviderCredential } from '../config/loader.js';
 import { createLogger } from '../logger.js';
 import { AgentError } from './errors.js';
 import { scheduleRateLimitRetry } from './rate-limit-retry.js';
-import { toolDefinitions, getFilteredTools } from './tools.js';
+import { toolDefinitions, getFilteredTools, type ToolDefinition } from './tools.js';
 import { recordCost } from '../costs/tracker.js';
 import { checkBudget } from '../costs/budget.js';
 import { updateRateLimits } from '../router/rate-limits.js';
@@ -361,17 +361,22 @@ async function callOpenAIModel(
     }
   }
 
-  // Build tools in OpenAI format
-  const openaiTools: OpenAI.ChatCompletionTool[] | undefined = tools
-    ? getFilteredTools(agentId).map(t => ({
-        type: 'function' as const,
-        function: {
-          name: t.name,
-          description: t.description,
-          parameters: t.input_schema as Record<string, unknown>,
-        },
-      }))
-    : undefined;
+  // Build tools in OpenAI format (two-phase loading: only always-loaded + session-loaded)
+  let openaiTools: OpenAI.ChatCompletionTool[] | undefined = undefined;
+  if (tools) {
+    const allPermitted = getFilteredTools(agentId);
+    const { filterToolsForApiCall, getAgentAlwaysLoadedTools } = await import('../tools/tool-docs.js');
+    const alwaysLoaded = getAgentAlwaysLoadedTools(agentId);
+    const filtered = filterToolsForApiCall(agentId, allPermitted, alwaysLoaded);
+    openaiTools = filtered.map(t => ({
+      type: 'function' as const,
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.input_schema as Record<string, unknown>,
+      },
+    }));
+  }
 
   // Determine the right max tokens parameter
   // o-series models use max_completion_tokens, others use max_tokens
@@ -569,8 +574,14 @@ async function callAnthropicSdkModel(
   // Dynamic import — gracefully fail if SDK not installed
   const { callAnthropicViaSdk } = await import('../providers/anthropic-sdk.js');
 
-  // Get tools for prompt-based formatting (if tools are enabled)
-  const toolDefs = tools ? getFilteredTools(agentId) : [];
+  // Get tools for prompt-based formatting (two-phase loading)
+  let toolDefs: ToolDefinition[] = [];
+  if (tools) {
+    const allPermitted = getFilteredTools(agentId);
+    const { filterToolsForApiCall, getAgentAlwaysLoadedTools } = await import('../tools/tool-docs.js');
+    const alwaysLoaded = getAgentAlwaysLoadedTools(agentId);
+    toolDefs = filterToolsForApiCall(agentId, allPermitted, alwaysLoaded);
+  }
 
   const startTime = Date.now();
   const streamedChunks: string[] = [];
@@ -659,7 +670,14 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
 
   // Estimate input tokens and enforce hard cap.
   // Use ~3.5 chars/token (conservative) to avoid underestimating.
-  const filteredTools = tools ? getFilteredTools(agentId) : [];
+  // Two-phase tool loading: only send always-loaded + session-loaded tools.
+  let filteredTools: ToolDefinition[] = [];
+  if (tools) {
+    const allPermitted = getFilteredTools(agentId);
+    const { filterToolsForApiCall, getAgentAlwaysLoadedTools } = await import('../tools/tool-docs.js');
+    const alwaysLoaded = getAgentAlwaysLoadedTools(agentId);
+    filteredTools = filterToolsForApiCall(agentId, allPermitted, alwaysLoaded);
+  }
   const toolsJson = tools ? JSON.stringify(filteredTools) : '';
   const toolTokenEstimate = Math.ceil(toolsJson.length / 3.5);
 
@@ -726,7 +744,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
       }, agentId);
 
       // Notify the agent's chat
-      const notifyMsg = `[System] Daily budget reached ($${budgetCheck.dailySpend?.toFixed(2)} of $${budgetCheck.dailyLimit?.toFixed(2)}). Using ${fb.modelName} (free) instead.`;
+      const notifyMsg = `[SOURCE: SYSTEM — not a message from the user] Daily budget reached ($${budgetCheck.dailySpend?.toFixed(2)} of $${budgetCheck.dailyLimit?.toFixed(2)}). Using ${fb.modelName} (free) instead.`;
       try {
         const db = getDb();
         const msgId = uuidv4();
@@ -741,7 +759,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
         const primaryId = getPrimaryAgentId();
         if (!isPrimaryAgent(agentId)) {
           const primaryMsgId = uuidv4();
-          const primaryNotify = `[System] Agent "${agentId}" switched to free model (${fb.modelName}) due to budget limits.`;
+          const primaryNotify = `[SOURCE: SYSTEM — not a message from the user] Agent "${agentId}" switched to free model (${fb.modelName}) due to budget limits.`;
           db.prepare("INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(primaryMsgId, primaryId, primaryNotify);
           broadcast({
             type: 'chat:message',
@@ -781,7 +799,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     messageCount: messages.length,
     systemPromptLength: systemPrompt.length,
     messages: msgPreview,
-    toolCount: tools ? getFilteredTools(agentId).length : 0,
+    toolCount: filteredTools.length,
   }, agentId);
 
   const startTime = Date.now();

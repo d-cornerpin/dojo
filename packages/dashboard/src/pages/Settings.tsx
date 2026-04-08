@@ -1607,15 +1607,16 @@ const ModelsTab = () => {
         </div>
       )}
 
-      {models.length === 0 ? (
-        <p className="white/40 text-sm">No models available. Add a provider first.</p>
+      {providers.length === 0 ? (
+        <p className="white/40 text-sm">No providers configured. Add one in the Providers tab first.</p>
       ) : (
         providers.map(provider => {
           const providerModels = models
             .filter(m => m.providerId === provider.id)
             .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-          if (providerModels.length === 0) return null;
           const isAggregator = provider.type === 'openai-compatible' && provider.isValidated;
+          // Skip empty groups EXCEPT aggregators — they need the browse box visible
+          if (providerModels.length === 0 && !isAggregator) return null;
           return (
             <ProviderModelGroup
               key={provider.id}

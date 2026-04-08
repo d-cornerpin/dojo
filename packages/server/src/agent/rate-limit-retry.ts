@@ -112,8 +112,8 @@ function scheduleNextAttempt(
         // Tell the agent they're back online
         const isPrimary = isPrimaryAgent(agentId);
         const noticeContent = isPrimary
-          ? `[System] You were rate-limited by the API for ${downtime}. You're back online now. Pick up where you left off.`
-          : `[System] You were rate-limited by the API for ${downtime}. You're back online now. Let the primary agent know you were temporarily unavailable, then resume your task.`;
+          ? `[SOURCE: SYSTEM — not a message from the user] You were rate-limited by the API for ${downtime}. You're back online now. Pick up where you left off.`
+          : `[SOURCE: SYSTEM — not a message from the user] You were rate-limited by the API for ${downtime}. You're back online now. Let the primary agent know you were temporarily unavailable, then resume your task.`;
 
         const db = getDb();
         const noticeMsgId = uuidv4();

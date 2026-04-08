@@ -568,7 +568,7 @@ class AgentRuntime {
 
               // Deliver to the original sender's messages table (same as send_to_agent does)
               const replyMsgId = uuidv4();
-              const replyContent = `[Message from ${senderName} (agent ID: ${agentId})] ${lastResponse.content}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
+              const replyContent = `[SOURCE: AGENT MESSAGE FROM ${senderName.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's an auto-routed reply from another agent] ${lastResponse.content}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
               db.prepare(`
                 INSERT INTO messages (id, agent_id, role, content, created_at)
                 VALUES (?, ?, 'user', ?, datetime('now'))

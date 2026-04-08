@@ -141,6 +141,32 @@ export async function assembleContext(
   // was trimmed by budget constraints, and ensure valid pairing
   const sanitized = sanitizeToolPairs(tailMessages);
 
+  // Auto-load tools that appear in recent assistant tool_use blocks.
+  // This handles the case where an agent previously loaded a tool but the
+  // server restarted (in-memory session state was lost). Without this,
+  // the agent would need to re-call load_tool_docs for tools it's already
+  // been using in this conversation.
+  try {
+    const { markToolsLoaded } = await import('../tools/tool-docs.js');
+    const seenToolNames = new Set<string>();
+    for (const msg of sanitized) {
+      if (msg.role !== 'assistant') continue;
+      try {
+        const parsed = JSON.parse(msg.content);
+        if (Array.isArray(parsed)) {
+          for (const block of parsed) {
+            if (block?.type === 'tool_use' && typeof block.name === 'string') {
+              seenToolNames.add(block.name);
+            }
+          }
+        }
+      } catch { /* not JSON, skip */ }
+    }
+    if (seenToolNames.size > 0) {
+      markToolsLoaded(agentId, [...seenToolNames]);
+    }
+  } catch { /* best effort */ }
+
   for (const msg of sanitized) {
     const parsed = parseMessageContent(msg);
 

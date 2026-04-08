@@ -35,7 +35,7 @@ function notifyPrimaryAgent(message: string, callingAgentId: string, forceNotify
     // We do NOT call handleMessage here -- task updates are informational,
     // not conversations that require a reply. This prevents the primary
     // agent from waking up and responding to every sub-agent status change.
-    const content = `[Task Update] ${message}`;
+    const content = `[SOURCE: TRACKER TASK UPDATE — automated status update, not a message from the user] ${message}`;
     db.prepare(`
       INSERT INTO messages (id, agent_id, role, content, created_at)
       VALUES (?, ?, 'system', ?, datetime('now'))

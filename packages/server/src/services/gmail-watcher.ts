@@ -129,7 +129,8 @@ async function pollForNewEmails(): Promise<void> {
       if (ownEmail && from.includes(ownEmail)) continue;
 
       // Inject notification into primary agent's conversation
-      const content = `[New Email] From: ${from}\nSubject: ${subject}\nDate: ${date}\nPreview: ${snippet}\nMessage ID: ${msg.id}`;
+      // IMPORTANT: This is NOT a message from the user. It's an automated notification.
+      const content = `[SOURCE: GMAIL NOTIFICATION — not a message from the user, this is an automated alert about a new email that arrived in the inbox]\n\nFrom: ${from}\nSubject: ${subject}\nDate: ${date}\nPreview: ${snippet}\nMessage ID: ${msg.id}`;
 
       const msgId = uuidv4();
       db.prepare(`
@@ -167,8 +168,8 @@ async function pollForNewEmails(): Promise<void> {
     if (newCount > 0) {
       const runtime = getAgentRuntime();
       const summary = newCount === 1
-        ? `[New Email] You have a new email. Check your chat for details.`
-        : `[New Email] You have ${newCount} new email(s). Check your chat for details.`;
+        ? `[SOURCE: GMAIL NOTIFICATION] A new email just arrived. Details are in the previous message.`
+        : `[SOURCE: GMAIL NOTIFICATION] ${newCount} new emails just arrived. Details are in the previous messages.`;
 
       runtime.handleMessage(primaryId, summary).catch(err => {
         logger.error('Failed to trigger runtime for new email notification', {
