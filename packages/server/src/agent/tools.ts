@@ -863,7 +863,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'update_agent_model',
-    description: 'Change the model assigned to a sub-agent. The agent will use the new model on its next turn. You can also set "auto" to enable auto-routing for the agent.',
+    description: 'Change another agent\'s model. This is THE tool for switching what model a sub-agent runs on — do NOT try to modify the database or respawn the agent. Pass a model ID, or "auto" to enable auto-routing. The agent uses the new model on its next turn.',
     input_schema: {
       type: 'object',
       properties: {
@@ -875,7 +875,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'update_agent_profile',
-    description: 'Rename a sub-agent and/or rewrite its system prompt (role definition, personality, instructions). Provide at least one of name or system_prompt. Conversation history, tracker tasks, group membership, permissions, and model are all preserved — this is a non-destructive edit. The agent will use the new identity on its next turn. Cannot be used on the primary agent (edit its SOUL.md via Settings instead).',
+    description: 'Change another agent\'s system prompt, role, personality, instructions, or name. This is THE tool for editing a sub-agent\'s identity — do NOT try to modify files, SOUL.md, or the database directly. Provide at least one of name or system_prompt. Conversation history, tracker tasks, group membership, permissions, and model are all preserved. The agent uses the new identity on its next turn. Cannot be used on the primary agent (edit its SOUL.md via Settings instead).',
     input_schema: {
       type: 'object',
       properties: {
@@ -901,7 +901,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'update_group',
-    description: 'Edit an existing agent group\'s name and/or description. Provide at least one of name or description. The description is injected into every member agent\'s system prompt as shared group context — updating it changes what the whole group sees.',
+    description: 'Change an agent group\'s name or description (the shared context all members see). This is THE tool for editing a group — do NOT try to delete and recreate it. Provide at least one of name or description. Description changes appear in every member agent\'s context on their next turn.',
     input_schema: {
       type: 'object',
       properties: {
@@ -981,7 +981,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'update_agent_permissions',
-    description: 'Change the permissions on an existing agent. Use to grant or revoke capabilities like file access, command execution, web access, system control, etc.',
+    description: 'Change another agent\'s permissions — grant or revoke file access, command execution, web access, system control, spawn rights, etc. This is THE tool for editing permissions — do NOT try to modify the database or respawn the agent. Permissions take effect immediately.',
     input_schema: {
       type: 'object',
       properties: {
