@@ -1286,8 +1286,78 @@ function auditLog(agentId: string, actionType: string, target: string | null, re
   }
 }
 
+/**
+ * Hard block on shell/file access to dojo internals.
+ *
+ * The primary agent has a well-documented pattern of trying to edit
+ * sub-agent system prompts by running `sqlite3 dojo.db` or grepping
+ * ~/.dojo/prompts/ looking for SOUL.md files that do not exist for
+ * sub-agents (sub-agent prompts live in the messages table). The
+ * prompt-level guardrail in prompt/assembler.ts told the model not
+ * to do this but it ignored the instruction in practice.
+ *
+ * This function enforces it at the tool level: if an exec command or
+ * file path targets dojo.db, ~/.dojo/data, or ~/.dojo/prompts, the
+ * call is rejected with a pointed error that names the specific tool
+ * the agent should be using instead.
+ *
+ * Returns an error string to return to the agent, or null if the
+ * access is allowed.
+ */
+function blockDojoInternalAccess(agentId: string, target: string): string | null {
+  if (!target) return null;
+  // Case-insensitive; paths can contain uppercase user dirs.
+  const lower = target.toLowerCase();
+
+  // The ~/.dojo/ directory is reserved for platform internal state
+  // (databases, prompts, secrets, tool docs, logs). Agents have zero
+  // legitimate reason to touch anything under it via shell or file
+  // tools — everything they need is exposed through proper tool APIs.
+  // Block the entire tree in one sweep rather than playing whack-a-mole
+  // with sub-path patterns.
+  const hits: string[] = [];
+  if (/\bdojo\.db\b/.test(lower)) {
+    hits.push('the agent database (dojo.db)');
+  } else if (/[~/\\]\.dojo(\/|\\|\s|"|'|$)/.test(lower)) {
+    // Matches paths starting or containing "/.dojo" as a directory component,
+    // e.g. "~/.dojo", "/Users/foo/.dojo/data", "grep -r ... ~/.dojo".
+    hits.push('the dojo internal directory (~/.dojo and everything under it)');
+  }
+  if (hits.length === 0) return null;
+
+  const reason = hits[0];
+  const isPrimary = isPrimaryAgent(agentId);
+  auditLog(agentId, 'dojo_internal_access_blocked', target, 'denied', `blocked: ${reason}`);
+
+  if (isPrimary) {
+    return `BLOCKED: You cannot access ${reason} via shell or file tools. This is a hard guardrail — soft prompt guidance did not prevent this improvisation in the past.
+
+To edit sub-agents or groups, use the Managing Other Agents tools:
+- Change a sub-agent's system prompt, role, personality, instructions, or name → \`update_agent_profile\`
+- Change a sub-agent's model (or set to auto-routing) → \`update_agent_model\`
+- Grant or revoke a sub-agent's permissions → \`update_agent_permissions\`
+- Edit a group's name or description → \`update_group\`
+- Create / terminate agents → \`spawn_agent\` / \`kill_agent\`
+- Create / delete groups → \`create_agent_group\` / \`delete_group\`
+- Add / remove an agent from a group → \`assign_to_group\`
+- Find an agent or group → \`list_agents\` / \`list_groups\`
+
+IMPORTANT: sub-agent system prompts are stored in the \`messages\` table as the first system-role message — NOT in SOUL.md files on disk. Only the primary agent has a SOUL.md on disk. Searching ~/.dojo/prompts/ for a sub-agent's prompt will never find anything.
+
+Next step: call \`load_tool_docs\` with the specific tool name you need, then call that tool directly. Do not retry this command with a different path.`;
+  }
+
+  return `BLOCKED: Sub-agents cannot access ${reason} via shell or file tools. If you need an agent or group edited, use \`send_to_agent\` to ask the primary agent to do it with their Managing Other Agents tools.`;
+}
+
 async function executeExec(agentId: string, args: Record<string, unknown>): Promise<string> {
   const command = args.command as string;
+
+  // Hard block: prevent shell improvisation against dojo internals.
+  // See blockDojoInternalAccess() for rationale.
+  const blockMsg = blockDojoInternalAccess(agentId, command);
+  if (blockMsg) return blockMsg;
+
   const timeout = Math.min(
     typeof args.timeout === 'number' ? args.timeout : EXEC_TIMEOUT_MS,
     120000,
@@ -1325,6 +1395,10 @@ async function executeFileRead(agentId: string, args: Record<string, unknown>): 
     auditLog(agentId, 'file_read', filePath, 'error', 'Path must be absolute (use ~ for home directory)');
     return 'Error: Path must be absolute. Use ~ for home directory or provide a full path.';
   }
+
+  // Hard block on dojo internals — see blockDojoInternalAccess() rationale.
+  const blockMsg = blockDojoInternalAccess(agentId, filePath);
+  if (blockMsg) return blockMsg;
 
   try {
     const stat = await fs.promises.stat(filePath).catch(() => null);
@@ -1369,6 +1443,10 @@ async function executeFileWrite(agentId: string, args: Record<string, unknown>):
     return 'Error: Path must be absolute. Use ~ for home directory or provide a full path.';
   }
 
+  // Hard block on dojo internals — see blockDojoInternalAccess() rationale.
+  const blockMsg = blockDojoInternalAccess(agentId, filePath);
+  if (blockMsg) return blockMsg;
+
   try {
     const dir = path.dirname(filePath);
     await fs.promises.mkdir(dir, { recursive: true });
@@ -1389,6 +1467,10 @@ async function executeFileList(agentId: string, args: Record<string, unknown>): 
     auditLog(agentId, 'file_read', dirPath, 'error', 'Path must be absolute (use ~ for home directory)');
     return 'Error: Path must be absolute. Use ~ for home directory or provide a full path.';
   }
+
+  // Hard block on dojo internals — see blockDojoInternalAccess() rationale.
+  const blockMsg = blockDojoInternalAccess(agentId, dirPath);
+  if (blockMsg) return blockMsg;
 
   try {
     const stat = await fs.promises.stat(dirPath).catch(() => null);
