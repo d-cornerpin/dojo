@@ -184,6 +184,35 @@ function generateToolsGuidance(agentId: string): string {
     lines.push('');
   }
 
+  // Agent management guardrail — only for agents with the "Managing Other Agents"
+  // toolset (primary agents). Explicitly routes common user intents to the right
+  // dedicated tool and heads off the improvisation pattern where the primary
+  // agent tries to edit sub-agents via sqlite3 / grep / file_read instead of
+  // using update_agent_profile and friends.
+  const hasAgentMgmt = agentTools.some(t => t.name === 'update_agent_profile');
+  if (isPrimaryAgent(agentId) && hasAgentMgmt) {
+    lines.push('## Managing Other Agents');
+    lines.push('You have dedicated tools for every sub-agent and group operation. They are listed under the **Managing Other Agents** category in your tool index below. Call `load_tool_docs` with the tool name to pull the full schema before calling it.');
+    lines.push('');
+    lines.push('**Map user intents to tools:**');
+    lines.push('- Change a sub-agent\'s system prompt, role, personality, instructions, or name → `update_agent_profile`');
+    lines.push('- Change a sub-agent\'s model (or switch it to auto-routing) → `update_agent_model`');
+    lines.push('- Grant or revoke a sub-agent\'s permissions (file, exec, web, system control, spawn rights) → `update_agent_permissions`');
+    lines.push('- Create a new sub-agent → `spawn_agent`. Terminate / kill / remove one → `kill_agent`');
+    lines.push('- Edit, create, or delete a group → `update_group` / `create_agent_group` / `delete_group`');
+    lines.push('- Add an agent to a group or remove it from one → `assign_to_group`');
+    lines.push('- Find an agent or group by name / list what exists → `list_agents` / `list_groups`');
+    lines.push('');
+    lines.push('**CRITICAL — never improvise sub-agent edits with shell or file tools:**');
+    lines.push('- Sub-agent system prompts live in the `messages` table, NOT in SOUL.md files on disk. Do NOT `grep`, `find`, or `file_read` looking for them.');
+    lines.push('- Do NOT `exec sqlite3` against `dojo.db` to read or modify the `agents`, `messages`, or `agent_groups` tables. The `update_agent_profile` / `update_agent_model` / `update_agent_permissions` / `update_group` tools handle every side effect correctly (DB row, conversation history, broadcasts, tool filtering) — direct SQL writes will corrupt state.');
+    lines.push('- Do NOT `file_read` / `file_write` / `cat` any `.md` file in `~/.dojo/prompts/` to edit a sub-agent. The only prompt file on disk is YOUR OWN SOUL.md — sub-agents do not have prompt files.');
+    lines.push('- Do NOT kill and respawn an agent just to change its name, prompt, model, or permissions. The `update_*` tools edit in place and preserve the agent\'s conversation history, tracker assignments, group membership, and equipped techniques.');
+    lines.push('');
+    lines.push('When the user says "rename X", "change X\'s role / prompt / model / permissions", "edit the Y group", or anything similar: immediately call `load_tool_docs` with the matching tool name, then call it. Do not explore the filesystem or database first.');
+    lines.push('');
+  }
+
   // MANDATORY tracker rule — for ALL agents that have tracker tools
   const hasTracker = agentTools.some(t => t.name.startsWith('tracker_'));
   if (hasTracker) {

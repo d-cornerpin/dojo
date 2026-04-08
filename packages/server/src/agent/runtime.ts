@@ -55,6 +55,30 @@ const stoppedAgents = new Set<string>();
 // AbortControllers for in-flight API calls — aborting these kills the request immediately
 const activeAbortControllers = new Map<string, AbortController>();
 
+/**
+ * Hard stop marker injected into the conversation when the user hits Stop.
+ *
+ * Why this exists:
+ *   Previously, stopAgent() would abort the in-flight fetch and set a flag
+ *   that the loop checked between iterations, so the CURRENT turn exited.
+ *   But when the user sent their NEXT message, the assembler fed the full
+ *   conversation history to the model, and the model picked up exactly
+ *   where it left off — resuming the cancelled tool loop as if the stop
+ *   had never happened. The user experienced "stop" as "pause then resume".
+ *
+ *   This marker is inserted as a user-role message immediately in stopAgent(),
+ *   so it's persistent, visible in the dashboard, and most importantly
+ *   reaches the model on the next turn via the memory assembler. The text
+ *   explicitly tells the model to abandon its previous plan and treat the
+ *   next user message as a fresh request.
+ *
+ *   The memory assembler's mergeConsecutiveRoles() handles any adjacency
+ *   with synthetic "Cancelled" tool_result messages the loop may write
+ *   after stopAgent() returns — they get merged into a single user turn
+ *   and the model sees both the cancellations and the stop marker.
+ */
+const STOP_MARKER_TEXT = '[STOPPED BY USER]\n\nThe user just hit the Stop button. Your previous plan is CANCELLED. Do NOT continue the tool loop you were executing. Do NOT retry the last action with a different approach. Do NOT resume your prior work. When the user sends their next message, read it as a FRESH REQUEST from scratch and respond directly to what they are asking NOW — ignore what they asked before unless the new message explicitly tells you to continue.';
+
 /** Stop a running agent — aborts in-flight API call and halts the loop */
 export function stopAgent(agentId: string): void {
   stoppedAgents.add(agentId);
@@ -66,6 +90,25 @@ export function stopAgent(agentId: string): void {
     controller.abort();
     activeAbortControllers.delete(agentId);
   }
+
+  // Persist a stop marker into the conversation so the next turn sees it.
+  // This is role='user' because the memory assembler filters out system-role
+  // messages from the model's context. The marker survives server restarts
+  // (unlike an in-memory flag) and shows up in the dashboard chat as an
+  // explicit "the user pressed stop here" breadcrumb.
+  try {
+    const markerId = uuidv4();
+    const now = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+    getDb().prepare(
+      "INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)"
+    ).run(markerId, agentId, STOP_MARKER_TEXT, now);
+    broadcastMessage(agentId, { id: markerId, role: 'user', content: STOP_MARKER_TEXT, createdAt: now });
+  } catch (err) {
+    logger.warn('Failed to persist stop marker', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+
   logger.info('Agent stop requested', {}, agentId);
 }
 
