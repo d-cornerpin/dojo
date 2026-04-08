@@ -29,7 +29,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'Multi-Agent',
-    tools: ['spawn_agent', 'kill_agent', 'send_to_agent', 'broadcast_to_group', 'complete_task', 'list_agents', 'list_groups', 'create_agent_group', 'assign_to_group', 'delete_group', 'update_agent_permissions', 'update_agent_model', 'reset_session', 'set_user_presence'],
+    tools: ['spawn_agent', 'kill_agent', 'send_to_agent', 'broadcast_to_group', 'complete_task', 'list_agents', 'list_groups', 'create_agent_group', 'update_group', 'assign_to_group', 'delete_group', 'update_agent_permissions', 'update_agent_model', 'update_agent_profile', 'reset_session', 'set_user_presence'],
   },
   {
     label: 'Techniques',

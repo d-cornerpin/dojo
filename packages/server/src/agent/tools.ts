@@ -102,7 +102,7 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
 
   // Only primary-level agents should have group management, session, and presence tools
   if (!isPrimaryAgent(agentId)) {
-    removeTools.push('create_agent_group', 'assign_to_group', 'delete_group', 'reset_session', 'set_user_presence', 'update_agent_model', 'tunnel_start', 'tunnel_stop', 'tunnel_restart');
+    removeTools.push('create_agent_group', 'update_group', 'assign_to_group', 'delete_group', 'reset_session', 'set_user_presence', 'update_agent_model', 'update_agent_profile', 'tunnel_start', 'tunnel_stop', 'tunnel_restart');
   }
 
   // Technique tools: only Sensei can save/publish/update, everyone can use/list
@@ -873,6 +873,19 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['agent_id', 'model_id'],
     },
   },
+  {
+    name: 'update_agent_profile',
+    description: 'Rename a sub-agent and/or rewrite its system prompt (role definition, personality, instructions). Provide at least one of name or system_prompt. Conversation history, tracker tasks, group membership, permissions, and model are all preserved — this is a non-destructive edit. The agent will use the new identity on its next turn. Cannot be used on the primary agent (edit its SOUL.md via Settings instead).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The agent ID or name to update' },
+        name: { type: 'string', description: 'New name for the agent. Omit to keep the current name.' },
+        system_prompt: { type: 'string', description: 'New system prompt defining the agent\'s role, personality, and instructions. REPLACES the existing prompt entirely — include everything you want the agent to remember. Omit to keep the current prompt.' },
+      },
+      required: ['agent_id'],
+    },
+  },
   // ── Group Tools (Phase 6) ──
   {
     name: 'create_agent_group',
@@ -884,6 +897,19 @@ export const toolDefinitions: ToolDefinition[] = [
         description: { type: 'string', description: 'Group purpose and context' },
       },
       required: ['name', 'description'],
+    },
+  },
+  {
+    name: 'update_group',
+    description: 'Edit an existing agent group\'s name and/or description. Provide at least one of name or description. The description is injected into every member agent\'s system prompt as shared group context — updating it changes what the whole group sees.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        group_id: { type: 'string', description: 'The group ID to update' },
+        name: { type: 'string', description: 'New group name. Omit to keep the current name.' },
+        description: { type: 'string', description: 'New group purpose/description. Appears in every member agent\'s context. Omit to keep the current description.' },
+      },
+      required: ['group_id'],
     },
   },
   {
@@ -2127,6 +2153,79 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         break;
       }
 
+      case 'update_agent_profile': {
+        try {
+          const db = getDb();
+          const targetRef = args.agent_id as string;
+          const newName = args.name as string | undefined;
+          const newPrompt = args.system_prompt as string | undefined;
+
+          if (!targetRef) {
+            content = 'Error: agent_id is required';
+            isError = true;
+            break;
+          }
+          if (newName === undefined && newPrompt === undefined) {
+            content = 'Error: provide at least one of name or system_prompt';
+            isError = true;
+            break;
+          }
+
+          // Resolve by ID first, then by name
+          let target = db.prepare('SELECT id, name FROM agents WHERE id = ?').get(targetRef) as { id: string; name: string } | undefined;
+          if (!target) {
+            target = db.prepare("SELECT id, name FROM agents WHERE name = ? AND status != 'terminated'").get(targetRef) as { id: string; name: string } | undefined;
+          }
+          if (!target) {
+            content = `Error: Agent "${targetRef}" not found`;
+            isError = true;
+            break;
+          }
+
+          // Primary agent's identity lives in SOUL.md on disk, not in the messages table.
+          // Changing it via this tool would get out-of-sync with the assembler's prompt loader.
+          if (isPrimaryAgent(target.id)) {
+            content = 'Error: Cannot edit the primary agent via this tool. Edit its SOUL.md in Settings > Soul instead.';
+            isError = true;
+            break;
+          }
+
+          const changes: string[] = [];
+          let finalName = target.name;
+
+          if (typeof newName === 'string' && newName.trim() && newName.trim() !== target.name) {
+            const trimmedName = newName.trim();
+            db.prepare("UPDATE agents SET name = ?, updated_at = datetime('now') WHERE id = ?").run(trimmedName, target.id);
+            changes.push(`name: "${target.name}" → "${trimmedName}"`);
+            finalName = trimmedName;
+          }
+
+          if (typeof newPrompt === 'string') {
+            // The system prompt is stored as the first system-role message on the
+            // agent. Mirror the behavior of PUT /api/agents/:id in gateway/routes/agents.ts.
+            const existingMsg = db.prepare("SELECT id FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY rowid ASC LIMIT 1").get(target.id) as { id: string } | undefined;
+            if (existingMsg) {
+              db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(newPrompt, existingMsg.id);
+            } else {
+              db.prepare("INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(uuidv4(), target.id, newPrompt);
+            }
+            db.prepare("UPDATE agents SET updated_at = datetime('now') WHERE id = ?").run(target.id);
+            changes.push(`system prompt rewritten (${newPrompt.length} chars)`);
+          }
+
+          if (changes.length === 0) {
+            content = `No changes: ${target.name} already matches the requested values.`;
+          } else {
+            content = `Updated ${finalName}: ${changes.join('; ')}`;
+            logger.info('Agent profile updated via tool', { callerAgentId: agentId, targetAgentId: target.id, changes }, agentId);
+          }
+        } catch (err) {
+          content = `Error updating agent profile: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
+        break;
+      }
+
       // ── Group Tools (Phase 6) ──
       case 'create_agent_group': {
         const group = createGroup(
@@ -2135,6 +2234,63 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           agentId,
         );
         content = `Group created: "${group.name}" (ID: ${group.id})`;
+        break;
+      }
+      case 'update_group': {
+        const gid = args.group_id as string;
+        const newName = args.name as string | undefined;
+        const newDescription = args.description as string | undefined;
+
+        if (!gid) {
+          content = 'Error: group_id is required';
+          isError = true;
+          break;
+        }
+        if (newName === undefined && newDescription === undefined) {
+          content = 'Error: provide at least one of name or description';
+          isError = true;
+          break;
+        }
+
+        const { updateGroup: doUpdateGroup, SYSTEM_GROUP_ID: SYS_GROUP_U, getGroupDetail } = await import('./groups.js');
+        if (gid === SYS_GROUP_U) {
+          content = 'Cannot modify the System group.';
+          isError = true;
+          break;
+        }
+
+        const existing = getGroupDetail(gid);
+        if (!existing) {
+          content = `Error: Group ${gid} not found`;
+          isError = true;
+          break;
+        }
+
+        const updates: { name?: string; description?: string } = {};
+        const changes: string[] = [];
+        if (typeof newName === 'string' && newName.trim() && newName.trim() !== existing.name) {
+          updates.name = newName.trim();
+          changes.push(`name: "${existing.name}" → "${newName.trim()}"`);
+        }
+        if (typeof newDescription === 'string' && newDescription !== (existing.description ?? '')) {
+          updates.description = newDescription;
+          changes.push(`description updated (${newDescription.length} chars)`);
+        }
+
+        if (changes.length === 0) {
+          content = `No changes: group "${existing.name}" already matches the requested values.`;
+          break;
+        }
+
+        const updated = doUpdateGroup(gid, updates);
+        if (!updated) {
+          content = `Error: Failed to update group ${gid}`;
+          isError = true;
+          break;
+        }
+
+        content = `Group "${updates.name ?? existing.name}" updated: ${changes.join('; ')}`;
+        logger.info('Group updated via tool', { callerAgentId: agentId, groupId: gid, updates });
         break;
       }
       case 'assign_to_group': {
