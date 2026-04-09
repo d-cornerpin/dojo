@@ -9,6 +9,9 @@ import {
   listProjects,
   updateTask,
   addTaskNotes,
+  resolveTaskId,
+  resolveProjectId,
+  formatResolveError,
 } from './schema.js';
 import { ensurePMAgentRunning } from './pm-agent.js';
 import { calculateNextRun } from '../scheduler/engine.js';
@@ -282,8 +285,12 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
 
 export function trackerUpdateStatus(agentId: string, args: Record<string, unknown>): string {
   try {
-    const taskId = args.taskId as string;
-    if (!taskId) return 'Error: taskId is required';
+    const rawTaskId = args.taskId as string;
+    if (!rawTaskId) return 'Error: taskId is required';
+
+    const resolved = resolveTaskId(rawTaskId);
+    if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+    const taskId = resolved.id;
 
     const status = args.status as string | undefined;
     const assignedTo = args.assignedTo as string | undefined;
@@ -348,7 +355,12 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     const task = updateTask(taskId, updates);
 
     if (!task) {
-      return `Task ${taskId} was deleted while being updated.`;
+      // We already resolved taskId above, so the id existed at resolve time.
+      // A null return from updateTask now means one of two rare things:
+      //   1. Another agent deleted the task between resolve and update
+      //   2. The task was deleted between the UPDATE and the SELECT
+      // Either way, the task genuinely no longer exists — not a prefix mismatch.
+      return `Error: Task ${taskId} was deleted before the update completed. It no longer exists.`;
     }
 
     // Notify primary agent when a task completes
@@ -385,8 +397,12 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
 
 export function trackerAddNotes(agentId: string, args: Record<string, unknown>): string {
   try {
-    const taskId = args.taskId as string;
-    if (!taskId) return 'Error: taskId is required';
+    const rawTaskId = args.taskId as string;
+    if (!rawTaskId) return 'Error: taskId is required';
+
+    const resolved = resolveTaskId(rawTaskId);
+    if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+    const taskId = resolved.id;
 
     const notes = args.notes as string;
     if (!notes) return 'Error: notes is required';
@@ -405,45 +421,62 @@ export function trackerAddNotes(agentId: string, args: Record<string, unknown>):
 
 export function trackerGetStatus(agentId: string, args: Record<string, unknown>): string {
   try {
-    const taskId = args.taskId as string | undefined;
-    const projectId = args.projectId as string | undefined;
+    const rawTaskId = args.taskId as string | undefined;
+    const rawProjectId = args.projectId as string | undefined;
 
-    if (taskId) {
-      const task = getTask(taskId);
-      if (!task) return `Task not found: ${taskId}`;
+    // The dispatcher in agent/tools.ts passes the same input as BOTH
+    // taskId and projectId to let either side succeed. Try to resolve
+    // the task first; if that fails, fall through and try the project
+    // (but don't surface the task's not_found error if the project
+    // resolves).
+    if (rawTaskId) {
+      const taskResolved = resolveTaskId(rawTaskId);
+      if (taskResolved.ok) {
+        const task = getTask(taskResolved.id);
+        if (!task) return `Error: Task ${taskResolved.id} was deleted before it could be read.`;
 
-      const parts = [
-        `Task: ${task.title}`,
-        `ID: ${task.id}`,
-        `Status: ${task.status}`,
-        `Priority: ${task.priority}`,
-      ];
-      if (task.projectId) {
-        const statusDb = getDb();
-        const proj = statusDb.prepare('SELECT title FROM projects WHERE id = ?').get(task.projectId) as { title: string } | undefined;
-        parts.push(`Project: ${proj?.title ?? task.projectId}`);
+        const parts = [
+          `Task: ${task.title}`,
+          `ID: ${task.id}`,
+          `Status: ${task.status}`,
+          `Priority: ${task.priority}`,
+        ];
+        if (task.projectId) {
+          const statusDb = getDb();
+          const proj = statusDb.prepare('SELECT title FROM projects WHERE id = ?').get(task.projectId) as { title: string } | undefined;
+          parts.push(`Project: ${proj?.title ?? task.projectId}`);
+        }
+        if (task.assignedTo) parts.push(`Assigned to: ${task.assignedToName ?? task.assignedTo}`);
+        if (task.description) parts.push(`Description: ${task.description}`);
+        if (task.stepNumber !== null) parts.push(`Step: ${task.stepNumber}${task.totalSteps ? ` of ${task.totalSteps}` : ''}`);
+        if (task.dependsOn.length > 0) {
+          const depNames = task.dependsOn.map(depId => {
+            const dep = getTask(depId);
+            return dep ? dep.title : depId;
+          });
+          parts.push(`Depends on: ${depNames.join(', ')}`);
+        }
+        if (task.notes) parts.push(`\nNotes:\n${task.notes}`);
+        parts.push(`Created: ${task.createdAt}`);
+        parts.push(`Updated: ${task.updatedAt}`);
+        if (task.completedAt) parts.push(`Completed: ${task.completedAt}`);
+
+        return parts.join('\n');
       }
-      if (task.assignedTo) parts.push(`Assigned to: ${task.assignedToName ?? task.assignedTo}`);
-      if (task.description) parts.push(`Description: ${task.description}`);
-      if (task.stepNumber !== null) parts.push(`Step: ${task.stepNumber}${task.totalSteps ? ` of ${task.totalSteps}` : ''}`);
-      if (task.dependsOn.length > 0) {
-        const depNames = task.dependsOn.map(depId => {
-          const dep = getTask(depId);
-          return dep ? dep.title : depId;
-        });
-        parts.push(`Depends on: ${depNames.join(', ')}`);
+      // Task resolution failed — if we also have a projectId (usually the
+      // same string), try the project branch below before reporting.
+      if (!rawProjectId) {
+        return formatResolveError('task', rawTaskId, taskResolved);
       }
-      if (task.notes) parts.push(`\nNotes:\n${task.notes}`);
-      parts.push(`Created: ${task.createdAt}`);
-      parts.push(`Updated: ${task.updatedAt}`);
-      if (task.completedAt) parts.push(`Completed: ${task.completedAt}`);
-
-      return parts.join('\n');
     }
 
-    if (projectId) {
-      const project = getProject(projectId);
-      if (!project) return `Project not found: ${projectId}`;
+    if (rawProjectId) {
+      const projectResolved = resolveProjectId(rawProjectId);
+      if (!projectResolved.ok) {
+        return formatResolveError('project', rawProjectId, projectResolved);
+      }
+      const project = getProject(projectResolved.id);
+      if (!project) return `Error: Project ${projectResolved.id} was deleted before it could be read.`;
 
       const parts = [
         `Project: ${project.title}`,
@@ -553,15 +586,19 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
 
 export function trackerCompleteStep(agentId: string, args: Record<string, unknown>): string {
   try {
-    const taskId = args.taskId as string ?? args.task_id as string;
-    if (!taskId) return 'Error: task_id is required';
+    const rawTaskId = (args.taskId as string) ?? (args.task_id as string);
+    if (!rawTaskId) return 'Error: task_id is required';
+
+    const resolved = resolveTaskId(rawTaskId);
+    if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+    const taskId = resolved.id;
 
     const notes = args.notes as string | undefined;
     const db = getDb();
 
     // Get the completed task
     const task = getTask(taskId);
-    if (!task) return `Error: Task ${taskId} not found`;
+    if (!task) return `Error: Task ${taskId} was deleted before completion could be recorded.`;
 
     // Mark current task as complete
     updateTask(taskId, { status: 'complete', notes: notes ? `[Completed] ${notes}` : '[Completed]' });
@@ -619,13 +656,18 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
 // ── trackerPauseSchedule ──
 
 export function trackerPauseSchedule(agentId: string, args: Record<string, unknown>): string {
-  const taskId = args.taskId as string;
-  if (!taskId) return 'Error: taskId is required';
+  const rawTaskId = args.taskId as string;
+  if (!rawTaskId) return 'Error: taskId is required';
+
+  const resolved = resolveTaskId(rawTaskId);
+  if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+  const taskId = resolved.id;
+
   const markComplete = (args.mark_complete as boolean) ?? false;
 
   const db = getDb();
   const task = db.prepare('SELECT id, title, schedule_status, project_id FROM tasks WHERE id = ?').get(taskId) as { id: string; title: string; schedule_status: string; project_id: string } | undefined;
-  if (!task) return `Error: Task not found: ${taskId}`;
+  if (!task) return `Error: Task ${taskId} was deleted before pause could be applied.`;
   if (task.schedule_status === 'unscheduled') return `Error: Task "${task.title}" is not scheduled`;
 
   if (markComplete) {
@@ -645,12 +687,16 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
 // ── trackerResumeSchedule ──
 
 export function trackerResumeSchedule(agentId: string, args: Record<string, unknown>): string {
-  const taskId = args.taskId as string;
-  if (!taskId) return 'Error: taskId is required';
+  const rawTaskId = args.taskId as string;
+  if (!rawTaskId) return 'Error: taskId is required';
+
+  const resolved = resolveTaskId(rawTaskId);
+  if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+  const taskId = resolved.id;
 
   const db = getDb();
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as Record<string, unknown> | undefined;
-  if (!task) return `Error: Task not found: ${taskId}`;
+  if (!task) return `Error: Task ${taskId} was deleted before resume could be applied.`;
 
   
   const scheduledTask = {

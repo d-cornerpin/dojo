@@ -2421,11 +2421,24 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         break;
       }
       case 'tracker_reassign_task': {
-        const reassignTaskId = args.task_id as string;
-        if (!reassignTaskId) { content = 'Error: task_id is required'; isError = true; break; }
+        const rawReassignTaskId = args.task_id as string;
+        if (!rawReassignTaskId) { content = 'Error: task_id is required'; isError = true; break; }
+
+        // Resolve task id prefix to the full UUID so this tool accepts
+        // the 8-char ids emitted by tracker_list_active, same pattern as
+        // the other tracker_* tools.
+        const { resolveTaskId, formatResolveError } = await import('../tracker/schema.js');
+        const reassignResolved = resolveTaskId(rawReassignTaskId);
+        if (!reassignResolved.ok) {
+          content = formatResolveError('task', rawReassignTaskId, reassignResolved);
+          isError = true;
+          break;
+        }
+        const reassignTaskId = reassignResolved.id;
+
         const reassignDb = getDb();
         const reassignTask = reassignDb.prepare('SELECT id, title FROM tasks WHERE id = ?').get(reassignTaskId) as { id: string; title: string } | undefined;
-        if (!reassignTask) { content = `Error: Task not found: ${reassignTaskId}`; isError = true; break; }
+        if (!reassignTask) { content = `Error: Task ${reassignTaskId} was deleted before reassignment could be applied.`; isError = true; break; }
         const newAgent = args.assigned_to as string | undefined;
         const newGroup = args.assigned_to_group as string | undefined;
         if (newAgent) {

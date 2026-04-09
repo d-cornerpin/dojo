@@ -112,6 +112,13 @@ chatRouter.get('/:agentId/messages', (c) => {
 
   let rows: Array<Record<string, unknown>>;
 
+  // Filter out legacy stop marker rows written by v1.10.4's earlier
+  // stopAgent() implementation. The stop marker is now injected only at
+  // context-assembly time and is never persisted, but older production
+  // databases may still contain marker rows that should not appear in
+  // the user-facing chat feed.
+  const STOP_MARKER_FILTER = "content NOT LIKE '[STOPPED BY USER]%'";
+
   if (before) {
     // Get the timestamp of the cursor message
     const cursorMsg = db.prepare('SELECT created_at FROM messages WHERE id = ?').get(before) as { created_at: string } | undefined;
@@ -121,14 +128,14 @@ chatRouter.get('/:agentId/messages', (c) => {
 
     rows = db.prepare(`
       SELECT * FROM messages
-      WHERE agent_id = ? AND created_at < ?
+      WHERE agent_id = ? AND created_at < ? AND ${STOP_MARKER_FILTER}
       ORDER BY created_at DESC, rowid DESC
       LIMIT ?
     `).all(agentId, cursorMsg.created_at, Math.min(limit, 200)) as Array<Record<string, unknown>>;
   } else {
     rows = db.prepare(`
       SELECT * FROM messages
-      WHERE agent_id = ?
+      WHERE agent_id = ? AND ${STOP_MARKER_FILTER}
       ORDER BY created_at DESC, rowid DESC
       LIMIT ?
     `).all(agentId, Math.min(limit, 200)) as Array<Record<string, unknown>>;

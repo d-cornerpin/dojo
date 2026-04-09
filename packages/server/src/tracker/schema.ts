@@ -373,6 +373,86 @@ export function getTask(id: string): Task | null {
   return mapTaskRow(row);
 }
 
+// ── ID prefix resolution ──
+//
+// The tracker list tools display task/project ids truncated to 8 chars
+// (see tracker/tools.ts — `t.id.slice(0, 8)`). Agents naturally copy that
+// prefix back when calling update/pause/etc. tools, but the underlying
+// DB rows have full UUID primary keys, so a WHERE id = 'aaa73e0e' lookup
+// returns nothing even when the task exists. This caused a loop where
+// the agent couldn't act on any task it saw in the list.
+//
+// These resolvers accept either a full UUID or a ≥4-char prefix and
+// return a discriminated result so callers can surface precise errors
+// to the agent (not_found vs ambiguous vs too short) instead of the
+// generic "Task was deleted while being updated" that the runtime was
+// synthesizing from a null updateTask() return.
+
+export type IdResolution =
+  | { ok: true; id: string }
+  | { ok: false; reason: 'empty' | 'too_short' | 'not_found' | 'ambiguous'; matches?: string[] };
+
+function resolveIdIn(table: 'tasks' | 'projects', idOrPrefix: string): IdResolution {
+  if (!idOrPrefix || typeof idOrPrefix !== 'string') {
+    return { ok: false, reason: 'empty' };
+  }
+  const input = idOrPrefix.trim();
+  if (input.length === 0) return { ok: false, reason: 'empty' };
+  if (input.length < 4) return { ok: false, reason: 'too_short' };
+
+  const db = getDb();
+
+  // Full UUID form (with or without dashes) — try direct lookup first.
+  if (input.length >= 32) {
+    const row = db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(input) as { id: string } | undefined;
+    if (row) return { ok: true, id: row.id };
+    // Fall through to prefix match — the "full" id may be malformed
+  }
+
+  // Prefix match. Limit to 5 so we can detect ambiguity cheaply.
+  const matches = db.prepare(`SELECT id FROM ${table} WHERE id LIKE ? LIMIT 5`)
+    .all(`${input}%`) as Array<{ id: string }>;
+
+  if (matches.length === 0) return { ok: false, reason: 'not_found' };
+  if (matches.length === 1) return { ok: true, id: matches[0].id };
+  return { ok: false, reason: 'ambiguous', matches: matches.map(m => m.id) };
+}
+
+/** Resolve a task id from a full UUID or ≥4-char prefix. */
+export function resolveTaskId(idOrPrefix: string): IdResolution {
+  return resolveIdIn('tasks', idOrPrefix);
+}
+
+/** Resolve a project id from a full UUID or ≥4-char prefix. */
+export function resolveProjectId(idOrPrefix: string): IdResolution {
+  return resolveIdIn('projects', idOrPrefix);
+}
+
+/**
+ * Format a resolver failure as a clear error string for an agent tool
+ * response. Callers should check `ok` first and only call this on
+ * failures.
+ */
+export function formatResolveError(
+  kind: 'task' | 'project',
+  input: string,
+  resolution: Exclude<IdResolution, { ok: true }>,
+): string {
+  const Kind = kind === 'task' ? 'Task' : 'Project';
+  switch (resolution.reason) {
+    case 'empty':
+      return `Error: ${kind} id is required.`;
+    case 'too_short':
+      return `Error: ${kind} id '${input}' is too short. Provide at least 4 characters of the id (8-char prefixes from tracker_list_active work fine).`;
+    case 'not_found':
+      return `Error: ${Kind} not found: '${input}'. It may have been deleted or completed. Use tracker_list_active to see current ${kind}s.`;
+    case 'ambiguous': {
+      const shown = (resolution.matches ?? []).map(m => m.slice(0, 12)).join(', ');
+      return `Error: ${kind} id prefix '${input}' matches multiple ${kind}s. Use a longer prefix or the full id. Candidates: ${shown}`;
+    }
+  }
+}
+
 export function listTasks(filter?: {
   status?: string;
   assignedTo?: string;
@@ -447,13 +527,26 @@ export function updateTask(id: string, updates: Partial<{
 
   params.push(id);
 
-  db.prepare(`UPDATE tasks SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
+  const result = db.prepare(`UPDATE tasks SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
+
+  if (result.changes === 0) {
+    // UPDATE matched zero rows — the id doesn't exist. Callers that pass
+    // the result through tracker tools should have already resolved the
+    // id via resolveTaskId() before calling updateTask(), so hitting this
+    // path generally means a race (task deleted between resolve and
+    // update) or a caller that bypassed the resolver.
+    logger.warn('updateTask: UPDATE affected zero rows (task id does not exist)', { taskId: id });
+    return null;
+  }
 
   logger.info('Task updated', { taskId: id, updates });
 
   const task = getTask(id);
   if (!task) {
-    logger.warn('Task not found after update (may have been deleted)', { taskId: id });
+    // Rare race: row was present during UPDATE (.changes >= 1) but deleted
+    // before the SELECT. Honest diagnostic now that the zero-rows case
+    // is handled separately above.
+    logger.warn('updateTask: task deleted between UPDATE and SELECT (race)', { taskId: id });
     return null;
   }
 

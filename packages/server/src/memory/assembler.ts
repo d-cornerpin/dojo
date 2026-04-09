@@ -202,7 +202,22 @@ export async function assembleContext(
   }
 
   // Ensure alternating roles
-  const merged = mergeConsecutiveRoles(messages);
+  let merged = mergeConsecutiveRoles(messages);
+
+  // Self-heal: drop orphaned tool blocks so the agent can recover from a
+  // broken conversation invariant without manual intervention. Both the
+  // Anthropic and OpenAI-compatible APIs require that every tool_use in
+  // an assistant message has a matching tool_result in a following user
+  // message, and every tool_result references a tool_use id that appears
+  // in a preceding assistant message. Violations cause provider errors
+  // like MiniMax's "tool result's tool id(...) not found", which leaves
+  // the agent stuck in a loop of failed calls.
+  //
+  // Causes include mid-history compaction dropping an assistant turn
+  // but leaving the tool_result behind, stream accumulators capturing
+  // a drifted id, or transient DB failures. We don't try to diagnose
+  // which one — we just enforce the invariant before every call.
+  merged = sanitizeToolBlocks(merged, agentId);
 
   // Ensure conversation ends with a user message (Anthropic API requirement —
   // "does not support assistant message prefill")
@@ -236,6 +251,38 @@ export async function assembleContext(
       }
     }
   } catch { /* session_started_at column may not exist yet */ }
+
+  // If the user pressed Stop since the last turn, inject a stop marker into
+  // the last user message telling the model to abandon its prior plan. The
+  // flag is set by stopAgent() in runtime.ts and cleared here after we've
+  // applied it. The marker exists only in the model's in-memory context —
+  // it is never persisted to the messages table, so the dashboard chat feed
+  // does not show it to the user.
+  try {
+    const db = getDb();
+    const row = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
+    if (row?.config) {
+      const config = JSON.parse(row.config) as Record<string, unknown>;
+      if (config.stopMarkerPending === true) {
+        const STOP_MARKER = '[Context note: the user just hit the Stop button. Your previous plan is CANCELLED. Do NOT continue the tool loop you were executing. Do NOT retry the last action with a different approach. Do NOT resume your prior work. Read the next user message as a fresh request and respond to what they are asking NOW — ignore what they asked before unless the new message explicitly tells you to continue.]';
+        if (merged.length > 0 && merged[merged.length - 1].role === 'user') {
+          const lastMsg = merged[merged.length - 1];
+          if (typeof lastMsg.content === 'string') {
+            lastMsg.content = `${STOP_MARKER}\n\n${lastMsg.content}`;
+          } else if (Array.isArray(lastMsg.content)) {
+            // Content blocks (e.g. tool_result) — prepend a text block
+            lastMsg.content = [
+              { type: 'text', text: STOP_MARKER } as Anthropic.TextBlockParam,
+              ...(lastMsg.content as Anthropic.ContentBlockParam[]),
+            ];
+          }
+        }
+        // Clear the flag so the marker fires exactly once.
+        config.stopMarkerPending = false;
+        db.prepare("UPDATE agents SET config = ? WHERE id = ?").run(JSON.stringify(config), agentId);
+      }
+    }
+  } catch { /* config may not exist or be malformed */ }
 
   logger.info('Context assembled', {
     systemPromptTokens: estimateTokens(systemPrompt),
@@ -453,6 +500,100 @@ function parseMessageContent(
   } catch {
     return msg.content;
   }
+}
+
+/**
+ * Drop tool blocks that break the conversation invariant so the next
+ * provider call does not fail with a "tool id not found" error.
+ *
+ * The invariant every chat API enforces:
+ *   - Every `tool_use` block on an assistant message must have a matching
+ *     `tool_result` block in a following user message (same id).
+ *   - Every `tool_result` block on a user message must reference a
+ *     `tool_use_id` that appears on a preceding assistant message.
+ *
+ * This function does two passes:
+ *   1. Collect the set of tool_use ids that exist in assistant messages
+ *      and the set of tool_result ids that exist in user messages.
+ *   2. Filter each message's content blocks:
+ *      - On assistant messages, drop tool_use blocks whose id has no
+ *        matching tool_result anywhere in the history.
+ *      - On user messages, drop tool_result blocks whose tool_use_id
+ *        has no matching tool_use.
+ *      - Text blocks are always kept.
+ *   3. Any message that becomes empty after filtering is dropped
+ *      entirely.
+ *
+ * The function is non-destructive — it returns a sanitized copy and
+ * does not touch the messages table. The DB still holds the orphaned
+ * rows so history stays intact; the invariant is only enforced on the
+ * in-memory list that goes to the provider.
+ */
+function sanitizeToolBlocks(
+  messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
+  agentId: string,
+): Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }> {
+  // Pass 1: collect the valid id sets
+  const validToolUseIds = new Set<string>();
+  const validToolResultIds = new Set<string>();
+
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) continue;
+    const blocks = msg.content as unknown as Array<Record<string, unknown>>;
+    for (const b of blocks) {
+      if (msg.role === 'assistant' && b.type === 'tool_use' && typeof b.id === 'string') {
+        validToolUseIds.add(b.id);
+      } else if (msg.role === 'user' && b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+        validToolResultIds.add(b.tool_use_id);
+      }
+    }
+  }
+
+  // Pass 2: filter blocks that don't have a matching partner
+  let droppedToolUse = 0;
+  let droppedToolResult = 0;
+  let droppedMessages = 0;
+  const sanitized: typeof messages = [];
+
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) {
+      sanitized.push(msg);
+      continue;
+    }
+    const blocks = msg.content as unknown as Array<Record<string, unknown>>;
+
+    const kept = blocks.filter(b => {
+      if (msg.role === 'assistant' && b.type === 'tool_use') {
+        if (typeof b.id === 'string' && validToolResultIds.has(b.id)) return true;
+        droppedToolUse++;
+        return false;
+      }
+      if (msg.role === 'user' && b.type === 'tool_result') {
+        if (typeof b.tool_use_id === 'string' && validToolUseIds.has(b.tool_use_id)) return true;
+        droppedToolResult++;
+        return false;
+      }
+      return true; // text blocks and anything else pass through
+    });
+
+    if (kept.length === 0) {
+      droppedMessages++;
+      continue;
+    }
+    sanitized.push({ ...msg, content: kept as unknown as Anthropic.ContentBlockParam[] });
+  }
+
+  if (droppedToolUse > 0 || droppedToolResult > 0 || droppedMessages > 0) {
+    logger.warn('Sanitized orphaned tool blocks from context', {
+      droppedToolUse,
+      droppedToolResult,
+      droppedMessages,
+      validToolUseIds: validToolUseIds.size,
+      validToolResultIds: validToolResultIds.size,
+    }, agentId);
+  }
+
+  return sanitized;
 }
 
 function mergeConsecutiveRoles(
