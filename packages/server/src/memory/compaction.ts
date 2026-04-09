@@ -42,6 +42,28 @@ export async function checkAndCompact(
   contextWindow: number,
   options?: { force?: boolean },
 ): Promise<{ leafCreated: number; condensedCreated: number; tokensReclaimed: number }> {
+  // If the caller passed the sentinel 'auto' model id (auto-routed agent),
+  // resolve it to a real model so the summarizer can actually call it.
+  // The cheapest enabled model is a good pick — summaries are bulk work
+  // where quality matters less than not crashing.
+  if (modelId === 'auto' || modelId === '__auto__') {
+    const db = getDb();
+    const cheapest = db.prepare(`
+      SELECT m.id FROM models m
+      JOIN providers p ON p.id = m.provider_id
+      WHERE m.is_enabled = 1 AND p.id != '__system__'
+      ORDER BY COALESCE(m.input_cost_per_m, 0) ASC
+      LIMIT 1
+    `).get() as { id: string } | undefined;
+    if (cheapest) {
+      modelId = cheapest.id;
+      logger.info('Resolved auto-routed model for compaction', { resolvedModelId: modelId }, agentId);
+    } else {
+      logger.warn('No enabled models available for compaction — skipping', {}, agentId);
+      return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
+    }
+  }
+
   const totalTokens = getTotalTokensByAgent(agentId);
   const threshold = DEFAULTS.contextThreshold * contextWindow;
 

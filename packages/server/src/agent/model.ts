@@ -389,9 +389,46 @@ async function callOpenAIModel(
     return sum + Math.ceil(content.length / 3);
   }, 0) + Math.ceil(JSON.stringify(openaiTools ?? []).length / 3);
 
+  // Hard guard: if the input alone exceeds the context window (minus a
+  // minimum output reservation), trim the oldest messages until it fits.
+  // OpenAI-compatible providers (MiniMax, OpenRouter, etc.) reject
+  // over-limit requests outright, unlike Anthropic which auto-truncates.
+  // Keep at least the system message (index 0) and the most recent user
+  // message (last index); trim from the middle outward.
+  const minOutputReserve = 1024;
+  const hardCeiling = modelInfo.contextWindow - minOutputReserve;
+  if (inputEstimate > hardCeiling && openaiMessages.length > 2) {
+    logger.warn('Input exceeds context window — trimming oldest messages to fit', {
+      inputEstimate,
+      contextWindow: modelInfo.contextWindow,
+      messageCount: openaiMessages.length,
+    }, agentId);
+
+    // Preserve the system message (first) and the most recent messages.
+    // Drop from index 1 forward (oldest conversation messages) until we're
+    // under the ceiling. Each dropped message reclaims its estimated tokens.
+    let currentEstimate = inputEstimate;
+    while (currentEstimate > hardCeiling && openaiMessages.length > 2) {
+      const dropped = openaiMessages.splice(1, 1)[0];
+      const droppedTokens = Math.ceil(
+        (typeof dropped.content === 'string' ? dropped.content : JSON.stringify(dropped.content ?? '')).length / 3,
+      );
+      currentEstimate -= droppedTokens;
+    }
+
+    logger.info('Trimmed context to fit', {
+      newEstimate: currentEstimate,
+      remainingMessages: openaiMessages.length,
+    }, agentId);
+  }
+
   // Reserve at most 25% of context for output, or whatever's left after input
+  const finalInputEstimate = openaiMessages.reduce((sum, m) => {
+    const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
+    return sum + Math.ceil(content.length / 3);
+  }, 0) + Math.ceil(JSON.stringify(openaiTools ?? []).length / 3);
   const maxOutputBudget = Math.floor(modelInfo.contextWindow * 0.25);
-  const availableForOutput = Math.max(1024, Math.min(maxOutputBudget, modelInfo.contextWindow - inputEstimate - 1000));
+  const availableForOutput = Math.max(1024, Math.min(maxOutputBudget, modelInfo.contextWindow - finalInputEstimate - 1000));
   const effectiveMaxTokens = Math.min(modelInfo.maxOutputTokens, availableForOutput);
 
   const requestParams: OpenAI.ChatCompletionCreateParams = {
