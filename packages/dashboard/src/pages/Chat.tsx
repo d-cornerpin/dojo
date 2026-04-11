@@ -441,6 +441,10 @@ export const Chat = () => {
             role: e.message.role,
             content: e.message.content,
             createdAt: e.message.createdAt,
+            // Carry attachments through from the WS payload so thumbnails
+            // render immediately for iMessage-sourced messages (previously
+            // only hydrated on page reload via the HTTP GET).
+            attachments: e.message.attachments,
           },
         ];
       });

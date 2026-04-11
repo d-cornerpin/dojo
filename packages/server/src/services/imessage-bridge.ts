@@ -490,6 +490,12 @@ async function pollMessages(): Promise<void> {
               cost: null,
               latencyMs: null,
               createdAt: new Date().toISOString(),
+              // Include the uploaded attachments in the WS payload so the
+              // dashboard can render thumbnails the moment the iMessage
+              // arrives, without waiting for a page refresh to re-fetch.
+              ...(attachmentResult.uploadedFiles.length > 0
+                ? { attachments: attachmentResult.uploadedFiles }
+                : {}),
             },
           });
 
