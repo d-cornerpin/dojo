@@ -381,15 +381,26 @@ export async function probeAndStoreCapabilities(modelId: string): Promise<Capabi
   return caps;
 }
 
-// ── Boot backfill: probe every model whose capabilities are empty ──
+// ── Boot backfill: probe every model whose capabilities look stale ──
 //
-// "Empty" here means the *normalized* capability set (what the UI actually
-// renders) is empty — not just the raw DB value. That way we also sweep up
-// legacy rows with pre-normalized values like `['chat']` / `['chat','code']`
-// that were written by the old name-heuristic code before the probe feature
-// shipped. Those rows aren't literally empty but render as "capabilities
-// unknown" because none of their strings are in the modern vocabulary, so
-// they need a refresh just as much as a brand-new `[]` row.
+// A row "looks stale" when EITHER of these is true:
+//   1. Its normalized capability set (what the UI renders) is empty — the
+//      row is literally `[]`, unparseable, or contains only non-modern
+//      strings that the normalizer drops. Example: legacy Ollama rows with
+//      `['chat']`.
+//   2. Its raw JSON contains ANY string that isn't in the modern vocabulary
+//      (`tools`/`vision`/`thinking`/`embedding`). This catches rows like
+//      Anthropic's old hardcoded `['chat','code','analysis','tools']` where
+//      the normalizer *would* keep `tools` — so criterion 1 alone wouldn't
+//      fire — but the row is still stale and missing vision/thinking info
+//      because the heuristic never detected them. One non-modern string in
+//      the raw array is an unambiguous "this was written by the pre-probe
+//      code path" tell.
+//
+// This replaces the earlier length-only check that was passing Anthropic
+// models through unchanged.
+
+const MODERN_CAPABILITY_VOCAB = new Set<string>(['tools', 'vision', 'thinking', 'embedding']);
 
 export async function backfillEmptyCapabilities(): Promise<void> {
   const db = getDb();
@@ -398,11 +409,24 @@ export async function backfillEmptyCapabilities(): Promise<void> {
   `).all() as Array<{ id: string; capabilities: string }>;
 
   const needsBackfill = rows.filter(r => {
-    // Use the same normalizer the UI uses — if the modern-vocab filter
-    // returns an empty array, this row will render as "unknown" and needs
-    // a real probe regardless of what's in the raw JSON.
     const normalized = getModelCapabilities(r.id);
-    return normalized.length === 0;
+    if (normalized.length === 0) return true;
+
+    // Criterion 2: raw array contains any non-modern-vocab string → legacy.
+    try {
+      const raw = JSON.parse(r.capabilities);
+      if (Array.isArray(raw)) {
+        for (const c of raw) {
+          if (typeof c === 'string' && !MODERN_CAPABILITY_VOCAB.has(c)) {
+            return true;
+          }
+        }
+      }
+    } catch {
+      return true;
+    }
+
+    return false;
   });
 
   if (needsBackfill.length === 0) {
