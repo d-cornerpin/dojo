@@ -59,6 +59,41 @@ const IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp
 const HEIC_MIMES = new Set(['image/heic', 'image/heif']);
 const PDF_MIMES = new Set(['application/pdf']);
 
+// Text-ish file extensions we'll read + inline directly into the forwarded
+// message body (same list as packages/server/src/gateway/routes/upload.ts).
+// Any file under `INLINE_TEXT_MAX_BYTES` whose MIME starts with `text/` or
+// whose extension is in this set gets slurped and framed with a header/
+// footer so the model reads it as context. Duplicated here rather than
+// imported to keep the iMessage bridge self-contained.
+const INLINE_TEXT_EXTENSIONS = new Set([
+  '.txt', '.md', '.csv', '.json', '.xml', '.js', '.ts', '.py', '.html', '.css',
+  '.sh', '.yaml', '.yml', '.toml', '.env', '.tsx', '.jsx', '.sql', '.rs',
+  '.go', '.java', '.rb', '.php', '.swift', '.kt', '.c', '.cpp', '.h', '.log',
+]);
+const INLINE_TEXT_MAX_BYTES = 64 * 1024; // 64 KB per text file
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// A note about an attachment we chose not to decode/deliver — still surfaced
+// to the model in the message text so it can respond "I got your video but
+// I can't play videos" etc, rather than silently dropping the context.
+interface MentionedAttachment {
+  name: string;
+  mimeType: string;
+  size: number;
+  reason: string; // short human-readable reason for the mention-only path
+}
+
+interface ImessageAttachmentResult {
+  uploadedFiles: UploadedFile[];   // image/PDF copied to disk, runtime injects as content blocks
+  inlinedTextBlocks: string[];     // small text files read + framed for the message body
+  mentionedAttachments: MentionedAttachment[]; // everything else — metadata only
+}
+
 function ensureImessageUploadDir(agentId: string): string {
   const dir = path.join(DOJO_UPLOAD_DIR, agentId);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -86,7 +121,7 @@ function fetchImessageAttachments(
   chatDb: Database.Database,
   messageRowid: number,
   agentId: string,
-): UploadedFile[] {
+): ImessageAttachmentResult {
   const rows = chatDb.prepare(`
     SELECT a.ROWID, a.filename, a.mime_type, a.transfer_name
     FROM message_attachment_join maj
@@ -95,10 +130,15 @@ function fetchImessageAttachments(
     ORDER BY a.ROWID ASC
   `).all(messageRowid) as IMessageAttachmentRow[];
 
-  if (rows.length === 0) return [];
+  const result: ImessageAttachmentResult = {
+    uploadedFiles: [],
+    inlinedTextBlocks: [],
+    mentionedAttachments: [],
+  };
+
+  if (rows.length === 0) return result;
 
   const dir = ensureImessageUploadDir(agentId);
-  const uploaded: UploadedFile[] = [];
 
   for (const row of rows) {
     if (!row.filename) continue;
@@ -114,23 +154,31 @@ function fetchImessageAttachments(
 
     const mimeType = (row.mime_type ?? '').toLowerCase();
     const displayName = row.transfer_name || path.basename(srcPath);
+    const ext = path.extname(displayName).toLowerCase();
     const fileId = uuidv4();
     const timestamp = Date.now();
 
+    // Stat once up front so every branch has size info without re-stating.
+    let srcSize = 0;
+    try { srcSize = fs.statSync(srcPath).size; } catch { /* leave 0 */ }
+
     try {
+      // ── Tier 1: deliverable bytes (image + PDF) ──────────────────────
       if (IMAGE_MIMES.has(mimeType)) {
         const storedName = `imessage_${timestamp}_${safeFilenamePart(displayName)}`;
         const destPath = path.join(dir, storedName);
         fs.copyFileSync(srcPath, destPath);
         const size = fs.statSync(destPath).size;
-        uploaded.push({
+        result.uploadedFiles.push({
           fileId, filename: displayName, mimeType, size, path: destPath, category: 'image',
         });
         logger.info('iMessage image attached', { fileId, displayName, size });
-      } else if (HEIC_MIMES.has(mimeType)) {
+        continue;
+      }
+
+      if (HEIC_MIMES.has(mimeType)) {
         // Vision models don't accept HEIC — convert to JPEG via macOS's
-        // built-in `sips` tool. 30s timeout should be generous for any
-        // reasonable iPhone photo.
+        // built-in `sips` tool. 30s timeout is generous for any iPhone photo.
         const jpegBase = safeFilenamePart(displayName).replace(/\.(heic|heif)$/i, '.jpg');
         const jpegName = `imessage_${timestamp}_${jpegBase}`;
         const destPath = path.join(dir, jpegName);
@@ -139,11 +187,19 @@ function fetchImessageAttachments(
           { stdio: 'pipe', timeout: 30_000 },
         );
         if (!fs.existsSync(destPath)) {
-          logger.warn('HEIC conversion produced no output — skipping', { srcPath, destPath });
+          logger.warn('HEIC conversion produced no output — mentioning instead', {
+            srcPath, destPath,
+          });
+          result.mentionedAttachments.push({
+            name: displayName,
+            mimeType,
+            size: srcSize,
+            reason: 'HEIC conversion failed',
+          });
           continue;
         }
         const size = fs.statSync(destPath).size;
-        uploaded.push({
+        result.uploadedFiles.push({
           fileId,
           filename: displayName.replace(/\.(heic|heif)$/i, '.jpg'),
           mimeType: 'image/jpeg',
@@ -152,30 +208,80 @@ function fetchImessageAttachments(
           category: 'image',
         });
         logger.info('iMessage HEIC converted and attached', { fileId, displayName, size });
-      } else if (PDF_MIMES.has(mimeType)) {
+        continue;
+      }
+
+      if (PDF_MIMES.has(mimeType)) {
         const storedName = `imessage_${timestamp}_${safeFilenamePart(displayName)}`;
         const destPath = path.join(dir, storedName);
         fs.copyFileSync(srcPath, destPath);
         const size = fs.statSync(destPath).size;
-        uploaded.push({
+        result.uploadedFiles.push({
           fileId, filename: displayName, mimeType, size, path: destPath, category: 'pdf',
         });
         logger.info('iMessage PDF attached', { fileId, displayName, size });
-      } else {
-        logger.info('iMessage attachment type unsupported — skipping', {
-          displayName, mimeType,
-        });
+        continue;
       }
+
+      // ── Tier 2: inline text (small text-ish files read + framed) ─────
+      const looksLikeText = mimeType.startsWith('text/') || INLINE_TEXT_EXTENSIONS.has(ext);
+      if (looksLikeText) {
+        if (srcSize > INLINE_TEXT_MAX_BYTES) {
+          result.mentionedAttachments.push({
+            name: displayName,
+            mimeType: mimeType || `text/${ext.slice(1) || 'plain'}`,
+            size: srcSize,
+            reason: `text file too large to inline (${formatBytes(srcSize)}, cap ${formatBytes(INLINE_TEXT_MAX_BYTES)})`,
+          });
+          logger.info('iMessage text file too large — mentioning', { displayName, size: srcSize });
+          continue;
+        }
+        try {
+          const content = fs.readFileSync(srcPath, 'utf8');
+          const header = `[Text file: ${displayName} — ${formatBytes(srcSize)}]`;
+          const footer = `[end of ${displayName}]`;
+          result.inlinedTextBlocks.push(`${header}\n${content}\n${footer}`);
+          logger.info('iMessage text file inlined', { displayName, size: srcSize });
+          continue;
+        } catch (err) {
+          result.mentionedAttachments.push({
+            name: displayName,
+            mimeType: mimeType || 'text/plain',
+            size: srcSize,
+            reason: `couldn't read as text (${err instanceof Error ? err.message : String(err)})`,
+          });
+          continue;
+        }
+      }
+
+      // ── Tier 3: mention only (video, audio, office, unknown) ─────────
+      // We don't copy the bytes. The model gets the filename, MIME type,
+      // and size in the message body and can decide how to respond.
+      result.mentionedAttachments.push({
+        name: displayName,
+        mimeType: mimeType || 'application/octet-stream',
+        size: srcSize,
+        reason: 'format not yet deliverable to models — metadata only',
+      });
+      logger.info('iMessage attachment mentioned (not delivered)', {
+        displayName, mimeType, size: srcSize,
+      });
     } catch (err) {
-      logger.warn('Failed to copy/convert iMessage attachment — skipping', {
+      logger.warn('Failed to process iMessage attachment — mentioning instead', {
         displayName,
         mimeType,
         error: err instanceof Error ? err.message : String(err),
       });
+      result.mentionedAttachments.push({
+        name: displayName,
+        mimeType: mimeType || 'application/octet-stream',
+        size: srcSize,
+        reason: `processing error (${err instanceof Error ? err.message : String(err)})`,
+      });
     }
   }
 
-  return uploaded;
+  return result;
 }
 
 const logger = createLogger('imessage');
@@ -275,14 +381,21 @@ async function pollMessages(): Promise<void> {
         // forward control characters to the model.
         const cleanedText = stripAttachmentPlaceholder(msg.text);
 
-        // Pull any attachments (images/PDFs) linked to this message into the
-        // dojo uploads dir. Unsupported types get skipped with a log.
-        const attachments = fetchImessageAttachments(chatDb, msg.ROWID, primaryId);
+        // Pull every attachment linked to this message. The helper classifies
+        // each into one of three buckets: deliverable bytes (image/PDF,
+        // copied to uploads dir), inlined text (small text files read into
+        // memory), or mention-only metadata (video/audio/office/unknown —
+        // the model is told they exist so it can decide how to respond).
+        const attachmentResult = fetchImessageAttachments(chatDb, msg.ROWID, primaryId);
+        const totalAttachmentCount =
+          attachmentResult.uploadedFiles.length +
+          attachmentResult.inlinedTextBlocks.length +
+          attachmentResult.mentionedAttachments.length;
 
-        // Skip rows that are neither text nor a supported attachment —
-        // these are reactions, typing indicators, or unsupported media.
-        if (!cleanedText && attachments.length === 0) {
-          logger.debug('iMessage skipped — no text and no supported attachments', {
+        // Skip rows that are neither text nor any kind of attachment —
+        // these are reactions, typing indicators, etc.
+        if (!cleanedText && totalAttachmentCount === 0) {
+          logger.debug('iMessage skipped — no text and no attachments of any kind', {
             rowid: msg.ROWID,
           });
           continue;
@@ -291,7 +404,9 @@ async function pollMessages(): Promise<void> {
         logger.info('iMessage received', {
           from: sender,
           text: cleanedText.slice(0, 100),
-          attachmentCount: attachments.length,
+          uploaded: attachmentResult.uploadedFiles.length,
+          inlined: attachmentResult.inlinedTextBlocks.length,
+          mentioned: attachmentResult.mentionedAttachments.length,
         });
 
         broadcast({
@@ -300,7 +415,7 @@ async function pollMessages(): Promise<void> {
             text: cleanedText,
             from: sender,
             timestamp: new Date().toISOString(),
-            attachmentCount: attachments.length,
+            attachmentCount: totalAttachmentCount,
           },
         } as never);
 
@@ -320,14 +435,36 @@ async function pollMessages(): Promise<void> {
           const ownerName = getOwnerName();
           const msgId = uuidv4();
 
-          // Build a clear text body for the model. When the user sends an
-          // image with no caption the caption is empty; we note explicitly
-          // that attachments are present so the model's reasoning is anchored.
-          const textForModel = cleanedText
-            ? cleanedText
-            : (attachments.length === 1
-                ? '(attached without a caption)'
-                : `(${attachments.length} files attached without a caption)`);
+          // ── Compose the forwarded message body ─────────────────────
+          // Three pieces, any of which may be empty:
+          //   1. The user's typed caption (if any)
+          //   2. Inlined text files (framed blocks ready for the model)
+          //   3. A "[Other attachments ...]" footer listing everything we
+          //      didn't deliver as bytes or inline text — gives the model
+          //      enough info to say "I can't play that video" or similar.
+          const bodyParts: string[] = [];
+          if (cleanedText) {
+            bodyParts.push(cleanedText);
+          } else if (totalAttachmentCount > 0) {
+            bodyParts.push(totalAttachmentCount === 1
+              ? '(attached without a caption)'
+              : `(${totalAttachmentCount} files attached without a caption)`);
+          }
+
+          if (attachmentResult.inlinedTextBlocks.length > 0) {
+            bodyParts.push(attachmentResult.inlinedTextBlocks.join('\n\n'));
+          }
+
+          if (attachmentResult.mentionedAttachments.length > 0) {
+            const lines = attachmentResult.mentionedAttachments.map(m =>
+              `  • ${m.name} (${m.mimeType}, ${formatBytes(m.size)}) — ${m.reason}`,
+            );
+            bodyParts.push(
+              `[Other attachments this model can't directly process — let ${ownerName} know if the format isn't supported]:\n${lines.join('\n')}`,
+            );
+          }
+
+          const textForModel = bodyParts.join('\n\n');
           const msgContent = `[SOURCE: IMESSAGE FROM ${ownerName.toUpperCase()} — this message came from iMessage, not the dashboard chat] ${textForModel}`;
 
           db.prepare(`
@@ -337,7 +474,7 @@ async function pollMessages(): Promise<void> {
             msgId,
             primaryId,
             msgContent,
-            attachments.length > 0 ? JSON.stringify(attachments) : null,
+            attachmentResult.uploadedFiles.length > 0 ? JSON.stringify(attachmentResult.uploadedFiles) : null,
           );
 
           broadcast({
