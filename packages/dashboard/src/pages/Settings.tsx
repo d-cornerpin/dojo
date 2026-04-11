@@ -1317,6 +1317,56 @@ const ProviderModelGroup = ({
   );
 };
 
+const CAPABILITY_LABELS: Record<string, { label: string; className: string; title: string }> = {
+  tools: {
+    label: 'Tools',
+    className: 'bg-blue-500/15 text-blue-300 border-blue-400/30',
+    title: 'Supports function/tool calling',
+  },
+  vision: {
+    label: 'Vision',
+    className: 'bg-purple-500/15 text-purple-300 border-purple-400/30',
+    title: 'Can accept image inputs',
+  },
+  thinking: {
+    label: 'Thinking',
+    className: 'bg-amber-500/15 text-amber-300 border-amber-400/30',
+    title: 'Supports extended reasoning / thinking',
+  },
+  embedding: {
+    label: 'Embedding',
+    className: 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30',
+    title: 'Embedding model (not for chat)',
+  },
+};
+
+const CapabilityBadges = ({ capabilities }: { capabilities: string[] }) => {
+  const known = capabilities.filter(c => CAPABILITY_LABELS[c]);
+  if (known.length === 0) {
+    return (
+      <div className="mt-1.5 flex items-center gap-1">
+        <span className="text-[10px] text-white/25 italic">capabilities unknown</span>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-1">
+      {known.map(c => {
+        const meta = CAPABILITY_LABELS[c];
+        return (
+          <span
+            key={c}
+            title={meta.title}
+            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${meta.className}`}
+          >
+            {meta.label}
+          </span>
+        );
+      })}
+    </div>
+  );
+};
+
 const ModelRow = ({
   model,
   isPrimaryModel,
@@ -1332,6 +1382,11 @@ const ModelRow = ({
   const [outputCost, setOutputCost] = useState(String(model.outputCostPerM ?? 0));
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  // Local optimistic state for the thinking toggle. Mirrors the prop but
+  // flips instantly on click while the PATCH is in flight.
+  const [thinkingEnabled, setThinkingEnabled] = useState(model.thinkingEnabled);
+  const supportsThinking = model.capabilities.includes('thinking');
 
   const hasChanges =
     Number(inputCost) !== (model.inputCostPerM ?? 0) ||
@@ -1351,6 +1406,17 @@ const ModelRow = ({
     setSaving(false);
   };
 
+  const handleThinkingToggle = async () => {
+    const next = !thinkingEnabled;
+    setThinkingEnabled(next); // optimistic
+    const result = await api.updateModelThinking(model.id, next);
+    if (!result.ok) {
+      setThinkingEnabled(!next); // roll back
+    } else {
+      onPricingChange();
+    }
+  };
+
   return (
     <div className="glass-card p-4">
       <div className="flex items-center justify-between mb-3">
@@ -1366,6 +1432,23 @@ const ModelRow = ({
             {model.contextWindow ? ` | ${Math.round(model.contextWindow / 1000)}k context` : ''}
             {' | '}{model.providerId}
           </p>
+          <CapabilityBadges capabilities={model.capabilities} />
+          {supportsThinking && (
+            <label
+              className="mt-2 inline-flex items-center gap-2 cursor-pointer select-none"
+              title="When unchecked, the model is asked to skip extended thinking. Works for Ollama and OpenRouter models today; other providers store the preference for future use."
+            >
+              <input
+                type="checkbox"
+                checked={thinkingEnabled}
+                onChange={handleThinkingToggle}
+                className="h-3.5 w-3.5 rounded border-white/20 bg-white/[0.05] accent-amber-500 cursor-pointer"
+              />
+              <span className="text-[11px] text-white/60">
+                Enable thinking
+              </span>
+            </label>
+          )}
         </div>
         <button
           onClick={onToggle}

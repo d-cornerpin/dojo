@@ -1,0 +1,11 @@
+-- Add thinking_enabled flag to the models table.
+-- Default: 1 (ON) so that thinking-capable models think by default. The
+-- dashboard exposes a per-model toggle in Settings → Models, shown only on
+-- cards whose capabilities array includes 'thinking'.
+--
+-- Providers that currently honor this flag at call time:
+--   • ollama        → native /api/chat `think: true|false`
+--   • openrouter    → OpenAI-compat `reasoning: { enabled: true|false }`
+-- Other providers store the preference for forward-compat but do not yet
+-- translate it at call time.
+ALTER TABLE models ADD COLUMN thinking_enabled INTEGER NOT NULL DEFAULT 1;

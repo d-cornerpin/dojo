@@ -211,6 +211,22 @@ async function main(): Promise<void> {
     }
   }
 
+  // 4i. Backfill model capabilities for any model whose capabilities array is
+  // empty. Runs in the background so HTTP boot isn't blocked by Ollama
+  // /api/show latency or OpenRouter catalog fetches.
+  {
+    void (async () => {
+      try {
+        const { backfillEmptyCapabilities } = await import('./services/capabilities.js');
+        await backfillEmptyCapabilities();
+      } catch (err) {
+        logger.warn('Capability backfill failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+  }
+
   // 5. Set up log broadcast
   setLogBroadcast((entry) => {
     broadcast({ type: 'log:entry', entry });

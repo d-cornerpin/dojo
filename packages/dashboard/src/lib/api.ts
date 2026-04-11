@@ -229,6 +229,16 @@ export const updateModelPricing = async (
   });
 };
 
+export const updateModelThinking = async (
+  modelId: string,
+  enabled: boolean,
+): Promise<ApiResponse<unknown>> => {
+  return request(`/config/models/${modelId}/thinking`, {
+    method: 'PATCH',
+    body: JSON.stringify({ enabled }),
+  });
+};
+
 // ── Identity ──
 
 export const getIdentity = async (

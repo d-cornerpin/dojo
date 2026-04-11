@@ -14,7 +14,98 @@ import { isAwaitingIMResponse, clearIMResponseFlag, sendResponseViaIMessage } fr
 import { scoreQuery } from '../router/scorer.js';
 import { selectModel } from '../router/selector.js';
 import { queueEmbedding } from '../memory/embeddings.js';
+import { getModelCapabilities } from '../services/capabilities.js';
 import type { Message } from '@dojo/shared';
+
+// One-shot dedup so the "model does not support tools" banner only fires once
+// per (agent, model) pair for the lifetime of the server process. Without
+// this we'd broadcast the same banner on every single turn.
+const toolsUnavailableNotified = new Set<string>();
+
+function enforceModelCapabilities(
+  agentId: string,
+  modelId: string,
+  messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
+): { useTools: boolean } {
+  const caps = getModelCapabilities(modelId);
+
+  // Unknown capability set → don't gate. We'd rather optimistically try and
+  // let the provider error out than lock users out of a working model whose
+  // probe failed or simply returned nothing.
+  if (caps.length === 0) {
+    return { useTools: true };
+  }
+
+  // ── Vision gate ──
+  // If the assembled messages contain image or document blocks and the model
+  // has no vision capability, strip those blocks (keeping any text) and warn
+  // the user via a banner so the turn can still proceed on the text alone.
+  if (!caps.includes('vision')) {
+    let imagesStripped = 0;
+    let docsStripped = 0;
+
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      if (m.role !== 'user' || typeof m.content === 'string' || !Array.isArray(m.content)) continue;
+
+      const blocks = m.content as unknown as Array<Record<string, unknown>>;
+      const hasMedia = blocks.some(b => b.type === 'image' || b.type === 'document');
+      if (!hasMedia) continue;
+
+      const kept = blocks.filter(b => {
+        if (b.type === 'image') { imagesStripped++; return false; }
+        if (b.type === 'document') { docsStripped++; return false; }
+        return true;
+      });
+
+      // If nothing but text remains, collapse to a plain string so older call
+      // paths that prefer strings don't choke. Otherwise preserve the array.
+      if (kept.length === 0) {
+        messages[i] = { role: 'user', content: '' };
+      } else if (kept.every(b => b.type === 'text')) {
+        const text = kept.map(b => (b.text as string) ?? '').join('\n');
+        messages[i] = { role: 'user', content: text };
+      } else {
+        messages[i] = { role: 'user', content: kept as unknown as Anthropic.ContentBlockParam[] };
+      }
+    }
+
+    if (imagesStripped > 0 || docsStripped > 0) {
+      const parts: string[] = [];
+      if (imagesStripped > 0) parts.push(`${imagesStripped} image${imagesStripped === 1 ? '' : 's'}`);
+      if (docsStripped > 0) parts.push(`${docsStripped} PDF${docsStripped === 1 ? '' : 's'}`);
+      const what = parts.join(' and ');
+      const errorMsg =
+        `This model can't see ${what}. The attachment was dropped and the agent will respond to your text only. ` +
+        `Switch to a vision-capable model (look for the "Vision" badge in Settings → Models) to use image or PDF input.`;
+      logger.warn('Vision gate: stripped media from turn', {
+        modelId, imagesStripped, docsStripped,
+      }, agentId);
+      broadcast({ type: 'chat:error', agentId, error: errorMsg });
+    }
+  }
+
+  // ── Tools gate ──
+  // If the model is known not to support tools, tell callModel to skip
+  // sending the tool definitions entirely (so we don't waste tokens or
+  // trigger a provider-side 400), and surface a one-time banner.
+  let useTools = true;
+  if (!caps.includes('tools')) {
+    useTools = false;
+    const dedupKey = `${agentId}:${modelId}`;
+    if (!toolsUnavailableNotified.has(dedupKey)) {
+      toolsUnavailableNotified.add(dedupKey);
+      const errorMsg =
+        `This model doesn't support tool calling, so the agent can only respond in plain text on this turn. ` +
+        `Browser automation, file access, scheduling, and other tool-based actions won't work. ` +
+        `Switch to a model with the "Tools" badge in Settings → Models for full capabilities.`;
+      logger.warn('Tools gate: disabling tools for this turn', { modelId }, agentId);
+      broadcast({ type: 'chat:error', agentId, error: errorMsg });
+    }
+  }
+
+  return { useTools };
+}
 
 // Broadcast a persisted message to the dashboard so it appears in real-time
 function broadcastMessage(agentId: string, msg: { id: string; role: string; content: string; createdAt?: string; modelId?: string | null }) {
@@ -263,6 +354,12 @@ class AgentRuntime {
       }
       lastUsedModelId = modelId;
 
+      // Pre-flight capability enforcement: strip unsupported image/PDF blocks,
+      // decide whether to send tool definitions, and broadcast banners so the
+      // user knows what the model can't do. Runs once per outer turn after
+      // the final modelId has been resolved.
+      const { useTools } = enforceModelCapabilities(agentId, modelId, messages);
+
       // Call model with retry logic — for auto-routed agents, try fallback models on failure
       const messageId = uuidv4();
       const streamedChunks: string[] = [];
@@ -285,7 +382,7 @@ class AgentRuntime {
                 modelId,
                 messages,
                 systemPrompt,
-                tools: true,
+                tools: useTools,
                 routerTier: routerTier ?? undefined,
                 onChunk: (chunk) => {
                   if (abortController.signal.aborted) return;
@@ -748,7 +845,10 @@ function injectAttachmentBlocks(
       }
     }
 
-    // Add PDF blocks (Anthropic supports document type)
+    // Add PDF blocks. Anthropic's `document` type supports an optional
+    // `title` field (used by the UI + for model grounding); we also use it
+    // downstream by the Ollama translator to label extracted-text sections
+    // so the model knows which file a passage belongs to.
     for (const pdf of pdfAttachments) {
       try {
         if (!fs.existsSync(pdf.path)) continue;
@@ -760,6 +860,7 @@ function injectAttachmentBlocks(
             media_type: 'application/pdf',
             data,
           },
+          title: pdf.filename,
         } as Anthropic.ContentBlockParam);
       } catch {
         // Skip if file can't be read

@@ -25,6 +25,10 @@ export interface Model {
   inputCostPerM: number | null;
   outputCostPerM: number | null;
   isEnabled: boolean;
+  // Per-model thinking/reasoning toggle. Defaults to true. Only meaningful
+  // when the capabilities array includes 'thinking'; for non-thinking
+  // models the field is stored but has no runtime effect.
+  thinkingEnabled: boolean;
   createdAt: string;
   updatedAt: string;
 }

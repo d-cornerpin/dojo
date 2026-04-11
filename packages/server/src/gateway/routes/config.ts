@@ -868,12 +868,6 @@ configRouter.post('/providers/:id/add-model', async (c) => {
   const alreadyAdded = db.prepare('SELECT id FROM models WHERE provider_id = ? AND api_model_id = ?').get(providerId, body.apiModelId);
   if (alreadyAdded) return c.json({ ok: false, error: 'Model already added' }, 409);
 
-  const capabilities = ['chat'];
-  const idLower = (body.apiModelId as string).toLowerCase();
-  if (idLower.includes('code') || idLower.includes('deepseek') || idLower.includes('coder')) capabilities.push('code');
-  if (idLower.includes('vision') || idLower.includes('llava')) capabilities.push('vision');
-  if (idLower.includes('tool') || idLower.includes('claude') || idLower.includes('gpt-4') || idLower.includes('gpt-5')) capabilities.push('tools');
-
   const modelId = uuidv4();
   db.prepare(`
     INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, is_enabled, created_at, updated_at)
@@ -882,17 +876,57 @@ configRouter.post('/providers/:id/add-model', async (c) => {
     modelId, providerId,
     body.name ?? body.apiModelId,
     body.apiModelId,
-    JSON.stringify(capabilities),
+    JSON.stringify([]),
     body.contextWindow ?? null,
     body.maxOutputTokens ?? null,
     body.inputCostPerM ?? null,
     body.outputCostPerM ?? null,
   );
 
+  // Probe the real capabilities from the provider and persist them before we
+  // return the row to the UI. Best-effort — a probe failure leaves the row
+  // with `[]` and the boot backfill will retry later.
+  try {
+    const { probeAndStoreCapabilities } = await import('../../services/capabilities.js');
+    await probeAndStoreCapabilities(modelId);
+  } catch (err) {
+    logger.warn('Capability probe failed on add-model', {
+      providerId,
+      apiModelId: body.apiModelId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   const row = db.prepare('SELECT * FROM models WHERE id = ?').get(modelId) as Record<string, unknown>;
   logger.info('Model added from catalog', { providerId, apiModelId: body.apiModelId });
 
   return c.json({ ok: true, data: rowToModel(row) }, 201);
+});
+
+// PATCH /models/:id/thinking — toggle per-model thinking/reasoning
+// Body: { enabled: boolean }
+// Only meaningful when the model's capabilities array includes 'thinking';
+// we accept the update for any model (forward-compat) but it only affects
+// call-time behavior on providers we've wired (ollama, openrouter).
+configRouter.patch('/models/:id/thinking', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body.enabled !== 'boolean') {
+    return c.json({ ok: false, error: 'Request body must be { enabled: boolean }' }, 400);
+  }
+
+  const db = getDb();
+  const model = db.prepare('SELECT id FROM models WHERE id = ?').get(id);
+  if (!model) {
+    return c.json({ ok: false, error: 'Model not found' }, 404);
+  }
+
+  db.prepare("UPDATE models SET thinking_enabled = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(body.enabled ? 1 : 0, id);
+
+  const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
+  logger.info('Model thinking toggle updated', { modelId: id, enabled: body.enabled });
+  return c.json({ ok: true, data: rowToModel(row) });
 });
 
 // PUT /models/:id/pricing — update model pricing
@@ -1224,6 +1258,13 @@ function rowToProvider(row: Record<string, unknown>): Provider {
 }
 
 function rowToModel(row: Record<string, unknown>): Model {
+  // thinking_enabled may be missing on pre-migration reads in rare paths;
+  // default to true so the behavior matches the migration default.
+  const thinkingEnabledRaw = row.thinking_enabled;
+  const thinkingEnabled = thinkingEnabledRaw === undefined || thinkingEnabledRaw === null
+    ? true
+    : Boolean(thinkingEnabledRaw);
+
   return {
     id: row.id as string,
     providerId: row.provider_id as string,
@@ -1235,6 +1276,7 @@ function rowToModel(row: Record<string, unknown>): Model {
     inputCostPerM: row.input_cost_per_m as number | null,
     outputCostPerM: row.output_cost_per_m as number | null,
     isEnabled: Boolean(row.is_enabled),
+    thinkingEnabled,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };

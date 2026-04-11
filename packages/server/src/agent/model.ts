@@ -122,20 +122,37 @@ function getMaxOutputTokens(apiModelId: string, providerType: string): number {
   return 16384;
 }
 
-function getModelInfo(modelId: string): { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null } {
+function getModelInfo(modelId: string): { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[] } {
   const db = getDb();
   const row = db.prepare(`
-    SELECT m.provider_id, m.api_model_id, m.context_window, m.max_output_tokens, p.type as provider_type, p.base_url as provider_base_url
+    SELECT m.provider_id, m.api_model_id, m.context_window, m.max_output_tokens, m.thinking_enabled, m.capabilities, p.type as provider_type, p.base_url as provider_base_url
     FROM models m
     JOIN providers p ON p.id = m.provider_id
     WHERE m.id = ?
-  `).get(modelId) as { provider_id: string; api_model_id: string; context_window: number | null; max_output_tokens: number | null; provider_type: string; provider_base_url: string | null } | undefined;
+  `).get(modelId) as {
+    provider_id: string;
+    api_model_id: string;
+    context_window: number | null;
+    max_output_tokens: number | null;
+    thinking_enabled: number | null;
+    capabilities: string | null;
+    provider_type: string;
+    provider_base_url: string | null;
+  } | undefined;
 
   if (!row) {
     throw new AgentError(`Model not found: ${modelId}`, '', {
       code: 'MODEL_NOT_FOUND',
       retryable: false,
     });
+  }
+
+  let capabilities: string[] = [];
+  if (row.capabilities) {
+    try {
+      const parsed = JSON.parse(row.capabilities);
+      if (Array.isArray(parsed)) capabilities = parsed.filter(c => typeof c === 'string');
+    } catch { /* leave empty */ }
   }
 
   return {
@@ -146,18 +163,199 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
     maxOutputTokens: row.max_output_tokens ?? getMaxOutputTokens(row.api_model_id, row.provider_type),
     providerType: row.provider_type,
     providerBaseUrl: row.provider_base_url,
+    // Default ON — matches migration default and the UX the user asked for.
+    thinkingEnabled: row.thinking_enabled === null || row.thinking_enabled === undefined
+      ? true
+      : Boolean(row.thinking_enabled),
+    capabilities,
   };
 }
 
-// ── Ollama Call Path (OpenAI-compatible API) ──
+// ── Ollama Call Path (Native /api/chat API) ──
+//
+// Uses Ollama's native /api/chat endpoint (not /v1/chat/completions) so we
+// can access the `think` parameter, get the separate `thinking` response
+// field, use native `images: [base64]` on user messages for vision models,
+// and pick up future Ollama features as they land.
+//
+// The native response shape differs from OpenAI-compat in a few key ways:
+//   • flat `message` (not `choices[0].message`)
+//   • `thinking` as a separate field alongside `content`
+//   • `tool_calls[].function.arguments` is a pre-parsed object (not JSON string)
+//   • token counts in `prompt_eval_count` / `eval_count` (not `usage.*`)
+//   • streaming is newline-delimited JSON (one object per line)
+//   • `done_reason` / `done: true` instead of `finish_reason`
 
 import { getOllamaLock } from '../services/ollama-lock.js';
 
+interface NativeOllamaMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  images?: string[]; // base64-encoded image data, one entry per image
+  tool_calls?: Array<{
+    id?: string;
+    function: {
+      name: string;
+      arguments: Record<string, unknown>;
+    };
+  }>;
+  tool_name?: string; // required on role:'tool' messages
+}
+
+// Translate our internal Anthropic-style message format into Ollama's native
+// /api/chat message shape. Handles:
+//   • tool_use content blocks → assistant.tool_calls
+//   • tool_result content blocks → separate {role:'tool', tool_name, content}
+//     messages (tool name recovered from the matching prior tool_use id)
+//   • image content blocks → `images: [base64,...]` on the user message
+//   • document (PDF) blocks → text extracted via pdfjs and inlined as a
+//     framed text section in the user message. Extraction failures broadcast
+//     a chat:error banner and the PDF is dropped.
+//
+// Async because PDF extraction via pdfjs is async; the call site must await.
+async function buildNativeOllamaMessages(
+  systemPrompt: string,
+  messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
+  agentId: string,
+): Promise<NativeOllamaMessage[]> {
+  const native: NativeOllamaMessage[] = [{ role: 'system', content: systemPrompt }];
+  const toolIdToName = new Map<string, string>();
+
+  for (const m of messages) {
+    if (m.role === 'user') {
+      if (typeof m.content === 'string') {
+        native.push({ role: 'user', content: m.content });
+        continue;
+      }
+      if (!Array.isArray(m.content)) continue;
+
+      const blocks = m.content as unknown as Array<Record<string, unknown>>;
+      const toolResults = blocks.filter(b => b.type === 'tool_result');
+
+      if (toolResults.length > 0) {
+        for (const tr of toolResults) {
+          const toolUseId = tr.tool_use_id as string;
+          const toolName = toolIdToName.get(toolUseId) ?? '';
+          const content = typeof tr.content === 'string'
+            ? tr.content
+            : JSON.stringify(tr.content);
+          native.push({ role: 'tool', content, tool_name: toolName });
+        }
+        continue;
+      }
+
+      // Regular user message: text + optional images + documents
+      const textBlocks = blocks.filter(b => b.type === 'text');
+      const imageBlocks = blocks.filter(b => b.type === 'image');
+      const documentBlocks = blocks.filter(b => b.type === 'document');
+
+      const textParts: string[] = [];
+      const userText = textBlocks.map(b => (b.text as string) ?? '').join('\n');
+      if (userText) textParts.push(userText);
+
+      // ── PDF text extraction ──
+      // For each PDF document block, extract the text via pdfjs and splice
+      // it into the user message as a labeled section. This gives local
+      // models the full textual content of the document without needing a
+      // native document type. Extraction failures broadcast a banner and
+      // the PDF is dropped from the turn.
+      if (documentBlocks.length > 0) {
+        const { extractPdfText, PdfExtractError } = await import('../services/pdf-extract.js');
+        for (const doc of documentBlocks) {
+          const source = doc.source as Record<string, unknown> | undefined;
+          const title = (typeof doc.title === 'string' && doc.title) ? doc.title : 'attached document';
+          if (!source || source.type !== 'base64' || typeof source.data !== 'string') {
+            logger.warn('Ollama translator: document block has no base64 data — skipping', {
+              title,
+            }, agentId);
+            continue;
+          }
+
+          try {
+            const extracted = await extractPdfText(source.data);
+            const header = `[PDF attachment: ${title} — ${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}${extracted.truncated ? `, truncated to first ${extracted.pagesExtracted}` : ''}]`;
+            const footer = `[end of ${title}]`;
+            textParts.push(`${header}\n${extracted.text}\n${footer}`);
+
+            if (extracted.truncated) {
+              broadcast({
+                type: 'chat:error',
+                agentId,
+                error: `"${title}" was too large to fit in context and was truncated after ${extracted.pagesExtracted} of ${extracted.pageCount} pages. The agent will only see the first part of the document.`,
+              });
+            }
+          } catch (err) {
+            const reason = err instanceof PdfExtractError
+              ? err.message
+              : (err instanceof Error ? err.message : String(err));
+            logger.warn('Ollama translator: PDF extraction failed — dropping attachment', {
+              title,
+              reason,
+            }, agentId);
+            broadcast({
+              type: 'chat:error',
+              agentId,
+              error: `Couldn't extract text from "${title}" (${reason}). The agent will respond to your message without the PDF's contents.`,
+            });
+          }
+        }
+      }
+
+      const images: string[] = [];
+      for (const img of imageBlocks) {
+        const source = img.source as Record<string, unknown> | undefined;
+        if (source && source.type === 'base64' && typeof source.data === 'string') {
+          images.push(source.data);
+        }
+      }
+
+      const userMsg: NativeOllamaMessage = {
+        role: 'user',
+        content: textParts.join('\n\n'),
+      };
+      if (images.length > 0) userMsg.images = images;
+      native.push(userMsg);
+    } else if (m.role === 'assistant') {
+      if (typeof m.content === 'string') {
+        native.push({ role: 'assistant', content: m.content });
+        continue;
+      }
+      if (!Array.isArray(m.content)) continue;
+
+      const blocks = m.content as unknown as Array<Record<string, unknown>>;
+      const textBlocks = blocks.filter(b => b.type === 'text');
+      const toolUseBlocks = blocks.filter(b => b.type === 'tool_use');
+      const text = textBlocks.map(b => (b.text as string) ?? '').join('\n');
+
+      const assistantMsg: NativeOllamaMessage = { role: 'assistant', content: text };
+
+      if (toolUseBlocks.length > 0) {
+        assistantMsg.tool_calls = toolUseBlocks.map(tc => {
+          const id = tc.id as string;
+          const name = tc.name as string;
+          toolIdToName.set(id, name);
+          return {
+            id,
+            function: {
+              name,
+              arguments: (tc.input ?? {}) as Record<string, unknown>,
+            },
+          };
+        });
+      }
+
+      native.push(assistantMsg);
+    }
+  }
+
+  return native;
+}
+
 async function callOllamaModel(
   params: ModelCallParams,
-  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; providerType: string; providerBaseUrl: string | null },
+  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[] },
 ): Promise<ModelCallResult> {
-  const { agentId, modelId, messages, systemPrompt, onChunk, routerTier } = params;
+  const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
   const baseUrl = (modelInfo.providerBaseUrl ?? 'http://localhost:11434').replace(/\/+$/, '');
   const ollamaModelName = modelInfo.apiModelId;
 
@@ -167,30 +365,61 @@ async function callOllamaModel(
 
   const startTime = Date.now();
 
-  // Build OpenAI-compatible messages
-  const ollamaMessages: Array<{ role: string; content: string }> = [
-    { role: 'system', content: systemPrompt },
-  ];
-  for (const m of messages) {
-    const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-    ollamaMessages.push({ role: m.role, content });
+  const nativeMessages = await buildNativeOllamaMessages(systemPrompt, messages, agentId);
+
+  // Build tools in the shape Ollama's native API accepts (same as the OpenAI
+  // function-calling schema — Ollama mirrors it). Two-phase loading: only
+  // always-loaded + session-loaded tools go to the model.
+  let nativeTools: Array<{
+    type: 'function';
+    function: { name: string; description: string; parameters: Record<string, unknown> };
+  }> | undefined = undefined;
+  if (tools) {
+    const allPermitted = getFilteredTools(agentId);
+    const { filterToolsForApiCall, getAgentAlwaysLoadedTools } = await import('../tools/tool-docs.js');
+    const alwaysLoaded = getAgentAlwaysLoadedTools(agentId);
+    const filtered = filterToolsForApiCall(agentId, allPermitted, alwaysLoaded);
+    if (filtered.length > 0) {
+      nativeTools = filtered.map(t => ({
+        type: 'function' as const,
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.input_schema as Record<string, unknown>,
+        },
+      }));
+    }
   }
 
-  logger.info('Calling Ollama model', {
+  logger.info('Calling Ollama native /api/chat (streaming)', {
     model: ollamaModelName,
     baseUrl,
-    messageCount: ollamaMessages.length,
+    messageCount: nativeMessages.length,
+    toolCount: nativeTools?.length ?? 0,
+    hasImages: nativeMessages.some(m => m.images && m.images.length > 0),
+    thinkingEnabled: modelInfo.thinkingEnabled,
   }, agentId);
 
+  const requestBody: Record<string, unknown> = {
+    model: ollamaModelName,
+    messages: nativeMessages,
+    stream: true,
+    // `think` is driven by the per-model toggle in Settings → Models. For
+    // models without the thinking capability this is a harmless no-op. Some
+    // families (gpt-oss, DeepSeek-R1) are trained to always think and will
+    // ignore the flag — the call still works; we just capture the thinking
+    // separately and don't surface it to the UI.
+    think: modelInfo.thinkingEnabled,
+  };
+  if (nativeTools && nativeTools.length > 0) {
+    requestBody.tools = nativeTools;
+  }
+
   try {
-    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    const response = await fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: ollamaModelName,
-        messages: ollamaMessages,
-        stream: false,
-      }),
+      body: JSON.stringify(requestBody),
       signal: AbortSignal.timeout(300000),
     });
 
@@ -202,21 +431,114 @@ async function callOllamaModel(
       });
     }
 
-    const data = await response.json() as {
-      choices?: Array<{ message?: { content?: string } }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number };
-    };
-
-    const content = data.choices?.[0]?.message?.content ?? '';
-    const inputTokens = data.usage?.prompt_tokens ?? 0;
-    const outputTokens = data.usage?.completion_tokens ?? 0;
-    const latencyMs = Date.now() - startTime;
-
-    if (onChunk && content) {
-      onChunk(content);
+    if (!response.body) {
+      throw new AgentError('Ollama response body is empty', agentId, {
+        code: 'MODEL_CALL_FAILED',
+        retryable: true,
+      });
     }
 
-    // Record cost ($0 for local models)
+    // ── Streaming accumulator: newline-delimited JSON ──
+    // Each line is a complete JSON object. Content tokens, thinking tokens,
+    // and tool_calls arrive in `message.*` across successive lines; the
+    // final line has `done: true` with usage stats.
+    let fullContent = '';
+    let fullThinking = '';
+    let accumulatedToolCalls: ToolCall[] = [];
+    let doneReason: string | null = null;
+    let inputTokens = 0;
+    let outputTokens = 0;
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    const processLine = (line: string): void => {
+      if (!line.trim()) return;
+      let chunk: {
+        message?: {
+          content?: string;
+          thinking?: string;
+          tool_calls?: Array<{
+            id?: string;
+            function?: { name?: string; arguments?: unknown };
+          }>;
+        };
+        done?: boolean;
+        done_reason?: string;
+        prompt_eval_count?: number;
+        eval_count?: number;
+      };
+      try {
+        chunk = JSON.parse(line);
+      } catch {
+        logger.debug('Ollama: failed to parse stream line', {
+          linePreview: line.slice(0, 120),
+        }, agentId);
+        return;
+      }
+
+      const message = chunk.message;
+      if (message) {
+        if (typeof message.content === 'string' && message.content.length > 0) {
+          fullContent += message.content;
+          if (onChunk) onChunk(message.content);
+        }
+        if (typeof message.thinking === 'string' && message.thinking.length > 0) {
+          fullThinking += message.thinking;
+        }
+        if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+          // Ollama emits the full tool_calls array in one chunk (typically the
+          // last message chunk before `done: true`), not per-argument deltas.
+          // Replacing-on-each-chunk is safe across gpt-oss / qwen3 / llama3.1.
+          accumulatedToolCalls = message.tool_calls.map((tc, idx) => {
+            const rawArgs = tc.function?.arguments;
+            let parsedArgs: Record<string, unknown>;
+            if (rawArgs && typeof rawArgs === 'object') {
+              parsedArgs = rawArgs as Record<string, unknown>;
+            } else if (typeof rawArgs === 'string') {
+              try { parsedArgs = JSON.parse(rawArgs); } catch { parsedArgs = {}; }
+            } else {
+              parsedArgs = {};
+            }
+            return {
+              id: tc.id && tc.id.length > 0 ? tc.id : `ollama_tool_${Date.now()}_${idx}`,
+              name: tc.function?.name ?? '',
+              arguments: parsedArgs,
+            };
+          });
+        }
+      }
+
+      if (chunk.done === true) {
+        doneReason = chunk.done_reason ?? null;
+        if (typeof chunk.prompt_eval_count === 'number') inputTokens = chunk.prompt_eval_count;
+        if (typeof chunk.eval_count === 'number') outputTokens = chunk.eval_count;
+      }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) processLine(line);
+    }
+    // Flush any trailing content left in the buffer after the stream ends.
+    if (buffer.trim()) processLine(buffer);
+
+    const latencyMs = Date.now() - startTime;
+
+    if (fullThinking.length > 0) {
+      logger.debug('Ollama: thinking captured (not surfaced to UI)', {
+        modelName: ollamaModelName,
+        thinkingLength: fullThinking.length,
+        thinkingPreview: fullThinking.slice(0, 120),
+      }, agentId);
+    }
+
+    // Record cost ($0 for local models — still tracked for latency metrics)
     recordCost({
       agentId,
       modelId,
@@ -229,19 +551,25 @@ async function callOllamaModel(
 
     recordProviderSuccess(modelInfo.providerId);
 
-    logger.info('Ollama call completed', {
+    logger.info('Ollama native call completed', {
       model: ollamaModelName,
       inputTokens,
       outputTokens,
       latencyMs,
+      contentLength: fullContent.length,
+      thinkingLength: fullThinking.length,
+      toolCallCount: accumulatedToolCalls.length,
+      doneReason,
     }, agentId);
 
     return {
-      content,
-      toolCalls: [],
+      content: fullContent,
+      toolCalls: accumulatedToolCalls,
       inputTokens,
       outputTokens,
-      stopReason: 'end_turn',
+      stopReason: accumulatedToolCalls.length > 0
+        ? 'tool_use'
+        : (doneReason === 'stop' ? 'end_turn' : (doneReason ?? 'end_turn')),
     };
   } catch (err) {
     const latencyMs = Date.now() - startTime;
@@ -297,7 +625,7 @@ function getOpenAIClient(providerId: string, baseUrl?: string | null): OpenAI {
 
 async function callOpenAIModel(
   params: ModelCallParams,
-  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null },
+  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[] },
 ): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
   const startTime = Date.now();
@@ -441,12 +769,33 @@ async function callOpenAIModel(
     ...(openaiTools && openaiTools.length > 0 ? { tools: openaiTools } : {}),
   };
 
+  // ── OpenRouter unified reasoning toggle ──
+  // When the provider is OpenRouter (detected by base URL) and the model is
+  // known to support thinking, honor the per-model thinking_enabled flag by
+  // sending the `reasoning` parameter. OpenRouter translates this into each
+  // upstream provider's convention (Anthropic thinking, o-series
+  // reasoning_effort, Gemini thinkingBudget, DeepSeek R1, etc). For generic
+  // openai-compatible providers we leave the request alone.
+  const isOpenRouter = (modelInfo.providerBaseUrl ?? '').toLowerCase().includes('openrouter.ai');
+  const supportsThinking = modelInfo.capabilities.includes('thinking');
+  if (isOpenRouter && supportsThinking) {
+    // `extra_body` survives the OpenAI SDK's pass-through to non-standard
+    // params. Use it so the unified reasoning object makes it into the
+    // wire request untouched.
+    (requestParams as unknown as { extra_body?: Record<string, unknown> }).extra_body = {
+      ...((requestParams as unknown as { extra_body?: Record<string, unknown> }).extra_body ?? {}),
+      reasoning: { enabled: modelInfo.thinkingEnabled },
+    };
+  }
+
   logger.info('Calling OpenAI model', {
     model: modelInfo.apiModelId,
     provider: modelInfo.providerId,
     messageCount: openaiMessages.length,
     toolCount: openaiTools?.length ?? 0,
     maxOutputTokens: modelInfo.maxOutputTokens,
+    thinkingEnabled: modelInfo.thinkingEnabled,
+    reasoningToggleApplied: isOpenRouter && supportsThinking,
   }, agentId);
 
   try {
@@ -604,7 +953,7 @@ function getOpenAICost(apiModelId: string): { input: number; output: number } {
 
 async function callAnthropicSdkModel(
   params: ModelCallParams,
-  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null },
+  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[] },
 ): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
 

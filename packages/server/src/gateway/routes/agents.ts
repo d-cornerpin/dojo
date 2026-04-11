@@ -488,6 +488,9 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
         inputCostPerM: modelRow.input_cost_per_m as number | null,
         outputCostPerM: modelRow.output_cost_per_m as number | null,
         isEnabled: Boolean(modelRow.is_enabled),
+        thinkingEnabled: modelRow.thinking_enabled === null || modelRow.thinking_enabled === undefined
+          ? true
+          : Boolean(modelRow.thinking_enabled),
         createdAt: modelRow.created_at as string,
         updatedAt: modelRow.updated_at as string,
       };
