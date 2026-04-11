@@ -3,6 +3,7 @@
 // ════════════════════════════════════════
 
 import { execSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { getDb } from '../db/connection.js';
@@ -13,6 +14,169 @@ import { handleIMCommand } from './imessage-commands.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { v4 as uuidv4 } from 'uuid';
 import Database from 'better-sqlite3';
+
+// ── iMessage attachment pipeline ────────────────────────────────────────────
+//
+// macOS's Messages chat.db stores a row in `message_attachment_join` for each
+// file attached to a message, and the `attachment` table has the actual path
+// (in `~/Library/Messages/Attachments/...`), MIME type, and original name.
+// When a user sends an image or PDF to the primary agent via iMessage, we:
+//
+//   1. Fetch the attachment rows linked to the message.
+//   2. Copy each supported file into `~/.dojo/uploads/<agentId>/` using the
+//      same directory layout as dashboard uploads.
+//   3. Convert HEIC → JPEG via macOS's built-in `sips` (vision models don't
+//      accept HEIC).
+//   4. Register them as an `UploadedFile[]` which gets JSON-serialized into
+//      the `messages.attachments` column — identical shape to what the
+//      /upload route writes, so the runtime's `injectAttachmentBlocks`
+//      picks them up automatically.
+//
+// Unsupported attachment types (video, audio, arbitrary docs) are logged and
+// skipped. The forwarded text is sanitized to remove the `￼` object-
+// replacement character macOS inserts as a placeholder for attachments.
+
+interface IMessageAttachmentRow {
+  ROWID: number;
+  filename: string | null;
+  mime_type: string | null;
+  transfer_name: string | null;
+}
+
+// Mirror of upload.ts UploadedFile — same shape so the runtime's attachment
+// injection logic can read both without any branching.
+interface UploadedFile {
+  fileId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  path: string;
+  category: 'image' | 'pdf' | 'text' | 'office' | 'unknown';
+}
+
+const DOJO_UPLOAD_DIR = path.join(os.homedir(), '.dojo', 'uploads');
+const IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+const HEIC_MIMES = new Set(['image/heic', 'image/heif']);
+const PDF_MIMES = new Set(['application/pdf']);
+
+function ensureImessageUploadDir(agentId: string): string {
+  const dir = path.join(DOJO_UPLOAD_DIR, agentId);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function expandHomedir(p: string): string {
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  if (p === '~') return os.homedir();
+  return p;
+}
+
+function safeFilenamePart(name: string): string {
+  return name.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+// Remove the U+FFFC object-replacement character macOS inserts in the text
+// column for each inline attachment, plus any leftover whitespace. If the
+// user sent an image with no caption, this collapses to an empty string.
+function stripAttachmentPlaceholder(text: string | null): string {
+  return (text ?? '').replace(/\uFFFC/g, '').trim();
+}
+
+function fetchImessageAttachments(
+  chatDb: Database.Database,
+  messageRowid: number,
+  agentId: string,
+): UploadedFile[] {
+  const rows = chatDb.prepare(`
+    SELECT a.ROWID, a.filename, a.mime_type, a.transfer_name
+    FROM message_attachment_join maj
+    JOIN attachment a ON a.ROWID = maj.attachment_id
+    WHERE maj.message_id = ?
+    ORDER BY a.ROWID ASC
+  `).all(messageRowid) as IMessageAttachmentRow[];
+
+  if (rows.length === 0) return [];
+
+  const dir = ensureImessageUploadDir(agentId);
+  const uploaded: UploadedFile[] = [];
+
+  for (const row of rows) {
+    if (!row.filename) continue;
+    const srcPath = expandHomedir(row.filename);
+
+    if (!fs.existsSync(srcPath)) {
+      logger.warn('iMessage attachment file missing on disk — skipping', {
+        attachmentId: row.ROWID,
+        srcPath,
+      });
+      continue;
+    }
+
+    const mimeType = (row.mime_type ?? '').toLowerCase();
+    const displayName = row.transfer_name || path.basename(srcPath);
+    const fileId = uuidv4();
+    const timestamp = Date.now();
+
+    try {
+      if (IMAGE_MIMES.has(mimeType)) {
+        const storedName = `imessage_${timestamp}_${safeFilenamePart(displayName)}`;
+        const destPath = path.join(dir, storedName);
+        fs.copyFileSync(srcPath, destPath);
+        const size = fs.statSync(destPath).size;
+        uploaded.push({
+          fileId, filename: displayName, mimeType, size, path: destPath, category: 'image',
+        });
+        logger.info('iMessage image attached', { fileId, displayName, size });
+      } else if (HEIC_MIMES.has(mimeType)) {
+        // Vision models don't accept HEIC — convert to JPEG via macOS's
+        // built-in `sips` tool. 30s timeout should be generous for any
+        // reasonable iPhone photo.
+        const jpegBase = safeFilenamePart(displayName).replace(/\.(heic|heif)$/i, '.jpg');
+        const jpegName = `imessage_${timestamp}_${jpegBase}`;
+        const destPath = path.join(dir, jpegName);
+        execSync(
+          `sips -s format jpeg ${JSON.stringify(srcPath)} --out ${JSON.stringify(destPath)}`,
+          { stdio: 'pipe', timeout: 30_000 },
+        );
+        if (!fs.existsSync(destPath)) {
+          logger.warn('HEIC conversion produced no output — skipping', { srcPath, destPath });
+          continue;
+        }
+        const size = fs.statSync(destPath).size;
+        uploaded.push({
+          fileId,
+          filename: displayName.replace(/\.(heic|heif)$/i, '.jpg'),
+          mimeType: 'image/jpeg',
+          size,
+          path: destPath,
+          category: 'image',
+        });
+        logger.info('iMessage HEIC converted and attached', { fileId, displayName, size });
+      } else if (PDF_MIMES.has(mimeType)) {
+        const storedName = `imessage_${timestamp}_${safeFilenamePart(displayName)}`;
+        const destPath = path.join(dir, storedName);
+        fs.copyFileSync(srcPath, destPath);
+        const size = fs.statSync(destPath).size;
+        uploaded.push({
+          fileId, filename: displayName, mimeType, size, path: destPath, category: 'pdf',
+        });
+        logger.info('iMessage PDF attached', { fileId, displayName, size });
+      } else {
+        logger.info('iMessage attachment type unsupported — skipping', {
+          displayName, mimeType,
+        });
+      }
+    } catch (err) {
+      logger.warn('Failed to copy/convert iMessage attachment — skipping', {
+        displayName,
+        mimeType,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return uploaded;
+}
 
 const logger = createLogger('imessage');
 
@@ -77,7 +241,8 @@ async function pollMessages(): Promise<void> {
     const chatDb = new Database(CHAT_DB_PATH, { readonly: true, fileMustExist: true });
 
     try {
-      // Build a query that matches ANY approved sender
+      // Build a query that matches ANY approved sender. No text filter —
+      // image-only messages store U+FFFC in `text` and we want them through.
       const placeholders = approvedSenders.map(() => 'c.chat_identifier LIKE ?').join(' OR ');
       const likeParams = approvedSenders.map(s => `%${s}%`);
 
@@ -88,14 +253,12 @@ async function pollMessages(): Promise<void> {
         JOIN chat c ON c.ROWID = cmj.chat_id
         WHERE m.ROWID > ?
           AND m.is_from_me = 0
-          AND m.text IS NOT NULL
-          AND m.text != ''
           AND (${placeholders})
         ORDER BY m.ROWID ASC
         LIMIT 10
       `).all(lastSeenRowId, ...likeParams) as Array<{
         ROWID: number;
-        text: string;
+        text: string | null;
         is_from_me: number;
         date: number;
         chat_identifier: string;
@@ -106,35 +269,76 @@ async function pollMessages(): Promise<void> {
         saveLastSeenRowId(lastSeenRowId);
 
         const sender = msg.chat_identifier;
-        logger.info('iMessage received', { from: sender, text: msg.text.slice(0, 100) });
+        const primaryId = getPrimaryAgentId();
+
+        // Sanitize text: strip U+FFFC attachment placeholders so we don't
+        // forward control characters to the model.
+        const cleanedText = stripAttachmentPlaceholder(msg.text);
+
+        // Pull any attachments (images/PDFs) linked to this message into the
+        // dojo uploads dir. Unsupported types get skipped with a log.
+        const attachments = fetchImessageAttachments(chatDb, msg.ROWID, primaryId);
+
+        // Skip rows that are neither text nor a supported attachment —
+        // these are reactions, typing indicators, or unsupported media.
+        if (!cleanedText && attachments.length === 0) {
+          logger.debug('iMessage skipped — no text and no supported attachments', {
+            rowid: msg.ROWID,
+          });
+          continue;
+        }
+
+        logger.info('iMessage received', {
+          from: sender,
+          text: cleanedText.slice(0, 100),
+          attachmentCount: attachments.length,
+        });
 
         broadcast({
           type: 'imessage:received',
           data: {
-            text: msg.text,
+            text: cleanedText,
             from: sender,
             timestamp: new Date().toISOString(),
+            attachmentCount: attachments.length,
           },
         } as never);
 
-        // Check for built-in commands — reply goes to the sender
-        const commandResponse = await handleIMCommand(msg.text, sender);
-        if (commandResponse) {
-          sendIMessage(sender, commandResponse);
-          continue;
+        // Check for built-in commands against the text portion only (an
+        // image-only message can't be a command). Reply goes to the sender.
+        if (cleanedText) {
+          const commandResponse = await handleIMCommand(cleanedText, sender);
+          if (commandResponse) {
+            sendIMessage(sender, commandResponse);
+            continue;
+          }
         }
 
         // Forward to primary agent's runtime as a user message
         try {
           const db = getDb();
-          const primaryId = getPrimaryAgentId();
           const ownerName = getOwnerName();
           const msgId = uuidv4();
-          const msgContent = `[SOURCE: IMESSAGE FROM ${ownerName.toUpperCase()} — this message came from iMessage, not the dashboard chat] ${msg.text}`;
+
+          // Build a clear text body for the model. When the user sends an
+          // image with no caption the caption is empty; we note explicitly
+          // that attachments are present so the model's reasoning is anchored.
+          const textForModel = cleanedText
+            ? cleanedText
+            : (attachments.length === 1
+                ? '(attached without a caption)'
+                : `(${attachments.length} files attached without a caption)`);
+          const msgContent = `[SOURCE: IMESSAGE FROM ${ownerName.toUpperCase()} — this message came from iMessage, not the dashboard chat] ${textForModel}`;
+
           db.prepare(`
-            INSERT INTO messages (id, agent_id, role, content, created_at)
-            VALUES (?, ?, 'user', ?, datetime('now'))
-          `).run(msgId, primaryId, msgContent);
+            INSERT INTO messages (id, agent_id, role, content, attachments, created_at)
+            VALUES (?, ?, 'user', ?, ?, datetime('now'))
+          `).run(
+            msgId,
+            primaryId,
+            msgContent,
+            attachments.length > 0 ? JSON.stringify(attachments) : null,
+          );
 
           broadcast({
             type: 'chat:message',
