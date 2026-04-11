@@ -623,16 +623,19 @@ function getOpenAIClient(providerId: string, baseUrl?: string | null): OpenAI {
   return client;
 }
 
-async function callOpenAIModel(
-  params: ModelCallParams,
-  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[] },
-): Promise<ModelCallResult> {
-  const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
-  const startTime = Date.now();
-
-  const client = getOpenAIClient(modelInfo.providerId, modelInfo.providerBaseUrl);
-
-  // Build OpenAI messages
+// Build OpenAI Chat Completions messages from our internal Anthropic-style
+// content blocks. Image blocks become proper `image_url` parts (data URLs),
+// document blocks get their text extracted via pdf-extract and inlined so
+// providers without native document support still see the content.
+//
+// Any image/document blocks for models that LACK vision should already have
+// been stripped by `enforceModelCapabilities` in runtime.ts before this
+// function runs — this helper just translates whatever's left.
+async function buildOpenAIMessages(
+  systemPrompt: string,
+  messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
+  agentId: string,
+): Promise<OpenAI.ChatCompletionMessageParam[]> {
   const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
   ];
@@ -641,23 +644,114 @@ async function callOpenAIModel(
     if (m.role === 'user') {
       if (typeof m.content === 'string') {
         openaiMessages.push({ role: 'user', content: m.content });
-      } else if (Array.isArray(m.content)) {
-        // Handle tool_result blocks from Anthropic format
-        const blocks = m.content as unknown as Array<Record<string, unknown>>;
-        const toolResults = blocks.filter(b => b.type === 'tool_result');
-        if (toolResults.length > 0) {
-          for (const tr of toolResults) {
-            openaiMessages.push({
-              role: 'tool',
-              tool_call_id: tr.tool_use_id as string,
-              content: typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content),
+        continue;
+      }
+      if (!Array.isArray(m.content)) continue;
+
+      const blocks = m.content as unknown as Array<Record<string, unknown>>;
+      const toolResults = blocks.filter(b => b.type === 'tool_result');
+
+      if (toolResults.length > 0) {
+        for (const tr of toolResults) {
+          openaiMessages.push({
+            role: 'tool',
+            tool_call_id: tr.tool_use_id as string,
+            content: typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content),
+          });
+        }
+        continue;
+      }
+
+      // Regular user message — text + optional images + optional PDFs
+      const textBlocks = blocks.filter(b => b.type === 'text');
+      const imageBlocks = blocks.filter(b => b.type === 'image');
+      const documentBlocks = blocks.filter(b => b.type === 'document');
+
+      // Start with any user-typed text.
+      let textContent = textBlocks.map(b => (b.text as string) ?? '').join('\n');
+
+      // Inline PDF text (the OpenAI Chat Completions API has no document
+      // type, so this is the only way to get PDFs in front of the model).
+      if (documentBlocks.length > 0) {
+        const { extractPdfText, PdfExtractError } = await import('../services/pdf-extract.js');
+        for (const doc of documentBlocks) {
+          const source = doc.source as Record<string, unknown> | undefined;
+          const title = (typeof doc.title === 'string' && doc.title) ? doc.title : 'attached document';
+          if (!source || source.type !== 'base64' || typeof source.data !== 'string') {
+            logger.warn('OpenAI translator: document block has no base64 data — skipping', {
+              title,
+            }, agentId);
+            continue;
+          }
+          try {
+            const extracted = await extractPdfText(source.data);
+            const header = `[PDF attachment: ${title} — ${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}${extracted.truncated ? `, truncated to first ${extracted.pagesExtracted}` : ''}]`;
+            const footer = `[end of ${title}]`;
+            textContent = (textContent ? textContent + '\n\n' : '') + `${header}\n${extracted.text}\n${footer}`;
+
+            if (extracted.truncated) {
+              broadcast({
+                type: 'chat:error',
+                agentId,
+                error: `"${title}" was too large to fit in context and was truncated after ${extracted.pagesExtracted} of ${extracted.pageCount} pages. The agent will only see the first part of the document.`,
+              });
+            }
+          } catch (err) {
+            const reason = err instanceof PdfExtractError
+              ? err.message
+              : (err instanceof Error ? err.message : String(err));
+            logger.warn('OpenAI translator: PDF extraction failed — dropping attachment', {
+              title,
+              reason,
+            }, agentId);
+            broadcast({
+              type: 'chat:error',
+              agentId,
+              error: `Couldn't extract text from "${title}" (${reason}). The agent will respond to your message without the PDF's contents.`,
             });
           }
-        } else {
-          // Text content blocks
-          const text = blocks.map(b => (b.text as string) ?? '').join('\n');
-          openaiMessages.push({ role: 'user', content: text });
         }
+      }
+
+      // No images → send as a simple string (backwards compatible).
+      if (imageBlocks.length === 0) {
+        openaiMessages.push({ role: 'user', content: textContent });
+        continue;
+      }
+
+      // Images present → build multimodal content as an array of parts,
+      // using OpenAI's image_url with a base64 data URL so we don't need
+      // external hosting. This is supported by OpenAI itself, OpenRouter,
+      // MoonshotAI, Gemini (via OpenAI compat), Together, and most other
+      // OpenAI-compatible providers for models with vision capability.
+      const parts: OpenAI.ChatCompletionContentPart[] = [];
+      if (textContent) {
+        parts.push({ type: 'text', text: textContent });
+      }
+      for (const img of imageBlocks) {
+        const source = img.source as Record<string, unknown> | undefined;
+        if (!source || source.type !== 'base64' || typeof source.data !== 'string') {
+          logger.warn('OpenAI translator: image block has no base64 data — skipping', {}, agentId);
+          continue;
+        }
+        const mediaType = (source.media_type as string) || 'image/jpeg';
+        parts.push({
+          type: 'image_url',
+          image_url: {
+            url: `data:${mediaType};base64,${source.data}`,
+          },
+        });
+      }
+
+      if (parts.length === 0) {
+        // Nothing survived encoding — fall back to whatever text we have.
+        openaiMessages.push({ role: 'user', content: textContent || '(attachment could not be decoded)' });
+      } else if (parts.length === 1 && parts[0].type === 'text') {
+        // Only text survived — send as string for compat with providers that
+        // don't love the array form for text-only messages.
+        openaiMessages.push({ role: 'user', content: parts[0].text });
+      } else {
+        openaiMessages.push({ role: 'user', content: parts });
       }
     } else if (m.role === 'assistant') {
       if (typeof m.content === 'string') {
@@ -688,6 +782,20 @@ async function callOpenAIModel(
       }
     }
   }
+
+  return openaiMessages;
+}
+
+async function callOpenAIModel(
+  params: ModelCallParams,
+  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[] },
+): Promise<ModelCallResult> {
+  const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
+  const startTime = Date.now();
+
+  const client = getOpenAIClient(modelInfo.providerId, modelInfo.providerBaseUrl);
+
+  const openaiMessages = await buildOpenAIMessages(systemPrompt, messages, agentId);
 
   // Build tools in OpenAI format (two-phase loading: only always-loaded + session-loaded)
   let openaiTools: OpenAI.ChatCompletionTool[] | undefined = undefined;
