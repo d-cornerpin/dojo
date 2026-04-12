@@ -642,12 +642,16 @@ class AgentRuntime {
             const { getPresence } = await import('../services/presence.js');
             const { isPrimaryAgent } = await import('../config/platform.js');
             const presence = getPresence();
+            // Trim trailing whitespace — the model often appends \n\n
+            // before a tool_use block, which the dashboard trims on
+            // render but iMessage would display as literal newlines.
+            const ackText = result.content.trim();
 
             if (presence === 'away' && isPrimaryAgent(agentId)) {
-              sendResponseViaIMessage(result.content, agentId);
+              sendResponseViaIMessage(ackText, agentId);
               clearIMResponseFlag(agentId);
             } else if (isAwaitingIMResponse(agentId)) {
-              sendResponseViaIMessage(result.content, agentId);
+              sendResponseViaIMessage(ackText, agentId);
               clearIMResponseFlag(agentId);
             }
           } catch { /* presence/imessage module may not be available */ }
