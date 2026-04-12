@@ -160,10 +160,14 @@ export async function generateImage(req: GenerateImageRequest): Promise<Generate
     : req.prompt;
 
   const endpoint = resolveChatCompletionsEndpoint(row.provider_base_url);
+  // Use modalities: ['image'] (not ['image', 'text']). Pure image models
+  // like FLUX only support image output and return 404 if text is
+  // requested. Models that CAN output text alongside (Gemini) will still
+  // include it even when only 'image' is specified.
   const requestBody = {
     model: row.api_model_id,
     messages: [{ role: 'user', content: fullPrompt }],
-    modalities: ['image', 'text'],
+    modalities: ['image'],
   };
 
   logger.info('Generating image', {
