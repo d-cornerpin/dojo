@@ -229,6 +229,10 @@ export const updateModelPricing = async (
   });
 };
 
+export const deleteModel = async (modelId: string): Promise<ApiResponse<unknown>> => {
+  return request(`/config/models/${modelId}`, { method: 'DELETE' });
+};
+
 export const updateModelThinking = async (
   modelId: string,
   enabled: boolean,

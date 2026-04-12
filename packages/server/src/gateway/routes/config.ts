@@ -973,6 +973,45 @@ configRouter.patch('/providers/:id/host-ram', async (c) => {
 // will still refuse values the loaded model can't support). Only
 // meaningful for Ollama models — other providers store the value but
 // never translate it at call time.
+// DELETE /models/:id — remove a model from the DB. Checks for active usage
+// by agents first and warns if any are using it. Removes from router tiers,
+// clears config references (PM model, dreamer model, imaginer model).
+configRouter.delete('/models/:id', async (c) => {
+  const id = c.req.param('id');
+  const db = getDb();
+
+  const model = db.prepare('SELECT id, name, api_model_id FROM models WHERE id = ?').get(id) as
+    | { id: string; name: string; api_model_id: string }
+    | undefined;
+  if (!model) return c.json({ ok: false, error: 'Model not found' }, 404);
+
+  // Check if any agent is using this model
+  const agents = db.prepare(
+    "SELECT id, name FROM agents WHERE model_id = ? AND status != 'terminated'",
+  ).all(id) as Array<{ id: string; name: string }>;
+  if (agents.length > 0) {
+    const names = agents.map(a => a.name).join(', ');
+    return c.json({
+      ok: false,
+      error: `Cannot delete — model is in use by: ${names}. Change their model first.`,
+    }, 409);
+  }
+
+  // Clean up config references
+  for (const key of ['pm_agent_model', 'dreaming_model_id', 'imaginer_image_model', 'imaginer_brain_model']) {
+    db.prepare('DELETE FROM config WHERE key = ? AND value = ?').run(key, id);
+  }
+
+  // Remove from router tiers
+  db.prepare('DELETE FROM router_tier_models WHERE model_id = ?').run(id);
+
+  // Delete the model
+  db.prepare('DELETE FROM models WHERE id = ?').run(id);
+  logger.info('Model deleted', { modelId: id, name: model.name, apiModelId: model.api_model_id });
+
+  return c.json({ ok: true });
+});
+
 // POST /models/:id/refresh-capabilities — force a fresh capability probe
 // for one model. Useful when a new capability vocabulary is added (e.g.
 // image_generation in v1.12) and the user's existing rows are stale.

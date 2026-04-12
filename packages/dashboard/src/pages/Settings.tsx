@@ -1633,18 +1633,35 @@ const ModelRow = ({
             </label>
           )}
         </div>
-        <button
-          onClick={onToggle}
-          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-            model.isEnabled ? 'bg-blue-600' : 'bg-white/[0.12]'
-          }`}
-        >
-          <span
-            className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${
-              model.isEnabled ? 'translate-x-6' : 'translate-x-1'
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onToggle}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+              model.isEnabled ? 'bg-blue-600' : 'bg-white/[0.12]'
             }`}
-          />
-        </button>
+          >
+            <span
+              className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${
+                model.isEnabled ? 'translate-x-6' : 'translate-x-1'
+              }`}
+            />
+          </button>
+          <button
+            onClick={async () => {
+              if (!confirm(`Delete "${model.name}"? This removes it from the dojo entirely.`)) return;
+              const result = await api.deleteModel(model.id);
+              if (result.ok) {
+                onPricingChange(); // triggers a full model list reload
+              } else {
+                alert(result.error ?? 'Delete failed');
+              }
+            }}
+            className="w-6 h-6 flex items-center justify-center rounded text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+            title="Delete model"
+          >
+            <span className="text-sm leading-none">×</span>
+          </button>
+        </div>
       </div>
 
       {/* Pricing fields */}
