@@ -694,40 +694,25 @@ export function stopIMBridge(): void {
   }
 }
 
-// ── imsg CLI integration ──────────────────────────────────────────────
-//
-// All iMessage sending uses the `imsg` CLI tool (github.com/steipete/imsg)
-// instead of raw AppleScript. imsg handles phone number normalization,
-// file attachment delivery across all macOS versions, and service
-// detection (iMessage vs SMS) reliably. Install via:
-//   git clone https://github.com/steipete/imsg.git && cd imsg && make build
-//   sudo cp bin/imsg /usr/local/bin/
-//
-// The binary is expected at /opt/homebrew/bin/imsg or anywhere in PATH.
-
-function findImsg(): string {
-  // Check common locations; fall back to bare 'imsg' and let PATH resolve
-  for (const p of ['/opt/homebrew/bin/imsg', '/usr/local/bin/imsg']) {
-    try {
-      if (fs.existsSync(p)) return p;
-    } catch { /* continue */ }
-  }
-  return 'imsg';
-}
-
-let imsgPath: string | null = null;
-function getImsgPath(): string {
-  if (!imsgPath) imsgPath = findImsg();
-  return imsgPath;
-}
+// ── Text messages: AppleScript (works everywhere) ─────────────────────
 
 export function sendIMessage(recipient: string, text: string): void {
   try {
-    const imsg = getImsgPath();
-    execSync(
-      `${imsg} send --to ${JSON.stringify(recipient)} --text ${JSON.stringify(text)} --service imessage`,
-      { timeout: 15000, encoding: 'utf-8', stdio: 'pipe' },
-    );
+    const escapedText = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const escapedRecipient = recipient.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+    const script = `
+      tell application "Messages"
+        set targetService to 1st service whose service type = iMessage
+        set targetBuddy to buddy "${escapedRecipient}" of targetService
+        send "${escapedText}" to targetBuddy
+      end tell
+    `;
+
+    execSync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`, {
+      timeout: 10000,
+      encoding: 'utf-8',
+    });
 
     logger.info('iMessage sent', { recipient, textLength: text.length });
 
@@ -747,27 +732,66 @@ export function sendIMessage(recipient: string, text: string): void {
   }
 }
 
+// ── File attachments: imsg CLI (AppleScript can't do this reliably) ───
+//
+// AppleScript's `send POSIX file` silently fails on newer macOS versions
+// (-1700: "Can't make POSIX file into type file or text"). The `imsg`
+// CLI tool (github.com/steipete/imsg) handles file delivery properly.
+// It's only used for attachments — plain text continues to use the
+// proven AppleScript path above.
+//
+// If imsg isn't installed, falls back to sending a text-only message
+// pointing the user to the dashboard.
+
+function findImsg(): string | null {
+  for (const p of ['/opt/homebrew/bin/imsg', '/usr/local/bin/imsg']) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch { /* continue */ }
+  }
+  // Check PATH as last resort
+  try {
+    execSync('which imsg', { encoding: 'utf-8', stdio: 'pipe' });
+    return 'imsg';
+  } catch {
+    return null;
+  }
+}
+
+let imsgPathCached: string | null | undefined = undefined;
+function getImsgPath(): string | null {
+  if (imsgPathCached === undefined) imsgPathCached = findImsg();
+  return imsgPathCached;
+}
+
 /**
  * Send a file attachment via iMessage with an optional text caption.
- * Uses `imsg send --file` which handles POSIX file delivery reliably
- * across all macOS versions. If the send fails, falls back to a text
- * message telling the user the image is in the dashboard.
+ * Uses the `imsg` CLI for the file attachment since AppleScript can't
+ * handle POSIX file sends on newer macOS. If imsg isn't installed,
+ * sends the caption as text and tells the user to check the dashboard.
  */
 export function sendIMessageWithAttachment(
   recipient: string,
   filePath: string,
   caption?: string,
 ): void {
+  const imsg = getImsgPath();
+
+  if (!imsg) {
+    logger.warn('imsg CLI not found — cannot send iMessage attachment. Install from https://github.com/steipete/imsg');
+    if (caption) sendIMessage(recipient, caption);
+    sendIMessage(recipient, '(Image generated but imsg CLI not installed — open the dashboard to see it.)');
+    return;
+  }
+
   try {
-    const imsg = getImsgPath();
-    // imsg supports --text and --file together in a single send
     const textArg = caption ? ` --text ${JSON.stringify(caption)}` : '';
     execSync(
       `${imsg} send --to ${JSON.stringify(recipient)}${textArg} --file ${JSON.stringify(filePath)} --service imessage`,
       { timeout: 30000, encoding: 'utf-8', stdio: 'pipe' },
     );
 
-    logger.info('iMessage attachment sent', { recipient, filePath });
+    logger.info('iMessage attachment sent via imsg', { recipient, filePath });
 
     broadcast({
       type: 'imessage:sent',
@@ -779,16 +803,16 @@ export function sendIMessageWithAttachment(
     } as never);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    logger.error('Failed to send iMessage attachment — falling back to text', {
+    logger.error('imsg send failed — falling back to text', {
       error: errMsg,
       recipient,
       filePath,
     });
 
-    // Fallback: send text + dashboard pointer if attachment failed
+    // Fallback: send caption + dashboard pointer via AppleScript
     try {
       if (caption) sendIMessage(recipient, caption);
-      sendIMessage(recipient, '(The image was generated but couldn\'t be attached via iMessage — open the dashboard to see it.)');
+      sendIMessage(recipient, '(The image was generated but couldn\'t be attached — open the dashboard to see it.)');
     } catch { /* double-fault — give up */ }
   }
 }
