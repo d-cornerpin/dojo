@@ -256,8 +256,15 @@ export const Chat = () => {
   // Auto-scroll — only when the last message changes (new message appended),
   // not when older messages are prepended at the top
   const lastMessageIdRef = useRef<string | null>(null);
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const scrollToBottom = useCallback((instant?: boolean) => {
+    if (instant) {
+      // Instant scroll — used on initial load where smooth animation
+      // is distracting and scrollIntoView sometimes undershoots.
+      const container = messagesContainerRef.current;
+      if (container) container.scrollTop = container.scrollHeight;
+    } else {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, []);
 
   useEffect(() => {
@@ -300,10 +307,14 @@ export const Chat = () => {
           })),
         );
         setHasMore(result.data.length >= 50);
-        // Scroll to bottom on initial load — delay to ensure DOM is painted
-        setTimeout(() => {
-          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }, 100);
+        // Scroll to bottom on initial load — use instant (not smooth)
+        // and a double-frame delay to ensure the DOM is fully painted
+        // after the mobile padding/layout settles.
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            scrollToBottom(true);
+          });
+        });
       }
       setLoading(false);
     };
@@ -378,6 +389,8 @@ export const Chat = () => {
               : undefined;
             currentToolCallsRef.current = [];
             setIsWorking(false);
+            // Ensure we're scrolled to the bottom after streaming completes
+            requestAnimationFrame(() => scrollToBottom());
           }
           return [...prev.slice(0, -1), updated];
         } else if (prev.some((m) => m.id === e.messageId)) {
