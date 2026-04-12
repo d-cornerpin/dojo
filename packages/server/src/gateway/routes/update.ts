@@ -102,6 +102,147 @@ updateRouter.get('/version', (c) => {
   return c.json({ ok: true, data: { version: getCurrentVersion() } });
 });
 
+// ── List recent releases (for rollback) ──
+
+updateRouter.get('/releases', async (c) => {
+  const currentVersion = getCurrentVersion();
+
+  try {
+    const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=15`, {
+      headers: { 'Accept': 'application/vnd.github.v3+json' },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      return c.json({ ok: false, error: `GitHub API: ${response.status}` }, 502);
+    }
+
+    const releases = await response.json() as Array<{
+      tag_name: string;
+      name: string;
+      published_at: string;
+      body: string;
+      assets: Array<{ name: string; browser_download_url: string; size: number }>;
+    }>;
+
+    const data = releases.map(r => {
+      const version = r.tag_name.replace(/^v/, '');
+      const zipAsset = r.assets.find(a => a.name === 'dojo-platform.zip');
+      return {
+        version,
+        tag: r.tag_name,
+        name: r.name,
+        publishedAt: r.published_at,
+        notes: r.body?.slice(0, 300) ?? null,
+        downloadUrl: zipAsset?.browser_download_url ?? null,
+        downloadSize: zipAsset?.size ?? null,
+        isCurrent: version === currentVersion,
+      };
+    });
+
+    return c.json({ ok: true, data: { currentVersion, releases: data } });
+  } catch (err) {
+    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// ── Rollback to a specific version ──
+
+updateRouter.post('/rollback', async (c) => {
+  const currentVersion = getCurrentVersion();
+  const body = await c.req.json().catch(() => null);
+  if (!body?.tag) {
+    return c.json({ ok: false, error: 'tag is required (e.g. "v1.12.0")' }, 400);
+  }
+
+  const targetTag = body.tag as string;
+  const targetVersion = targetTag.replace(/^v/, '');
+
+  const isProduction = fs.existsSync(PLATFORM_DIR) && fs.existsSync(path.join(PLATFORM_DIR, 'package.json'));
+  if (!isProduction) {
+    return c.json({ ok: false, error: 'Rollback only supported for production installs (~/.dojo/platform).' }, 400);
+  }
+
+  try {
+    // Fetch the specific release
+    const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${targetTag}`, {
+      headers: { 'Accept': 'application/vnd.github.v3+json' },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      return c.json({ ok: false, error: `Release ${targetTag} not found on GitHub (HTTP ${response.status})` }, 404);
+    }
+
+    const release = await response.json() as { tag_name: string; assets: Array<{ name: string; browser_download_url: string }> };
+    const zipAsset = release.assets.find(a => a.name === 'dojo-platform.zip');
+
+    if (!zipAsset) {
+      return c.json({ ok: false, error: `No dojo-platform.zip found in release ${targetTag}` }, 500);
+    }
+
+    logger.info('Starting rollback', { from: currentVersion, to: targetVersion, url: zipAsset.browser_download_url });
+
+    // Same process as apply: download → extract → backup → copy → npm install → restart
+    const tmpDir = path.join(os.tmpdir(), `dojo-rollback-${Date.now()}`);
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const zipPath = path.join(tmpDir, 'dojo-platform.zip');
+
+    await execAsync(`curl -L -o "${zipPath}" "${zipAsset.browser_download_url}"`, { timeout: 120000 });
+    await execAsync(`unzip -o "${zipPath}" -d "${tmpDir}"`, { timeout: 60000 });
+
+    const extractedDir = path.join(tmpDir, 'dojo-platform', 'platform');
+    if (!fs.existsSync(extractedDir)) {
+      return c.json({ ok: false, error: 'Extracted zip does not contain dojo-platform/platform directory' }, 500);
+    }
+
+    // Backup current
+    const backupDir = `${PLATFORM_DIR}.backup-${currentVersion}`;
+    if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true });
+    logger.info('Backing up current platform for rollback', { from: PLATFORM_DIR, to: backupDir });
+    await execAsync(`cp -R "${PLATFORM_DIR}" "${backupDir}"`, { timeout: 30000 });
+
+    // Copy files (same logic as apply)
+    const env = { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH}` };
+    const entries = fs.readdirSync(extractedDir);
+    for (const entry of entries) {
+      if (entry === 'node_modules') continue;
+      const src = path.join(extractedDir, entry);
+      const dest = path.join(PLATFORM_DIR, entry);
+      const stat = fs.statSync(src);
+      if (stat.isDirectory()) {
+        await execAsync(`rsync -a --delete "${src}/" "${dest}/"`, { timeout: 30000, env });
+      } else {
+        await execAsync(`cp -f "${src}" "${dest}"`, { timeout: 30000 });
+      }
+    }
+
+    await execAsync('npm install --omit=dev', { cwd: PLATFORM_DIR, timeout: 120000, env });
+    fs.rmSync(tmpDir, { recursive: true });
+
+    logger.info('Rollback complete', { from: currentVersion, to: targetVersion });
+
+    setTimeout(() => {
+      logger.info('Restarting server after rollback');
+      process.exit(0);
+    }, 1000);
+
+    return c.json({
+      ok: true,
+      data: {
+        message: `Rolled back from ${currentVersion} to ${targetVersion}. Server is restarting...`,
+        previousVersion: currentVersion,
+        newVersion: targetVersion,
+        backupDir,
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Rollback failed', { error: msg });
+    return c.json({ ok: false, error: `Rollback failed: ${msg}` }, 500);
+  }
+});
+
 // ── Apply update ──
 
 updateRouter.post('/apply', async (c) => {

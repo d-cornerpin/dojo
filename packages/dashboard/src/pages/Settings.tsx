@@ -2896,6 +2896,126 @@ const UpdateTab = () => {
           </div>
         )}
       </div>
+
+      {/* Previous releases for rollback */}
+      <RollbackSection currentVersion={updateInfo?.currentVersion ?? null} />
+    </div>
+  );
+};
+
+// ── Rollback to Previous Releases ──
+
+const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) => {
+  const [releases, setReleases] = useState<api.ReleaseInfo[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [rollingBack, setRollingBack] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadReleases = async () => {
+    setLoading(true);
+    const r = await api.listReleases();
+    if (r.ok) {
+      setReleases(r.data.releases);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (expanded && releases.length === 0) loadReleases();
+  }, [expanded]);
+
+  const handleRollback = async (tag: string, version: string) => {
+    if (!confirm(`Roll back to ${version}? This will download that version, replace the current install, and restart the server.`)) return;
+    setRollingBack(tag);
+    setError(null);
+    setResult(null);
+    const r = await api.rollbackToVersion(tag);
+    if (r.ok) {
+      setResult(r.data.message);
+      setTimeout(() => {
+        const poll = setInterval(async () => {
+          try {
+            const v = await api.getVersion();
+            if (v.ok) { clearInterval(poll); window.location.reload(); }
+          } catch { /* still restarting */ }
+        }, 2000);
+        setTimeout(() => clearInterval(poll), 60000);
+      }, 3000);
+    } else {
+      setError(r.error ?? 'Rollback failed');
+      setRollingBack(null);
+    }
+  };
+
+  return (
+    <div className="glass-card p-4 space-y-3">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between text-sm font-medium text-white/70 hover:text-white/90"
+      >
+        <span>Previous Releases</span>
+        <span className="text-white/30">{expanded ? '[-]' : '[+]'}</span>
+      </button>
+
+      {expanded && (
+        <div className="space-y-2">
+          <p className="text-xs text-white/40">
+            Roll back to a previous version if the current release has issues. Each rollback creates a backup of the current install.
+          </p>
+
+          {loading && <p className="text-xs text-white/30">Loading releases...</p>}
+
+          {result && (
+            <div className="px-3 py-2 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400 text-sm">
+              {result}
+            </div>
+          )}
+          {error && (
+            <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+              {error}
+            </div>
+          )}
+
+          <div className="space-y-1 max-h-[400px] overflow-y-auto">
+            {releases.map(r => (
+              <div
+                key={r.tag}
+                className={`flex items-center justify-between p-2.5 rounded-lg ${
+                  r.isCurrent
+                    ? 'bg-cp-amber/10 border border-cp-amber/20'
+                    : 'glass-nested'
+                }`}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-mono text-white/90">{r.version}</span>
+                    {r.isCurrent && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-cp-amber/20 text-cp-amber font-medium">
+                        current
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-white/40 mt-0.5 truncate">
+                    {r.name} · {new Date(r.publishedAt).toLocaleDateString()}
+                  </div>
+                </div>
+
+                {!r.isCurrent && r.downloadUrl && (
+                  <button
+                    onClick={() => handleRollback(r.tag, r.version)}
+                    disabled={!!rollingBack}
+                    className="shrink-0 ml-2 px-3 py-1.5 text-xs bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-white/70 hover:text-white rounded-lg transition-colors disabled:opacity-30"
+                  >
+                    {rollingBack === r.tag ? 'Rolling back...' : 'Rollback'}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

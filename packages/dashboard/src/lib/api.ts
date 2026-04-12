@@ -1176,4 +1176,26 @@ export const applyUpdate = async (): Promise<ApiResponse<{ message: string; prev
   });
 };
 
+export interface ReleaseInfo {
+  version: string;
+  tag: string;
+  name: string;
+  publishedAt: string;
+  notes: string | null;
+  downloadUrl: string | null;
+  downloadSize: number | null;
+  isCurrent: boolean;
+}
+
+export const listReleases = async (): Promise<ApiResponse<{ currentVersion: string; releases: ReleaseInfo[] }>> => {
+  return request<{ currentVersion: string; releases: ReleaseInfo[] }>('/update/releases');
+};
+
+export const rollbackToVersion = async (tag: string): Promise<ApiResponse<{ message: string; previousVersion: string; newVersion: string; backupDir: string }>> => {
+  return request<{ message: string; previousVersion: string; newVersion: string; backupDir: string }>('/update/rollback', {
+    method: 'POST',
+    body: JSON.stringify({ tag }),
+  });
+};
+
 export { getToken, clearToken };
