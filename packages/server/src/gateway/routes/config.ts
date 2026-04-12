@@ -868,6 +868,13 @@ configRouter.post('/providers/:id/add-model', async (c) => {
   const alreadyAdded = db.prepare('SELECT id FROM models WHERE provider_id = ? AND api_model_id = ?').get(providerId, body.apiModelId);
   if (alreadyAdded) return c.json({ ok: false, error: 'Model already added' }, 409);
 
+  // If the caller provided explicit capabilities (manual add for models
+  // not in the provider catalog), use those directly. Otherwise start
+  // empty and probe.
+  const explicitCapabilities = Array.isArray(body.capabilities)
+    ? body.capabilities.filter((c: unknown) => typeof c === 'string')
+    : null;
+
   const modelId = uuidv4();
   db.prepare(`
     INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, is_enabled, created_at, updated_at)
@@ -876,25 +883,28 @@ configRouter.post('/providers/:id/add-model', async (c) => {
     modelId, providerId,
     body.name ?? body.apiModelId,
     body.apiModelId,
-    JSON.stringify([]),
+    JSON.stringify(explicitCapabilities ?? []),
     body.contextWindow ?? null,
     body.maxOutputTokens ?? null,
     body.inputCostPerM ?? null,
     body.outputCostPerM ?? null,
   );
 
-  // Probe the real capabilities from the provider and persist them before we
-  // return the row to the UI. Best-effort — a probe failure leaves the row
-  // with `[]` and the boot backfill will retry later.
-  try {
-    const { probeAndStoreCapabilities } = await import('../../services/capabilities.js');
-    await probeAndStoreCapabilities(modelId);
-  } catch (err) {
-    logger.warn('Capability probe failed on add-model', {
-      providerId,
-      apiModelId: body.apiModelId,
-      error: err instanceof Error ? err.message : String(err),
-    });
+  // Probe capabilities from the provider catalog — but only if the caller
+  // didn't supply explicit ones. For manually-added models (not in the
+  // catalog), the probe would return empty and overwrite the user's
+  // selection, so we skip it.
+  if (!explicitCapabilities) {
+    try {
+      const { probeAndStoreCapabilities } = await import('../../services/capabilities.js');
+      await probeAndStoreCapabilities(modelId);
+    } catch (err) {
+      logger.warn('Capability probe failed on add-model', {
+        providerId,
+        apiModelId: body.apiModelId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   // For Ollama models, compute and persist a RAM-aware num_ctx recommendation

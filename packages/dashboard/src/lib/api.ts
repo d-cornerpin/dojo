@@ -179,6 +179,9 @@ export interface BrowseModelResult {
   maxOutputTokens: number | null;
   inputCostPerM: number | null;
   outputCostPerM: number | null;
+  // Optional: when provided via manual add, these are stored directly
+  // instead of probing the provider catalog.
+  capabilities?: string[];
 }
 
 export const browseProviderModels = async (providerId: string, query: string): Promise<ApiResponse<BrowseModelResult[]>> => {

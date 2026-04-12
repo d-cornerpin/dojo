@@ -1836,6 +1836,133 @@ const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: 
       {searched && results.length === 0 && !searching && (
         <p className="text-xs white/30 text-center py-2">No models found matching "{query}"</p>
       )}
+
+      {/* Manual Add — for models not in the catalog */}
+      <ManualAddModel providerId={providerId} onModelAdded={onModelAdded} />
+    </div>
+  );
+};
+
+// ── Manual Add Model (for models not in the provider catalog) ──
+
+const MANUAL_ADD_CAPABILITIES = [
+  { key: 'tools', label: 'Tools', desc: 'Function/tool calling' },
+  { key: 'vision', label: 'Vision', desc: 'Image input' },
+  { key: 'thinking', label: 'Thinking', desc: 'Extended reasoning' },
+  { key: 'image_generation', label: 'Image Gen', desc: 'Image output' },
+] as const;
+
+const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onModelAdded: () => void }) => {
+  const [expanded, setExpanded] = useState(false);
+  const [modelId, setModelId] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [selectedCaps, setSelectedCaps] = useState<Set<string>>(new Set());
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const toggleCap = (key: string) => {
+    setSelectedCaps(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const handleAdd = async () => {
+    const trimmedId = modelId.trim();
+    if (!trimmedId) { setError('Model ID is required'); return; }
+    setError(null);
+    setAdding(true);
+
+    const result = await api.addProviderModel(providerId, {
+      apiModelId: trimmedId,
+      name: displayName.trim() || trimmedId,
+      contextWindow: null,
+      maxOutputTokens: null,
+      inputCostPerM: null,
+      outputCostPerM: null,
+      capabilities: Array.from(selectedCaps),
+    } as api.BrowseModelResult & { capabilities?: string[] });
+
+    setAdding(false);
+    if (result.ok) {
+      setModelId('');
+      setDisplayName('');
+      setSelectedCaps(new Set());
+      setExpanded(false);
+      onModelAdded();
+    } else {
+      setError(result.error ?? 'Failed to add model');
+    }
+  };
+
+  return (
+    <div className="border-t border-white/[0.06] pt-3 mt-3">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="text-xs text-white/40 hover:text-white/70 transition-colors"
+      >
+        {expanded ? '▾ Hide manual add' : '▸ Manual add (model not in catalog?)'}
+      </button>
+
+      {expanded && (
+        <div className="mt-3 space-y-3">
+          <p className="text-[10px] text-white/30">
+            For models not listed in the catalog (e.g. new image models, private endpoints).
+            Enter the exact model ID from the provider and select its capabilities.
+          </p>
+
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={modelId}
+              onChange={(e) => setModelId(e.target.value)}
+              placeholder="Model ID (e.g. black-forest-labs/flux.2-max)"
+              className="flex-1 px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+            />
+          </div>
+
+          <input
+            type="text"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="Display name (optional — defaults to model ID)"
+            className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+
+          <div>
+            <label className="block text-xs font-medium text-white/55 mb-2">Capabilities</label>
+            <div className="flex flex-wrap gap-2">
+              {MANUAL_ADD_CAPABILITIES.map(cap => (
+                <button
+                  key={cap.key}
+                  onClick={() => toggleCap(cap.key)}
+                  title={cap.desc}
+                  className={`px-2.5 py-1 rounded text-[11px] font-medium border transition-colors ${
+                    selectedCaps.has(cap.key)
+                      ? 'bg-blue-500/20 text-blue-300 border-blue-400/40'
+                      : 'bg-white/[0.03] text-white/40 border-white/[0.08] hover:border-white/20'
+                  }`}
+                >
+                  {cap.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleAdd}
+              disabled={adding || !modelId.trim()}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:text-white/40 text-white text-sm font-medium rounded-lg transition-colors"
+            >
+              {adding ? 'Adding...' : 'Add Model'}
+            </button>
+            {error && <span className="text-xs text-red-400">{error}</span>}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
