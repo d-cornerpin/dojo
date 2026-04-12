@@ -93,6 +93,30 @@ else
     echo "✅ Node.js v${NODE_VERSION} installed"
 fi
 
+# ── Install imsg (iMessage CLI for text + image attachments) ──
+
+if command -v imsg &>/dev/null; then
+    echo "✅ imsg CLI installed"
+else
+    echo ""
+    echo "📦 Installing imsg (iMessage CLI)..."
+    IMSG_BUILD_DIR=$(mktemp -d)
+    if git clone --depth 1 https://github.com/steipete/imsg.git "$IMSG_BUILD_DIR" 2>/dev/null; then
+        if (cd "$IMSG_BUILD_DIR" && make build 2>/dev/null); then
+            cp "$IMSG_BUILD_DIR/bin/imsg" /usr/local/bin/imsg 2>/dev/null || \
+                cp "$IMSG_BUILD_DIR/bin/imsg" /opt/homebrew/bin/imsg 2>/dev/null || \
+                (mkdir -p "$HOME/.dojo/bin" && cp "$IMSG_BUILD_DIR/bin/imsg" "$HOME/.dojo/bin/imsg")
+            echo "✅ imsg installed"
+        else
+            echo "⚠️  imsg build failed (optional — iMessage image attachments won't work)"
+            echo "   Try manually: git clone https://github.com/steipete/imsg.git && cd imsg && make build && sudo cp bin/imsg /usr/local/bin/"
+        fi
+    else
+        echo "⚠️  Could not clone imsg repo (optional — iMessage image attachments won't work)"
+    fi
+    rm -rf "$IMSG_BUILD_DIR" 2>/dev/null
+fi
+
 # ── Install Google Workspace CLI (optional) ──
 
 if command -v gws &>/dev/null; then

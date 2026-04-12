@@ -694,27 +694,68 @@ export function stopIMBridge(): void {
   }
 }
 
-// ── Text messages: AppleScript (works everywhere) ─────────────────────
+// ── iMessage sending via imsg CLI ──────────────────────────────────────
+//
+// All iMessage sending uses the `imsg` CLI (github.com/steipete/imsg).
+// imsg is installed automatically by the dojo installer (install.sh)
+// and handles text, file attachments, phone number normalization, and
+// service detection reliably across all macOS versions.
+//
+// If imsg isn't available (shouldn't happen after a proper install),
+// falls back to raw AppleScript for text-only messages. File
+// attachments require imsg — AppleScript's POSIX file handling is
+// broken on newer macOS.
+
+function findImsg(): string | null {
+  for (const p of ['/opt/homebrew/bin/imsg', '/usr/local/bin/imsg', `${os.homedir()}/.dojo/bin/imsg`]) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch { /* continue */ }
+  }
+  try {
+    execSync('which imsg', { encoding: 'utf-8', stdio: 'pipe' });
+    return 'imsg';
+  } catch {
+    return null;
+  }
+}
+
+let imsgPathCached: string | null | undefined = undefined;
+function getImsgPath(): string | null {
+  if (imsgPathCached === undefined) imsgPathCached = findImsg();
+  return imsgPathCached;
+}
+
+// AppleScript fallback for text-only — used only when imsg isn't installed
+function sendIMessageViaAppleScript(recipient: string, text: string): void {
+  const escapedText = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const escapedRecipient = recipient.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const script = `
+    tell application "Messages"
+      set targetService to 1st service whose service type = iMessage
+      set targetBuddy to buddy "${escapedRecipient}" of targetService
+      send "${escapedText}" to targetBuddy
+    end tell
+  `;
+  execSync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`, {
+    timeout: 10000,
+    encoding: 'utf-8',
+  });
+}
 
 export function sendIMessage(recipient: string, text: string): void {
   try {
-    const escapedText = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    const escapedRecipient = recipient.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const imsg = getImsgPath();
+    if (imsg) {
+      execSync(
+        `${imsg} send --to ${JSON.stringify(recipient)} --text ${JSON.stringify(text)} --service imessage`,
+        { timeout: 15000, encoding: 'utf-8', stdio: 'pipe' },
+      );
+    } else {
+      sendIMessageViaAppleScript(recipient, text);
+    }
 
-    const script = `
-      tell application "Messages"
-        set targetService to 1st service whose service type = iMessage
-        set targetBuddy to buddy "${escapedRecipient}" of targetService
-        send "${escapedText}" to targetBuddy
-      end tell
-    `;
-
-    execSync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`, {
-      timeout: 10000,
-      encoding: 'utf-8',
-    });
-
-    logger.info('iMessage sent', { recipient, textLength: text.length });
+    logger.info('iMessage sent', { recipient, textLength: text.length, via: imsg ? 'imsg' : 'applescript' });
 
     broadcast({
       type: 'imessage:sent',
@@ -732,43 +773,10 @@ export function sendIMessage(recipient: string, text: string): void {
   }
 }
 
-// ── File attachments: imsg CLI (AppleScript can't do this reliably) ───
-//
-// AppleScript's `send POSIX file` silently fails on newer macOS versions
-// (-1700: "Can't make POSIX file into type file or text"). The `imsg`
-// CLI tool (github.com/steipete/imsg) handles file delivery properly.
-// It's only used for attachments — plain text continues to use the
-// proven AppleScript path above.
-//
-// If imsg isn't installed, falls back to sending a text-only message
-// pointing the user to the dashboard.
-
-function findImsg(): string | null {
-  for (const p of ['/opt/homebrew/bin/imsg', '/usr/local/bin/imsg']) {
-    try {
-      if (fs.existsSync(p)) return p;
-    } catch { /* continue */ }
-  }
-  // Check PATH as last resort
-  try {
-    execSync('which imsg', { encoding: 'utf-8', stdio: 'pipe' });
-    return 'imsg';
-  } catch {
-    return null;
-  }
-}
-
-let imsgPathCached: string | null | undefined = undefined;
-function getImsgPath(): string | null {
-  if (imsgPathCached === undefined) imsgPathCached = findImsg();
-  return imsgPathCached;
-}
-
 /**
  * Send a file attachment via iMessage with an optional text caption.
- * Uses the `imsg` CLI for the file attachment since AppleScript can't
- * handle POSIX file sends on newer macOS. If imsg isn't installed,
- * sends the caption as text and tells the user to check the dashboard.
+ * Requires imsg CLI (installed by the dojo installer). If imsg isn't
+ * available, falls back to text-only via AppleScript.
  */
 export function sendIMessageWithAttachment(
   recipient: string,
@@ -778,7 +786,7 @@ export function sendIMessageWithAttachment(
   const imsg = getImsgPath();
 
   if (!imsg) {
-    logger.warn('imsg CLI not found — cannot send iMessage attachment. Install from https://github.com/steipete/imsg');
+    logger.warn('imsg CLI not found — cannot send file attachment. Install via: git clone https://github.com/steipete/imsg.git && cd imsg && make build && sudo cp bin/imsg /usr/local/bin/');
     if (caption) sendIMessage(recipient, caption);
     sendIMessage(recipient, '(Image generated but imsg CLI not installed — open the dashboard to see it.)');
     return;
@@ -791,7 +799,7 @@ export function sendIMessageWithAttachment(
       { timeout: 30000, encoding: 'utf-8', stdio: 'pipe' },
     );
 
-    logger.info('iMessage attachment sent via imsg', { recipient, filePath });
+    logger.info('iMessage attachment sent', { recipient, filePath });
 
     broadcast({
       type: 'imessage:sent',
@@ -803,13 +811,12 @@ export function sendIMessageWithAttachment(
     } as never);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    logger.error('imsg send failed — falling back to text', {
+    logger.error('imsg attachment send failed — falling back to text', {
       error: errMsg,
       recipient,
       filePath,
     });
 
-    // Fallback: send caption + dashboard pointer via AppleScript
     try {
       if (caption) sendIMessage(recipient, caption);
       sendIMessage(recipient, '(The image was generated but couldn\'t be attached — open the dashboard to see it.)');
