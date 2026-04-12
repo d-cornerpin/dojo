@@ -409,7 +409,7 @@ IMPORTANT: Always deliver your findings to ${primaryName} using send_to_agent. D
 
 If you spot issues, call send_to_agent to tell ${primaryName}. You can also message agents directly to ask about stalled tasks.
 For engine-detected issues, act on them: call send_to_agent to notify ${primaryName} or poke the relevant agent.
-If everything looks fine, just say "All clear."
+If everything looks fine, DO NOT call send_to_agent. Just end your turn silently — ${primaryName} does not need to hear "all clear" every check cycle. Only contact ${primaryName} when there is something actionable.
 Keep it brief.`;
 
   const msgId = uuidv4();
