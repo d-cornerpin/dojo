@@ -2737,6 +2737,28 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           break;
         }
 
+        // Capture the user's ORIGINAL request text so the delivery
+        // references what the USER asked for, not the model's enhanced
+        // prompt. Strip common prefixes ("generate an image of", "make
+        // me a picture of", etc.) to get just the subject.
+        const userMsgRow = getDb().prepare(`
+          SELECT content FROM messages
+          WHERE agent_id = ? AND role = 'user'
+          ORDER BY created_at DESC LIMIT 1
+        `).get(agentId) as { content: string } | undefined;
+        let userSubject = (userMsgRow?.content ?? '').replace(/^\[SOURCE:.*?\]\s*/i, '').trim();
+        // Strip common "generate/create/make an image/picture of" prefixes
+        userSubject = userSubject
+          .replace(/^(can you |please |could you |i want |i need |i'd like )/i, '')
+          .replace(/^(generate|create|make|draw|design|produce|render)\s+(me\s+)?(an?\s+)?(image|picture|photo|illustration|drawing|graphic|artwork)\s+(of\s+|showing\s+|with\s+|depicting\s+)?/i, '')
+          .replace(/^(draw|paint|sketch)\s+(me\s+)?/i, '')
+          .trim();
+        // Remove trailing punctuation and leading articles
+        userSubject = userSubject.replace(/[.!?]+$/, '').replace(/^(a|an|the)\s+/i, '').trim();
+        if (userSubject.length > 120) {
+          userSubject = userSubject.slice(0, 117) + '...';
+        }
+
         const { getImaginerAgentId, getImaginerAgentName, isImaginerEnabled } = await import('../config/platform.js');
 
         if (!isImaginerEnabled()) {
@@ -2955,8 +2977,9 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
             // it appears as if Kevin posted the image. No second runtime
             // turn — the background task IS the delivery mechanism.
             const deliveryMsgId = uuidv4();
-            const deliveryContent =
-              `Here's the image you requested! Let me know if you'd like any changes or a different version.`;
+            const deliveryContent = userSubject
+              ? `Here's your ${userSubject}! Let me know if you'd like any changes or a different version.`
+              : `Here's the image you requested! Let me know if you'd like any changes or a different version.`;
 
             db.prepare(`
               INSERT INTO messages (id, agent_id, role, content, attachments, model_id, created_at)
