@@ -199,9 +199,12 @@ export interface OllamaStatusEvent {
   type: 'ollama:status';
   data: {
     maxConcurrentModels: number;
-    slots: Array<{ modelName: string; activeRequests: number }>;
+    // Slots are now per-provider: each entry tags which Ollama provider
+    // the model is loaded on, so the same modelName can legitimately
+    // appear once per provider.
+    slots: Array<{ providerId: string; modelName: string; activeRequests: number }>;
     queuedRequests: number;
-    queuedModels: string[];
+    queuedModels: Array<{ providerId: string; modelName: string }>;
   };
 }
 

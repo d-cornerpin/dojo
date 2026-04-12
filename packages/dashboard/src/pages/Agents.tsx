@@ -330,7 +330,7 @@ export const Agents = () => {
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [showAllHistory, setShowAllHistory] = useState(false);
-  const [ollamaWarning, setOllamaWarning] = useState<{ count: number; max: number } | null>(null);
+  const [ollamaWarnings, setOllamaWarnings] = useState<api.OllamaLockWarning[]>([]);
   const [ollamaWarningExpanded, setOllamaWarningExpanded] = useState(false);
   const { subscribe } = useWebSocket();
 
@@ -346,10 +346,10 @@ export const Agents = () => {
 
   const checkOllamaWarning = async () => {
     const result = await api.getOllamaLockStatus();
-    if (result.ok && result.data.warning) {
-      setOllamaWarning({ count: result.data.activeAgentModels.count, max: result.data.maxConcurrentModels });
+    if (result.ok && result.data.warnings.length > 0) {
+      setOllamaWarnings(result.data.warnings);
     } else {
-      setOllamaWarning(null);
+      setOllamaWarnings([]);
     }
   };
 
@@ -438,26 +438,39 @@ export const Agents = () => {
         </div>
       </div>
 
-      {/* Ollama model concurrency warning */}
-      {ollamaWarning && (
-        <div className="mb-4 px-4 py-2.5 rounded-xl bg-cp-amber/10 border border-cp-amber/20">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-cp-amber">
-              {ollamaWarning.count} different local models in use — your system supports {ollamaWarning.max} concurrent. Some agents may queue.
-            </span>
-            <button
-              onClick={() => setOllamaWarningExpanded(!ollamaWarningExpanded)}
-              className="text-xs text-cp-amber/70 hover:text-cp-amber ml-2 shrink-0"
-            >
-              {ollamaWarningExpanded ? 'Hide' : 'Learn more'}
-            </button>
-          </div>
-          {ollamaWarningExpanded && (
-            <div className="mt-2 text-xs white/50 space-y-1">
-              <p>Your machine can only keep {ollamaWarning.max} Ollama model{ollamaWarning.max > 1 ? 's' : ''} loaded in RAM at once. When agents use different local models, they have to wait for the current model to finish before swapping.</p>
-              <p>To avoid delays: assign all agents to the same local model, switch some agents to a cloud model (Anthropic/OpenAI), or <a href="/settings?tab=platform" className="text-cp-amber underline hover:text-cp-amber/80">increase the concurrent model limit</a> if your machine has enough RAM.</p>
+      {/* Ollama model concurrency warnings — one per over-limit provider */}
+      {ollamaWarnings.length > 0 && (
+        <div className="mb-4 space-y-2">
+          {ollamaWarnings.map((w) => (
+            <div key={w.providerId} className="px-4 py-2.5 rounded-xl bg-cp-amber/10 border border-cp-amber/20">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-cp-amber">
+                  {w.count} different local models in use on <span className="font-semibold">{w.providerName}</span> — supports {w.maxConcurrentModels} concurrent. Some agents may queue.
+                </span>
+                <button
+                  onClick={() => setOllamaWarningExpanded(!ollamaWarningExpanded)}
+                  className="text-xs text-cp-amber/70 hover:text-cp-amber ml-2 shrink-0"
+                >
+                  {ollamaWarningExpanded ? 'Hide' : 'Learn more'}
+                </button>
+              </div>
+              {ollamaWarningExpanded && (
+                <div className="mt-2 text-xs white/50 space-y-1">
+                  <p>
+                    <span className="font-semibold">{w.providerName}</span> can only keep {w.maxConcurrentModels} Ollama model{w.maxConcurrentModels > 1 ? 's' : ''} loaded in RAM at once.
+                    When agents assigned to this provider use different models, they have to wait for the current one to finish before swapping.
+                    Other Ollama providers on your network aren't affected — each machine has its own slot pool.
+                  </p>
+                  <p>
+                    Current models on {w.providerName}: <span className="font-mono">{w.models.join(', ')}</span>
+                  </p>
+                  <p>
+                    To avoid delays: assign all agents on this provider to the same model, route some agents to a different Ollama provider (or a cloud model), or <a href="/settings?tab=platform" className="text-cp-amber underline hover:text-cp-amber/80">increase the concurrent model limit</a> if the host has enough RAM.
+                  </p>
+                </div>
+              )}
             </div>
-          )}
+          ))}
         </div>
       )}
 

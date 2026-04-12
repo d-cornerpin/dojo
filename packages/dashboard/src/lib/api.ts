@@ -963,15 +963,30 @@ export const getTaskRuns = async (taskId: string): Promise<ApiResponse<TaskRun[]
   return request<TaskRun[]>(`/tasks/${taskId}/runs`);
 };
 
-// ── Ollama Lock Status ──
+// ── Ollama Lock Status (per-provider) ──
+
+export interface OllamaLockWarning {
+  providerId: string;
+  providerName: string;
+  count: number;
+  maxConcurrentModels: number;
+  models: string[];
+}
+
+export interface OllamaProviderActiveModels {
+  providerId: string;
+  providerName: string;
+  count: number;
+  models: string[];
+}
 
 export interface OllamaLockStatus {
   maxConcurrentModels: number;
-  slots: Array<{ modelName: string; activeRequests: number }>;
+  slots: Array<{ providerId: string; modelName: string; activeRequests: number }>;
   queuedRequests: number;
-  queuedModels: string[];
-  activeAgentModels: { count: number; models: string[] };
-  warning: string | null;
+  queuedModels: Array<{ providerId: string; modelName: string }>;
+  activeAgentModelsByProvider: OllamaProviderActiveModels[];
+  warnings: OllamaLockWarning[];
 }
 
 export const getOllamaLockStatus = async (): Promise<ApiResponse<OllamaLockStatus>> => {

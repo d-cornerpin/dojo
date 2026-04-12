@@ -365,9 +365,10 @@ async function callOllamaModel(
   const baseUrl = (modelInfo.providerBaseUrl ?? 'http://localhost:11434').replace(/\/+$/, '');
   const ollamaModelName = modelInfo.apiModelId;
 
-  // Acquire the Ollama model lock (waits if a different model is in use)
+  // Acquire the Ollama model lock (waits if a different model is in use
+  // ON THE SAME PROVIDER — remote Ollama hosts have their own slot pool).
   const lock = getOllamaLock();
-  await lock.acquire(ollamaModelName);
+  await lock.acquire(modelInfo.providerId, ollamaModelName);
 
   const startTime = Date.now();
 
@@ -612,7 +613,7 @@ async function callOllamaModel(
       retryable: true,
     });
   } finally {
-    lock.release(ollamaModelName);
+    lock.release(modelInfo.providerId, ollamaModelName);
   }
 }
 

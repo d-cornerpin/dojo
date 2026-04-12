@@ -8,7 +8,7 @@ import { getDb } from '../../db/connection.js';
 import { getIMBridgeStatus, sendIMessage, startIMBridge } from '../../services/imessage-bridge.js';
 import { getResourceInfo } from '../../services/resource-monitor.js';
 import { checkOllamaHealth, getOllamaStatus, listOllamaModels } from '../../services/ollama.js';
-import { getOllamaLock, getActiveOllamaModelCount, getOllamaMaxConcurrent } from '../../services/ollama-lock.js';
+import { getOllamaLock, getActiveOllamaModelsByProvider, getOllamaMaxConcurrent } from '../../services/ollama-lock.js';
 import { getWSStatus } from '../ws.js';
 import { getPresence, setPresence, isImessageConfigured, type PresenceStatus } from '../../services/presence.js';
 import {
@@ -189,18 +189,30 @@ servicesRouter.get('/ollama/status', (c) => {
   return c.json({ ok: true, data: status });
 });
 
-// GET /ollama/lock — Ollama concurrency lock status
+// GET /ollama/lock — Ollama concurrency lock status (per-provider)
 servicesRouter.get('/ollama/lock', (c) => {
   const lockStatus = getOllamaLock().getStatus();
-  const activeModels = getActiveOllamaModelCount();
+  const byProvider = getActiveOllamaModelsByProvider();
+  // One warning record per provider that's currently over its limit.
+  // The dashboard renders each warning as a separate banner naming the
+  // specific machine, so having the Mac Mini at 2 concurrent and the Mac
+  // Studio at 1 no longer triggers a single lumped "3 models across all
+  // Ollama providers" message.
+  const warnings = byProvider
+    .filter(p => p.count > lockStatus.maxConcurrentModels)
+    .map(p => ({
+      providerId: p.providerId,
+      providerName: p.providerName,
+      count: p.count,
+      maxConcurrentModels: lockStatus.maxConcurrentModels,
+      models: p.models,
+    }));
   return c.json({
     ok: true,
     data: {
       ...lockStatus,
-      activeAgentModels: activeModels,
-      warning: activeModels.count > lockStatus.maxConcurrentModels
-        ? `${activeModels.count} different Ollama models assigned across active agents, but system supports ${lockStatus.maxConcurrentModels} concurrent. Agents may queue.`
-        : null,
+      activeAgentModelsByProvider: byProvider,
+      warnings,
     },
   });
 });
