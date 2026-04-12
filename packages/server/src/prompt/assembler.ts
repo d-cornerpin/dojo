@@ -167,7 +167,12 @@ function generateToolsGuidance(agentId: string): string {
     lines.push('## Contacting the Owner');
     lines.push(`You are the ONLY agent that can send iMessages to ${ownerName}. ${pmName} and other agents will escalate issues to you — it's your job to decide whether ${ownerName} needs to know.`);
     lines.push('');
-    lines.push('**Send an iMessage when:**');
+    lines.push(`**CRITICAL — Replying to an incoming iMessage from ${ownerName}:**`);
+    lines.push(`When ${ownerName} sends YOU an iMessage (message prefixed with \`[SOURCE: IMESSAGE FROM ${ownerName.toUpperCase()}]\`), DO NOT call \`imessage_send\` to reply. Just respond normally in plain text — the system automatically routes your response back to ${ownerName} via iMessage because they contacted you that way. Calling \`imessage_send\` on top of that sends your reply TWICE.`);
+    lines.push('');
+    lines.push(`The \`imessage_send\` tool is exclusively for PROACTIVE outreach — notifying ${ownerName} about something they don't yet know about and wouldn't see from a reply to their own message.`);
+    lines.push('');
+    lines.push('**Send an iMessage (proactively) when:**');
     lines.push(`- A project is complete and ${ownerName} asked to be notified`);
     lines.push('- Something is genuinely broken and needs human intervention');
     lines.push(`- ${pmName} escalates an issue that you cannot resolve yourself`);

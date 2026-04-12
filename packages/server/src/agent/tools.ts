@@ -14,7 +14,7 @@ import { checkPermission, getAgentPermissions } from './permissions.js';
 import { isPrimaryAgent, isPMAgent, getPrimaryAgentId } from '../config/platform.js';
 import { spawnAgent, terminateAgent, completeAgent } from './spawner.js';
 import { getAgentRuntime } from './runtime.js';
-import { sendIMessage, getDefaultSender } from '../services/imessage-bridge.js';
+import { sendIMessage, getDefaultSender, isAwaitingIMResponse, clearIMResponseFlag } from '../services/imessage-bridge.js';
 import {
   trackerCreateProject,
   trackerCreateTask,
@@ -2552,6 +2552,30 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         }
 
         sendIMessage(recipient, message);
+
+        // Prevent double-sending when the agent is responding to an
+        // incoming iMessage. If the turn was triggered by an iMessage
+        // (bridge set pendingIMResponseMap) and the agent chose to
+        // explicitly call imessage_send as its reply, the runtime's
+        // auto-reply rule in runtime.ts will otherwise ALSO fire at
+        // end-of-turn with the final text content and send a second
+        // iMessage. Clearing the flag here says "the agent took
+        // responsibility, don't auto-reply on top."
+        //
+        // We clear unconditionally rather than checking recipient
+        // match: the risk of double-send (annoying) is worse than
+        // the risk of not auto-replying to the original sender when
+        // the agent deliberately messaged someone else mid-turn
+        // (rare). Gemma4 in particular tends to invoke this tool to
+        // reply when other models would just respond in plain text.
+        if (isAwaitingIMResponse(agentId)) {
+          clearIMResponseFlag(agentId);
+          logger.info('imessage_send: cleared auto-reply flag — agent is handling iMessage response itself', {
+            agentId,
+            recipient,
+          });
+        }
+
         auditLog(agentId, 'imessage_send', recipient, 'success', `Sent ${message.length} chars`);
         content = `iMessage sent to ${recipient}`;
         break;
