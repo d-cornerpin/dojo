@@ -11,7 +11,7 @@ import { broadcast } from '../gateway/ws.js';
 import { memoryGrep, memoryDescribe, memoryExpand, memorySearch } from '../memory/retrieval.js';
 import { shouldIntercept, interceptLargeFile } from '../memory/large-files.js';
 import { checkPermission, getAgentPermissions } from './permissions.js';
-import { isPrimaryAgent, isPMAgent, getPrimaryAgentId } from '../config/platform.js';
+import { isPrimaryAgent, isPMAgent, isImaginerAgent, getPrimaryAgentId } from '../config/platform.js';
 import { spawnAgent, terminateAgent, completeAgent } from './spawner.js';
 import { getAgentRuntime } from './runtime.js';
 import { sendIMessage, getDefaultSender, isAwaitingIMResponse, clearIMResponseFlag } from '../services/imessage-bridge.js';
@@ -110,6 +110,7 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   if (agentClassification !== 'sensei') {
     removeTools.push('save_technique', 'publish_technique', 'update_technique', 'submit_technique_for_review', 'delete_technique');
   }
+
 
   if (removeTools.length > 0) {
     filtered = filtered.filter(t => !removeTools.includes(t.name));
@@ -514,7 +515,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'send_to_agent',
-    description: 'Send a direct message to another agent by ID or name. This is THE tool for agent-to-agent messaging — do NOT try to write to databases or files to communicate. Works in any direction: parent to sub-agent, sub-agent to parent, peer to peer, or to the PM. The recipient sees who sent the message and can reply.',
+    description: 'Send a direct message to another agent by ID or name. This is THE tool for agent-to-agent messaging — do NOT try to write to databases or files to communicate. Works in any direction: parent to sub-agent, sub-agent to parent, peer to peer, or to the PM. The recipient sees who sent the message and can reply. Optionally attach image or PDF files by absolute path — they\'ll appear as thumbnails in the recipient\'s chat view and as native content blocks in the recipient\'s next model call (Imaginer uses this to deliver generated images).',
     input_schema: {
       type: 'object',
       properties: {
@@ -525,6 +526,11 @@ export const toolDefinitions: ToolDefinition[] = [
         message: {
           type: 'string',
           description: 'The message content to send',
+        },
+        attach_paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional list of absolute file paths to attach to the message. Supported categories: image (PNG/JPEG/GIF/WEBP) and PDF. Other types are logged and skipped. Files are copied into the recipient agent\'s uploads directory so they appear as thumbnails. Omit or pass an empty array for a plain text message.',
         },
       },
       required: ['agent', 'message'],
@@ -1011,6 +1017,30 @@ export const toolDefinitions: ToolDefinition[] = [
         },
       },
       required: ['message'],
+    },
+  },
+  // ── Image Generation Tools ──
+  {
+    name: 'image_create',
+    description: 'Generate an image from a text description. The image appears automatically in the chat when ready. When calling this tool, include a brief acknowledgment IN YOUR TEXT BEFORE the tool call — something like "On it, I\'ll generate that image for you." Do NOT send a separate follow-up message after the tool returns. Do NOT mention "Imaginer" or any internal system to the user.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        description: {
+          type: 'string',
+          description: 'A detailed plain-English description of what you want the image to show. Include subject, setting, composition, mood, style, lighting, colors, and any specific details. The more specific you are, the better the result. Example: "A cozy coffee shop interior at sunset, warm golden light streaming through large windows, vintage leather chairs, exposed brick walls, steam rising from a latte on a wooden table in the foreground, cinematic lighting, photorealistic". Do NOT use image-model flags like "--ar 16:9" — just describe what you want.',
+        },
+        aspect_ratio: {
+          type: 'string',
+          enum: ['1:1', '16:9', '9:16', '4:3', '3:4'],
+          description: 'Aspect ratio. 1:1 square, 16:9 landscape, 9:16 portrait/vertical, 4:3 standard, 3:4 portrait standard. Defaults to 1:1 if omitted.',
+        },
+        style_hint: {
+          type: 'string',
+          description: 'Optional style override like "photorealistic", "illustration", "watercolor", "3D render", "pixel art", "line drawing". If omitted, Imaginer picks the best style for the description.',
+        },
+      },
+      required: ['description'],
     },
   },
   // ── System Control Tools (Phase 5A) ──
@@ -1704,6 +1734,10 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'send_to_agent': {
         const agentRef = args.agent as string;
         const message = args.message as string;
+        const rawAttachPaths = args.attach_paths;
+        const attachPaths: string[] = Array.isArray(rawAttachPaths)
+          ? rawAttachPaths.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+          : [];
         const db = getDb();
 
         // Look up by ID first, then by name
@@ -1723,15 +1757,111 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           const senderRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
           const senderName = senderRow?.name ?? agentId;
 
+          // ── Optional attachment pass-through ──
+          // If the caller provided file paths (typically Imaginer delivering
+          // a generated image), copy each readable file into the recipient's
+          // uploads dir and build UploadedFile records. These go into the
+          // `messages.attachments` column so `injectAttachmentBlocks` picks
+          // them up on the next turn and the dashboard chat view renders
+          // the thumbnails immediately.
+          interface UploadedFile {
+            fileId: string;
+            filename: string;
+            mimeType: string;
+            size: number;
+            path: string;
+            category: 'image' | 'pdf' | 'text' | 'office' | 'unknown';
+          }
+          const IMAGE_MIMES: Record<string, 'image'> = {
+            '.png': 'image', '.jpg': 'image', '.jpeg': 'image',
+            '.gif': 'image', '.webp': 'image',
+          };
+          const attachments: UploadedFile[] = [];
+          if (attachPaths.length > 0) {
+            // Dynamic imports to avoid top-of-file churn
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const fs = require('node:fs') as typeof import('node:fs');
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const path = require('node:path') as typeof import('node:path');
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const os = require('node:os') as typeof import('node:os');
+
+            const recipientDir = path.join(os.homedir(), '.dojo', 'uploads', target.id);
+            if (!fs.existsSync(recipientDir)) {
+              fs.mkdirSync(recipientDir, { recursive: true });
+            }
+
+            for (const srcPath of attachPaths) {
+              try {
+                if (!fs.existsSync(srcPath)) {
+                  logger.warn('send_to_agent: attach_path does not exist on disk — skipping', {
+                    srcPath, from: agentId, to: target.id,
+                  });
+                  continue;
+                }
+                const stat = fs.statSync(srcPath);
+                if (stat.size > 20 * 1024 * 1024) {
+                  logger.warn('send_to_agent: attach_path exceeds 20 MB — skipping', {
+                    srcPath, size: stat.size, from: agentId, to: target.id,
+                  });
+                  continue;
+                }
+                const ext = path.extname(srcPath).toLowerCase();
+                const safeName = path.basename(srcPath).replace(/[^a-zA-Z0-9._-]/g, '_');
+                const timestamp = Date.now();
+                const storedName = `agent_${timestamp}_${safeName}`;
+                const destPath = path.join(recipientDir, storedName);
+                fs.copyFileSync(srcPath, destPath);
+
+                let category: UploadedFile['category'] = 'unknown';
+                let mimeType = 'application/octet-stream';
+                if (ext in IMAGE_MIMES) {
+                  category = 'image';
+                  mimeType = ext === '.jpg' ? 'image/jpeg' : `image/${ext.slice(1)}`;
+                } else if (ext === '.pdf') {
+                  category = 'pdf';
+                  mimeType = 'application/pdf';
+                } else {
+                  logger.info('send_to_agent: attach_path is unsupported type — copied but category=unknown', {
+                    srcPath, ext, from: agentId, to: target.id,
+                  });
+                }
+
+                attachments.push({
+                  fileId: uuidv4(),
+                  filename: path.basename(srcPath),
+                  mimeType,
+                  size: stat.size,
+                  path: destPath,
+                  category,
+                });
+              } catch (err) {
+                logger.warn('send_to_agent: failed to copy attachment — skipping', {
+                  srcPath,
+                  error: err instanceof Error ? err.message : String(err),
+                  from: agentId,
+                  to: target.id,
+                });
+              }
+            }
+          }
+
           // Persist as a user message with sender context and reply instructions
           const msgId = uuidv4();
           const contextMessage = `[SOURCE: AGENT MESSAGE FROM ${senderName.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's from another agent] ${message}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
-          db.prepare(`
-            INSERT INTO messages (id, agent_id, role, content, created_at)
-            VALUES (?, ?, 'user', ?, datetime('now'))
-          `).run(msgId, target.id, contextMessage);
 
-          // Broadcast so the target agent's chat view updates
+          db.prepare(`
+            INSERT INTO messages (id, agent_id, role, content, attachments, created_at)
+            VALUES (?, ?, 'user', ?, ?, datetime('now'))
+          `).run(
+            msgId,
+            target.id,
+            contextMessage,
+            attachments.length > 0 ? JSON.stringify(attachments) : null,
+          );
+
+          // Broadcast so the target agent's chat view updates, including
+          // attachments so thumbnails render in real time (v1.11.5 pattern).
           broadcast({
             type: 'chat:message',
             agentId: target.id,
@@ -1745,6 +1875,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
               cost: null,
               latencyMs: null,
               createdAt: new Date().toISOString(),
+              ...(attachments.length > 0 ? { attachments } : {}),
             },
           });
 
@@ -1757,8 +1888,14 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
             }, agentId);
           });
 
-          auditLog(agentId, 'tool_call', 'send_to_agent', 'success', `to:${target.id} (${target.name})`);
-          content = `Message sent to agent "${target.name}" (${target.id}). Status: ${target.status}.`;
+          auditLog(
+            agentId, 'tool_call', 'send_to_agent', 'success',
+            `to:${target.id} (${target.name})${attachments.length > 0 ? ` with ${attachments.length} attachment(s)` : ''}`,
+          );
+          content = `Message sent to agent "${target.name}" (${target.id}). Status: ${target.status}.` +
+            (attachments.length > 0
+              ? ` Attached ${attachments.length} file(s): ${attachments.map(a => a.filename).join(', ')}.`
+              : '');
         }
         break;
       }
@@ -2578,6 +2715,315 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
         auditLog(agentId, 'imessage_send', recipient, 'success', `Sent ${message.length} chars`);
         content = `iMessage sent to ${recipient}`;
+        break;
+      }
+
+      // ── Image Generation ──
+      //
+      // image_create: Any agent calls this. The tool returns immediately
+      // with an ack, then spawns a background async operation that calls
+      // the configured image model directly (no LLM orchestration — image
+      // models don't support tool calling). When the image is ready, the
+      // tool programmatically sends a delivery message from Imaginer to
+      // the requesting agent via send_to_agent with the file attached.
+      case 'image_create': {
+        const description = (args.description as string | undefined)?.trim();
+        const aspectRatio = ((args.aspect_ratio as string | undefined) ?? '1:1').trim();
+        const styleHint = ((args.style_hint as string | undefined) ?? '').trim();
+
+        if (!description) {
+          content = 'Error: description is required';
+          isError = true;
+          break;
+        }
+
+        const { getImaginerAgentId, getImaginerAgentName, isImaginerEnabled } = await import('../config/platform.js');
+
+        if (!isImaginerEnabled()) {
+          content =
+            'Image generation is disabled. An administrator can enable Imaginer in Settings → Dojo → Imaginer. ' +
+            'You do not need to retry; inform the user that image generation is currently unavailable.';
+          isError = true;
+          break;
+        }
+
+        const imaginerId = getImaginerAgentId();
+        const imaginerName = getImaginerAgentName();
+        const db = getDb();
+
+        const imaginer = db.prepare(
+          'SELECT id, status FROM agents WHERE id = ?',
+        ).get(imaginerId) as { id: string; status: string } | undefined;
+        if (!imaginer) {
+          content =
+            `Imaginer agent does not exist yet. Ask the administrator to check server logs and restart.`;
+          isError = true;
+          break;
+        }
+        if (imaginer.status === 'terminated') {
+          content = `Imaginer has been terminated. Image generation is unavailable until it's restored.`;
+          isError = true;
+          break;
+        }
+
+        // The image model is Imaginer's own model_id (set in Settings →
+        // Dojo → Imaginer or on Imaginer's agent detail page). Image
+        // models don't support tool calling so Imaginer never runs through
+        // the normal LLM runtime — this tool does the generation directly.
+        const imageModelRow = db.prepare(
+          "SELECT value FROM config WHERE key = 'imaginer_image_model'",
+        ).get() as { value: string } | undefined;
+        if (!imageModelRow?.value) {
+          content =
+            `No image generation model is configured for Imaginer yet. ` +
+            `Go to Settings → Dojo → Imaginer and pick an image-capable model (e.g. Gemini 2.5 Flash Image on OpenRouter). ` +
+            `Tell the user image generation is unavailable until this is configured — do not retry.`;
+          isError = true;
+          break;
+        }
+
+        const requestId = `img_${uuidv4().replace(/-/g, '').slice(0, 12)}`;
+
+        // Build the full prompt. Append the style hint if the user provided
+        // one, so the image model gets stylistic direction inline.
+        const fullPrompt = styleHint
+          ? `${description}\n\nStyle: ${styleHint}`
+          : description;
+
+        // Get requester name for the delivery message header
+        const senderRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as
+          | { name: string }
+          | undefined;
+        const senderName = senderRow?.name ?? agentId;
+
+        // Capture whether this request originated from iMessage BEFORE the
+        // runtime clears the flag after sending the ack. The background task
+        // needs this to know whether to send the finished image back via
+        // iMessage when it's done — the flag will be long gone by then.
+        const triggeredByIMessage = isAwaitingIMResponse(agentId);
+
+        auditLog(agentId, 'image_create', imaginerId, 'success',
+          `Request ${requestId} queued (aspect ${aspectRatio}${styleHint ? `, style ${styleHint}` : ''})`,
+        );
+
+        // ── Async background generation — fire and forget ──
+        // The tool returns the ack text below IMMEDIATELY. The generation
+        // runs in the background. When done, a programmatic send_to_agent
+        // delivers the result (or the error) to the requesting agent.
+        const imageModelId = imageModelRow.value;
+        void (async () => {
+          try {
+            // Mark Imaginer as working so the UI shows the status badge
+            db.prepare("UPDATE agents SET status = 'working', updated_at = datetime('now') WHERE id = ?").run(imaginerId);
+            broadcast({ type: 'agent:status', agentId: imaginerId, status: 'working' });
+
+            // Log the request in Imaginer's chat for audit trail
+            const reqMsgId = uuidv4();
+            db.prepare(`
+              INSERT INTO messages (id, agent_id, role, content, created_at)
+              VALUES (?, ?, 'user', ?, datetime('now'))
+            `).run(reqMsgId, imaginerId,
+              `[IMAGE_CREATE request_id=${requestId} from=${senderName} aspect=${aspectRatio}]\n${description}`,
+            );
+
+            // Wait for the requesting agent to finish its current turn
+            // before we start generating. This prevents the delivery message
+            // from landing in the middle of the agent's still-in-progress
+            // response to the ack text, which scrambles the message order
+            // and confuses the model into repeating "I'll have Imaginer
+            // work on that" instead of presenting the image.
+            const waitStart = Date.now();
+            const MAX_WAIT_MS = 60000;
+            while (Date.now() - waitStart < MAX_WAIT_MS) {
+              const agentRow = db.prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status: string } | undefined;
+              if (agentRow?.status === 'idle' || agentRow?.status === 'error') break;
+              await new Promise<void>(r => setTimeout(r, 500));
+            }
+
+            logger.info('Imaginer: generating image', {
+              requestId, requesterId: agentId, modelId: imageModelId, aspectRatio,
+              waitedForIdleMs: Date.now() - waitStart,
+            });
+
+            const { generateImage } = await import('../services/image-generation.js');
+            const result = await generateImage({
+              modelId: imageModelId,
+              prompt: fullPrompt,
+              aspectRatio,
+            });
+
+            if (!result.ok) {
+              logger.error('Imaginer: generation failed', {
+                requestId, code: result.code, error: result.error,
+              });
+
+              // Log failure in Imaginer's chat
+              db.prepare(`
+                INSERT INTO messages (id, agent_id, role, content, created_at)
+                VALUES (?, ?, 'assistant', ?, datetime('now'))
+              `).run(uuidv4(), imaginerId,
+                `[FAILED request_id=${requestId}] ${result.code}: ${result.error}`,
+              );
+
+              // Deliver error directly as an assistant message from the
+              // requesting agent — no second LLM turn, same pattern as
+              // the success path.
+              const errMsgId = uuidv4();
+              const errContent =
+                `I wasn't able to generate that image:\n\n` +
+                `> ${result.error}\n\n` +
+                `You could try simplifying the description or trying again in a moment.`;
+              db.prepare(`
+                INSERT INTO messages (id, agent_id, role, content, created_at)
+                VALUES (?, ?, 'assistant', ?, datetime('now'))
+              `).run(errMsgId, agentId, errContent);
+              broadcast({
+                type: 'chat:message', agentId,
+                message: {
+                  id: errMsgId, agentId, role: 'assistant' as const, content: errContent,
+                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                  createdAt: new Date().toISOString(),
+                },
+              });
+              broadcast({
+                type: 'chat:chunk', agentId,
+                messageId: errMsgId, content: '', done: true, modelId: null,
+              });
+              return;
+            }
+
+            // Success! Log in Imaginer's chat
+            const costLine = result.costUsd !== null ? ` cost=$${result.costUsd.toFixed(4)}` : '';
+            db.prepare(`
+              INSERT INTO messages (id, agent_id, role, content, created_at)
+              VALUES (?, ?, 'assistant', ?, datetime('now'))
+            `).run(uuidv4(), imaginerId,
+              `[DONE request_id=${requestId}] ${result.filename} (${result.sizeBytes}B, ${result.latencyMs}ms${costLine})`,
+            );
+
+            // Record cost under Imaginer's agent ID
+            try {
+              const { recordCost } = await import('../costs/tracker.js');
+              recordCost({
+                agentId: imaginerId,
+                modelId: imageModelId,
+                providerId: result.providerId,
+                inputTokens: result.inputTokens,
+                outputTokens: result.outputTokens,
+                latencyMs: result.latencyMs,
+                requestType: 'image_generation',
+              });
+            } catch { /* best effort */ }
+
+            // ── Deliver the image directly as an assistant message from
+            // the requesting agent, with the file attached. This means
+            // the image appears in the chat as if Kevin (or whoever
+            // requested it) posted it themselves — clean UX, no confusing
+            // "[SOURCE: AGENT MESSAGE FROM IMAGINER]" wrapper, no second
+            // LLM turn needed. The user sees:
+            //   Kevin: "Working on it..."
+            //   (5-10 seconds)
+            //   Kevin: "Here's your school bus image!" [thumbnail]
+            const fs = (await import('node:fs')).default;
+            const path = (await import('node:path')).default;
+            const os = (await import('node:os')).default;
+
+            const recipientDir = path.join(os.homedir(), '.dojo', 'uploads', agentId);
+            if (!fs.existsSync(recipientDir)) fs.mkdirSync(recipientDir, { recursive: true });
+            const copiedName = `imaginer_${Date.now()}_${result.filename}`;
+            const copiedPath = path.join(recipientDir, copiedName);
+            fs.copyFileSync(result.filePath, copiedPath);
+
+            const attachment = {
+              fileId: uuidv4(),
+              filename: result.filename,
+              mimeType: result.mimeType,
+              size: result.sizeBytes,
+              path: copiedPath,
+              category: 'image' as const,
+            };
+
+            // Insert as an ASSISTANT message from the requesting agent so
+            // it appears as if Kevin posted the image. No second runtime
+            // turn — the background task IS the delivery mechanism.
+            const deliveryMsgId = uuidv4();
+            const deliveryContent =
+              `Here's the image you requested:\n\n` +
+              `**${description.slice(0, 120)}${description.length > 120 ? '...' : ''}**\n\n` +
+              `Let me know if you'd like any changes or a different version.`;
+
+            db.prepare(`
+              INSERT INTO messages (id, agent_id, role, content, attachments, model_id, created_at)
+              VALUES (?, ?, 'assistant', ?, ?, ?, datetime('now'))
+            `).run(deliveryMsgId, agentId, deliveryContent, JSON.stringify([attachment]), imageModelId);
+
+            // Broadcast so the dashboard renders the image in real time
+            broadcast({
+              type: 'chat:message', agentId,
+              message: {
+                id: deliveryMsgId, agentId, role: 'assistant' as const, content: deliveryContent,
+                tokenCount: null, modelId: imageModelId, cost: null, latencyMs: null,
+                createdAt: new Date().toISOString(),
+                attachments: [attachment],
+              },
+            });
+
+            // Also broadcast a streaming "done" chunk so the UI clears
+            // any pending streaming state for this message.
+            broadcast({
+              type: 'chat:chunk', agentId,
+              messageId: deliveryMsgId,
+              content: '', done: true, modelId: imageModelId,
+            });
+
+            logger.info('Imaginer: image delivered as assistant message', {
+              requestId, requesterId: agentId, filePath: result.filePath,
+              sizeBytes: result.sizeBytes, latencyMs: result.latencyMs,
+            });
+
+            // Send the image via iMessage if:
+            //   1. The user is away from the dojo (all responses go via
+            //      iMessage when presence = away), OR
+            //   2. The original request came in via iMessage (even if
+            //      the user is "in the dojo" — they asked via iMessage
+            //      so they expect the reply there too).
+            try {
+              const { isPrimaryAgent } = await import('../config/platform.js');
+              if (isPrimaryAgent(agentId)) {
+                let shouldSendViaIMessage = triggeredByIMessage;
+                if (!shouldSendViaIMessage) {
+                  try {
+                    const { getPresence } = await import('../services/presence.js');
+                    shouldSendViaIMessage = getPresence() === 'away';
+                  } catch { /* presence module unavailable */ }
+                }
+                if (shouldSendViaIMessage) {
+                  const { sendIMessageWithAttachment, getDefaultSender } = await import('../services/imessage-bridge.js');
+                  const recipient = getDefaultSender();
+                  if (recipient) {
+                    const caption = `Here's the image you requested: "${description.slice(0, 80)}${description.length > 80 ? '...' : ''}"`;
+                    sendIMessageWithAttachment(recipient, result.filePath, caption);
+                  }
+                }
+              }
+            } catch { /* iMessage not available — fine */ }
+
+          } catch (err) {
+            logger.error('Imaginer: unexpected error in background generation', {
+              requestId, error: err instanceof Error ? err.message : String(err),
+            });
+          } finally {
+            // Always set Imaginer back to idle
+            db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(imaginerId);
+            broadcast({ type: 'agent:status', agentId: imaginerId, status: 'idle' });
+          }
+        })();
+
+        content =
+          `Image generation started (request_id: ${requestId}). ` +
+          `The finished image will appear in the chat automatically when ready — you do NOT need to do anything else. ` +
+          `Do NOT send another message to the user about this. Your earlier acknowledgment (before this tool call) is sufficient. ` +
+          `Just end your turn now. The image will show up on its own.`;
         break;
       }
 

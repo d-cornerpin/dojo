@@ -37,6 +37,7 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'send_to_agent',
   'list_agents',
   'imessage_send',
+  'image_create',
 ];
 
 // PM agent: tracker-focused, monitors tasks and sends messages to other agents.
@@ -73,6 +74,16 @@ export const TRAINER_AGENT_ALWAYS_LOADED = [
   'file_write',
 ];
 
+// Imaginer agent: doesn't run through the LLM runtime at all — its
+// image model gets called directly by the image_create tool's async
+// background task. The always-loaded set is minimal just in case the
+// runtime tries to assemble tools for it (which shouldn't happen, but
+// being safe). Imaginer never calls tools because image models don't
+// support tool calling.
+export const IMAGINER_AGENT_ALWAYS_LOADED = [
+  ...DEFAULT_ALWAYS_LOADED_TOOLS,
+];
+
 // Sub-agents (ronin / apprentice / freelance): sensible defaults for common work.
 // These tools are used by most sub-agents regardless of specific task.
 // Permission filtering will strip any tools the sub-agent lacks permission for.
@@ -84,6 +95,7 @@ export const SUB_AGENT_ALWAYS_LOADED = [
   'send_to_agent',
   'vault_search',
   'tracker_update_status',
+  'image_create',
 ];
 
 // ── Per-session tool loading state ──
@@ -180,23 +192,38 @@ export function executeLoadToolDocs(agentId: string, toolNames: string[]): strin
 
 import { getDb } from '../db/connection.js';
 
+// Resolve which always-loaded tool set to use for a given agent. This runs
+// synchronously at call time, so we can't `await import()`. Instead we read
+// the agent's role directly from the DB (one cheap query) and match against
+// known system agent IDs and classifications. The old `require()` approach
+// silently failed in ESM, causing every agent to fall back to the 3-tool
+// default set — meaning they had to `load_tool_docs` before every single
+// tool use, which was slow and model-dependent.
 function getDefaultForAgent(agentId: string): string[] {
   try {
-    // Dynamic import to avoid circular dependency
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { isPrimaryAgent, isPMAgent, isTrainerAgent } = require('../config/platform.js');
-    if (isPrimaryAgent(agentId)) return PRIMARY_AGENT_ALWAYS_LOADED;
-    if (isPMAgent(agentId)) return PM_AGENT_ALWAYS_LOADED;
-    if (isTrainerAgent(agentId)) return TRAINER_AGENT_ALWAYS_LOADED;
-    // Dreamer is identified by name, not a helper function
     const db = getDb();
-    const row = db.prepare('SELECT name, classification FROM agents WHERE id = ?').get(agentId) as { name: string; classification: string } | undefined;
+
+    // Check system agent IDs from config table (avoids importing platform.ts)
+    const configRows = db.prepare(
+      "SELECT key, value FROM config WHERE key IN ('primary_agent_id', 'pm_agent_id', 'trainer_agent_id', 'imaginer_agent_id')",
+    ).all() as Array<{ key: string; value: string }>;
+    const configMap: Record<string, string> = {};
+    for (const r of configRows) configMap[r.key] = r.value;
+
+    if (agentId === (configMap['primary_agent_id'] ?? 'kevin')) return PRIMARY_AGENT_ALWAYS_LOADED;
+    if (agentId === (configMap['pm_agent_id'] ?? 'pm')) return PM_AGENT_ALWAYS_LOADED;
+    if (agentId === (configMap['trainer_agent_id'] ?? 'trainer')) return TRAINER_AGENT_ALWAYS_LOADED;
+    if (agentId === (configMap['imaginer_agent_id'] ?? 'imaginer')) return IMAGINER_AGENT_ALWAYS_LOADED;
+
+    // Non-system agents: check by name (Dreamer) or classification
+    const row = db.prepare('SELECT name, classification FROM agents WHERE id = ?').get(agentId) as
+      | { name: string; classification: string }
+      | undefined;
     if (row?.name === 'Dreamer') return DREAMER_AGENT_ALWAYS_LOADED;
-    // Sub-agents (ronin / apprentice / freelance) get the sub-agent defaults
     if (row && ['ronin', 'apprentice', 'freelance'].includes(row.classification)) {
       return SUB_AGENT_ALWAYS_LOADED;
     }
-  } catch { /* ignore */ }
+  } catch { /* DB not ready yet — use minimal default */ }
   return DEFAULT_ALWAYS_LOADED_TOOLS;
 }
 

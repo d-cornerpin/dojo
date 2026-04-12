@@ -10,7 +10,7 @@ import { formatDate } from '../lib/dates';
 import { MigrationExport } from '../components/MigrationExport';
 import { MigrationImport } from '../components/MigrationImport';
 
-type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'dreaming' | 'workspace' | 'microsoft' | 'update';
+type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'sensei' | 'workspace' | 'microsoft' | 'update';
 
 export const Settings = () => {
   const [searchParams] = useSearchParams();
@@ -24,7 +24,7 @@ export const Settings = () => {
     { key: 'router', label: 'Router' },
     { key: 'profile', label: 'Profile' },
     { key: 'security', label: 'Security' },
-    { key: 'dreaming', label: 'Dreaming' },
+    { key: 'sensei', label: 'Sensei' },
     { key: 'workspace', label: 'Google' },
     { key: 'microsoft', label: 'Microsoft' },
     { key: 'update', label: 'Update' },
@@ -58,7 +58,7 @@ export const Settings = () => {
       {activeTab === 'router' && <RouterTab />}
       {activeTab === 'profile' && <ProfileTab />}
       {activeTab === 'security' && <SecurityTab />}
-      {activeTab === 'dreaming' && <DreamingTab />}
+      {activeTab === 'sensei' && <DreamingTab />}
       {activeTab === 'workspace' && <GoogleWorkspaceSettings />}
       {activeTab === 'microsoft' && <MicrosoftWorkspaceSettings />}
       {activeTab === 'update' && <UpdateTab />}
@@ -1445,6 +1445,11 @@ const CAPABILITY_LABELS: Record<string, { label: string; className: string; titl
     className: 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30',
     title: 'Embedding model (not for chat)',
   },
+  image_generation: {
+    label: 'Image Gen',
+    className: 'bg-pink-500/15 text-pink-300 border-pink-400/30',
+    title: 'Can generate images — available to Imaginer for image_create requests',
+  },
 };
 
 const CapabilityBadges = ({ capabilities }: { capabilities: string[] }) => {
@@ -2370,6 +2375,218 @@ const DreamingTab = () => {
           </pre>
         </div>
       )}
+
+      {/* Imaginer card — image generation sensei */}
+      <ImaginerCard models={models} />
+    </div>
+  );
+};
+
+// ── Imaginer Settings Card ──
+//
+// Lives under the Dreaming tab. Controls the Imaginer Sensei agent's
+// image-generation model selection, default aspect ratio / style, and
+// provides a test-generate button. The Model dropdown is filtered to
+// image-capable models only; if none exist, the card explains how to
+// add one.
+
+const ASPECT_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4'] as const;
+
+const ImaginerCard = ({ models }: { models: Model[] }) => {
+  const [enabled, setEnabled] = useState(true);
+  const [imageModelId, setImageModelId] = useState('');
+  const [defaultAspect, setDefaultAspect] = useState<string>('1:1');
+  const [defaultStyle, setDefaultStyle] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  // Filter to models that the capability probe has flagged as image-capable.
+  const imageCapableModels = models.filter(m => m.capabilities.includes('image_generation'));
+
+  useEffect(() => {
+    const load = async () => {
+      const [enabledResult, modelResult, aspectResult, styleResult] = await Promise.all([
+        api.getSetting('imaginer_enabled'),
+        api.getSetting('imaginer_image_model'),
+        api.getSetting('imaginer_default_aspect_ratio'),
+        api.getSetting('imaginer_default_style'),
+      ]);
+      if (enabledResult.ok) {
+        setEnabled(enabledResult.data.value !== 'false'); // default true
+      }
+      if (modelResult.ok && modelResult.data.value) {
+        setImageModelId(modelResult.data.value);
+      }
+      if (aspectResult.ok && aspectResult.data.value) {
+        setDefaultAspect(aspectResult.data.value);
+      }
+      if (styleResult.ok && styleResult.data.value) {
+        setDefaultStyle(styleResult.data.value);
+      }
+      setLoading(false);
+    };
+    load();
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    await Promise.all([
+      api.setSetting('imaginer_enabled', enabled ? 'true' : 'false'),
+      api.setSetting('imaginer_image_model', imageModelId),
+      api.setSetting('imaginer_default_aspect_ratio', defaultAspect),
+      api.setSetting('imaginer_default_style', defaultStyle),
+    ]);
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const handleTest = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      // Route through the primary agent so the full image_create flow is
+      // exercised (acks, delivery, thumbnail routing). The result image
+      // will show up in the primary agent's chat view.
+      const agentsResult = await api.getAgents();
+      if (!agentsResult.ok) {
+        setTestResult('Failed to resolve primary agent');
+        return;
+      }
+      const primary = agentsResult.data.find(a => a.classification === 'sensei');
+      if (!primary) {
+        setTestResult('No sensei agent found to route test through');
+        return;
+      }
+      const send = await api.sendMessage(
+        primary.id,
+        'Please call image_create with description="A friendly stylized dojo mascot mid-kata, simple line drawing on white background". Tell me when Imaginer acknowledges, and share the image when it arrives.',
+      );
+      if (send.ok) {
+        setTestResult(`Test request sent to ${primary.name}. Watch their chat view for the image.`);
+      } else {
+        setTestResult(`Failed to send test message: ${send.error}`);
+      }
+    } catch (err) {
+      setTestResult(`Test failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  if (loading) return null;
+
+  return (
+    <div className="glass-card p-4 space-y-4">
+      <div>
+        <h3 className="text-sm font-medium text-white/70">Imaginer (Image Generation Sensei)</h3>
+        <p className="text-xs text-white/40 mt-1">
+          Imaginer is a system agent that turns text descriptions into images when any agent calls the{' '}
+          <code className="text-pink-300">image_create</code> tool. Kevin and sub-agents never need to switch models
+          to generate images — they describe what they want and Imaginer handles the rest.
+        </p>
+      </div>
+
+      {/* Enabled toggle */}
+      <label className="flex items-center gap-3 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => setEnabled(e.target.checked)}
+          className="h-4 w-4 rounded border-white/20 bg-white/[0.05] accent-pink-500 cursor-pointer"
+        />
+        <span className="text-sm text-white/80">Enable Imaginer</span>
+      </label>
+
+      {/* Model dropdown */}
+      <div>
+        <label className="block text-xs font-medium text-white/55 mb-1">Image Generation Model</label>
+        {imageCapableModels.length === 0 ? (
+          <div className="px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
+            No image-capable models configured. Add an image-generating model (e.g. Google Gemini 2.5 Flash Image or
+            OpenAI GPT-5 Image via OpenRouter) in Settings → Models. Already added but not showing up? Click{' '}
+            <em>Refresh capabilities</em> on that model's card — older rows may need a fresh probe to pick up the new
+            <code className="mx-1 text-pink-300">image_generation</code>capability.
+          </div>
+        ) : (
+          <>
+            <select
+              value={imageModelId}
+              onChange={(e) => setImageModelId(e.target.value)}
+              className="w-full px-3 py-2 bg-white/[0.05] border border-white/[0.08] rounded-lg text-sm text-white/90 focus:outline-none focus:ring-2 focus:ring-pink-500"
+            >
+              <option value="">(select an image model)</option>
+              {imageCapableModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name} ({m.apiModelId})
+                </option>
+              ))}
+            </select>
+            <p className="text-[10px] text-white/30 mt-1">
+              Only models with the <code className="text-pink-300">Image Gen</code> capability are shown. Imaginer
+              calls this model whenever it needs to actually produce an image — its orchestration/chat brain uses a
+              separate text model (Kevin's default by default).
+            </p>
+          </>
+        )}
+      </div>
+
+      {/* Default aspect ratio */}
+      <div>
+        <label className="block text-xs font-medium text-white/55 mb-1">Default Aspect Ratio</label>
+        <select
+          value={defaultAspect}
+          onChange={(e) => setDefaultAspect(e.target.value)}
+          className="w-full px-3 py-2 bg-white/[0.05] border border-white/[0.08] rounded-lg text-sm text-white/90 focus:outline-none focus:ring-2 focus:ring-pink-500"
+        >
+          {ASPECT_RATIOS.map(r => <option key={r} value={r}>{r}</option>)}
+        </select>
+        <p className="text-[10px] text-white/30 mt-1">Used when requesting agents don't specify one.</p>
+      </div>
+
+      {/* Default style */}
+      <div>
+        <label className="block text-xs font-medium text-white/55 mb-1">Default Style (optional)</label>
+        <input
+          type="text"
+          value={defaultStyle}
+          onChange={(e) => setDefaultStyle(e.target.value)}
+          placeholder="e.g. photorealistic, cinematic lighting"
+          className="w-full px-3 py-2 bg-white/[0.05] border border-white/[0.08] rounded-lg text-sm text-white/90 placeholder-white/25 focus:outline-none focus:ring-2 focus:ring-pink-500"
+        />
+        <p className="text-[10px] text-white/30 mt-1">Fallback style hint when requesting agents don't specify one.</p>
+      </div>
+
+      {/* Output dir (read-only info) */}
+      <div>
+        <label className="block text-xs font-medium text-white/55 mb-1">Output Directory</label>
+        <code className="block text-[11px] text-white/50 px-3 py-2 bg-white/[0.03] rounded font-mono">
+          ~/.dojo/uploads/generated/
+        </code>
+      </div>
+
+      {/* Save + Test buttons */}
+      <div className="flex items-center gap-3 pt-2">
+        <button
+          onClick={handleSave}
+          disabled={saving || !imageModelId || imageCapableModels.length === 0}
+          className="px-4 py-2 bg-pink-600 hover:bg-pink-700 disabled:bg-white/[0.08] disabled:text-white/40 text-white text-sm font-medium rounded-lg transition-colors"
+        >
+          {saving ? 'Saving...' : 'Save'}
+        </button>
+        <button
+          onClick={handleTest}
+          disabled={testing || !imageModelId || imageCapableModels.length === 0}
+          className="px-4 py-2 bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] disabled:bg-white/[0.02] disabled:text-white/30 text-white/80 text-sm font-medium rounded-lg transition-colors"
+        >
+          {testing ? 'Testing...' : 'Generate test image'}
+        </button>
+        {saved && <span className="text-xs text-green-400">Saved!</span>}
+        {testResult && <span className="text-xs text-white/60">{testResult}</span>}
+      </div>
     </div>
   );
 };

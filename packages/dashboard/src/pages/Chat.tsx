@@ -172,6 +172,13 @@ const AssistantBubble = ({ msg, wordyMode = true, modelNames = {} }: { msg: Chat
           </div>
         )}
 
+        {/* Image / PDF attachments (e.g. Imaginer-generated images) */}
+        {msg.attachments && msg.attachments.length > 0 && (
+          <div className="mt-2">
+            <AttachmentChips attachments={msg.attachments} />
+          </div>
+        )}
+
         {/* Timestamp */}
         {!msg.isStreaming && (
           <div className="text-[10px] mt-1 px-1" style={{ color: 'var(--text-tertiary)' }}>

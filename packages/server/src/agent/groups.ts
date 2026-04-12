@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { getPrimaryAgentId, getPMAgentId, getTrainerAgentId } from '../config/platform.js';
+import { getPrimaryAgentId, getPMAgentId, getTrainerAgentId, getImaginerAgentId } from '../config/platform.js';
 
 const logger = createLogger('groups');
 
@@ -234,8 +234,9 @@ export function ensureSystemGroup(): void {
   const primaryId = getPrimaryAgentId();
   const pmId = getPMAgentId();
   const trainerId = getTrainerAgentId();
+  const imaginerId = getImaginerAgentId();
 
-  for (const agentId of [primaryId, pmId, trainerId]) {
+  for (const agentId of [primaryId, pmId, trainerId, imaginerId]) {
     const agent = db.prepare('SELECT id, group_id FROM agents WHERE id = ?').get(agentId) as { id: string; group_id: string | null } | undefined;
     if (agent && agent.group_id !== SYSTEM_GROUP_ID) {
       db.prepare("UPDATE agents SET group_id = ?, updated_at = datetime('now') WHERE id = ?").run(SYSTEM_GROUP_ID, agentId);

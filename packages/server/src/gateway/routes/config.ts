@@ -973,6 +973,35 @@ configRouter.patch('/providers/:id/host-ram', async (c) => {
 // will still refuse values the loaded model can't support). Only
 // meaningful for Ollama models — other providers store the value but
 // never translate it at call time.
+// POST /models/:id/refresh-capabilities — force a fresh capability probe
+// for one model. Useful when a new capability vocabulary is added (e.g.
+// image_generation in v1.12) and the user's existing rows are stale.
+// The normal boot backfill only touches rows whose normalized caps are
+// empty; this endpoint bypasses that check and always re-probes.
+configRouter.post('/models/:id/refresh-capabilities', async (c) => {
+  const id = c.req.param('id');
+  const db = getDb();
+  const exists = db.prepare('SELECT id FROM models WHERE id = ?').get(id);
+  if (!exists) return c.json({ ok: false, error: 'Model not found' }, 404);
+
+  try {
+    // Clear the row so probeAndStoreCapabilities unconditionally overwrites
+    // even if the probe result is "same as before". This guarantees a fresh
+    // read on next use.
+    db.prepare("UPDATE models SET capabilities = '[]', updated_at = datetime('now') WHERE id = ?").run(id);
+    const { probeAndStoreCapabilities } = await import('../../services/capabilities.js');
+    const caps = await probeAndStoreCapabilities(id);
+    const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
+    logger.info('Model capabilities refreshed', { modelId: id, capabilities: caps });
+    return c.json({ ok: true, data: rowToModel(row), capabilities: caps });
+  } catch (err) {
+    return c.json({
+      ok: false,
+      error: `Capability refresh failed: ${err instanceof Error ? err.message : String(err)}`,
+    }, 500);
+  }
+});
+
 configRouter.patch('/models/:id/num-ctx', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => null);
@@ -1150,7 +1179,7 @@ configRouter.put('/settings/:key', async (c) => {
   `).run(key, body.value);
 
   // Clear platform config cache when platform keys are updated
-  const platformKeys = ['platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'pm_agent_enabled', 'setup_completed'];
+  const platformKeys = ['platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'pm_agent_enabled', 'trainer_agent_id', 'trainer_agent_name', 'trainer_agent_enabled', 'imaginer_agent_id', 'imaginer_agent_name', 'imaginer_enabled', 'setup_completed'];
   if (platformKeys.includes(key)) {
     const { clearPlatformConfigCache } = await import('../../config/platform.js');
     clearPlatformConfigCache();

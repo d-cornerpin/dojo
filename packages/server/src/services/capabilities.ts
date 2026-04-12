@@ -23,7 +23,7 @@ import { getProviderCredential } from '../config/loader.js';
 
 const logger = createLogger('capabilities');
 
-export type Capability = 'tools' | 'vision' | 'thinking' | 'embedding';
+export type Capability = 'tools' | 'vision' | 'thinking' | 'embedding' | 'image_generation';
 
 export interface ProbeInput {
   providerId: string;
@@ -125,6 +125,14 @@ async function probeOllama(baseUrl: string, apiModelId: string): Promise<Capabil
       if (norm === 'vision' && !caps.includes('vision')) caps.push('vision');
       if (norm === 'thinking' && !caps.includes('thinking')) caps.push('thinking');
       if (norm === 'embedding' && !caps.includes('embedding')) caps.push('embedding');
+      // Forward-compat: if a future Ollama model self-reports image
+      // generation via /api/show, we recognize it. Nothing in today's
+      // Ollama model catalog returns this yet, but the detection is
+      // cheap and consistent with the other capability checks.
+      if ((norm === 'image_generation' || norm === 'image-generation' || norm === 'image') &&
+          !caps.includes('image_generation')) {
+        caps.push('image_generation');
+      }
     }
 
     return caps;
@@ -258,6 +266,20 @@ async function probeOpenRouter(baseUrl: string, providerId: string, apiModelId: 
     caps.push('thinking');
   }
 
+  // Image generation: check `architecture.output_modalities` for 'image',
+  // which OpenRouter populates for models like Gemini 2.5 Flash Image,
+  // GPT-5 Image, and the Gemini 3 image previews. These models return
+  // images inline in the chat completion response when the request
+  // includes `modalities: ['image', 'text']`.
+  const outputModalities = Array.isArray(entry.architecture?.output_modalities)
+    ? entry.architecture!.output_modalities!
+    : [];
+  const hasImageOutput = outputModalities.includes('image') ||
+    /->.*(^|\+|\s)image/.test(modalityString);
+  if (hasImageOutput) {
+    caps.push('image_generation');
+  }
+
   return caps;
 }
 
@@ -322,7 +344,8 @@ export function getModelCapabilities(modelId: string): Capability[] {
     for (const c of parsed) {
       if (typeof c !== 'string') continue;
       const norm = c.toLowerCase();
-      if ((norm === 'tools' || norm === 'vision' || norm === 'thinking' || norm === 'embedding')
+      if ((norm === 'tools' || norm === 'vision' || norm === 'thinking' ||
+           norm === 'embedding' || norm === 'image_generation')
           && !caps.includes(norm as Capability)) {
         caps.push(norm as Capability);
       }
@@ -400,7 +423,7 @@ export async function probeAndStoreCapabilities(modelId: string): Promise<Capabi
 // This replaces the earlier length-only check that was passing Anthropic
 // models through unchanged.
 
-const MODERN_CAPABILITY_VOCAB = new Set<string>(['tools', 'vision', 'thinking', 'embedding']);
+const MODERN_CAPABILITY_VOCAB = new Set<string>(['tools', 'vision', 'thinking', 'embedding', 'image_generation']);
 
 export async function backfillEmptyCapabilities(): Promise<void> {
   const db = getDb();

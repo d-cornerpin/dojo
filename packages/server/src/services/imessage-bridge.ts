@@ -731,6 +731,60 @@ export function sendIMessage(recipient: string, text: string): void {
   }
 }
 
+/**
+ * Send a file attachment via iMessage. Uses AppleScript's `send POSIX file`
+ * to deliver an image or other file alongside an optional text caption.
+ * The file must exist on disk at `filePath`. If a caption is provided, a
+ * separate text message is sent first (iMessage doesn't support inline
+ * text + file in a single `send` call).
+ */
+export function sendIMessageWithAttachment(
+  recipient: string,
+  filePath: string,
+  caption?: string,
+): void {
+  try {
+    const escapedRecipient = recipient.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const escapedPath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+    // Send the caption first if provided
+    if (caption) {
+      sendIMessage(recipient, caption);
+    }
+
+    // Send the file attachment
+    const script = `
+      tell application "Messages"
+        set targetService to 1st service whose service type = iMessage
+        set targetBuddy to buddy "${escapedRecipient}" of targetService
+        send POSIX file "${escapedPath}" to targetBuddy
+      end tell
+    `;
+
+    execSync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`, {
+      timeout: 15000,
+      encoding: 'utf-8',
+    });
+
+    logger.info('iMessage attachment sent', { recipient, filePath });
+
+    broadcast({
+      type: 'imessage:sent',
+      data: {
+        to: recipient,
+        text: `[attachment: ${filePath}]`,
+        timestamp: new Date().toISOString(),
+      },
+    } as never);
+  } catch (err) {
+    logger.error('Failed to send iMessage attachment', {
+      error: err instanceof Error ? err.message : String(err),
+      recipient,
+      filePath,
+    });
+  }
+}
+
 // ── Alert & Sender Helpers ──
 
 export function getDefaultSender(): string | null {

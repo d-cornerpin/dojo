@@ -7,11 +7,21 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { createLogger } from '../logger.js';
 import type { ToolDefinition } from '../agent/tools.js';
 
 const logger = createLogger('tool-docs-generator');
 const TOOLS_DIR = path.join(os.homedir(), '.dojo', 'tools');
+
+// Source directory for hand-written tool doc overrides. When a file named
+// `<tool-name>.md` exists here, it's copied verbatim into ~/.dojo/tools/
+// instead of generating one from the tool definition. Used when a tool
+// needs a longer prompting guide than can reasonably live in the
+// `description` field (e.g. image_create's "how to write good
+// descriptions" section).
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const TOOL_DOCS_SOURCE_DIR = path.resolve(__dirname, './docs');
 
 export function getToolsDir(): string {
   return TOOLS_DIR;
@@ -88,7 +98,20 @@ export async function generateToolDocs(): Promise<{ count: number }> {
     if (seen.has(tool.name)) continue;
     seen.add(tool.name);
 
-    const doc = formatToolDoc(tool);
+    // If there's a hand-written override in src/tools/docs/<name>.md, use
+    // it verbatim. Otherwise generate from the tool definition.
+    let doc: string;
+    const overridePath = path.join(TOOL_DOCS_SOURCE_DIR, `${tool.name}.md`);
+    if (fs.existsSync(overridePath)) {
+      try {
+        doc = fs.readFileSync(overridePath, 'utf-8');
+      } catch {
+        doc = formatToolDoc(tool);
+      }
+    } else {
+      doc = formatToolDoc(tool);
+    }
+
     const filePath = path.join(TOOLS_DIR, `${tool.name}.md`);
     try {
       fs.writeFileSync(filePath, doc, 'utf-8');

@@ -20,6 +20,8 @@ const PLATFORM_DIRS = [
   path.join(os.homedir(), '.dojo', 'data'),
   path.join(os.homedir(), '.dojo', 'logs'),
   path.join(os.homedir(), '.dojo', 'prompts'),
+  path.join(os.homedir(), '.dojo', 'uploads'),
+  path.join(os.homedir(), '.dojo', 'uploads', 'generated'),
 ];
 
 function ensureDirectories(): void {
@@ -139,6 +141,22 @@ async function main(): Promise<void> {
         logger.info('Trainer agent ensured on server startup');
       } catch (err) {
         logger.error('Failed to ensure Trainer agent', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  // 4c3. Ensure Imaginer agent exists (if enabled and setup is complete)
+  {
+    const { isImaginerEnabled, isSetupCompleted: isSetupDone } = await import('./config/platform.js');
+    if (isSetupDone() && isImaginerEnabled()) {
+      try {
+        const { ensureImaginerAgentRunning } = await import('./imaginer/imaginer-agent.js');
+        ensureImaginerAgentRunning();
+        logger.info('Imaginer agent ensured on server startup');
+      } catch (err) {
+        logger.error('Failed to ensure Imaginer agent', {
           error: err instanceof Error ? err.message : String(err),
         });
       }

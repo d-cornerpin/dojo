@@ -620,6 +620,42 @@ class AgentRuntime {
         break;
       }
 
+      // image_create is "fire and forget" — the image will appear in the
+      // chat automatically when the background generation finishes. The
+      // agent's text response before the tool call IS the user-facing
+      // acknowledgment ("On it, I'll generate that for you"). We don't
+      // need a follow-up model call to respond to the tool result because
+      // there's nothing more to say — calling the model again just
+      // produces a redundant "I'm generating that image now" message.
+      const calledImageCreate = result.toolCalls.some(tc => tc.name === 'image_create');
+      if (calledImageCreate) {
+        logger.info('Agent called image_create, exiting loop (delivery is async)', { agentId }, agentId);
+
+        // If this turn was triggered by an iMessage, send the agent's
+        // acknowledgment text ("On it, I'll generate that for you") back
+        // to the user NOW — because the normal iMessage-reply path only
+        // fires in the text-only (no tool calls) branch, which we're
+        // about to skip by breaking out of the loop. Without this, the
+        // iMessage user would get silence until the image is ready.
+        if (result.content) {
+          try {
+            const { getPresence } = await import('../services/presence.js');
+            const { isPrimaryAgent } = await import('../config/platform.js');
+            const presence = getPresence();
+
+            if (presence === 'away' && isPrimaryAgent(agentId)) {
+              sendResponseViaIMessage(result.content, agentId);
+              clearIMResponseFlag(agentId);
+            } else if (isAwaitingIMResponse(agentId)) {
+              sendResponseViaIMessage(result.content, agentId);
+              clearIMResponseFlag(agentId);
+            }
+          } catch { /* presence/imessage module may not be available */ }
+        }
+
+        break;
+      }
+
       // Detect repetition: if the model produced the same text AND same tool calls as last iteration
       const currentResponseSig = (result.content ?? '') + '|' + result.toolCalls.map(tc => `${tc.name}:${JSON.stringify(tc.arguments)}`).sort().join(',');
       if (lastResponseText === currentResponseSig) {

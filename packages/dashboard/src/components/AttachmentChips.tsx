@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 interface Attachment {
   fileId: string;
@@ -35,16 +35,121 @@ function getImageUrl(att: Attachment): string {
   return `/api/upload/file/${agentId}/${filename}`;
 }
 
-// Lightbox for image preview
-const ImageLightbox = ({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) => (
-  <div
-    className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-8 cursor-pointer"
-    onClick={onClose}
-  >
-    <img src={src} alt={alt} className="max-w-full max-h-full rounded-lg shadow-2xl" onClick={(e) => e.stopPropagation()} />
-    <button onClick={onClose} className="absolute top-4 right-4 text-white/60 hover:text-white text-2xl">&times;</button>
-  </div>
-);
+// Near-full-screen image viewer used for every chat image (user uploads,
+// iMessage attachments, and Imaginer-generated images). ~90% viewport,
+// dark backdrop, top-right Download + Close controls, Esc closes,
+// D triggers download, clicking outside the image closes too.
+const ImageLightbox = ({
+  src,
+  alt,
+  caption,
+  onClose,
+}: {
+  src: string;
+  alt: string;
+  caption?: string | null;
+  onClose: () => void;
+}) => {
+  const handleDownload = useCallback(() => {
+    // Build a sensible default filename. If the alt (usually the original
+    // file name) already has an extension we use it directly; otherwise
+    // fall back to `dojo-image-<timestamp>.png`.
+    const hasExt = /\.[a-zA-Z0-9]{2,5}$/.test(alt);
+    const filename = hasExt
+      ? alt
+      : `dojo-image-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.png`;
+
+    // Anchor-download approach works cross-origin for same-origin URLs
+    // (which our /api/upload/file/... paths are). For remote URLs or data
+    // URLs the browser will still try the download attribute.
+    const a = document.createElement('a');
+    a.href = src;
+    a.download = filename;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }, [src, alt]);
+
+  // Global keyboard: Esc closes, D downloads
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      } else if ((e.key === 'd' || e.key === 'D') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        // Avoid hijacking browser devtools / Cmd+D bookmark shortcut
+        e.preventDefault();
+        handleDownload();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [handleDownload, onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center cursor-pointer"
+      style={{ background: 'rgba(0,0,0,0.88)' }}
+      onClick={onClose}
+    >
+      {/* Top-right controls — stopPropagation so clicking buttons
+          doesn't also close the modal via the backdrop click. */}
+      <div
+        className="absolute top-4 right-4 flex items-center gap-2"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          onClick={handleDownload}
+          title="Download image (D)"
+          className="px-3 py-1.5 rounded-lg bg-white/[0.08] hover:bg-white/[0.15] border border-white/[0.12] text-xs text-white/85 font-medium backdrop-blur transition-colors"
+        >
+          <span aria-hidden>⬇</span> Download
+        </button>
+        <button
+          onClick={onClose}
+          title="Close (Esc)"
+          className="w-9 h-9 flex items-center justify-center rounded-lg bg-white/[0.08] hover:bg-white/[0.15] border border-white/[0.12] text-white/85 backdrop-blur transition-colors"
+          aria-label="Close"
+        >
+          <span className="text-xl leading-none">×</span>
+        </button>
+      </div>
+
+      {/* Image — scaled to ~90% viewport, preserve aspect ratio */}
+      <img
+        src={src}
+        alt={alt}
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          maxWidth: '90vw',
+          maxHeight: caption ? '80vh' : '88vh',
+          objectFit: 'contain',
+          borderRadius: '8px',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
+          cursor: 'default',
+        }}
+      />
+
+      {/* Optional caption */}
+      {caption && (
+        <div
+          className="mt-4 max-w-3xl text-center text-xs text-white/60 px-4"
+          onClick={(e) => e.stopPropagation()}
+          style={{ cursor: 'default' }}
+        >
+          {caption}
+        </div>
+      )}
+
+      {/* Keyboard hint */}
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-[10px] text-white/25">
+        Press <kbd className="px-1 py-0.5 rounded bg-white/[0.08] border border-white/[0.12] text-white/40">D</kbd> to download ·
+        <kbd className="ml-1 px-1 py-0.5 rounded bg-white/[0.08] border border-white/[0.12] text-white/40">Esc</kbd> to close
+      </div>
+    </div>
+  );
+};
 
 export const AttachmentChips = ({ attachments }: { attachments: Attachment[] }) => {
   const [lightboxSrc, setLightboxSrc] = useState<{ src: string; alt: string } | null>(null);

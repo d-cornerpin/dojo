@@ -13,7 +13,7 @@ let cacheLoaded = false;
 function loadCache(): void {
   try {
     const db = getDb();
-    const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'pm_agent_enabled', 'trainer_agent_id', 'trainer_agent_name', 'trainer_agent_enabled', 'setup_completed')").all() as Array<{ key: string; value: string }>;
+    const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'pm_agent_enabled', 'trainer_agent_id', 'trainer_agent_name', 'trainer_agent_enabled', 'imaginer_agent_id', 'imaginer_agent_name', 'imaginer_enabled', 'setup_completed')").all() as Array<{ key: string; value: string }>;
     cache = {};
     for (const row of rows) {
       cache[row.key] = row.value;
@@ -84,6 +84,20 @@ export function isTrainerEnabled(): boolean {
   return get('trainer_agent_enabled', 'true') === 'true';
 }
 
+// ── Imaginer Agent ──
+
+export function getImaginerAgentId(): string {
+  return get('imaginer_agent_id', 'imaginer');
+}
+
+export function getImaginerAgentName(): string {
+  return get('imaginer_agent_name', 'Imaginer');
+}
+
+export function isImaginerEnabled(): boolean {
+  return get('imaginer_enabled', 'true') === 'true';
+}
+
 // ── Setup ──
 
 export function isSetupCompleted(): boolean {
@@ -120,6 +134,10 @@ export function isPMAgent(agentId: string): boolean {
 
 export function isTrainerAgent(agentId: string): boolean {
   return agentId === getTrainerAgentId();
+}
+
+export function isImaginerAgent(agentId: string): boolean {
+  return agentId === getImaginerAgentId();
 }
 
 export function isPermanentAgent(agentId: string): boolean {
