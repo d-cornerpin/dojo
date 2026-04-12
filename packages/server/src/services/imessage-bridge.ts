@@ -59,6 +59,28 @@ const IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp
 const HEIC_MIMES = new Set(['image/heic', 'image/heif']);
 const PDF_MIMES = new Set(['application/pdf']);
 
+// ── Attachment-readiness race ────────────────────────────────────────────
+//
+// When macOS receives an iMessage with an attachment, chat.db gets the
+// message row and attachment row written immediately, but the actual
+// attachment file under ~/Library/Messages/Attachments/... may take
+// several seconds to appear — especially for large photos, HEIC from an
+// iPhone, or anything being synced from iCloud. If we poll during that
+// window and advance `lastSeenRowId` past the message, we'll process it
+// as text-only and never retry. The model then says "I don't see an
+// image attached" because, from its perspective, there never was one.
+//
+// Fix: before advancing past any message that claims attachments, verify
+// every attachment file is actually on disk. If not, break out of the
+// processing loop without advancing, and try again on the next poll.
+// A per-rowid retry counter bounds the deferral so a permanently broken
+// download doesn't block the bridge forever — after ~60 seconds of
+// retries (12 polls × 5s interval) we give up and process the message
+// without the attachments, logging a warning so the reason is visible.
+
+const MAX_ATTACHMENT_RETRIES = 12;
+const deferredAttachmentRetries = new Map<number, number>();
+
 // Text-ish file extensions we'll read + inline directly into the forwarded
 // message body (same list as packages/server/src/gateway/routes/upload.ts).
 // Any file under `INLINE_TEXT_MAX_BYTES` whose MIME starts with `text/` or
@@ -115,6 +137,44 @@ function safeFilenamePart(name: string): string {
 // user sent an image with no caption, this collapses to an empty string.
 function stripAttachmentPlaceholder(text: string | null): string {
   return (text ?? '').replace(/\uFFFC/g, '').trim();
+}
+
+// Quickly checks whether every attachment linked to a given message has
+// its file on disk. Read-only, no side effects — just a sanity probe the
+// poll loop uses to decide whether to defer processing.
+//
+// Returns `{ready: true}` when the message has zero attached files OR
+// every attachment's `filename` path exists on disk. Returns
+// `{ready: false, reason}` as soon as one is missing.
+function isMessageAttachmentReady(
+  chatDb: Database.Database,
+  messageRowid: number,
+): { ready: true } | { ready: false; reason: string } {
+  const rows = chatDb.prepare(`
+    SELECT a.ROWID, a.filename
+    FROM message_attachment_join maj
+    JOIN attachment a ON a.ROWID = maj.attachment_id
+    WHERE maj.message_id = ?
+  `).all(messageRowid) as Array<{ ROWID: number; filename: string | null }>;
+
+  // No joins yet → either the message has no attachments, or the join
+  // row hasn't been written yet. In the first case we're fine; in the
+  // second, the message's text was already processed one poll earlier
+  // before the join existed, so there's nothing we can do now. Treat
+  // "no joins" as ready and move on.
+  if (rows.length === 0) return { ready: true };
+
+  for (const row of rows) {
+    if (!row.filename) continue; // attachment row exists but no path — skip it silently
+    const srcPath = expandHomedir(row.filename);
+    if (!fs.existsSync(srcPath)) {
+      return {
+        ready: false,
+        reason: `attachment ${row.ROWID} not yet on disk: ${srcPath}`,
+      };
+    }
+  }
+  return { ready: true };
 }
 
 function fetchImessageAttachments(
@@ -353,7 +413,7 @@ async function pollMessages(): Promise<void> {
       const likeParams = approvedSenders.map(s => `%${s}%`);
 
       const messages = chatDb.prepare(`
-        SELECT m.ROWID, m.text, m.is_from_me, m.date, c.chat_identifier
+        SELECT m.ROWID, m.text, m.is_from_me, m.date, m.cache_has_attachments, c.chat_identifier
         FROM message m
         JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
         JOIN chat c ON c.ROWID = cmj.chat_id
@@ -367,12 +427,46 @@ async function pollMessages(): Promise<void> {
         text: string | null;
         is_from_me: number;
         date: number;
+        cache_has_attachments: number;
         chat_identifier: string;
       }>;
 
       for (const msg of messages) {
+        // ── Attachment-readiness gate ──
+        // If chat.db claims this message has attachments but the files
+        // aren't on disk yet (iCloud sync, slow download, etc.), defer
+        // processing by breaking out of this poll cycle WITHOUT
+        // advancing lastSeenRowId. The next poll will see the same
+        // message again and retry. Bounded by MAX_ATTACHMENT_RETRIES so
+        // a permanently-missing file can't block the bridge forever.
+        if (msg.cache_has_attachments === 1) {
+          const readiness = isMessageAttachmentReady(chatDb, msg.ROWID);
+          if (!readiness.ready) {
+            const retries = (deferredAttachmentRetries.get(msg.ROWID) ?? 0) + 1;
+            if (retries < MAX_ATTACHMENT_RETRIES) {
+              deferredAttachmentRetries.set(msg.ROWID, retries);
+              logger.info('iMessage attachment not ready — deferring to next poll', {
+                rowid: msg.ROWID,
+                retry: retries,
+                maxRetries: MAX_ATTACHMENT_RETRIES,
+                reason: readiness.reason,
+              });
+              break; // stop processing this cycle, do NOT advance lastSeenRowId
+            }
+            // Give up and process the message without attachments so the
+            // bridge doesn't get permanently stuck on a broken download.
+            logger.warn('iMessage attachment never became ready — processing without it', {
+              rowid: msg.ROWID,
+              retriesAttempted: retries,
+              reason: readiness.reason,
+            });
+            deferredAttachmentRetries.delete(msg.ROWID);
+          }
+        }
+
         lastSeenRowId = msg.ROWID;
         saveLastSeenRowId(lastSeenRowId);
+        deferredAttachmentRetries.delete(msg.ROWID); // clear any prior retry count
 
         const sender = msg.chat_identifier;
         const primaryId = getPrimaryAgentId();
