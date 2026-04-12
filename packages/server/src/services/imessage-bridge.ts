@@ -732,37 +732,41 @@ export function sendIMessage(recipient: string, text: string): void {
 }
 
 /**
- * Send a file attachment via iMessage. Uses AppleScript's `send POSIX file`
- * to deliver an image or other file alongside an optional text caption.
- * The file must exist on disk at `filePath`. If a caption is provided, a
- * separate text message is sent first (iMessage doesn't support inline
- * text + file in a single `send` call).
+ * Send a file attachment via iMessage. Uses AppleScript to deliver an
+ * image or other file alongside an optional text caption. The file must
+ * exist on disk at `filePath`. If the attachment send fails (macOS
+ * version quirks, permissions, etc.), falls back to a text-only message
+ * telling the user the image is in the dashboard.
  */
 export function sendIMessageWithAttachment(
   recipient: string,
   filePath: string,
   caption?: string,
 ): void {
+  // Send the caption first if provided (always text — works reliably)
+  if (caption) {
+    sendIMessage(recipient, caption);
+  }
+
   try {
     const escapedRecipient = recipient.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     const escapedPath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
-    // Send the caption first if provided
-    if (caption) {
-      sendIMessage(recipient, caption);
-    }
-
-    // Send the file attachment
+    // Set the file reference as a variable first, then send it.
+    // This two-step approach is more compatible across macOS versions
+    // than inline `send POSIX file "..."`. Some versions of Messages.app
+    // need the file coerced to an alias for the send to work.
     const script = `
       tell application "Messages"
         set targetService to 1st service whose service type = iMessage
         set targetBuddy to buddy "${escapedRecipient}" of targetService
-        send POSIX file "${escapedPath}" to targetBuddy
+        set theFile to POSIX file "${escapedPath}"
+        send theFile to targetBuddy
       end tell
     `;
 
     execSync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`, {
-      timeout: 15000,
+      timeout: 30000,
       encoding: 'utf-8',
     });
 
@@ -777,11 +781,17 @@ export function sendIMessageWithAttachment(
       },
     } as never);
   } catch (err) {
-    logger.error('Failed to send iMessage attachment', {
-      error: err instanceof Error ? err.message : String(err),
+    const errMsg = err instanceof Error ? err.message : String(err);
+    logger.error('Failed to send iMessage attachment — falling back to text', {
+      error: errMsg,
       recipient,
       filePath,
     });
+
+    // Fallback: send a text message pointing the user to the dashboard
+    try {
+      sendIMessage(recipient, '(The image was generated but couldn\'t be attached to iMessage — open the dashboard to see it.)');
+    } catch { /* double-fault — give up */ }
   }
 }
 
