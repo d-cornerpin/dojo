@@ -2924,15 +2924,13 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
               });
             } catch { /* best effort */ }
 
-            // ── Deliver the image directly as an assistant message from
-            // the requesting agent, with the file attached. This means
-            // the image appears in the chat as if Kevin (or whoever
-            // requested it) posted it themselves — clean UX, no confusing
-            // "[SOURCE: AGENT MESSAGE FROM IMAGINER]" wrapper, no second
-            // LLM turn needed. The user sees:
-            //   Kevin: "Working on it..."
-            //   (5-10 seconds)
-            //   Kevin: "Here's your school bus image!" [thumbnail]
+            // ── Deliver the image to the requesting agent as a user
+            // message with the file attached, then trigger the agent's
+            // runtime so it responds NATURALLY in its own voice. The
+            // agent sees the image + a brief instruction, writes its own
+            // response ("Your wooden sign is ready!" etc.), and the
+            // image thumbnail appears on the delivery message above the
+            // agent's response in the chat view.
             const fs = (await import('node:fs')).default;
             const path = (await import('node:path')).default;
             const os = (await import('node:os')).default;
@@ -2952,47 +2950,39 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
               category: 'image' as const,
             };
 
-            // Insert as an ASSISTANT message from the requesting agent so
-            // it appears as if Kevin posted the image. No second runtime
-            // turn — the background task IS the delivery mechanism.
+            // Insert as a user message so the agent's LLM can see the
+            // image and respond naturally. The instruction tells the
+            // agent to keep it brief and casual.
             const deliveryMsgId = uuidv4();
-            const deliveryContent = `Here you go! Let me know if you'd like any changes.`;
+            const deliveryContent =
+              `[SYSTEM: IMAGE GENERATION COMPLETE] The image you requested has been generated and is attached to this message. ` +
+              `Let the user know the image is ready. Be brief and natural — just casually mention what the image is of so they can ` +
+              `connect it to their original request. Don't describe the image in detail, don't repeat the full prompt, and don't ` +
+              `say anything about "Imaginer" or internal systems. Just be yourself.`;
 
             db.prepare(`
-              INSERT INTO messages (id, agent_id, role, content, attachments, model_id, created_at)
-              VALUES (?, ?, 'assistant', ?, ?, ?, datetime('now'))
-            `).run(deliveryMsgId, agentId, deliveryContent, JSON.stringify([attachment]), imageModelId);
+              INSERT INTO messages (id, agent_id, role, content, attachments, created_at)
+              VALUES (?, ?, 'user', ?, ?, datetime('now'))
+            `).run(deliveryMsgId, agentId, deliveryContent, JSON.stringify([attachment]));
 
-            // Broadcast so the dashboard renders the image in real time
             broadcast({
               type: 'chat:message', agentId,
               message: {
-                id: deliveryMsgId, agentId, role: 'assistant' as const, content: deliveryContent,
-                tokenCount: null, modelId: imageModelId, cost: null, latencyMs: null,
+                id: deliveryMsgId, agentId, role: 'user' as const, content: deliveryContent,
+                tokenCount: null, modelId: null, cost: null, latencyMs: null,
                 createdAt: new Date().toISOString(),
                 attachments: [attachment],
               },
             });
 
-            // Also broadcast a streaming "done" chunk so the UI clears
-            // any pending streaming state for this message.
-            broadcast({
-              type: 'chat:chunk', agentId,
-              messageId: deliveryMsgId,
-              content: '', done: true, modelId: imageModelId,
-            });
-
-            logger.info('Imaginer: image delivered as assistant message', {
+            logger.info('Imaginer: image delivered, triggering agent response', {
               requestId, requesterId: agentId, filePath: result.filePath,
               sizeBytes: result.sizeBytes, latencyMs: result.latencyMs,
             });
 
-            // Send the image via iMessage if:
-            //   1. The user is away from the dojo (all responses go via
-            //      iMessage when presence = away), OR
-            //   2. The original request came in via iMessage (even if
-            //      the user is "in the dojo" — they asked via iMessage
-            //      so they expect the reply there too).
+            // Send the image via iMessage before triggering Kevin's turn
+            // so the user gets it immediately (Kevin's LLM response may
+            // take a few seconds).
             try {
               const { isPrimaryAgent } = await import('../config/platform.js');
               if (isPrimaryAgent(agentId)) {
@@ -3007,23 +2997,35 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
                   const { sendIMessageWithAttachment, getDefaultSender } = await import('../services/imessage-bridge.js');
                   const recipient = getDefaultSender();
                   if (recipient) {
-                    const caption = `Here you go!`;
-                    sendIMessageWithAttachment(recipient, result.filePath, caption);
+                    sendIMessageWithAttachment(recipient, result.filePath, 'Here you go!');
                   }
                 }
               }
             } catch { /* iMessage not available — fine */ }
+
+            // Trigger the agent's runtime so it responds naturally.
+            // The agent will see the attached image + the instruction
+            // and write its own response in its own voice.
+            try {
+              const { getAgentRuntime } = await import('./runtime.js');
+              await getAgentRuntime().handleMessage(agentId, deliveryContent);
+            } catch (err) {
+              logger.error('Imaginer: agent failed to respond to delivered image', {
+                requestId, agentId,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
 
           } catch (err) {
             logger.error('Imaginer: unexpected error in background generation', {
               requestId, error: err instanceof Error ? err.message : String(err),
             });
           } finally {
-            // Set both Imaginer and the requesting agent back to idle
+            // Set Imaginer back to idle. The requesting agent's status
+            // is managed by the runtime's handleMessage call above —
+            // it goes working → idle naturally as part of Kevin's turn.
             db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(imaginerId);
             broadcast({ type: 'agent:status', agentId: imaginerId, status: 'idle' });
-            db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(agentId);
-            broadcast({ type: 'agent:status', agentId, status: 'idle' });
           }
         })();
 
