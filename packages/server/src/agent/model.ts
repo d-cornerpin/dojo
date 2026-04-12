@@ -1007,6 +1007,46 @@ async function callOpenAIModel(
 
     recordProviderSuccess(modelInfo.providerId);
 
+    // ── Text-based tool call fallback ──
+    // Some models (MiniMax, older Gemini) occasionally fall back to
+    // outputting tool calls as XML text instead of using the structured
+    // tool_calls mechanism. When that happens, toolCalls is empty but
+    // fullText contains `<invoke name="X">` or similar patterns. We
+    // detect and parse these so the runtime can execute them normally.
+    if (toolCalls.length === 0 && fullText.includes('<invoke name="')) {
+      const invokeRegex = /<invoke name="([^"]+)">([\s\S]*?)<\/invoke>/g;
+      let match;
+      while ((match = invokeRegex.exec(fullText)) !== null) {
+        const toolName = match[1];
+        const paramsBlock = match[2];
+        const args: Record<string, unknown> = {};
+        const paramRegex = /<parameter name="([^"]+)">([\s\S]*?)<\/parameter>/g;
+        let paramMatch;
+        while ((paramMatch = paramRegex.exec(paramsBlock)) !== null) {
+          const val = paramMatch[2].trim();
+          // Try to parse as JSON for numbers/booleans/objects, fall back to string
+          try { args[paramMatch[1]] = JSON.parse(val); } catch { args[paramMatch[1]] = val; }
+        }
+        toolCalls.push({
+          id: `text_tool_${Date.now()}_${toolCalls.length}`,
+          name: toolName,
+          arguments: args,
+        });
+      }
+      if (toolCalls.length > 0) {
+        // Strip the XML tool calls from the visible text so the user
+        // doesn't see raw invoke tags in the chat
+        fullText = fullText.replace(/<minimax:tool_call>[\s\S]*?<\/minimax:tool_call>/g, '')
+          .replace(/<invoke name="[^"]*">[\s\S]*?<\/invoke>/g, '')
+          .trim();
+        logger.info('Extracted text-based tool calls (XML fallback)', {
+          model: modelInfo.apiModelId,
+          extractedCount: toolCalls.length,
+          tools: toolCalls.map(tc => tc.name),
+        }, agentId);
+      }
+    }
+
     logger.info('OpenAI call completed', {
       model: modelInfo.apiModelId,
       inputTokens, outputTokens, latencyMs,
