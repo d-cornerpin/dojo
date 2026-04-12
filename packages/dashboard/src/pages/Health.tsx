@@ -319,11 +319,11 @@ export const Health = () => {
     ?? (health ? (health.memory.used / Math.max(health.memory.total, 1)) * 100 : 0);
 
   return (
-    <div className="flex-1 p-6 flex flex-col min-h-0 overflow-y-auto">
-      <h1 className="text-xl font-bold text-white mb-6">System Health</h1>
+    <div className="flex-1 p-3 sm:p-6 flex flex-col min-h-0 overflow-y-auto">
+      <h1 className="text-lg sm:text-xl font-bold text-white mb-4 sm:mb-6">System Health</h1>
 
       {/* Stat Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-1 xs:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-4 sm:mb-6">
         <StatCard
           label="Uptime"
           value={health ? formatUptime(health.uptime) : '--'}

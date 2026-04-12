@@ -781,12 +781,14 @@ export const TechniqueBuilder = () => {
     }
   };
 
+  const [canvasOpen, setCanvasOpen] = useState(false);
+
   return (
-    <div className="flex-1 flex min-h-0">
-      {/* Left Panel — Chat (60%) */}
-      <div className="flex flex-col min-h-0" style={{ width: '60%' }}>
+    <div className="flex-1 flex min-h-0 relative">
+      {/* Left Panel — Chat (full width on mobile, 60% on desktop) */}
+      <div className="flex flex-col min-h-0 w-full md:w-[60%]">
         {/* Chat header */}
-        <div className="shrink-0 px-4 py-3 border-b border-white/[0.06] flex items-center gap-3">
+        <div className="shrink-0 px-3 sm:px-4 py-2 sm:py-3 border-b border-white/[0.06] flex items-center gap-2 sm:gap-3">
           <button
             onClick={() => navigate(isEditMode ? `/techniques/${editId}` : '/techniques')}
             className="text-xs text-white/40 hover:text-white/70"
@@ -827,14 +829,40 @@ export const TechniqueBuilder = () => {
         )}
 
         {/* Input */}
-        <ChatInput agentId={AGENT_ID} onSend={handleSend} variant="agent" />
+        <div className="flex items-center gap-2">
+          <div className="flex-1">
+            <ChatInput agentId={AGENT_ID} onSend={handleSend} variant="agent" />
+          </div>
+          {/* Mobile toggle for canvas panel */}
+          <button
+            onClick={() => setCanvasOpen(!canvasOpen)}
+            className="md:hidden shrink-0 px-3 py-2 mr-2 mb-1 text-xs bg-white/[0.06] border border-white/[0.08] rounded-lg text-white/60 hover:text-white/90"
+          >
+            {canvasOpen ? 'Chat' : 'Mat'}
+          </button>
+        </div>
       </div>
 
-      {/* Divider */}
-      <div className="shrink-0 w-px" style={{ background: 'rgba(255,255,255,0.08)' }} />
+      {/* Divider — desktop only */}
+      <div className="hidden md:block shrink-0 w-px" style={{ background: 'rgba(255,255,255,0.08)' }} />
 
-      {/* Right Panel — Canvas (40%) */}
-      <div className="min-h-0" style={{ width: '40%', background: 'rgba(0,0,0,0.15)' }}>
+      {/* Right Panel — Canvas (40% on desktop, flyout on mobile) */}
+      <div className={`
+        min-h-0
+        ${canvasOpen
+          ? 'fixed inset-0 z-40 md:relative md:inset-auto md:z-auto'
+          : 'hidden md:block'
+        }
+      `} style={{ width: canvasOpen && window.innerWidth < 768 ? '100%' : '40%', background: 'rgba(0,0,0,0.15)' }}>
+        {/* Mobile close button */}
+        {canvasOpen && (
+          <button
+            onClick={() => setCanvasOpen(false)}
+            className="md:hidden absolute top-3 right-3 z-50 px-3 py-1.5 bg-white/[0.1] rounded-lg text-xs text-white/70 hover:text-white"
+          >
+            ← Back to chat
+          </button>
+        )}
         <CanvasPanel
           canvas={canvas}
           onChange={handleCanvasChange}

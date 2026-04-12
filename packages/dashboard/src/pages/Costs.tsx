@@ -258,9 +258,9 @@ export const Costs = () => {
   }
 
   return (
-    <div className="flex-1 p-6 overflow-y-auto">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-xl font-bold text-white">Costs</h1>
+    <div className="flex-1 p-3 sm:p-6 overflow-y-auto">
+      <div className="flex items-center justify-between mb-4 sm:mb-6">
+        <h1 className="text-lg sm:text-xl font-bold text-white">Costs</h1>
 
         {/* Time range selector */}
         <div className="flex gap-1 bg-white/[0.04] rounded-lg p-1">
@@ -281,7 +281,7 @@ export const Costs = () => {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+      <div className="grid grid-cols-1 xs:grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4 mb-4 sm:mb-6">
         <SummaryCard
           label="Total Spend"
           value={`$${(summary?.totalSpend ?? 0).toFixed(2)}`}
@@ -316,7 +316,7 @@ export const Costs = () => {
       </div>
 
       {/* Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 mb-4 sm:mb-6">
         {/* Spend by model */}
         <div className="glass-card p-4">
           <h3 className="text-sm font-medium white/70 mb-3">Spend by Model</h3>

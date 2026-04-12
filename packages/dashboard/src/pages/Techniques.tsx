@@ -98,7 +98,7 @@ export const Techniques = () => {
     <div className="flex-1 p-4 md:p-6 overflow-y-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-xl font-bold text-white">Techniques</h1>
+        <h1 className="text-lg sm:text-xl font-bold text-white">Techniques</h1>
         <button
           onClick={() => navigate('/techniques/new')}
           className="glass-btn glass-btn-primary text-sm"

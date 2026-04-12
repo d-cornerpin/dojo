@@ -13,9 +13,21 @@ import { MigrationImport } from '../components/MigrationImport';
 type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'sensei' | 'workspace' | 'microsoft' | 'update';
 
 export const Settings = () => {
-  const [searchParams] = useSearchParams();
-  const initialTab = (searchParams.get('tab') as Tab) || 'platform';
-  const [activeTab, setActiveTab] = useState<Tab>(initialTab);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabFromUrl = searchParams.get('tab') as Tab | null;
+  const [activeTab, setActiveTab] = useState<Tab>(tabFromUrl || 'platform');
+
+  // Sync tab with URL query param so mobile hamburger sub-menu links work
+  useEffect(() => {
+    if (tabFromUrl && tabFromUrl !== activeTab) {
+      setActiveTab(tabFromUrl);
+    }
+  }, [tabFromUrl]);
+
+  const handleTabChange = (tab: Tab) => {
+    setActiveTab(tab);
+    setSearchParams({ tab });
+  };
 
   const tabs: { key: Tab; label: string }[] = [
     { key: 'platform', label: 'Dojo' },
@@ -31,15 +43,15 @@ export const Settings = () => {
   ];
 
   return (
-    <div className="flex-1 p-6 overflow-y-auto">
-      <h1 className="text-xl font-bold text-white mb-6">Settings</h1>
+    <div className="flex-1 p-3 sm:p-6 overflow-y-auto">
+      <h1 className="text-lg sm:text-xl font-bold text-white mb-4 sm:mb-6">Settings</h1>
 
-      {/* Tabs */}
-      <div className="flex gap-1 mb-6 bg-white/[0.04] rounded-lg p-1 w-fit">
+      {/* Tabs — hidden on mobile (handled by hamburger sub-menu instead) */}
+      <div className="hidden md:flex gap-1 mb-6 bg-white/[0.04] rounded-lg p-1 w-fit">
         {tabs.map((tab) => (
           <button
             key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
+            onClick={() => handleTabChange(tab.key)}
             className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
               activeTab === tab.key
                 ? 'bg-white/[0.05] text-white'
@@ -49,6 +61,19 @@ export const Settings = () => {
             {tab.label}
           </button>
         ))}
+      </div>
+
+      {/* Mobile tab selector — a compact dropdown for quick switching on phones */}
+      <div className="md:hidden mb-4">
+        <select
+          value={activeTab}
+          onChange={(e) => handleTabChange(e.target.value as Tab)}
+          className="w-full px-3 py-2 bg-white/[0.05] border border-white/[0.08] rounded-lg text-sm text-white/90 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          {tabs.map(tab => (
+            <option key={tab.key} value={tab.key}>{tab.label}</option>
+          ))}
+        </select>
       </div>
 
       {/* Tab Content */}

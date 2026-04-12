@@ -97,7 +97,7 @@ const DashboardLayout = () => {
   return (
     <>
       <GradientBlobs />
-      <div className="h-screen flex overflow-hidden relative z-[1]" style={{ backgroundColor: 'transparent' }}>
+      <div className="h-dvh flex overflow-hidden relative z-[1]" style={{ backgroundColor: 'transparent' }}>
         <Sidebar />
         <main className="flex-1 flex flex-col h-full overflow-hidden">
           <PostMigrationBanner />
@@ -200,7 +200,7 @@ const GlobalAlerts = () => {
   };
 
   return (
-    <div className="fixed top-4 right-4 z-50 space-y-2 max-w-sm">
+    <div className="fixed top-14 sm:top-4 right-2 sm:right-4 z-50 space-y-2 max-w-[calc(100vw-16px)] sm:max-w-sm">
       {toasts.map(t => (
         <div key={t.id} className={`glass-toast ${toastColors[t.level]} px-4 py-3 text-sm text-white animate-slide-in-right`}>
           <div className="flex items-center justify-between gap-3">

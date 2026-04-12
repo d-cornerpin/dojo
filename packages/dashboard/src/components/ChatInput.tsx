@@ -202,11 +202,11 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
         WebkitBackdropFilter: 'blur(24px)',
         borderTop: '1px solid rgba(255,255,255,0.12)',
         boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)',
-        padding: '16px 24px',
+        padding: window.innerWidth < 640 ? '8px 10px' : '16px 24px',
       } : {
         borderTop: '1px solid rgba(255,255,255,0.06)',
         background: 'rgba(255,255,255,0.04)',
-        padding: '12px 16px',
+        padding: window.innerWidth < 640 ? '8px 10px' : '12px 16px',
       }}
     >
       {/* Error */}
@@ -274,16 +274,16 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder={uploading ? 'Uploading files...' : placeholder ?? 'Send a message... (Shift+Enter for newline)'}
+            placeholder={uploading ? 'Uploading files...' : placeholder ?? 'Send a message...'}
             disabled={disabled || uploading}
             rows={1}
             className={isPrimary
-              ? 'glass-input w-full resize-none py-3.5 pr-5 text-[15px] scrollbar-hide'
-              : 'w-full py-2.5 pr-4 bg-white/[0.05] border border-white/[0.08] rounded-xl text-white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none disabled:opacity-50 scrollbar-hide'
+              ? 'glass-input w-full resize-none py-2 sm:py-3.5 pr-4 sm:pr-5 text-xs sm:text-[15px] scrollbar-hide'
+              : 'w-full py-2 sm:py-2.5 pr-3 sm:pr-4 bg-white/[0.05] border border-white/[0.08] rounded-xl text-xs sm:text-sm text-white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none disabled:opacity-50 scrollbar-hide'
             }
             style={isPrimary
-              ? { minHeight: '50px', borderRadius: '16px', paddingLeft: '44px' }
-              : { paddingLeft: '40px' }
+              ? { minHeight: window.innerWidth < 640 ? '38px' : '50px', borderRadius: '16px', paddingLeft: '38px' }
+              : { paddingLeft: '36px' }
             }
           />
         </div>
@@ -294,7 +294,7 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
             <button
               onClick={onStop}
               className="shrink-0 flex items-center justify-center transition-all"
-              style={{ background: '#EF4444', color: '#ffffff', borderRadius: '50%', width: '44px', height: '44px' }}
+              style={{ background: '#EF4444', color: '#ffffff', borderRadius: '50%', width: window.innerWidth < 640 ? '36px' : '44px', height: window.innerWidth < 640 ? '36px' : '44px' }}
               onMouseEnter={(e) => { e.currentTarget.style.background = '#DC2626'; e.currentTarget.style.boxShadow = '0 0 16px rgba(239,68,68,0.3)'; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = '#EF4444'; e.currentTarget.style.boxShadow = 'none'; }}
               title="Stop agent"
@@ -306,7 +306,7 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
               onClick={handleSend}
               disabled={disabled || uploading || (!input.trim() && pendingFiles.length === 0)}
               className="shrink-0 flex items-center justify-center text-xl font-bold transition-all disabled:opacity-30"
-              style={{ background: '#F5A623', color: '#0B0F1A', borderRadius: '50%', width: '44px', height: '44px' }}
+              style={{ background: '#F5A623', color: '#0B0F1A', borderRadius: '50%', width: window.innerWidth < 640 ? '36px' : '44px', height: window.innerWidth < 640 ? '36px' : '44px' }}
               onMouseEnter={(e) => { if (input.trim() || pendingFiles.length > 0) { e.currentTarget.style.background = '#FFBA42'; e.currentTarget.style.boxShadow = '0 0 16px rgba(245,166,35,0.3)'; } }}
               onMouseLeave={(e) => { e.currentTarget.style.background = '#F5A623'; e.currentTarget.style.boxShadow = 'none'; }}
             >

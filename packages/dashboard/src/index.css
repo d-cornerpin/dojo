@@ -533,6 +533,41 @@
 @media (max-width: 768px) {
   .glass-card { backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
   .glass-nested { backdrop-filter: none; }
+
+  /* ── Mobile responsive overrides ── */
+
+  /* Modals: full-width on phones with reduced padding */
+  .glass-modal {
+    max-width: calc(100vw - 24px) !important;
+    margin: 12px;
+    border-radius: 16px;
+    max-height: 90vh;
+  }
+
+  /* Stat cards: compact on mobile */
+  .stat-number { font-size: 24px; }
+  .stat-label { font-size: 10px; }
+  .stat-card { padding: 12px !important; }
+
+  /* Section labels: slightly larger for readability */
+  .section-label { font-size: 11px; }
+
+  /* Glass tables: horizontal scroll wrapper */
+  .glass-table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* Glass cards: tighter padding */
+  .glass-card { padding: 12px; }
+
+  /* Touch-friendly: ensure minimum tap targets */
+  button, a, select, input[type="checkbox"] {
+    min-height: 36px;
+  }
+}
+
+/* Safe area padding for notched devices (iPhone X+, Dynamic Island) */
+@supports (padding-top: env(safe-area-inset-top)) {
+  .safe-area-top { padding-top: env(safe-area-inset-top); }
+  .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
 }
 
 @supports not (backdrop-filter: blur(1px)) {

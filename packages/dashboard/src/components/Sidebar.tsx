@@ -22,6 +22,21 @@ const navItems: NavItem[] = [
   { path: '/settings', label: 'Settings', icon: '\u2699\uFE0F' },
 ];
 
+// Settings sub-tabs shown in the mobile hamburger menu instead of the
+// tab bar (which doesn't fit on phone screens).
+const settingsSubItems = [
+  { tab: 'platform', label: 'Dojo' },
+  { tab: 'providers', label: 'Providers' },
+  { tab: 'models', label: 'Models' },
+  { tab: 'router', label: 'Router' },
+  { tab: 'profile', label: 'Profile' },
+  { tab: 'security', label: 'Security' },
+  { tab: 'sensei', label: 'Sensei' },
+  { tab: 'workspace', label: 'Google' },
+  { tab: 'microsoft', label: 'Microsoft' },
+  { tab: 'update', label: 'Update' },
+];
+
 const statusConfig: Record<ConnectionStatus, { dot: string; label: string }> = {
   connected: { dot: 'status-dot-healthy status-dot-pulse', label: 'In Session' },
   connecting: { dot: 'status-dot-warning status-dot-pulse', label: 'Returning to Mat...' },
@@ -137,29 +152,38 @@ export const Sidebar = () => {
 
 const MobileTopBar = ({ connectionStatus }: { connectionStatus: ConnectionStatus }) => {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [settingsExpanded, setSettingsExpanded] = useState(false);
   const location = useLocation();
   const { logout } = useAuth();
   const ws = statusConfig[connectionStatus];
 
-  // Get current page title
-  const pageTitle = navItems.find(n =>
-    n.path === '/' ? location.pathname === '/' : location.pathname.startsWith(n.path)
-  )?.label ?? 'Agent D.O.J.O.';
+  // Get current page title — include settings sub-tab if on settings
+  const settingsTab = location.pathname.startsWith('/settings')
+    ? new URLSearchParams(location.search).get('tab')
+    : null;
+  const settingsSubLabel = settingsTab
+    ? settingsSubItems.find(s => s.tab === settingsTab)?.label
+    : null;
+  const pageTitle = settingsSubLabel
+    ? `Settings — ${settingsSubLabel}`
+    : (navItems.find(n =>
+        n.path === '/' ? location.pathname === '/' : location.pathname.startsWith(n.path)
+      )?.label ?? 'Agent D.O.J.O.');
 
   return (
     <>
       <div
-        className="md:hidden fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-4 py-3"
+        className="md:hidden fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-3 py-2.5 safe-area-top"
         style={{
           background: 'rgba(11, 15, 26, 0.85)',
           backdropFilter: 'blur(16px)',
           borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
         }}
       >
-        <button onClick={() => setMenuOpen(true)} className="text-white/60 hover:text-white text-xl p-1">
+        <button onClick={() => setMenuOpen(true)} className="text-white/60 hover:text-white text-xl p-2 -ml-1">
           {'\u2630'}
         </button>
-        <span className="text-sm font-semibold text-white">{pageTitle}</span>
+        <span className="text-xs font-semibold text-white truncate max-w-[200px]">{pageTitle}</span>
         <span className={`status-dot ${ws.dot}`} title={ws.label} />
       </div>
 
@@ -168,20 +192,61 @@ const MobileTopBar = ({ connectionStatus }: { connectionStatus: ConnectionStatus
         <div className="md:hidden fixed inset-0 z-50">
           <div className="absolute inset-0 bg-black/60" onClick={() => setMenuOpen(false)} />
           <div
-            className="absolute left-0 top-0 bottom-0 w-[280px] flex flex-col"
+            className="absolute left-0 top-0 bottom-0 w-[280px] flex flex-col safe-area-top"
             style={{
               background: 'rgba(26, 31, 53, 0.95)',
               backdropFilter: 'blur(30px)',
             }}
           >
-            <div className="flex items-center gap-3 px-5 py-5 border-b border-white/[0.06]">
-              <img src="/dojologo.svg" alt="DOJO" className="w-8 h-8" />
-              <h1 className="text-base font-bold text-white">Agent D.O.J.O.</h1>
+            <div className="flex items-center gap-3 px-5 py-4 border-b border-white/[0.06]">
+              <img src="/dojologo.svg" alt="DOJO" className="w-7 h-7" />
+              <h1 className="text-sm font-bold text-white">Agent D.O.J.O.</h1>
             </div>
-            <nav className="flex-1 py-3 px-2 space-y-0.5">
+            <nav className="flex-1 py-2 px-2 space-y-0.5 overflow-y-auto">
               {navItems.map((item) => {
+                const isSettings = item.path === '/settings';
                 const isActive =
                   item.path === '/' ? location.pathname === '/' : location.pathname.startsWith(item.path);
+
+                if (isSettings) {
+                  // Settings gets an expandable sub-menu on mobile
+                  return (
+                    <div key={item.path}>
+                      <button
+                        onClick={() => setSettingsExpanded(!settingsExpanded)}
+                        className={`w-full flex items-center gap-3 px-3 py-3 rounded-glass-sm transition-colors ${
+                          isActive ? 'bg-white/[0.08] text-white' : 'text-white/50'
+                        }`}
+                      >
+                        <span className="text-base w-6 text-center">{item.icon}</span>
+                        <span className="text-sm font-medium flex-1 text-left">{item.label}</span>
+                        <span className="text-[10px] text-white/30">{settingsExpanded ? '▾' : '▸'}</span>
+                      </button>
+                      {settingsExpanded && (
+                        <div className="ml-5 pl-4 border-l border-white/[0.06] space-y-0.5 mt-0.5">
+                          {settingsSubItems.map(sub => {
+                            const subActive = isActive && settingsTab === sub.tab;
+                            return (
+                              <Link
+                                key={sub.tab}
+                                to={`/settings?tab=${sub.tab}`}
+                                onClick={() => setMenuOpen(false)}
+                                className={`block px-3 py-2 rounded-lg text-xs transition-colors ${
+                                  subActive
+                                    ? 'bg-cp-amber/10 text-cp-amber font-medium'
+                                    : 'text-white/40 hover:text-white/70'
+                                }`}
+                              >
+                                {sub.label}
+                              </Link>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
                 return (
                   <Link
                     key={item.path}
@@ -198,8 +263,9 @@ const MobileTopBar = ({ connectionStatus }: { connectionStatus: ConnectionStatus
               })}
             </nav>
             <div className="p-3 border-t border-white/[0.06]">
+              <PresenceToggle collapsed={false} />
               <button onClick={() => { logout(); setMenuOpen(false); }}
-                className="w-full flex items-center gap-3 px-3 py-3 rounded-glass-xs text-white/40 hover:text-white/70 transition-colors">
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-glass-xs text-white/40 hover:text-white/70 transition-colors mt-1">
                 <span>{'\u{1F6AA}'}</span>
                 <span className="text-sm">Leave the Dojo</span>
               </button>
@@ -209,7 +275,7 @@ const MobileTopBar = ({ connectionStatus }: { connectionStatus: ConnectionStatus
       )}
 
       {/* Spacer for fixed top bar */}
-      <div className="md:hidden h-[52px]" />
+      <div className="md:hidden h-[48px]" />
     </>
   );
 };

@@ -81,37 +81,38 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged }: A
   const cardContent = (
     <div
       onClick={() => navigate(`/agents/${agent.id}`)}
-      draggable={agent.classification !== 'sensei'}
+      draggable={agent.classification !== 'sensei' && window.innerWidth >= 768}
       onDragStart={(e) => {
-        if (agent.classification === 'sensei') { e.preventDefault(); return; }
+        if (agent.classification === 'sensei' || window.innerWidth < 768) { e.preventDefault(); return; }
         e.dataTransfer.setData('agent-id', agent.id);
         e.dataTransfer.effectAllowed = 'move';
       }}
-      className={`glass-card glass-card-hover p-5 cursor-pointer group relative ${
+      className={`glass-card glass-card-hover p-3 sm:p-5 cursor-pointer group relative ${
         agent.status === 'terminated' ? 'opacity-50' : ''
       }`}
     >
       {/* Header */}
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold"
+      <div className="flex items-start justify-between mb-2 sm:mb-4">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center text-xs sm:text-sm font-bold shrink-0"
             style={{ background: `${color}20`, color }}>
             {agent.name.charAt(0).toUpperCase()}
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className={`glass-badge ${cls.cls}`}>{cls.label}</span>
-              <h3 className="text-base font-semibold text-white">{agent.name}</h3>
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+              <span className={`glass-badge ${cls.cls} text-[9px] sm:text-[10px]`}>{cls.label}</span>
+              <h3 className="text-sm sm:text-base font-semibold text-white truncate">{agent.name}</h3>
             </div>
-            {senseiRole && <p className="text-[10px] text-white/40 mt-0.5">{senseiRole}</p>}
+            {senseiRole && <p className="text-[9px] sm:text-[10px] text-white/40 mt-0.5 truncate">{senseiRole}</p>}
           </div>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
           <StatusBadge status={agent.status} />
+          {/* Action buttons: always visible on mobile (no hover), hover-reveal on desktop */}
           {agent.status === 'working' && (
             <button
               onClick={async (e) => { e.stopPropagation(); await api.stopAgent(agent.id); onModelChanged(); }}
-              className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-amber-400 transition-all p-0.5"
+              className="md:opacity-0 md:group-hover:opacity-100 text-white/30 hover:text-amber-400 transition-all p-1"
               title="Stop agent"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>
@@ -120,7 +121,7 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged }: A
           {agent.classification !== 'sensei' && agent.status !== 'terminated' && (
             <button
               onClick={(e) => { e.stopPropagation(); setConfirmTerminate(true); }}
-              className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-cp-coral transition-all p-0.5"
+              className="md:opacity-0 md:group-hover:opacity-100 text-white/30 hover:text-cp-coral transition-all p-1"
               title="Dismiss agent"
             >
               &times;
@@ -145,7 +146,7 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged }: A
       )}
 
       {/* Info rows */}
-      <div className="space-y-2.5 text-sm">
+      <div className="space-y-1.5 sm:space-y-2.5 text-xs sm:text-sm">
         <div className="flex justify-between items-center">
           <span style={{ color: 'var(--text-secondary)' }}>Model</span>
           {changingModel ? (

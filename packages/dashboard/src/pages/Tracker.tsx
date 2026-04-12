@@ -524,7 +524,7 @@ export const Tracker = () => {
       <div className="shrink-0 mb-6 space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <h1 className="text-xl font-bold text-white">Tracker</h1>
+            <h1 className="text-lg sm:text-xl font-bold text-white">Tracker</h1>
 
             {/* Project selector */}
             <select
