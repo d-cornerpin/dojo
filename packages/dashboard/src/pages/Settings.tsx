@@ -2,6 +2,7 @@ import { useState, useEffect, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import type { Provider, Model } from '@dojo/shared';
 import * as api from '../lib/api';
+import { useToast } from '../hooks/useToast';
 import { RouterConfig } from '../components/RouterConfig';
 import { RouterTest } from '../components/RouterTest';
 import { GoogleWorkspaceSettings } from '../components/GoogleWorkspaceSettings';
@@ -1517,6 +1518,7 @@ const ModelRow = ({
   onToggle: () => void;
   onPricingChange: () => void;
 }) => {
+  const toast = useToast();
   const [inputCost, setInputCost] = useState(String(model.inputCostPerM ?? 0));
   const [outputCost, setOutputCost] = useState(String(model.outputCostPerM ?? 0));
   const [saving, setSaving] = useState(false);
@@ -1676,9 +1678,10 @@ const ModelRow = ({
               if (!confirm(`Delete "${model.name}"? This removes it from the dojo entirely.`)) return;
               const result = await api.deleteModel(model.id);
               if (result.ok) {
-                onPricingChange(); // triggers a full model list reload
+                toast.success(`${model.name} deleted`);
+                onPricingChange();
               } else {
-                alert(result.error ?? 'Delete failed');
+                toast.error(result.error ?? 'Delete failed');
               }
             }}
             className="w-6 h-6 flex items-center justify-center rounded text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-colors"

@@ -2,6 +2,7 @@ import { Routes, Route, Navigate, useNavigate, Outlet } from 'react-router-dom';
 import { useEffect, useState, useCallback, type ReactNode } from 'react';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { WebSocketProvider, useWebSocket } from './hooks/useWebSocket';
+import { ToastProvider, ToastContainer, useToast } from './hooks/useToast';
 import type { WsEvent } from '@dojo/shared';
 import { Sidebar } from './components/Sidebar';
 import { Login } from './pages/Login';
@@ -95,16 +96,18 @@ const GradientBlobs = () => (
 
 const DashboardLayout = () => {
   return (
-    <>
+    <ToastProvider>
       <GradientBlobs />
+      <ToastContainer />
       <div className="h-dvh flex overflow-hidden relative z-[1]" style={{ backgroundColor: 'transparent' }}>
         <Sidebar />
         <main className="flex-1 flex flex-col h-full overflow-hidden pt-[48px] md:pt-0">
           <PostMigrationBanner />
+          <GlobalAlerts />
           <Outlet />
         </main>
       </div>
-    </>
+    </ToastProvider>
   );
 };
 
@@ -147,73 +150,34 @@ const AppRoutes = () => {
   );
 };
 
-// ── Global Alert Toasts ──
-
-interface AlertToast {
-  id: number;
-  message: string;
-  level: 'warning' | 'error' | 'info';
-  timestamp: number;
-}
-
-let alertIdCounter = 0;
+// ── Global WebSocket-driven alerts (uses the shared toast system) ──
 
 const GlobalAlerts = () => {
-  const [toasts, setToasts] = useState<AlertToast[]>([]);
   const { subscribe } = useWebSocket();
-
-  const addToast = useCallback((message: string, level: 'warning' | 'error' | 'info') => {
-    const id = ++alertIdCounter;
-    setToasts(prev => [...prev, { id, message, level, timestamp: Date.now() }]);
-    setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id !== id));
-    }, 8000);
-  }, []);
+  const toast = useToast();
 
   useEffect(() => {
     const unsub = subscribe('cost:alert', (event: WsEvent) => {
       const e = event as { type: string; data: { scope: string; percentage: number; currentSpend: number; limitUsd: number } };
       const pct = e.data.percentage;
-      const level = pct >= 90 ? 'error' : pct >= 75 ? 'warning' : 'info';
-      const msg = pct >= 90
-        ? `Resources nearly depleted (90%) — $${e.data.currentSpend.toFixed(2)} of $${e.data.limitUsd.toFixed(2)}`
-        : pct >= 75
-        ? `Resources running low (75%)`
-        : `Resources at half strength (50%) — $${e.data.currentSpend.toFixed(2)} of $${e.data.limitUsd.toFixed(2)}`;
-      addToast(msg, level);
+      if (pct >= 90) {
+        toast.error(`Resources nearly depleted (90%) — $${e.data.currentSpend.toFixed(2)} of $${e.data.limitUsd.toFixed(2)}`);
+      } else if (pct >= 75) {
+        toast.warning('Resources running low (75%)');
+      } else {
+        toast.info(`Resources at half strength (50%) — $${e.data.currentSpend.toFixed(2)} of $${e.data.limitUsd.toFixed(2)}`);
+      }
     });
 
     const unsub2 = subscribe('resource:warning', (event: WsEvent) => {
       const e = event as { type: string; data: { freeMb: number; totalMb: number } };
-      addToast(`Low memory: ${(e.data.freeMb / 1024).toFixed(1)}GB free`, 'warning');
+      toast.warning(`Low memory: ${(e.data.freeMb / 1024).toFixed(1)}GB free`);
     });
 
     return () => { unsub(); unsub2(); };
-  }, [subscribe, addToast]);
+  }, [subscribe, toast]);
 
-  if (toasts.length === 0) return null;
-
-  const toastColors = {
-    info: 'glass-toast-info',
-    warning: 'glass-toast-warning',
-    error: 'glass-toast-error',
-  };
-
-  return (
-    <div className="fixed top-14 sm:top-4 right-2 sm:right-4 z-50 space-y-2 max-w-[calc(100vw-16px)] sm:max-w-sm">
-      {toasts.map(t => (
-        <div key={t.id} className={`glass-toast ${toastColors[t.level]} px-4 py-3 text-sm text-white animate-slide-in-right`}>
-          <div className="flex items-center justify-between gap-3">
-            <span>{t.message}</span>
-            <button
-              onClick={() => setToasts(prev => prev.filter(x => x.id !== t.id))}
-              className="text-white/40 hover:text-white shrink-0"
-            >&times;</button>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
+  return null; // rendering is handled by ToastContainer
 };
 
 export const App = () => {
