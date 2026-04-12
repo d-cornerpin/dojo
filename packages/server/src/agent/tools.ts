@@ -3030,7 +3030,9 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
                   const { sendIMessageWithAttachment, getDefaultSender } = await import('../services/imessage-bridge.js');
                   const recipient = getDefaultSender();
                   if (recipient) {
-                    const caption = `Here's the image you requested: "${description.slice(0, 80)}${description.length > 80 ? '...' : ''}"`;
+                    const caption = userSubject
+                      ? `Here's your ${userSubject}!`
+                      : `Here's the image you requested!`;
                     sendIMessageWithAttachment(recipient, result.filePath, caption);
                   }
                 }
