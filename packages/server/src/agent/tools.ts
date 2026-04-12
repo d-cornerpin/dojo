@@ -2840,6 +2840,14 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
               await new Promise<void>(r => setTimeout(r, 500));
             }
 
+            // Set the requesting agent back to 'working' so the thinking
+            // dots stay visible during image generation. The user sees the
+            // agent say "On it!" → thinking dots stay → image appears.
+            // Without this, Kevin goes idle between the ack and delivery
+            // and the user sees an awkward gap of silence.
+            db.prepare("UPDATE agents SET status = 'working', updated_at = datetime('now') WHERE id = ?").run(agentId);
+            broadcast({ type: 'agent:status', agentId, status: 'working' });
+
             logger.info('Imaginer: generating image', {
               requestId, requesterId: agentId, modelId: imageModelId, aspectRatio,
               waitedForIdleMs: Date.now() - waitStart,
@@ -2948,9 +2956,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
             // turn — the background task IS the delivery mechanism.
             const deliveryMsgId = uuidv4();
             const deliveryContent =
-              `Here's the image you requested:\n\n` +
-              `**${description.slice(0, 120)}${description.length > 120 ? '...' : ''}**\n\n` +
-              `Let me know if you'd like any changes or a different version.`;
+              `Here's the image you requested! Let me know if you'd like any changes or a different version.`;
 
             db.prepare(`
               INSERT INTO messages (id, agent_id, role, content, attachments, model_id, created_at)
@@ -3013,9 +3019,11 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
               requestId, error: err instanceof Error ? err.message : String(err),
             });
           } finally {
-            // Always set Imaginer back to idle
+            // Set both Imaginer and the requesting agent back to idle
             db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(imaginerId);
             broadcast({ type: 'agent:status', agentId: imaginerId, status: 'idle' });
+            db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(agentId);
+            broadcast({ type: 'agent:status', agentId, status: 'idle' });
           }
         })();
 
