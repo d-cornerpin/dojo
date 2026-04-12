@@ -111,32 +111,41 @@ export function getMessagesByIds(ids: string[]): Message[] {
   return rows.map(rowToMessage);
 }
 
-export function getRecentMessages(agentId: string, count: number): Message[] {
+export function getRecentMessages(agentId: string, count: number, turnCutoff?: string): Message[] {
   const db = getDb();
   const sessionBoundary = getSessionBoundary(agentId);
 
   // Get the last N messages, then return in ASC order
   // Use rowid as tiebreaker to preserve insertion order when timestamps match
   // If a session boundary is set, only include messages from the current session
+  // If turnCutoff is set, exclude user messages that arrived after that timestamp
+  // (they'll be processed in a fresh turn via the wakeup mechanism)
+  const cutoffClause = turnCutoff
+    ? "AND NOT (role = 'user' AND created_at > ?)"
+    : '';
+  const params = turnCutoff
+    ? (sessionBoundary ? [agentId, sessionBoundary, turnCutoff, count] : [agentId, turnCutoff, count])
+    : (sessionBoundary ? [agentId, sessionBoundary, count] : [agentId, count]);
+
   const rows = sessionBoundary
     ? db.prepare(`
         SELECT * FROM (
           SELECT *, rowid as _rowid FROM messages
-          WHERE agent_id = ? AND created_at >= ?
+          WHERE agent_id = ? AND created_at >= ? ${cutoffClause}
           ORDER BY created_at DESC, rowid DESC
           LIMIT ?
         ) sub
         ORDER BY created_at ASC, _rowid ASC
-      `).all(agentId, sessionBoundary, count) as MessageRow[]
+      `).all(...params) as MessageRow[]
     : db.prepare(`
         SELECT * FROM (
           SELECT *, rowid as _rowid FROM messages
-          WHERE agent_id = ?
+          WHERE agent_id = ? ${cutoffClause}
           ORDER BY created_at DESC, rowid DESC
           LIMIT ?
         ) sub
         ORDER BY created_at ASC, _rowid ASC
-      `).all(agentId, count) as MessageRow[];
+      `).all(...params) as MessageRow[];
 
   return rows.map(rowToMessage);
 }

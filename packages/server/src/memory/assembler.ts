@@ -8,6 +8,7 @@ import { getContextSummaries } from './dag.js';
 import { getLatestBriefing } from './briefing.js';
 import { retrieveForContext } from '../vault/retrieval.js';
 import { isPMAgent } from '../config/platform.js';
+import { turnBoundary } from '../agent/turn-state.js';
 import type { Summary } from './dag.js';
 import type { Message } from '@dojo/shared';
 
@@ -130,9 +131,12 @@ export async function assembleContext(
     }
   }
 
-  // 4. Fresh tail
+  // 4. Fresh tail — exclude user messages that arrived after the current turn
+  // started so they get a clean run via the wakeup mechanism instead of being
+  // buried mid-context where the LLM might ignore them
   const freshTailCount = getFreshTailCount(contextWindow);
-  const freshTail = getRecentMessages(agentId, freshTailCount);
+  const turnCutoff = turnBoundary.get(agentId);
+  const freshTail = getRecentMessages(agentId, freshTailCount, turnCutoff);
 
   // Budget: only include messages that fit
   const tailMessages = budgetFreshTail(freshTail, maxTokens - usedTokens);

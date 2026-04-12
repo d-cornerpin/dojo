@@ -137,8 +137,7 @@ const activeRuns = new Set<string>();
 // Queue for messages that arrive while an agent is busy
 const pendingWakeups = new Set<string>();
 
-// Track the last message ID processed per agent to avoid re-processing
-const lastProcessedMessageId = new Map<string, string>();
+import { turnBoundary } from './turn-state.js';
 
 // Agents that should halt on the next loop iteration
 const stoppedAgents = new Set<string>();
@@ -235,29 +234,25 @@ class AgentRuntime {
     } finally {
       activeRuns.delete(agentId);
 
-      // If a message arrived while we were busy, re-trigger the loop
-      // BUT only if there's a genuinely new user message we haven't processed yet
-      // Delay slightly to batch rapid-fire messages from multiple sub-agents
+      // If a message arrived while we were busy, re-trigger the loop.
+      // The turnBoundary mechanism ensures the new message was excluded from
+      // the context during the run that just finished, so the agent will see
+      // it fresh in the next run.
       if (pendingWakeups.has(agentId)) {
         pendingWakeups.delete(agentId);
         setTimeout(() => {
-          const lastUserMsg = getDb().prepare(
-            "SELECT id, role FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1"
-          ).get(agentId) as { id: string; role: string } | undefined;
-          const lastProcessed = lastProcessedMessageId.get(agentId);
-          if (lastUserMsg && lastUserMsg.id !== lastProcessed) {
-            logger.info('Processing queued wakeup (new user message found)', { agentId, msgId: lastUserMsg.id }, agentId);
-            this.handleMessage(agentId, '').catch(err => {
-              logger.error('Queued wakeup failed', {
-                agentId,
-                error: err instanceof Error ? err.message : String(err),
-              }, agentId);
-            });
-          } else {
-            logger.debug('Skipping queued wakeup (no new user messages since last run)', { agentId }, agentId);
-          }
-        }, 2000); // 2 second delay to batch rapid messages
+          logger.info('Processing queued wakeup', { agentId }, agentId);
+          this.handleMessage(agentId, '').catch(err => {
+            logger.error('Queued wakeup failed', {
+              agentId,
+              error: err instanceof Error ? err.message : String(err),
+            }, agentId);
+          });
+        }, 1500);
       }
+
+      // Clear the turn boundary so the next run sees all messages
+      turnBoundary.delete(agentId);
     }
   }
 
@@ -289,13 +284,13 @@ class AgentRuntime {
     let lastResponseText: string | null = null; // For repetition detection
     let lockedModelId: string | null = null; // For auto-routed agents: lock model during tool loops
 
-    // Track the latest user message so wakeup queue knows what we've already seen
-    const latestUserMsg = db.prepare(
-      "SELECT id FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1"
-    ).get(agentId) as { id: string } | undefined;
-    if (latestUserMsg) {
-      lastProcessedMessageId.set(agentId, latestUserMsg.id);
-    }
+    // Snapshot the turn boundary so context assembly ignores messages that
+    // arrive mid-loop. Without this, a reply from another agent gets baked
+    // into the context while the LLM is focused on the current task — the
+    // LLM generates a response that follows the reply in the timeline, and
+    // on the wakeup re-run it looks like the reply was already handled.
+    const turnStartedAt = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+    turnBoundary.set(agentId, turnStartedAt);
 
     while (loopCount < MAX_TOOL_LOOPS) {
       loopCount++;
