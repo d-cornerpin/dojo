@@ -450,11 +450,17 @@ export const Chat = () => {
       });
     });
 
-    // Clear isWorking when agent goes idle (catches cases where done chunk is missed)
+    // Track the agent's working state from agent:status events. This
+    // covers external triggers (iMessage, scheduled runs, agent-to-agent
+    // messaging) where the user never called handleSend locally — the
+    // thinking dots and the send→stop button swap need to react live
+    // without requiring a page reload to pick up the backend state.
     const unsubStatus = subscribe('agent:status', (event: WsEvent) => {
       const e = event as { agentId: string; status: string };
       if (e.agentId !== agentIdRef.current) return;
-      if (e.status === 'idle' || e.status === 'error') {
+      if (e.status === 'working') {
+        setIsWorking(true);
+      } else if (e.status === 'idle' || e.status === 'error') {
         setIsWorking(false);
       }
     });
