@@ -10,6 +10,12 @@ export interface Provider {
   authType: 'api_key' | 'oauth' | 'agent-sdk';
   isValidated: boolean;
   validatedAt: string | null;
+  // User-entered host machine RAM in GB. Only relevant for remote Ollama
+  // providers (Ollama has no API to report total system RAM). The num_ctx
+  // auto-sizer uses `hostRamGb * 1024^3` as the total RAM when computing
+  // recommendations for models on this provider. Null on localhost (we
+  // use os.totalmem() instead) or when the user hasn't filled it in yet.
+  hostRamGb: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -29,6 +35,18 @@ export interface Model {
   // when the capabilities array includes 'thinking'; for non-thinking
   // models the field is stored but has no runtime effect.
   thinkingEnabled: boolean;
+  // Per-model override for Ollama's `num_ctx` parameter. null means "use
+  // the auto-computed recommendation (numCtxRecommended); if that's also
+  // null, fall back to the model's Modelfile default". Only meaningful
+  // for provider type 'ollama'.
+  numCtxOverride: number | null;
+  // Auto-computed num_ctx default sized to the host machine's RAM, the
+  // model's on-disk weights, and its KV cache footprint per token. The
+  // runtime uses this when there's no explicit override, and the UI
+  // displays it as the pre-filled "default" value in the Context input
+  // on every Ollama model card. null means "computation failed" or
+  // "not yet computed" — the runtime then skips num_ctx entirely.
+  numCtxRecommended: number | null;
   createdAt: string;
   updatedAt: string;
 }

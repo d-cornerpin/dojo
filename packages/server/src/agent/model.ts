@@ -122,10 +122,10 @@ function getMaxOutputTokens(apiModelId: string, providerType: string): number {
   return 16384;
 }
 
-function getModelInfo(modelId: string): { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[] } {
+function getModelInfo(modelId: string): { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null } {
   const db = getDb();
   const row = db.prepare(`
-    SELECT m.provider_id, m.api_model_id, m.context_window, m.max_output_tokens, m.thinking_enabled, m.capabilities, p.type as provider_type, p.base_url as provider_base_url
+    SELECT m.provider_id, m.api_model_id, m.context_window, m.max_output_tokens, m.thinking_enabled, m.num_ctx_override, m.num_ctx_recommended, m.capabilities, p.type as provider_type, p.base_url as provider_base_url
     FROM models m
     JOIN providers p ON p.id = m.provider_id
     WHERE m.id = ?
@@ -135,6 +135,8 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
     context_window: number | null;
     max_output_tokens: number | null;
     thinking_enabled: number | null;
+    num_ctx_override: number | null;
+    num_ctx_recommended: number | null;
     capabilities: string | null;
     provider_type: string;
     provider_base_url: string | null;
@@ -168,6 +170,10 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
       ? true
       : Boolean(row.thinking_enabled),
     capabilities,
+    // Ollama num_ctx controls. Runtime uses `override ?? recommended`.
+    // Both null → no `options.num_ctx` sent, Ollama uses Modelfile default.
+    numCtxOverride: typeof row.num_ctx_override === 'number' ? row.num_ctx_override : null,
+    numCtxRecommended: typeof row.num_ctx_recommended === 'number' ? row.num_ctx_recommended : null,
   };
 }
 
@@ -353,7 +359,7 @@ async function buildNativeOllamaMessages(
 
 async function callOllamaModel(
   params: ModelCallParams,
-  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[] },
+  modelInfo: { providerId: string; apiModelId: string; contextWindow: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null },
 ): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
   const baseUrl = (modelInfo.providerBaseUrl ?? 'http://localhost:11434').replace(/\/+$/, '');
@@ -391,6 +397,18 @@ async function callOllamaModel(
     }
   }
 
+  // Effective num_ctx: the user's explicit override wins, otherwise the
+  // auto-computed RAM-aware recommendation, otherwise no value at all
+  // (Ollama falls back to the model's Modelfile default).
+  const effectiveNumCtx: number | null =
+    typeof modelInfo.numCtxOverride === 'number'
+      ? modelInfo.numCtxOverride
+      : (typeof modelInfo.numCtxRecommended === 'number' ? modelInfo.numCtxRecommended : null);
+  const numCtxSource: 'override' | 'recommended' | 'default' =
+    typeof modelInfo.numCtxOverride === 'number'
+      ? 'override'
+      : (typeof modelInfo.numCtxRecommended === 'number' ? 'recommended' : 'default');
+
   logger.info('Calling Ollama native /api/chat (streaming)', {
     model: ollamaModelName,
     baseUrl,
@@ -398,6 +416,10 @@ async function callOllamaModel(
     toolCount: nativeTools?.length ?? 0,
     hasImages: nativeMessages.some(m => m.images && m.images.length > 0),
     thinkingEnabled: modelInfo.thinkingEnabled,
+    numCtxOverride: modelInfo.numCtxOverride,
+    numCtxRecommended: modelInfo.numCtxRecommended,
+    effectiveNumCtx,
+    numCtxSource,
   }, agentId);
 
   const requestBody: Record<string, unknown> = {
@@ -413,6 +435,11 @@ async function callOllamaModel(
   };
   if (nativeTools && nativeTools.length > 0) {
     requestBody.tools = nativeTools;
+  }
+  // Set options.num_ctx when we have either an override or an auto-computed
+  // recommendation. If neither is set, let Ollama use the Modelfile default.
+  if (typeof effectiveNumCtx === 'number') {
+    requestBody.options = { num_ctx: effectiveNumCtx };
   }
 
   try {

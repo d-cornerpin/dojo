@@ -7,10 +7,11 @@ interface GroupCardProps {
   group: api.AgentGroup;
   agents: AgentDetail[];
   models: Model[];
+  providerNameById: Record<string, string>;
   onReload: () => void;
 }
 
-export const GroupCard = ({ group, agents, models, onReload }: GroupCardProps) => {
+export const GroupCard = ({ group, agents, models, providerNameById, onReload }: GroupCardProps) => {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(group.name);
   const [description, setDescription] = useState(group.description ?? '');
@@ -96,7 +97,7 @@ export const GroupCard = ({ group, agents, models, onReload }: GroupCardProps) =
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           {agents.map((agent) => (
-            <AgentCard key={agent.id} agent={agent} models={models} onModelChanged={onReload} />
+            <AgentCard key={agent.id} agent={agent} models={models} providerNameById={providerNameById} onModelChanged={onReload} />
           ))}
         </div>
       )}

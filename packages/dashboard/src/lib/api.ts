@@ -239,6 +239,26 @@ export const updateModelThinking = async (
   });
 };
 
+export const updateModelNumCtx = async (
+  modelId: string,
+  override: number | null,
+): Promise<ApiResponse<unknown>> => {
+  return request(`/config/models/${modelId}/num-ctx`, {
+    method: 'PATCH',
+    body: JSON.stringify({ override }),
+  });
+};
+
+export const updateProviderHostRam = async (
+  providerId: string,
+  ramGb: number | null,
+): Promise<ApiResponse<unknown>> => {
+  return request(`/config/providers/${providerId}/host-ram`, {
+    method: 'PATCH',
+    body: JSON.stringify({ ramGb }),
+  });
+};
+
 // ── Identity ──
 
 export const getIdentity = async (

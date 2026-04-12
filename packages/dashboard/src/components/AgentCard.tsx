@@ -7,6 +7,7 @@ import * as api from '../lib/api';
 interface AgentCardProps {
   agent: AgentDetail;
   models: Model[];
+  providerNameById: Record<string, string>;
   onModelChanged: () => void;
 }
 
@@ -47,7 +48,7 @@ const formatUptime = (seconds: number): string => {
   return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
 };
 
-export const AgentCard = ({ agent, models, onModelChanged }: AgentCardProps) => {
+export const AgentCard = ({ agent, models, providerNameById, onModelChanged }: AgentCardProps) => {
   const navigate = useNavigate();
   const [changingModel, setChangingModel] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -158,7 +159,12 @@ export const AgentCard = ({ agent, models, onModelChanged }: AgentCardProps) => 
               className="glass-select text-xs py-1 px-2 w-40"
             >
               <option value="auto">Auto (Smart Router)</option>
-              {models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                  {providerNameById[m.providerId] ? ` (${providerNameById[m.providerId]})` : ''}
+                </option>
+              ))}
             </select>
           ) : (
             <button

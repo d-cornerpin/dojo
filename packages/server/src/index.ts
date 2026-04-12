@@ -227,6 +227,22 @@ async function main(): Promise<void> {
     })();
   }
 
+  // 4j. Compute RAM-aware num_ctx recommendations for Ollama models that
+  // don't have one yet. Separate background task so it doesn't block boot
+  // or the capability backfill.
+  {
+    void (async () => {
+      try {
+        const { backfillRecommendedNumCtx } = await import('./services/num-ctx-calculator.js');
+        await backfillRecommendedNumCtx();
+      } catch (err) {
+        logger.warn('num_ctx backfill failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+  }
+
   // 5. Set up log broadcast
   setLogBroadcast((entry) => {
     broadcast({ type: 'log:entry', entry });

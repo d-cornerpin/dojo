@@ -445,6 +445,7 @@ const SaveToast = ({ message }: { message: string | null }) => {
 
 const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: () => void }) => {
   const [models, setModels] = useState<Model[]>([]);
+  const [providerNameById, setProviderNameById] = useState<Record<string, string>>({});
   const [systemPrompt, setSystemPrompt] = useState('');
   const [selectedModelId, setSelectedModelId] = useState(
     agent.modelId === 'auto' ? 'auto' : (agent.modelId ?? ''),
@@ -466,14 +467,20 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
 
   useEffect(() => {
     const load = async () => {
-      const [promptResult, modelsResult, groupsResult] = await Promise.all([
+      const [promptResult, modelsResult, groupsResult, providersResult] = await Promise.all([
         api.getAgentSystemPrompt(agent.id),
         api.getModels(),
         api.getGroups(),
+        api.getProviders(),
       ]);
       if (promptResult.ok) setSystemPrompt(promptResult.data.content);
       if (modelsResult.ok) setModels(modelsResult.data.filter((m: Model) => m.isEnabled));
       if (groupsResult.ok) setGroups(groupsResult.data);
+      if (providersResult.ok) {
+        const map: Record<string, string> = {};
+        for (const p of providersResult.data) map[p.id] = p.name;
+        setProviderNameById(map);
+      }
       setLoading(false);
     };
     load();
@@ -583,7 +590,10 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
               <option value="">No model selected</option>
               <option value="auto">Auto (Smart Router)</option>
               {models.map((m) => (
-                <option key={m.id} value={m.id}>{m.name} ({m.apiModelId})</option>
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                  {providerNameById[m.providerId] ? ` (${providerNameById[m.providerId]})` : ''}
+                </option>
               ))}
             </select>
             <button

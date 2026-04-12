@@ -15,11 +15,13 @@ import { TechniqueSelector } from '../components/TechniqueSelector';
 
 const CreateAgentModal = ({
   models,
+  providerNameById,
   groups: availableGroups,
   onClose,
   onCreate,
 }: {
   models: Model[];
+  providerNameById: Record<string, string>;
   groups: api.AgentGroup[];
   onClose: () => void;
   onCreate: () => void;
@@ -118,7 +120,10 @@ const CreateAgentModal = ({
                 <option value="">No model selected</option>
                 <option value="auto">Auto (Smart Router)</option>
                 {models.map((m) => (
-                  <option key={m.id} value={m.id}>{m.name}</option>
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                    {providerNameById[m.providerId] ? ` (${providerNameById[m.providerId]})` : ''}
+                  </option>
                 ))}
               </select>
             </div>
@@ -317,6 +322,7 @@ const TerminatedAgentRow = ({
 export const Agents = () => {
   const [agents, setAgents] = useState<AgentDetail[]>([]);
   const [models, setModels] = useState<Model[]>([]);
+  const [providerNameById, setProviderNameById] = useState<Record<string, string>>({});
   const [groups, setGroups] = useState<api.AgentGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -350,9 +356,17 @@ export const Agents = () => {
   useEffect(() => {
     const load = async () => {
       await loadAgents();
-      const modelsResult = await api.getModels();
+      const [modelsResult, providersResult] = await Promise.all([
+        api.getModels(),
+        api.getProviders(),
+      ]);
       if (modelsResult.ok) {
         setModels(modelsResult.data.filter((m) => m.isEnabled));
+      }
+      if (providersResult.ok) {
+        const map: Record<string, string> = {};
+        for (const p of providersResult.data) map[p.id] = p.name;
+        setProviderNameById(map);
       }
       setLoading(false);
       checkOllamaWarning();
@@ -449,16 +463,16 @@ export const Agents = () => {
 
       {/* System Group first */}
       {groups.filter(g => g.id === 'system-group').map((group) => (
-        <GroupCard key={group.id} group={group} agents={activeAgents.filter(a => a.groupId === group.id)} models={models} onReload={loadAgents} />
+        <GroupCard key={group.id} group={group} agents={activeAgents.filter(a => a.groupId === group.id)} models={models} providerNameById={providerNameById} onReload={loadAgents} />
       ))}
 
       {/* User-created groups */}
       {groups.filter(g => g.id !== 'system-group').map((group) => (
-        <GroupCard key={group.id} group={group} agents={activeAgents.filter(a => a.groupId === group.id)} models={models} onReload={loadAgents} />
+        <GroupCard key={group.id} group={group} agents={activeAgents.filter(a => a.groupId === group.id)} models={models} providerNameById={providerNameById} onReload={loadAgents} />
       ))}
 
       {/* Ungrouped at the bottom — also a drop zone to remove from groups */}
-      <UngroupedSection agents={activeAgents.filter(a => !a.groupId)} models={models} onReload={loadAgents} />
+      <UngroupedSection agents={activeAgents.filter(a => !a.groupId)} models={models} providerNameById={providerNameById} onReload={loadAgents} />
 
       {/* Create Group Modal */}
       {showCreateGroup && (
@@ -525,6 +539,7 @@ export const Agents = () => {
       {showCreate && (
         <CreateAgentModal
           models={models}
+          providerNameById={providerNameById}
           groups={groups}
           onClose={() => setShowCreate(false)}
           onCreate={loadAgents}
@@ -590,10 +605,12 @@ const CreateGroupModal = ({ onClose, onCreated }: { onClose: () => void; onCreat
 const UngroupedSection = ({
   agents,
   models,
+  providerNameById,
   onReload,
 }: {
   agents: AgentDetail[];
   models: Model[];
+  providerNameById: Record<string, string>;
   onReload: () => void;
 }) => {
   const [dragOver, setDragOver] = useState(false);
@@ -623,7 +640,7 @@ const UngroupedSection = ({
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {agents.map((agent) => (
-            <AgentCard key={agent.id} agent={agent} models={models} onModelChanged={onReload} />
+            <AgentCard key={agent.id} agent={agent} models={models} providerNameById={providerNameById} onModelChanged={onReload} />
           ))}
         </div>
       )}

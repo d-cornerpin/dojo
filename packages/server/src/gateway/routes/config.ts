@@ -897,10 +897,109 @@ configRouter.post('/providers/:id/add-model', async (c) => {
     });
   }
 
+  // For Ollama models, compute and persist a RAM-aware num_ctx recommendation
+  // so the Settings UI has a sensible pre-filled default. Non-Ollama
+  // providers are a no-op inside the helper.
+  try {
+    const { computeAndStoreRecommendedNumCtx } = await import('../../services/num-ctx-calculator.js');
+    await computeAndStoreRecommendedNumCtx(modelId);
+  } catch (err) {
+    logger.warn('num_ctx recommendation failed on add-model', {
+      providerId,
+      apiModelId: body.apiModelId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   const row = db.prepare('SELECT * FROM models WHERE id = ?').get(modelId) as Record<string, unknown>;
   logger.info('Model added from catalog', { providerId, apiModelId: body.apiModelId });
 
   return c.json({ ok: true, data: rowToModel(row) }, 201);
+});
+
+// PATCH /providers/:id/host-ram — set or clear the manually-entered RAM
+// (in GB) for a remote Ollama provider. Body: { ramGb: number | null }.
+// On success, every model belonging to this provider is re-run through
+// the num_ctx calculator so the Settings UI sees fresh recommendations
+// immediately after the user enters a RAM value. Only meaningful for
+// provider type 'ollama' — the server accepts and stores the value for
+// any provider type but the calculator only reads it from Ollama rows.
+configRouter.patch('/providers/:id/host-ram', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => null);
+  if (!body || !('ramGb' in body)) {
+    return c.json({ ok: false, error: 'Request body must include a `ramGb` field (number or null)' }, 400);
+  }
+
+  const ramGb = body.ramGb;
+  if (ramGb !== null) {
+    if (typeof ramGb !== 'number' || !Number.isInteger(ramGb)) {
+      return c.json({ ok: false, error: '`ramGb` must be an integer (in GB) or null' }, 400);
+    }
+    if (ramGb < 1 || ramGb > 2048) {
+      return c.json({ ok: false, error: '`ramGb` must be between 1 and 2048' }, 400);
+    }
+  }
+
+  const db = getDb();
+  const existing = db.prepare('SELECT id FROM providers WHERE id = ?').get(id);
+  if (!existing) return c.json({ ok: false, error: 'Provider not found' }, 404);
+
+  db.prepare("UPDATE providers SET host_ram_gb = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(ramGb, id);
+
+  // Recompute num_ctx for every model belonging to this provider so the
+  // dashboard reflects the new RAM immediately.
+  let recomputeSummary: { probed: number; populated: number } = { probed: 0, populated: 0 };
+  try {
+    const { recomputeAllModelsForProvider } = await import('../../services/num-ctx-calculator.js');
+    recomputeSummary = await recomputeAllModelsForProvider(id);
+  } catch (err) {
+    logger.warn('host-ram update: recompute failed', {
+      providerId: id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown>;
+  logger.info('Provider host_ram_gb updated', { providerId: id, ramGb, recomputeSummary });
+  return c.json({ ok: true, data: rowToProvider(row), recomputed: recomputeSummary });
+});
+
+// PATCH /models/:id/num-ctx — set or clear the per-model Ollama num_ctx
+// override. Body: { override: number | null }. Null (or missing field)
+// clears the override and reverts to Ollama's Modelfile default.
+// Validated range: 512 – 2_097_152 tokens (server-side sanity cap; Ollama
+// will still refuse values the loaded model can't support). Only
+// meaningful for Ollama models — other providers store the value but
+// never translate it at call time.
+configRouter.patch('/models/:id/num-ctx', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => null);
+  if (!body || !('override' in body)) {
+    return c.json({ ok: false, error: 'Request body must include an `override` field (number or null)' }, 400);
+  }
+
+  const override = body.override;
+  if (override !== null) {
+    if (typeof override !== 'number' || !Number.isInteger(override)) {
+      return c.json({ ok: false, error: '`override` must be an integer or null' }, 400);
+    }
+    if (override < 512 || override > 2_097_152) {
+      return c.json({ ok: false, error: '`override` must be between 512 and 2097152' }, 400);
+    }
+  }
+
+  const db = getDb();
+  const model = db.prepare('SELECT id FROM models WHERE id = ?').get(id);
+  if (!model) return c.json({ ok: false, error: 'Model not found' }, 404);
+
+  db.prepare("UPDATE models SET num_ctx_override = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(override, id);
+
+  const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
+  logger.info('Model num_ctx override updated', { modelId: id, override });
+  return c.json({ ok: true, data: rowToModel(row) });
 });
 
 // PATCH /models/:id/thinking — toggle per-model thinking/reasoning
@@ -1252,6 +1351,7 @@ function rowToProvider(row: Record<string, unknown>): Provider {
     authType: row.auth_type as Provider['authType'],
     isValidated: Boolean(row.is_validated),
     validatedAt: row.validated_at as string | null,
+    hostRamGb: typeof row.host_ram_gb === 'number' ? row.host_ram_gb : null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };
@@ -1265,6 +1365,13 @@ function rowToModel(row: Record<string, unknown>): Model {
     ? true
     : Boolean(thinkingEnabledRaw);
 
+  // num_ctx_override: null means "use the computed recommendation (or
+  // Modelfile default if that's also null)".
+  const numCtxOverrideRaw = row.num_ctx_override;
+  const numCtxOverride = typeof numCtxOverrideRaw === 'number' ? numCtxOverrideRaw : null;
+  const numCtxRecommendedRaw = row.num_ctx_recommended;
+  const numCtxRecommended = typeof numCtxRecommendedRaw === 'number' ? numCtxRecommendedRaw : null;
+
   return {
     id: row.id as string,
     providerId: row.provider_id as string,
@@ -1277,6 +1384,8 @@ function rowToModel(row: Record<string, unknown>): Model {
     outputCostPerM: row.output_cost_per_m as number | null,
     isEnabled: Boolean(row.is_enabled),
     thinkingEnabled,
+    numCtxOverride,
+    numCtxRecommended,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };

@@ -491,6 +491,12 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
         thinkingEnabled: modelRow.thinking_enabled === null || modelRow.thinking_enabled === undefined
           ? true
           : Boolean(modelRow.thinking_enabled),
+        numCtxOverride: typeof modelRow.num_ctx_override === 'number'
+          ? modelRow.num_ctx_override
+          : null,
+        numCtxRecommended: typeof modelRow.num_ctx_recommended === 'number'
+          ? modelRow.num_ctx_recommended
+          : null,
         createdAt: modelRow.created_at as string,
         updatedAt: modelRow.updated_at as string,
       };

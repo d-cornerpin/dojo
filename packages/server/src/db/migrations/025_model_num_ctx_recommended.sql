@@ -1,0 +1,11 @@
+-- Auto-computed Ollama num_ctx recommendation for each model, based on
+-- the machine's total RAM, the model's on-disk weights, and its KV cache
+-- footprint per token (derived from architecture fields in /api/show).
+--
+-- NULL means "not yet computed" or "computation failed" (e.g. model arch
+-- fields missing, or weights+headroom already exceed total RAM). The
+-- runtime falls back in this order: num_ctx_override → num_ctx_recommended
+-- → no num_ctx at all (Modelfile default).
+--
+-- Only populated for provider type 'ollama'. Other providers ignore it.
+ALTER TABLE models ADD COLUMN num_ctx_recommended INTEGER DEFAULT NULL;

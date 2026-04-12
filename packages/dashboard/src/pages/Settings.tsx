@@ -1268,16 +1268,14 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
 // ── Models Tab ──
 
 const ProviderModelGroup = ({
-  providerName,
-  providerType,
+  provider,
   models,
   primaryModelId,
   onToggle,
   onPricingChange,
   browseSection,
 }: {
-  providerName: string;
-  providerType: string;
+  provider: Provider;
   models: Model[];
   primaryModelId: string | null;
   onToggle: (model: Model) => void;
@@ -1294,17 +1292,21 @@ const ProviderModelGroup = ({
         className="w-full px-4 py-3 flex items-center justify-between text-sm font-medium white/70 hover:bg-white/[0.03] transition-colors"
       >
         <div className="flex items-center gap-2">
-          <span>{providerName}</span>
+          <span>{provider.name}</span>
           <span className="text-xs white/30">{enabledCount}/{models.length} enabled</span>
         </div>
         <span className="white/40">{open ? '[-]' : '[+]'}</span>
       </button>
       {open && (
         <div className="px-4 pb-4 space-y-2">
+          {provider.type === 'ollama' && (
+            <OllamaHostRamRow provider={provider} onChange={onPricingChange} />
+          )}
           {models.map(model => (
             <ModelRow
               key={model.id}
               model={model}
+              providerType={provider.type}
               isPrimaryModel={model.id === primaryModelId}
               onToggle={() => onToggle(model)}
               onPricingChange={onPricingChange}
@@ -1312,6 +1314,111 @@ const ProviderModelGroup = ({
           ))}
           {browseSection}
         </div>
+      )}
+    </div>
+  );
+};
+
+// Detects localhost Ollama from the stored base URL. Mirrors the server-side
+// helper in services/num-ctx-calculator.ts so the UI shows the right state
+// (auto-detected vs. editable) before any API call.
+function isLocalOllamaBaseUrlClient(baseUrl: string | null): boolean {
+  if (!baseUrl) return true; // default Ollama baseUrl is localhost
+  const lower = baseUrl.toLowerCase();
+  return (
+    lower.includes('localhost') ||
+    lower.includes('127.0.0.1') ||
+    lower.includes('[::1]') ||
+    lower.includes('0.0.0.0')
+  );
+}
+
+// Ollama-only: row above the model list showing/editing how much RAM the
+// Ollama host has, so the num_ctx auto-sizer can compute recommendations.
+// For localhost, this is auto-detected from the dojo host; for remote
+// providers, the user types it in and the server recomputes every model's
+// num_ctx recommendation on the spot.
+const OllamaHostRamRow = ({ provider, onChange }: { provider: Provider; onChange: () => void }) => {
+  const isLocal = isLocalOllamaBaseUrlClient(provider.baseUrl);
+  const [ramInput, setRamInput] = useState(
+    provider.hostRamGb === null ? '' : String(provider.hostRamGb),
+  );
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSave = async () => {
+    setError(null);
+    const trimmed = ramInput.trim();
+    let ramGb: number | null;
+    if (trimmed === '') {
+      ramGb = null;
+    } else {
+      const n = Number(trimmed);
+      if (!Number.isFinite(n) || !Number.isInteger(n)) {
+        setError('Must be a whole number');
+        return;
+      }
+      if (n < 1 || n > 2048) {
+        setError('Must be between 1 and 2048');
+        return;
+      }
+      ramGb = n;
+    }
+    if (ramGb === provider.hostRamGb) return; // no change
+
+    setSaving(true);
+    const result = await api.updateProviderHostRam(provider.id, ramGb);
+    setSaving(false);
+    if (result.ok) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+      // onChange triggers a models reload so every card's recommended
+      // num_ctx picks up the newly-computed value from the server.
+      onChange();
+    } else {
+      setError(result.error ?? 'Save failed');
+    }
+  };
+
+  if (isLocal) {
+    return (
+      <div className="glass-card p-3 flex items-center gap-3 text-xs">
+        <span className="white/40 w-20">Host RAM</span>
+        <span className="white/70 font-mono">auto-detected (this machine)</span>
+        <span className="text-[10px] text-white/25 italic">
+          num_ctx recommendations use os.totalmem()
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="glass-card p-3 flex items-center gap-3 text-xs">
+      <label className="white/40 w-20" title="Total RAM of the remote Ollama host in GB. The dojo uses this value to auto-size num_ctx recommendations for every model on this provider.">
+        Host RAM
+      </label>
+      <input
+        type="number"
+        step="1"
+        min="1"
+        max="2048"
+        placeholder="GB"
+        value={ramInput}
+        onChange={(e) => setRamInput(e.target.value)}
+        onBlur={handleSave}
+        disabled={saving}
+        className="w-20 px-2 py-1 bg-white/[0.05] border white/[0.08] rounded text-xs white/90 font-mono text-right focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-60"
+      />
+      <span className="text-[10px] text-white/30">GB</span>
+      {saved && <span className="text-xs text-green-400">Saved — recomputing…</span>}
+      {error && <span className="text-xs text-red-400">{error}</span>}
+      {!saved && !error && (
+        <span className="text-[10px] text-white/25 italic">
+          {provider.hostRamGb === null
+            ? 'set this to enable num_ctx recommendations for remote models'
+            : `num_ctx auto-sized for ${provider.hostRamGb} GB`}
+        </span>
       )}
     </div>
   );
@@ -1369,11 +1476,13 @@ const CapabilityBadges = ({ capabilities }: { capabilities: string[] }) => {
 
 const ModelRow = ({
   model,
+  providerType,
   isPrimaryModel,
   onToggle,
   onPricingChange,
 }: {
   model: Model;
+  providerType: string;
   isPrimaryModel: boolean;
   onToggle: () => void;
   onPricingChange: () => void;
@@ -1387,6 +1496,19 @@ const ModelRow = ({
   // flips instantly on click while the PATCH is in flight.
   const [thinkingEnabled, setThinkingEnabled] = useState(model.thinkingEnabled);
   const supportsThinking = model.capabilities.includes('thinking');
+
+  // Ollama-only: per-model num_ctx control. The input box shows
+  // `override ?? recommended`. When the user types, it becomes an
+  // override. Reset button restores to the RAM-aware recommendation.
+  const isOllama = providerType === 'ollama';
+  const effectiveNumCtx =
+    model.numCtxOverride ?? model.numCtxRecommended ?? null;
+  const [numCtxInput, setNumCtxInput] = useState(
+    effectiveNumCtx === null ? '' : String(effectiveNumCtx),
+  );
+  const [ctxSaving, setCtxSaving] = useState(false);
+  const [ctxSaved, setCtxSaved] = useState(false);
+  const [ctxError, setCtxError] = useState<string | null>(null);
 
   const hasChanges =
     Number(inputCost) !== (model.inputCostPerM ?? 0) ||
@@ -1414,6 +1536,62 @@ const ModelRow = ({
       setThinkingEnabled(!next); // roll back
     } else {
       onPricingChange();
+    }
+  };
+
+  const handleNumCtxSave = async () => {
+    setCtxError(null);
+    const trimmed = numCtxInput.trim();
+
+    // Empty input means "use the recommendation" (clear any override).
+    // Otherwise parse and validate. If the typed value equals the current
+    // recommendation exactly, that's also equivalent to "no override".
+    let override: number | null;
+    if (trimmed === '') {
+      override = null;
+    } else {
+      const n = Number(trimmed);
+      if (!Number.isFinite(n) || !Number.isInteger(n)) {
+        setCtxError('Must be a whole number');
+        return;
+      }
+      if (n < 512 || n > 2_097_152) {
+        setCtxError('Must be between 512 and 2097152');
+        return;
+      }
+      override = n === model.numCtxRecommended ? null : n;
+    }
+
+    if (override === model.numCtxOverride) return; // no change
+
+    setCtxSaving(true);
+    const result = await api.updateModelNumCtx(model.id, override);
+    setCtxSaving(false);
+    if (result.ok) {
+      setCtxSaved(true);
+      setTimeout(() => setCtxSaved(false), 1500);
+      onPricingChange();
+    } else {
+      setCtxError(result.error ?? 'Save failed');
+    }
+  };
+
+  const handleNumCtxReset = async () => {
+    setCtxError(null);
+    // Restore the box to the recommendation (or empty if no recommendation).
+    setNumCtxInput(
+      model.numCtxRecommended === null ? '' : String(model.numCtxRecommended),
+    );
+    if (model.numCtxOverride === null) return; // nothing to clear server-side
+    setCtxSaving(true);
+    const result = await api.updateModelNumCtx(model.id, null);
+    setCtxSaving(false);
+    if (result.ok) {
+      setCtxSaved(true);
+      setTimeout(() => setCtxSaved(false), 1500);
+      onPricingChange();
+    } else {
+      setCtxError(result.error ?? 'Reset failed');
     }
   };
 
@@ -1501,6 +1679,51 @@ const ModelRow = ({
         )}
         {saved && <span className="text-xs text-green-400">Saved</span>}
       </div>
+
+      {isOllama && (
+        <div className="mt-3 flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <label
+              className="text-xs white/40 w-20"
+              title="Context window (num_ctx) passed to Ollama for every call to this model. The pre-filled value is a RAM-aware recommendation based on your machine's memory and this model's architecture. Higher values use more RAM."
+            >
+              Context
+            </label>
+            <input
+              type="number"
+              step="1"
+              min="512"
+              max="2097152"
+              placeholder={model.numCtxRecommended === null ? 'default' : ''}
+              value={numCtxInput}
+              onChange={(e) => setNumCtxInput(e.target.value)}
+              onBlur={handleNumCtxSave}
+              disabled={ctxSaving}
+              className="w-28 px-2 py-1 bg-white/[0.05] border white/[0.08] rounded text-xs white/90 font-mono text-right focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-60"
+            />
+            <span className="text-[10px] text-white/30">tokens</span>
+            {model.numCtxRecommended !== null && (
+              <button
+                onClick={handleNumCtxReset}
+                disabled={ctxSaving || (model.numCtxOverride === null && numCtxInput === String(model.numCtxRecommended))}
+                className="text-[10px] text-white/40 hover:text-white/80 underline disabled:text-white/20 disabled:no-underline disabled:cursor-default"
+                title={`Reset to auto-sized recommendation (${model.numCtxRecommended.toLocaleString()} tokens)`}
+              >
+                reset
+              </button>
+            )}
+          </div>
+          {ctxSaved && <span className="text-xs text-green-400">Saved</span>}
+          {ctxError && <span className="text-xs text-red-400">{ctxError}</span>}
+          <span className="text-[10px] text-white/25 italic">
+            {model.numCtxOverride !== null
+              ? 'override set — reset for auto-sized default'
+              : model.numCtxRecommended !== null
+              ? `auto-sized for your RAM (~${Math.round(model.numCtxRecommended / 1024)}k tokens)`
+              : 'higher = more RAM'}
+          </span>
+        </div>
+      )}
     </div>
   );
 };
@@ -1703,8 +1926,7 @@ const ModelsTab = () => {
           return (
             <ProviderModelGroup
               key={provider.id}
-              providerName={provider.name}
-              providerType={provider.type}
+              provider={provider}
               models={providerModels}
               primaryModelId={primaryModelId}
               onToggle={toggleModel}

@@ -1,0 +1,14 @@
+-- Manually-entered host RAM (in GB) for remote Ollama provider instances.
+-- When a user adds an Ollama provider pointing at a remote machine (not
+-- localhost), Ollama has no API to tell us how much RAM that host has.
+-- The user fills this field in on the provider row, and the num_ctx
+-- calculator uses `host_ram_gb * 1024^3` as the total RAM for that
+-- provider's models instead of `os.totalmem()`.
+--
+-- NULL means:
+--   • Localhost Ollama providers: ignored, use os.totalmem() (native host)
+--   • Remote Ollama providers: skip num_ctx recommendation — user hasn't
+--     entered a value yet, so no auto-sizing is possible.
+--
+-- Only read for provider type 'ollama'. Other provider types ignore it.
+ALTER TABLE providers ADD COLUMN host_ram_gb INTEGER DEFAULT NULL;
