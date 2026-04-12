@@ -11,11 +11,12 @@ import { formatDate } from '../lib/dates';
 import { MigrationExport } from '../components/MigrationExport';
 import { MigrationImport } from '../components/MigrationImport';
 
-type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'sensei' | 'workspace' | 'microsoft' | 'update';
+type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'sensei' | 'integrations' | 'update';
 
 export const Settings = () => {
   const [searchParams, setSearchParams] = useSearchParams();
-  const tabFromUrl = searchParams.get('tab') as Tab | null;
+  const rawTab = searchParams.get('tab');
+  const tabFromUrl = (rawTab === 'workspace' || rawTab === 'microsoft' ? 'integrations' : rawTab) as Tab | null;
   const [activeTab, setActiveTab] = useState<Tab>(tabFromUrl || 'platform');
 
   // Sync tab with URL query param so mobile hamburger sub-menu links work
@@ -38,8 +39,7 @@ export const Settings = () => {
     { key: 'profile', label: 'Profile' },
     { key: 'security', label: 'Security' },
     { key: 'sensei', label: 'Sensei' },
-    { key: 'workspace', label: 'Google' },
-    { key: 'microsoft', label: 'Microsoft' },
+    { key: 'integrations', label: 'Integrations' },
     { key: 'update', label: 'Update' },
   ];
 
@@ -69,7 +69,7 @@ export const Settings = () => {
         <select
           value={activeTab}
           onChange={(e) => handleTabChange(e.target.value as Tab)}
-          className="w-full px-3 py-2 bg-white/[0.05] border border-white/[0.08] rounded-lg text-sm text-white/90 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="glass-select w-full"
         >
           {tabs.map(tab => (
             <option key={tab.key} value={tab.key}>{tab.label}</option>
@@ -85,8 +85,12 @@ export const Settings = () => {
       {activeTab === 'profile' && <ProfileTab />}
       {activeTab === 'security' && <SecurityTab />}
       {activeTab === 'sensei' && <DreamingTab />}
-      {activeTab === 'workspace' && <GoogleWorkspaceSettings />}
-      {activeTab === 'microsoft' && <MicrosoftWorkspaceSettings />}
+      {activeTab === 'integrations' && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-4xl">
+          <GoogleWorkspaceSettings />
+          <MicrosoftWorkspaceSettings />
+        </div>
+      )}
       {activeTab === 'update' && <UpdateTab />}
     </div>
   );
@@ -198,7 +202,7 @@ const IMBridgeSettings = () => {
 
   return (
     <div className="glass-card p-4 space-y-4">
-      <h3 className="text-sm font-medium white/70">iMessage Bridge</h3>
+      <h3 className="card-header">iMessage Bridge</h3>
       <p className="text-xs white/40">
         Enable to send and receive messages with your agent via iMessage. Requires Full Disk Access for Terminal in System Settings &gt; Privacy &amp; Security &gt; Full Disk Access.
       </p>
@@ -208,22 +212,16 @@ const IMBridgeSettings = () => {
         <label className="text-sm white/70">Enable iMessage Bridge</label>
         <button
           onClick={() => setEnabled(!enabled)}
-          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-            enabled ? 'bg-blue-600' : 'bg-white/[0.12]'
-          }`}
+          className={`toggle-switch ${enabled ? 'toggle-on' : ''}`}
         >
-          <span
-            className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${
-              enabled ? 'translate-x-6' : 'translate-x-1'
-            }`}
-          />
+          <span className="toggle-knob" />
         </button>
       </div>
 
       {/* Approved Senders */}
       {enabled && (
         <div>
-          <label className="block text-xs font-medium white/55 mb-2">
+          <label className="form-label mb-2">
             Approved Senders
           </label>
           <p className="text-xs white/30 mb-2">
@@ -244,8 +242,8 @@ const IMBridgeSettings = () => {
                       title={sender === defaultSender ? 'Default sender' : 'Set as default sender'}
                       className={`text-lg leading-none transition-colors ${
                         sender === defaultSender
-                          ? 'text-yellow-400'
-                          : 'white/30 hover:text-yellow-400'
+                          ? 'text-cp-amber'
+                          : 'white/30 hover:text-cp-amber'
                       }`}
                     >
                       {sender === defaultSender ? '\u2605' : '\u2606'}
@@ -254,7 +252,7 @@ const IMBridgeSettings = () => {
                   </div>
                   <button
                     onClick={() => removeSender(i)}
-                    className="white/40 hover:text-red-400 transition-colors ml-2"
+                    className="white/40 hover:text-cp-coral transition-colors ml-2"
                   >
                     &times;
                   </button>
@@ -277,12 +275,12 @@ const IMBridgeSettings = () => {
                 onKeyDown={(e) => e.key === 'Enter' && addSender()}
                 placeholder="+15551234567 or user@icloud.com"
                 autoFocus
-                className="flex-1 px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+                className="glass-input flex-1 font-mono"
               />
               <button
                 onClick={addSender}
                 disabled={!newSender.trim()}
-                className="px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-sm rounded-lg transition-colors"
+                className="px-3 py-2 glass-btn-blue text-sm rounded-lg transition-colors"
               >
                 Add
               </button>
@@ -296,7 +294,7 @@ const IMBridgeSettings = () => {
           ) : (
             <button
               onClick={() => setShowAddInput(true)}
-              className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+              className="flex items-center gap-1 text-xs text-cp-blue hover:text-cp-blue/80 transition-colors"
             >
               <span className="text-lg leading-none">+</span> Add sender
             </button>
@@ -305,7 +303,7 @@ const IMBridgeSettings = () => {
       )}
 
       {error && (
-        <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+        <div className="alert-banner alert-error">
           {error}
         </div>
       )}
@@ -314,15 +312,15 @@ const IMBridgeSettings = () => {
         <button
           onClick={handleSave}
           disabled={saving}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
-        {saved && <span className="text-xs text-green-400">Saved! Restart server to apply.</span>}
+        {saved && <span className="text-xs text-cp-teal">Saved! Restart server to apply.</span>}
       </div>
 
       {enabled && (
-        <div className="px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-xs">
+        <div className="alert-banner alert-warning">
           If the bridge fails to read messages, ensure Terminal has Full Disk Access: System Settings &gt; Privacy &amp; Security &gt; Full Disk Access &gt; Enable Terminal.
         </div>
       )}
@@ -336,23 +334,12 @@ const IMBridgeSettings = () => {
 
 const PlatformTab = () => {
   return (
-    <div className="space-y-6 max-w-lg">
-      {/* Agent Limits */}
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-4xl">
       <AgentLimitsSettings />
-
-      {/* Ollama Settings */}
       <OllamaSettings />
-
-      {/* Remote Access */}
       <RemoteAccessSettings />
-
-      {/* iMessage Bridge */}
       <IMBridgeSettings />
-
-      {/* Web Search */}
       <SearchSettings />
-
-      {/* Migration */}
       <MigrationSettings />
     </div>
   );
@@ -364,8 +351,8 @@ const MigrationSettings = () => {
   const [showImport, setShowImport] = useState(false);
 
   return (
-    <div className="bg-white/[0.03] border border-white/10 rounded-xl p-5 space-y-4">
-      <h3 className="text-sm font-bold text-white/90">Migration</h3>
+    <div className="glass-card p-5 space-y-4">
+      <h3 className="card-header">Migration</h3>
       <p className="text-xs text-white/40">
         Export your entire dojo to move it to another machine, or import from a previous export.
       </p>
@@ -484,14 +471,14 @@ const RemoteAccessSettings = () => {
     }
   };
 
-  if (loading) return <div className="glass-card p-4"><p className="white/40 text-sm">Loading...</p></div>;
+  if (loading) return <div className="loading-state">Loading...</div>;
 
   const isActive = status?.status === 'active';
   const isStarting = status?.status === 'starting';
 
   return (
     <div className="glass-card p-4 space-y-4">
-      <h3 className="text-sm font-medium white/70">Remote Access</h3>
+      <h3 className="card-header">Remote Access</h3>
       <p className="text-xs white/40">
         Access your dojo from anywhere via Cloudflare Tunnel.
       </p>
@@ -510,7 +497,7 @@ const RemoteAccessSettings = () => {
           <button
             onClick={handleInstall}
             disabled={installing}
-            className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white rounded-lg transition-colors"
+            className="px-3 py-1.5 text-xs glass-btn-blue rounded-lg transition-colors"
           >
             {installing ? 'Installing...' : 'Install cloudflared'}
           </button>
@@ -622,7 +609,7 @@ const RemoteAccessSettings = () => {
                     value={token}
                     onChange={(e) => setToken(e.target.value)}
                     placeholder="Cloudflare tunnel token..."
-                    className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-xs white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="glass-input w-full"
                   />
                 </div>
               )}
@@ -630,7 +617,7 @@ const RemoteAccessSettings = () => {
               <button
                 onClick={handleEnable}
                 disabled={acting || (mode === 'named' && !token.trim())}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-sm font-medium rounded-lg transition-colors"
+                className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
               >
                 {acting ? 'Connecting...' : mode === 'named' ? 'Save & Connect' : 'Enable Remote Access'}
               </button>
@@ -670,24 +657,24 @@ const OllamaSettings = () => {
     setSaving(false);
   };
 
-  if (loading) return <div className="glass-card p-4"><p className="white/40 text-sm">Loading...</p></div>;
+  if (loading) return <div className="loading-state">Loading...</div>;
 
   return (
     <div className="glass-card p-4 space-y-4">
-      <h3 className="text-sm font-medium white/70">Ollama (Local Models)</h3>
+      <h3 className="card-header">Ollama (Local Models)</h3>
       <p className="text-xs white/40">
         Controls how many different Ollama models can be loaded in RAM simultaneously.
         Set to 1 for 16GB machines, 2+ if you have more RAM.
       </p>
       <div>
-        <label className="block text-xs font-medium white/55 mb-1">Max Concurrent Models</label>
+        <label className="form-label">Max Concurrent Models</label>
         <input
           type="number"
           min={1}
           max={8}
           value={maxConcurrent}
           onChange={(e) => setMaxConcurrent(e.target.value)}
-          className="w-24 px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="glass-input w-24"
         />
         <p className="text-[10px] white/30 mt-0.5">
           When agents use more local models than this limit, requests queue until the current model finishes.
@@ -698,11 +685,11 @@ const OllamaSettings = () => {
         <button
           onClick={handleSave}
           disabled={saving}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
-        {saved && <span className="text-xs text-green-400">Saved!</span>}
+        {saved && <span className="text-xs text-cp-teal">Saved!</span>}
       </div>
     </div>
   );
@@ -750,25 +737,25 @@ const AgentLimitsSettings = () => {
     setSaving(false);
   };
 
-  if (loading) return <div className="glass-card p-4"><p className="white/40 text-sm">Loading...</p></div>;
+  if (loading) return <div className="loading-state">Loading...</div>;
 
   return (
     <div className="glass-card p-4 space-y-4">
-      <h3 className="text-sm font-medium white/70">Dojo Capacity</h3>
+      <h3 className="card-header">Dojo Capacity</h3>
       <p className="text-xs white/40">
         Controls how many agents can run and how they are spawned. Changes take effect immediately.
       </p>
       <div className="grid grid-cols-2 gap-4">
         {AGENT_LIMIT_KEYS.map((item) => (
           <div key={item.key}>
-            <label className="block text-xs font-medium white/55 mb-1">{item.label}</label>
+            <label className="form-label">{item.label}</label>
             <input
               type="number"
               min={item.min}
               max={item.max}
               value={values[item.key] ?? item.default}
               onChange={(e) => setValues(prev => ({ ...prev, [item.key]: e.target.value }))}
-              className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="glass-input w-full"
             />
             <p className="text-[10px] white/30 mt-0.5">{item.description}</p>
           </div>
@@ -778,11 +765,11 @@ const AgentLimitsSettings = () => {
         <button
           onClick={handleSave}
           disabled={saving}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
         >
           {saving ? 'Saving...' : 'Save Limits'}
         </button>
-        {saved && <span className="text-xs text-green-400">Saved!</span>}
+        {saved && <span className="text-xs text-cp-teal">Saved!</span>}
       </div>
     </div>
   );
@@ -862,24 +849,24 @@ const SearchSettings = () => {
 
   return (
     <div className="glass-card p-4 space-y-4">
-      <h3 className="text-sm font-medium white/70">Web Search Provider</h3>
+      <h3 className="card-header">Web Search Provider</h3>
       <p className="text-xs white/40">
         Configure web search for the web_search tool.
       </p>
 
       <div>
-        <label className="block text-xs font-medium white/55 mb-1">Provider</label>
+        <label className="form-label">Provider</label>
         <select
           value={provider}
           onChange={(e) => setProvider(e.target.value)}
-          className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="glass-select w-full"
         >
           <option value="brave">Brave Search</option>
         </select>
       </div>
 
       <div>
-        <label className="block text-xs font-medium white/55 mb-1">
+        <label className="form-label">
           Brave Search API Key
         </label>
         <input
@@ -887,18 +874,18 @@ const SearchSettings = () => {
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
           placeholder={hasKey ? '••••••••••••••••' : 'Enter Brave Search API key'}
-          className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="glass-input w-full"
         />
       </div>
 
       {error && (
-        <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+        <div className="alert-banner alert-error">
           {error}
         </div>
       )}
 
       {validationResult === 'valid' && (
-        <div className="px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/20 text-green-400 text-xs">
+        <div className="alert-banner alert-success">
           API key is valid
         </div>
       )}
@@ -907,7 +894,7 @@ const SearchSettings = () => {
         <button
           onClick={handleSave}
           disabled={saving || !apiKey.trim()}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
@@ -918,13 +905,13 @@ const SearchSettings = () => {
         >
           {validating ? 'Validating...' : 'Validate'}
         </button>
-        {saved && <span className="text-xs text-green-400">Saved!</span>}
+        {saved && <span className="text-xs text-cp-teal">Saved!</span>}
       </div>
 
       <div className="flex items-center gap-2">
         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
           hasKey
-            ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+            ? 'bg-cp-teal/10 text-cp-teal border border-cp-teal/20'
             : 'bg-white/[0.08] white/55 border white/[0.10]'
         }`}>
           {hasKey ? 'Configured' : 'Not configured'}
@@ -964,7 +951,7 @@ const AgentSdkSetup = () => {
       <div className="space-y-2 text-xs">
         {/* Step 1: CLI installed */}
         <div className="flex items-center gap-2">
-          <span className={status?.cliInstalled ? 'text-green-400' : 'text-amber-400'}>
+          <span className={status?.cliInstalled ? 'text-cp-teal' : 'text-cp-amber'}>
             {status?.cliInstalled ? '\u2713' : '1.'}
           </span>
           <span className="text-white/60">
@@ -982,7 +969,7 @@ const AgentSdkSetup = () => {
 
         {/* Step 2: Signed in */}
         <div className="flex items-center gap-2">
-          <span className={authResult?.authenticated ? 'text-green-400' : status?.cliInstalled ? 'text-amber-400' : 'text-white/20'}>
+          <span className={authResult?.authenticated ? 'text-cp-teal' : status?.cliInstalled ? 'text-cp-amber' : 'text-white/20'}>
             {authResult?.authenticated ? '\u2713' : '2.'}
           </span>
           <span className={status?.cliInstalled ? 'text-white/60' : 'text-white/20'}>
@@ -1003,19 +990,19 @@ const AgentSdkSetup = () => {
           <button
             onClick={handleVerify}
             disabled={verifying}
-            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-medium rounded-lg transition-colors"
+            className="px-3 py-1.5 glass-btn-blue text-xs font-medium rounded-lg transition-colors"
           >
             {verifying ? 'Verifying...' : 'Verify Connection'}
           </button>
           {authResult && !authResult.authenticated && (
-            <span className="text-xs text-red-400">
+            <span className="text-xs text-cp-coral">
               {authResult.error ?? 'Not authenticated. Run `claude` in your terminal and sign in.'}
             </span>
           )}
         </div>
       )}
 
-      <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
+      <div className="alert-banner alert-warning">
         <p className="text-[10px] text-amber-400/70">
           Agent SDK subscription billing is subject to Anthropic's usage policies. If you experience issues, switch to API Key.
         </p>
@@ -1073,10 +1060,10 @@ const ProvidersTab = () => {
     setSyncing(null);
   };
 
-  if (loading) return <p className="white/40">Loading providers...</p>;
+  if (loading) return <div className="loading-state">Loading...</div>;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 max-w-4xl">
       {/* Existing providers */}
       {providers.length === 0 ? (
         <p className="white/40 text-sm">No providers configured.</p>
@@ -1103,7 +1090,7 @@ const ProvidersTab = () => {
                 </button>
                 <button
                   onClick={() => handleDelete(provider.id)}
-                  className="text-sm text-red-400 hover:text-red-300 transition-colors"
+                  className="text-sm text-cp-coral hover:text-cp-coral/80 transition-colors"
                 >
                   Delete
                 </button>
@@ -1125,7 +1112,7 @@ const ProvidersTab = () => {
       ) : (
         <button
           onClick={() => setShowAdd(true)}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
         >
           Add Provider
         </button>
@@ -1186,20 +1173,20 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
     <form onSubmit={handleSubmit} className="glass-card p-4 space-y-3">
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="block text-xs font-medium white/55 mb-1">Name</label>
+          <label className="form-label">Name</label>
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="glass-input w-full"
           />
         </div>
         <div>
-          <label className="block text-xs font-medium white/55 mb-1">Type</label>
+          <label className="form-label">Type</label>
           <select
             value={type}
             onChange={(e) => setType(e.target.value)}
-            className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="glass-select w-full"
           >
             <option value="anthropic">Anthropic</option>
             <option value="openai">OpenAI</option>
@@ -1211,13 +1198,13 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
 
       {type === 'ollama' && (
         <div>
-          <label className="block text-xs font-medium white/55 mb-1">Base URL</label>
+          <label className="form-label">Base URL</label>
           <input
             type="text"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder="http://localhost:11434"
-            className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="glass-input w-full"
           />
         </div>
       )}
@@ -1226,11 +1213,11 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
         <>
           {type === 'anthropic' && (
             <div>
-              <label className="block text-xs font-medium white/55 mb-1">Auth Type</label>
+              <label className="form-label">Auth Type</label>
               <select
                 value={authType}
                 onChange={(e) => setAuthType(e.target.value as 'api_key' | 'oauth' | 'agent-sdk')}
-                className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="glass-select w-full"
               >
                 <option value="api_key">API Key</option>
                 <option value="oauth">OAuth Token</option>
@@ -1243,7 +1230,7 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
             <AgentSdkSetup />
           ) : (
             <div>
-              <label className="block text-xs font-medium white/55 mb-1">
+              <label className="form-label">
                 {authType === 'oauth' && type === 'anthropic' ? 'OAuth Token' : 'API Key'}
               </label>
               <input
@@ -1251,7 +1238,7 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
                 value={credential}
                 onChange={(e) => setCredential(e.target.value)}
                 placeholder={type === 'openai' ? 'sk-...' : authType === 'oauth' ? 'Bearer token...' : 'sk-...'}
-                className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="glass-input w-full"
               />
             </div>
           )}
@@ -1259,13 +1246,13 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
       )}
 
       {error && (
-        <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+        <div className="alert-banner alert-error">
           {error}
         </div>
       )}
 
       {status === 'valid' && (
-        <div className="px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/20 text-green-400 text-xs">
+        <div className="alert-banner alert-success">
           Validated
         </div>
       )}
@@ -1274,7 +1261,7 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
         <button
           type="submit"
           disabled={status === 'saving' || status === 'validating' || status === 'valid' || !name.trim() || (type !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
         >
           {status === 'saving' ? 'Adding...' : status === 'validating' ? 'Validating...' : 'Add & Validate'}
         </button>
@@ -1434,11 +1421,11 @@ const OllamaHostRamRow = ({ provider, onChange }: { provider: Provider; onChange
         onChange={(e) => setRamInput(e.target.value)}
         onBlur={handleSave}
         disabled={saving}
-        className="w-20 px-2 py-1 bg-white/[0.05] border white/[0.08] rounded text-xs white/90 font-mono text-right focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-60"
+        className="glass-input w-20 font-mono text-right disabled:opacity-60"
       />
       <span className="text-[10px] text-white/30">GB</span>
-      {saved && <span className="text-xs text-green-400">Saved — recomputing…</span>}
-      {error && <span className="text-xs text-red-400">{error}</span>}
+      {saved && <span className="text-xs text-cp-teal">Saved — recomputing…</span>}
+      {error && <span className="text-xs text-cp-coral">{error}</span>}
       {!saved && !error && (
         <span className="text-[10px] text-white/25 italic">
           {provider.hostRamGb === null
@@ -1473,7 +1460,7 @@ const CAPABILITY_LABELS: Record<string, { label: string; className: string; titl
   },
   image_generation: {
     label: 'Image Gen',
-    className: 'bg-pink-500/15 text-pink-300 border-pink-400/30',
+    className: 'bg-cp-amber/15 text-cp-amber border-cp-amber/30',
     title: 'Can generate images — available to Imaginer for image_create requests',
   },
 };
@@ -1634,7 +1621,7 @@ const ModelRow = ({
           <h3 className="text-sm font-medium text-white">
             {model.name}
             {isPrimaryModel && (
-              <span className="ml-2 text-xs text-blue-400 font-normal">(primary agent model)</span>
+              <span className="ml-2 text-xs text-cp-blue font-normal">(primary agent model)</span>
             )}
           </h3>
           <p className="text-xs white/40 mt-0.5">
@@ -1663,15 +1650,9 @@ const ModelRow = ({
         <div className="flex items-center gap-2">
           <button
             onClick={onToggle}
-            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-              model.isEnabled ? 'bg-blue-600' : 'bg-white/[0.12]'
-            }`}
+            className={`toggle-switch ${model.isEnabled ? 'toggle-on' : ''}`}
           >
-            <span
-              className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${
-                model.isEnabled ? 'translate-x-6' : 'translate-x-1'
-              }`}
-            />
+            <span className="toggle-knob" />
           </button>
           <button
             onClick={async () => {
@@ -1684,7 +1665,7 @@ const ModelRow = ({
                 toast.error(result.error ?? 'Delete failed');
               }
             }}
-            className="w-6 h-6 flex items-center justify-center rounded text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+            className="w-6 h-6 flex items-center justify-center rounded text-white/30 hover:text-cp-coral hover:bg-cp-coral/10 transition-colors"
             title="Delete model"
           >
             <span className="text-sm leading-none">×</span>
@@ -1703,7 +1684,7 @@ const ModelRow = ({
             value={inputCost}
             onChange={(e) => setInputCost(e.target.value)}
             onBlur={() => hasChanges && handleSave()}
-            className="w-24 px-2 py-1 bg-white/[0.05] border white/[0.08] rounded text-xs white/90 font-mono text-right focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="glass-input w-24 font-mono text-right"
           />
         </div>
         <div className="flex items-center gap-2">
@@ -1715,19 +1696,19 @@ const ModelRow = ({
             value={outputCost}
             onChange={(e) => setOutputCost(e.target.value)}
             onBlur={() => hasChanges && handleSave()}
-            className="w-24 px-2 py-1 bg-white/[0.05] border white/[0.08] rounded text-xs white/90 font-mono text-right focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="glass-input w-24 font-mono text-right"
           />
         </div>
         {hasChanges && (
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-2 py-1 text-xs bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] text-white rounded transition-colors"
+            className="px-2 py-1 text-xs glass-btn-blue rounded transition-colors"
           >
             {saving ? '...' : 'Save'}
           </button>
         )}
-        {saved && <span className="text-xs text-green-400">Saved</span>}
+        {saved && <span className="text-xs text-cp-teal">Saved</span>}
       </div>
 
       {isOllama && (
@@ -1749,7 +1730,7 @@ const ModelRow = ({
               onChange={(e) => setNumCtxInput(e.target.value)}
               onBlur={handleNumCtxSave}
               disabled={ctxSaving}
-              className="w-28 px-2 py-1 bg-white/[0.05] border white/[0.08] rounded text-xs white/90 font-mono text-right focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-60"
+              className="glass-input w-28 font-mono text-right disabled:opacity-60"
             />
             <span className="text-[10px] text-white/30">tokens</span>
             {model.numCtxRecommended !== null && (
@@ -1763,8 +1744,8 @@ const ModelRow = ({
               </button>
             )}
           </div>
-          {ctxSaved && <span className="text-xs text-green-400">Saved</span>}
-          {ctxError && <span className="text-xs text-red-400">{ctxError}</span>}
+          {ctxSaved && <span className="text-xs text-cp-teal">Saved</span>}
+          {ctxError && <span className="text-xs text-cp-coral">{ctxError}</span>}
           <span className="text-[10px] text-white/25 italic">
             {model.numCtxOverride !== null
               ? 'override set — reset for auto-sized default'
@@ -1815,7 +1796,7 @@ const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: 
 
   return (
     <div className="glass-card p-4 space-y-3">
-      <h3 className="text-sm font-medium white/70">Browse {providerName} Models</h3>
+      <h3 className="card-header">Browse {providerName} Models</h3>
       <p className="text-xs white/40">Search the model catalog and add models you want to use.</p>
       <div className="flex gap-2">
         <input
@@ -1824,12 +1805,12 @@ const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: 
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
           placeholder="Search models... (e.g., claude, llama, gpt)"
-          className="flex-1 px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="glass-input flex-1"
         />
         <button
           onClick={handleSearch}
           disabled={searching || !query.trim()}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-sm font-medium rounded-lg transition-colors shrink-0"
+          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors shrink-0"
         >
           {searching ? 'Searching...' : 'Search'}
         </button>
@@ -1947,7 +1928,7 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
               value={modelId}
               onChange={(e) => setModelId(e.target.value)}
               placeholder="Model ID (e.g. black-forest-labs/flux.2-max)"
-              className="flex-1 px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+              className="glass-input flex-1 font-mono"
             />
           </div>
 
@@ -1956,11 +1937,11 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
             placeholder="Display name (optional — defaults to model ID)"
-            className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="glass-input w-full"
           />
 
           <div>
-            <label className="block text-xs font-medium text-white/55 mb-2">Capabilities</label>
+            <label className="form-label mb-2">Capabilities</label>
             <div className="flex flex-wrap gap-2">
               {MANUAL_ADD_CAPABILITIES.map(cap => (
                 <button
@@ -1983,11 +1964,11 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
             <button
               onClick={handleAdd}
               disabled={adding || !modelId.trim()}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:text-white/40 text-white text-sm font-medium rounded-lg transition-colors"
+              className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
             >
               {adding ? 'Adding...' : 'Add Model'}
             </button>
-            {error && <span className="text-xs text-red-400">{error}</span>}
+            {error && <span className="text-xs text-cp-coral">{error}</span>}
           </div>
         </div>
       )}
@@ -2058,16 +2039,16 @@ const ModelsTab = () => {
     setSettingModel(false);
   };
 
-  if (loading) return <p className="white/40">Loading models...</p>;
+  if (loading) return <div className="loading-state">Loading...</div>;
 
   const enabledModels = models.filter((m) => m.isEnabled);
   const showWarning = !primaryModelId && enabledModels.length > 0;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 max-w-4xl">
       {/* Warning banner: primary agent has no model */}
       {showWarning && (
-        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 flex items-center justify-between gap-4">
+        <div className="alert-banner alert-warning flex items-center justify-between gap-4">
           <div>
             <h3 className="text-sm font-medium text-yellow-400">Primary agent has no model assigned</h3>
             <p className="text-xs text-yellow-400/70 mt-0.5">
@@ -2165,10 +2146,10 @@ const ProfileTab = () => {
   };
 
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="space-y-6 max-w-4xl">
       {/* Your Name */}
       <div className="glass-card p-4 space-y-3">
-        <h3 className="text-sm font-medium white/70">Your Name</h3>
+        <h3 className="card-header">Your Name</h3>
         <p className="text-xs white/40">Used in memory summaries and agent conversations to identify you.</p>
         {loadingName ? (
           <div className="h-10 glass-nested rounded-xl animate-pulse" />
@@ -2179,14 +2160,14 @@ const ProfileTab = () => {
               value={userName}
               onChange={(e) => setUserName(e.target.value)}
               placeholder="e.g., David"
-              className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="glass-input w-full"
             />
             <div className="flex items-center gap-2">
               <button onClick={handleSaveName} disabled={savingName || !userName.trim()}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-sm font-medium rounded-lg transition-colors">
+                className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors">
                 {savingName ? 'Saving...' : 'Save'}
               </button>
-              {savedName && <span className="text-xs text-green-400">Saved!</span>}
+              {savedName && <span className="text-xs text-cp-teal">Saved!</span>}
             </div>
           </>
         )}
@@ -2196,16 +2177,16 @@ const ProfileTab = () => {
       <div className="glass-card p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-medium white/70">About You</h3>
+            <h3 className="card-header">About You</h3>
             <p className="text-xs white/40 mt-0.5">
               Information about you that agents will know when "Share User Profile" is enabled.
               Your preferences, businesses, projects, communication style, etc.
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {savedProfile && <span className="text-xs text-green-400">Saved!</span>}
+            {savedProfile && <span className="text-xs text-cp-teal">Saved!</span>}
             <button onClick={handleSaveProfile} disabled={savingProfile || loadingProfile}
-              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-xs font-medium rounded-lg transition-colors">
+              className="px-3 py-1.5 glass-btn-blue text-xs font-medium rounded-lg transition-colors">
               {savingProfile ? 'Saving...' : 'Save'}
             </button>
           </div>
@@ -2217,7 +2198,7 @@ const ProfileTab = () => {
             value={userProfile}
             onChange={(e) => setUserProfile(e.target.value)}
             rows={12}
-            className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
+            className="glass-textarea w-full font-mono resize-y"
           />
         )}
       </div>
@@ -2294,11 +2275,11 @@ const RouterTab = () => {
     return null;
   };
 
-  if (loading) return <p className="white/40">Loading router config...</p>;
+  if (loading) return <div className="loading-state">Loading...</div>;
   if (!config) return <p className="white/40">Unable to load router config.</p>;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-4xl">
       <RouterConfig
         config={config}
         onUpdateTierModels={handleUpdateTierModels}
@@ -2347,48 +2328,48 @@ const SecurityTab = () => {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="glass-card p-4 space-y-4 max-w-md">
-      <h3 className="text-sm font-medium white/70">Change Password</h3>
+    <form onSubmit={handleSubmit} className="glass-card p-4 space-y-4 max-w-lg">
+      <h3 className="card-header">Change Password</h3>
 
       <div>
-        <label className="block text-xs font-medium white/55 mb-1">Current Password</label>
+        <label className="form-label">Current Password</label>
         <input
           type="password"
           value={currentPassword}
           onChange={(e) => setCurrentPassword(e.target.value)}
-          className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="glass-input w-full"
         />
       </div>
 
       <div>
-        <label className="block text-xs font-medium white/55 mb-1">New Password</label>
+        <label className="form-label">New Password</label>
         <input
           type="password"
           value={newPassword}
           onChange={(e) => setNewPassword(e.target.value)}
           placeholder="At least 8 characters"
-          className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="glass-input w-full"
         />
       </div>
 
       <div>
-        <label className="block text-xs font-medium white/55 mb-1">Confirm New Password</label>
+        <label className="form-label">Confirm New Password</label>
         <input
           type="password"
           value={confirmPassword}
           onChange={(e) => setConfirmPassword(e.target.value)}
-          className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="glass-input w-full"
         />
       </div>
 
       {error && (
-        <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+        <div className="alert-banner alert-error">
           {error}
         </div>
       )}
 
       {success && (
-        <div className="px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/20 text-green-400 text-xs">
+        <div className="alert-banner alert-success">
           Password changed successfully!
         </div>
       )}
@@ -2396,7 +2377,7 @@ const SecurityTab = () => {
       <button
         type="submit"
         disabled={saving || !currentPassword || !newPassword || !confirmPassword}
-        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-sm font-medium rounded-lg transition-colors"
+        className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
       >
         {saving ? 'Changing...' : 'Change Password'}
       </button>
@@ -2453,24 +2434,25 @@ const DreamingTab = () => {
     setSaving(false);
   };
 
-  if (loading) return <div className="text-white/40 text-sm">Loading...</div>;
+  if (loading) return <div className="loading-state">Loading...</div>;
 
   return (
-    <div className="space-y-6 max-w-lg">
+    <div className="max-w-4xl">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <div className="glass-card p-4 space-y-4">
         <div>
-          <h3 className="text-sm font-medium text-white/70">Dreaming</h3>
+          <h3 className="card-header">Dreaming</h3>
           <p className="text-xs text-white/40 mt-1">
             Configure how the dojo processes its daily conversations into long-term memories overnight. A temporary "Dreamer" agent is spawned to do the work -- it uses the tracker, extracts knowledge, and dismisses itself when done.
           </p>
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-white/55 mb-1">Dreamer Model</label>
+          <label className="form-label">Dreamer Model</label>
           <select
             value={dreamModelId}
             onChange={(e) => setDreamModelId(e.target.value)}
-            className="w-full px-3 py-2 bg-white/[0.05] border border-white/[0.08] rounded-lg text-sm text-white/90 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="glass-select w-full"
           >
             <option value="">Auto (first available Standard tier model)</option>
             {models.map((m) => (
@@ -2485,12 +2467,12 @@ const DreamingTab = () => {
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-white/55 mb-1">Dream Time</label>
+          <label className="form-label">Dream Time</label>
           <input
             type="time"
             value={dreamTime}
             onChange={(e) => setDreamTime(e.target.value)}
-            className="w-full px-3 py-2 bg-white/[0.05] border border-white/[0.08] rounded-lg text-sm text-white/90 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="glass-select w-full"
           />
           <p className="text-[10px] text-white/30 mt-1">
             When the Dreamer agent wakes up to process the day's conversations. Default: 3:00 AM.
@@ -2498,7 +2480,7 @@ const DreamingTab = () => {
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-white/55 mb-2">Dream Mode</label>
+          <label className="form-label mb-2">Dream Mode</label>
           <div className="space-y-2">
             {([
               { value: 'full', label: 'Full Dream', desc: 'Extract memories + identify technique candidates + vault maintenance' },
@@ -2511,7 +2493,7 @@ const DreamingTab = () => {
                   value={option.value}
                   checked={dreamMode === option.value}
                   onChange={() => setDreamMode(option.value)}
-                  className="mt-1 accent-blue-500"
+                  className="mt-1 accent-cp-amber"
                 />
                 <div>
                   <span className="text-sm text-white/80">{option.label}</span>
@@ -2526,18 +2508,22 @@ const DreamingTab = () => {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:text-white/40 text-white text-sm font-medium rounded-lg transition-colors"
+            className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
           >
             {saving ? 'Saving...' : 'Save'}
           </button>
-          {saved && <span className="text-xs text-green-400">Saved!</span>}
+          {saved && <span className="text-xs text-cp-teal">Saved!</span>}
         </div>
       </div>
 
-      {/* Last Dream Report */}
+      {/* Imaginer card — image generation sensei */}
+      <ImaginerCard models={models} />
+      </div>
+
+      {/* Last Dream Report — full width below the grid */}
       {lastDream && (
-        <div className="glass-card p-4 space-y-2">
-          <h3 className="text-sm font-medium text-white/70">Last Dream</h3>
+        <div className="glass-card p-4 space-y-2 mt-6">
+          <h3 className="card-header">Last Dream</h3>
           <p className="text-[10px] text-white/30">
             {formatDate(lastDream.createdAt)}
             {lastDream.durationMs && ` (${(lastDream.durationMs / 1000).toFixed(1)}s)`}
@@ -2547,9 +2533,6 @@ const DreamingTab = () => {
           </pre>
         </div>
       )}
-
-      {/* Imaginer card — image generation sensei */}
-      <ImaginerCard models={models} />
     </div>
   );
 };
@@ -2654,10 +2637,10 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
   return (
     <div className="glass-card p-4 space-y-4">
       <div>
-        <h3 className="text-sm font-medium text-white/70">Imaginer (Image Generation Sensei)</h3>
+        <h3 className="card-header">Imaginer (Image Generation Sensei)</h3>
         <p className="text-xs text-white/40 mt-1">
           Imaginer is a system agent that turns text descriptions into images when any agent calls the{' '}
-          <code className="text-pink-300">image_create</code> tool. Kevin and sub-agents never need to switch models
+          <code className="text-cp-amber">image_create</code> tool. Kevin and sub-agents never need to switch models
           to generate images — they describe what they want and Imaginer handles the rest.
         </p>
       </div>
@@ -2668,27 +2651,27 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
           type="checkbox"
           checked={enabled}
           onChange={(e) => setEnabled(e.target.checked)}
-          className="h-4 w-4 rounded border-white/20 bg-white/[0.05] accent-pink-500 cursor-pointer"
+          className="h-4 w-4 rounded border-white/20 bg-white/[0.05] accent-cp-amber cursor-pointer"
         />
         <span className="text-sm text-white/80">Enable Imaginer</span>
       </label>
 
       {/* Model dropdown */}
       <div>
-        <label className="block text-xs font-medium text-white/55 mb-1">Image Generation Model</label>
+        <label className="form-label">Image Generation Model</label>
         {imageCapableModels.length === 0 ? (
-          <div className="px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
+          <div className="alert-banner alert-warning">
             No image-capable models configured. Add an image-generating model (e.g. Google Gemini 2.5 Flash Image or
             OpenAI GPT-5 Image via OpenRouter) in Settings → Models. Already added but not showing up? Click{' '}
             <em>Refresh capabilities</em> on that model's card — older rows may need a fresh probe to pick up the new
-            <code className="mx-1 text-pink-300">image_generation</code>capability.
+            <code className="mx-1 text-cp-amber">image_generation</code>capability.
           </div>
         ) : (
           <>
             <select
               value={imageModelId}
               onChange={(e) => setImageModelId(e.target.value)}
-              className="w-full px-3 py-2 bg-white/[0.05] border border-white/[0.08] rounded-lg text-sm text-white/90 focus:outline-none focus:ring-2 focus:ring-pink-500"
+              className="glass-input w-full"
             >
               <option value="">(select an image model)</option>
               {imageCapableModels.map((m) => (
@@ -2698,7 +2681,7 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
               ))}
             </select>
             <p className="text-[10px] text-white/30 mt-1">
-              Only models with the <code className="text-pink-300">Image Gen</code> capability are shown. Imaginer
+              Only models with the <code className="text-cp-amber">Image Gen</code> capability are shown. Imaginer
               calls this model whenever it needs to actually produce an image — its orchestration/chat brain uses a
               separate text model (Kevin's default by default).
             </p>
@@ -2708,11 +2691,11 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
 
       {/* Default aspect ratio */}
       <div>
-        <label className="block text-xs font-medium text-white/55 mb-1">Default Aspect Ratio</label>
+        <label className="form-label">Default Aspect Ratio</label>
         <select
           value={defaultAspect}
           onChange={(e) => setDefaultAspect(e.target.value)}
-          className="w-full px-3 py-2 bg-white/[0.05] border border-white/[0.08] rounded-lg text-sm text-white/90 focus:outline-none focus:ring-2 focus:ring-pink-500"
+          className="glass-input w-full"
         >
           {ASPECT_RATIOS.map(r => <option key={r} value={r}>{r}</option>)}
         </select>
@@ -2721,20 +2704,20 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
 
       {/* Default style */}
       <div>
-        <label className="block text-xs font-medium text-white/55 mb-1">Default Style (optional)</label>
+        <label className="form-label">Default Style (optional)</label>
         <input
           type="text"
           value={defaultStyle}
           onChange={(e) => setDefaultStyle(e.target.value)}
           placeholder="e.g. photorealistic, cinematic lighting"
-          className="w-full px-3 py-2 bg-white/[0.05] border border-white/[0.08] rounded-lg text-sm text-white/90 placeholder-white/25 focus:outline-none focus:ring-2 focus:ring-pink-500"
+          className="glass-input w-full"
         />
         <p className="text-[10px] text-white/30 mt-1">Fallback style hint when requesting agents don't specify one.</p>
       </div>
 
       {/* Output dir (read-only info) */}
       <div>
-        <label className="block text-xs font-medium text-white/55 mb-1">Output Directory</label>
+        <label className="form-label">Output Directory</label>
         <code className="block text-[11px] text-white/50 px-3 py-2 bg-white/[0.03] rounded font-mono">
           ~/.dojo/uploads/generated/
         </code>
@@ -2745,7 +2728,7 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
         <button
           onClick={handleSave}
           disabled={saving || !imageModelId || imageCapableModels.length === 0}
-          className="px-4 py-2 bg-pink-600 hover:bg-pink-700 disabled:bg-white/[0.08] disabled:text-white/40 text-white text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
@@ -2756,7 +2739,7 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
         >
           {testing ? 'Testing...' : 'Generate test image'}
         </button>
-        {saved && <span className="text-xs text-green-400">Saved!</span>}
+        {saved && <span className="text-xs text-cp-teal">Saved!</span>}
         {testResult && <span className="text-xs text-white/60">{testResult}</span>}
       </div>
     </div>
@@ -2814,10 +2797,10 @@ const UpdateTab = () => {
   };
 
   return (
-    <div className="space-y-6 max-w-lg">
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-4xl">
       <div className="glass-card p-4 space-y-4">
         <div>
-          <h3 className="text-sm font-medium text-white/70">Software Update</h3>
+          <h3 className="card-header">Software Update</h3>
           <p className="text-xs text-white/40 mt-1">
             Check for and install updates from the Agent D.O.J.O. repository.
           </p>
@@ -2836,13 +2819,13 @@ const UpdateTab = () => {
         )}
 
         {updateInfo && !updateInfo.updateAvailable && !updateInfo.error && (
-          <div className="px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/20 text-green-400 text-sm">
+          <div className="alert-banner alert-success text-sm">
             You're up to date.
           </div>
         )}
 
         {updateInfo?.updateAvailable && (
-          <div className="px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400 text-sm">
+          <div className="alert-banner alert-warning text-sm">
             Update available: {updateInfo.latestVersion}
             {updateInfo.downloadSize && (
               <span className="text-xs text-amber-400/60 ml-2">
@@ -2862,13 +2845,13 @@ const UpdateTab = () => {
         )}
 
         {error && (
-          <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+          <div className="alert-banner alert-error">
             {error}
           </div>
         )}
 
         {updateResult && (
-          <div className="px-3 py-2 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400 text-sm">
+          <div className="alert-banner alert-info text-sm">
             {updateResult}
           </div>
         )}
@@ -2886,7 +2869,7 @@ const UpdateTab = () => {
             <button
               onClick={handleUpdate}
               disabled={updating}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 text-white text-sm font-medium rounded-lg transition-colors"
+              className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
             >
               {updating ? 'Updating...' : 'Update Now'}
             </button>
@@ -2911,7 +2894,6 @@ const UpdateTab = () => {
 const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) => {
   const [releases, setReleases] = useState<api.ReleaseInfo[]>([]);
   const [loading, setLoading] = useState(false);
-  const [expanded, setExpanded] = useState(false);
   const [rollingBack, setRollingBack] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -2926,8 +2908,8 @@ const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) 
   };
 
   useEffect(() => {
-    if (expanded && releases.length === 0) loadReleases();
-  }, [expanded]);
+    loadReleases();
+  }, []);
 
   const handleRollback = async (tag: string, version: string) => {
     if (!confirm(`Roll back to ${version}? This will download that version, replace the current install, and restart the server.`)) return;
@@ -2954,71 +2936,60 @@ const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) 
 
   return (
     <div className="glass-card p-4 space-y-3">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between text-sm font-medium text-white/70 hover:text-white/90"
-      >
-        <span>Previous Releases</span>
-        <span className="text-white/30">{expanded ? '[-]' : '[+]'}</span>
-      </button>
+      <h3 className="card-header">Previous Releases</h3>
+      <p className="text-xs text-white/40">
+        Roll back to a previous version if the current release has issues.
+      </p>
 
-      {expanded && (
-        <div className="space-y-2">
-          <p className="text-xs text-white/40">
-            Roll back to a previous version if the current release has issues. Each rollback creates a backup of the current install.
-          </p>
+      {loading && <p className="text-xs text-white/30">Loading releases...</p>}
 
-          {loading && <p className="text-xs text-white/30">Loading releases...</p>}
-
-          {result && (
-            <div className="px-3 py-2 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400 text-sm">
-              {result}
-            </div>
-          )}
-          {error && (
-            <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
-              {error}
-            </div>
-          )}
-
-          <div className="space-y-1 max-h-[400px] overflow-y-auto">
-            {releases.map(r => (
-              <div
-                key={r.tag}
-                className={`flex items-center justify-between p-2.5 rounded-lg ${
-                  r.isCurrent
-                    ? 'bg-cp-amber/10 border border-cp-amber/20'
-                    : 'glass-nested'
-                }`}
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-mono text-white/90">{r.version}</span>
-                    {r.isCurrent && (
-                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-cp-amber/20 text-cp-amber font-medium">
-                        current
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[10px] text-white/40 mt-0.5 truncate">
-                    {r.name} · {new Date(r.publishedAt).toLocaleDateString()}
-                  </div>
-                </div>
-
-                {!r.isCurrent && r.downloadUrl && (
-                  <button
-                    onClick={() => handleRollback(r.tag, r.version)}
-                    disabled={!!rollingBack}
-                    className="shrink-0 ml-2 px-3 py-1.5 text-xs bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-white/70 hover:text-white rounded-lg transition-colors disabled:opacity-30"
-                  >
-                    {rollingBack === r.tag ? 'Rolling back...' : 'Rollback'}
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
+      {result && (
+        <div className="alert-banner alert-info text-sm">
+          {result}
         </div>
       )}
+      {error && (
+        <div className="alert-banner alert-error">
+          {error}
+        </div>
+      )}
+
+      <div className="space-y-1 max-h-[500px] overflow-y-auto">
+        {releases.map(r => (
+          <div
+            key={r.tag}
+            className={`flex items-center justify-between p-2.5 rounded-lg ${
+              r.isCurrent
+                ? 'bg-cp-amber/10 border border-cp-amber/20'
+                : 'glass-nested'
+            }`}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-mono text-white/90">{r.version}</span>
+                {r.isCurrent && (
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-cp-amber/20 text-cp-amber font-medium">
+                    current
+                  </span>
+                )}
+              </div>
+              <div className="text-[10px] text-white/40 mt-0.5 truncate">
+                {r.name} · {new Date(r.publishedAt).toLocaleDateString()}
+              </div>
+            </div>
+
+            {!r.isCurrent && r.downloadUrl && (
+              <button
+                onClick={() => handleRollback(r.tag, r.version)}
+                disabled={!!rollingBack}
+                className="shrink-0 ml-2 px-3 py-1.5 text-xs bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-white/70 hover:text-white rounded-lg transition-colors disabled:opacity-30"
+              >
+                {rollingBack === r.tag ? 'Rolling back...' : 'Rollback'}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 };

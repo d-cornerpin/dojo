@@ -62,9 +62,9 @@ const TaskDetailPanel = ({
   };
 
   const priorityColors: Record<string, string> = {
-    high: 'text-red-400',
-    normal: 'text-yellow-400',
-    low: 'text-green-400',
+    high: 'text-cp-coral',
+    normal: 'text-cp-amber',
+    low: 'text-cp-teal',
   };
 
   return (
@@ -106,7 +106,7 @@ const TaskDetailPanel = ({
                 handleFieldUpdate({ status: newStatus });
               }}
               disabled={saving}
-              className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="glass-select w-full"
             >
               <option value="on_deck">Pending</option>
               <option value="in_progress">In Progress</option>
@@ -127,7 +127,7 @@ const TaskDetailPanel = ({
                 handleFieldUpdate({ priority: newPriority });
               }}
               disabled={saving}
-              className={`w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${priorityColors[priority] || 'white/90'}`}
+              className={`glass-select w-full ${priorityColors[priority] || ''}`}
             >
               <option value="high">High</option>
               <option value="normal">Normal</option>
@@ -146,7 +146,7 @@ const TaskDetailPanel = ({
                 handleFieldUpdate({ assignedTo: newAgent || undefined });
               }}
               disabled={saving}
-              className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="glass-select w-full"
             >
               <option value="">Unassigned</option>
               {agents.map((a) => (
@@ -156,7 +156,7 @@ const TaskDetailPanel = ({
             {task.assignedTo && (
               <Link
                 to={`/agents/${task.assignedTo}`}
-                className="text-xs text-blue-400 hover:text-blue-300 mt-1 inline-block"
+                className="text-xs text-cp-blue hover:text-cp-blue/80 mt-1 inline-block"
               >
                 View agent details
               </Link>
@@ -172,7 +172,7 @@ const TaskDetailPanel = ({
                   const depTask = allTasks.find(t => t.id === depId);
                   return (
                     <div key={depId} className="text-sm text-white/55 flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full shrink-0 ${depTask?.status === 'complete' ? 'bg-green-400' : depTask?.status === 'in_progress' ? 'bg-blue-400' : 'bg-white/20'}`} />
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${depTask?.status === 'complete' ? 'bg-cp-teal' : depTask?.status === 'in_progress' ? 'bg-cp-blue' : 'bg-white/20'}`} />
                       {depTask?.title ?? depId}
                     </div>
                   );
@@ -216,12 +216,12 @@ const TaskDetailPanel = ({
               onChange={(e) => setNoteInput(e.target.value)}
               placeholder="Add a note..."
               rows={3}
-              className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+              className="glass-textarea w-full resize-none"
             />
             <button
               onClick={handleAddNote}
               disabled={saving || !noteInput.trim()}
-              className="mt-2 px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white rounded-lg transition-colors"
+              className="mt-2 px-3 py-1.5 text-sm glass-btn-blue rounded-lg transition-colors"
             >
               Add Note
             </button>
@@ -305,7 +305,7 @@ const CreateProjectModal = ({
         <h3 className="text-lg font-semibold text-white mb-4">Create Project</h3>
 
         {error && (
-          <div className="mb-4 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+          <div className="alert-banner alert-error mb-4">
             {error}
           </div>
         )}
@@ -317,7 +317,7 @@ const CreateProjectModal = ({
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Project title"
-              className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="glass-input w-full"
             />
           </div>
 
@@ -328,7 +328,7 @@ const CreateProjectModal = ({
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Optional description"
               rows={3}
-              className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none"
+              className="glass-textarea w-full resize-none"
             />
           </div>
 
@@ -337,7 +337,7 @@ const CreateProjectModal = ({
             <select
               value={level}
               onChange={(e) => setLevel(Number(e.target.value))}
-              className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="glass-select w-full"
             >
               <option value={1}>Level 1 - Simple</option>
               <option value={2}>Level 2 - Medium</option>
@@ -361,7 +361,7 @@ const CreateProjectModal = ({
                         updated[i] = { ...t, assignedTo: e.target.value };
                         setTasks(updated);
                       }}
-                      className="px-2 py-0.5 bg-white/[0.08] border white/[0.10] rounded text-xs white/70 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      className="glass-select"
                     >
                       {activeAgents.map((a) => (
                         <option key={a.id} value={a.id}>{a.name}</option>
@@ -369,7 +369,7 @@ const CreateProjectModal = ({
                     </select>
                     <button
                       onClick={() => removeTask(i)}
-                      className="white/40 hover:text-red-400 transition-colors text-sm"
+                      className="white/40 hover:text-cp-coral transition-colors text-sm"
                     >
                       &times;
                     </button>
@@ -383,12 +383,12 @@ const CreateProjectModal = ({
                 onChange={(e) => setTaskTitle(e.target.value)}
                 placeholder="Add a task..."
                 onKeyDown={(e) => e.key === 'Enter' && addTask()}
-                className="flex-1 px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="glass-input flex-1"
               />
               <select
                 value={taskAssignee}
                 onChange={(e) => setTaskAssignee(e.target.value)}
-                className="px-2 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="glass-select"
               >
                 {activeAgents.map((a) => (
                   <option key={a.id} value={a.id}>{a.name}</option>
@@ -415,7 +415,7 @@ const CreateProjectModal = ({
           <button
             onClick={handleCreate}
             disabled={saving || !title.trim()}
-            className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white rounded-lg transition-colors"
+            className="px-4 py-2 text-sm glass-btn-blue rounded-lg transition-colors"
           >
             {saving ? 'Creating...' : 'Create Project'}
           </button>
@@ -510,13 +510,7 @@ export const Tracker = () => {
 
   const selectedTask = selectedTaskId ? tasks.find((t) => t.id === selectedTaskId) : null;
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <p className="white/40">Loading tracker...</p>
-      </div>
-    );
-  }
+  if (loading) return <div className="flex-1 loading-state">Loading...</div>;
 
   return (
     <div className="flex-1 flex flex-col min-h-0 p-6">
@@ -530,7 +524,7 @@ export const Tracker = () => {
             <select
               value={selectedProjectId}
               onChange={(e) => { setSelectedProjectId(e.target.value); setConfirmDeleteProject(false); }}
-              className="px-3 py-1.5 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="glass-select"
             >
               <option value="all">All Tasks</option>
               {projects.map((p) => (
@@ -555,7 +549,7 @@ export const Tracker = () => {
 
             {confirmDeleteProject ? (
               <div className="flex items-center gap-3">
-                <span className="text-sm text-red-400">Delete this project and all its tasks?</span>
+                <span className="text-sm text-cp-coral">Delete this project and all its tasks?</span>
                 <button
                   onClick={async () => {
                     await api.deleteProject(selectedProjectId);
@@ -577,7 +571,7 @@ export const Tracker = () => {
             ) : (
               <button
                 onClick={() => setConfirmDeleteProject(true)}
-                className="px-3 py-1 text-sm text-red-400 hover:text-red-300 border border-red-500/30 rounded-lg hover:border-red-500/50 transition-colors"
+                className="px-3 py-1 text-sm text-cp-coral hover:text-cp-coral/80 border border-cp-coral/30 rounded-lg hover:border-cp-coral/50 transition-colors"
               >
                 Delete Project
               </button>
@@ -688,8 +682,7 @@ const CreateTaskModal = ({
 
   return (
     <div className="glass-modal-backdrop">
-      <div className="glass-modal p-6 max-w-lg w-full mx-4"
-        style={{ boxShadow: '0 24px 64px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.1)' }}>
+      <div className="glass-modal p-6 max-w-lg w-full mx-4">
         <h3 className="text-lg font-semibold text-white mb-4">Create Task</h3>
 
         {error && <div className="mb-4 px-3 py-2 rounded-xl bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}

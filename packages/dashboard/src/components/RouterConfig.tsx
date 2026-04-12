@@ -64,7 +64,7 @@ export const RouterConfig = ({ config, onUpdateTierModels, onUpdateDimension }: 
     <div className="space-y-6">
       {/* Tier panels */}
       <div>
-        <h3 className="text-sm font-medium white/70 mb-3">Tier Configuration</h3>
+        <h3 className="card-header mb-3">Tier Configuration</h3>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           {config.tiers.map((tier) => (
             <TierPanel
@@ -79,7 +79,7 @@ export const RouterConfig = ({ config, onUpdateTierModels, onUpdateDimension }: 
 
       {/* Dimension weights */}
       <div>
-        <h3 className="text-sm font-medium white/70 mb-3">Dimension Weights</h3>
+        <h3 className="card-header mb-3">Dimension Weights</h3>
         <div className="glass-card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
@@ -240,7 +240,7 @@ const TierPanel = ({
                 if (e.target.value) handleAdd(e.target.value);
               }}
               disabled={saving}
-              className="w-full px-2 py-1.5 bg-white/[0.05] border white/[0.08] rounded text-xs white/90 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="glass-select w-full"
             >
               <option value="" disabled>Select a model...</option>
               {availableModels
@@ -314,7 +314,7 @@ const DimensionRow = ({
             onChange={(e) => setWeight(e.target.value)}
             onBlur={handleWeightSave}
             disabled={!dimension.isEnabled || saving}
-            className="w-16 px-2 py-1 bg-white/[0.05] border white/[0.08] rounded text-xs white/90 disabled:white/30 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="glass-input w-16 disabled:white/30"
           />
         </div>
       </td>
@@ -322,15 +322,9 @@ const DimensionRow = ({
         <button
           onClick={handleToggle}
           disabled={saving}
-          className={`relative w-9 h-5 rounded-full transition-colors ${
-            dimension.isEnabled ? 'bg-blue-600' : 'bg-white/[0.08]'
-          }`}
+          className={`toggle-switch ${dimension.isEnabled ? 'toggle-on' : ''}`}
         >
-          <span
-            className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-              dimension.isEnabled ? 'translate-x-4' : 'translate-x-0.5'
-            }`}
-          />
+          <span className="toggle-knob" />
         </button>
       </td>
     </tr>

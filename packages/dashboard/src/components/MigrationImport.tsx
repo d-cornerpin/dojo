@@ -109,14 +109,14 @@ export const MigrationImport = ({ isOobe = false, onComplete }: Props) => {
         {isOobe ? (
           <button
             onClick={() => { window.location.href = '/'; }}
-            className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors"
+            className="px-6 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
           >
             Enter the Dojo
           </button>
         ) : (
           <button
             onClick={() => { window.location.reload(); }}
-            className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors"
+            className="px-6 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
           >
             Reload Dashboard
           </button>
@@ -128,7 +128,7 @@ export const MigrationImport = ({ isOobe = false, onComplete }: Props) => {
   return (
     <div className="space-y-4">
       {!isOobe && (
-        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
+        <div className="alert-banner alert-warning">
           <p className="text-amber-400 text-sm font-medium">Warning</p>
           <p className="text-amber-400/70 text-xs mt-1">
             This will REPLACE your current dojo with the imported data. This action cannot be undone.
@@ -225,7 +225,7 @@ export const MigrationImport = ({ isOobe = false, onComplete }: Props) => {
               <button
                 type="submit"
                 disabled={!password || password.length < 8}
-                className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
+                className="w-full px-4 py-2 glass-btn-blue disabled:cursor-not-allowed text-sm font-medium rounded-lg transition-colors"
               >
                 Import
               </button>

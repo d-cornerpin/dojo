@@ -78,7 +78,6 @@ const SetupGate = () => {
 const WebSocketShell = () => {
   return (
     <WebSocketProvider>
-      <GlobalAlerts />
       <Outlet />
     </WebSocketProvider>
   );

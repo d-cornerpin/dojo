@@ -46,7 +46,7 @@ export const BudgetConfig = ({ budgets, agents, onUpdateGlobal, onUpdateAgent }:
     <div className="space-y-6">
       {/* Global budget */}
       <div className="glass-card p-4">
-        <h3 className="text-sm font-medium white/70 mb-3">Global Daily Budget</h3>
+        <h3 className="card-header mb-3">Global Daily Budget</h3>
         {budgets.global && (
           <div className="mb-3">
             <div className="flex items-center justify-between text-xs white/40 mb-1">
@@ -65,12 +65,12 @@ export const BudgetConfig = ({ budgets, agents, onUpdateGlobal, onUpdateAgent }:
             value={globalLimit}
             onChange={(e) => setGlobalLimit(e.target.value)}
             placeholder="e.g., 10.00"
-            className="w-32 px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="glass-input w-32"
           />
           <button
             onClick={handleSaveGlobal}
             disabled={savingGlobal || !globalLimit}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-sm font-medium rounded-lg transition-colors"
+            className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
           >
             {savingGlobal ? 'Saving...' : 'Save'}
           </button>
@@ -82,7 +82,7 @@ export const BudgetConfig = ({ budgets, agents, onUpdateGlobal, onUpdateAgent }:
       <div className="glass-card overflow-hidden">
         <button
           onClick={() => setAgentBudgetsOpen(!agentBudgetsOpen)}
-          className="w-full px-4 py-3 flex items-center justify-between text-sm font-medium white/70 hover:bg-white/[0.03] transition-colors"
+          className="w-full px-4 py-3 flex items-center justify-between card-header hover:bg-white/[0.03] transition-colors"
         >
           <span>Per-Agent Budgets</span>
           <span className="white/40">{agentBudgetsOpen ? '[-]' : '[+]'}</span>
@@ -178,12 +178,12 @@ const AgentBudgetRow = ({
           value={limit}
           onChange={(e) => setLimit(e.target.value)}
           placeholder="--"
-          className="w-20 px-2 py-1 bg-white/[0.05] border white/[0.08] rounded text-xs white/90 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          className="glass-input w-20"
         />
         <select
           value={selectedPeriod}
           onChange={(e) => setSelectedPeriod(e.target.value)}
-          className="px-2 py-1 bg-white/[0.05] border white/[0.08] rounded text-xs white/70 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          className="glass-select"
         >
           <option value="daily">Daily</option>
           <option value="weekly">Weekly</option>
@@ -192,7 +192,7 @@ const AgentBudgetRow = ({
         <button
           onClick={handleSave}
           disabled={saving}
-          className="px-2 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-xs font-medium rounded transition-colors"
+          className="px-2 py-1 glass-btn-blue text-xs font-medium rounded transition-colors"
         >
           {saving ? '...' : 'Set'}
         </button>

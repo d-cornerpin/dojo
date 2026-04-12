@@ -85,12 +85,8 @@ export const PresenceToggle = ({ collapsed }: { collapsed: boolean }) => {
         }`}
       >
         {/* Toggle switch */}
-        <div className={`relative w-8 h-4 rounded-full transition-colors shrink-0 ${
-          isAway ? 'bg-cp-amber/40' : 'bg-cp-teal/40'
-        }`}>
-          <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
-            isAway ? 'translate-x-4' : 'translate-x-0.5'
-          }`} />
+        <div className={`toggle-switch ${!isAway ? 'toggle-on' : ''}`} style={{ transform: 'scale(0.75)' }}>
+          <span className="toggle-knob" />
         </div>
 
         <span className={`font-medium ${isAway ? 'text-cp-amber' : 'text-cp-teal'}`}>

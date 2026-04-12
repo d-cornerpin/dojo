@@ -88,7 +88,7 @@ export const TechniqueDetail = () => {
 
   useEffect(() => { load(); }, [id]);
 
-  if (loading) return <div className="flex-1 flex items-center justify-center"><p className="text-white/40">Loading...</p></div>;
+  if (loading) return <div className="flex-1 loading-state">Loading...</div>;
   if (!technique) return <div className="flex-1 flex items-center justify-center"><p className="text-red-400">Technique not found</p></div>;
 
   const badge = stateBadge[technique.state] ?? stateBadge.draft;
@@ -188,13 +188,13 @@ export const TechniqueDetail = () => {
 const OverviewTab = ({ technique }: { technique: TechniqueData }) => (
   <div className="space-y-4 max-w-2xl">
     <div className="glass-card p-4 space-y-2">
-      <h3 className="text-sm font-medium text-white/70">Description</h3>
+      <h3 className="card-header">Description</h3>
       <p className="text-sm text-white/80">{technique.description || <span className="text-white/30 italic">No description</span>}</p>
     </div>
 
     {technique.tags.length > 0 && (
       <div className="glass-card p-4 space-y-2">
-        <h3 className="text-sm font-medium text-white/70">Tags</h3>
+        <h3 className="card-header">Tags</h3>
         <div className="flex flex-wrap gap-1.5">
           {technique.tags.map(tag => (
             <span key={tag} className="glass-badge glass-badge-blue text-xs">{tag}</span>
@@ -204,7 +204,7 @@ const OverviewTab = ({ technique }: { technique: TechniqueData }) => (
     )}
 
     <div className="glass-card p-4 space-y-2">
-      <h3 className="text-sm font-medium text-white/70">Stats</h3>
+      <h3 className="card-header">Stats</h3>
       <div className="grid grid-cols-2 gap-2 text-xs text-white/50">
         <div>Usage count: <span className="text-white/80">{technique.usageCount}</span></div>
         <div>Last used: <span className="text-white/80">{technique.lastUsedAt ? formatDate(technique.lastUsedAt) : 'Never'}</span></div>

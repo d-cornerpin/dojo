@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { SearchResult } from '@dojo/shared';
 import * as api from '../lib/api';
-import { parseUtc } from '../lib/dates';
+import { formatDate } from '../lib/dates';
 
 type SearchScope = 'both' | 'messages' | 'summaries';
 type SearchMode = 'text' | 'semantic';
@@ -103,17 +103,6 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
     };
   }, [query, doSearch, mode]);
 
-  const formatTimestamp = (ts: string) => {
-    if (!ts) return '';
-    const d = parseUtc(ts);
-    if (!d) return '';
-    return d.toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  };
 
   const highlightMatch = (text: string, q: string) => {
     if (!q.trim()) return text;
@@ -151,7 +140,7 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
                 ? 'Semantic search — describe what you recall...'
                 : 'Search memory...'
             }
-            className="w-full bg-white/[0.05] border white/[0.08] rounded-lg pl-9 pr-3 py-2 text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="glass-input w-full pl-9 pr-3"
           />
           <span className="absolute left-3 top-1/2 -translate-y-1/2 white/40 text-sm">
             {mode === 'semantic' ? '\u2731' : '?'}
@@ -171,7 +160,7 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
               onClick={() => setMode('text')}
               className={`px-2.5 py-1 text-xs rounded transition-colors ${
                 mode === 'text'
-                  ? 'bg-blue-600/20 text-blue-400'
+                  ? 'bg-cp-amber/20 text-cp-amber'
                   : 'white/40 hover:white/70'
               }`}
             >
@@ -208,7 +197,7 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
                 onClick={() => setScope(s)}
                 className={`px-2.5 py-1 text-xs rounded transition-colors ${
                   scope === s
-                    ? 'bg-blue-600/20 text-blue-400'
+                    ? 'bg-cp-amber/20 text-cp-amber'
                     : 'bg-white/[0.05] white/40 hover:white/70'
                 }`}
               >
@@ -241,10 +230,10 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
           >
             <div className="flex items-center gap-2 mb-1">
               <span
-                className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                className={`glass-badge ${
                   result.type === 'message'
-                    ? 'bg-blue-500/20 text-blue-400'
-                    : 'bg-green-500/20 text-green-400'
+                    ? 'glass-badge-blue'
+                    : 'glass-badge-teal'
                 }`}
               >
                 {result.type}
@@ -256,7 +245,7 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
               )}
               {result.timestamp && (
                 <span className="text-[10px] white/40">
-                  {formatTimestamp(result.timestamp)}
+                  {formatDate(result.timestamp)}
                 </span>
               )}
               {result.tokenCount > 0 && (

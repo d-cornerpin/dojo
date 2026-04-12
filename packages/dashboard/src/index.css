@@ -147,11 +147,12 @@
      ════════════════════════════════════════ */
 
   .glass-input {
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 12px;
-    color: rgba(255, 255, 255, 0.92);
-    padding: 10px 14px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    color: rgba(255, 255, 255, 0.9);
+    padding: 8px 12px;
+    font-size: 14px;
     font-size: 14px;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
     outline: none;
@@ -159,16 +160,17 @@
   }
   .glass-input::placeholder { color: rgba(255, 255, 255, 0.3); }
   .glass-input:focus {
-    border-color: rgba(245, 166, 35, 0.5);
-    box-shadow: 0 0 12px rgba(245, 166, 35, 0.15);
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(245, 166, 35, 0.4);
   }
 
   .glass-select {
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 12px;
-    color: rgba(255, 255, 255, 0.92);
-    padding: 10px 14px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    color: rgba(255, 255, 255, 0.9);
+    padding: 8px 12px;
+    font-size: 14px;
     font-size: 14px;
     outline: none;
     cursor: pointer;
@@ -180,16 +182,17 @@
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
   .glass-select:focus {
-    border-color: rgba(245, 166, 35, 0.5);
-    box-shadow: 0 0 12px rgba(245, 166, 35, 0.15);
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(245, 166, 35, 0.4);
   }
 
   .glass-textarea {
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 12px;
-    color: rgba(255, 255, 255, 0.92);
-    padding: 12px 14px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    color: rgba(255, 255, 255, 0.9);
+    padding: 10px 12px;
+    font-size: 14px;
     font-size: 14px;
     outline: none;
     resize: vertical;
@@ -199,8 +202,8 @@
   }
   .glass-textarea::placeholder { color: rgba(255, 255, 255, 0.3); }
   .glass-textarea:focus {
-    border-color: rgba(245, 166, 35, 0.5);
-    box-shadow: 0 0 12px rgba(245, 166, 35, 0.15);
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(245, 166, 35, 0.4);
   }
 
   /* ════════════════════════════════════════
@@ -252,6 +255,21 @@
   }
   .glass-btn-destructive:not(:disabled):hover {
     background: rgba(255, 107, 138, 0.25);
+  }
+
+  .glass-btn-blue {
+    background: linear-gradient(135deg, #F5A623, #FFBA42);
+    color: #1a1a2e;
+    font-weight: 600;
+  }
+  .glass-btn-blue:not(:disabled):hover {
+    box-shadow: 0 0 16px rgba(245, 166, 35, 0.3);
+    transform: translateY(-1px);
+  }
+  .glass-btn-blue:disabled {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.4);
+    font-weight: 500;
   }
 
   .glass-btn-ghost {
@@ -351,6 +369,242 @@
     letter-spacing: 0.1em;
     text-transform: uppercase;
     color: rgba(255, 255, 255, 0.55);
+  }
+
+  /* ════════════════════════════════════════
+     STANDARDIZED UI UTILITIES
+     ════════════════════════════════════════ */
+
+  /* Form labels — consistent across all forms */
+  .form-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.55);
+    margin-bottom: 4px;
+  }
+
+  /* Form hint text below inputs */
+  .form-hint {
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.3);
+    margin-top: 4px;
+  }
+
+  /* Section headers inside cards */
+  .card-header {
+    font-size: 14px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.7);
+  }
+
+  /* Card description text below headers */
+  .card-description {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.4);
+    margin-top: 4px;
+  }
+
+  /* Loading state */
+  .loading-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 16px;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 14px;
+  }
+
+  /* Empty state messaging */
+  .empty-state {
+    text-align: center;
+    padding: 24px 16px;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 14px;
+  }
+  .empty-state-icon {
+    font-size: 24px;
+    margin-bottom: 8px;
+    opacity: 0.6;
+  }
+  .empty-state-text {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.3);
+    margin-top: 4px;
+  }
+
+  /* Chat message bubbles */
+  .bubble-user {
+    background: rgba(124, 58, 237, 0.25);
+    border: 1px solid rgba(124, 58, 237, 0.4);
+    border-radius: 16px 16px 4px 16px;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  }
+
+  .bubble-assistant {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 16px 16px 16px 4px;
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    color: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  }
+
+  /* Toggle switch */
+  .toggle-switch {
+    position: relative;
+    display: inline-flex;
+    height: 24px;
+    width: 44px;
+    align-items: center;
+    border-radius: 9999px;
+    transition: background-color 0.2s ease;
+    cursor: pointer;
+    border: none;
+    background: rgba(255, 255, 255, 0.12);
+  }
+  .toggle-switch[aria-checked="true"],
+  .toggle-switch.toggle-on {
+    background: #F5A623;
+  }
+  .toggle-switch:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .toggle-knob {
+    display: inline-block;
+    height: 16px;
+    width: 16px;
+    border-radius: 9999px;
+    background: white;
+    transition: transform 0.2s ease;
+    transform: translateX(4px);
+  }
+  .toggle-on .toggle-knob {
+    transform: translateX(24px);
+  }
+
+  /* Circular send/stop buttons (Chat input) */
+  .btn-circle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+  }
+  @media (min-width: 640px) {
+    .btn-circle { width: 44px; height: 44px; }
+  }
+  .btn-circle:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  .btn-circle-send {
+    background: #F5A623;
+    color: #0B0F1A;
+    font-size: 20px;
+    font-weight: 700;
+  }
+  .btn-circle-send:not(:disabled):hover {
+    background: #FFBA42;
+    box-shadow: 0 0 16px rgba(245, 166, 35, 0.3);
+  }
+
+  .btn-circle-stop {
+    background: #EF4444;
+    color: #ffffff;
+  }
+  .btn-circle-stop:hover {
+    background: #DC2626;
+    box-shadow: 0 0 16px rgba(239, 68, 68, 0.3);
+  }
+
+  /* Sidebar nav links */
+  .nav-link {
+    border-left: 3px solid transparent;
+    color: rgba(255, 255, 255, 0.45);
+    transition: all 0.2s ease;
+  }
+  .nav-link:hover {
+    color: rgba(255, 255, 255, 0.8);
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .nav-link-active {
+    background: rgba(245, 166, 35, 0.1);
+    border-left-color: #F5A623;
+    color: #F5A623;
+  }
+  .nav-link-active:hover {
+    color: #F5A623;
+    background: rgba(245, 166, 35, 0.1);
+  }
+
+  /* Inline action buttons (small, compact) */
+  .btn-sm {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    outline: none;
+    transition: all 0.15s ease;
+  }
+  .btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .btn-sm-primary {
+    background: rgba(91, 141, 239, 0.15);
+    color: #7BA4F7;
+    border: 1px solid rgba(91, 141, 239, 0.25);
+  }
+  .btn-sm-primary:not(:disabled):hover {
+    background: rgba(91, 141, 239, 0.25);
+  }
+
+  .btn-sm-ghost {
+    background: transparent;
+    color: rgba(255, 255, 255, 0.5);
+  }
+  .btn-sm-ghost:not(:disabled):hover {
+    color: rgba(255, 255, 255, 0.8);
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  /* Inline alert banners */
+  .alert-banner {
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    border: 1px solid;
+  }
+  .alert-error {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: rgba(239, 68, 68, 0.2);
+    color: #f87171;
+  }
+  .alert-success {
+    background: rgba(34, 197, 94, 0.1);
+    border-color: rgba(34, 197, 94, 0.2);
+    color: #4ade80;
+  }
+  .alert-warning {
+    background: rgba(245, 166, 35, 0.1);
+    border-color: rgba(245, 166, 35, 0.2);
+    color: #F5A623;
+  }
+  .alert-info {
+    background: rgba(59, 130, 246, 0.1);
+    border-color: rgba(59, 130, 246, 0.2);
+    color: #60a5fa;
   }
 
   .accent-bar-amber  { border-top: 3px solid #F5A623; }

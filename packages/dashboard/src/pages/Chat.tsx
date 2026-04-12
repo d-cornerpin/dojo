@@ -88,8 +88,7 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
 
   return (
     <div className="flex justify-end">
-      <div className="max-w-[92%] sm:max-w-[75%] px-3 py-2 sm:px-4 sm:py-3 text-white"
-        style={{ background: 'rgba(124, 58, 237, 0.25)', border: '1px solid rgba(124, 58, 237, 0.4)', borderRadius: '16px 16px 4px 16px', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1)' }}>
+      <div className="bubble-user max-w-[92%] sm:max-w-[75%] px-3 py-2 sm:px-4 sm:py-3 text-white">
         {displayContent && (
           <pre className="whitespace-pre-wrap font-sans text-xs sm:text-sm leading-relaxed break-words">
             {displayContent}
@@ -116,7 +115,7 @@ const AssistantBubble = ({ msg, wordyMode = true, modelNames = {} }: { msg: Chat
       <div className="max-w-[92%] sm:max-w-[75%]">
         {/* Text content */}
         {text && (
-          <div className="px-3 py-2 sm:px-4 sm:py-3 whitespace-pre-wrap text-xs sm:text-sm" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '16px 16px 16px 4px', backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)', color: 'rgba(255,255,255,0.92)', boxShadow: '0 4px 16px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)' }}>
+          <div className="bubble-assistant px-3 py-2 sm:px-4 sm:py-3 whitespace-pre-wrap text-xs sm:text-sm">
             {wordyMode && msg.modelId && (
               <div className="text-[9px] sm:text-[10px] text-white/25 mb-1">{modelNames[msg.modelId] ?? msg.modelId}</div>
             )}
@@ -133,7 +132,7 @@ const AssistantBubble = ({ msg, wordyMode = true, modelNames = {} }: { msg: Chat
 
         {/* Streaming cursor when no text yet */}
         {!text && msg.isStreaming && (
-          <div className="px-4 py-3" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '16px 16px 16px 4px', backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1)' }}>
+          <div className="bubble-assistant px-4 py-3">
             <span className="inline-flex gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-cp-amber animate-bounce" style={{ animationDelay: '0ms' }} />
               <span className="w-1.5 h-1.5 rounded-full bg-cp-amber animate-bounce" style={{ animationDelay: '150ms' }} />
@@ -519,13 +518,7 @@ export const Chat = () => {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <p className="white/40">Loading chat...</p>
-      </div>
-    );
-  }
+  if (loading) return <div className="flex-1 loading-state">Loading...</div>;
 
   return (
     <div className="flex-1 flex flex-col min-h-0">

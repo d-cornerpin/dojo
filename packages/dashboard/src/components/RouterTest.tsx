@@ -28,7 +28,7 @@ export const RouterTest = ({ onTest }: RouterTestProps) => {
 
   return (
     <div className="glass-card p-4">
-      <h3 className="text-sm font-medium white/70 mb-3">Test Router</h3>
+      <h3 className="card-header mb-3">Test Router</h3>
       <p className="text-xs white/40 mb-3">
         Enter a prompt to see how the router would score and route it.
       </p>
@@ -38,13 +38,13 @@ export const RouterTest = ({ onTest }: RouterTestProps) => {
         onChange={(e) => setPrompt(e.target.value)}
         rows={3}
         placeholder="Enter a test prompt..."
-        className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y mb-3"
+        className="glass-textarea w-full resize-y mb-3"
       />
 
       <button
         onClick={handleTest}
         disabled={testing || !prompt.trim()}
-        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-sm font-medium rounded-lg transition-colors"
+        className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
       >
         {testing ? 'Testing...' : 'Test'}
       </button>

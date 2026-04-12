@@ -211,7 +211,7 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
     >
       {/* Error */}
       {error && (
-        <div className="mb-2 px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-xs flex items-center justify-between">
+        <div className="alert-banner alert-error mb-2 flex items-center justify-between">
           <span>{error}</span>
           <button onClick={() => setError(null)} className="ml-2 hover:opacity-70">&times;</button>
         </div>
@@ -279,10 +279,10 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
             rows={1}
             className={isPrimary
               ? 'glass-input w-full resize-none py-2 sm:py-3.5 pr-4 sm:pr-5 text-xs sm:text-[15px] scrollbar-hide'
-              : 'w-full py-2 sm:py-2.5 pr-3 sm:pr-4 bg-white/[0.05] border border-white/[0.08] rounded-xl text-xs sm:text-sm text-white/90 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none disabled:opacity-50 scrollbar-hide'
+              : 'glass-input w-full py-2 sm:py-2.5 pr-3 sm:pr-4 rounded-xl text-xs sm:text-sm resize-none disabled:opacity-50 scrollbar-hide'
             }
             style={isPrimary
-              ? { minHeight: window.innerWidth < 640 ? '38px' : '50px', borderRadius: '16px', paddingLeft: '38px' }
+              ? { borderRadius: '16px', paddingLeft: '38px' }
               : { paddingLeft: '36px' }
             }
           />
@@ -293,10 +293,7 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
           isWorking && onStop ? (
             <button
               onClick={onStop}
-              className="shrink-0 flex items-center justify-center transition-all"
-              style={{ background: '#EF4444', color: '#ffffff', borderRadius: '50%', width: window.innerWidth < 640 ? '36px' : '44px', height: window.innerWidth < 640 ? '36px' : '44px' }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = '#DC2626'; e.currentTarget.style.boxShadow = '0 0 16px rgba(239,68,68,0.3)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = '#EF4444'; e.currentTarget.style.boxShadow = 'none'; }}
+              className="btn-circle btn-circle-stop"
               title="Stop agent"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
@@ -305,10 +302,7 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
             <button
               onClick={handleSend}
               disabled={disabled || uploading || (!input.trim() && pendingFiles.length === 0)}
-              className="shrink-0 flex items-center justify-center text-xl font-bold transition-all disabled:opacity-30"
-              style={{ background: '#F5A623', color: '#0B0F1A', borderRadius: '50%', width: window.innerWidth < 640 ? '36px' : '44px', height: window.innerWidth < 640 ? '36px' : '44px' }}
-              onMouseEnter={(e) => { if (input.trim() || pendingFiles.length > 0) { e.currentTarget.style.background = '#FFBA42'; e.currentTarget.style.boxShadow = '0 0 16px rgba(245,166,35,0.3)'; } }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = '#F5A623'; e.currentTarget.style.boxShadow = 'none'; }}
+              className="btn-circle btn-circle-send"
             >
               {uploading ? '\u23F3' : '\u2191'}
             </button>
@@ -317,7 +311,7 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
           <button
             onClick={handleSend}
             disabled={disabled || uploading || (!input.trim() && pendingFiles.length === 0)}
-            className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:text-white/40 text-white font-medium rounded-xl transition-colors shrink-0"
+            className="px-4 py-2.5 glass-btn-blue font-medium rounded-xl transition-colors shrink-0"
           >
             {uploading ? 'Uploading...' : 'Send'}
           </button>

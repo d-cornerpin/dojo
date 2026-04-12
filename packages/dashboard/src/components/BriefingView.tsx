@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { Briefing } from '@dojo/shared';
 import * as api from '../lib/api';
-import { parseUtc } from '../lib/dates';
+import { formatDate } from '../lib/dates';
 
 interface BriefingViewProps {
   agentId: string;
@@ -56,17 +56,6 @@ export const BriefingView = ({ agentId }: BriefingViewProps) => {
     setRegenerating(false);
   };
 
-  const formatDate = (d: string) => {
-    const parsed = parseUtc(d);
-    if (!parsed) return '';
-    return parsed.toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  };
 
   if (loading) {
     return (
@@ -83,7 +72,7 @@ export const BriefingView = ({ agentId }: BriefingViewProps) => {
         <button
           onClick={handleRegenerate}
           disabled={regenerating}
-          className="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors disabled:opacity-50"
+          className="px-4 py-2 text-sm rounded-lg glass-btn-blue transition-colors"
         >
           {regenerating ? 'Generating...' : 'Generate Briefing'}
         </button>
@@ -98,7 +87,7 @@ export const BriefingView = ({ agentId }: BriefingViewProps) => {
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b white/[0.06]">
         <div>
-          <h3 className="text-sm font-medium white/90">Morning Briefing</h3>
+          <h3 className="card-header">Morning Briefing</h3>
           <div className="flex items-center gap-3 mt-0.5 text-[10px] white/40">
             <span>Generated: {formatDate(briefing.generatedAt)}</span>
             <span>{briefing.tokenCount.toLocaleString()} tokens</span>
@@ -119,7 +108,7 @@ export const BriefingView = ({ agentId }: BriefingViewProps) => {
           <button
             onClick={handleRegenerate}
             disabled={regenerating}
-            className="px-3 py-1.5 text-xs rounded bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 transition-colors disabled:opacity-50"
+            className="px-3 py-1.5 text-xs rounded bg-cp-amber/20 text-cp-amber hover:bg-cp-amber/30 transition-colors disabled:opacity-50"
           >
             {regenerating ? 'Regenerating...' : 'Regenerate'}
           </button>
@@ -128,7 +117,7 @@ export const BriefingView = ({ agentId }: BriefingViewProps) => {
 
       {/* Error banner */}
       {error && (
-        <div className="px-4 py-2 bg-red-900/20 border-b border-red-900/30 text-red-400 text-xs">
+        <div className="alert-banner alert-error">
           {error}
         </div>
       )}
@@ -140,13 +129,13 @@ export const BriefingView = ({ agentId }: BriefingViewProps) => {
             <textarea
               value={editContent}
               onChange={(e) => setEditContent(e.target.value)}
-              className="w-full h-96 bg-white/[0.05] border white/[0.08] rounded-lg p-3 text-sm white/90 font-mono resize-y focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="glass-textarea w-full h-96 font-mono resize-y"
             />
             <div className="flex gap-2">
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className="px-4 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-500 transition-colors disabled:opacity-50"
+                className="px-4 py-1.5 text-xs rounded glass-btn-blue transition-colors"
               >
                 {saving ? 'Saving...' : 'Save'}
               </button>

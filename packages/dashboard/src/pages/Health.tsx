@@ -38,9 +38,9 @@ const formatTimestamp = (ts: string | null): string => {
 
 const levelColors: Record<string, string> = {
   debug: 'bg-white/[0.12] white/90',
-  info: 'bg-blue-600/30 text-blue-300',
-  warn: 'bg-yellow-600/30 text-yellow-300',
-  error: 'bg-red-600/30 text-red-300',
+  info: 'bg-cp-blue/30 text-cp-blue',
+  warn: 'bg-cp-amber/30 text-cp-amber',
+  error: 'bg-cp-coral/30 text-cp-coral',
 };
 
 interface ProviderStatus {
@@ -97,7 +97,7 @@ const RemoteAccessCard = () => {
 
   return (
     <div className="mb-6">
-      <h3 className="text-sm font-medium white/70 mb-3">Remote Access</h3>
+      <h3 className="card-header mb-3">Remote Access</h3>
       <div className="glass-card p-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -141,7 +141,7 @@ const GoogleWorkspaceCard = () => {
 
   return (
     <div className="mb-6">
-      <h3 className="text-sm font-medium white/70 mb-3">Google Workspace</h3>
+      <h3 className="card-header mb-3">Google Workspace</h3>
       <div className="glass-card p-4">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
@@ -307,13 +307,7 @@ export const Health = () => {
     setSendingTest(false);
   };
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <p className="white/40">Loading health data...</p>
-      </div>
-    );
-  }
+  if (loading) return <div className="flex-1 loading-state">Loading...</div>;
 
   const memPct = resources?.memory?.percentage
     ?? (health ? (health.memory.used / Math.max(health.memory.total, 1)) * 100 : 0);
@@ -341,7 +335,7 @@ export const Health = () => {
         <StatCard
           label="Database"
           value={health?.db === 'ok' ? 'OK' : 'Error'}
-          valueColor={health?.db === 'ok' ? 'text-green-400' : 'text-red-400'}
+          valueColor={health?.db === 'ok' ? 'text-cp-teal' : 'text-cp-coral'}
         />
         <StatCard
           label="Agents"
@@ -351,7 +345,7 @@ export const Health = () => {
 
       {/* Memory gauge */}
       <div className="glass-card p-4 mb-6">
-        <h3 className="text-sm font-medium white/70 mb-3">Memory Usage</h3>
+        <h3 className="card-header mb-3">Memory Usage</h3>
         <div className="space-y-2">
           <div className="flex items-center justify-between text-xs white/40">
             <span>
@@ -385,7 +379,7 @@ export const Health = () => {
             <div className="mt-3 space-y-1.5">
               <div className="flex items-center gap-2">
                 <span className="text-xs white/40">Ollama:</span>
-                <span className={`text-xs ${resources.ollama.running ? 'text-green-400' : 'text-red-400'}`}>
+                <span className={`text-xs ${resources.ollama.running ? 'text-cp-teal' : 'text-cp-coral'}`}>
                   {resources.ollama.running ? 'Running' : 'Stopped'}
                 </span>
                 {resources.ollama.running && resources.ollama.models.length > 0 && (
@@ -424,7 +418,7 @@ export const Health = () => {
 
       {/* Provider health */}
       <div className="mb-6">
-        <h3 className="text-sm font-medium white/70 mb-3">Provider Health</h3>
+        <h3 className="card-header mb-3">Provider Health</h3>
         <ProviderHealth providers={providerStatuses} />
       </div>
 
@@ -439,13 +433,13 @@ export const Health = () => {
         {/* Watchdog */}
         <div className="glass-card p-4">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-medium white/70">Watchdog</h3>
+            <h3 className="card-header">Watchdog</h3>
             {watchdog && (
               <span
                 className={`text-xs font-medium px-2 py-0.5 rounded-full ${
                   watchdog.running
-                    ? 'bg-green-500/10 text-green-400'
-                    : 'bg-red-500/10 text-red-400'
+                    ? 'bg-cp-teal/10 text-cp-teal'
+                    : 'bg-cp-coral/10 text-cp-coral'
                 }`}
               >
                 {watchdog.running ? 'Running' : 'Stopped'}
@@ -471,14 +465,14 @@ export const Health = () => {
         {/* iMessage bridge */}
         <div className="glass-card p-4">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-medium white/70">iMessage Bridge</h3>
+            <h3 className="card-header">iMessage Bridge</h3>
             {imBridge && (
               <span
                 className={`text-xs font-medium px-2 py-0.5 rounded-full ${
                   imBridge.connected
-                    ? 'bg-green-500/10 text-green-400'
+                    ? 'bg-cp-teal/10 text-cp-teal'
                     : imBridge.enabled
-                      ? 'bg-yellow-500/10 text-yellow-400'
+                      ? 'bg-cp-amber/10 text-cp-amber'
                       : 'bg-white/[0.04] white/55'
                 }`}
               >
@@ -503,12 +497,12 @@ export const Health = () => {
                     value={testMsg}
                     onChange={(e) => setTestMsg(e.target.value)}
                     placeholder="Test message..."
-                    className="flex-1 px-2 py-1 bg-white/[0.05] border white/[0.08] rounded text-xs white/90 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="glass-input flex-1"
                   />
                   <button
                     onClick={handleSendTest}
                     disabled={sendingTest || !testMsg.trim()}
-                    className="px-2 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-xs font-medium rounded transition-colors"
+                    className="px-2 py-1 glass-btn-blue text-xs font-medium rounded transition-colors"
                   >
                     {sendingTest ? '...' : 'Send'}
                   </button>
@@ -529,7 +523,7 @@ export const Health = () => {
           <select
             value={levelFilter}
             onChange={(e) => setLevelFilter(e.target.value)}
-            className="px-2 py-1 bg-white/[0.05] border white/[0.08] rounded text-sm white/70 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="glass-select"
           >
             <option value="">All Levels</option>
             <option value="debug">Debug</option>
@@ -540,7 +534,7 @@ export const Health = () => {
           <select
             value={componentFilter}
             onChange={(e) => setComponentFilter(e.target.value)}
-            className="px-2 py-1 bg-white/[0.05] border white/[0.08] rounded text-sm white/70 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="glass-select"
           >
             <option value="">All Components</option>
             {components.map((c) => (

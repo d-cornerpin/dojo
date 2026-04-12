@@ -72,9 +72,9 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
         <span className="text-sm text-white/70">Schedule this task</span>
         <button
           onClick={() => handleToggle(!enabled)}
-          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 ${enabled ? 'bg-cp-teal' : 'bg-white/[0.12]'}`}
+          className={`toggle-switch ${enabled ? 'toggle-on' : ''}`}
         >
-          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-200 ${enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+          <span className="toggle-knob" />
         </button>
       </div>
 
@@ -100,9 +100,9 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
                 if (repeatEnabled) update({ repeatInterval: null, repeatUnit: null, repeatEndType: 'never', repeatEndValue: null });
                 else update({ repeatInterval: 1, repeatUnit: 'days' });
               }}
-              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 ${repeatEnabled ? 'bg-cp-teal' : 'bg-white/[0.12]'}`}
+              className={`toggle-switch ${repeatEnabled ? 'toggle-on' : ''}`}
             >
-              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform duration-200 ${repeatEnabled ? 'translate-x-[18px]' : 'translate-x-[2px]'}`} />
+              <span className="toggle-knob" />
             </button>
           </div>
 

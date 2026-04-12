@@ -171,13 +171,13 @@ export const SummaryDetail = ({
             <textarea
               value={editContent}
               onChange={(e) => setEditContent(e.target.value)}
-              className="w-full h-64 bg-white/[0.05] border white/[0.08] rounded-lg p-3 text-sm white/90 font-mono resize-y focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="glass-textarea w-full h-64 font-mono resize-y"
             />
             <div className="flex gap-2">
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className="px-4 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-500 transition-colors disabled:opacity-50"
+                className="px-4 py-1.5 text-xs rounded glass-btn-blue transition-colors"
               >
                 {saving ? 'Saving...' : 'Save'}
               </button>

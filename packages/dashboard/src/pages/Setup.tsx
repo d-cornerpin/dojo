@@ -549,7 +549,7 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
                 <p className="text-[11px] text-white/30">
                   Once both steps are done, click "Add & Validate Provider" below. The dojo will verify your connection.
                 </p>
-                <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
+                <div className="alert-banner alert-warning">
                   <p className="text-[10px] text-amber-400/70">
                     Agent SDK billing is subject to Anthropic's usage policies. If you experience issues, switch to API Key.
                   </p>
@@ -759,7 +759,7 @@ const ModelsStep = () => {
             {models.map((model) => (
               <label key={model.id} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/[0.04] cursor-pointer">
                 <input type="checkbox" checked={selected.has(model.id)} onChange={() => toggleModel(model.id)}
-                  className="w-4 h-4 rounded white/[0.10] bg-white/[0.08] text-blue-500 focus:ring-blue-500 focus:ring-offset-0" />
+                  className="w-4 h-4 rounded white/[0.10] bg-white/[0.08] text-cp-amber focus:ring-cp-amber focus:ring-offset-0" />
                 <div>
                   <span className="text-sm white/90">{model.name}</span>
                   {model.contextWindow && (
@@ -943,7 +943,7 @@ const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
           {['casual', 'balanced', 'formal'].map((s) => (
             <label key={s} className="flex items-center gap-2 cursor-pointer">
               <input type="radio" name="style" value={s} checked={style === s} onChange={() => setStyle(s)}
-                className="w-4 h-4 text-blue-500 bg-white/[0.08] white/[0.10] focus:ring-blue-500" />
+                className="w-4 h-4 text-cp-amber bg-white/[0.08] white/[0.10] focus:ring-cp-amber" />
               <span className="text-sm white/70 capitalize">{s}</span>
             </label>
           ))}
@@ -1231,7 +1231,7 @@ const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
               name="setupDreamMode"
               checked={dreamMode === 'full'}
               onChange={() => { setDreamMode('full'); setSaved(false); }}
-              className="mt-1 accent-blue-500"
+              className="mt-1 accent-cp-amber"
             />
             <div>
               <span className="text-sm text-white/80 font-medium">Full Dream</span>
@@ -1248,7 +1248,7 @@ const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
               name="setupDreamMode"
               checked={dreamMode === 'light'}
               onChange={() => { setDreamMode('light'); setSaved(false); }}
-              className="mt-1 accent-blue-500"
+              className="mt-1 accent-cp-amber"
             />
             <div>
               <span className="text-sm text-white/80 font-medium">Light Dream</span>
@@ -1364,8 +1364,8 @@ const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
           <p className="text-xs text-white/40 mt-0.5">Send and receive messages with your agent via iMessage</p>
         </div>
         <button onClick={() => { setEnabled(!enabled); setSaved(false); }}
-          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 ${enabled ? 'bg-cp-teal' : 'bg-white/[0.12]'}`}>
-          <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-200 ${enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+          className={`toggle-switch ${enabled ? 'toggle-on' : ''}`}>
+          <span className="toggle-knob" />
         </button>
       </div>
 
@@ -1504,7 +1504,7 @@ const WorkspaceStep = () => {
       <button
         onClick={handleConnect}
         disabled={connecting}
-        className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
+        className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
       >
         {connecting ? 'Waiting for sign-in...' : 'Sign in with Google'}
       </button>

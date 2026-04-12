@@ -55,26 +55,17 @@ function hasToolAccess(policy: { allow?: string[]; deny?: string[] } | undefined
 const Toggle = ({
   enabled,
   onChange,
-  color = 'blue',
 }: {
   enabled: boolean;
   onChange: (v: boolean) => void;
-  color?: 'blue' | 'red' | 'green';
+  color?: string;
 }) => {
-  const bg = enabled
-    ? color === 'red' ? 'bg-red-500' : color === 'green' ? 'bg-green-500' : 'bg-blue-500'
-    : 'bg-white/[0.12]';
-
   return (
     <button
       onClick={() => onChange(!enabled)}
-      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 ${bg}`}
+      className={`toggle-switch ${enabled ? 'toggle-on' : ''}`}
     >
-      <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-200 ${
-          enabled ? 'translate-x-6' : 'translate-x-1'
-        }`}
-      />
+      <span className="toggle-knob" />
     </button>
   );
 };
@@ -143,7 +134,7 @@ const SubOption = ({
           type="radio"
           checked={isAll}
           onChange={() => onAllChange(true)}
-          className="text-blue-500 bg-white/[0.05] white/[0.10] focus:ring-blue-500 focus:ring-offset-0"
+          className="text-cp-amber bg-white/[0.05] white/[0.10] focus:ring-cp-amber focus:ring-offset-0"
         />
         <span className="text-xs white/70">{allLabel}</span>
       </label>
@@ -152,7 +143,7 @@ const SubOption = ({
           type="radio"
           checked={!isAll}
           onChange={() => onAllChange(false)}
-          className="text-blue-500 bg-white/[0.05] white/[0.10] focus:ring-blue-500 focus:ring-offset-0"
+          className="text-cp-amber bg-white/[0.05] white/[0.10] focus:ring-cp-amber focus:ring-offset-0"
         />
         <span className="text-xs white/70">{specificLabel}</span>
       </label>
@@ -162,7 +153,7 @@ const SubOption = ({
         value={list}
         onChange={(e) => onListChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full px-3 py-1.5 bg-white/[0.04] border white/[0.08] rounded-lg text-xs white/90 font-mono placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        className="glass-input w-full font-mono"
       />
     )}
   </div>
@@ -369,7 +360,7 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
                 value={execDeny}
                 onChange={(e) => setExecDeny(e.target.value)}
                 placeholder="rm -rf *, sudo *, ..."
-                className="w-full px-3 py-1.5 bg-white/[0.04] border white/[0.08] rounded-lg text-xs white/90 font-mono placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="glass-input w-full font-mono"
               />
               <p className="text-[10px] white/30 mt-0.5">Global deny (rm -rf /, sudo *, chmod 777 *) always enforced.</p>
             </div>
@@ -381,7 +372,7 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
                 max={50}
                 value={maxProcesses}
                 onChange={(e) => setMaxProcesses(Number(e.target.value))}
-                className="w-20 px-3 py-1.5 bg-white/[0.04] border white/[0.08] rounded-lg text-xs white/90 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="glass-input w-20"
               />
             </div>
             <div>
@@ -393,7 +384,7 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
                   else { setWebDomainsAll(false); setWebDomainsList(e.target.value); }
                 }}
                 placeholder="* for all, or comma-separated domains"
-                className="w-full px-3 py-1.5 bg-white/[0.04] border white/[0.08] rounded-lg text-xs white/90 font-mono placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="glass-input w-full font-mono"
               />
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -403,7 +394,7 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
                   value={rawToolsAllow}
                   onChange={(e) => setRawToolsAllow(e.target.value)}
                   placeholder="empty = all tools"
-                  className="w-full px-3 py-1.5 bg-white/[0.04] border white/[0.08] rounded-lg text-xs white/90 font-mono placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="glass-input w-full font-mono"
                 />
               </div>
               <div>
@@ -412,7 +403,7 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
                   value={rawToolsDeny}
                   onChange={(e) => setRawToolsDeny(e.target.value)}
                   placeholder="spawn_agent, kill_agent, ..."
-                  className="w-full px-3 py-1.5 bg-white/[0.04] border white/[0.08] rounded-lg text-xs white/90 font-mono placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="glass-input w-full font-mono"
                 />
               </div>
             </div>

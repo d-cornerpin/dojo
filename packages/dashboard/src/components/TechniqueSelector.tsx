@@ -65,7 +65,7 @@ export const TechniqueSelector = ({ selected, onChange }: TechniqueSelectorProps
           <select
             defaultValue=""
             onChange={(e) => { if (e.target.value) handleAdd(e.target.value); }}
-            className="flex-1 px-2 py-1.5 bg-white/[0.05] border white/[0.08] rounded-lg text-xs white/90 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="glass-select flex-1"
             autoFocus
           >
             <option value="" disabled>Select a technique...</option>

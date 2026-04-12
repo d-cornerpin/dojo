@@ -102,12 +102,12 @@ const OpenRouterBudget = () => {
 
   const balance = Math.round((credits.balance ?? 0) * 100) / 100;
   const totalUsage = Math.round((credits.total_usage ?? 0) * 100) / 100;
-  const balanceColor = balance >= 100 ? 'text-green-400' : balance >= 25 ? 'text-amber-400' : 'text-red-400';
+  const balanceColor = balance >= 100 ? 'text-cp-teal' : balance >= 25 ? 'text-cp-amber' : 'text-cp-coral';
 
   return (
     <div className="glass-card p-4 mb-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-medium white/70">OpenRouter Balance</h2>
+        <h2 className="card-header">OpenRouter Balance</h2>
         <p className={`text-lg font-semibold ${balanceColor}`}>${balance.toFixed(2)}</p>
       </div>
       <p className="text-xs white/30 mt-1">Lifetime spend: ${totalUsage.toFixed(2)}</p>
@@ -120,16 +120,16 @@ const OpenRouterBudget = () => {
           value={threshold}
           onChange={(e) => setThreshold(e.target.value)}
           placeholder="e.g., 10"
-          className="w-20 px-2 py-1 bg-white/[0.05] border white/[0.08] rounded text-xs white/90 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          className="glass-input w-20"
         />
         <button
           onClick={handleSaveThreshold}
           disabled={savingThreshold || !threshold}
-          className="px-2 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-xs font-medium rounded transition-colors"
+          className="px-2 py-1 glass-btn-blue text-xs font-medium rounded transition-colors"
         >
           {savingThreshold ? '...' : 'Save'}
         </button>
-        {savedThreshold && <span className="text-xs text-green-400">Saved</span>}
+        {savedThreshold && <span className="text-xs text-cp-teal">Saved</span>}
       </div>
     </div>
   );
@@ -249,13 +249,7 @@ export const Costs = () => {
       : 0
     : 0;
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <p className="white/40">Loading cost data...</p>
-      </div>
-    );
-  }
+  if (loading) return <div className="flex-1 loading-state">Loading...</div>;
 
   return (
     <div className="flex-1 p-3 sm:p-6 overflow-y-auto">
@@ -270,7 +264,7 @@ export const Costs = () => {
               onClick={() => setPeriod(p)}
               className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                 period === p
-                  ? 'bg-blue-600 text-white'
+                  ? 'bg-cp-amber text-cp-bg'
                   : 'white/55 hover:white/90'
               }`}
             >
@@ -319,7 +313,7 @@ export const Costs = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 mb-4 sm:mb-6">
         {/* Spend by model */}
         <div className="glass-card p-4">
-          <h3 className="text-sm font-medium white/70 mb-3">Spend by Model</h3>
+          <h3 className="card-header mb-3">Spend by Model</h3>
           <BarChart
             data={(summary?.byModel ?? []).map((m: Record<string, unknown>, i: number) => ({
               label: (m.modelName ?? m.modelId ?? 'Unknown') as string,
@@ -331,7 +325,7 @@ export const Costs = () => {
 
         {/* Spend by agent */}
         <div className="glass-card p-4">
-          <h3 className="text-sm font-medium white/70 mb-3">Spend by Agent</h3>
+          <h3 className="card-header mb-3">Spend by Agent</h3>
           <BarChart
             data={(summary?.byAgent ?? []).map((a: Record<string, unknown>, i: number) => ({
               label: (a.agentName ?? a.agentId ?? 'Unknown') as string,
@@ -343,7 +337,7 @@ export const Costs = () => {
 
         {/* Tier distribution */}
         <div className="glass-card p-4">
-          <h3 className="text-sm font-medium white/70 mb-3">Tier Distribution</h3>
+          <h3 className="card-header mb-3">Tier Distribution</h3>
           <div className="space-y-3">
             {(summary?.byTier ?? []).map((t) => {
               const count = (t as Record<string, unknown>).requestCount as number ?? (t as Record<string, unknown>).count as number ?? 0;
@@ -374,7 +368,7 @@ export const Costs = () => {
       {/* Budget config */}
       {budgets && (
         <div className="glass-card p-4 mb-6">
-          <h2 className="text-sm font-medium white/70 mb-3">Budget Configuration</h2>
+          <h2 className="card-header mb-3">Budget Configuration</h2>
             <BudgetConfig
               budgets={budgets}
               agents={agents}
@@ -396,7 +390,7 @@ export const Costs = () => {
       {/* Recent API calls table */}
       <div className="glass-card overflow-hidden">
         <div className="px-4 py-3 border-b white/[0.06] flex items-center justify-between">
-          <h3 className="text-sm font-medium white/70">Recent API Calls</h3>
+          <h3 className="card-header">Recent API Calls</h3>
           <span className="text-xs white/30">{records.length} records</span>
         </div>
         <div className="overflow-x-auto">
@@ -472,8 +466,8 @@ const SummaryCard = ({
 const TierBadge = ({ tier }: { tier: string }) => {
   const colors: Record<string, string> = {
     tier1: 'bg-purple-600/20 text-purple-300',
-    tier2: 'bg-blue-600/20 text-blue-300',
-    tier3: 'bg-green-600/20 text-green-300',
+    tier2: 'bg-cp-amber/20 text-cp-amber',
+    tier3: 'bg-green-600/20 text-cp-teal',
   };
   return (
     <span className={`text-xs px-1.5 py-0.5 rounded ${colors[tier] || 'bg-white/[0.08] white/70'}`}>
@@ -502,7 +496,7 @@ const SortableHeader = ({
     <span className="inline-flex items-center gap-1">
       {label}
       {current === field && (
-        <span className="text-blue-400">{dir === 'asc' ? '^' : 'v'}</span>
+        <span className="text-cp-blue">{dir === 'asc' ? '^' : 'v'}</span>
       )}
     </span>
   </th>

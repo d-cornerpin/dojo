@@ -15,6 +15,13 @@ interface MsStatus {
   officeTools: { status: 'not_installed' | 'installing' | 'installed' | 'failed'; error: string | null };
 }
 
+const serviceList = [
+  { key: 'outlook', label: 'Outlook Email', desc: 'Read and send emails' },
+  { key: 'calendar', label: 'Calendar', desc: 'View and create events' },
+  { key: 'onedrive', label: 'OneDrive', desc: 'List, read, and upload files' },
+  { key: 'teams', label: 'Teams', desc: 'Send messages', entraOnly: true },
+];
+
 export const MicrosoftWorkspaceSettings = () => {
   const [status, setStatus] = useState<MsStatus | null>(null);
   const [testing, setTesting] = useState(false);
@@ -37,16 +44,11 @@ export const MicrosoftWorkspaceSettings = () => {
   const handleConnect = async () => {
     setConnecting(true);
     setError(null);
-
-    // Always use localhost:3001 — the auth callback must hit the API server directly.
-    // This works even when the user accesses the dashboard via a tunnel because
-    // the user is on the same machine as the dojo.
     const redirectUri = 'http://localhost:3001/api/microsoft/callback';
     const result = await api.request<{ authUrl: string }>('/microsoft/connect', {
       method: 'POST',
       body: JSON.stringify({ redirectUri }),
     });
-
     if (result.ok) {
       window.open(result.data.authUrl, '_blank');
       const poll = setInterval(async () => {
@@ -72,6 +74,7 @@ export const MicrosoftWorkspaceSettings = () => {
   };
 
   const handleDisconnect = async () => {
+    if (!confirm('Disconnect Microsoft 365? Your agents will lose access to Outlook, Calendar, OneDrive, and Teams.')) return;
     await api.request('/microsoft/disconnect', { method: 'POST' });
     await loadStatus();
   };
@@ -83,159 +86,134 @@ export const MicrosoftWorkspaceSettings = () => {
     await loadStatus();
   };
 
-  if (!status) return <p className="text-sm text-white/40">Loading...</p>;
+  const handleInstallOffice = async () => {
+    await api.request('/microsoft/install-office-tools', { method: 'POST' });
+    setTimeout(loadStatus, 5000);
+  };
 
-  const serviceList = [
-    { key: 'outlook', label: 'Outlook Email' },
-    { key: 'calendar', label: 'Calendar' },
-    { key: 'onedrive', label: 'OneDrive' },
-    { key: 'teams', label: 'Teams', entraOnly: true },
-  ];
+  if (!status) return <div className="loading-state">Loading...</div>;
 
-  // ═══════════════════════════════════════
-  // Connected
-  // ═══════════════════════════════════════
-  if (status.connected) {
-    return (
-      <div className="space-y-6">
-        <h3 className="text-sm font-semibold text-white/80 uppercase tracking-wider">Microsoft 365</h3>
-
-        <div className="glass-card p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-cp-teal animate-pulse" />
-              <span className="text-sm text-white/70">
-                Connected as <strong className="text-white">{status.email}</strong>
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className={`text-[10px] px-2 py-0.5 rounded-full ${
-                status.accountType === 'entra' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : 'bg-white/[0.06] text-white/40'
-              }`}>
-                {status.accountType === 'entra' ? 'Work/School' : 'Personal'}
-              </span>
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-cp-teal/10 text-cp-teal border border-cp-teal/20">Connected</span>
-            </div>
-          </div>
-          {status.lastVerified && <p className="text-xs text-white/30">Last verified: {new Date(status.lastVerified).toLocaleString()}</p>}
-          <div className="flex gap-2">
-            <button onClick={handleTest} disabled={testing} className="glass-btn glass-btn-ghost text-xs">
-              {testing ? 'Testing...' : 'Test Connection'}
-            </button>
-            <button onClick={handleDisconnect} className="glass-btn glass-btn-ghost text-xs text-cp-coral hover:text-cp-coral">
-              Disconnect
-            </button>
-          </div>
-        </div>
-
-        <div className="glass-card p-4 space-y-3">
-          <h4 className="text-sm font-medium text-white/70">Enabled Services</h4>
-          <div className="grid grid-cols-2 gap-2">
-            {serviceList.map(svc => {
-              const blocked = svc.entraOnly && status.accountType === 'msa';
-              return (
-                <div key={svc.key}>
-                  <label className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
-                    blocked ? 'opacity-40 cursor-not-allowed' :
-                    status.services[svc.key] ? 'bg-cp-teal/10 border border-cp-teal/30 cursor-pointer' : 'bg-white/[0.04] border border-white/[0.06] cursor-pointer'
-                  }`}>
-                    <input type="checkbox" checked={!blocked && (status.services[svc.key] ?? true)}
-                      onChange={(e) => !blocked && handleServiceToggle(svc.key, e.target.checked)}
-                      disabled={blocked} className="sr-only" />
-                    <span className={`w-4 h-4 rounded flex items-center justify-center text-[10px] ${
-                      !blocked && status.services[svc.key] ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/10 text-white/30'
-                    }`}>{!blocked && status.services[svc.key] ? '\u2713' : ''}</span>
-                    <span className="text-sm text-white/70">{svc.label}</span>
-                  </label>
-                  {blocked && <p className="text-[10px] text-cp-amber/70 mt-1 ml-1">Requires work/school account</p>}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Office Document Tools */}
-        <div className="glass-card p-4 space-y-2">
-          <div className="flex items-center justify-between">
-            <h4 className="text-sm font-medium text-white/70">Office Document Tools</h4>
-            <span className={`text-[10px] px-2 py-0.5 rounded-full ${
-              status.officeTools.status === 'installed' ? 'bg-cp-teal/10 text-cp-teal border border-cp-teal/20' :
-              status.officeTools.status === 'installing' ? 'bg-cp-amber/10 text-cp-amber border border-cp-amber/20' :
-              status.officeTools.status === 'failed' ? 'bg-cp-coral/10 text-cp-coral border border-cp-coral/20' :
-              'bg-white/[0.06] text-white/40'
-            }`}>
-              {status.officeTools.status === 'installed' ? 'Ready' :
-               status.officeTools.status === 'installing' ? 'Installing...' :
-               status.officeTools.status === 'failed' ? 'Failed' : 'Not installed'}
-            </span>
-          </div>
-          <p className="text-xs text-white/40">
-            {status.officeTools.status === 'installed'
-              ? 'Word, Excel, and PowerPoint document creation tools are available.'
-              : status.officeTools.status === 'installing'
-                ? 'Installing document creation packages...'
-                : 'Enables creating Word documents, Excel spreadsheets, and PowerPoint presentations.'}
-          </p>
-          {status.officeTools.status === 'failed' && (
-            <div className="space-y-2">
-              {status.officeTools.error && <p className="text-xs text-cp-coral">{status.officeTools.error}</p>}
-              <button onClick={async () => { await api.request('/microsoft/install-office-tools', { method: 'POST' }); setTimeout(loadStatus, 5000); }}
-                className="glass-btn glass-btn-ghost text-xs">Retry Install</button>
-            </div>
-          )}
-          {status.officeTools.status === 'not_installed' && (
-            <button onClick={async () => { await api.request('/microsoft/install-office-tools', { method: 'POST' }); setTimeout(loadStatus, 5000); }}
-              className="glass-btn glass-btn-primary text-xs">Install Office Tools</button>
-          )}
-        </div>
-
-        <div className="glass-card p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h4 className="text-sm font-medium text-white/70">Microsoft Activity Log</h4>
-            <button onClick={() => setShowActivity(!showActivity)} className="text-xs text-cp-teal hover:text-cp-teal/80">
-              {showActivity ? 'Hide' : 'Show'} Activity
-            </button>
-          </div>
-          <div className="flex gap-4 text-xs text-white/40">
-            <span>Today: {status.todayActivity.reads} reads, {status.todayActivity.writes} writes</span>
-            {status.lastActivity && <span>Last: {new Date(status.lastActivity).toLocaleString()}</span>}
-          </div>
-          {showActivity && <MicrosoftActivityLog />}
-        </div>
-      </div>
-    );
-  }
-
-  // ═══════════════════════════════════════
-  // Not connected — single button
-  // ═══════════════════════════════════════
   return (
-    <div className="space-y-6">
-      <h3 className="text-sm font-semibold text-white/80 uppercase tracking-wider">Microsoft 365</h3>
-      <p className="text-sm text-white/55">
-        Connect a Microsoft account to let your agents read and send Outlook email, manage the calendar, use OneDrive, and send Teams messages. Works with both personal and work/school accounts.
-      </p>
+    <div className="space-y-4">
+      <div className="glass-card p-4 space-y-4">
+        <h3 className="card-header">Microsoft 365</h3>
 
-      <div className="glass-card p-4 space-y-3">
-        <button onClick={handleConnect} disabled={connecting} className="glass-btn glass-btn-primary text-sm w-full">
-          {connecting ? 'Waiting for sign-in...' : 'Sign in with Microsoft'}
-        </button>
+        {!status.connected ? (
+          <div className="space-y-3">
+            <p className="text-xs text-white/40">
+              Connect your Microsoft account to give agents access to Outlook, Calendar, OneDrive, and Teams.
+            </p>
+            {error && <div className="alert-banner alert-error">{error}</div>}
+            <button
+              onClick={handleConnect}
+              disabled={connecting}
+              className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors w-full"
+            >
+              {connecting ? 'Waiting for sign-in...' : 'Sign in with Microsoft'}
+            </button>
+            {connecting && (
+              <p className="text-xs text-white/30">
+                Complete the sign-in in your browser. This page will update automatically.
+              </p>
+            )}
+            <p className="text-[10px] text-white/25">
+              For work/school accounts: if you see "Need admin approval", your organization's admin needs to approve the app once.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {/* Connected status */}
+            <div className="flex items-center gap-3">
+              <span className="w-2 h-2 rounded-full bg-cp-teal animate-pulse shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-white/80 truncate">{status.email}</p>
+                <p className="text-xs text-white/30">
+                  {status.accountType === 'entra' ? 'Work/School' : 'Personal'}
+                  {status.lastVerified && ` · Verified ${new Date(status.lastVerified).toLocaleDateString()}`}
+                </p>
+              </div>
+            </div>
 
-        {connecting && (
-          <div className="px-3 py-2 rounded-lg bg-cp-amber/10 border border-cp-amber/20 text-xs text-cp-amber animate-pulse">
-            Complete the sign-in in your browser. This page will update automatically.
+            {/* Activity summary */}
+            {status.todayActivity && (status.todayActivity.reads > 0 || status.todayActivity.writes > 0) && (
+              <div className="text-xs text-white/30">
+                Today: {status.todayActivity.reads} reads, {status.todayActivity.writes} writes
+              </div>
+            )}
+
+            {/* Service toggles */}
+            <div className="space-y-1">
+              <p className="form-label">Services</p>
+              {serviceList.map(svc => {
+                const blocked = svc.entraOnly && status.accountType === 'msa';
+                return (
+                  <label key={svc.key} className={`flex items-center justify-between py-1.5 ${blocked ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
+                    <div>
+                      <span className="text-sm text-white/70">{svc.label}</span>
+                      <span className="text-xs text-white/30 ml-2">{svc.desc}</span>
+                      {blocked && <span className="text-[10px] text-cp-amber/70 ml-2">(work/school only)</span>}
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={!blocked && (status.services[svc.key] ?? true)}
+                      onChange={(e) => !blocked && handleServiceToggle(svc.key, e.target.checked)}
+                      disabled={blocked}
+                      className="rounded border-white/20 bg-white/5 text-cp-amber focus:ring-cp-amber focus:ring-offset-0"
+                    />
+                  </label>
+                );
+              })}
+            </div>
+
+            {/* Office Document Tools */}
+            <div className="border-t border-white/[0.06] pt-3">
+              <div className="flex items-center justify-between mb-1">
+                <p className="form-label mb-0">Office Document Tools</p>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full ${
+                  status.officeTools.status === 'installed' ? 'bg-cp-teal/10 text-cp-teal' :
+                  status.officeTools.status === 'installing' ? 'bg-cp-amber/10 text-cp-amber' :
+                  status.officeTools.status === 'failed' ? 'bg-cp-coral/10 text-cp-coral' :
+                  'bg-white/[0.06] text-white/40'
+                }`}>
+                  {status.officeTools.status === 'installed' ? 'Ready' :
+                   status.officeTools.status === 'installing' ? 'Installing...' :
+                   status.officeTools.status === 'failed' ? 'Failed' : 'Not installed'}
+                </span>
+              </div>
+              <p className="text-xs text-white/30 mb-2">
+                Word, Excel, and PowerPoint document creation.
+              </p>
+              {status.officeTools.status === 'failed' && status.officeTools.error && (
+                <p className="text-xs text-cp-coral mb-2">{status.officeTools.error}</p>
+              )}
+              {(status.officeTools.status === 'not_installed' || status.officeTools.status === 'failed') && (
+                <button onClick={handleInstallOffice}
+                  className="px-3 py-1.5 glass-btn-blue text-xs rounded-lg transition-colors">
+                  {status.officeTools.status === 'failed' ? 'Retry Install' : 'Install'}
+                </button>
+              )}
+            </div>
+
+            {/* Actions */}
+            <div className="flex gap-2 pt-2 flex-wrap">
+              <button onClick={handleTest} disabled={testing}
+                className="px-3 py-1.5 glass-btn-blue text-xs rounded-lg transition-colors">
+                {testing ? 'Testing...' : 'Test Connection'}
+              </button>
+              <button onClick={() => setShowActivity(!showActivity)}
+                className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white/60 text-xs rounded-lg transition-colors">
+                {showActivity ? 'Hide Activity' : 'Activity Log'}
+              </button>
+              <button onClick={handleDisconnect}
+                className="px-3 py-1.5 bg-cp-coral/10 hover:bg-cp-coral/20 text-cp-coral text-xs rounded-lg transition-colors ml-auto">
+                Disconnect
+              </button>
+            </div>
           </div>
         )}
-
-        <p className="text-[10px] text-white/30">
-          For work/school accounts: if you see "Need admin approval", your organization's admin needs to approve the app once.
-          Ask them to visit the admin consent link, or sign in with an admin account first.
-        </p>
       </div>
 
-      {error && (
-        <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>
-      )}
+      {showActivity && <MicrosoftActivityLog />}
     </div>
   );
 };

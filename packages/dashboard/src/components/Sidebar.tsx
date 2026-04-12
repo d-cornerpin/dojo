@@ -32,8 +32,7 @@ const settingsSubItems = [
   { tab: 'profile', label: 'Profile' },
   { tab: 'security', label: 'Security' },
   { tab: 'sensei', label: 'Sensei' },
-  { tab: 'workspace', label: 'Google' },
-  { tab: 'microsoft', label: 'Microsoft' },
+  { tab: 'integrations', label: 'Integrations' },
   { tab: 'update', label: 'Update' },
 ];
 
@@ -86,19 +85,9 @@ export const Sidebar = () => {
                 key={item.path}
                 to={item.path}
                 title={collapsed ? item.label : undefined}
-                className={`flex items-center gap-3 rounded-xl transition-all duration-200 ${
+                className={`nav-link flex items-center gap-3 rounded-xl ${
                   collapsed ? 'px-0 py-2.5 justify-center' : 'px-3 py-2.5'
-                }`}
-                style={isActive ? {
-                  background: 'rgba(245, 166, 35, 0.1)',
-                  borderLeft: '3px solid #F5A623',
-                  color: '#F5A623',
-                } : {
-                  color: 'rgba(255,255,255,0.45)',
-                  borderLeft: '3px solid transparent',
-                }}
-                onMouseEnter={(e) => { if (!isActive) { e.currentTarget.style.color = 'rgba(255,255,255,0.8)'; e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; } }}
-                onMouseLeave={(e) => { if (!isActive) { e.currentTarget.style.color = 'rgba(255,255,255,0.45)'; e.currentTarget.style.background = 'transparent'; } }}
+                } ${isActive ? 'nav-link-active' : ''}`}
               >
                 <span className={`text-base ${collapsed ? '' : 'w-6 text-center'}`}>{item.icon}</span>
                 {!collapsed && <span className="text-sm font-medium">{item.label}</span>}

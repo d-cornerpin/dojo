@@ -82,8 +82,8 @@ function parseMessageContent(raw: string): { text: string; blocks?: ContentBlock
 }
 
 const classificationStyles: Record<string, { bg: string; text: string; label: string }> = {
-  sensei: { bg: 'bg-yellow-500/20', text: 'text-yellow-400', label: 'Sensei' },
-  ronin: { bg: 'bg-blue-500/20', text: 'text-blue-400', label: 'Ronin' },
+  sensei: { bg: 'bg-cp-amber/20', text: 'text-cp-amber', label: 'Sensei' },
+  ronin: { bg: 'bg-blue-500/20', text: 'text-cp-blue', label: 'Ronin' },
   apprentice: { bg: 'bg-white/[0.08]', text: 'white/55', label: 'Apprentice' },
 };
 
@@ -102,7 +102,7 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
 
   return (
     <div className="flex justify-end">
-      <div className="max-w-[75%] rounded-xl px-4 py-3 bg-blue-600 text-white">
+      <div className="bubble-user max-w-[75%] px-4 py-3 text-white">
         {displayContent && (
           <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed break-words">
             {displayContent}
@@ -127,7 +127,7 @@ const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
     <div className="flex justify-start">
       <div className="max-w-[75%]">
         {text && (
-          <div className="rounded-xl px-4 py-3 bg-white/[0.05] white/90 whitespace-pre-wrap">
+          <div className="bubble-assistant px-4 py-3 whitespace-pre-wrap">
             <Markdown content={text} />
             {msg.isStreaming && (
               <span className="inline-block w-2 h-4 bg-white/40 animate-pulse ml-0.5" />
@@ -135,7 +135,7 @@ const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
           </div>
         )}
         {!text && msg.isStreaming && (
-          <div className="rounded-xl px-4 py-3 bg-white/[0.05] white/90">
+          <div className="bubble-assistant px-4 py-3">
             <span className="inline-block w-2 h-4 bg-white/40 animate-pulse" />
           </div>
         )}
@@ -364,7 +364,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto min-h-0 px-4 py-6 space-y-3">
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto min-h-0 px-2 sm:px-4 md:px-6 py-3 sm:py-6 space-y-2 sm:space-y-4">
         {loadingMore && (
           <div className="text-center py-2">
             <span className="text-xs white/30">Loading older messages...</span>
@@ -387,9 +387,9 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
       </div>
 
       {error && (
-        <div className="shrink-0 mx-4 mb-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm flex items-center justify-between">
+        <div className="alert-banner alert-error shrink-0 mx-4 mb-2 flex items-center justify-between">
           <span>{error}</span>
-          <button onClick={() => setError(null)} className="text-red-400 hover:text-red-300 ml-2">&times;</button>
+          <button onClick={() => setError(null)} className="text-cp-coral hover:text-cp-coral/80 ml-2">&times;</button>
         </div>
       )}
 
@@ -547,7 +547,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
     }
   };
 
-  if (loading) return <div className="p-6 white/40">Loading config...</div>;
+  if (loading) return <div className="flex-1 loading-state">Loading...</div>;
 
   return (
     <div className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -561,12 +561,12 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
             <input
               value={editedName}
               onChange={(e) => setEditedName(e.target.value)}
-              className="flex-1 px-3 py-2 bg-white/[0.04] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="glass-input flex-1"
             />
             <button
               onClick={saveName}
               disabled={!editedName.trim() || editedName.trim() === agent.name}
-              className="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white rounded-lg transition-colors"
+              className="px-3 py-2 text-sm glass-btn-blue rounded-lg transition-colors"
             >
               Save
             </button>
@@ -585,7 +585,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
             <select
               value={selectedModelId}
               onChange={(e) => setSelectedModelId(e.target.value)}
-              className="flex-1 px-3 py-2 bg-white/[0.04] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="glass-select flex-1"
             >
               <option value="">No model selected</option>
               <option value="auto">Auto (Smart Router)</option>
@@ -599,7 +599,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
             <button
               onClick={saveModel}
               disabled={selectedModelId === (agent.modelId === 'auto' ? 'auto' : (agent.modelId ?? ''))}
-              className="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white rounded-lg transition-colors"
+              className="px-3 py-2 text-sm glass-btn-blue rounded-lg transition-colors"
             >
               Save
             </button>
@@ -613,7 +613,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
         <div className="glass-nested rounded-xl p-4">
           {agent.classification === 'sensei' ? (
             <div className="flex items-center gap-2">
-              <span className="px-2 py-1 rounded text-xs font-bold bg-yellow-500/20 text-yellow-400">Sensei</span>
+              <span className="px-2 py-1 rounded text-xs font-bold bg-cp-amber/20 text-cp-amber">Sensei</span>
               <span className="text-sm white/40">Cannot be dismissed or deleted. Set programmatically.</span>
             </div>
           ) : (
@@ -624,7 +624,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
                   const result = await api.updateAgentConfig(agent.id, { classification: e.target.value } as Record<string, unknown>);
                   if (result.ok) { showToast('Classification updated'); onUpdated(); }
                 }}
-                className="px-3 py-2 bg-white/[0.04] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="glass-select"
               >
                 <option value="apprentice">Apprentice</option>
                 <option value="ronin">Ronin</option>
@@ -675,12 +675,12 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
             value={systemPrompt}
             onChange={(e) => setSystemPrompt(e.target.value)}
             rows={12}
-            className="w-full px-3 py-2 bg-white/[0.04] border white/[0.08] rounded-lg text-sm white/90 font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 resize-y"
+            className="glass-textarea w-full font-mono resize-y"
           />
           <div className="flex justify-end mt-2">
             <button
               onClick={saveSystemPrompt}
-              className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+              className="px-3 py-1.5 text-sm glass-btn-blue rounded-lg transition-colors"
             >
               Save Prompt
             </button>
@@ -693,7 +693,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
         <h3 className="text-sm font-semibold white/55 uppercase tracking-wide mb-2">Permissions</h3>
         {isPrimary ? (
           <div className="glass-nested rounded-xl p-4">
-            <p className="text-sm text-green-400">This Sensei agent has full access to all files, commands, tools, and system controls.</p>
+            <p className="text-sm text-cp-teal">This Sensei agent has full access to all files, commands, tools, and system controls.</p>
           </div>
         ) : (
           <div className="glass-nested rounded-xl p-4">
@@ -706,7 +706,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
             <div className="flex justify-end mt-4 pt-3 border-t white/[0.08]">
               <button
                 onClick={savePermissions}
-                className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors font-medium"
+                className="px-4 py-2 text-sm glass-btn-blue rounded-lg transition-colors font-medium"
               >
                 Save Permissions
               </button>
@@ -752,9 +752,9 @@ const HistoryTab = ({ agentId }: { agentId: string }) => {
           {messages.map((msg) => (
             <div key={msg.id} className="flex gap-3 text-sm">
               <span className={`shrink-0 w-16 text-right font-mono text-xs py-1 ${
-                msg.role === 'user' ? 'text-blue-400' :
-                msg.role === 'assistant' ? 'text-green-400' :
-                msg.role === 'tool' ? 'text-yellow-400' :
+                msg.role === 'user' ? 'text-cp-blue' :
+                msg.role === 'assistant' ? 'text-cp-teal' :
+                msg.role === 'tool' ? 'text-cp-amber' :
                 'white/40'
               }`}>
                 {msg.role}
@@ -783,9 +783,9 @@ const HistoryTab = ({ agentId }: { agentId: string }) => {
 // ── Inter-Agent Tab ──
 
 const messageTypeBadgeColors: Record<string, { bg: string; text: string }> = {
-  task: { bg: 'bg-blue-500/20', text: 'text-blue-400' },
-  result: { bg: 'bg-green-500/20', text: 'text-green-400' },
-  poke: { bg: 'bg-yellow-500/20', text: 'text-yellow-400' },
+  task: { bg: 'bg-cp-blue/20', text: 'text-cp-blue' },
+  result: { bg: 'bg-cp-teal/20', text: 'text-cp-teal' },
+  poke: { bg: 'bg-cp-amber/20', text: 'text-cp-amber' },
   status: { bg: 'bg-white/[0.08]', text: 'white/55' },
   chat: { bg: 'bg-purple-500/20', text: 'text-purple-400' },
 };
@@ -837,7 +837,7 @@ const InterAgentTab = ({ agentId }: { agentId: string }) => {
             return (
               <div key={msg.id} className="glass-nested rounded-xl p-4">
                 <div className="flex items-center gap-2 mb-2">
-                  <span className={`text-xs px-1.5 py-0.5 rounded ${isSent ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'}`}>
+                  <span className={`text-xs px-1.5 py-0.5 rounded ${isSent ? 'bg-cp-blue/20 text-cp-blue' : 'bg-cp-teal/20 text-cp-teal'}`}>
                     {isSent ? 'Sent' : 'Received'}
                   </span>
                   <span className={`text-xs px-1.5 py-0.5 rounded ${badge.bg} ${badge.text} capitalize`}>
@@ -883,7 +883,7 @@ const TerminateDialog = ({
         <h3 className="text-lg font-semibold text-white mb-2">Dismiss Agent</h3>
         <p className="text-sm white/55 mb-6">
           {classification === 'ronin'
-            ? <>This is a <strong className="text-blue-400">Ronin</strong> agent. Are you sure you want to dismiss <strong className="text-white">{agentName}</strong> from the dojo?</>
+            ? <>This is a <strong className="text-cp-blue">Ronin</strong> agent. Are you sure you want to dismiss <strong className="text-white">{agentName}</strong> from the dojo?</>
             : <>Are you sure you want to dismiss <strong className="text-white">{agentName}</strong> from the dojo? This action cannot be undone.</>
           }
         </p>
@@ -964,7 +964,7 @@ export const AgentDetailPage = () => {
   if (error || !agent) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <p className="text-red-400">{error || 'Agent not found'}</p>
+        <p className="text-cp-coral">{error || 'Agent not found'}</p>
       </div>
     );
   }
@@ -1004,7 +1004,7 @@ export const AgentDetailPage = () => {
               {agent.parentAgent && (
                 <span>
                   Parent:{' '}
-                  <Link to={`/agents/${agent.parentAgent}`} className="text-blue-400 hover:text-blue-300">
+                  <Link to={`/agents/${agent.parentAgent}`} className="text-cp-blue hover:text-cp-blue/80">
                     {agent.parentAgent}
                   </Link>
                 </span>
@@ -1022,7 +1022,7 @@ export const AgentDetailPage = () => {
             {agent.status !== 'terminated' && agent.classification !== 'sensei' && (
               <button
                 onClick={() => setShowTerminate(true)}
-                className="px-3 py-1.5 text-sm bg-red-600/20 text-red-400 hover:bg-red-600/30 rounded-lg transition-colors"
+                className="px-3 py-1.5 text-sm bg-cp-coral/20 text-cp-coral hover:bg-cp-coral/30 rounded-lg transition-colors"
               >
                 Dismiss
               </button>

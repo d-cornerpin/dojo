@@ -219,7 +219,7 @@ export const Memory = () => {
             <select
               value={agentId}
               onChange={(e) => setAgentId(e.target.value)}
-              className="bg-white/[0.05] border border-white/[0.08] rounded-lg px-3 py-1.5 text-sm text-white/90 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="glass-select"
             >
               {agents.map((a) => (
                 <option key={a.id} value={a.id}>
@@ -235,7 +235,7 @@ export const Memory = () => {
               <select
                 value={vaultTypeFilter}
                 onChange={(e) => setVaultTypeFilter(e.target.value)}
-                className="bg-white/[0.05] border border-white/[0.08] rounded-lg px-2 py-1 text-xs text-white/70"
+                className="glass-select"
               >
                 <option value="">All types</option>
                 <option value="fact">Facts</option>
@@ -252,7 +252,7 @@ export const Memory = () => {
                 value={vaultSearch}
                 onChange={(e) => setVaultSearchText(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && loadVault()}
-                className="bg-white/[0.05] border border-white/[0.08] rounded-lg px-3 py-1 text-xs text-white/90 w-48 placeholder-white/30 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="glass-input w-48"
               />
             </>
           )}
@@ -263,7 +263,7 @@ export const Memory = () => {
               }
               className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
                 rightPanel === 'search'
-                  ? 'bg-blue-600/20 text-blue-400'
+                  ? 'bg-cp-amber/20 text-cp-amber'
                   : 'bg-white/[0.05] text-white/55 hover:text-white/90'
               }`}
             >
@@ -355,7 +355,7 @@ export const Memory = () => {
           <div className="flex-1 overflow-y-auto p-4">
             <div className="max-w-3xl mx-auto space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-medium text-white/70">Dream Reports</h3>
+                <h3 className="card-header">Dream Reports</h3>
                 <button
                   onClick={handleDreamNow}
                   disabled={dreaming}
@@ -419,7 +419,7 @@ export const Memory = () => {
                 }
                 className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
                   rightPanel === 'briefing'
-                    ? 'bg-blue-600/20 text-blue-400'
+                    ? 'bg-cp-amber/20 text-cp-amber'
                     : 'bg-white/[0.05] text-white/70 hover:bg-white/[0.08]'
                 }`}
               >
@@ -440,8 +440,8 @@ export const Memory = () => {
           <span
             className={`text-xs ${
               compactResult.startsWith('Error')
-                ? 'text-red-400'
-                : 'text-green-400'
+                ? 'text-cp-coral'
+                : 'text-cp-teal'
             }`}
           >
             {compactResult}
@@ -464,7 +464,7 @@ export const Memory = () => {
                 value={injectContent}
                 onChange={(e) => setInjectContent(e.target.value)}
                 placeholder="Enter memory content to inject..."
-                className="w-full h-40 bg-white/[0.05] border white/[0.08] rounded-lg p-3 text-sm white/90 font-mono placeholder-gray-500 resize-y focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="glass-textarea w-full h-40 font-mono resize-y"
               />
             </div>
             <div className="flex items-center justify-end gap-2 px-5 py-3 border-t white/[0.06]">
@@ -480,7 +480,7 @@ export const Memory = () => {
               <button
                 onClick={handleInject}
                 disabled={injecting || !injectContent.trim()}
-                className="px-4 py-2 text-xs rounded-lg bg-blue-600 text-white hover:bg-blue-500 transition-colors disabled:opacity-50"
+                className="px-4 py-2 text-xs rounded-lg glass-btn-blue transition-colors"
               >
                 {injecting ? 'Injecting...' : 'Inject'}
               </button>

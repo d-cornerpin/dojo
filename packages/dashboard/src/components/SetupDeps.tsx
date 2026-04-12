@@ -78,7 +78,7 @@ const DepItem = ({ label, status, detail, error, onRetry }: {
           <span className="text-xs text-yellow-500 animate-pulse">Checking...</span>
         )}
         {(status === 'failed' || status === 'not-installed') && onRetry && (
-          <button onClick={onRetry} className="px-2 py-1 text-xs bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 rounded transition-colors">
+          <button onClick={onRetry} className="px-2 py-1 text-xs bg-cp-amber/20 text-cp-amber hover:bg-cp-amber/30 rounded transition-colors">
             {status === 'failed' ? 'Retry' : 'Install'}
           </button>
         )}
@@ -336,7 +336,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
     <div className="space-y-6">
       {/* Section 1: Dependencies */}
       <div>
-        <h3 className="text-sm font-medium white/70 mb-3">System Dependencies</h3>
+        <h3 className="card-header mb-3">System Dependencies</h3>
         <div className="glass-nested rounded-xl p-4 divide-y divide-gray-700">
           <DepItem label="Node.js" status={deps.node} detail="Platform runtime" />
           <DepItem label="Homebrew" status={deps.brew} detail="macOS package manager" />
@@ -391,7 +391,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
             <button
               onClick={installAllMissing}
               disabled={allInstalling}
-              className="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] text-white rounded-lg transition-colors"
+              className="px-3 py-1.5 text-xs glass-btn-blue rounded-lg transition-colors"
             >
               Retry All
             </button>
@@ -414,7 +414,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       {/* Section 2: Local Models (once Ollama is ready) */}
       {phase === 'models' && deps.ollamaRunning && deps.nomic === 'installed' && (
         <div>
-          <h3 className="text-sm font-medium white/70 mb-1">Choose a Local Model</h3>
+          <h3 className="card-header mb-1">Choose a Local Model</h3>
           <p className="text-xs white/40 mb-3">
             A local model runs on your machine for free. It's used for lightweight tasks, as a fallback when API providers are down,
             and for system services. You can skip this if you only want to use API models.
@@ -435,7 +435,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
                   onClick={() => pullModel('qwen3.5:9b')}
                   disabled={pulling !== null}
                   className={`px-3 py-1.5 text-xs font-medium rounded-lg shrink-0 transition-colors ${
-                    pulling === 'qwen3.5:9b' ? 'bg-yellow-600/20 text-yellow-400' : 'bg-blue-600 hover:bg-blue-700 text-white disabled:bg-white/[0.08] disabled:white/40'
+                    pulling === 'qwen3.5:9b' ? 'bg-yellow-600/20 text-yellow-400' : 'glass-btn-blue'
                   }`}
                 >
                   {pulling === 'qwen3.5:9b' ? 'Downloading...' : 'Install'}
@@ -450,12 +450,12 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
               value={manualModel}
               onChange={(e) => setManualModel(e.target.value)}
               placeholder="Or type a model name (e.g., llama3.3, gemma3:4b)"
-              className="flex-1 px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="glass-input flex-1"
             />
             <button
               onClick={() => { if (manualModel.trim()) pullModel(manualModel.trim()); }}
               disabled={!manualModel.trim() || pulling !== null}
-              className="px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white text-sm rounded-lg transition-colors shrink-0"
+              className="px-3 py-2 glass-btn-blue text-sm rounded-lg transition-colors shrink-0"
             >
               {pulling && pulling !== 'qwen3.5:9b' ? 'Pulling...' : 'Pull'}
             </button>
@@ -472,7 +472,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
             const isVerifying = statusText.includes('verifying') || statusText.includes('writing');
 
             return (
-              <div className="mb-3 px-3 py-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-xs">
+              <div className="alert-banner alert-warning mb-3">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
                     <span className="animate-spin">{'\u{1F504}'}</span>
@@ -511,7 +511,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
           })()}
 
           {pullError && (
-            <div className="mb-3 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">{pullError}</div>
+            <div className="alert-banner alert-error mb-3">{pullError}</div>
           )}
 
           {/* Installed models */}
@@ -641,7 +641,7 @@ export const SetupPermissions = () => {
                       </button>
                       <button
                         onClick={() => openSettings(item.apiKey)}
-                        className="px-2.5 py-1 text-xs bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 rounded transition-colors"
+                        className="px-2.5 py-1 text-xs bg-cp-amber/20 text-cp-amber hover:bg-cp-amber/30 rounded transition-colors"
                       >
                         Open Settings
                       </button>

@@ -82,7 +82,7 @@ const CreateAgentModal = ({
         <h3 className="text-lg font-semibold text-white mb-4">Recruit Agent</h3>
 
         {error && (
-          <div className="mb-4 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+          <div className="alert-banner alert-error mb-4">
             {error}
           </div>
         )}
@@ -94,7 +94,7 @@ const CreateAgentModal = ({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Agent name"
-              className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="glass-input w-full"
             />
           </div>
 
@@ -105,7 +105,7 @@ const CreateAgentModal = ({
               onChange={(e) => setSystemPrompt(e.target.value)}
               placeholder="Instructions for the agent..."
               rows={6}
-              className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none font-mono"
+              className="glass-textarea w-full resize-none font-mono"
             />
           </div>
 
@@ -115,7 +115,7 @@ const CreateAgentModal = ({
               <select
                 value={modelId}
                 onChange={(e) => setModelId(e.target.value)}
-                className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="glass-select w-full"
               >
                 <option value="">No model selected</option>
                 <option value="auto">Auto (Smart Router)</option>
@@ -135,7 +135,7 @@ const CreateAgentModal = ({
                 placeholder="No timeout"
                 type="number"
                 min="0"
-                className="w-full px-3 py-2 bg-white/[0.05] border white/[0.08] rounded-lg text-sm white/90 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="glass-input w-full"
               />
             </div>
           </div>
@@ -159,7 +159,7 @@ const CreateAgentModal = ({
                 onClick={() => setClassification('ronin')}
                 className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors border ${
                   classification === 'ronin'
-                    ? 'bg-blue-600/20 text-blue-400 border-blue-500/30'
+                    ? 'bg-cp-amber/20 text-cp-amber border-cp-amber/30'
                     : 'bg-white/[0.05] white/40 white/[0.08] hover:white/70'
                 }`}
               >
@@ -220,7 +220,7 @@ const CreateAgentModal = ({
           <button
             onClick={handleCreate}
             disabled={saving || !name.trim() || !systemPrompt.trim()}
-            className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-white/[0.08] disabled:white/40 text-white rounded-lg transition-colors"
+            className="px-4 py-2 text-sm glass-btn-blue rounded-lg transition-colors"
           >
             {saving ? 'Creating...' : 'Recruit Agent'}
           </button>
@@ -244,7 +244,7 @@ const TerminatedAgentRow = ({
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const statusColor =
-    agent.status === 'terminated' ? 'white/40' : 'text-red-400';
+    agent.status === 'terminated' ? 'white/40' : 'text-cp-coral';
 
   const duration = agent.uptime > 0
     ? agent.uptime < 60
@@ -273,14 +273,14 @@ const TerminatedAgentRow = ({
         <div className="px-4 pb-3 pt-1 white/[0.02] flex items-center gap-3">
           <button
             onClick={(e) => { e.stopPropagation(); navigate(`/agents/${agent.id}`); }}
-            className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+            className="text-xs text-cp-blue hover:text-cp-blue/80 transition-colors"
           >
             View Detail
           </button>
           {agent.classification !== 'sensei' && (
             confirmDelete ? (
               <div className="flex items-center gap-2">
-                <span className="text-xs text-red-400">Delete permanently?</span>
+                <span className="text-xs text-cp-coral">Delete permanently?</span>
                 <button
                   onClick={async (e) => {
                     e.stopPropagation();
@@ -302,7 +302,7 @@ const TerminatedAgentRow = ({
             ) : (
               <button
                 onClick={(e) => { e.stopPropagation(); setConfirmDelete(true); }}
-                className="text-xs text-red-400 hover:text-red-300 transition-colors"
+                className="text-xs text-cp-coral hover:text-cp-coral/80 transition-colors"
               >
                 Delete
               </button>
@@ -415,18 +415,12 @@ export const Agents = () => {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <p className="white/40">Loading agents...</p>
-      </div>
-    );
-  }
+  if (loading) return <div className="flex-1 loading-state">Loading...</div>;
 
   if (error) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <p className="text-red-400">{error}</p>
+        <p className="text-cp-coral">{error}</p>
       </div>
     );
   }
@@ -542,7 +536,7 @@ export const Agents = () => {
                 <div className="px-4 py-2 border-t white/[0.06]">
                   <button
                     onClick={() => setShowAllHistory(true)}
-                    className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                    className="text-xs text-cp-blue hover:text-cp-blue/80 transition-colors"
                   >
                     Show all {terminatedAgents.length} terminated agents
                   </button>
