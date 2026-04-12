@@ -99,7 +99,7 @@ const DashboardLayout = () => {
       <GradientBlobs />
       <div className="h-dvh flex overflow-hidden relative z-[1]" style={{ backgroundColor: 'transparent' }}>
         <Sidebar />
-        <main className="flex-1 flex flex-col h-full overflow-hidden">
+        <main className="flex-1 flex flex-col h-full overflow-hidden pt-[48px] md:pt-0">
           <PostMigrationBanner />
           <Outlet />
         </main>

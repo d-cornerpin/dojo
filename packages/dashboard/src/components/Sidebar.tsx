@@ -274,8 +274,7 @@ const MobileTopBar = ({ connectionStatus }: { connectionStatus: ConnectionStatus
         </div>
       )}
 
-      {/* Spacer for fixed top bar */}
-      <div className="md:hidden h-[48px]" />
+      {/* Spacer removed — pt-[48px] on <main> in App.tsx handles clearance */}
     </>
   );
 };
