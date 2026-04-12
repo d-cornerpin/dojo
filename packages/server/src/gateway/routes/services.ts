@@ -116,7 +116,7 @@ servicesRouter.post('/imessage/welcome', async (c) => {
 servicesRouter.get('/providers/health', async (c) => {
   const db = getDb();
   const providers = db.prepare(`
-    SELECT id, name, type, base_url FROM providers
+    SELECT id, name, type, base_url FROM providers WHERE id != '__system__'
   `).all() as Array<{ id: string; name: string; type: string; base_url: string | null }>;
 
   const results: Array<{ id: string; name: string; type: string; healthy: boolean; lastSuccess?: string | null; errorCount?: number; error?: string }> = [];
