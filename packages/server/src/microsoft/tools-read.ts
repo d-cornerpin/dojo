@@ -289,19 +289,21 @@ export async function executeMicrosoftReadTool(
       const folderId = args.folder_id as string | undefined;
       const maxResults = (args.max_results as number) ?? 20;
       const endpoint = folderId
-        ? `me/drive/items/${encodeURIComponent(folderId)}/children?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder`
-        : `me/drive/root/children?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder`;
+        ? `me/drive/items/${encodeURIComponent(folderId)}/children?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl`
+        : `me/drive/root/children?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl`;
 
       const result = await msGraphRead(endpoint, agentId, agentName, 'onedrive_list', { folderId, maxResults });
       if (!result.ok) return `Error listing OneDrive: ${result.error}`;
 
-      const data = result.data as { value?: Array<{ id: string; name: string; size?: number; lastModifiedDateTime: string; file?: { mimeType: string }; folder?: { childCount: number } }> };
+      const data = result.data as { value?: Array<{ id: string; name: string; size?: number; lastModifiedDateTime: string; file?: { mimeType: string }; folder?: { childCount: number }; webUrl?: string }> };
       if (!data?.value || data.value.length === 0) return 'No files found.';
 
       const files = data.value.map(f => {
         const type = f.folder ? `Folder (${f.folder.childCount} items)` : (f.file?.mimeType ?? 'File');
         const size = f.size ? ` (${Math.round(f.size / 1024)}KB)` : '';
-        return `- ${f.name}${size}\n  ID: ${f.id}\n  Type: ${type}\n  Modified: ${f.lastModifiedDateTime}`;
+        let line = `- ${f.name}${size}\n  ID: ${f.id}\n  Type: ${type}\n  Modified: ${f.lastModifiedDateTime}`;
+        if (f.webUrl) line += `\n  URL: ${f.webUrl}`;
+        return line;
       });
 
       return `Found ${data.value.length} item(s):\n\n${files.join('\n\n')}`;
@@ -311,12 +313,12 @@ export async function executeMicrosoftReadTool(
       const fileId = encodeURIComponent(args.file_id as string);
       // First get metadata
       const meta = await msGraphRead(
-        `me/drive/items/${fileId}?$select=id,name,size,file`,
+        `me/drive/items/${fileId}?$select=id,name,size,file,webUrl`,
         agentId, agentName, 'onedrive_read', { fileId: args.file_id },
       );
       if (!meta.ok) return `Error reading file: ${meta.error}`;
 
-      const metaData = meta.data as { id: string; name: string; size?: number; file?: { mimeType: string } };
+      const metaData = meta.data as { id: string; name: string; size?: number; file?: { mimeType: string }; webUrl?: string };
 
       // For text-based files, download content
       const mimeType = metaData?.file?.mimeType ?? '';
@@ -334,7 +336,7 @@ export async function executeMicrosoftReadTool(
         } catch { /* fall through to metadata */ }
       }
 
-      return `File: ${metaData.name}\nSize: ${metaData.size ? Math.round(metaData.size / 1024) + 'KB' : 'unknown'}\nType: ${mimeType || 'unknown'}\n\n(Binary file — use onedrive download or view in browser)`;
+      return `File: ${metaData.name}\nSize: ${metaData.size ? Math.round(metaData.size / 1024) + 'KB' : 'unknown'}\nType: ${mimeType || 'unknown'}${metaData.webUrl ? `\nURL: ${metaData.webUrl}` : ''}\n\n(Binary file — use onedrive_download_attachment or open the URL above in a browser)`;
     }
 
     case 'teams_read_messages': {
@@ -401,18 +403,20 @@ export async function executeMicrosoftReadTool(
       const maxResults = (args.max_results as number) ?? 20;
 
       const result = await msGraphRead(
-        `me/drive/root/search(q='${encodeURIComponent(query)}')?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder`,
+        `me/drive/root/search(q='${encodeURIComponent(query)}')?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl`,
         agentId, agentName, 'onedrive_search', { query, maxResults },
       );
       if (!result.ok) return `Error searching OneDrive: ${result.error}`;
 
-      const data = result.data as { value?: Array<{ id: string; name: string; size?: number; lastModifiedDateTime: string; file?: { mimeType: string }; folder?: { childCount: number } }> };
+      const data = result.data as { value?: Array<{ id: string; name: string; size?: number; lastModifiedDateTime: string; file?: { mimeType: string }; folder?: { childCount: number }; webUrl?: string }> };
       if (!data?.value || data.value.length === 0) return `No files found matching "${query}".`;
 
       const files = data.value.map(f => {
         const type = f.folder ? `Folder (${f.folder.childCount} items)` : (f.file?.mimeType ?? 'File');
         const size = f.size ? ` (${Math.round(f.size / 1024)}KB)` : '';
-        return `- ${f.name}${size}\n  ID: ${f.id}\n  Type: ${type}\n  Modified: ${f.lastModifiedDateTime}`;
+        let line = `- ${f.name}${size}\n  ID: ${f.id}\n  Type: ${type}\n  Modified: ${f.lastModifiedDateTime}`;
+        if (f.webUrl) line += `\n  URL: ${f.webUrl}`;
+        return line;
       });
 
       return `Found ${data.value.length} result(s) for "${query}":\n\n${files.join('\n\n')}`;
