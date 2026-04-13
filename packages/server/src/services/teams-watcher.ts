@@ -121,29 +121,33 @@ async function pollForNewMessages(): Promise<void> {
 
     let totalNewCount = 0;
 
-    for (const chat of chatsData.value) {
-      // Fetch members once per chat so we can show sender email in notifications
-      await fetchChatMembers(chat.id);
+    // Fetch members + messages for all chats in parallel
+    type ChatMessage = {
+      id: string;
+      createdDateTime: string;
+      from?: { user?: { id?: string; displayName?: string } };
+      body?: { content: string; contentType: string };
+      messageType?: string;
+    };
 
-      // Step 2: Fetch recent messages from this chat
-      const msgsResult = await msGraphRead(
-        `chats/${encodeURIComponent(chat.id)}/messages?$top=10&$orderby=createdDateTime desc`,
-        'system', 'Teams Watcher', 'teams_watcher_messages', { chatId: chat.id },
-      );
+    const chatResults = await Promise.all(
+      chatsData.value.map(async (chat) => {
+        await fetchChatMembers(chat.id);
+        const msgsResult = await msGraphRead(
+          `chats/${encodeURIComponent(chat.id)}/messages?$top=10&$orderby=createdDateTime desc`,
+          'system', 'Teams Watcher', 'teams_watcher_messages', { chatId: chat.id },
+        );
+        return { chat, msgsResult };
+      }),
+    );
+
+    for (const { chat, msgsResult } of chatResults) {
       if (!msgsResult.ok) {
         logger.debug('Teams watcher: messages fetch error', { chatId: chat.id, error: msgsResult.error });
         continue;
       }
 
-      const msgsData = msgsResult.data as {
-        value?: Array<{
-          id: string;
-          createdDateTime: string;
-          from?: { user?: { id?: string; displayName?: string } };
-          body?: { content: string; contentType: string };
-          messageType?: string;
-        }>;
-      };
+      const msgsData = msgsResult.data as { value?: ChatMessage[] };
       if (!msgsData?.value) continue;
 
       // For chats we've never processed before, use watcherStartedAt as baseline
