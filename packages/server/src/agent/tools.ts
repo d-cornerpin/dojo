@@ -40,6 +40,7 @@ import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../mic
 import { officeToolDefinitions, executeOfficeTool } from '../microsoft/tools-office.js';
 import { getAgentMicrosoftAccessLevel, getEnabledMsServices } from '../microsoft/auth.js';
 import { areOfficePackagesInstalled } from '../microsoft/office-packages.js';
+import { getTunnelStatus } from '../services/tunnel.js';
 import type { ToolCall, ToolResult } from '@dojo/shared';
 
 const logger = createLogger('tools');
@@ -50,12 +51,11 @@ const EXEC_TIMEOUT_MS = 30000;
 /** Build a full download URL that works from anywhere — tunnel if active, localhost otherwise */
 function getDownloadUrl(fileId: string): string {
   try {
-    const { getTunnelStatus } = require('../services/tunnel.js');
     const tunnel = getTunnelStatus();
     if (tunnel.status === 'active' && tunnel.url) {
       return `${tunnel.url}/api/upload/download/${fileId}`;
     }
-  } catch { /* tunnel module may not be available */ }
+  } catch { /* tunnel module may not be loaded yet */ }
   const port = process.env.DOJO_PORT ?? '3001';
   return `http://localhost:${port}/api/upload/download/${fileId}`;
 }
@@ -331,7 +331,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'share_file',
-    description: 'Get a download URL for an existing file so the user can access it from any device. Use this when the user asks for a link to a file, wants to download something, or you need to share a file that already exists on disk. Returns a full clickable URL. IMPORTANT: Give the user the raw URL exactly as returned — do NOT wrap it in markdown link syntax.',
+    description: 'Get a download URL for an existing file so the user can access it from any device. Use this when the user asks for a link to a file, wants to download something, or you need to share a file that already exists on disk. Returns a full clickable URL. IMPORTANT: Give the user the URL exactly ONCE as plain text. Do NOT repeat it, do NOT wrap it in markdown, do NOT add extra formatting.',
     input_schema: {
       type: 'object',
       properties: {
