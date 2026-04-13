@@ -16,6 +16,7 @@ const PUBLIC_PATHS = [
 
 const PUBLIC_PREFIXES = [
   '/api/setup/',  // All setup routes are public (only useful during first run)
+  '/api/upload/download/',  // File downloads use unguessable UUIDs as auth
 ];
 
 export interface JwtPayload {

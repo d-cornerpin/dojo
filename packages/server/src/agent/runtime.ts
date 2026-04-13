@@ -290,7 +290,6 @@ class AgentRuntime {
     let nudgedForRepetition = false; // Only nudge once for repetition
     let nudgedForEmptyResponse = false; // Only nudge once for empty output
     let nudgedForNoResults = false; // Only nudge once for empty search results
-    let nudgedForIncomplete = false; // Only nudge once for incomplete response
 
     // Snapshot the turn boundary so context assembly ignores messages that
     // arrive mid-loop. Without this, a reply from another agent gets baked
@@ -470,8 +469,9 @@ class AgentRuntime {
         throw new AgentError('Model call failed after all attempts', agentId, { code: 'MODEL_CALL_FAILED' });
       }
 
-      // If this is a final text response (no tool calls), flush the buffered chunks to the client
-      if (result.toolCalls.length === 0) {
+      // If this is a final text response (no tool calls), flush the buffered chunks to the client.
+      // Only flush if there's actual content — don't create ghost bubbles for empty responses.
+      if (result.toolCalls.length === 0 && result.content && result.content.trim().length > 0) {
         for (const chunk of streamedChunks) {
           broadcast({
             type: 'chat:chunk',
@@ -502,19 +502,12 @@ class AgentRuntime {
         // and failed tool call chains from this turn. This gives the model a
         // clean context on the next user message.
         try {
-          // Remove system nudge messages from this turn
+          // Remove only the system nudge messages injected during this turn.
+          // Do NOT delete assistant or tool messages — they may have useful content.
           db.prepare(`
             DELETE FROM messages WHERE agent_id = ? AND role = 'user'
               AND content LIKE '[System:%'
               AND created_at >= ?
-          `).run(agentId, turnStartedAt);
-
-          // Remove tool/assistant messages from this turn that have no useful content
-          // (1 token responses, empty tool results from failed commands)
-          db.prepare(`
-            DELETE FROM messages WHERE agent_id = ? AND role IN ('assistant', 'tool')
-              AND created_at >= ?
-              AND (LENGTH(content) < 10 OR content LIKE '%not available%' OR content LIKE '%not found%' OR content LIKE '%No such file%')
           `).run(agentId, turnStartedAt);
 
           logger.info('Cleaned poisoned context from failed turn', { agentId }, agentId);
@@ -541,8 +534,8 @@ class AgentRuntime {
       }
 
       // Sanitize model output — weak models sometimes produce literal "\n" strings
-      // or excessive whitespace
-      if (result.content) {
+      // or excessive whitespace. Only sanitize if there's actual text content.
+      if (result.content && result.content.trim().length > 0) {
         result.content = result.content
           .replace(/\\n/g, '\n')        // literal \n → real newline
           .replace(/\n{3,}/g, '\n\n')   // collapse 3+ newlines to 2
@@ -628,36 +621,21 @@ class AgentRuntime {
         }
       }
 
-      // Broadcast completion for streaming (include modelId so UI can show it)
-      broadcast({
-        type: 'chat:chunk',
-        agentId,
-        messageId,
-        content: '',
-        done: true,
-        modelId,
-      });
+      // Broadcast completion for streaming — only if we actually sent content or have tool calls.
+      // Don't broadcast done for empty responses (creates ghost bubbles in the UI).
+      if ((result.content && result.content.trim().length > 0) || result.toolCalls.length > 0) {
+        broadcast({
+          type: 'chat:chunk',
+          agentId,
+          messageId,
+          content: '',
+          done: true,
+          modelId,
+        });
+      }
 
-      // If no tool calls, we're done — but check for incomplete response first
+      // If no tool calls, we're done
       if (result.toolCalls.length === 0) {
-        // Detect incomplete responses from weak models
-        if (result.content && !nudgedForIncomplete) {
-          const trimmed = result.content.trim();
-          const looksIncomplete =
-            // Ends mid-sentence (no terminal punctuation)
-            (trimmed.length > 20 && !/[.!?:)\]"'`]$/.test(trimmed)) ||
-            // Contains "I will" / "Let me" / "I'll" with nothing following through
-            (/\b(I will|Let me|I'll|I'm going to)\b/i.test(trimmed) && trimmed.length < 150);
-          if (looksIncomplete) {
-            nudgedForIncomplete = true;
-            logger.warn('Model response looks incomplete, nudging for continuation', { contentLength: trimmed.length }, agentId);
-            const nudgeMsgId = uuidv4();
-            const nudge = '[System: Your response appears incomplete — it ends mid-sentence. Please continue where you left off, or if you are finished, confirm by ending with a complete sentence.]';
-            db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
-            continue; // Re-run the loop to get continuation
-          }
-        }
-
         if (result.content) {
           try {
             const { getPresence } = await import('../services/presence.js');

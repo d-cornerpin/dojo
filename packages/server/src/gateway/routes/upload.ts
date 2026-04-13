@@ -170,18 +170,31 @@ uploadRouter.get('/file/:agentId/:filename', async (c) => {
 // GET /download/:fileId — serve any shared file by ID (works through tunnel)
 uploadRouter.get('/download/:fileId', async (c) => {
   const fileId = c.req.param('fileId');
-  const db = (await import('../../db/connection.js')).getDb();
+  let db;
+  try {
+    db = (await import('../../db/connection.js')).getDb();
+  } catch {
+    return c.json({ ok: false, error: 'Database not available' }, 500);
+  }
+
+  // Check if the shared_files table exists
+  const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='shared_files'").get();
+  if (!tableExists) {
+    return c.json({ ok: false, error: 'File sharing not available — server needs to be restarted to run migrations' }, 500);
+  }
 
   const row = db.prepare('SELECT file_path, filename, mime_type FROM shared_files WHERE id = ?').get(fileId) as {
     file_path: string; filename: string; mime_type: string;
   } | undefined;
 
   if (!row) {
-    return c.json({ ok: false, error: 'File not found' }, 404);
+    // Check how many entries exist for debugging
+    const count = (db.prepare('SELECT COUNT(*) as c FROM shared_files').get() as { c: number }).c;
+    return c.json({ ok: false, error: `File ID not found in registry (${count} files registered). The link may have expired or the server was restarted before the migration ran.` }, 404);
   }
 
   if (!fs.existsSync(row.file_path)) {
-    return c.json({ ok: false, error: 'File no longer exists on disk' }, 404);
+    return c.json({ ok: false, error: `File was registered but no longer exists on disk at: ${row.file_path}` }, 404);
   }
 
   const content = await fs.promises.readFile(row.file_path);

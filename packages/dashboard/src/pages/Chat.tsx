@@ -549,7 +549,7 @@ export const Chat = () => {
         )}
 
         {messages.map((msg) => {
-          // Hide inter-agent messages unless wordy mode is on
+          // Hide inter-agent messages and system nudges unless wordy mode is on
           if (!wordyMode && msg.role === 'user' && (
             msg.content.includes('[SOURCE: AGENT MESSAGE FROM') ||
             msg.content.includes('[SOURCE: PM AGENT POKE FROM') ||
@@ -557,7 +557,14 @@ export const Chat = () => {
             msg.content.includes('[SOURCE: SCHEDULER') ||
             msg.content.includes('[SOURCE: HEALER') ||
             msg.content.includes('[SOURCE: SUB-AGENT COMPLETION') ||
-            msg.content.includes('[SOURCE: SYSTEM')
+            msg.content.includes('[SOURCE: SYSTEM') ||
+            msg.content.startsWith('[System:') ||
+            msg.content.startsWith('Tracker review --')
+          )) return null;
+          // Hide system-generated fallback messages from the agent
+          if (!wordyMode && msg.role === 'assistant' && (
+            msg.content.startsWith('I got stuck on that') ||
+            msg.content.startsWith("I'm sorry — I'm having trouble")
           )) return null;
           if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} />;
           if (msg.role === 'tool') {
