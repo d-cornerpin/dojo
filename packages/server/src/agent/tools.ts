@@ -285,6 +285,20 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'share_file',
+    description: 'Get a download URL for an existing file so the user can access it from any device. Use this when the user asks for a link to a file, wants to download something, or you need to share a file that already exists on disk. Returns a URL that works from anywhere including remote access.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Absolute path to the file to share (use ~ for home directory)',
+        },
+      },
+      required: ['path'],
+    },
+  },
+  {
     name: 'memory_grep',
     description: 'Search through conversation history and memory summaries using full-text search or pattern matching. Returns matching messages and summaries with context. Example: memory_grep({ pattern: "budget meeting", limit: 10 }). Returns timestamped results from both raw messages and compressed summaries.',
     input_schema: {
@@ -1703,6 +1717,51 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         content = await executeFileList(agentId, args);
         isError = content.startsWith('Error');
         break;
+      case 'share_file': {
+        const sharePath = resolvePath(args.path as string);
+        if (!path.isAbsolute(sharePath)) {
+          content = 'Error: Path must be absolute. Use ~ for home directory.';
+          isError = true;
+          break;
+        }
+        if (!fs.existsSync(sharePath)) {
+          content = `Error: File not found: ${sharePath}`;
+          isError = true;
+          break;
+        }
+        const stat = fs.statSync(sharePath);
+        if (stat.isDirectory()) {
+          content = `Error: ${sharePath} is a directory, not a file. Use file_list to see its contents.`;
+          isError = true;
+          break;
+        }
+        const fileId = uuidv4();
+        const filename = path.basename(sharePath);
+        const ext = path.extname(filename).toLowerCase();
+        const mimeMap: Record<string, string> = {
+          '.txt': 'text/plain', '.md': 'text/markdown', '.json': 'application/json',
+          '.csv': 'text/csv', '.html': 'text/html', '.xml': 'application/xml',
+          '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg',
+          '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+          '.svg': 'image/svg+xml', '.zip': 'application/zip',
+          '.mp4': 'video/mp4', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
+          '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          '.xls': 'application/vnd.ms-excel', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        };
+        const mimeType = mimeMap[ext] ?? 'application/octet-stream';
+        try {
+          const shareDb = getDb();
+          shareDb.prepare(`
+            INSERT OR IGNORE INTO shared_files (id, agent_id, file_path, filename, mime_type, size, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+          `).run(fileId, agentId, sharePath, filename, mimeType, stat.size);
+        } catch { /* table may not exist */ }
+        const downloadUrl = `/api/upload/download/${fileId}`;
+        content = `Download link for ${filename}: ${downloadUrl}`;
+        auditLog(agentId, 'share_file', sharePath, 'success', `Shared as ${fileId}`);
+        break;
+      }
       case 'memory_grep':
         content = memoryGrep(agentId, {
           pattern: args.pattern as string,
