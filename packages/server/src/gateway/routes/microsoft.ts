@@ -94,6 +94,19 @@ microsoftRouter.get('/callback', async (c) => {
 
   if (result.success) {
     logger.info('Microsoft OAuth successful', { email: result.email, accountType: result.accountType });
+
+    // Restart the Teams watcher now that we have a (potentially new) account.
+    // startTeamsWatcher guards against double-starts, so stop first to ensure a clean restart.
+    try {
+      const { stopTeamsWatcher, startTeamsWatcher } = await import('../../services/teams-watcher.js');
+      stopTeamsWatcher();
+      startTeamsWatcher();
+    } catch (err) {
+      logger.warn('Failed to restart Teams watcher after Microsoft reconnect', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     return c.redirect(`${dashboardBase}/settings?tab=microsoft&connected=true`);
   } else {
     logger.error('Microsoft token exchange failed', { error: result.error });
