@@ -297,7 +297,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
 
         const notifyMsgId = uuidv4();
         const db = getDb();
-        db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(notifyMsgId, assignedTo, taskNotification);
+        db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, created_at) VALUES (?, ?, 'user', ?, ?, datetime('now'))`).run(notifyMsgId, assignedTo, taskNotification, agentId);
 
         broadcast({
           type: 'chat:message',

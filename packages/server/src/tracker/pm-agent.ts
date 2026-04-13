@@ -534,9 +534,9 @@ function runPokeCheck(): void {
     const pokeMsgId = uuidv4();
     const fullPokeContent = `[SOURCE: PM AGENT POKE FROM ${pmName.toUpperCase()} — this is NOT a message from the user, it's an automated poke from the PM agent checking on your progress] ${pokeMessage}`;
     db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'user', ?, datetime('now'))
-    `).run(pokeMsgId, recipient, fullPokeContent);
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, created_at)
+      VALUES (?, ?, 'user', ?, ?, datetime('now'))
+    `).run(pokeMsgId, recipient, fullPokeContent, pmId);
 
     // Broadcast same content to dashboard (consistent with what the agent sees)
     broadcast({

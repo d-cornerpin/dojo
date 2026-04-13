@@ -61,7 +61,7 @@ function enforceModelCapabilities(
       // If nothing but text remains, collapse to a plain string so older call
       // paths that prefer strings don't choke. Otherwise preserve the array.
       if (kept.length === 0) {
-        messages[i] = { role: 'user', content: '' };
+        messages[i] = { role: 'user', content: '(Image/PDF attachment removed — this model does not support vision input)' };
       } else if (kept.every(b => b.type === 'text')) {
         const text = kept.map(b => (b.text as string) ?? '').join('\n');
         messages[i] = { role: 'user', content: text };

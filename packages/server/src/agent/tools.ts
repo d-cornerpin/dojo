@@ -1718,8 +1718,11 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
     switch (name) {
       case 'load_tool_docs': {
         const { executeLoadToolDocs } = await import('../tools/tool-docs.js');
-        const toolNames = (args.tools as string[]) ?? [];
-        content = executeLoadToolDocs(agentId, toolNames);
+        const requestedTools = (args.tools as string[]) ?? [];
+        // Only allow loading docs for tools the agent actually has access to
+        const allowedToolNames = new Set(getFilteredTools(agentId).map(t => t.name));
+        const filteredTools = requestedTools.filter(t => allowedToolNames.has(t));
+        content = executeLoadToolDocs(agentId, filteredTools);
         isError = content.startsWith('Error');
         break;
       }
@@ -2059,9 +2062,9 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           const bcMsgId = uuidv4();
           const bcContextMsg = `[SOURCE: GROUP BROADCAST FROM ${senderName2.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's a broadcast from another agent to your group] ${broadcastMsg}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
           bcDb.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-            VALUES (?, ?, 'user', ?, datetime('now'))
-          `).run(bcMsgId, member.id, bcContextMsg);
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, created_at)
+            VALUES (?, ?, 'user', ?, ?, datetime('now'))
+          `).run(bcMsgId, member.id, bcContextMsg, agentId);
 
           broadcast({
             type: 'chat:message',

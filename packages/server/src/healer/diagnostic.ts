@@ -184,7 +184,7 @@ function getContextHealth(): DiagnosticItem[] {
     const toolMsgs = db.prepare(`
       SELECT content FROM messages
       WHERE agent_id = ? AND role IN ('tool', 'assistant')
-        AND content LIKE '%tool_use%' OR content LIKE '%tool_result%'
+        AND (content LIKE '%tool_use%' OR content LIKE '%tool_result%')
       ORDER BY created_at DESC LIMIT 20
     `).all(agent_id) as Array<{ content: string }>;
 
@@ -293,11 +293,12 @@ function getNudgeStats(): DiagnosticItem[] {
   const db = getDb();
   const items: DiagnosticItem[] = [];
 
-  // Count nudge messages per agent in last 24h
+  // Count empty response / model failure events per agent in last 24h from audit_log
+  // (nudges are in-memory only now, so we check for model failures as a proxy)
   const nudges = db.prepare(`
     SELECT agent_id, COUNT(*) as cnt
-    FROM messages
-    WHERE role = 'user' AND content LIKE '[System:%'
+    FROM audit_log
+    WHERE action_type = 'model_call' AND result = 'error'
       AND created_at > datetime('now', '-24 hours')
     GROUP BY agent_id
     HAVING cnt >= 3
