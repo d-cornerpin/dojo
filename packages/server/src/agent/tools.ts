@@ -254,7 +254,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'file_write',
-    description: 'Write content to a file at the given absolute path. Creates parent directories if they do not exist. Overwrites existing files. Example: file_write({ path: "/Users/me/output.txt", content: "Hello world" }).',
+    description: 'Write content to a file at the given absolute path. Creates parent directories if they do not exist. Overwrites existing files. Returns a download URL that works from anywhere (including remote access). Share the download URL with the user so they can access the file from any device. Example: file_write({ path: "/Users/me/output.txt", content: "Hello world" }).',
     input_schema: {
       type: 'object',
       properties: {
@@ -1436,7 +1436,32 @@ async function executeFileWrite(agentId: string, args: Record<string, unknown>):
     await fs.promises.mkdir(dir, { recursive: true });
     await fs.promises.writeFile(filePath, content, 'utf-8');
     auditLog(agentId, 'file_write', filePath, 'success', `${content.length} bytes written`);
-    return `File written successfully: ${filePath} (${content.length} bytes)`;
+
+    // Register as a shared file so it can be downloaded from anywhere
+    let downloadUrl = '';
+    try {
+      const fileId = uuidv4();
+      const filename = path.basename(filePath);
+      const ext = path.extname(filename).toLowerCase();
+      const mimeMap: Record<string, string> = {
+        '.txt': 'text/plain', '.md': 'text/markdown', '.json': 'application/json',
+        '.csv': 'text/csv', '.html': 'text/html', '.xml': 'application/xml',
+        '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+        '.svg': 'image/svg+xml', '.zip': 'application/zip',
+        '.js': 'text/javascript', '.ts': 'text/typescript', '.py': 'text/x-python',
+        '.sh': 'text/x-shellscript', '.yaml': 'text/yaml', '.yml': 'text/yaml',
+      };
+      const mimeType = mimeMap[ext] ?? 'application/octet-stream';
+      const db = getDb();
+      db.prepare(`
+        INSERT OR IGNORE INTO shared_files (id, agent_id, file_path, filename, mime_type, size, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+      `).run(fileId, agentId, filePath, filename, mimeType, content.length);
+      downloadUrl = `\nDownload: /api/upload/download/${fileId}`;
+    } catch { /* shared_files table may not exist yet */ }
+
+    return `File written successfully: ${filePath} (${content.length} bytes)${downloadUrl}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     auditLog(agentId, 'file_write', filePath, 'error', msg);

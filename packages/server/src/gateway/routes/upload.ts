@@ -167,4 +167,31 @@ uploadRouter.get('/file/:agentId/:filename', async (c) => {
   });
 });
 
+// GET /download/:fileId — serve any shared file by ID (works through tunnel)
+uploadRouter.get('/download/:fileId', async (c) => {
+  const fileId = c.req.param('fileId');
+  const db = (await import('../../db/connection.js')).getDb();
+
+  const row = db.prepare('SELECT file_path, filename, mime_type FROM shared_files WHERE id = ?').get(fileId) as {
+    file_path: string; filename: string; mime_type: string;
+  } | undefined;
+
+  if (!row) {
+    return c.json({ ok: false, error: 'File not found' }, 404);
+  }
+
+  if (!fs.existsSync(row.file_path)) {
+    return c.json({ ok: false, error: 'File no longer exists on disk' }, 404);
+  }
+
+  const content = await fs.promises.readFile(row.file_path);
+  return new Response(content, {
+    headers: {
+      'Content-Type': row.mime_type,
+      'Content-Disposition': `attachment; filename="${row.filename}"`,
+      'Cache-Control': 'public, max-age=86400',
+    },
+  });
+});
+
 export { uploadRouter };

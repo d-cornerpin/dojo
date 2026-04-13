@@ -369,17 +369,7 @@ export function sendResponseViaIMessage(text: string, agentId?: string): void {
   const entry = pendingIMResponseMap.get(agentId);
   const sender = entry?.sender ?? approvedSenders[0];
   if (sender) {
-    // Sanitize for iMessage: strip markdown and clean whitespace
-    let cleaned = text;
-    cleaned = cleaned.replace(/\*\*(.+?)\*\*/g, '$1');  // **bold** → bold
-    cleaned = cleaned.replace(/\*(.+?)\*/g, '$1');       // *italic* → italic
-    cleaned = cleaned.replace(/`([^`]+)`/g, '$1');       // `code` → code
-    cleaned = cleaned.replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, '').trim()); // code blocks → plain
-    cleaned = cleaned.replace(/^#{1,6}\s+/gm, '');       // # headers → plain
-    cleaned = cleaned.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // [text](url) → text
-    cleaned = cleaned.replace(/\n{3,}/g, '\n\n');         // collapse excessive newlines
-    cleaned = cleaned.trim();
-    sendIMessage(sender, cleaned);
+    sendIMessage(sender, text); // sanitization happens inside sendIMessage
   }
   pendingIMResponseMap.delete(agentId);
 }
@@ -753,7 +743,20 @@ function sendIMessageViaAppleScript(recipient: string, text: string): void {
   });
 }
 
-export function sendIMessage(recipient: string, text: string): void {
+export function sendIMessage(recipient: string, rawText: string): void {
+  // Sanitize for iMessage — strip markdown, literal \n, excessive whitespace.
+  // This runs on ALL iMessage paths so nothing gets through unsanitized.
+  let text = rawText;
+  text = text.replace(/\\n/g, '\n');               // literal \n → real newline
+  text = text.replace(/\*\*(.+?)\*\*/g, '$1');     // **bold** → bold
+  text = text.replace(/\*(.+?)\*/g, '$1');          // *italic* → italic
+  text = text.replace(/`([^`]+)`/g, '$1');          // `code` → code
+  text = text.replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, '').trim()); // code blocks
+  text = text.replace(/^#{1,6}\s+/gm, '');          // # headers → plain
+  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // [text](url) → text
+  text = text.replace(/\n{3,}/g, '\n\n');           // collapse excessive newlines
+  text = text.trim();
+
   try {
     const imsg = getImsgPath();
     if (imsg) {
