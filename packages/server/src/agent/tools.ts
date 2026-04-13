@@ -3335,6 +3335,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'calendar_create_ms':
       case 'calendar_update_ms':
       case 'calendar_delete_ms':
+      case 'onedrive_create_folder':
       case 'onedrive_upload':
       case 'onedrive_share':
       case 'teams_create_chat':

@@ -93,8 +93,20 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'onedrive_create_folder',
+    description: 'Create a new folder in OneDrive.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Folder name to create' },
+        parent_folder_id: { type: 'string', description: 'ID of the parent folder to create inside (omit to create in root)' },
+      },
+      required: ['name'],
+    },
+  },
+  {
     name: 'onedrive_upload',
-    description: 'Upload a file to OneDrive (max 4MB). For larger files, use a different approach.',
+    description: 'Upload a file to OneDrive. Handles files of any size using resumable upload sessions for large files.',
     input_schema: {
       type: 'object',
       properties: {
@@ -269,44 +281,113 @@ export async function executeMicrosoftWriteTool(
       return `Calendar event ${args.event_id} deleted`;
     }
 
+    case 'onedrive_create_folder': {
+      const folderName = args.name as string;
+      const parentFolderId = args.parent_folder_id as string | undefined;
+
+      const endpoint = parentFolderId
+        ? `me/drive/items/${encodeURIComponent(parentFolderId)}/children`
+        : 'me/drive/root/children';
+
+      const result = await msGraphWrite('POST', endpoint, {
+        name: folderName,
+        folder: {},
+        '@microsoft.graph.conflictBehavior': 'rename',
+      }, agentId, agentName, 'onedrive_create_folder', { folderName, parentFolderId });
+
+      if (!result.ok) return `Error creating folder: ${result.error}`;
+      const folder = result.data as { id?: string; name?: string; webUrl?: string };
+      return `Folder "${folder.name ?? folderName}" created in OneDrive${folder.id ? ` (ID: ${folder.id})` : ''}${folder.webUrl ? `\nLink: ${folder.webUrl}` : ''}`;
+    }
+
     case 'onedrive_upload': {
       const filePath = args.file_path as string;
       const fileName = (args.name as string) ?? filePath.split('/').pop() ?? 'upload';
       const folderId = args.folder_id as string | undefined;
 
-      // Read the local file
       const fs = await import('node:fs');
       if (!fs.existsSync(filePath)) return `Error: File not found at ${filePath}`;
 
       const stat = fs.statSync(filePath);
-      if (stat.size > 4 * 1024 * 1024) return `Error: File is ${Math.round(stat.size / 1024 / 1024)}MB. OneDrive upload via this tool is limited to 4MB. Use a different approach for larger files.`;
-
-      const content = fs.readFileSync(filePath);
+      const fileSize = stat.size;
       const token = (await import('./auth.js')).getAccessToken();
       if (!token) return 'Error: Not authenticated with Microsoft';
 
-      const endpoint = folderId
-        ? `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(folderId)}:/${encodeURIComponent(fileName)}:/content`
-        : `https://graph.microsoft.com/v1.0/me/drive/root:/${encodeURIComponent(fileName)}:/content`;
+      const itemPath = folderId
+        ? `me/drive/items/${encodeURIComponent(folderId)}:/${encodeURIComponent(fileName)}`
+        : `me/drive/root:/${encodeURIComponent(fileName)}`;
 
       try {
-        const resp = await fetch(endpoint, {
-          method: 'PUT',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/octet-stream',
-          },
-          body: content,
-          signal: AbortSignal.timeout(60000),
-        });
-
-        if (!resp.ok) {
-          const err = await resp.text();
-          return `Error uploading to OneDrive: ${err.slice(0, 200)}`;
+        // Small files (≤4MB): simple PUT upload
+        if (fileSize <= 4 * 1024 * 1024) {
+          const content = fs.readFileSync(filePath);
+          const resp = await fetch(`https://graph.microsoft.com/v1.0/${itemPath}:/content`, {
+            method: 'PUT',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
+            body: content,
+            signal: AbortSignal.timeout(60_000),
+          });
+          if (!resp.ok) {
+            const err = await resp.text();
+            return `Error uploading to OneDrive: ${err.slice(0, 200)}`;
+          }
+          const data = await resp.json() as { id?: string; name?: string; webUrl?: string };
+          return `File uploaded to OneDrive: ${data.name ?? fileName}${data.id ? ` (ID: ${data.id})` : ''}${data.webUrl ? `\nLink: ${data.webUrl}` : ''}`;
         }
 
-        const data = await resp.json() as { id?: string; name?: string; webUrl?: string };
-        return `File uploaded to OneDrive: ${data.name ?? fileName}${data.id ? ` (ID: ${data.id})` : ''}${data.webUrl ? `\nLink: ${data.webUrl}` : ''}`;
+        // Large files: resumable upload session
+        const sessionResp = await fetch(`https://graph.microsoft.com/v1.0/${itemPath}:/createUploadSession`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace', name: fileName } }),
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!sessionResp.ok) {
+          const err = await sessionResp.text();
+          return `Error creating upload session: ${err.slice(0, 200)}`;
+        }
+        const session = await sessionResp.json() as { uploadUrl?: string };
+        if (!session.uploadUrl) return 'Error: no upload URL returned from OneDrive';
+
+        // Upload in 4MB chunks
+        const CHUNK_SIZE = 4 * 1024 * 1024;
+        const fd = fs.openSync(filePath, 'r');
+        let offset = 0;
+        let finalData: { id?: string; name?: string; webUrl?: string } | null = null;
+
+        try {
+          while (offset < fileSize) {
+            const chunkSize = Math.min(CHUNK_SIZE, fileSize - offset);
+            const chunk = Buffer.alloc(chunkSize);
+            fs.readSync(fd, chunk, 0, chunkSize, offset);
+
+            const chunkResp = await fetch(session.uploadUrl, {
+              method: 'PUT',
+              headers: {
+                'Content-Length': String(chunkSize),
+                'Content-Range': `bytes ${offset}-${offset + chunkSize - 1}/${fileSize}`,
+              },
+              body: chunk,
+              signal: AbortSignal.timeout(120_000),
+            });
+
+            if (!chunkResp.ok && chunkResp.status !== 202) {
+              const err = await chunkResp.text();
+              return `Error uploading chunk at offset ${offset}: ${err.slice(0, 200)}`;
+            }
+
+            if (chunkResp.status === 201 || chunkResp.status === 200) {
+              finalData = await chunkResp.json() as { id?: string; name?: string; webUrl?: string };
+            }
+
+            offset += chunkSize;
+          }
+        } finally {
+          fs.closeSync(fd);
+        }
+
+        const sizeMB = Math.round(fileSize / 1024 / 1024 * 10) / 10;
+        return `File uploaded to OneDrive: ${finalData?.name ?? fileName} (${sizeMB}MB)${finalData?.id ? ` (ID: ${finalData.id})` : ''}${finalData?.webUrl ? `\nLink: ${finalData.webUrl}` : ''}`;
       } catch (err) {
         return `Error uploading to OneDrive: ${err instanceof Error ? err.message : String(err)}`;
       }
