@@ -1,6 +1,12 @@
 // ════════════════════════════════════════
-// Teams Watcher: Polls for new incoming Teams messages and notifies the primary agent
-// Mirrors the Outlook watcher but scans across all chats rather than one inbox
+// Teams Watcher: Real-time-ish incoming Teams message notifications via delta queries
+//
+// Strategy:
+//   - Poll chat list every 15 seconds to detect chats with new activity
+//   - Use Graph delta queries (chats/{id}/messages/delta) so each call only returns
+//     messages added since the previous call — no redundant fetches, no missed messages
+//   - Delta tokens are persisted to DB so they survive server restarts
+//   - New chats get a baseline delta token on first sight (no backlog replay)
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
@@ -15,38 +21,56 @@ import { isMicrosoftEnabled, isMicrosoftConnected, getEnabledMsServices } from '
 const logger = createLogger('teams-watcher');
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-let lastCheckedAt: string | null = null;
 let ownUserId: string | null = null;
 
-const POLL_INTERVAL_MS = 120_000; // 2 minutes — tighter than email since Teams is conversational
+// chatId → full delta link URL (persisted to DB)
+const deltaTokens = new Map<string, string>();
+
+// chatId → lastUpdatedDateTime from the most recent chat list poll (in-memory only)
+// Used to skip delta calls for chats with no new activity
+const chatLastUpdated = new Map<string, string>();
+
+// userId → email (UPN) — populated when a chat's members are fetched on first sight
+// Lets us include the sender's email in notifications without a per-message lookup
+const userEmails = new Map<string, string>();
+
+const POLL_INTERVAL_MS = 15_000;
+const DELTA_TOKENS_KEY = 'teams_delta_tokens';
 
 // ── Persistence ──
 
-function loadLastCheckedAt(): string | null {
+function loadDeltaTokens(): void {
   try {
     const db = getDb();
-    const row = db.prepare("SELECT value FROM config WHERE key = 'teams_last_checked_at'").get() as { value: string } | undefined;
-    return row?.value ?? null;
+    const row = db.prepare('SELECT value FROM config WHERE key = ?').get(DELTA_TOKENS_KEY) as { value: string } | undefined;
+    if (row?.value) {
+      const parsed = JSON.parse(row.value) as Record<string, string>;
+      for (const [chatId, link] of Object.entries(parsed)) {
+        deltaTokens.set(chatId, link);
+      }
+    }
   } catch {
-    return null;
+    // start fresh
   }
 }
 
-function saveLastCheckedAt(timestamp: string): void {
+function saveDeltaTokens(): void {
   try {
     const db = getDb();
+    const obj = Object.fromEntries(deltaTokens);
+    const json = JSON.stringify(obj);
     db.prepare(`
-      INSERT INTO config (key, value, updated_at) VALUES ('teams_last_checked_at', ?, datetime('now'))
+      INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
       ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-    `).run(timestamp, timestamp);
+    `).run(DELTA_TOKENS_KEY, json, json);
   } catch (err) {
-    logger.error('Failed to save teams_last_checked_at', {
+    logger.error('Failed to persist Teams delta tokens', {
       error: err instanceof Error ? err.message : String(err),
     });
   }
 }
 
-// ── Own user ID (cached after first successful fetch) ──
+// ── Own user ID (cached) ──
 
 async function getOwnUserId(): Promise<string | null> {
   if (ownUserId) return ownUserId;
@@ -57,7 +81,154 @@ async function getOwnUserId(): Promise<string | null> {
   return ownUserId;
 }
 
-// ── Polling ──
+// ── Fetch chat members to build userId → email lookup ──
+// Called once per chat during baseline initialization.
+// Teams message payloads include displayName + userId but not email —
+// we get emails from the chat member list instead.
+
+async function fetchChatMembers(chatId: string): Promise<void> {
+  const result = await msGraphRead(
+    `chats/${encodeURIComponent(chatId)}/members?$select=userId,displayName,email`,
+    'system', 'Teams Watcher', 'teams_watcher_members', { chatId },
+  );
+  if (!result.ok) return;
+
+  const data = result.data as {
+    value?: Array<{ userId?: string; displayName?: string; email?: string }>;
+  };
+  if (!data?.value) return;
+
+  for (const member of data.value) {
+    if (member.userId && member.email) {
+      userEmails.set(member.userId, member.email);
+    }
+  }
+}
+
+// ── Delta query for a single chat ──
+// Returns the number of new messages processed.
+// If isBaseline=true, fetches the initial token only — no notifications sent.
+
+async function pollChatDelta(
+  chatId: string,
+  chatTopic: string | null,
+  chatType: string,
+  isBaseline: boolean,
+  myId: string,
+  db: ReturnType<typeof getDb>,
+  primaryId: string,
+  notifiedIds: Set<string>,
+): Promise<{ newCount: number; deltaLink: string | null }> {
+  const storedLink = deltaTokens.get(chatId);
+  const endpoint = storedLink ?? `chats/${encodeURIComponent(chatId)}/messages/delta?$top=20`;
+
+  const result = await msGraphRead(endpoint, 'system', 'Teams Watcher', 'teams_watcher_delta', { chatId });
+
+  if (!result.ok) {
+    // 410 Gone = expired token; clear it so next poll reinitializes
+    if (result.error?.includes('410') || result.error?.toLowerCase().includes('gone') || result.error?.toLowerCase().includes('sync state')) {
+      logger.warn('Teams delta token expired, will reinitialize on next poll', { chatId });
+      deltaTokens.delete(chatId);
+      saveDeltaTokens();
+    } else {
+      logger.debug('Teams delta error', { chatId, error: result.error });
+    }
+    return { newCount: 0, deltaLink: null };
+  }
+
+  const data = result.data as Record<string, unknown>;
+
+  // Extract the new delta link from the response
+  const newDeltaLink = (data['@odata.deltaLink'] as string | undefined) ?? null;
+
+  if (isBaseline) {
+    // First time seeing this chat — just capture the token, don't notify
+    return { newCount: 0, deltaLink: newDeltaLink };
+  }
+
+  const messages = (data.value as Array<{
+    id: string;
+    createdDateTime: string;
+    from?: { user?: { id?: string; displayName?: string } };
+    body?: { content: string; contentType: string };
+    messageType?: string;
+  }>) ?? [];
+
+  let newCount = 0;
+
+  for (const msg of messages) {
+    if (msg.from?.user?.id === myId) continue;                      // skip own messages
+    if (msg.messageType && msg.messageType !== 'message') continue;  // skip system events
+    if (notifiedIds.has(msg.id)) continue;                          // deduplicate
+
+    const senderId = msg.from?.user?.id ?? '';
+    const senderName = msg.from?.user?.displayName ?? 'Someone';
+    const senderEmail = senderId ? (userEmails.get(senderId) ?? null) : null;
+    const senderLabel = senderEmail ? `${senderName} (${senderEmail})` : senderName;
+
+    let body = msg.body?.content ?? '';
+    if (msg.body?.contentType === 'html') {
+      body = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+    body = body.slice(0, 1000);
+
+    const chatLabel = chatTopic
+      ? `"${chatTopic}"`
+      : chatType === 'oneOnOne'
+        ? `1:1 chat with ${senderName}`
+        : 'group chat';
+
+    const content = [
+      `[SOURCE: TEAMS MESSAGE FROM ${senderLabel}]`,
+      ``,
+      `This is an incoming Microsoft Teams message — NOT a message from the dashboard user.`,
+      `To reply, call teams_send_message with the chat_id shown below.`,
+      ``,
+      `Chat: ${chatLabel} (${chatType})`,
+      `Time: ${msg.createdDateTime}`,
+      ``,
+      `Message:`,
+      body,
+      ``,
+      `Chat ID: ${chatId}`,
+    ].join('\n');
+
+    const msgId = uuidv4();
+    db.prepare(`
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+      VALUES (?, ?, 'user', ?, datetime('now'))
+    `).run(msgId, primaryId, content);
+
+    broadcast({
+      type: 'chat:message',
+      agentId: primaryId,
+      message: {
+        id: msgId,
+        agentId: primaryId,
+        role: 'user' as const,
+        content,
+        tokenCount: null,
+        modelId: null,
+        cost: null,
+        latencyMs: null,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    notifiedIds.add(msg.id);
+    newCount++;
+
+    logger.info('New Teams message notification sent to primary agent', {
+      chatId,
+      sender: senderName,
+      chatType,
+    });
+  }
+
+  return { newCount, deltaLink: newDeltaLink };
+}
+
+// ── Main poll ──
 
 async function pollForNewMessages(): Promise<void> {
   if (!isMicrosoftEnabled() || !isMicrosoftConnected()) return;
@@ -72,9 +243,7 @@ async function pollForNewMessages(): Promise<void> {
       return;
     }
 
-    // Step 1: List all my chats, then filter to those updated since last check.
-    // lastUpdatedDateTime on the chat object reflects the most recent message —
-    // if it hasn't changed, there's nothing new to fetch.
+    // Get all chats with their last-updated timestamp
     const chatsResult = await msGraphRead(
       'me/chats?$top=50&$select=id,topic,chatType,lastUpdatedDateTime',
       'system', 'Teams Watcher', 'teams_watcher_list_chats', {},
@@ -87,21 +256,7 @@ async function pollForNewMessages(): Promise<void> {
     const chatsData = chatsResult.data as {
       value?: Array<{ id: string; topic: string | null; chatType: string; lastUpdatedDateTime: string }>;
     };
-    if (!chatsData?.value || chatsData.value.length === 0) {
-      lastCheckedAt = new Date().toISOString();
-      saveLastCheckedAt(lastCheckedAt);
-      return;
-    }
-
-    const activeChats = lastCheckedAt
-      ? chatsData.value.filter(c => c.lastUpdatedDateTime > lastCheckedAt!)
-      : chatsData.value;
-
-    if (activeChats.length === 0) {
-      lastCheckedAt = new Date().toISOString();
-      saveLastCheckedAt(lastCheckedAt);
-      return;
-    }
+    if (!chatsData?.value) return;
 
     const db = getDb();
     const primaryId = getPrimaryAgentId();
@@ -115,107 +270,55 @@ async function pollForNewMessages(): Promise<void> {
       notifiedIds = new Set();
     }
 
-    let newCount = 0;
+    let totalNewCount = 0;
+    let tokensChanged = false;
 
-    for (const chat of activeChats) {
-      // Step 2: Fetch recent messages for each active chat.
-      const msgsResult = await msGraphRead(
-        `chats/${encodeURIComponent(chat.id)}/messages?$top=10&$orderby=createdDateTime desc`,
-        'system', 'Teams Watcher', 'teams_watcher_messages', { chatId: chat.id },
-      );
-      if (!msgsResult.ok) {
-        logger.debug('Teams watcher: messages fetch error', { chatId: chat.id, error: msgsResult.error });
+    for (const chat of chatsData.value) {
+      const prevUpdated = chatLastUpdated.get(chat.id);
+      const hasNewActivity = prevUpdated === undefined || chat.lastUpdatedDateTime !== prevUpdated;
+      const isNewChat = !deltaTokens.has(chat.id);
+
+      // Update our in-memory record of when this chat was last active
+      chatLastUpdated.set(chat.id, chat.lastUpdatedDateTime);
+
+      if (isNewChat) {
+        // First time seeing this chat — fetch members to build userId→email lookup,
+        // then initialize the delta token. No notifications on first sight.
+        await fetchChatMembers(chat.id);
+        const { deltaLink } = await pollChatDelta(
+          chat.id, chat.topic, chat.chatType, true, myId, db, primaryId, notifiedIds,
+        );
+        if (deltaLink) {
+          deltaTokens.set(chat.id, deltaLink);
+          tokensChanged = true;
+        }
         continue;
       }
 
-      const msgsData = msgsResult.data as {
-        value?: Array<{
-          id: string;
-          createdDateTime: string;
-          from?: { user?: { id?: string; displayName?: string } };
-          body?: { content: string; contentType: string };
-          messageType?: string;
-        }>;
-      };
-      if (!msgsData?.value) continue;
+      if (!hasNewActivity) {
+        // No change since last poll — skip the delta call entirely
+        continue;
+      }
 
-      for (const msg of msgsData.value) {
-        // Only messages newer than our last check window
-        if (lastCheckedAt && msg.createdDateTime <= lastCheckedAt) continue;
-        // Skip own messages — we sent those
-        if (msg.from?.user?.id === myId) continue;
-        // Skip system events (member join/leave, topic changes, etc.)
-        if (msg.messageType && msg.messageType !== 'message') continue;
-        // Skip already-notified messages
-        if (notifiedIds.has(msg.id)) continue;
+      // Chat has new activity — call delta to get only new messages
+      const { newCount, deltaLink } = await pollChatDelta(
+        chat.id, chat.topic, chat.chatType, false, myId, db, primaryId, notifiedIds,
+      );
 
-        const senderName = msg.from?.user?.displayName ?? 'Someone';
+      totalNewCount += newCount;
 
-        let body = msg.body?.content ?? '';
-        if (msg.body?.contentType === 'html') {
-          body = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-        }
-        body = body.slice(0, 1000);
-
-        const chatLabel = chat.topic
-          ? `"${chat.topic}"`
-          : chat.chatType === 'oneOnOne'
-            ? `1:1 chat with ${senderName}`
-            : 'group chat';
-
-        const content = [
-          `[SOURCE: TEAMS NOTIFICATION — not a message from the user, this is an automated alert about a new incoming Teams message]`,
-          ``,
-          `From: ${senderName}`,
-          `Chat: ${chatLabel} (${chat.chatType})`,
-          `Time: ${msg.createdDateTime}`,
-          ``,
-          `Message:`,
-          body,
-          ``,
-          `Chat ID: ${chat.id}`,
-          `To reply, use teams_send_message with chat_id: ${chat.id}`,
-        ].join('\n');
-
-        const msgId = uuidv4();
-        db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-          VALUES (?, ?, 'user', ?, datetime('now'))
-        `).run(msgId, primaryId, content);
-
-        broadcast({
-          type: 'chat:message',
-          agentId: primaryId,
-          message: {
-            id: msgId,
-            agentId: primaryId,
-            role: 'user' as const,
-            content,
-            tokenCount: null,
-            modelId: null,
-            cost: null,
-            latencyMs: null,
-            createdAt: new Date().toISOString(),
-          },
-        });
-
-        notifiedIds.add(msg.id);
-        newCount++;
-
-        logger.info('New Teams message notification sent to primary agent', {
-          chatId: chat.id,
-          sender: senderName,
-          chatType: chat.chatType,
-        });
+      if (deltaLink) {
+        deltaTokens.set(chat.id, deltaLink);
+        tokensChanged = true;
       }
     }
 
-    // Trigger the agent runtime once for all new messages
-    if (newCount > 0) {
+    // Trigger the agent once for all new messages this poll
+    if (totalNewCount > 0) {
       const runtime = getAgentRuntime();
-      const summary = newCount === 1
-        ? `[SOURCE: TEAMS NOTIFICATION] A new Teams message just arrived. Details and the chat_id to reply with are in the previous message.`
-        : `[SOURCE: TEAMS NOTIFICATION] ${newCount} new Teams messages just arrived. Details and chat_ids are in the previous messages.`;
+      const summary = totalNewCount === 1
+        ? `[SOURCE: TEAMS MESSAGE] An incoming Teams message is waiting above — review it and reply using teams_send_message with the chat_id provided.`
+        : `[SOURCE: TEAMS MESSAGE] ${totalNewCount} incoming Teams messages are waiting above — review each one and reply using teams_send_message with the chat_id provided in each.`;
 
       runtime.handleMessage(primaryId, summary).catch(err => {
         logger.error('Failed to trigger runtime for Teams notification', {
@@ -224,15 +327,17 @@ async function pollForNewMessages(): Promise<void> {
       });
     }
 
-    // Persist notified IDs — keep last 200 to avoid unbounded growth
-    const recentIds = [...notifiedIds].slice(-200);
-    db.prepare(`
-      INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-    `).run(notifiedKey, JSON.stringify(recentIds), JSON.stringify(recentIds));
+    // Persist delta tokens only when they changed
+    if (tokensChanged) saveDeltaTokens();
 
-    lastCheckedAt = new Date().toISOString();
-    saveLastCheckedAt(lastCheckedAt);
+    // Persist notified IDs (keep last 200)
+    if (totalNewCount > 0) {
+      const recentIds = [...notifiedIds].slice(-200);
+      db.prepare(`
+        INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+        ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
+      `).run(notifiedKey, JSON.stringify(recentIds), JSON.stringify(recentIds));
+    }
 
   } catch (err) {
     logger.error('Teams poll cycle failed', {
@@ -260,16 +365,11 @@ export function startTeamsWatcher(): void {
     return;
   }
 
-  lastCheckedAt = loadLastCheckedAt();
-
-  // Seed to now on first run so we don't replay the entire chat history
-  if (!lastCheckedAt) {
-    lastCheckedAt = new Date().toISOString();
-    saveLastCheckedAt(lastCheckedAt);
-    logger.info('Teams watcher: first run, seeded lastCheckedAt to now');
-  }
-
-  logger.info('Starting Teams watcher', { pollInterval: POLL_INTERVAL_MS, lastCheckedAt });
+  loadDeltaTokens();
+  logger.info('Starting Teams watcher', {
+    pollInterval: POLL_INTERVAL_MS,
+    knownChats: deltaTokens.size,
+  });
 
   pollTimer = setInterval(() => {
     pollForNewMessages().catch(err => {
@@ -279,7 +379,7 @@ export function startTeamsWatcher(): void {
     });
   }, POLL_INTERVAL_MS);
 
-  // Initial poll after 15s — staggers after the Outlook watcher's 10s delay
+  // Initial poll after 15s — staggers behind Outlook watcher's 10s delay
   setTimeout(() => {
     pollForNewMessages().catch(() => {});
   }, 15_000);

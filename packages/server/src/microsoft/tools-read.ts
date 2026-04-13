@@ -303,7 +303,7 @@ export async function executeMicrosoftReadTool(
       }
 
       const result = await msGraphRead(
-        `me/chats/${encodeURIComponent(chatId)}/messages?$top=${maxResults}&$orderby=createdDateTime desc`,
+        `chats/${encodeURIComponent(chatId)}/messages?$top=${maxResults}&$orderby=createdDateTime desc`,
         agentId, agentName, 'teams_read_messages', { chatId, maxResults },
       );
       if (!result.ok) return `Error reading Teams messages: ${result.error}`;

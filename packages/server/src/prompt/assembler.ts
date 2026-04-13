@@ -488,6 +488,18 @@ If a task requires sending email or modifying Gmail/Drive/Docs/Sheets/Calendar, 
     const msEmail = getMicrosoftWorkspaceConfig().accountEmail;
 
     if (msAccess === 'full') {
+      const teamsInboundGuidance = msAccountType !== 'msa' ? `
+
+**CRITICAL — Incoming Teams messages:**
+People can send you Microsoft Teams messages directly. When they do, a notification arrives in your conversation tagged \`[SOURCE: TEAMS MESSAGE FROM {name} ({email})]\`. These are real people reaching out via Teams — they are NOT messages from the dashboard user.
+
+When you see a \`[SOURCE: TEAMS MESSAGE FROM ...]\` notification:
+1. Read the message and the \`Chat ID\` shown at the bottom of the notification.
+2. Reply by calling \`teams_send_message\` with that \`chat_id\` and your reply text.
+3. Do NOT reply in plain chat — the person is on Teams, not the dashboard. They will never see a plain chat response.
+
+The \`teams_create_chat\` tool is for starting a new conversation with someone. \`teams_send_message\` is for replying to an existing chat using the \`chat_id\` from the notification.` : '';
+
       parts.push(`## Microsoft 365${msEmail ? ` (${msEmail})` : ''}
 
 You have full access to the connected Microsoft 365 account${msEmail ? ` (${msEmail})` : ''}. You can send and read Outlook email, manage the calendar, create and share Word/Excel/PowerPoint documents, upload and read OneDrive files${msAccountType !== 'msa' ? ', and send/read Teams messages' : ''}.
@@ -497,7 +509,7 @@ Access levels for other agents:
 - The PM agent has no Microsoft access.
 - If you need something sent, created, edited, or deleted in Microsoft 365, you must do it yourself.
 
-All Microsoft 365 actions are logged.${teamsNote}`);
+All Microsoft 365 actions are logged.${teamsInboundGuidance}${teamsNote}`);
     } else if (msAccess === 'read') {
       parts.push(`## Microsoft 365 (Read-Only)
 
