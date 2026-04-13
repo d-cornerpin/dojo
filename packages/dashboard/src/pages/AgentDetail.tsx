@@ -303,6 +303,11 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
           // Already have this message -- skip duplicate from reconnect
           return prev;
         } else {
+          // Skip empty done events (ghost bubbles)
+          if (e.done && (!e.content || e.content.trim().length === 0)) {
+            setIsWorking(false);
+            return prev;
+          }
           return [
             ...prev,
             {

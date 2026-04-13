@@ -397,7 +397,11 @@ export const Chat = () => {
           // Already have this message (finalized) -- skip duplicate from reconnect
           return prev;
         } else {
-          // New streaming message
+          // New streaming message — but skip if it's empty and already done (ghost bubble)
+          if (e.done && (!e.content || e.content.trim().length === 0)) {
+            setIsWorking(false);
+            return prev;
+          }
           return [
             ...prev,
             {
