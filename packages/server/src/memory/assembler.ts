@@ -223,6 +223,24 @@ export async function assembleContext(
   // which one — we just enforce the invariant before every call.
   merged = sanitizeToolBlocks(merged, agentId);
 
+  // Final safety: strip any remaining tool_result blocks from the first message.
+  // After merging and sanitization, a tool_result can still end up at position 0
+  // if it got merged with a text message. Providers reject this.
+  if (merged.length > 0 && merged[0].role === 'user' && Array.isArray(merged[0].content)) {
+    const firstBlocks = merged[0].content as unknown as Array<Record<string, unknown>>;
+    const filtered = firstBlocks.filter(b => b.type !== 'tool_result');
+    if (filtered.length < firstBlocks.length) {
+      logger.warn('Stripped tool_result blocks from first context message', {
+        droppedCount: firstBlocks.length - filtered.length,
+      }, agentId);
+      if (filtered.length === 0) {
+        merged.shift();
+      } else {
+        merged[0] = { ...merged[0], content: filtered as unknown as Anthropic.ContentBlockParam[] };
+      }
+    }
+  }
+
   // Ensure conversation ends with a user message (Anthropic API requirement —
   // "does not support assistant message prefill")
   while (merged.length > 0 && merged[merged.length - 1].role === 'assistant') {

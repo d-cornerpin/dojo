@@ -493,43 +493,17 @@ class AgentRuntime {
           db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
           continue; // Re-run the loop with the nudge in context
         }
-        // Nudge didn't work — the model is stuck. The context is likely poisoned
-        // with failed tool calls and nudge messages. Clean it up so the next
-        // user message gets a fresh shot.
-        logger.warn('Model stuck on empty responses — cleaning poisoned context', { loopCount }, agentId);
-
-        // Delete recent failed exchanges: nudge messages, empty assistant turns,
-        // and failed tool call chains from this turn. This gives the model a
-        // clean context on the next user message.
+        // Nudge didn't work. Clean up the nudge message we injected so it
+        // doesn't pollute future context, then break. Toast only — no inline message.
+        logger.warn('Model returned empty after nudge, cleaning nudge and breaking', { loopCount }, agentId);
         try {
-          // Remove only the system nudge messages injected during this turn.
-          // Do NOT delete assistant or tool messages — they may have useful content.
           db.prepare(`
             DELETE FROM messages WHERE agent_id = ? AND role = 'user'
               AND content LIKE '[System:%'
               AND created_at >= ?
           `).run(agentId, turnStartedAt);
-
-          logger.info('Cleaned poisoned context from failed turn', { agentId }, agentId);
-        } catch (cleanErr) {
-          logger.warn('Failed to clean poisoned context', {
-            error: cleanErr instanceof Error ? cleanErr.message : String(cleanErr),
-          }, agentId);
-        }
-
-        // Now persist a visible message so the user knows what happened
-        const fallbackId = uuidv4();
-        const fallbackMsg = "I got stuck on that and couldn't figure out how to proceed. I've cleared the failed attempts so I can think clearly on your next message. Could you try rephrasing or asking in a different way?";
-        try {
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, model_id, created_at)
-            VALUES (?, ?, 'assistant', ?, ?, datetime('now'))
-          `).run(fallbackId, agentId, fallbackMsg, modelId);
-          broadcastMessage(agentId, { id: fallbackId, role: 'assistant', content: fallbackMsg, modelId });
-          broadcast({ type: 'chat:chunk', agentId, messageId: fallbackId, content: fallbackMsg, done: false });
-          broadcast({ type: 'chat:chunk', agentId, messageId: fallbackId, content: '', done: true, modelId });
         } catch { /* best effort */ }
-        broadcast({ type: 'chat:error', agentId, error: 'Model got stuck. Failed attempts have been cleaned from context.', code: 'MODEL_FAILED', severity: 'warning', retryable: true });
+        broadcast({ type: 'chat:error', agentId, error: 'The model returned an empty response. Try sending your message again.', code: 'MODEL_FAILED', severity: 'warning', retryable: true });
         break;
       }
 
