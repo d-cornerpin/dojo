@@ -40,7 +40,7 @@ export function sanitizeMessagesOnModelChange(agentId: string): { collapsed: num
       const hasToolUse = blocks.some((b: Record<string, unknown>) => b.type === 'tool_use');
       if (!hasToolUse) continue;
 
-      // Extract text and tool call info
+      // Extract text and tool call info — preserve full content, don't truncate
       const textParts: string[] = [];
       const toolCallSummaries: string[] = [];
 
@@ -50,8 +50,9 @@ export function sanitizeMessagesOnModelChange(agentId: string): { collapsed: num
         } else if (block.type === 'tool_use') {
           const name = block.name as string;
           const input = block.input as Record<string, unknown> | undefined;
-          const argSummary = input ? Object.keys(input).join(', ') : '';
-          toolCallSummaries.push(`[Called ${name}(${argSummary})]`);
+          // Include full argument values, not just keys
+          const argSummary = input ? JSON.stringify(input) : '{}';
+          toolCallSummaries.push(`[Called ${name}: ${argSummary}]`);
         }
       }
 
@@ -71,15 +72,16 @@ export function sanitizeMessagesOnModelChange(agentId: string): { collapsed: num
             for (const rb of resultBlocks) {
               if (rb.type === 'tool_result') {
                 const resultContent = typeof rb.content === 'string' ? rb.content : JSON.stringify(rb.content);
-                const truncated = resultContent.length > 200
-                  ? resultContent.slice(0, 200) + '...'
-                  : resultContent;
+                // Keep full result content — don't truncate. The context assembler
+                // will handle budgeting. Truncating here loses information permanently.
                 const errorLabel = rb.is_error ? ' (ERROR)' : '';
-                resultSummaries.push(`[Result${errorLabel}: ${truncated}]`);
+                resultSummaries.push(`[Result${errorLabel}: ${resultContent}]`);
               }
             }
           }
-        } catch { /* not JSON */ }
+        } catch {
+          logger.warn('Failed to parse tool result during model switch sanitization', { agentId });
+        }
       }
 
       // Build the collapsed plain-text version

@@ -695,11 +695,11 @@ class AgentRuntime {
           for (let i = 0; i < result.toolCalls.length; i++) {
             const tc = result.toolCalls[i];
             const tr = toolResults[i];
-            const argSummary = Object.entries(tc.arguments).map(([k, v]) => `${k}=${typeof v === 'string' ? v.slice(0, 80) : JSON.stringify(v)}`).join(', ');
-            collapsedParts.push(`[Called ${tc.name}(${argSummary})]`);
+            // Preserve full arguments and results — don't truncate
+            const argJson = JSON.stringify(tc.arguments);
+            collapsedParts.push(`[Called ${tc.name}: ${argJson}]`);
             if (tr) {
-              const resultPreview = tr.content.length > 300 ? tr.content.slice(0, 300) + '...' : tr.content;
-              collapsedParts.push(`[Result${tr.isError ? ' ERROR' : ''}: ${resultPreview}]`);
+              collapsedParts.push(`[Result${tr.isError ? ' ERROR' : ''}: ${tr.content}]`);
             }
           }
           const collapsedText = collapsedParts.join('\n');
