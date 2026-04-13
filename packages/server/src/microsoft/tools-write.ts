@@ -4,7 +4,7 @@
 // ════════════════════════════════════════
 
 import type { ToolDefinition } from '../agent/tools.js';
-import { msGraphWrite } from './client.js';
+import { msGraphRead, msGraphWrite } from './client.js';
 import { getPrimaryAgentName } from '../config/platform.js';
 
 // ── Tool Definitions ──
@@ -106,12 +106,31 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     },
   },
   {
-    name: 'teams_send_message',
-    description: 'Send a message to a Teams chat. Requires a Microsoft work/school account (Entra ID). Not available on personal Microsoft accounts.',
+    name: 'teams_create_chat',
+    description: 'Create a new Teams 1:1 or group chat. Returns the chat_id so you can immediately send a message with teams_send_message. Use this when you need to message someone for the first time and do not have a chat_id yet. Requires a Microsoft work/school account (Entra ID).',
     input_schema: {
       type: 'object',
       properties: {
-        chat_id: { type: 'string', description: 'Teams chat ID (from teams_read_messages)' },
+        members: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Email address(es) of the person or people to add to the chat. For a 1:1 chat, provide exactly one email. For a group chat, provide two or more.',
+        },
+        topic: {
+          type: 'string',
+          description: 'Chat topic/name (required for group chats, optional for 1:1)',
+        },
+      },
+      required: ['members'],
+    },
+  },
+  {
+    name: 'teams_send_message',
+    description: 'Send a message to a Teams chat. Requires a Microsoft work/school account (Entra ID). Not available on personal Microsoft accounts. If you do not have a chat_id, use teams_create_chat first.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'Teams chat ID (from teams_read_messages or teams_create_chat)' },
         message: { type: 'string', description: 'Message text to send' },
       },
       required: ['chat_id', 'message'],
@@ -291,6 +310,58 @@ export async function executeMicrosoftWriteTool(
       } catch (err) {
         return `Error uploading to OneDrive: ${err instanceof Error ? err.message : String(err)}`;
       }
+    }
+
+    case 'teams_create_chat': {
+      const memberEmails = args.members as string[];
+      if (!memberEmails || memberEmails.length === 0) {
+        return 'Error: at least one member email is required';
+      }
+
+      const chatType = memberEmails.length === 1 ? 'oneOnOne' : 'group';
+
+      // Resolve each email to a user ID via Microsoft Graph
+      const resolvedIds: string[] = [];
+      for (const email of memberEmails) {
+        const userResult = await msGraphRead(
+          `users/${encodeURIComponent(email)}?$select=id,displayName`,
+          agentId, agentName, 'teams_create_chat_lookup', { email },
+        );
+        if (!userResult.ok) {
+          return `Error: could not find Microsoft account for "${email}": ${userResult.error}`;
+        }
+        const user = userResult.data as { id?: string; displayName?: string };
+        if (!user?.id) return `Error: no user ID returned for "${email}"`;
+        resolvedIds.push(user.id);
+      }
+
+      // Fetch the signed-in user's own ID to add as an owner member
+      const meResult = await msGraphRead('me?$select=id', agentId, agentName, 'teams_create_chat_me', {});
+      if (!meResult.ok) return `Error fetching signed-in user: ${meResult.error}`;
+      const me = meResult.data as { id?: string };
+      if (!me?.id) return 'Error: could not determine signed-in user ID';
+
+      // Build the members array — current user is owner, others are members
+      const allMemberIds = [me.id, ...resolvedIds.filter(id => id !== me.id)];
+      const members = allMemberIds.map((id, index) => ({
+        '@odata.type': '#microsoft.graph.aadUserConversationMember',
+        'user@odata.bind': `https://graph.microsoft.com/v1.0/users('${id}')`,
+        roles: index === 0 ? ['owner'] : [],
+      }));
+
+      const chatBody: Record<string, unknown> = { chatType, members };
+      if (chatType === 'group' && args.topic) chatBody.topic = args.topic as string;
+
+      const result = await msGraphWrite('POST', 'chats', chatBody, agentId, agentName, 'teams_create_chat', {
+        chatType, members: memberEmails,
+      });
+
+      if (!result.ok) return `Error creating Teams chat: ${result.error}`;
+      const chat = result.data as { id?: string };
+      if (!chat?.id) return 'Error: chat created but no ID returned';
+
+      const memberList = memberEmails.join(', ');
+      return `Teams ${chatType} chat created with ${memberList}\nChat ID: ${chat.id}\n\nYou can now use teams_send_message with this chat_id to send a message.`;
     }
 
     case 'teams_send_message': {
