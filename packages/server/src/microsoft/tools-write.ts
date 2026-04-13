@@ -337,7 +337,7 @@ export async function executeMicrosoftWriteTool(
         ...memberEmails.map(email => ({
           '@odata.type': '#microsoft.graph.aadUserConversationMember',
           'user@odata.bind': `https://graph.microsoft.com/v1.0/users('${email}')`,
-          roles: [],
+          roles: ['owner'],
         })),
       ];
 
@@ -360,7 +360,7 @@ export async function executeMicrosoftWriteTool(
       const chatId = encodeURIComponent(args.chat_id as string);
       const message = args.message as string;
 
-      const result = await msGraphWrite('POST', `me/chats/${chatId}/messages`, {
+      const result = await msGraphWrite('POST', `chats/${chatId}/messages`, {
         body: { content: message },
       }, agentId, agentName, 'teams_send_message', { chatId: args.chat_id });
 
