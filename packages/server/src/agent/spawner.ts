@@ -547,7 +547,8 @@ export async function completeAgent(
   }
 
   // If this is the Dreamer completing, mark its archives as processed
-  if (agent.name === 'Dreamer' && status === 'complete') {
+  const { isDreamerAgent } = await import('../config/platform.js');
+  if ((agent.name === 'Dreamer' || isDreamerAgent(agentId)) && status === 'complete') {
     try {
       const { markDreamerArchivesProcessed } = await import('../vault/maintenance.js');
       markDreamerArchivesProcessed(agentId);

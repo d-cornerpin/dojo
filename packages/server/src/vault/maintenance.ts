@@ -5,17 +5,31 @@
 // Engine-level pruning runs before the Dreamer is spawned.
 // ════════════════════════════════════════
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { spawnAgent } from '../agent/spawner.js';
-import { getPrimaryAgentId, getTrainerAgentId, getTrainerAgentName } from '../config/platform.js';
+import { getAgentRuntime } from '../agent/runtime.js';
+import {
+  getPrimaryAgentId,
+  getTrainerAgentId, getTrainerAgentName,
+  getDreamerAgentId, getDreamerAgentName,
+  isSetupCompleted,
+} from '../config/platform.js';
+import type { Message } from '@dojo/shared';
+import { v4 as uuidv4 } from 'uuid';
 import {
   getUnprocessedConversations,
   getVaultStats,
   type VaultConversation,
 } from './store.js';
 import { MAX_PINNED_ENTRIES } from './retrieval.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const logger = createLogger('vault-dreaming');
 
@@ -103,107 +117,6 @@ function runEngineMaintenance(): { pruned: number; decayed: number } {
   if (decayResult.changes > 0) logger.info(`Engine maintenance: decayed confidence on ${decayResult.changes} entries`);
 
   return { pruned, decayed: decayResult.changes };
-}
-
-// ── Build Dreamer Instructions ──
-
-async function buildDreamerPrompt(
-  unprocessed: VaultConversation[],
-  dreamMode: DreamMode,
-  stats: ReturnType<typeof getVaultStats>,
-): Promise<string> {
-  // Summarize what needs processing
-  const archiveSummary = unprocessed.map((conv, i) => {
-    return `Archive ${i + 1}: Agent "${conv.agentName ?? conv.agentId}", ${conv.messageCount} messages, ${conv.tokenCount} tokens (${conv.earliestAt} to ${conv.latestAt}), ID: ${conv.id}`;
-  }).join('\n');
-
-  const trainerName = getTrainerAgentName();
-  const trainerId = getTrainerAgentId();
-  const techniqueInstructions = dreamMode === 'full' ? `
-- IDENTIFY TECHNIQUES: If a conversation contains a reusable multi-step procedure or workflow that other agents would benefit from, send a message to the Trainer agent (**${trainerName}**, ID: ${trainerId}) via send_to_agent describing the technique candidate. Include: a suggested name, what it does, and the step-by-step instructions. The Trainer is the technique expert -- let them create and refine it. Only flag genuinely reusable processes, not one-off commands.` : '';
-
-  // Get file paths for profile updates
-  const os = await import('node:os');
-  const path = await import('node:path');
-  const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
-  const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
-
-  return `You are the Dreamer -- a specialized agent that processes the dojo's daily conversations into long-term memories and keeps the dojo's profile files up to date.
-
-# Your Mission
-
-The dojo has ${unprocessed.length} unprocessed conversation archive(s). You have three jobs:
-1. Extract knowledge from conversations into the vault
-2. Update the owner's profile (USER.md) if conversations revealed new behavioral or operational info
-3. Update the agent personality (SOUL.md) if the owner gave feedback about how the agent should behave
-
-# Files
-
-- USER.md: ${profilePath} -- The owner's profile. Contains behavioral/operational info the agent needs every turn.
-- SOUL.md: ${soulPath} -- The agent's personality and instructions. Defines how the agent talks and works.
-
-# Current Vault State
-
-- Total entries: ${stats.totalEntries} (${stats.pinnedCount} pinned, ${stats.permanentCount} permanent)
-- Pinned entry cap: ${MAX_PINNED_ENTRIES} (currently ${stats.pinnedCount}${stats.pinnedCount > MAX_PINNED_ENTRIES ? ' -- OVER CAP, needs pruning' : ''})
-- Unprocessed archives: ${unprocessed.length}
-
-# Archives to Process
-
-${archiveSummary}
-
-# How to Work
-
-1. **Create a project in the tracker** called "Dream Cycle [date]" with tasks for each step.
-2. **For each unprocessed archive:**
-   a. Read the archive content (it will be provided in your conversation)
-   b. Extract facts worth remembering into the vault via vault_remember:
-      - Facts about the user, their businesses, projects
-      - Decisions that were made and WHY
-      - Procedures or workflows that were figured out
-      - Relationships between people, systems, or projects
-      - Events with specific dates
-      - Corrections the user made
-   c. Do NOT vault: routine tool calls, transient debugging, small talk, info already in the vault
-   d. Look for information that should update USER.md or SOUL.md (see below)${techniqueInstructions}
-3. **After processing all archives**, check if USER.md or SOUL.md need updates (see below). If so, read the current file with file_read, make targeted edits, and write it back with file_write.
-4. **Deduplicate**: search the vault for entries that say essentially the same thing. Use vault_forget on the less detailed one.
-5. **Pin cap enforcement**: The dojo allows a maximum of ${MAX_PINNED_ENTRIES} pinned/permanent vault entries (these are included in EVERY agent turn and cost tokens). If the count exceeds ${MAX_PINNED_ENTRIES}, you MUST reduce it:
-   - Permanent entries (names, family, businesses, birth dates, key relationships) take priority. Do NOT unpin these.
-   - Review the remaining pinned entries. Unpin the least critical ones by calling vault_forget with reason "unpinned: over cap" then re-saving them without pin/permanent flags via vault_remember. They'll still be searchable, just not auto-included.
-   - Aim for no more than ${MAX_PINNED_ENTRIES} total pinned+permanent entries after your cycle.
-6. **When done**, call complete_task with a summary.
-
-# When to Update USER.md
-
-Read USER.md first. Then check: did any conversation reveal changes that affect it? Examples:
-- The owner moved (update location and timezone, remove the old ones)
-- The owner changed their work schedule
-- The owner stated a new communication preference or rule
-- A scheduling constraint changed or was removed
-- Information in the file is now outdated or contradicted by something said in conversation
-
-If yes, read the current file, make the changes, and write it back. You CAN update, replace, or remove content that is outdated. If the owner moved from Washington to Colorado, replace Washington with Colorado -- don't keep both. Keep the file lean and current. Only behavioral/operational content belongs here -- factual reference info goes to the vault.
-
-# When to Update SOUL.md
-
-Read SOUL.md first. Then check: did the owner give the agent direct feedback about its behavior? Examples:
-- "Stop doing X" or "Start doing Y"
-- "You're being too formal" or "Be more concise"
-- "When I ask about X, always do Y"
-- "Never do X again"
-- A rule in SOUL.md is now contradicted by something the owner said
-
-If yes, read the current file, make targeted edits, and write it back. You CAN remove or update rules that have been superseded. Preserve the file's existing voice and energy -- don't rewrite the whole thing, just update the parts that changed.
-
-# Vault Entry Rules
-
-- Write each entry as a STANDALONE statement
-- Use the correct type: fact, relationship, decision, procedure, event, preference, note
-- "preference" = factual preferences (likes Leica cameras, drinks iced black coffee). NOT behavioral rules.
-- Mark stable facts as permanent: true (names, family, businesses, locations, birth dates)
-- vault_search before saving to avoid duplicates
-- Keep each entry under 500 tokens`;
 }
 
 // Rough token estimate: ~4 characters per token
@@ -310,6 +223,213 @@ ${batchText}
 Begin by creating a tracker project, then process each archive systematically.`;
 }
 
+/**
+ * Build the cycle message sent to the permanent Dreamer agent.
+ * This replaces the old dynamic system prompt — vault state and archive data
+ * go in the user message since the system prompt is now fixed.
+ */
+function buildDreamerCycleMessage(
+  batchText: string,
+  batchIndex: number,
+  totalBatches: number,
+  stats: ReturnType<typeof getVaultStats>,
+  profilePath: string,
+  soulPath: string,
+  dreamMode: DreamMode,
+  allUnprocessed: VaultConversation[],
+): string {
+  const trainerName = getTrainerAgentName();
+  const trainerId = getTrainerAgentId();
+  const techniqueNote = dreamMode === 'full'
+    ? `\n- If a conversation shows a reusable multi-step procedure, send it to Trainer agent (${trainerName}, ID: ${trainerId}) via send_to_agent.`
+    : '';
+
+  const batchNote = totalBatches > 1
+    ? `\n\nThis is batch ${batchIndex + 1} of ${totalBatches}. Focus on these archives only. The remaining batches will be delivered after you call complete_task.`
+    : '';
+
+  const archiveSummary = allUnprocessed.length > 0
+    ? `\n\nFull archive list (${allUnprocessed.length} total):\n` + allUnprocessed.map((conv, i) =>
+        `  ${i + 1}. ${conv.agentName ?? conv.agentId} — ${conv.messageCount} messages (${conv.earliestAt} to ${conv.latestAt})`
+      ).join('\n')
+    : '';
+
+  return `═══ DREAM CYCLE ═══
+Files:
+- USER.md: ${profilePath}
+- SOUL.md: ${soulPath}
+
+Vault state: ${stats.totalEntries} entries (${stats.pinnedCount} pinned, ${stats.permanentCount} permanent). Pin cap: ${MAX_PINNED_ENTRIES}${stats.pinnedCount > MAX_PINNED_ENTRIES ? ' — OVER CAP, prune now' : ''}.${archiveSummary}${techniqueNote}${batchNote}
+
+Process the archives below. Extract vault memories, update USER.md/SOUL.md if needed, then call complete_task.
+
+${batchText}`;
+}
+
+// ── Permanent Dreamer Tools & Permissions ──
+
+const DREAMER_TOOLS_POLICY = JSON.stringify({
+  allow: [
+    'vault_remember', 'vault_search', 'vault_forget',
+    'memory_grep', 'memory_search', 'memory_describe',
+    'file_read', 'file_write',
+    'tracker_create_project', 'tracker_create_task',
+    'tracker_update_status', 'tracker_add_notes', 'tracker_complete_step',
+    'tracker_list_projects',
+    'send_to_agent', 'list_agents',
+    'get_current_time', 'load_tool_docs', 'complete_task',
+  ],
+});
+
+function getDreamerPermissions(): string {
+  const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
+  const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
+  return JSON.stringify({
+    file_read: [profilePath, soulPath],
+    file_write: [profilePath, soulPath],
+    file_delete: 'none',
+    exec_allow: [],
+    exec_deny: ['*'],
+    network_domains: 'none',
+    max_processes: 0,
+    can_spawn_agents: false,
+    can_assign_permissions: false,
+    system_control: [],
+  });
+}
+
+function loadDreamerSoulPrompt(): string {
+  const templatePaths = [
+    path.resolve(__dirname, '../../../../templates/DREAMER-SOUL.md'),
+    path.resolve(__dirname, '../../../templates/DREAMER-SOUL.md'),
+  ];
+  for (const p of templatePaths) {
+    try {
+      if (fs.existsSync(p)) return fs.readFileSync(p, 'utf-8');
+    } catch { /* try next */ }
+  }
+  return `You are the Dreamer, the dojo's memory keeper. Each night you process conversation archives into vault memories and keep USER.md and SOUL.md up to date. When done with each cycle, call complete_task.`;
+}
+
+export function ensureDreamerAgentRunning(): void {
+  if (!isSetupCompleted()) {
+    logger.info('Setup not completed, deferring Dreamer creation');
+    return;
+  }
+
+  const db = getDb();
+  const dreamerId = getDreamerAgentId();
+  const dreamerName = getDreamerAgentName();
+  const primaryId = getPrimaryAgentId();
+
+  logger.info('Dreamer auto-spawn check triggered', { dreamerId, dreamerName });
+
+  const primaryExists = db.prepare('SELECT id FROM agents WHERE id = ?').get(primaryId);
+  if (!primaryExists) {
+    logger.warn('Primary agent not yet created — deferring Dreamer spawn', { primaryId });
+    setTimeout(() => ensureDreamerAgentRunning(), 5000);
+    return;
+  }
+
+  const existing = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(dreamerId) as
+    | { id: string; status: string }
+    | undefined;
+
+  const dreamerPermissions = getDreamerPermissions();
+
+  if (existing && existing.status !== 'terminated') {
+    logger.info('Dreamer agent already running', { status: existing.status });
+    db.prepare(
+      "UPDATE agents SET tools_policy = ?, permissions = ?, updated_at = datetime('now') WHERE id = ?",
+    ).run(DREAMER_TOOLS_POLICY, dreamerPermissions, dreamerId);
+    return;
+  }
+
+  // Resolve model: dreaming_model_id, else primary agent's model
+  const modelRow = db.prepare("SELECT value FROM config WHERE key = 'dreaming_model_id'").get() as { value: string } | undefined;
+  let modelId: string | null = modelRow?.value ?? null;
+  if (!modelId) {
+    const primary = db.prepare('SELECT model_id FROM agents WHERE id = ?').get(primaryId) as
+      | { model_id: string | null }
+      | undefined;
+    modelId = primary?.model_id ?? null;
+  }
+
+  const systemPrompt = loadDreamerSoulPrompt();
+
+  if (existing) {
+    db.prepare(`
+      UPDATE agents SET
+        name = ?,
+        model_id = ?,
+        status = 'idle',
+        agent_type = 'persistent',
+        parent_agent = ?,
+        spawn_depth = 1,
+        max_runtime = NULL,
+        timeout_at = NULL,
+        permissions = ?,
+        tools_policy = ?,
+        config = '{"persist":true,"shareUserProfile":false}',
+        updated_at = datetime('now')
+      WHERE id = ?
+    `).run(dreamerName, modelId, primaryId, dreamerPermissions, DREAMER_TOOLS_POLICY, dreamerId);
+    logger.info('Dreamer agent reactivated', { dreamerId, dreamerName });
+  } else {
+    db.prepare(`
+      INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by,
+                          parent_agent, spawn_depth, agent_type, classification, max_runtime, timeout_at,
+                          permissions, tools_policy, task_id, created_at, updated_at)
+      VALUES (?, ?, ?, NULL, 'idle', '{"persist":true,"shareUserProfile":false}', ?,
+              ?, 1, 'persistent', 'sensei', NULL, NULL,
+              ?, ?, NULL, datetime('now'), datetime('now'))
+    `).run(dreamerId, dreamerName, modelId, primaryId, primaryId, dreamerPermissions, DREAMER_TOOLS_POLICY);
+
+    db.prepare(`
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+      VALUES (?, ?, 'system', ?, datetime('now'))
+    `).run(uuidv4(), dreamerId, systemPrompt);
+
+    logger.info('Dreamer agent created', { dreamerId, dreamerName });
+  }
+}
+
+// ── Inject Cycle Message and Wake Dreamer ──
+
+function wakeupDreamer(cycleMessage: string): void {
+  const db = getDb();
+  const dreamerId = getDreamerAgentId();
+
+  const msgId = uuidv4();
+  db.prepare(`
+    INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+    VALUES (?, ?, 'user', ?, datetime('now'))
+  `).run(msgId, dreamerId, cycleMessage);
+
+  broadcast({
+    type: 'chat:message',
+    agentId: dreamerId,
+    message: {
+      id: msgId,
+      agentId: dreamerId,
+      role: 'user' as Message['role'],
+      content: cycleMessage,
+      tokenCount: null,
+      modelId: null,
+      cost: null,
+      latencyMs: null,
+      createdAt: new Date().toISOString(),
+    },
+  });
+
+  const runtime = getAgentRuntime();
+  runtime.handleMessage(dreamerId, cycleMessage).catch(err => {
+    logger.error('Dreamer cycle failed', {
+      error: err instanceof Error ? err.message : String(err),
+    }, dreamerId);
+  });
+}
+
 // ── Main Dreaming Cycle ──
 
 export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> {
@@ -333,8 +453,6 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
   }
 
   // Compute profile file paths for Dreamer's file access
-  const os = await import('node:os');
-  const path = await import('node:path');
   const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
   const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
 
@@ -358,7 +476,7 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
   // Batch archives to fit within the model's context window
   const batches = batchArchives(unprocessed, contextWindow);
 
-  logger.info(`Spawning Dreamer agent to process ${unprocessed.length} archives in ${batches.length} batch(es)`, {
+  logger.info(`Waking Dreamer to process ${unprocessed.length} archives in ${batches.length} batch(es)`, {
     mode: config.dreamMode,
     modelId,
     contextWindow,
@@ -369,83 +487,47 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
 
   const stats = getVaultStats();
 
-  // Step 3: Process batches — spawn Dreamer for the first batch
-  // Subsequent batches are handled by scheduleDreamerBatch after each completes
+  // Step 3: Process batches — wake Dreamer for the first batch
+  // Subsequent batches are handled after each complete_task via markDreamerArchivesProcessed
   const firstBatch = batches[0];
   if (!firstBatch) {
     logger.warn('No valid archive batches to process');
     return { dreamerId: null };
   }
 
+  // Ensure permanent Dreamer exists before waking it
+  ensureDreamerAgentRunning();
+
+  const dreamerId = getDreamerAgentId();
+  const dreamerState = db.prepare('SELECT status FROM agents WHERE id = ?').get(dreamerId) as { status: string } | undefined;
+
+  if (dreamerState?.status === 'working') {
+    logger.warn('Dreamer is already running — skipping cycle');
+    return { dreamerId };
+  }
+
   // Store remaining batches for sequential processing
   pendingBatches.set(primaryId, { batches, currentIndex: 0, config, primaryId, modelId, stats });
 
-  try {
-    const result = await spawnAgent({
-      parentId: primaryId,
-      name: 'Dreamer',
-      systemPrompt: await buildDreamerPrompt(unprocessed, config.dreamMode, stats),
-      modelId,
-      classification: 'sensei',
-      groupId: 'system-group',
-      timeout: 3600, // 1 hour safety net
-      persist: false, // auto-terminate on complete_task
-      toolsPolicy: {
-        allow: [
-          'vault_remember',
-          'vault_search',
-          'vault_forget',
-          'memory_grep',
-          'memory_search',
-          'file_read',
-          'file_write',
-          'tracker_create_project',
-          'tracker_create_task',
-          'tracker_update_status',
-          'tracker_add_notes',
-          'tracker_complete_step',
-          'get_current_time',
-          'send_to_agent',
-          'complete_task',
-        ],
-        deny: [],
-      },
-      permissions: {
-        file_read: [profilePath, soulPath],
-        file_write: [profilePath, soulPath],
-        file_delete: 'none',
-        exec_allow: [],
-        exec_deny: ['*'],
-        network_domains: 'none',
-        max_processes: 0,
-        can_spawn_agents: false,
-        can_assign_permissions: false,
-        system_control: [],
-      },
-      initialMessage: buildDreamerInitialMessage(firstBatch.text, 0, batches.length),
-    });
+  // Store the first batch's archive IDs on the Dreamer agent record
+  db.prepare(`
+    UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', ?)
+    WHERE id = ?
+  `).run(JSON.stringify(firstBatch.ids), dreamerId);
 
-    // Store THIS BATCH's archive IDs so we mark only them when it completes
-    db.prepare(`
-      UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', ?)
-      WHERE id = ?
-    `).run(JSON.stringify(firstBatch.ids), result.agentId);
+  // Build cycle message: vault state + archives + instructions
+  const cycleMessage = buildDreamerCycleMessage(firstBatch.text, 0, batches.length, stats, profilePath, soulPath, config.dreamMode, unprocessed);
 
-    logger.info('Dreamer agent spawned', {
-      dreamerId: result.agentId,
-      batch: `1/${batches.length}`,
-      archivesInBatch: firstBatch.ids.length,
-      totalArchives: unprocessed.length,
-    });
+  wakeupDreamer(cycleMessage);
 
-    return { dreamerId: result.agentId };
-  } catch (err) {
-    logger.error('Failed to spawn Dreamer agent', {
-      error: err instanceof Error ? err.message : String(err),
-    });
+  logger.info('Dreamer agent woken', {
+    dreamerId,
+    batch: `1/${batches.length}`,
+    archivesInBatch: firstBatch.ids.length,
+    totalArchives: unprocessed.length,
+  });
 
-    return { dreamerId: null };
-  }
+  return { dreamerId };
 }
 
 // ── Batch Processing State ──
@@ -462,8 +544,8 @@ interface PendingBatchState {
 const pendingBatches = new Map<string, PendingBatchState>();
 
 /**
- * After a Dreamer completes a batch, check if there are more batches to process.
- * If so, spawn a new Dreamer for the next batch.
+ * After the Dreamer completes a batch, check if there are more batches to process.
+ * If so, inject the next batch message and wake the permanent Dreamer again.
  */
 export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
   const state = pendingBatches.get(primaryId);
@@ -481,63 +563,44 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
   state.currentIndex = nextIndex;
   const batch = state.batches[nextIndex];
 
-  logger.info(`Spawning Dreamer for batch ${nextIndex + 1}/${state.batches.length}`, {
+  logger.info(`Injecting next Dreamer batch ${nextIndex + 1}/${state.batches.length}`, {
     archivesInBatch: batch.ids.length,
   });
 
-  const os = await import('node:os');
-  const path = await import('node:path');
-  const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
-  const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
+  const osModule = await import('node:os');
+  const pathModule = await import('node:path');
+  const profilePath = pathModule.join(osModule.homedir(), '.dojo', 'prompts', 'USER.md');
+  const soulPath = pathModule.join(osModule.homedir(), '.dojo', 'prompts', 'SOUL.md');
 
   try {
-    const result = await spawnAgent({
-      parentId: primaryId,
-      name: 'Dreamer',
-      systemPrompt: await buildDreamerPrompt([], state.config.dreamMode, state.stats),
-      modelId: state.modelId,
-      classification: 'sensei',
-      groupId: 'system-group',
-      timeout: 3600,
-      persist: false,
-      toolsPolicy: {
-        allow: [
-          'vault_remember', 'vault_search', 'vault_forget',
-          'memory_grep', 'memory_search',
-          'file_read', 'file_write',
-          'tracker_create_project', 'tracker_create_task',
-          'tracker_update_status', 'tracker_add_notes', 'tracker_complete_step',
-          'get_current_time', 'send_to_agent', 'complete_task',
-        ],
-        deny: [],
-      },
-      permissions: {
-        file_read: [profilePath, soulPath],
-        file_write: [profilePath, soulPath],
-        file_delete: 'none',
-        exec_allow: [],
-        exec_deny: ['*'],
-        network_domains: 'none',
-        max_processes: 0,
-        can_spawn_agents: false,
-        can_assign_permissions: false,
-        system_control: [],
-      },
-      initialMessage: buildDreamerInitialMessage(batch.text, nextIndex, state.batches.length),
-    });
-
+    const dreamerId = getDreamerAgentId();
     const db = getDb();
+
+    // Update archive IDs on the permanent Dreamer record for this batch
     db.prepare(`
       UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', ?)
       WHERE id = ?
-    `).run(JSON.stringify(batch.ids), result.agentId);
+    `).run(JSON.stringify(batch.ids), dreamerId);
 
-    logger.info('Next Dreamer batch spawned', {
-      dreamerId: result.agentId,
+    const nextCycleMessage = buildDreamerCycleMessage(
+      batch.text,
+      nextIndex,
+      state.batches.length,
+      state.stats,
+      profilePath,
+      soulPath,
+      state.config.dreamMode,
+      [],
+    );
+
+    wakeupDreamer(nextCycleMessage);
+
+    logger.info('Dreamer woken for next batch', {
+      dreamerId,
       batch: `${nextIndex + 1}/${state.batches.length}`,
     });
   } catch (err) {
-    logger.error('Failed to spawn next Dreamer batch', {
+    logger.error('Failed to wake Dreamer for next batch', {
       error: err instanceof Error ? err.message : String(err),
       batch: `${nextIndex + 1}/${state.batches.length}`,
     });
@@ -548,12 +611,22 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
 // ── Mark Dreamer Archives as Processed ──
 
 /**
- * Called when the Dreamer agent completes. Marks all its assigned archives as processed,
- * then spawns the next batch if there are more.
+ * Called when the Dreamer agent completes a batch. Marks all assigned archives as
+ * processed, then wakes the Dreamer for the next batch if there are more.
+ *
+ * dreamerAgentId may be either the permanent 'dreamer' ID or a legacy temporary agent ID.
  */
 export function markDreamerArchivesProcessed(dreamerAgentId: string): void {
   const db = getDb();
-  const agent = db.prepare('SELECT config FROM agents WHERE id = ?').get(dreamerAgentId) as { config: string } | undefined;
+
+  // For the permanent Dreamer, archive IDs are always on the fixed Dreamer agent record.
+  // For legacy temporary agents (first-run bootstrap, etc.), fall back to the passed ID.
+  const permanentDreamerId = getDreamerAgentId();
+  const lookupId = dreamerAgentId === permanentDreamerId ? permanentDreamerId : dreamerAgentId;
+
+  const agent = db.prepare('SELECT config, parent_agent FROM agents WHERE id = ?').get(lookupId) as
+    | { config: string; parent_agent: string | null }
+    | undefined;
   if (!agent) return;
 
   try {
@@ -568,10 +641,10 @@ export function markDreamerArchivesProcessed(dreamerAgentId: string): void {
     logger.info(`Marked ${archiveIds.length} archives as processed after Dreamer completion`, { dreamerAgentId });
 
     // Check if there are more batches to process
-    const agentRow = db.prepare('SELECT parent_id FROM agents WHERE id = ?').get(dreamerAgentId) as { parent_id: string } | undefined;
-    if (agentRow?.parent_id) {
-      spawnNextDreamerBatch(agentRow.parent_id).catch(err => {
-        logger.error('Failed to spawn next Dreamer batch', {
+    const primaryId = agent.parent_agent;
+    if (primaryId) {
+      spawnNextDreamerBatch(primaryId).catch(err => {
+        logger.error('Failed to wake Dreamer for next batch', {
           error: err instanceof Error ? err.message : String(err),
         });
       });
@@ -602,10 +675,7 @@ export async function runFirstRunProfileBootstrap(): Promise<{ dreamerId: string
     return { dreamerId: null };
   }
 
-  // Read the USER.md profile and SOUL.md personality
-  const fs = await import('node:fs');
-  const path = await import('node:path');
-  const os = await import('node:os');
+  // Read the USER.md profile
   const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
 
   let profileContent = '';

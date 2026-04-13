@@ -2,12 +2,12 @@
 // Healer Agent — Self-Healing Orchestrator
 //
 // Manages the healing cycle: compile diagnostic,
-// run auto-fixes, spawn a temporary Healer agent
-// for Tier 2-3 analysis, schedule next cycle.
+// run auto-fixes, then wake the permanent Healer
+// agent for Tier 2-3 analysis.
 //
-// The Healer agent is spawned on-demand (like the
-// Dreamer) and auto-terminates when done. It only
-// appears in the agent list while running.
+// The Healer is a permanent resident of Masters
+// (like the Trainer and Imaginer). It stays idle
+// between cycles and wakes when a cycle fires.
 // ════════════════════════════════════════
 
 import fs from 'node:fs';
@@ -20,8 +20,14 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { compileDiagnosticReport } from './diagnostic.js';
 import { runAutoFixes } from './auto-fix.js';
-import { spawnAgent } from '../agent/spawner.js';
-import { getPrimaryAgentId, isSetupCompleted } from '../config/platform.js';
+import { getAgentRuntime } from '../agent/runtime.js';
+import type { Message } from '@dojo/shared';
+import {
+  getPrimaryAgentId,
+  getHealerAgentId,
+  getHealerAgentName,
+  isSetupCompleted,
+} from '../config/platform.js';
 
 const logger = createLogger('healer-agent');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -110,6 +116,138 @@ You are the Healer, the dojo's self-healing agent. You analyze operational healt
 - Keep messages short. You're a medic, not a therapist.`;
 }
 
+// ── Permanent Healer Agent Tools & Permissions ──
+
+const HEALER_TOOLS_POLICY = JSON.stringify({
+  allow: [
+    // Diagnostic and healing
+    'healer_propose',
+    'healer_log_action',
+    // Vault
+    'vault_remember', 'vault_search', 'vault_forget',
+    // Memory
+    'memory_grep', 'memory_describe', 'memory_search',
+    // File operations
+    'file_read', 'file_write', 'file_list',
+    // Shell execution
+    'exec',
+    // Network
+    'web_search', 'web_fetch',
+    // Tracker
+    'tracker_create_project', 'tracker_create_task', 'tracker_update_status',
+    'tracker_add_notes', 'tracker_complete_step', 'tracker_list_projects',
+    // Agents
+    'list_agents',
+    // Utility
+    'load_tool_docs', 'get_current_time', 'complete_task',
+  ],
+});
+
+const HEALER_PERMISSIONS = JSON.stringify({
+  file_read: '*',
+  file_write: '*',
+  file_delete: 'none',
+  exec_allow: ['*'],
+  exec_deny: [],
+  network_domains: '*',
+  max_processes: 5,
+  can_spawn_agents: false,
+  can_assign_permissions: false,
+  system_control: [],
+});
+
+// ── Ensure Healer Agent Running ──
+
+export function ensureHealerAgentRunning(): void {
+  if (!isSetupCompleted()) {
+    logger.info('Setup not completed, deferring Healer creation');
+    return;
+  }
+
+  const db = getDb();
+  const healerId = getHealerAgentId();
+  const healerName = getHealerAgentName();
+  const primaryId = getPrimaryAgentId();
+
+  logger.info('Healer auto-spawn check triggered', { healerId, healerName });
+
+  const primaryExists = db.prepare('SELECT id FROM agents WHERE id = ?').get(primaryId);
+  if (!primaryExists) {
+    logger.warn('Primary agent not yet created — deferring Healer spawn', { primaryId });
+    setTimeout(() => ensureHealerAgentRunning(), 5000);
+    return;
+  }
+
+  // Clean up any old temporary Healer agents (from before permanent resident approach)
+  db.prepare("UPDATE agents SET status = 'terminated', updated_at = datetime('now') WHERE name = ? AND id != ?")
+    .run(healerName, healerId);
+
+  const existing = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(healerId) as
+    | { id: string; status: string }
+    | undefined;
+
+  if (existing && existing.status !== 'terminated') {
+    logger.info('Healer agent already running', { status: existing.status });
+    // Keep tools/permissions current on every boot
+    db.prepare(
+      "UPDATE agents SET tools_policy = ?, permissions = ?, updated_at = datetime('now') WHERE id = ?",
+    ).run(HEALER_TOOLS_POLICY, HEALER_PERMISSIONS, healerId);
+    return;
+  }
+
+  // Resolve model: use healer_model_id config if set, else primary agent's model
+  const healerModelRow = db.prepare(
+    "SELECT value FROM config WHERE key = 'healer_model_id'",
+  ).get() as { value: string } | undefined;
+  let modelId: string | null = healerModelRow?.value ?? null;
+  if (!modelId) {
+    const primary = db.prepare('SELECT model_id FROM agents WHERE id = ?').get(primaryId) as
+      | { model_id: string | null }
+      | undefined;
+    modelId = primary?.model_id ?? null;
+  }
+
+  const systemPrompt = loadHealerSoulPrompt();
+
+  if (existing) {
+    // Reactivate from terminated
+    db.prepare(`
+      UPDATE agents SET
+        name = ?,
+        model_id = ?,
+        status = 'idle',
+        agent_type = 'persistent',
+        parent_agent = ?,
+        spawn_depth = 1,
+        max_runtime = NULL,
+        timeout_at = NULL,
+        permissions = ?,
+        tools_policy = ?,
+        config = '{"persist":true,"shareUserProfile":true}',
+        updated_at = datetime('now')
+      WHERE id = ?
+    `).run(healerName, modelId, primaryId, HEALER_PERMISSIONS, HEALER_TOOLS_POLICY, healerId);
+    logger.info('Healer agent reactivated', { healerId, healerName });
+  } else {
+    // Create fresh
+    db.prepare(`
+      INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by,
+                          parent_agent, spawn_depth, agent_type, classification, max_runtime, timeout_at,
+                          permissions, tools_policy, task_id, created_at, updated_at)
+      VALUES (?, ?, ?, NULL, 'idle', '{"persist":true,"shareUserProfile":true}', ?,
+              ?, 1, 'persistent', 'sensei', NULL, NULL,
+              ?, ?, NULL, datetime('now'), datetime('now'))
+    `).run(healerId, healerName, modelId, primaryId, primaryId, HEALER_PERMISSIONS, HEALER_TOOLS_POLICY);
+
+    db.prepare(`
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+      VALUES (?, ?, 'system', ?, datetime('now'))
+    `).run(uuidv4(), healerId, systemPrompt);
+
+    logger.info('Healer agent created', { healerId, healerName });
+  }
+}
+
 // ── Run Healing Cycle ──
 
 export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFixCount: number; llmTriggered: boolean }> {
@@ -132,21 +270,28 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
     autoFixCount = autoResult.fixCount;
   }
 
-  // Step 3: If there are warnings/critical items remaining, spawn a temporary Healer agent
+  // Step 3: If there are warnings/critical items remaining, wake the permanent Healer agent
   const remainingIssues = report.items.filter(i => i.severity !== 'info');
   let llmTriggered = false;
 
   if (config.healerMode === 'active' && remainingIssues.length > 0) {
     try {
-      const modelId = config.modelId ?? getDefaultHealerModel();
-      if (!modelId) {
-        logger.warn('No model available for Healer LLM cycle');
-      } else {
-        const primaryId = getPrimaryAgentId();
-        const systemPrompt = loadHealerSoulPrompt();
+      const db = getDb();
+      const healerId = getHealerAgentId();
 
+      // Ensure permanent Healer exists
+      ensureHealerAgentRunning();
+
+      const healerState = db.prepare('SELECT status, model_id FROM agents WHERE id = ?').get(healerId) as
+        | { status: string; model_id: string | null }
+        | undefined;
+
+      if (healerState?.status === 'working') {
+        logger.warn('Healer is already running a cycle — skipping LLM trigger');
+      } else if (!healerState) {
+        logger.warn('Healer agent not found after ensureHealerAgentRunning — skipping LLM trigger');
+      } else {
         // Check for approved proposals from the user
-        const db = getDb();
         const approved = db.prepare(`
           SELECT id, title, proposed_fix, fix_action FROM healer_proposals
           WHERE status = 'approved'
@@ -159,37 +304,39 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
             '\n═══ END APPROVED ═══';
         }
 
-        const initialMessage = `${report.reportText}${approvedSection}\n\n${autoFixCount > 0 ? `Note: ${autoFixCount} auto-fix(es) were already applied before this report was delivered to you. Focus on the remaining issues.\n\n` : ''}For each issue in the diagnostic:\n1. Search the vault for past healer context on similar issues\n2. Fix it yourself, propose it to the user (healer_propose), or log and skip it (healer_log_action)\n3. Do NOT message other agents for advice — you are the diagnostician\n4. When done with all issues, call complete_task with a summary`;
+        const cycleMessage = `${report.reportText}${approvedSection}\n\n${autoFixCount > 0 ? `Note: ${autoFixCount} auto-fix(es) were already applied before this report was delivered to you. Focus on the remaining issues.\n\n` : ''}For each issue in the diagnostic:\n1. Search the vault for past healer context on similar issues\n2. Fix it yourself, propose it to the user (healer_propose), or log and skip it (healer_log_action)\n3. Do NOT message other agents for advice — you are the diagnostician\n4. When done with all issues, call complete_task with a summary`;
 
-        // Spawn temporary Healer agent (like the Dreamer)
-        const result = await spawnAgent({
-          parentId: primaryId,
-          name: 'Healer',
-          systemPrompt,
-          modelId,
-          classification: 'sensei',
-          groupId: 'system-group',
-          timeout: 7200, // 2 hours — the Healer takes whatever time it needs to fix problems
-          persist: false, // auto-terminate on complete_task
-          // Full access — same as the primary agent. The Healer may need to
-          // read/write files, run commands, query the database, restart services,
-          // or do whatever is needed to diagnose and fix problems.
-          permissions: {
-            file_read: '*',
-            file_write: '*',
-            file_delete: 'none',
-            exec_allow: ['*'],
-            exec_deny: [],
-            network_domains: '*',
-            max_processes: 5,
-            can_spawn_agents: false,
-            can_assign_permissions: false,
-            system_control: [],
+        // Inject the cycle message and wake the permanent Healer
+        const msgId = uuidv4();
+        db.prepare(`
+          INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+          VALUES (?, ?, 'user', ?, datetime('now'))
+        `).run(msgId, healerId, cycleMessage);
+
+        broadcast({
+          type: 'chat:message',
+          agentId: healerId,
+          message: {
+            id: msgId,
+            agentId: healerId,
+            role: 'user' as Message['role'],
+            content: cycleMessage,
+            tokenCount: null,
+            modelId: null,
+            cost: null,
+            latencyMs: null,
+            createdAt: new Date().toISOString(),
           },
-          initialMessage,
         });
 
-        logger.info('Healer agent spawned', { healerId: result.agentId, modelId });
+        const runtime = getAgentRuntime();
+        runtime.handleMessage(healerId, cycleMessage).catch(err => {
+          logger.error('Healer LLM cycle failed', {
+            error: err instanceof Error ? err.message : String(err),
+          }, healerId);
+        });
+
+        logger.info('Healer agent woken for cycle', { healerId });
         llmTriggered = true;
       }
     } catch (err) {

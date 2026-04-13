@@ -13,7 +13,7 @@ let cacheLoaded = false;
 function loadCache(): void {
   try {
     const db = getDb();
-    const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'pm_agent_enabled', 'trainer_agent_id', 'trainer_agent_name', 'trainer_agent_enabled', 'imaginer_agent_id', 'imaginer_agent_name', 'imaginer_enabled', 'setup_completed')").all() as Array<{ key: string; value: string }>;
+    const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'pm_agent_enabled', 'trainer_agent_id', 'trainer_agent_name', 'trainer_agent_enabled', 'imaginer_agent_id', 'imaginer_agent_name', 'imaginer_enabled', 'healer_agent_id', 'healer_agent_name', 'dreamer_agent_id', 'dreamer_agent_name', 'setup_completed')").all() as Array<{ key: string; value: string }>;
     cache = {};
     for (const row of rows) {
       cache[row.key] = row.value;
@@ -140,6 +140,34 @@ export function isImaginerAgent(agentId: string): boolean {
   return agentId === getImaginerAgentId();
 }
 
+// ── Healer Agent ──
+
+export function getHealerAgentId(): string {
+  return get('healer_agent_id', 'healer');
+}
+
+export function getHealerAgentName(): string {
+  return get('healer_agent_name', 'Healer');
+}
+
+export function isHealerAgent(agentId: string): boolean {
+  return agentId === getHealerAgentId();
+}
+
+// ── Dreamer Agent ──
+
+export function getDreamerAgentId(): string {
+  return get('dreamer_agent_id', 'dreamer');
+}
+
+export function getDreamerAgentName(): string {
+  return get('dreamer_agent_name', 'Dreamer');
+}
+
+export function isDreamerAgent(agentId: string): boolean {
+  return agentId === getDreamerAgentId();
+}
+
 export function isPermanentAgent(agentId: string): boolean {
-  return isPrimaryAgent(agentId) || isPMAgent(agentId) || isTrainerAgent(agentId);
+  return isPrimaryAgent(agentId) || isPMAgent(agentId) || isTrainerAgent(agentId) || isHealerAgent(agentId) || isDreamerAgent(agentId);
 }

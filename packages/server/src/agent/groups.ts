@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { getPrimaryAgentId, getPMAgentId, getTrainerAgentId, getImaginerAgentId } from '../config/platform.js';
+import { getPrimaryAgentId, getPMAgentId, getTrainerAgentId, getImaginerAgentId, getHealerAgentId, getDreamerAgentId } from '../config/platform.js';
 
 const logger = createLogger('groups');
 
@@ -161,8 +161,11 @@ export function assignAgentToGroup(agentId: string, groupId: string | null): { o
   const pmId = getPMAgentId();
   const trainerId = getTrainerAgentId();
 
-  // Permanent agents (primary + PM + trainer) are locked to the System Group
-  if (agentId === primaryId || agentId === pmId || agentId === trainerId) {
+  const healerId = getHealerAgentId();
+  const dreamerId = getDreamerAgentId();
+
+  // Permanent agents are locked to the System Group
+  if (agentId === primaryId || agentId === pmId || agentId === trainerId || agentId === healerId || agentId === dreamerId) {
     return { ok: false, error: 'Permanent agents cannot be moved from the System group' };
   }
 
@@ -230,13 +233,15 @@ export function ensureSystemGroup(): void {
     logger.info('System group created');
   }
 
-  // Assign all sensei agents to the system group
+  // Assign all permanent agents to the system group
   const primaryId = getPrimaryAgentId();
   const pmId = getPMAgentId();
   const trainerId = getTrainerAgentId();
   const imaginerId = getImaginerAgentId();
+  const healerId = getHealerAgentId();
+  const dreamerId = getDreamerAgentId();
 
-  for (const agentId of [primaryId, pmId, trainerId, imaginerId]) {
+  for (const agentId of [primaryId, pmId, trainerId, imaginerId, healerId, dreamerId]) {
     const agent = db.prepare('SELECT id, group_id FROM agents WHERE id = ?').get(agentId) as { id: string; group_id: string | null } | undefined;
     if (agent && agent.group_id !== SYSTEM_GROUP_ID) {
       db.prepare("UPDATE agents SET group_id = ?, updated_at = datetime('now') WHERE id = ?").run(SYSTEM_GROUP_ID, agentId);

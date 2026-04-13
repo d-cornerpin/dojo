@@ -163,6 +163,38 @@ async function main(): Promise<void> {
     }
   }
 
+  // 4c4. Ensure Healer agent exists (permanent resident, like Trainer and Imaginer)
+  {
+    const { isSetupCompleted: isSetupDone } = await import('./config/platform.js');
+    if (isSetupDone()) {
+      try {
+        const { ensureHealerAgentRunning } = await import('./healer/healer-agent.js');
+        ensureHealerAgentRunning();
+        logger.info('Healer agent ensured on server startup');
+      } catch (err) {
+        logger.error('Failed to ensure Healer agent', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  // 4c5. Ensure Dreamer agent exists (permanent resident)
+  {
+    const { isSetupCompleted: isSetupDone } = await import('./config/platform.js');
+    if (isSetupDone()) {
+      try {
+        const { ensureDreamerAgentRunning } = await import('./vault/maintenance.js');
+        ensureDreamerAgentRunning();
+        logger.info('Dreamer agent ensured on server startup');
+      } catch (err) {
+        logger.error('Failed to ensure Dreamer agent', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
   // 4d. Start iMessage bridge if enabled
   {
     const db = getDb();

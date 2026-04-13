@@ -117,6 +117,28 @@ setupRouter.post('/complete', async (c) => {
     }
   }
 
+  // Ensure Healer agent exists (permanent resident)
+  try {
+    const { ensureHealerAgentRunning } = await import('../../healer/healer-agent.js');
+    ensureHealerAgentRunning();
+    logger.info('Healer agent ensured during setup completion');
+  } catch (err) {
+    logger.error('Failed to ensure Healer agent', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Ensure Dreamer agent exists (permanent resident)
+  try {
+    const { ensureDreamerAgentRunning } = await import('../../vault/maintenance.js');
+    ensureDreamerAgentRunning();
+    logger.info('Dreamer agent ensured during setup completion');
+  } catch (err) {
+    logger.error('Failed to ensure Dreamer agent', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   // Re-run system group assignment now that all agents exist
   try {
     const { ensureSystemGroup: reassignGroups } = await import('../../agent/groups.js');
