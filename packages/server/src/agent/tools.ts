@@ -45,7 +45,6 @@ import type { ToolCall, ToolResult } from '@dojo/shared';
 
 const logger = createLogger('tools');
 
-const MAX_FILE_READ_CHARS = 50000;
 const EXEC_TIMEOUT_MS = 30000;
 
 /** Build a full download URL that works from anywhere — tunnel if active, localhost otherwise */
@@ -1459,19 +1458,9 @@ async function executeFileRead(agentId: string, args: Record<string, unknown>): 
       return 'Error: Path is a directory, use file_list instead';
     }
 
-    let content = await fs.promises.readFile(filePath, 'utf-8');
-    let truncated = false;
-
-    if (content.length > MAX_FILE_READ_CHARS) {
-      content = content.slice(0, MAX_FILE_READ_CHARS);
-      truncated = true;
-    }
+    const content = await fs.promises.readFile(filePath, 'utf-8');
 
     auditLog(agentId, 'file_read', filePath, 'success', `${stat.size} bytes`);
-
-    if (truncated) {
-      return content + `\n\n... [TRUNCATED: file is ${stat.size} bytes, showing first ${MAX_FILE_READ_CHARS} characters]`;
-    }
 
     return content;
   } catch (err) {
