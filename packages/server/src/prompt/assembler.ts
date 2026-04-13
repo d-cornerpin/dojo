@@ -199,6 +199,19 @@ function generateToolsGuidance(agentId: string, tier: PromptTier = 'full'): stri
     lines.push('');
   }
 
+  // CRITICAL: Agent communication rule — for ALL agents with send_to_agent
+  const hasSendToAgent = agentTools.some(t => t.name === 'send_to_agent');
+  if (hasSendToAgent) {
+    lines.push('## CRITICAL: Communicating With Other Agents');
+    lines.push('');
+    lines.push('Other agents CANNOT see your chat. Your chat window is a private conversation with the user ONLY. If you type a message to another agent in your chat, they will NEVER see it.');
+    lines.push('');
+    lines.push('The ONLY way to send a message to another agent is by calling the `send_to_agent` tool. There is no other way. If you want to ask an agent a question, delegate a task, send results, or communicate in any way — you MUST call `send_to_agent`.');
+    lines.push('');
+    lines.push('Similarly, when another agent messages you, it arrives as a `[SOURCE: AGENT MESSAGE FROM ...]` message in your chat. To reply to them, call `send_to_agent` with their name or ID.');
+    lines.push('');
+  }
+
   // Agent management guardrail — only for agents with the "Managing Other Agents"
   // toolset (primary agents). Explicitly routes common user intents to the right
   // dedicated tool and heads off the improvisation pattern where the primary
