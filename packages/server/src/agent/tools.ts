@@ -47,6 +47,51 @@ const logger = createLogger('tools');
 const MAX_FILE_READ_CHARS = 50000;
 const EXEC_TIMEOUT_MS = 30000;
 
+/** Build a full download URL that works from anywhere — tunnel if active, localhost otherwise */
+function getDownloadUrl(fileId: string): string {
+  try {
+    const { getTunnelStatus } = require('../services/tunnel.js');
+    const tunnel = getTunnelStatus();
+    if (tunnel.status === 'active' && tunnel.url) {
+      return `${tunnel.url}/api/upload/download/${fileId}`;
+    }
+  } catch { /* tunnel module may not be available */ }
+  const port = process.env.DOJO_PORT ?? '3001';
+  return `http://localhost:${port}/api/upload/download/${fileId}`;
+}
+
+/** Register a file for sharing and return its full download URL */
+function registerSharedFile(agentId: string, filePath: string): string | null {
+  try {
+    const fileId = uuidv4();
+    const filename = path.basename(filePath);
+    const ext = path.extname(filename).toLowerCase();
+    const mimeMap: Record<string, string> = {
+      '.txt': 'text/plain', '.md': 'text/markdown', '.json': 'application/json',
+      '.csv': 'text/csv', '.html': 'text/html', '.xml': 'application/xml',
+      '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+      '.svg': 'image/svg+xml', '.zip': 'application/zip',
+      '.mp4': 'video/mp4', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
+      '.doc': 'application/msword',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.xls': 'application/vnd.ms-excel',
+      '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    };
+    const mimeType = mimeMap[ext] ?? 'application/octet-stream';
+    const stat = fs.statSync(filePath);
+    const db = getDb();
+    db.prepare(`
+      INSERT OR IGNORE INTO shared_files (id, agent_id, file_path, filename, mime_type, size, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    `).run(fileId, agentId, filePath, filename, mimeType, stat.size);
+    return getDownloadUrl(fileId);
+  } catch {
+    return null;
+  }
+}
+
 // ── Filtered tools per agent (based on permissions + tools policy) ──
 
 export function getFilteredTools(agentId: string): ToolDefinition[] {
@@ -286,7 +331,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'share_file',
-    description: 'Get a download URL for an existing file so the user can access it from any device. Use this when the user asks for a link to a file, wants to download something, or you need to share a file that already exists on disk. Returns a URL that works from anywhere including remote access.',
+    description: 'Get a download URL for an existing file so the user can access it from any device. Use this when the user asks for a link to a file, wants to download something, or you need to share a file that already exists on disk. Returns a full clickable URL. IMPORTANT: Give the user the raw URL exactly as returned — do NOT wrap it in markdown link syntax.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1451,31 +1496,8 @@ async function executeFileWrite(agentId: string, args: Record<string, unknown>):
     await fs.promises.writeFile(filePath, content, 'utf-8');
     auditLog(agentId, 'file_write', filePath, 'success', `${content.length} bytes written`);
 
-    // Register as a shared file so it can be downloaded from anywhere
-    let downloadUrl = '';
-    try {
-      const fileId = uuidv4();
-      const filename = path.basename(filePath);
-      const ext = path.extname(filename).toLowerCase();
-      const mimeMap: Record<string, string> = {
-        '.txt': 'text/plain', '.md': 'text/markdown', '.json': 'application/json',
-        '.csv': 'text/csv', '.html': 'text/html', '.xml': 'application/xml',
-        '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
-        '.svg': 'image/svg+xml', '.zip': 'application/zip',
-        '.js': 'text/javascript', '.ts': 'text/typescript', '.py': 'text/x-python',
-        '.sh': 'text/x-shellscript', '.yaml': 'text/yaml', '.yml': 'text/yaml',
-      };
-      const mimeType = mimeMap[ext] ?? 'application/octet-stream';
-      const db = getDb();
-      db.prepare(`
-        INSERT OR IGNORE INTO shared_files (id, agent_id, file_path, filename, mime_type, size, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-      `).run(fileId, agentId, filePath, filename, mimeType, content.length);
-      downloadUrl = `\nDownload: /api/upload/download/${fileId}`;
-    } catch { /* shared_files table may not exist yet */ }
-
-    return `File written successfully: ${filePath} (${content.length} bytes)${downloadUrl}`;
+    const downloadUrl = registerSharedFile(agentId, filePath);
+    return `File written successfully: ${filePath} (${content.length} bytes)${downloadUrl ? `\nDownload: ${downloadUrl}` : ''}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     auditLog(agentId, 'file_write', filePath, 'error', msg);
@@ -1735,31 +1757,15 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           isError = true;
           break;
         }
-        const fileId = uuidv4();
+        const downloadUrl = registerSharedFile(agentId, sharePath);
+        if (!downloadUrl) {
+          content = `Error: Failed to register file for sharing.`;
+          isError = true;
+          break;
+        }
         const filename = path.basename(sharePath);
-        const ext = path.extname(filename).toLowerCase();
-        const mimeMap: Record<string, string> = {
-          '.txt': 'text/plain', '.md': 'text/markdown', '.json': 'application/json',
-          '.csv': 'text/csv', '.html': 'text/html', '.xml': 'application/xml',
-          '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg',
-          '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
-          '.svg': 'image/svg+xml', '.zip': 'application/zip',
-          '.mp4': 'video/mp4', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
-          '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-          '.xls': 'application/vnd.ms-excel', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-        };
-        const mimeType = mimeMap[ext] ?? 'application/octet-stream';
-        try {
-          const shareDb = getDb();
-          shareDb.prepare(`
-            INSERT OR IGNORE INTO shared_files (id, agent_id, file_path, filename, mime_type, size, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-          `).run(fileId, agentId, sharePath, filename, mimeType, stat.size);
-        } catch { /* table may not exist */ }
-        const downloadUrl = `/api/upload/download/${fileId}`;
         content = `Download link for ${filename}: ${downloadUrl}`;
-        auditLog(agentId, 'share_file', sharePath, 'success', `Shared as ${fileId}`);
+        auditLog(agentId, 'share_file', sharePath, 'success', downloadUrl);
         break;
       }
       case 'memory_grep':
