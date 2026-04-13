@@ -221,7 +221,18 @@ export async function assembleContext(
   // but leaving the tool_result behind, stream accumulators capturing
   // a drifted id, or transient DB failures. We don't try to diagnose
   // which one — we just enforce the invariant before every call.
+  const preSanitizeCount = merged.length;
   merged = sanitizeToolBlocks(merged, agentId);
+  // Safety check: if sanitization dropped more than half the messages, something is wrong.
+  // Log a critical warning so we can debug. Don't drop them — the provider error is better
+  // than silently losing the conversation.
+  if (merged.length < preSanitizeCount / 2 && preSanitizeCount > 4) {
+    logger.error('sanitizeToolBlocks dropped over half the context — possible bug', {
+      before: preSanitizeCount,
+      after: merged.length,
+      agentId,
+    }, agentId);
+  }
 
   // Final safety: strip any remaining tool_result blocks from the first message.
   // After merging and sanitization, a tool_result can still end up at position 0
@@ -247,11 +258,26 @@ export async function assembleContext(
     merged.pop();
   }
 
-  // Guard: if we have zero messages after all filtering, inject a minimal user message
-  // so the API call doesn't fail with "at least one message is required"
+  // Guard: if we have zero messages after all filtering, pull the last user message
+  // directly from DB so the agent at least sees what it's supposed to respond to.
   if (merged.length === 0) {
-    logger.warn('Context assembly produced 0 messages — injecting fallback', {}, agentId);
-    merged.push({ role: 'user', content: 'Continue with your current task.' });
+    logger.error('Context assembly produced 0 messages after filtering — recovering last user message', {
+      preSanitizeCount,
+      agentId,
+    }, agentId);
+    try {
+      const db = getDb();
+      const lastUserMsg = db.prepare(
+        "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' AND content NOT LIKE '[System:%' ORDER BY created_at DESC, rowid DESC LIMIT 1"
+      ).get(agentId) as { content: string } | undefined;
+      if (lastUserMsg) {
+        merged.push({ role: 'user', content: lastUserMsg.content });
+      } else {
+        merged.push({ role: 'user', content: 'Continue with your current task.' });
+      }
+    } catch {
+      merged.push({ role: 'user', content: 'Continue with your current task.' });
+    }
   }
 
   // If this is a new session, inject a brief context note into the first user message
@@ -397,7 +423,9 @@ function budgetFreshTail(messages: Message[], availableTokens: number): Message[
     }
   }
 
-  // Work backwards, include groups that fit the budget
+  // Work backwards, include groups that fit the budget.
+  // ALWAYS include at least the most recent group so the agent can see
+  // what it's supposed to respond to, even if it exceeds the budget.
   let usedTokens = 0;
   const includedGroups: Group[] = [];
 
@@ -407,6 +435,17 @@ function budgetFreshTail(messages: Message[], availableTokens: number): Message[
     }
     includedGroups.push(groups[g]);
     usedTokens += groups[g].tokens;
+  }
+
+  // Safety: if nothing was included (all groups exceed budget), include the last one anyway.
+  // An over-budget context is better than no context at all.
+  if (includedGroups.length === 0 && groups.length > 0) {
+    includedGroups.push(groups[groups.length - 1]);
+    logger.warn('budgetFreshTail: all groups exceed budget, forcing last group inclusion', {
+      groupCount: groups.length,
+      lastGroupTokens: groups[groups.length - 1].tokens,
+      availableTokens,
+    });
   }
 
   // Flatten and return in chronological order

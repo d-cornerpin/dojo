@@ -290,6 +290,8 @@ class AgentRuntime {
     let nudgedForRepetition = false; // Only nudge once for repetition
     let nudgedForEmptyResponse = false; // Only nudge once for empty output
     let nudgedForNoResults = false; // Only nudge once for empty search results
+    // In-memory nudge — injected into context on next loop iteration, never persisted to DB
+    let pendingNudge: string | null = null;
 
     // Snapshot the turn boundary so context assembly ignores messages that
     // arrive mid-loop. Without this, a reply from another agent gets baked
@@ -323,28 +325,18 @@ class AgentRuntime {
       }
 
       // Assemble context: system prompt + summaries + fresh tail
-      let context;
-      try {
-        context = await assembleContext(agentId, contextModelId);
-      } catch (ctxErr) {
-        logger.error('Context assembly failed — retrying with minimal context', {
-          error: ctxErr instanceof Error ? ctxErr.message : String(ctxErr),
-        }, agentId);
-        // Fall back to minimal context so the agent doesn't halt
-        const { assembleSystemPrompt } = await import('../prompt/assembler.js');
-        const fallbackPrompt = assembleSystemPrompt(agentId, contextModelId);
-        context = { systemPrompt: fallbackPrompt, messages: [] as Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }> };
-      }
+      const context = await assembleContext(agentId, contextModelId);
       const systemPrompt = context.systemPrompt;
       const messages = context.messages;
 
       // Inject image/PDF attachment content blocks into user messages
-      try {
-        injectAttachmentBlocks(messages, agentId);
-      } catch (attachErr) {
-        logger.warn('Attachment injection failed — continuing without attachments', {
-          error: attachErr instanceof Error ? attachErr.message : String(attachErr),
-        }, agentId);
+      injectAttachmentBlocks(messages, agentId);
+
+      // Inject in-memory nudge if one is pending (never persisted to DB)
+      if (pendingNudge) {
+        messages.push({ role: 'user', content: pendingNudge });
+        messages.push({ role: 'assistant', content: 'Understood, I will try a different approach.' });
+        pendingNudge = null;
       }
 
       // Resolve the actual model to call
@@ -469,9 +461,9 @@ class AgentRuntime {
         throw new AgentError('Model call failed after all attempts', agentId, { code: 'MODEL_CALL_FAILED' });
       }
 
-      // If this is a final text response (no tool calls), flush the buffered chunks to the client.
-      // Only flush if there's actual content — don't create ghost bubbles for empty responses.
-      if (result.toolCalls.length === 0 && result.content && result.content.trim().length > 0) {
+      // Flush the buffered text chunks to the client if there's actual content.
+      // This applies to BOTH text-only responses AND text+tool_call responses.
+      if (result.content && result.content.trim().length > 0) {
         for (const chunk of streamedChunks) {
           broadcast({
             type: 'chat:chunk',
@@ -487,22 +479,13 @@ class AgentRuntime {
       if (result.toolCalls.length === 0 && (!result.content || result.content.trim().length === 0)) {
         if (!nudgedForEmptyResponse) {
           nudgedForEmptyResponse = true;
-          logger.warn('Model returned empty response, injecting nudge', { loopCount }, agentId);
-          const nudgeMsgId = uuidv4();
-          const nudge = '[System: You returned an empty response. Please respond to the user\'s last message or call a tool to continue your task. If you are finished, say so clearly.]';
-          db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
-          continue; // Re-run the loop with the nudge in context
+          logger.warn('Model returned empty response, will nudge on next iteration', { loopCount }, agentId);
+          pendingNudge = '[System: You returned an empty response. Please respond to the user\'s last message or call a tool to continue your task. If you are finished, say so clearly.]';
+          continue; // Re-run the loop — nudge will be injected in-memory at context assembly
         }
-        // Nudge didn't work. Clean up the nudge message we injected so it
-        // doesn't pollute future context, then break. Toast only — no inline message.
-        logger.warn('Model returned empty after nudge, cleaning nudge and breaking', { loopCount }, agentId);
-        try {
-          db.prepare(`
-            DELETE FROM messages WHERE agent_id = ? AND role = 'user'
-              AND content LIKE '[System:%'
-              AND created_at >= ?
-          `).run(agentId, turnStartedAt);
-        } catch { /* best effort */ }
+        // Nudge didn't work — toast only, no DB changes
+        logger.warn('Model returned empty after nudge, breaking', { loopCount }, agentId);
+        pendingNudge = null;
         broadcast({ type: 'chat:error', agentId, error: 'The model returned an empty response. Try sending your message again.', code: 'MODEL_FAILED', severity: 'warning', retryable: true });
         break;
       }
@@ -554,45 +537,33 @@ class AgentRuntime {
         }
 
         // Always INSERT — content includes both text and tool_use blocks
-        try {
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, token_count, model_id, cost, latency_ms, created_at)
-            VALUES (?, ?, 'assistant', ?, ?, ?, ?, NULL, datetime('now'))
-          `).run(
-            messageId,
-            agentId,
-            JSON.stringify(assistantContent),
-            result.outputTokens,
-            modelId,
-            null,
-          );
-          broadcastMessage(agentId, { id: messageId, role: 'assistant', content: JSON.stringify(assistantContent), modelId });
-        } catch (persistErr) {
-          logger.error('Failed to persist assistant message — continuing', {
-            error: persistErr instanceof Error ? persistErr.message : String(persistErr),
-          }, agentId);
-        }
+        db.prepare(`
+          INSERT OR IGNORE INTO messages (id, agent_id, role, content, token_count, model_id, cost, latency_ms, created_at)
+          VALUES (?, ?, 'assistant', ?, ?, ?, ?, NULL, datetime('now'))
+        `).run(
+          messageId,
+          agentId,
+          JSON.stringify(assistantContent),
+          result.outputTokens,
+          modelId,
+          null,
+        );
+        broadcastMessage(agentId, { id: messageId, role: 'assistant', content: JSON.stringify(assistantContent), modelId });
       } else if (result.content) {
         // Text-only response, no tool calls
-        try {
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, token_count, model_id, cost, latency_ms, created_at)
-            VALUES (?, ?, 'assistant', ?, ?, ?, ?, NULL, datetime('now'))
-          `).run(
-            messageId,
-            agentId,
-            result.content,
-            result.outputTokens,
-            modelId,
-            null,
-          );
-          // Queue embedding for assistant text responses
-          queueEmbedding('message', messageId, agentId, result.content);
-        } catch (persistErr) {
-          logger.error('Failed to persist assistant text message — continuing', {
-            error: persistErr instanceof Error ? persistErr.message : String(persistErr),
-          }, agentId);
-        }
+        db.prepare(`
+          INSERT OR IGNORE INTO messages (id, agent_id, role, content, token_count, model_id, cost, latency_ms, created_at)
+          VALUES (?, ?, 'assistant', ?, ?, ?, ?, NULL, datetime('now'))
+        `).run(
+          messageId,
+          agentId,
+          result.content,
+          result.outputTokens,
+          modelId,
+          null,
+        );
+        // Queue embedding for assistant text responses
+        queueEmbedding('message', messageId, agentId, result.content);
       }
 
       // Broadcast completion for streaming — only if we actually sent content or have tool calls.
@@ -702,7 +673,7 @@ class AgentRuntime {
       }
 
       // Persist tool result messages
-      try {
+      {
         if (hasXmlFallbackTools) {
           // XML fallback path: collapse tool calls + results into a single plain-text
           // assistant message. This prevents synthetic tool IDs from entering the
@@ -746,10 +717,6 @@ class AgentRuntime {
           `).run(toolMessageId, agentId, JSON.stringify(toolResultContent));
           broadcastMessage(agentId, { id: toolMessageId, role: 'tool', content: JSON.stringify(toolResultContent) });
         }
-      } catch (persistErr) {
-        logger.error('Failed to persist tool results — continuing', {
-          error: persistErr instanceof Error ? persistErr.message : String(persistErr),
-        }, agentId);
       }
 
       // Clear error records on successful tool execution
@@ -813,11 +780,8 @@ class AgentRuntime {
       if (lastResponseText === currentResponseSig) {
         if (!nudgedForRepetition) {
           nudgedForRepetition = true;
-          logger.warn('Agent repeating itself, injecting nudge for one more try', { loopCount }, agentId);
-          const nudgeMsgId = uuidv4();
-          const nudge = '[System: You are repeating yourself — your last two responses were identical. Try a different approach. If the task is complete, call complete_task or tracker_update_status. If you need help, explain what you are stuck on.]';
-          db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
-          // Don't update lastResponseText so if it repeats again, we break
+          logger.warn('Agent repeating itself, will nudge on next iteration', { loopCount }, agentId);
+          pendingNudge = '[System: You are repeating yourself — your last two responses were identical. Try a different approach. If the task is complete, call complete_task or tracker_update_status. If you need help, explain what you are stuck on.]';
           continue;
         }
         logger.warn('Breaking tool loop: agent still repeating after nudge', { loopCount }, agentId);
@@ -835,11 +799,9 @@ class AgentRuntime {
         if (consecutiveNoResultTools >= 2) {
           if (!nudgedForNoResults) {
             nudgedForNoResults = true;
-            logger.warn('Consecutive empty search results, injecting nudge', { loopCount, consecutiveNoResultTools }, agentId);
-            const nudgeMsgId = uuidv4();
-            const nudge = '[System: Multiple searches returned no results. The information may not exist in memory. Try responding based on what you already know, or ask the user for clarification.]';
-            db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
-            consecutiveNoResultTools = 0; // Reset to give one more chance
+            logger.warn('Consecutive empty search results, will nudge on next iteration', { loopCount, consecutiveNoResultTools }, agentId);
+            pendingNudge = '[System: Multiple searches returned no results. The information may not exist in memory. Try responding based on what you already know, or ask the user for clarification.]';
+            consecutiveNoResultTools = 0;
             continue;
           }
           logger.warn('Breaking tool loop: still no results after nudge', { loopCount, consecutiveNoResultTools }, agentId);

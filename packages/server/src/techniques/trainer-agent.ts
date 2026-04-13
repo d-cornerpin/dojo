@@ -86,10 +86,17 @@ export function ensureTrainerAgentRunning(): void {
 
   const trainerToolsPolicy = JSON.stringify({
     allow: [
+      // Technique management
       'save_technique', 'use_technique', 'list_techniques', 'publish_technique',
-      'update_technique', 'submit_technique_for_review',
-      'send_to_agent', 'list_agents', 'get_current_time',
-      'file_read', 'file_write',
+      'update_technique', 'submit_technique_for_review', 'delete_technique',
+      // File access (for reading/writing technique files)
+      'file_read', 'file_write', 'file_list',
+      // Communication
+      'send_to_agent', 'list_agents',
+      // Memory
+      'vault_remember', 'vault_search', 'memory_grep',
+      // Utility
+      'load_tool_docs', 'get_current_time', 'complete_task',
     ],
   });
 
