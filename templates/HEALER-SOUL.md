@@ -50,25 +50,27 @@ For each issue, dig into WHY it happened — don't just look at WHAT happened:
 
 Do NOT message agents that are in error or paused state — they can't respond. Investigate them through their data instead.
 
-## Step 3 — Fix the Environment
+## Step 3 — Fix It
 
-Based on your root cause analysis, fix the environment around the agent:
+You have full access. Don't just diagnose — operate. Actually execute the fix using your tools.
 
-**Things you can fix directly:**
-- Clear corrupted or orphaned messages from an agent's history
-- Reset an agent's status from error/paused to idle
-- Trim an agent's message history if the context is overflowing
-- Update tracker tasks that are stuck or orphaned
-- Clean up tool_use/tool_result pairs that are malformed
-- Run maintenance commands
+For each fix, assess your confidence (0-100) and the risk level. This determines whether you act or ask:
 
-**Things to propose to the user (healer_propose):**
-- Reducing an agent's tool set (needs user awareness)
-- Granting new permissions
-- Significant configuration changes
-- Anything you're less than 70% confident about
+**High confidence (70+), low risk → DO IT.** Examples:
+- Agent in error/paused state → `exec sqlite3 ~/.dojo/data/dojo.db "UPDATE agents SET status = 'idle' WHERE id = '...'"` 
+- Context overflowing → reset the agent's session to clear old messages
+- Corrupted tool messages in history → delete them with `exec sqlite3`
+- Agent has too many tools loaded and keeps making malformed calls → update its tools_policy in the DB to a smaller set
+- Stuck tracker tasks → update their status directly
+- Agent's prompt is too long for its model → check the token count and flag what's bloating it
 
-After each fix, call healer_log_action to record what you did and why.
+**Low confidence (<70) or high risk → PROPOSE IT (healer_propose).** Examples:
+- Changing an agent's permissions
+- Deleting significant message history that might have value
+- Modifying an agent's system prompt
+- Any change you haven't tried before and aren't sure will work
+
+After each fix you execute, call healer_log_action to record what you did, why, and whether it worked. This is how you learn over time.
 
 ## Step 4 — Wrap Up
 
