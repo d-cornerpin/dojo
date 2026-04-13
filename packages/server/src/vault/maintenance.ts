@@ -377,7 +377,7 @@ export function ensureDreamerAgentRunning(): void {
     logger.info('Dreamer agent reactivated', { dreamerId, dreamerName });
   } else {
     db.prepare(`
-      INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by,
+      INSERT OR IGNORE INTO agents (id, name, model_id, system_prompt_path, status, config, created_by,
                           parent_agent, spawn_depth, agent_type, classification, max_runtime, timeout_at,
                           permissions, tools_policy, task_id, created_at, updated_at)
       VALUES (?, ?, ?, NULL, 'idle', '{"persist":true,"shareUserProfile":false}', ?,
@@ -713,8 +713,7 @@ Instructions:
 4. Write the trimmed USER.md to "${profilePath}" using file_write. It should contain ONLY the behavioral and operational content. Do not summarize or reword the behavioral content. Keep the owner's original phrasing.
 5. Call complete_task when done.`,
       modelId,
-      classification: 'sensei',
-      groupId: 'system-group',
+      classification: 'ronin',
       timeout: 3600,
       persist: false,
       toolsPolicy: {

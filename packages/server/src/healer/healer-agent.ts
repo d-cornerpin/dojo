@@ -231,7 +231,7 @@ export function ensureHealerAgentRunning(): void {
   } else {
     // Create fresh
     db.prepare(`
-      INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by,
+      INSERT OR IGNORE INTO agents (id, name, model_id, system_prompt_path, status, config, created_by,
                           parent_agent, spawn_depth, agent_type, classification, max_runtime, timeout_at,
                           permissions, tools_policy, task_id, created_at, updated_at)
       VALUES (?, ?, ?, NULL, 'idle', '{"persist":true,"shareUserProfile":true}', ?,
