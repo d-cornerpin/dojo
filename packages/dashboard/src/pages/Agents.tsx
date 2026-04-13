@@ -398,10 +398,6 @@ export const Agents = () => {
 
   const activeAgents = agents.filter(
     (a) => a.status !== 'terminated' && a.agentType !== 'archived'
-      // Imaginer is a background system agent — only show it on the
-      // Agents page when it's actively working (generating an image).
-      // When idle it's invisible infrastructure, like the Dreamer.
-      && !(a.name === 'Imaginer' && a.status !== 'working'),
   );
   const terminatedAgents = agents
     .filter((a) => a.status === 'terminated' && a.agentType !== 'archived')
