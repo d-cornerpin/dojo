@@ -3346,6 +3346,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'calendar_respond_invite':
       case 'onedrive_create_folder':
       case 'onedrive_upload':
+      case 'onedrive_upload_batch':
       case 'onedrive_share':
       case 'onedrive_delete':
       case 'onedrive_move':

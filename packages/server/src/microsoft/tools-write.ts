@@ -236,6 +236,22 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'onedrive_upload_batch',
+    description: 'Upload multiple files to OneDrive in a single tool call. Handles files of any size. Returns a summary of successes and failures.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Array of local file paths to upload',
+        },
+        folder_id: { type: 'string', description: 'Upload to a specific OneDrive folder ID (omit for root)' },
+      },
+      required: ['file_paths'],
+    },
+  },
+  {
     name: 'teams_send_channel_message',
     description: 'Post a message to a Microsoft Teams channel. Requires Entra ID. Use teams_list_teams then teams_list_channels to get the IDs.',
     input_schema: {
@@ -659,6 +675,113 @@ export async function executeMicrosoftWriteTool(
       if (!result.ok) return `Error moving/renaming OneDrive item: ${result.error}`;
       const data = result.data as { name?: string };
       return `OneDrive item updated${data?.name ? `: now named "${data.name}"` : ''}`;
+    }
+
+    case 'onedrive_upload_batch': {
+      const filePaths = args.file_paths as string[];
+      const folderId = args.folder_id as string | undefined;
+
+      if (!filePaths || filePaths.length === 0) return 'Error: file_paths must be a non-empty array';
+
+      const fs = await import('node:fs');
+      const token = (await import('./auth.js')).getAccessToken();
+      if (!token) return 'Error: Not authenticated with Microsoft';
+
+      type UploadResult = { path: string; ok: boolean; message: string };
+
+      async function uploadOne(filePath: string): Promise<UploadResult> {
+        if (!fs.existsSync(filePath)) return { path: filePath, ok: false, message: 'File not found' };
+
+        const fileName = filePath.split('/').pop() ?? 'upload';
+        const stat = fs.statSync(filePath);
+        const fileSize = stat.size;
+
+        const itemPath = folderId
+          ? `me/drive/items/${encodeURIComponent(folderId)}:/${encodeURIComponent(fileName)}`
+          : `me/drive/root:/${encodeURIComponent(fileName)}`;
+
+        try {
+          if (fileSize <= 4 * 1024 * 1024) {
+            // Small file: simple PUT
+            const content = fs.readFileSync(filePath);
+            const resp = await fetch(`https://graph.microsoft.com/v1.0/${itemPath}:/content`, {
+              method: 'PUT',
+              headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
+              body: content,
+              signal: AbortSignal.timeout(60_000),
+            });
+            if (!resp.ok) {
+              const err = await resp.text();
+              return { path: filePath, ok: false, message: err.slice(0, 150) };
+            }
+            return { path: filePath, ok: true, message: fileName };
+          }
+
+          // Large file: resumable upload session
+          const sessionResp = await fetch(`https://graph.microsoft.com/v1.0/${itemPath}:/createUploadSession`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace', name: fileName } }),
+            signal: AbortSignal.timeout(30_000),
+          });
+          if (!sessionResp.ok) {
+            return { path: filePath, ok: false, message: `Session error: ${(await sessionResp.text()).slice(0, 100)}` };
+          }
+          const session = await sessionResp.json() as { uploadUrl?: string };
+          if (!session.uploadUrl) return { path: filePath, ok: false, message: 'No upload URL returned' };
+
+          const CHUNK_SIZE = 4 * 1024 * 1024;
+          const fd = fs.openSync(filePath, 'r');
+          let offset = 0;
+          try {
+            while (offset < fileSize) {
+              const chunkSize = Math.min(CHUNK_SIZE, fileSize - offset);
+              const chunk = Buffer.alloc(chunkSize);
+              fs.readSync(fd, chunk, 0, chunkSize, offset);
+              const chunkResp = await fetch(session.uploadUrl, {
+                method: 'PUT',
+                headers: {
+                  'Content-Length': String(chunkSize),
+                  'Content-Range': `bytes ${offset}-${offset + chunkSize - 1}/${fileSize}`,
+                },
+                body: chunk,
+                signal: AbortSignal.timeout(120_000),
+              });
+              if (!chunkResp.ok && chunkResp.status !== 202) {
+                return { path: filePath, ok: false, message: `Chunk error at ${offset}: ${(await chunkResp.text()).slice(0, 100)}` };
+              }
+              offset += chunkSize;
+            }
+          } finally {
+            fs.closeSync(fd);
+          }
+          return { path: filePath, ok: true, message: `${fileName} (${Math.round(fileSize / 1024 / 1024 * 10) / 10}MB)` };
+
+        } catch (err) {
+          return { path: filePath, ok: false, message: err instanceof Error ? err.message : String(err) };
+        }
+      }
+
+      // Upload in batches of 5 to avoid overwhelming the Graph API
+      const results: UploadResult[] = [];
+      const BATCH = 5;
+      for (let i = 0; i < filePaths.length; i += BATCH) {
+        const chunk = filePaths.slice(i, i + BATCH);
+        const settled = await Promise.allSettled(chunk.map(uploadOne));
+        for (const s of settled) {
+          if (s.status === 'fulfilled') results.push(s.value);
+          else results.push({ path: '?', ok: false, message: String(s.reason) });
+        }
+      }
+
+      const succeeded = results.filter(r => r.ok);
+      const failed = results.filter(r => !r.ok);
+
+      let summary = `Batch upload: ${succeeded.length}/${filePaths.length} files uploaded successfully.`;
+      if (failed.length > 0) {
+        summary += `\n\nFailed (${failed.length}):\n` + failed.map(f => `- ${f.path}: ${f.message}`).join('\n');
+      }
+      return summary;
     }
 
     case 'teams_send_channel_message': {
