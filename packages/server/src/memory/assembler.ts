@@ -183,21 +183,21 @@ export async function assembleContext(
     // Skip system messages in history
   }
 
-  // Ensure messages start with user role (Anthropic API requirement)
-  // Also drop any leading tool_result messages — they reference tool_use IDs
-  // from a preceding assistant message that's no longer in context
+  // Ensure messages start with user role (Anthropic API requirement).
+  // Drop leading assistant messages and pure tool_result messages that
+  // reference tool_use IDs no longer in context. Stop at the first
+  // real user message.
   while (messages.length > 0) {
     const first = messages[0];
-    if (first.role !== 'user') {
+    if (first.role === 'assistant') {
       messages.shift();
       continue;
     }
-    // Check if this "user" message is actually a tool_result (mapped from tool role)
-    if (Array.isArray(first.content)) {
-      const hasToolResult = (first.content as Array<{ type?: string }>).some(
-        (b) => b.type === 'tool_result',
-      );
-      if (hasToolResult) {
+    // Check if this user message is ONLY tool_result blocks (no text)
+    if (first.role === 'user' && Array.isArray(first.content)) {
+      const blocks = first.content as Array<{ type?: string }>;
+      const allToolResults = blocks.length > 0 && blocks.every(b => b.type === 'tool_result');
+      if (allToolResults) {
         messages.shift();
         continue;
       }
@@ -594,18 +594,34 @@ function sanitizeToolBlocks(
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
   agentId: string,
 ): Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }> {
-  // Pass 1: collect the valid id sets
+  // Build POSITIONAL pairs: a tool_use is valid only if the NEXT message
+  // (which must be a user message) contains a matching tool_result, and
+  // a tool_result is valid only if the PRECEDING message (which must be
+  // an assistant message) contains a matching tool_use.
   const validToolUseIds = new Set<string>();
   const validToolResultIds = new Set<string>();
 
-  for (const msg of messages) {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
     if (!Array.isArray(msg.content)) continue;
     const blocks = msg.content as unknown as Array<Record<string, unknown>>;
-    for (const b of blocks) {
-      if (msg.role === 'assistant' && b.type === 'tool_use' && typeof b.id === 'string') {
-        validToolUseIds.add(b.id);
-      } else if (msg.role === 'user' && b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
-        validToolResultIds.add(b.tool_use_id);
+
+    if (msg.role === 'assistant') {
+      // Collect tool_use IDs from this assistant message
+      const useIds = blocks.filter(b => b.type === 'tool_use' && typeof b.id === 'string').map(b => b.id as string);
+      if (useIds.length === 0) continue;
+
+      // Check if the NEXT message is a user message with matching tool_results
+      const next = i + 1 < messages.length ? messages[i + 1] : null;
+      if (next && next.role === 'user' && Array.isArray(next.content)) {
+        const nextBlocks = next.content as unknown as Array<Record<string, unknown>>;
+        const resultIds = new Set(nextBlocks.filter(b => b.type === 'tool_result' && typeof b.tool_use_id === 'string').map(b => b.tool_use_id as string));
+        for (const uid of useIds) {
+          if (resultIds.has(uid)) {
+            validToolUseIds.add(uid);
+            validToolResultIds.add(uid);
+          }
+        }
       }
     }
   }
@@ -674,7 +690,18 @@ function mergeConsecutiveRoles(
         const msgArr = typeof msg.content === 'string'
           ? [{ type: 'text' as const, text: msg.content }]
           : msg.content;
-        prev.content = [...prevArr, ...msgArr];
+        // Deduplicate tool_result blocks by tool_use_id
+        const combined = [...prevArr, ...msgArr];
+        const seenToolResultIds = new Set<string>();
+        const deduped = combined.filter((block) => {
+          const b = block as unknown as Record<string, unknown>;
+          if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+            if (seenToolResultIds.has(b.tool_use_id)) return false;
+            seenToolResultIds.add(b.tool_use_id);
+          }
+          return true;
+        });
+        prev.content = deduped;
       }
     } else {
       merged.push({ ...msg });
