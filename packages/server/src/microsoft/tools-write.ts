@@ -320,34 +320,26 @@ export async function executeMicrosoftWriteTool(
 
       const chatType = memberEmails.length === 1 ? 'oneOnOne' : 'group';
 
-      // Resolve each email to a user ID via Microsoft Graph
-      const resolvedIds: string[] = [];
-      for (const email of memberEmails) {
-        const userResult = await msGraphRead(
-          `users/${encodeURIComponent(email)}?$select=id,displayName`,
-          agentId, agentName, 'teams_create_chat_lookup', { email },
-        );
-        if (!userResult.ok) {
-          return `Error: could not find Microsoft account for "${email}": ${userResult.error}`;
-        }
-        const user = userResult.data as { id?: string; displayName?: string };
-        if (!user?.id) return `Error: no user ID returned for "${email}"`;
-        resolvedIds.push(user.id);
-      }
-
-      // Fetch the signed-in user's own ID to add as an owner member
+      // Pass UPNs (emails) directly in the bind URL — no directory lookup needed.
+      // The signed-in user is included automatically by Graph when using /chats,
+      // but we add them explicitly as owner to satisfy the API requirement.
       const meResult = await msGraphRead('me?$select=id', agentId, agentName, 'teams_create_chat_me', {});
       if (!meResult.ok) return `Error fetching signed-in user: ${meResult.error}`;
       const me = meResult.data as { id?: string };
       if (!me?.id) return 'Error: could not determine signed-in user ID';
 
-      // Build the members array — current user is owner, others are members
-      const allMemberIds = [me.id, ...resolvedIds.filter(id => id !== me.id)];
-      const members = allMemberIds.map((id, index) => ({
-        '@odata.type': '#microsoft.graph.aadUserConversationMember',
-        'user@odata.bind': `https://graph.microsoft.com/v1.0/users('${id}')`,
-        roles: index === 0 ? ['owner'] : [],
-      }));
+      const members: Record<string, unknown>[] = [
+        {
+          '@odata.type': '#microsoft.graph.aadUserConversationMember',
+          'user@odata.bind': `https://graph.microsoft.com/v1.0/users('${me.id}')`,
+          roles: ['owner'],
+        },
+        ...memberEmails.map(email => ({
+          '@odata.type': '#microsoft.graph.aadUserConversationMember',
+          'user@odata.bind': `https://graph.microsoft.com/v1.0/users('${email}')`,
+          roles: [],
+        })),
+      ];
 
       const chatBody: Record<string, unknown> = { chatType, members };
       if (chatType === 'group' && args.topic) chatBody.topic = args.topic as string;
