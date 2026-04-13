@@ -93,7 +93,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'teams_read_messages',
-    description: 'Read recent Teams chat messages. Requires a Microsoft work/school account (Entra ID). Not available on personal Microsoft accounts.',
+    description: 'Read recent Teams chat messages (DMs and group chats). Requires a Microsoft work/school account (Entra ID). Not available on personal Microsoft accounts.',
     input_schema: {
       type: 'object',
       properties: {
@@ -101,6 +101,62 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
         max_results: { type: 'number', description: 'How many messages to show (default: 10)' },
       },
       required: [],
+    },
+  },
+  {
+    name: 'outlook_list_attachments',
+    description: 'List attachments on an Outlook email. Use outlook_download_attachment to save one to disk.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        message_id: { type: 'string', description: 'Outlook message ID (from outlook_search or outlook_inbox results)' },
+      },
+      required: ['message_id'],
+    },
+  },
+  {
+    name: 'onedrive_search',
+    description: 'Search for files and folders in OneDrive by name or content.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query (filename, keyword, or phrase)' },
+        max_results: { type: 'number', description: 'Maximum results (default: 20)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'teams_list_teams',
+    description: 'List all Microsoft Teams you are a member of. Requires Entra ID. Use teams_list_channels after to see channels inside a team.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'teams_list_channels',
+    description: 'List all channels in a Microsoft Team. Requires Entra ID. Use teams_read_channel_messages or teams_send_channel_message with the channel ID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        team_id: { type: 'string', description: 'Team ID (from teams_list_teams results)' },
+      },
+      required: ['team_id'],
+    },
+  },
+  {
+    name: 'teams_read_channel_messages',
+    description: 'Read recent messages from a Microsoft Teams channel. Requires Entra ID and channel membership.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        team_id: { type: 'string', description: 'Team ID (from teams_list_teams)' },
+        channel_id: { type: 'string', description: 'Channel ID (from teams_list_channels)' },
+        max_results: { type: 'number', description: 'How many messages to show (default: 10)' },
+      },
+      required: ['team_id', 'channel_id'],
     },
   },
 ];
@@ -161,7 +217,7 @@ export async function executeMicrosoftReadTool(
         body = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
       }
 
-      let output = `From: ${m.from?.emailAddress?.name} <${m.from?.emailAddress?.address}>\nTo: ${to}${cc ? `\nCc: ${cc}` : ''}\nSubject: ${m.subject}\nDate: ${m.receivedDateTime}\n\n${body.slice(0, 10000)}`;
+      let output = `From: ${m.from?.emailAddress?.name} <${m.from?.emailAddress?.address}>\nTo: ${to}${cc ? `\nCc: ${cc}` : ''}\nSubject: ${m.subject}\nDate: ${m.receivedDateTime}\n\n${body}`;
       if (m.hasAttachments) output += '\n\nAttachments: yes';
       return output;
     }
@@ -273,7 +329,7 @@ export async function executeMicrosoftReadTool(
           });
           if (resp.ok) {
             const text = await resp.text();
-            return `File: ${metaData.name}\n\n${text.slice(0, 50000)}`;
+            return `File: ${metaData.name}\n\n${text}`;
           }
         } catch { /* fall through to metadata */ }
       }
@@ -319,6 +375,107 @@ export async function executeMicrosoftReadTool(
       });
 
       return `Teams messages:\n\n${messages.join('\n\n')}`;
+    }
+
+    case 'outlook_list_attachments': {
+      const messageId = encodeURIComponent(args.message_id as string);
+      const result = await msGraphRead(
+        `me/messages/${messageId}/attachments?$select=id,name,contentType,size,isInline`,
+        agentId, agentName, 'outlook_list_attachments', { messageId: args.message_id },
+      );
+      if (!result.ok) return `Error listing attachments: ${result.error}`;
+
+      const data = result.data as { value?: Array<{ id: string; name: string; contentType: string; size: number; isInline: boolean }> };
+      if (!data?.value || data.value.length === 0) return 'No attachments on this email.';
+
+      const items = data.value
+        .filter(a => !a.isInline)
+        .map(a => `- ${a.name} (${Math.round(a.size / 1024)}KB, ${a.contentType})\n  ID: ${a.id}`);
+
+      if (items.length === 0) return 'No non-inline attachments on this email.';
+      return `Attachments (${items.length}):\n\n${items.join('\n\n')}\n\nUse outlook_download_attachment with the message ID and attachment ID to save to local disk.`;
+    }
+
+    case 'onedrive_search': {
+      const query = args.query as string;
+      const maxResults = (args.max_results as number) ?? 20;
+
+      const result = await msGraphRead(
+        `me/drive/root/search(q='${encodeURIComponent(query)}')?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder`,
+        agentId, agentName, 'onedrive_search', { query, maxResults },
+      );
+      if (!result.ok) return `Error searching OneDrive: ${result.error}`;
+
+      const data = result.data as { value?: Array<{ id: string; name: string; size?: number; lastModifiedDateTime: string; file?: { mimeType: string }; folder?: { childCount: number } }> };
+      if (!data?.value || data.value.length === 0) return `No files found matching "${query}".`;
+
+      const files = data.value.map(f => {
+        const type = f.folder ? `Folder (${f.folder.childCount} items)` : (f.file?.mimeType ?? 'File');
+        const size = f.size ? ` (${Math.round(f.size / 1024)}KB)` : '';
+        return `- ${f.name}${size}\n  ID: ${f.id}\n  Type: ${type}\n  Modified: ${f.lastModifiedDateTime}`;
+      });
+
+      return `Found ${data.value.length} result(s) for "${query}":\n\n${files.join('\n\n')}`;
+    }
+
+    case 'teams_list_teams': {
+      const result = await msGraphRead(
+        'me/joinedTeams?$select=id,displayName,description',
+        agentId, agentName, 'teams_list_teams', {},
+      );
+      if (!result.ok) return `Error listing Teams: ${result.error}`;
+
+      const data = result.data as { value?: Array<{ id: string; displayName: string; description?: string }> };
+      if (!data?.value || data.value.length === 0) {
+        return 'No Teams found. (Requires a Microsoft work/school account and membership in at least one Team.)';
+      }
+
+      const teams = data.value.map(t =>
+        `- ${t.displayName}\n  ID: ${t.id}${t.description ? `\n  ${t.description}` : ''}`
+      );
+      return `Teams you are a member of:\n\n${teams.join('\n\n')}\n\nUse teams_list_channels with a team_id to see channels.`;
+    }
+
+    case 'teams_list_channels': {
+      const teamId = encodeURIComponent(args.team_id as string);
+
+      const result = await msGraphRead(
+        `teams/${teamId}/channels?$select=id,displayName,description`,
+        agentId, agentName, 'teams_list_channels', { teamId: args.team_id },
+      );
+      if (!result.ok) return `Error listing channels: ${result.error}`;
+
+      const data = result.data as { value?: Array<{ id: string; displayName: string; description?: string }> };
+      if (!data?.value || data.value.length === 0) return 'No channels found in this Team.';
+
+      const channels = data.value.map(c =>
+        `- ${c.displayName}\n  ID: ${c.id}${c.description ? `\n  ${c.description}` : ''}`
+      );
+      return `Channels:\n\n${channels.join('\n\n')}\n\nUse teams_read_channel_messages or teams_send_channel_message with both team_id and channel_id.`;
+    }
+
+    case 'teams_read_channel_messages': {
+      const teamId = encodeURIComponent(args.team_id as string);
+      const channelId = encodeURIComponent(args.channel_id as string);
+      const maxResults = (args.max_results as number) ?? 10;
+
+      const result = await msGraphRead(
+        `teams/${teamId}/channels/${channelId}/messages?$top=${maxResults}`,
+        agentId, agentName, 'teams_read_channel_messages', { teamId: args.team_id, channelId: args.channel_id, maxResults },
+      );
+      if (!result.ok) return `Error reading channel messages: ${result.error}`;
+
+      const data = result.data as { value?: Array<{ id: string; from?: { user?: { displayName: string } }; body: { content: string; contentType: string }; createdDateTime: string }> };
+      if (!data?.value || data.value.length === 0) return 'No messages in this channel.';
+
+      const messages = data.value.map(m => {
+        const sender = m.from?.user?.displayName ?? 'Unknown';
+        let body = m.body?.content ?? '';
+        if (m.body?.contentType === 'html') body = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        return `[${m.createdDateTime}] ${sender}: ${body.slice(0, 500)}`;
+      });
+
+      return `Channel messages (newest first):\n\n${messages.join('\n\n')}`;
     }
 
     default:

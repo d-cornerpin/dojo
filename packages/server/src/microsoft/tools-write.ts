@@ -162,6 +162,92 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
       required: ['file_id'],
     },
   },
+  {
+    name: 'outlook_mark_read',
+    description: 'Mark an Outlook email as read or unread.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        message_id: { type: 'string', description: 'Outlook message ID' },
+        is_read: { type: 'boolean', description: 'true to mark as read, false to mark as unread (default: true)' },
+      },
+      required: ['message_id'],
+    },
+  },
+  {
+    name: 'outlook_delete',
+    description: 'Delete an Outlook email (moves to Deleted Items, not permanent).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        message_id: { type: 'string', description: 'Outlook message ID to delete' },
+      },
+      required: ['message_id'],
+    },
+  },
+  {
+    name: 'outlook_download_attachment',
+    description: 'Download an email attachment to local disk. Use outlook_list_attachments first to get the attachment ID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        message_id: { type: 'string', description: 'Outlook message ID' },
+        attachment_id: { type: 'string', description: 'Attachment ID (from outlook_list_attachments)' },
+        save_path: { type: 'string', description: 'Local path to save the file (defaults to ~/Downloads/{filename})' },
+      },
+      required: ['message_id', 'attachment_id'],
+    },
+  },
+  {
+    name: 'calendar_respond_invite',
+    description: 'Accept, decline, or tentatively accept a Microsoft Calendar meeting invite.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'Calendar event ID (from calendar_agenda_ms or calendar_search_ms)' },
+        response: { type: 'string', enum: ['accept', 'decline', 'tentative'], description: 'Your response to the invite' },
+        comment: { type: 'string', description: 'Optional message to include with your response' },
+      },
+      required: ['event_id', 'response'],
+    },
+  },
+  {
+    name: 'onedrive_delete',
+    description: 'Delete a file or folder from OneDrive.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'OneDrive file or folder ID to delete' },
+      },
+      required: ['file_id'],
+    },
+  },
+  {
+    name: 'onedrive_move',
+    description: 'Move or rename a file or folder in OneDrive. Provide new_name to rename, new_parent_id to move, or both.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'OneDrive file or folder ID' },
+        new_name: { type: 'string', description: 'New name for the item (omit to keep current name)' },
+        new_parent_id: { type: 'string', description: 'ID of the destination folder (omit to keep in current location)' },
+      },
+      required: ['file_id'],
+    },
+  },
+  {
+    name: 'teams_send_channel_message',
+    description: 'Post a message to a Microsoft Teams channel. Requires Entra ID. Use teams_list_teams then teams_list_channels to get the IDs.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        team_id: { type: 'string', description: 'Team ID (from teams_list_teams)' },
+        channel_id: { type: 'string', description: 'Channel ID (from teams_list_channels)' },
+        message: { type: 'string', description: 'Message text to post' },
+      },
+      required: ['team_id', 'channel_id', 'message'],
+    },
+  },
 ];
 
 // ── Helpers ──
@@ -480,6 +566,111 @@ export async function executeMicrosoftWriteTool(
         const data = result.data as { link?: { webUrl?: string } };
         return `Sharing link created: ${data?.link?.webUrl ?? '(no URL returned)'}`;
       }
+    }
+
+    case 'outlook_mark_read': {
+      const messageId = encodeURIComponent(args.message_id as string);
+      const isRead = args.is_read !== false; // default: true (mark as read)
+
+      const result = await msGraphWrite('PATCH', `me/messages/${messageId}`, { isRead }, agentId, agentName, 'outlook_mark_read', {
+        messageId: args.message_id, isRead,
+      });
+      if (!result.ok) return `Error marking email: ${result.error}`;
+      return `Email marked as ${isRead ? 'read' : 'unread'}`;
+    }
+
+    case 'outlook_delete': {
+      const messageId = encodeURIComponent(args.message_id as string);
+
+      const result = await msGraphWrite('DELETE', `me/messages/${messageId}`, undefined, agentId, agentName, 'outlook_delete', {
+        messageId: args.message_id,
+      });
+      if (!result.ok) return `Error deleting email: ${result.error}`;
+      return `Email moved to Deleted Items`;
+    }
+
+    case 'outlook_download_attachment': {
+      const messageId = encodeURIComponent(args.message_id as string);
+      const attachmentId = encodeURIComponent(args.attachment_id as string);
+
+      const result = await msGraphRead(
+        `me/messages/${messageId}/attachments/${attachmentId}`,
+        agentId, agentName, 'outlook_download_attachment', { messageId: args.message_id, attachmentId: args.attachment_id },
+      );
+      if (!result.ok) return `Error fetching attachment: ${result.error}`;
+
+      const att = result.data as { name?: string; contentType?: string; contentBytes?: string; size?: number };
+      if (!att?.contentBytes) return 'Error: attachment has no downloadable content (may be an inline image or reference attachment)';
+
+      const fs = await import('node:fs');
+      const os = await import('node:os');
+      const nodePath = await import('node:path');
+
+      const fileName = att.name ?? 'attachment';
+      const outPath = (args.save_path as string | undefined) ?? nodePath.join(os.homedir(), 'Downloads', fileName);
+      const content = Buffer.from(att.contentBytes, 'base64');
+      fs.writeFileSync(outPath, content);
+
+      return `Attachment "${fileName}" saved to ${outPath} (${Math.round(content.length / 1024)}KB)`;
+    }
+
+    case 'calendar_respond_invite': {
+      const eventId = encodeURIComponent(args.event_id as string);
+      const response = args.response as string;
+
+      const endpointMap: Record<string, string> = {
+        accept: 'accept',
+        decline: 'decline',
+        tentative: 'tentativelyAccept',
+      };
+      const action = endpointMap[response];
+      if (!action) return 'Error: response must be "accept", "decline", or "tentative"';
+
+      const result = await msGraphWrite('POST', `me/events/${eventId}/${action}`, {
+        comment: (args.comment as string) ?? '',
+        sendResponse: true,
+      }, agentId, agentName, 'calendar_respond_invite', { eventId: args.event_id, response });
+
+      if (!result.ok) return `Error responding to invite: ${result.error}`;
+      return `Meeting invite ${response}ed${args.comment ? ` with comment: "${args.comment}"` : ''}`;
+    }
+
+    case 'onedrive_delete': {
+      const fileId = encodeURIComponent(args.file_id as string);
+
+      const result = await msGraphWrite('DELETE', `me/drive/items/${fileId}`, undefined, agentId, agentName, 'onedrive_delete', {
+        fileId: args.file_id,
+      });
+      if (!result.ok) return `Error deleting from OneDrive: ${result.error}`;
+      return `Item deleted from OneDrive`;
+    }
+
+    case 'onedrive_move': {
+      const fileId = encodeURIComponent(args.file_id as string);
+      const patch: Record<string, unknown> = {};
+      if (args.new_name) patch.name = args.new_name as string;
+      if (args.new_parent_id) patch.parentReference = { id: args.new_parent_id as string };
+
+      if (Object.keys(patch).length === 0) return 'Error: provide new_name and/or new_parent_id';
+
+      const result = await msGraphWrite('PATCH', `me/drive/items/${fileId}`, patch, agentId, agentName, 'onedrive_move', {
+        fileId: args.file_id, newName: args.new_name, newParentId: args.new_parent_id,
+      });
+      if (!result.ok) return `Error moving/renaming OneDrive item: ${result.error}`;
+      const data = result.data as { name?: string };
+      return `OneDrive item updated${data?.name ? `: now named "${data.name}"` : ''}`;
+    }
+
+    case 'teams_send_channel_message': {
+      const teamId = encodeURIComponent(args.team_id as string);
+      const channelId = encodeURIComponent(args.channel_id as string);
+
+      const result = await msGraphWrite('POST', `teams/${teamId}/channels/${channelId}/messages`, {
+        body: { content: args.message as string },
+      }, agentId, agentName, 'teams_send_channel_message', { teamId: args.team_id, channelId: args.channel_id });
+
+      if (!result.ok) return `Error sending channel message: ${result.error}`;
+      return `Message posted to channel`;
     }
 
     default:

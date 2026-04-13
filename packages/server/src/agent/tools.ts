@@ -206,7 +206,7 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
 
   const msServiceToolPrefixes: Record<string, string[]> = {
     outlook: ['outlook_'],
-    calendar: ['calendar_agenda_ms', 'calendar_search_ms', 'calendar_create_ms', 'calendar_update_ms', 'calendar_delete_ms'],
+    calendar: ['calendar_agenda_ms', 'calendar_search_ms', 'calendar_create_ms', 'calendar_update_ms', 'calendar_delete_ms', 'calendar_respond_invite'],
     onedrive: ['onedrive_'],
     teams: ['teams_'],
   };
@@ -3318,11 +3318,16 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'outlook_search':
       case 'outlook_read':
       case 'outlook_inbox':
+      case 'outlook_list_attachments':
       case 'calendar_agenda_ms':
       case 'calendar_search_ms':
       case 'onedrive_list':
       case 'onedrive_read':
-      case 'teams_read_messages': {
+      case 'onedrive_search':
+      case 'teams_read_messages':
+      case 'teams_list_teams':
+      case 'teams_list_channels':
+      case 'teams_read_channel_messages': {
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         content = await executeMicrosoftReadTool(name, args, agentId, agentRow?.name ?? agentId);
         isError = content.startsWith('Error');
@@ -3332,14 +3337,21 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'outlook_send':
       case 'outlook_reply':
       case 'outlook_forward':
+      case 'outlook_mark_read':
+      case 'outlook_delete':
+      case 'outlook_download_attachment':
       case 'calendar_create_ms':
       case 'calendar_update_ms':
       case 'calendar_delete_ms':
+      case 'calendar_respond_invite':
       case 'onedrive_create_folder':
       case 'onedrive_upload':
       case 'onedrive_share':
+      case 'onedrive_delete':
+      case 'onedrive_move':
       case 'teams_create_chat':
-      case 'teams_send_message': {
+      case 'teams_send_message':
+      case 'teams_send_channel_message': {
         if (!isPrimaryAgent(agentId)) {
           content = 'Permission denied: only the primary agent can use Microsoft 365 write tools.';
           isError = true;
