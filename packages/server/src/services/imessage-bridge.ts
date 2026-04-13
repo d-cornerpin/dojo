@@ -2,7 +2,7 @@
 // iMessage Bridge: Polling + Sending
 // ════════════════════════════════════════
 
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -728,8 +728,16 @@ function getImsgPath(): string | null {
 
 // AppleScript fallback for text-only — used only when imsg isn't installed
 function sendIMessageViaAppleScript(recipient: string, text: string): void {
-  const escapedText = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const escapedRecipient = recipient.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+  // Escape for AppleScript double-quoted strings: backslashes and double quotes.
+  // Newlines can't appear inside AppleScript string literals, so we break the
+  // literal and concatenate using the linefeed character constant instead.
+  const escapedText = text
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '" & (ASCII character 10) & "');
+
   const script = `
     tell application "Messages"
       set targetService to 1st service whose service type = iMessage
@@ -760,8 +768,13 @@ export function sendIMessage(recipient: string, rawText: string): void {
   try {
     const imsg = getImsgPath();
     if (imsg) {
-      execSync(
-        `${imsg} send --to ${JSON.stringify(recipient)} --text ${JSON.stringify(text)} --service imessage`,
+      // Use execFileSync (not execSync) so the text is passed as a raw argument,
+      // bypassing the shell entirely. execSync builds a shell command string where
+      // $100 becomes a variable expansion (→ "00") and JSON-escaped \n sequences
+      // are passed literally instead of as real newlines.
+      execFileSync(
+        imsg,
+        ['send', '--to', recipient, '--text', text, '--service', 'imessage'],
         { timeout: 15000, encoding: 'utf-8', stdio: 'pipe' },
       );
     } else {
