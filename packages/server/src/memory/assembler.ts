@@ -123,11 +123,11 @@ export async function assembleContext(
       const summaryText = summariesToInclude.map(s => formatSummaryXml(s)).join('\n\n');
       const summaryTokens = estimateTokens(summaryText);
 
-      const wrappedText = `The following are summaries of earlier conversation history:\n\n${summaryText}`;
+      const wrappedText = `═══ COMPRESSED HISTORY (summaries of earlier messages — not live conversation) ═══\nThe following are compressed summaries of older conversation history. These capture key facts and decisions but are NOT live messages. Do not respond to them directly — they are context only.\n\n${summaryText}\n\n═══ END COMPRESSED HISTORY ═══`;
 
       messages.push({ role: 'user', content: wrappedText });
-      messages.push({ role: 'assistant', content: 'Thank you, I have reviewed the conversation summaries and will use them as context.' });
-      usedTokens += summaryTokens + estimateTokens('Thank you, I have reviewed the conversation summaries and will use them as context.');
+      messages.push({ role: 'assistant', content: 'Understood, I have reviewed the compressed conversation history and will use it as context.' });
+      usedTokens += summaryTokens + estimateTokens('Understood, I have reviewed the compressed conversation history and will use it as context.');
     }
   }
 
@@ -250,7 +250,7 @@ export async function assembleContext(
       if (assistantInSession.cnt === 0 && merged.length > 0 && merged[merged.length - 1].role === 'user') {
         const lastMsg = merged[merged.length - 1];
         if (typeof lastMsg.content === 'string') {
-          lastMsg.content = `[Note: The user started a fresh session. Your earlier conversations have been moved to the vault to keep things light. You still have all your long-term knowledge. Just respond naturally.]\n\n${lastMsg.content}`;
+          lastMsg.content = `[New Session] Your previous conversation history has been archived. You still have access to your long-term memory via vault_search. You DO NOT have the detailed conversation from before — only summaries. If the user references something specific from before, use vault_search to find it.\n\n${lastMsg.content}`;
         }
       }
     }

@@ -150,7 +150,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       taskSummary = `\nTasks (${result.taskIds.length}):\n${taskLines.join('\n')}`;
     }
 
-    return `Project created successfully.\nProject ID: ${result.projectId}\nTitle: ${title}${taskSummary}\n\nUse tracker_complete_step(task_id="<full task ID>") to mark steps complete.`;
+    return `[OK] project_id=${result.projectId} | title=${title}\n\nProject created successfully.${taskSummary}\n\nUse tracker_complete_step(task_id="<full task ID>") to mark steps complete.`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('trackerCreateProject failed', { error: msg }, agentId);
@@ -263,15 +263,68 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     }
 
     const parts = [
+      `[OK] task_id=${taskId} | title=${title}`,
+      ``,
       `Task created successfully.`,
-      `Task ID: ${taskId}`,
-      `Title: ${title}`,
     ];
     if (projectId) parts.push(`Project: ${projectId}`);
     if (assignedTo) parts.push(`Assigned to: ${assignedTo}`);
     if (assignedToGroup) parts.push(`Assigned to group: ${assignedToGroup}`);
     if (priority) parts.push(`Priority: ${priority}`);
     if (scheduledStart) parts.push(`Scheduled: ${scheduledStart}`);
+
+    // Notify assigned agent about the new task (unless they created it themselves,
+    // or it's a scheduled task — the scheduler handles those)
+    if (assignedTo && assignedTo !== agentId && !hasSchedule) {
+      try {
+        const creatorName = (() => {
+          const row = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+          return row?.name ?? agentId;
+        })();
+        const taskNotification = [
+          `[SOURCE: TRACKER TASK ASSIGNMENT — you have been assigned a new task]`,
+          ``,
+          `Task: ${title}`,
+          `ID: ${taskId}`,
+          `Priority: ${priority ?? 'normal'}`,
+          description ? `\nInstructions:\n${description}` : '',
+          projectId ? `Project: ${projectId}` : '',
+          `Assigned by: ${creatorName}`,
+          ``,
+          `Begin working on this task. When finished, call tracker_update_status(task_id="${taskId}", status="complete", notes="what you did").`,
+          `If you get stuck, call tracker_update_status(task_id="${taskId}", status="blocked", notes="why you're blocked").`,
+        ].filter(Boolean).join('\n');
+
+        const notifyMsgId = uuidv4();
+        const db = getDb();
+        db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(notifyMsgId, assignedTo, taskNotification);
+
+        broadcast({
+          type: 'chat:message',
+          agentId: assignedTo,
+          message: {
+            id: notifyMsgId, agentId: assignedTo, role: 'user' as const,
+            content: taskNotification,
+            tokenCount: null, modelId: null, cost: null, latencyMs: null,
+            createdAt: new Date().toISOString(),
+          },
+        });
+
+        // Trigger the agent so they process the task immediately
+        const runtime = getAgentRuntime();
+        runtime.handleMessage(assignedTo, taskNotification).catch(err => {
+          logger.error('Task assignment notification failed', {
+            taskId, assignedTo,
+            error: err instanceof Error ? err.message : String(err),
+          }, agentId);
+        });
+      } catch (err) {
+        logger.warn('Failed to notify assigned agent of new task', {
+          taskId, assignedTo,
+          error: err instanceof Error ? err.message : String(err),
+        }, agentId);
+      }
+    }
 
     return parts.join('\n');
   } catch (err) {
@@ -378,9 +431,9 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     }
 
     const parts = [
-      `Task updated successfully.`,
-      `Task: ${task.title} (${task.id})`,
-      `Status: ${task.status}`,
+      `[OK] task_id=${task.id} | status=${task.status}`,
+      ``,
+      `Task updated: ${task.title}`,
     ];
     if (task.assignedTo) parts.push(`Assigned to: ${task.assignedToName ?? task.assignedTo}`);
     parts.push(`Priority: ${task.priority}`);
@@ -409,7 +462,7 @@ export function trackerAddNotes(agentId: string, args: Record<string, unknown>):
 
     addTaskNotes(taskId, notes);
 
-    return `Notes added to task ${taskId}.`;
+    return `[OK] task_id=${taskId}\n\nNotes added successfully.`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('trackerAddNotes failed', { error: msg }, agentId);
@@ -436,10 +489,9 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
         if (!task) return `Error: Task ${taskResolved.id} was deleted before it could be read.`;
 
         const parts = [
+          `[OK] task_id=${task.id} | status=${task.status} | priority=${task.priority}`,
+          ``,
           `Task: ${task.title}`,
-          `ID: ${task.id}`,
-          `Status: ${task.status}`,
-          `Priority: ${task.priority}`,
         ];
         if (task.projectId) {
           const statusDb = getDb();
@@ -479,10 +531,9 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
       if (!project) return `Error: Project ${projectResolved.id} was deleted before it could be read.`;
 
       const parts = [
+        `[OK] project_id=${project.id} | status=${project.status} | phase=${project.currentPhase}/${project.phaseCount}`,
+        ``,
         `Project: ${project.title}`,
-        `ID: ${project.id}`,
-        `Status: ${project.status}`,
-        `Phase: ${project.currentPhase}/${project.phaseCount}`,
         `Level: ${project.level}`,
         '',
         `Task Summary:`,
@@ -519,6 +570,8 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
 export function trackerListActive(agentId: string, args: Record<string, unknown>): string {
   try {
     const scope = args.scope as 'tasks' | 'projects' | 'all' | undefined ?? 'all';
+    const filterAssignedTo = args.assignedTo as string | undefined;
+    const filterStatus = args.status as string | undefined;
     const parts: string[] = [];
 
     if (scope === 'projects' || scope === 'all') {
@@ -534,44 +587,81 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
     }
 
     if (scope === 'tasks' || scope === 'all') {
-      const inProgress = listTasks({ status: 'in_progress' });
-      const pending = listTasks({ status: 'on_deck' });
-      const blocked = listTasks({ status: 'blocked' });
+      // If a specific status filter is requested, only show those tasks
+      if (filterStatus) {
+        const filtered = listTasks({ status: filterStatus, assignedTo: filterAssignedTo });
+        if (filtered.length > 0) {
+          parts.push(`${filterStatus.replace('_', ' ')} Tasks (${filtered.length}):`);
+          for (const t of filtered) {
+            const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
+            parts.push(`  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`);
+            if (t.description) {
+              const desc = t.description.length > 120 ? t.description.slice(0, 120) + '...' : t.description;
+              parts.push(`    → ${desc}`);
+            }
+          }
+        } else {
+          parts.push(`No ${filterStatus} tasks.`);
+        }
+      } else {
+        // Default: show all active categories
+        const taskFilter = filterAssignedTo ? { assignedTo: filterAssignedTo } : undefined;
+        const inProgress = listTasks({ status: 'in_progress', ...taskFilter });
+        const pending = listTasks({ status: 'on_deck', ...taskFilter });
+        const blocked = listTasks({ status: 'blocked', ...taskFilter });
 
-      if (inProgress.length > 0) {
-        parts.push('');
-        parts.push(`In Progress Tasks (${inProgress.length}):`);
-        for (const t of inProgress) {
-          const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
-          parts.push(`  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`);
+        if (inProgress.length > 0) {
+          parts.push('');
+          parts.push(`In Progress Tasks (${inProgress.length}):`);
+          for (const t of inProgress) {
+            const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
+            parts.push(`  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`);
+            if (t.description) {
+              const desc = t.description.length > 120 ? t.description.slice(0, 120) + '...' : t.description;
+              parts.push(`    → ${desc}`);
+            }
+          }
+        }
+
+        if (pending.length > 0) {
+          parts.push('');
+          parts.push(`On Deck Tasks (${pending.length}):`);
+          for (const t of pending.slice(0, 10)) {
+            const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
+            parts.push(`  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`);
+            if (t.description) {
+              const desc = t.description.length > 120 ? t.description.slice(0, 120) + '...' : t.description;
+              parts.push(`    → ${desc}`);
+            }
+          }
+          if (pending.length > 10) {
+            parts.push(`  ... and ${pending.length - 10} more`);
+          }
+        }
+
+        if (blocked.length > 0) {
+          parts.push('');
+          parts.push(`Blocked Tasks (${blocked.length}):`);
+          for (const t of blocked) {
+            const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
+            parts.push(`  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`);
+            if (t.description) {
+              const desc = t.description.length > 120 ? t.description.slice(0, 120) + '...' : t.description;
+              parts.push(`    → ${desc}`);
+            }
+          }
+        }
+
+        if (inProgress.length === 0 && pending.length === 0 && blocked.length === 0) {
+          parts.push('');
+          parts.push('No active tasks.');
         }
       }
+    }
 
-      if (pending.length > 0) {
-        parts.push('');
-        parts.push(`On Deck Tasks (${pending.length}):`);
-        for (const t of pending.slice(0, 10)) {
-          const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
-          parts.push(`  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`);
-        }
-        if (pending.length > 10) {
-          parts.push(`  ... and ${pending.length - 10} more`);
-        }
-      }
-
-      if (blocked.length > 0) {
-        parts.push('');
-        parts.push(`Blocked Tasks (${blocked.length}):`);
-        for (const t of blocked) {
-          const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
-          parts.push(`  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`);
-        }
-      }
-
-      if (inProgress.length === 0 && pending.length === 0 && blocked.length === 0) {
-        parts.push('');
-        parts.push('No active tasks.');
-      }
+    if (parts.length > 0) {
+      parts.push('');
+      parts.push('Tip: Call tracker_get_status(id="<task_id>") for full details including complete instructions and notes.');
     }
 
     return parts.join('\n');
@@ -645,7 +735,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
     checkProjectCompletion(task.projectId, agentId);
 
     logger.info('Step completed', { taskId, nextTaskInfo: nextTaskInfo.trim() }, agentId);
-    return `Step completed: "${task.title}" marked as complete.${nextTaskInfo}`;
+    return `[OK] task_id=${taskId} | status=complete\n\nStep completed: "${task.title}".${nextTaskInfo}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('trackerCompleteStep failed', { error: msg }, agentId);

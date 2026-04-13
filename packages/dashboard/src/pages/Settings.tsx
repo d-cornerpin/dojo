@@ -2518,6 +2518,9 @@ const DreamingTab = () => {
 
       {/* Imaginer card — image generation sensei */}
       <ImaginerCard models={models} />
+
+      {/* Healer card — self-healing sensei */}
+      <HealerCard models={models} />
       </div>
 
       {/* Last Dream Report — full width below the grid */}
@@ -2742,6 +2745,213 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
         {saved && <span className="text-xs text-cp-teal">Saved!</span>}
         {testResult && <span className="text-xs text-white/60">{testResult}</span>}
       </div>
+    </div>
+  );
+};
+
+// ── Healer Settings Card ──
+
+const HealerCard = ({ models }: { models: Model[] }) => {
+  const [healerModelId, setHealerModelId] = useState('');
+  const [healerTime, setHealerTime] = useState('04:00');
+  const [healerMode, setHealerMode] = useState<'active' | 'monitor' | 'off'>('active');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [lastDiagnostic, setLastDiagnostic] = useState<api.HealerDiagnostic | null>(null);
+  const [sendingReport, setSendingReport] = useState(false);
+  const toast = useToast();
+
+  useEffect(() => {
+    const load = async () => {
+      const [configResult, diagResult] = await Promise.all([
+        api.getHealerConfig(),
+        api.getHealerDiagnostic(),
+      ]);
+      if (configResult.ok) {
+        setHealerModelId(configResult.data.modelId ?? '');
+        setHealerTime(configResult.data.healerTime);
+        setHealerMode(configResult.data.healerMode);
+      }
+      if (diagResult.ok && diagResult.data) {
+        setLastDiagnostic(diagResult.data);
+      }
+      setLoading(false);
+    };
+    load();
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    const result = await api.updateHealerConfig({
+      modelId: healerModelId || undefined,
+      healerTime,
+      healerMode,
+    });
+    if (result.ok) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    }
+    setSaving(false);
+  };
+
+  const handleRunNow = async () => {
+    setRunning(true);
+    const result = await api.triggerHealerRun();
+    if (result.ok) {
+      // The API returns immediately after spawning the Healer.
+      // If the LLM was triggered, poll until the Healer agent finishes.
+      if (result.data.llmTriggered) {
+        const pollForCompletion = async () => {
+          for (let i = 0; i < 60; i++) { // Poll for up to 5 minutes
+            await new Promise(r => setTimeout(r, 5000));
+            const agents = await api.getAgents();
+            if (agents.ok) {
+              const healer = agents.data.find((a: { name: string; status: string }) => a.name === 'Healer' && a.status === 'working');
+              if (!healer) break; // Healer finished or terminated
+            }
+          }
+        };
+        await pollForCompletion();
+      }
+      // Refresh diagnostic
+      const diagResult = await api.getHealerDiagnostic();
+      if (diagResult.ok && diagResult.data) setLastDiagnostic(diagResult.data);
+      toast.success('Healing cycle complete');
+    } else {
+      toast.error(result.error ?? 'Healing cycle failed');
+    }
+    setRunning(false);
+  };
+
+  const handleSendReport = async () => {
+    setSendingReport(true);
+    const result = await api.sendHealerReport();
+    if (result.ok) {
+      toast.success('Healer report sent and archived');
+    } else if (result.error === 'NO_EMAIL_CONFIGURED') {
+      toast.error('You need to connect a Google or Microsoft email account in Integrations before you can send Healer Reports.');
+    } else {
+      toast.error(result.error ?? 'Failed to send report');
+    }
+    setSendingReport(false);
+  };
+
+  if (loading) return <div className="glass-card p-4"><div className="loading-state">Loading...</div></div>;
+
+  return (
+    <div className="glass-card p-4 space-y-4">
+      <div>
+        <h3 className="card-header">Healing</h3>
+        <p className="text-xs text-white/40 mt-1">
+          The Healer agent analyzes daily health data, auto-fixes routine issues (stuck agents, orphaned tasks), and proposes solutions for complex problems. Proposals appear on the Health page for your approval.
+        </p>
+      </div>
+
+      <div>
+        <label className="form-label">Healer Model</label>
+        <select
+          value={healerModelId}
+          onChange={(e) => setHealerModelId(e.target.value)}
+          className="glass-select w-full"
+        >
+          <option value="">Auto (first available mid-tier model)</option>
+          {models.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name} ({m.apiModelId})
+            </option>
+          ))}
+        </select>
+        <p className="text-[10px] text-white/30 mt-1">
+          Mid-tier model recommended. Needs good reasoning but doesn't need to be frontier.
+        </p>
+      </div>
+
+      <div>
+        <label className="form-label">Healing Time</label>
+        <input
+          type="time"
+          value={healerTime}
+          onChange={(e) => setHealerTime(e.target.value)}
+          className="glass-select w-full"
+        />
+        <p className="text-[10px] text-white/30 mt-1">
+          When the Healer runs each day. Default: 4:00 AM (after the Dreamer).
+        </p>
+      </div>
+
+      <div>
+        <label className="form-label mb-2">Mode</label>
+        <div className="space-y-2">
+          {([
+            { value: 'active' as const, label: 'Active', desc: 'Auto-fix routine issues + propose complex fixes for your approval' },
+            { value: 'monitor' as const, label: 'Monitor', desc: 'Compile diagnostic report only, no fixes applied' },
+            { value: 'off' as const, label: 'Off', desc: 'Healer disabled' },
+          ]).map((option) => (
+            <label key={option.value} className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="healerMode"
+                value={option.value}
+                checked={healerMode === option.value}
+                onChange={() => setHealerMode(option.value)}
+                className="mt-1 accent-cp-amber"
+              />
+              <div>
+                <span className="text-sm text-white/80">{option.label}</span>
+                <p className="text-[10px] text-white/30">{option.desc}</p>
+              </div>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 pt-2">
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
+        >
+          {saving ? 'Saving...' : 'Save'}
+        </button>
+        <button
+          onClick={handleRunNow}
+          disabled={running || healerMode === 'off'}
+          className="px-4 py-2 text-sm font-medium rounded-lg bg-white/[0.06] text-white/60 border border-white/10 hover:border-white/20 hover:text-white/80 transition-colors disabled:opacity-40"
+        >
+          {running ? 'Running...' : 'Run Now'}
+        </button>
+        {saved && <span className="text-xs text-cp-teal">Saved!</span>}
+      </div>
+
+      <div>
+        <button
+          onClick={handleSendReport}
+          disabled={sendingReport}
+          className="px-4 py-2 text-sm font-medium rounded-lg bg-white/[0.06] text-white/60 border border-white/10 hover:border-white/20 hover:text-white/80 transition-colors disabled:opacity-40"
+        >
+          {sendingReport ? 'Sending...' : 'Send Healer Report'}
+        </button>
+        <p className="text-[10px] text-white/30 mt-1">
+          Emails a summary of everything the Healer has found and fixed, then starts a new log.
+        </p>
+      </div>
+
+      {lastDiagnostic && (
+        <div className="pt-2 border-t border-white/[0.06]">
+          <p className="text-[10px] text-white/30 mb-1">
+            Last cycle: {formatDate(lastDiagnostic.created_at)}
+            {' — '}
+            {lastDiagnostic.critical_count > 0 && <span className="text-cp-coral">{lastDiagnostic.critical_count} critical</span>}
+            {lastDiagnostic.critical_count > 0 && lastDiagnostic.warning_count > 0 && ', '}
+            {lastDiagnostic.warning_count > 0 && <span className="text-cp-amber">{lastDiagnostic.warning_count} warnings</span>}
+            {(lastDiagnostic.critical_count > 0 || lastDiagnostic.warning_count > 0) && lastDiagnostic.info_count > 0 && ', '}
+            {lastDiagnostic.info_count > 0 && <span className="text-white/40">{lastDiagnostic.info_count} info</span>}
+            {lastDiagnostic.critical_count === 0 && lastDiagnostic.warning_count === 0 && lastDiagnostic.info_count === 0 && <span className="text-cp-teal">All clear</span>}
+          </p>
+        </div>
+      )}
     </div>
   );
 };

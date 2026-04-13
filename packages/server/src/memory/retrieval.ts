@@ -35,7 +35,7 @@ export function memoryGrep(
   if (scope === 'messages' || scope === 'both') {
     const messageResults = searchMessages(db, agentId, pattern, mode, since, before, limit);
     if (messageResults.length > 0) {
-      results.push(`=== Messages (${messageResults.length} results) ===`);
+      results.push(`=== RAW MESSAGES (${messageResults.length} results — exact conversation records) ===`);
       results.push(...messageResults);
     }
   }
@@ -43,13 +43,14 @@ export function memoryGrep(
   if (scope === 'summaries' || scope === 'both') {
     const summaryResults = searchSummaries(db, agentId, pattern, mode, limit);
     if (summaryResults.length > 0) {
-      results.push(`=== Summaries (${summaryResults.length} results) ===`);
+      results.push(`=== COMPRESSED SUMMARIES (${summaryResults.length} results — condensed history, details may be lost) ===`);
       results.push(...summaryResults);
     }
   }
 
   if (results.length === 0) {
-    return `No results found for "${pattern}". This search checked all stored messages and summaries — retrying with a different query is unlikely to help. If the information was never discussed, it is not in memory.`;
+    const firstWord = pattern.trim().split(/\s+/)[0] || 'keyword';
+    return `No results found for "${pattern}".\n\nSuggestions:\n- Try broader search terms (e.g., "${firstWord}" instead of the full phrase)\n- Try vault_search for semantic (meaning-based) search\n- The information may predate your memory window or may never have been discussed`;
   }
 
   return results.join('\n');

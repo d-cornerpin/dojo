@@ -43,6 +43,9 @@ export interface ChatErrorEvent {
   type: 'chat:error';
   agentId: string;
   error: string;
+  code?: 'RATE_LIMITED' | 'MODEL_FAILED' | 'PERMISSION_DENIED' | 'ERROR_LOOP' | 'TIMEOUT' | 'TERMINATED' | 'STUCK_REPEATING' | 'NO_RESULTS';
+  severity?: 'info' | 'warning' | 'error';
+  retryable?: boolean;
 }
 
 export interface LogEntryEvent {

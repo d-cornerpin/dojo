@@ -174,6 +174,19 @@ function scheduleNextAttempt(
           const db = getDb();
           db.prepare("UPDATE agents SET status = 'rate_limited', updated_at = datetime('now') WHERE id = ?").run(agentId);
           broadcast({ type: 'agent:status', agentId, status: 'rate_limited' });
+
+          // For auto-routed agents, suggest switching models
+          const agentRow = db.prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined;
+          if (agentRow?.model_id === 'auto') {
+            broadcast({
+              type: 'chat:error',
+              agentId,
+              error: `Model rate-limited after ${formatDuration(Math.round(elapsedMs / 1000))}. The auto-router will try alternative models on the next attempt.`,
+              code: 'RATE_LIMITED',
+              severity: 'warning',
+              retryable: true,
+            } as never);
+          }
         } catch { /* best effort */ }
 
         nowAlerted = true;

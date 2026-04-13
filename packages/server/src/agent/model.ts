@@ -150,11 +150,23 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
   }
 
   let capabilities: string[] = [];
+  let capabilitiesValid = false;
   if (row.capabilities) {
     try {
       const parsed = JSON.parse(row.capabilities);
-      if (Array.isArray(parsed)) capabilities = parsed.filter(c => typeof c === 'string');
-    } catch { /* leave empty */ }
+      if (Array.isArray(parsed)) {
+        capabilities = parsed.filter(c => typeof c === 'string');
+        capabilitiesValid = true;
+      }
+    } catch {
+      // Invalid JSON — treat as text-only for safety rather than enabling everything
+      logger.warn('Model has invalid capabilities JSON, defaulting to text-only', { modelId });
+      capabilities = ['text'];
+      capabilitiesValid = false;
+    }
+  } else {
+    // No capabilities data at all — don't assume anything
+    capabilitiesValid = false;
   }
 
   return {
@@ -525,7 +537,15 @@ async function callOllamaModel(
             if (rawArgs && typeof rawArgs === 'object') {
               parsedArgs = rawArgs as Record<string, unknown>;
             } else if (typeof rawArgs === 'string') {
-              try { parsedArgs = JSON.parse(rawArgs); } catch { parsedArgs = {}; }
+              try {
+                parsedArgs = JSON.parse(rawArgs);
+              } catch {
+                logger.warn('Ollama: malformed tool call JSON arguments', {
+                  toolName: tc.function?.name,
+                  rawArgs: typeof rawArgs === 'string' ? rawArgs.slice(0, 200) : String(rawArgs),
+                }, agentId);
+                parsedArgs = { __malformed_args: typeof rawArgs === 'string' ? rawArgs.slice(0, 500) : String(rawArgs) };
+              }
             } else {
               parsedArgs = {};
             }
@@ -969,7 +989,27 @@ async function callOpenAIModel(
     // Finalize tool calls
     for (const [, acc] of toolCallAccumulator) {
       let parsedArgs: Record<string, unknown> = {};
-      try { parsedArgs = JSON.parse(acc.args); } catch {}
+      let malformedArgs = false;
+      if (acc.args && acc.args.trim().length > 0) {
+        try {
+          parsedArgs = JSON.parse(acc.args);
+        } catch {
+          malformedArgs = true;
+          logger.warn('OpenAI: malformed tool call JSON arguments', {
+            toolName: acc.name,
+            rawArgs: acc.args.slice(0, 200),
+          }, agentId);
+        }
+      }
+      if (malformedArgs) {
+        // Instead of silently using empty args, synthesize an error tool result
+        // so the model sees the failure and can retry with valid JSON.
+        // We push a synthetic tool call that the runtime will execute — the
+        // executeTool dispatcher will receive it, but we flag it here by
+        // injecting a special __malformed_args field. The runtime handles this
+        // before dispatching to produce a clear error message for the model.
+        parsedArgs = { __malformed_args: acc.args.slice(0, 500) };
+      }
       toolCalls.push({
         id: acc.id,
         name: acc.name,
@@ -1013,7 +1053,13 @@ async function callOpenAIModel(
     // tool_calls mechanism. When that happens, toolCalls is empty but
     // fullText contains `<invoke name="X">` or similar patterns. We
     // detect and parse these so the runtime can execute them normally.
-    if (toolCalls.length === 0 && fullText.includes('<invoke name="')) {
+    if (toolCalls.length === 0 && (
+      fullText.includes('<invoke name="') ||
+      fullText.includes('<tool_call>') ||
+      fullText.includes('<function_call') ||
+      /```json\s*\{\s*"name"\s*:/.test(fullText)
+    )) {
+      // Pattern 1: <invoke name="tool"><parameter name="key">value</parameter></invoke>
       const invokeRegex = /<invoke name="([^"]+)">([\s\S]*?)<\/invoke>/g;
       let match;
       while ((match = invokeRegex.exec(fullText)) !== null) {
@@ -1024,7 +1070,6 @@ async function callOpenAIModel(
         let paramMatch;
         while ((paramMatch = paramRegex.exec(paramsBlock)) !== null) {
           const val = paramMatch[2].trim();
-          // Try to parse as JSON for numbers/booleans/objects, fall back to string
           try { args[paramMatch[1]] = JSON.parse(val); } catch { args[paramMatch[1]] = val; }
         }
         toolCalls.push({
@@ -1033,13 +1078,64 @@ async function callOpenAIModel(
           arguments: args,
         });
       }
+      // Pattern 2: <tool_call><name>tool</name><arguments>{...}</arguments></tool_call>
+      if (toolCalls.length === 0) {
+        const tcRegex = /<tool_call>\s*<name>([^<]+)<\/name>\s*<arguments>([\s\S]*?)<\/arguments>\s*<\/tool_call>/g;
+        let tcMatch;
+        while ((tcMatch = tcRegex.exec(fullText)) !== null) {
+          const tcName = tcMatch[1].trim();
+          let tcArgs: Record<string, unknown> = {};
+          try { tcArgs = JSON.parse(tcMatch[2].trim()); } catch { /* skip unparseable */ }
+          toolCalls.push({
+            id: `text_tool_${Date.now()}_${toolCalls.length}`,
+            name: tcName,
+            arguments: tcArgs,
+          });
+        }
+      }
+
+      // Pattern 3: ```json\n{"name": "tool", "arguments": {...}}\n```
+      if (toolCalls.length === 0) {
+        const jsonBlockRegex = /```json\s*(\{[\s\S]*?\})\s*```/g;
+        let jbMatch;
+        while ((jbMatch = jsonBlockRegex.exec(fullText)) !== null) {
+          try {
+            const obj = JSON.parse(jbMatch[1]);
+            if (obj.name && typeof obj.name === 'string') {
+              toolCalls.push({
+                id: `text_tool_${Date.now()}_${toolCalls.length}`,
+                name: obj.name,
+                arguments: (obj.arguments ?? obj.parameters ?? {}) as Record<string, unknown>,
+              });
+            }
+          } catch { /* not valid JSON tool call */ }
+        }
+      }
+
+      // Pattern 4: <function_call name="tool" arguments='{"key": "value"}' />
+      if (toolCalls.length === 0) {
+        const fcRegex = /<function_call\s+name="([^"]+)"\s+arguments='([^']*)'\s*\/>/g;
+        let fcMatch;
+        while ((fcMatch = fcRegex.exec(fullText)) !== null) {
+          let fcArgs: Record<string, unknown> = {};
+          try { fcArgs = JSON.parse(fcMatch[2]); } catch { /* skip */ }
+          toolCalls.push({
+            id: `text_tool_${Date.now()}_${toolCalls.length}`,
+            name: fcMatch[1],
+            arguments: fcArgs,
+          });
+        }
+      }
+
       if (toolCalls.length > 0) {
-        // Strip the XML tool calls from the visible text so the user
-        // doesn't see raw invoke tags in the chat
+        // Strip all recognized tool call patterns from visible text
         fullText = fullText.replace(/<minimax:tool_call>[\s\S]*?<\/minimax:tool_call>/g, '')
           .replace(/<invoke name="[^"]*">[\s\S]*?<\/invoke>/g, '')
+          .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+          .replace(/<function_call[^>]*\/>/g, '')
+          .replace(/```json\s*\{[\s\S]*?\}\s*```/g, '')
           .trim();
-        logger.info('Extracted text-based tool calls (XML fallback)', {
+        logger.info('Extracted text-based tool calls (fallback)', {
           model: modelInfo.apiModelId,
           extractedCount: toolCalls.length,
           tools: toolCalls.map(tc => tc.name),

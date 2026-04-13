@@ -10,6 +10,16 @@ import { getAgentGoogleAccessLevel } from '../google/auth.js';
 import { getAgentMicrosoftAccessLevel, getMsAccountType, getMicrosoftWorkspaceConfig } from '../microsoft/auth.js';
 import { assembleGroupContext as _assembleGroupContext } from '../agent/groups.js';
 import { generateTechniqueIndex, generateDraftTechniqueContext } from '../techniques/index-builder.js';
+import { getContextWindow } from '../agent/model.js';
+
+// Prompt complexity tiers based on model context window
+type PromptTier = 'full' | 'standard' | 'compact' | 'minimal';
+function getPromptTier(contextWindow: number): PromptTier {
+  if (contextWindow >= 200000) return 'full';
+  if (contextWindow >= 32000) return 'standard';
+  if (contextWindow >= 8000) return 'compact';
+  return 'minimal';
+}
 import { generateToolIndex } from '../tools/categories.js';
 import { getAgentAlwaysLoadedTools } from '../tools/tool-docs.js';
 
@@ -149,7 +159,7 @@ You have access to the dojo's memory vault -- the same one every agent uses. Bef
 
 // ── Auto-generate tools guidance from registered tool definitions ──
 
-function generateToolsGuidance(agentId: string): string {
+function generateToolsGuidance(agentId: string, tier: PromptTier = 'full'): string {
   // Only show tools the agent actually has access to
   const agentTools = getFilteredTools(agentId);
   const lines: string[] = [];
@@ -221,21 +231,27 @@ function generateToolsGuidance(agentId: string): string {
   // MANDATORY tracker rule — for ALL agents that have tracker tools
   const hasTracker = agentTools.some(t => t.name.startsWith('tracker_'));
   if (hasTracker) {
-    lines.push('## MANDATORY: Project Tracker');
-    lines.push('You MUST use the project tracker any time you are going to make two or more tool calls to complete a request. This is not optional.');
-    lines.push('');
-    lines.push('**When to use:**');
-    lines.push('- If you need to call 2+ tools to fulfill the request, create a tracker task FIRST');
-    lines.push('- If the user asks you to do something (not just chat), track it');
-    lines.push('- Do NOT check the tracker when the user is just chatting, greeting you, or asking casual questions');
-    lines.push('');
-    lines.push('**How to use:**');
-    lines.push('- **Quick tasks (2-5 tool calls)**: Use `tracker_create_task` with a clear title. No project needed.');
-    lines.push('- **Bigger work (multiple steps, sub-agents)**: Use `tracker_create_project` with tasks broken into steps.');
-    lines.push('- **During work**: Call `tracker_complete_step` after each step. Mark tasks `in_progress` when starting, `complete` when done.');
-    lines.push('- **For sub-agents**: Create tasks in the tracker and assign them. The tracker is how the PM monitors progress.');
-    lines.push('- **For scheduled work**: Use `get_current_time` first, then set `scheduled_start`. Add `repeat_interval` + `repeat_unit` for recurring tasks.');
-    lines.push('- Do NOT rely on memory to track work. The tracker is the single source of truth.');
+    if (tier === 'compact' || tier === 'minimal') {
+      // Condensed tracker instructions
+      lines.push('## Project Tracker');
+      lines.push('Use the project tracker to manage tasks. Call tracker_create_task for new work. Call tracker_get_status to check progress. Call tracker_update_status to change task states (in_progress, complete, blocked). Call tracker_complete_step to advance multi-step projects. Don\'t check tracker during casual chat.');
+    } else {
+      lines.push('## MANDATORY: Project Tracker');
+      lines.push('You MUST use the project tracker any time you are going to make two or more tool calls to complete a request. This is not optional.');
+      lines.push('');
+      lines.push('**When to use:**');
+      lines.push('- If you need to call 2+ tools to fulfill the request, create a tracker task FIRST');
+      lines.push('- If the user asks you to do something (not just chat), track it');
+      lines.push('- Do NOT check the tracker when the user is just chatting, greeting you, or asking casual questions');
+      lines.push('');
+      lines.push('**How to use:**');
+      lines.push('- **Quick tasks (2-5 tool calls)**: Use `tracker_create_task` with a clear title. No project needed.');
+      lines.push('- **Bigger work (multiple steps, sub-agents)**: Use `tracker_create_project` with tasks broken into steps.');
+      lines.push('- **During work**: Call `tracker_complete_step` after each step. Mark tasks `in_progress` when starting, `complete` when done.');
+      lines.push('- **For sub-agents**: Create tasks in the tracker and assign them. The tracker is how the PM monitors progress.');
+      lines.push('- **For scheduled work**: Use `get_current_time` first, then set `scheduled_start`. Add `repeat_interval` + `repeat_unit` for recurring tasks.');
+      lines.push('- Do NOT rely on memory to track work. The tracker is the single source of truth.');
+    }
     lines.push('');
   }
 
@@ -250,7 +266,13 @@ function generateToolsGuidance(agentId: string): string {
     } catch { return false; }
   })();
   if (hasVault && !isDreamer) {
-    lines.push(`## Your Long-Term Memory (The Vault)
+    if (tier === 'compact' || tier === 'minimal') {
+      // Condensed vault instructions for small context windows
+      lines.push(`## Vault (Long-Term Memory)
+You have a vault for long-term memory shared by all agents. Use vault_search(query) to look things up — ALWAYS search before saying "I don't remember." Use vault_remember(content, tags) to save important facts, decisions, and user preferences. Search before starting any task. Save discoveries after completing tasks.`);
+    } else {
+      // Full vault instructions for large context windows
+      lines.push(`## Your Long-Term Memory (The Vault)
 
 You have a persistent memory vault shared by every agent in the dojo. Your conversation window is short-term memory -- it fades when compaction runs. The vault is permanent.
 
@@ -287,6 +309,7 @@ vault_search is your FIRST choice for recall. If it doesn't have what you need, 
 ### This is not optional.
 The vault is how you maintain continuity across conversations. If you need something you can't see, look it up. Never assume your context window has everything.
 `);
+    }
   }
 
   // Technique check rule — for agents with technique tools
@@ -350,8 +373,10 @@ function shouldShareUserProfile(agentId: string): boolean {
 // ── Main Assembly ──
 
 export function assembleSystemPrompt(agentId: string, modelId: string): string {
+  const contextWindow = getContextWindow(modelId);
+  const tier = getPromptTier(contextWindow);
   const soul = getSoulContent(agentId);
-  const tools = generateToolsGuidance(agentId);
+  const tools = generateToolsGuidance(agentId, tier);
 
   const parts = [soul, tools];
 
@@ -493,7 +518,7 @@ You have read-only access to the dojo's connected Microsoft 365 account. You can
     if (agentEquipped?.equipped_techniques) {
       const techniqueIds: string[] = JSON.parse(agentEquipped.equipped_techniques || '[]');
       if (techniqueIds.length > 0) {
-        const equippedParts: string[] = ['## Equipped Techniques\nThe following techniques are pre-loaded for your use. Follow these instructions when performing the relevant tasks.\n'];
+        const equippedParts: string[] = ['## Equipped Techniques\nYou have equipped techniques (specialized procedures). When a task matches a technique, follow its steps exactly — do not improvise your own approach.\n'];
         for (const techId of techniqueIds) {
           const technique = db.prepare('SELECT id, name, directory_path FROM techniques WHERE id = ? AND state = \'published\' AND enabled = 1').get(techId) as { id: string; name: string; directory_path: string } | undefined;
           if (technique) {
@@ -501,7 +526,7 @@ You have read-only access to the dojo's connected Microsoft 365 account. You can
               const mdPath = path.join(technique.directory_path, 'TECHNIQUE.md');
               if (fs.existsSync(mdPath)) {
                 const content = fs.readFileSync(mdPath, 'utf-8');
-                equippedParts.push(`### Technique: ${technique.name}\n${content}`);
+                equippedParts.push(`═══ EQUIPPED TECHNIQUE: ${technique.name} ═══\nWhen performing "${technique.name}", follow these steps IN ORDER:\n\n${content}\n═══ END TECHNIQUE ═══`);
               }
             } catch { /* skip unreadable */ }
           }
@@ -525,10 +550,22 @@ You have read-only access to the dojo's connected Microsoft 365 account. You can
 
   const systemPrompt = parts.join('\n\n---\n\n');
 
+  const estimatedTokens = Math.ceil(systemPrompt.length / 4);
+  const promptRatio = estimatedTokens / contextWindow;
+  if (promptRatio > 0.3) {
+    logger.warn('System prompt exceeds 30% of context window', {
+      agentId, modelId, tier,
+      estimatedTokens, contextWindow,
+      ratio: (promptRatio * 100).toFixed(1) + '%',
+    }, agentId);
+  }
+
   logger.debug('System prompt assembled', {
     agentId,
     modelId,
+    tier,
     length: systemPrompt.length,
+    estimatedTokens,
     includesUserProfile: shouldShareUserProfile(agentId),
   }, agentId);
 

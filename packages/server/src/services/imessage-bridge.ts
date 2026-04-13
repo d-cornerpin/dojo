@@ -369,7 +369,17 @@ export function sendResponseViaIMessage(text: string, agentId?: string): void {
   const entry = pendingIMResponseMap.get(agentId);
   const sender = entry?.sender ?? approvedSenders[0];
   if (sender) {
-    sendIMessage(sender, text);
+    // Sanitize for iMessage: strip markdown and clean whitespace
+    let cleaned = text;
+    cleaned = cleaned.replace(/\*\*(.+?)\*\*/g, '$1');  // **bold** → bold
+    cleaned = cleaned.replace(/\*(.+?)\*/g, '$1');       // *italic* → italic
+    cleaned = cleaned.replace(/`([^`]+)`/g, '$1');       // `code` → code
+    cleaned = cleaned.replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, '').trim()); // code blocks → plain
+    cleaned = cleaned.replace(/^#{1,6}\s+/gm, '');       // # headers → plain
+    cleaned = cleaned.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // [text](url) → text
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n');         // collapse excessive newlines
+    cleaned = cleaned.trim();
+    sendIMessage(sender, cleaned);
   }
   pendingIMResponseMap.delete(agentId);
 }

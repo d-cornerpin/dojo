@@ -222,7 +222,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'exec',
-    description: 'Execute a shell command and return its output. Has a 30-second timeout. Use for running scripts, checking system status, installing packages, etc.',
+    description: 'Execute a shell command and return its output. Has a 30-second timeout. Use for running scripts, checking system status, installing packages, etc. Example: exec({ command: "ls -la ~/projects" }). Returns stdout and stderr.',
     input_schema: {
       type: 'object',
       properties: {
@@ -240,7 +240,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'file_read',
-    description: 'Read the contents of a file at the given absolute path. Large files are truncated at 50,000 characters.',
+    description: 'Read the contents of a file at the given absolute path. Large files are truncated at 50,000 characters. Example: file_read({ path: "/Users/me/project/src/index.ts" }).',
     input_schema: {
       type: 'object',
       properties: {
@@ -254,7 +254,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'file_write',
-    description: 'Write content to a file at the given absolute path. Creates parent directories if they do not exist. Overwrites existing files.',
+    description: 'Write content to a file at the given absolute path. Creates parent directories if they do not exist. Overwrites existing files. Example: file_write({ path: "/Users/me/output.txt", content: "Hello world" }).',
     input_schema: {
       type: 'object',
       properties: {
@@ -272,7 +272,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'file_list',
-    description: 'List the contents of a directory at the given absolute path. Returns file names, sizes, and types.',
+    description: 'List the contents of a directory at the given absolute path. Returns file names, sizes, and types. Example: file_list({ path: "~/projects" }).',
     input_schema: {
       type: 'object',
       properties: {
@@ -286,7 +286,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'memory_grep',
-    description: 'Search through conversation history and memory summaries using full-text search or pattern matching. Returns matching messages and summaries with context.',
+    description: 'Search through conversation history and memory summaries using full-text search or pattern matching. Returns matching messages and summaries with context. Example: memory_grep({ pattern: "budget meeting", limit: 10 }). Returns timestamped results from both raw messages and compressed summaries.',
     input_schema: {
       type: 'object',
       properties: {
@@ -734,7 +734,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'tracker_get_status',
-    description: 'Get the current status and details of a task or project.',
+    description: 'Get the full details of a task or project, including description/instructions, notes, dependencies, step number, assigned agent, and timestamps. Use this to read the instructions for any task. Accepts a task ID or project ID (full UUID or 8+ char prefix from tracker_list_active).',
     input_schema: {
       type: 'object',
       properties: {
@@ -748,7 +748,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'tracker_list_active',
-    description: 'List active projects and tasks, optionally filtered.',
+    description: 'List active projects and tasks with their status, assignee, and priority. Shows truncated descriptions. For full task details including complete instructions and notes, call tracker_get_status with the task ID.',
     input_schema: {
       type: 'object',
       properties: {
@@ -763,7 +763,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'tracker_complete_step',
-    description: 'Complete the current step and automatically start the next one. Use this for multi-step projects — it marks the given task as "complete" and moves the next step (by step_number) to "in_progress" in one call.',
+    description: 'Complete the current step in a multi-step project and automatically start the next one. Marks this task as "complete" and moves the next step (by step_number) to "in_progress". Also checks if the entire project is now complete. Use this instead of tracker_update_status when working through ordered project steps.',
     input_schema: {
       type: 'object',
       properties: {
@@ -801,6 +801,38 @@ export const toolDefinitions: ToolDefinition[] = [
         task_id: { type: 'string', description: 'The task ID to resume' },
       },
       required: ['task_id'],
+    },
+  },
+  // ── Healer Tools ──
+  {
+    name: 'healer_log_action',
+    description: 'Log an auto-fix action taken by the Healer agent. Used to record what was fixed and whether it succeeded.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        category: { type: 'string', description: 'Category code (e.g., STUCK_AGENT, ORPHANED_TASK)' },
+        description: { type: 'string', description: 'What was done, in plain language' },
+        agent_id: { type: 'string', description: 'Which agent was affected (if applicable)' },
+        result: { type: 'string', enum: ['success', 'failed', 'partial'], description: 'Outcome of the fix' },
+      },
+      required: ['category', 'description', 'result'],
+    },
+  },
+  {
+    name: 'healer_propose',
+    description: 'Create a proposal for the user to approve or deny in the dashboard. Use this for fixes that change configuration, switch models, or grant permissions — anything you are less than 70% confident about.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short title for the dashboard (e.g., "Switch Kelly to Claude Haiku")' },
+        description: { type: 'string', description: 'Full explanation of the problem' },
+        proposed_fix: { type: 'string', description: 'What you want to do (plain language)' },
+        confidence: { type: 'number', description: 'Your confidence in this fix (0-100)' },
+        severity: { type: 'string', enum: ['critical', 'warning', 'info'], description: 'How urgent is this?' },
+        category: { type: 'string', description: 'Category (model_switch, config_change, permission_grant, etc.)' },
+        agent_id: { type: 'string', description: 'Which agent this concerns (if applicable)' },
+      },
+      required: ['title', 'description', 'proposed_fix', 'confidence', 'severity', 'category'],
     },
   },
   {
@@ -862,9 +894,9 @@ export const toolDefinitions: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        agent_id: { type: 'string', description: 'Optional agent ID to reset. If omitted, resets your own session. Use this to reset a sub-agent\'s session.' },
+        agent_id: { type: 'string', description: 'REQUIRED. The agent ID or name of the agent to reset. Pass a sub-agent\'s ID/name to reset them, or pass your own ID to reset yourself.' },
       },
-      required: [],
+      required: ['agent_id'],
     },
   },
   {
@@ -1237,7 +1269,7 @@ export const toolDefinitions: ToolDefinition[] = [
 
   {
     name: 'vault_remember',
-    description: 'Save an important piece of knowledge to the dojo\'s long-term memory vault. Use this when you learn something worth remembering permanently -- facts about the user, decisions made, procedures discovered, preferences stated. This is saved immediately and visible to all agents.',
+    description: 'Save an important piece of knowledge to the dojo\'s long-term memory vault. Use this when you learn something worth remembering permanently -- facts about the user, decisions made, procedures discovered, preferences stated. This is saved immediately and visible to all agents. Example: vault_remember({ content: "User prefers dark mode", tags: ["preferences"] }).',
     input_schema: {
       type: 'object',
       properties: {
@@ -1252,7 +1284,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'vault_search',
-    description: 'Search the dojo\'s long-term memory vault for relevant knowledge. Returns memories matching your query, ranked by relevance. Use this when you need to recall something that isn\'t in your current context window.',
+    description: 'Search the dojo\'s long-term memory vault for relevant knowledge. Returns memories matching your query, ranked by relevance. Use this when you need to recall something that isn\'t in your current context window. Example: vault_search({ query: "user preferences" }).',
     input_schema: {
       type: 'object',
       properties: {
@@ -1464,7 +1496,7 @@ function formatBytes(bytes: number): string {
 // ── Public API ──
 
 function permissionDeniedMessage(reason: string | undefined): string {
-  return `Permission denied: ${reason ?? 'not allowed'}. DO NOT retry this operation — your permissions do not allow it. Find an alternative approach or use complete_task to report that you are blocked.`;
+  return `[BLOCKED] Permission denied: ${reason ?? 'not allowed'}\n\nThis operation is permanently blocked by your permission settings. Retrying will fail every time.\n\nInstead, you should:\n1. Try an alternative approach that doesn't require this permission\n2. Call complete_task(result="blocked", notes="Need permission for: ${reason ?? 'this action'}") to report you are blocked\n3. Or use send_to_agent to ask another agent that has the required permissions`;
 }
 
 export async function executeTool(agentId: string, toolCall: ToolCall): Promise<ToolResult> {
@@ -1474,6 +1506,16 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
   let content: string = '';
   let isError = false;
+
+  // ── Malformed tool call arguments ──
+  // If the model produced invalid JSON for tool arguments, model.ts flags it
+  // with __malformed_args. Return a clear error so the model can retry.
+  if (args.__malformed_args) {
+    const rawSnippet = String(args.__malformed_args).slice(0, 300);
+    content = `Error: Your tool call arguments for "${name}" were malformed JSON and could not be parsed.\n\nThe raw text was:\n${rawSnippet}\n\nPlease retry this tool call with valid JSON arguments. Call load_tool_docs(tools=["${name}"]) to see the expected parameter schema.`;
+    logger.warn('Rejecting tool call with malformed arguments', { tool: name, rawSnippet }, agentId);
+    return { toolCallId: id, name, content, isError: true, errorCode: 'PARSE_ERROR' as const };
+  }
 
   // ── Permission checks for file/exec tools ──
   if (name === 'file_read' || name === 'file_list') {
@@ -1851,13 +1893,14 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           const contextMessage = `[SOURCE: AGENT MESSAGE FROM ${senderName.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's from another agent] ${message}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
 
           db.prepare(`
-            INSERT INTO messages (id, agent_id, role, content, attachments, created_at)
-            VALUES (?, ?, 'user', ?, ?, datetime('now'))
+            INSERT INTO messages (id, agent_id, role, content, attachments, source_agent_id, created_at)
+            VALUES (?, ?, 'user', ?, ?, ?, datetime('now'))
           `).run(
             msgId,
             target.id,
             contextMessage,
             attachments.length > 0 ? JSON.stringify(attachments) : null,
+            agentId, // Track sender for auto-route reply detection
           );
 
           // Broadcast so the target agent's chat view updates, including
@@ -2014,6 +2057,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           status: args.status as string,
         };
         if (args.notes) updateArgs.notes = args.notes;
+        if (args.complete_all_runs) updateArgs.complete_all_runs = args.complete_all_runs;
         content = trackerUpdateStatus(agentId, updateArgs);
         isError = content.startsWith('Error');
         break;
@@ -2032,12 +2076,18 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         isError = content.startsWith('Error');
         break;
       }
-      case 'tracker_list_active':
-        content = trackerListActive(agentId, {
-          scope: args.filter === 'all' || !args.filter ? 'all' : 'all',
-        });
+      case 'tracker_list_active': {
+        const listFilter = args.filter as string | undefined;
+        if (listFilter === 'mine') {
+          content = trackerListActive(agentId, { scope: 'tasks', assignedTo: agentId });
+        } else if (listFilter === 'blocked') {
+          content = trackerListActive(agentId, { scope: 'tasks', status: 'blocked' });
+        } else {
+          content = trackerListActive(agentId, { scope: 'all' });
+        }
         isError = content.startsWith('Error');
         break;
+      }
       case 'tracker_complete_step':
         content = trackerCompleteStep(agentId, {
           taskId: args.task_id as string,
@@ -2055,6 +2105,37 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         content = trackerResumeSchedule(agentId, { taskId: args.task_id as string });
         isError = content.startsWith('Error');
         break;
+      // ── Healer Tools ──
+      case 'healer_log_action': {
+        const healerDb = getDb();
+        const actionId = uuidv4();
+        healerDb.prepare(`
+          INSERT INTO healer_actions (id, diagnostic_id, category, description, agent_id, action_taken, result, created_at)
+          VALUES (?, NULL, ?, ?, ?, ?, ?, datetime('now'))
+        `).run(actionId, args.category as string, args.description as string, (args.agent_id as string) ?? null, args.category as string, args.result as string);
+        content = `[OK] action_id=${actionId}\n\nAction logged: ${args.description}`;
+        break;
+      }
+      case 'healer_propose': {
+        const propDb = getDb();
+        const propId = uuidv4();
+        propDb.prepare(`
+          INSERT INTO healer_proposals (id, diagnostic_id, category, severity, title, description, proposed_fix, confidence, status, agent_id, created_at)
+          VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'))
+        `).run(
+          propId,
+          args.category as string,
+          args.severity as string,
+          args.title as string,
+          args.description as string,
+          args.proposed_fix as string,
+          args.confidence as number,
+          (args.agent_id as string) ?? null,
+        );
+        broadcast({ type: 'healer:proposal', data: { id: propId, title: args.title, severity: args.severity } } as never);
+        content = `[OK] proposal_id=${propId}\n\nProposal created: "${args.title}". The user will see this in the dashboard vitals panel and can approve or deny it.`;
+        break;
+      }
       case 'get_current_time': {
         const now = new Date();
         const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -2199,21 +2280,30 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'reset_session': {
         try {
           const db = getDb();
-          const targetId = (args.agent_id as string) || agentId;
+          // Accept both 'agent_id' and 'agent' (models use inconsistent param names)
+          const rawTarget = (args.agent_id as string) ?? (args.agent as string) ?? null;
 
-          const agent = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(targetId) as { id: string; name: string; status: string } | undefined;
+          // Safety: if no target specified, the agent is resetting itself.
+          // Require explicit confirmation to prevent accidental self-resets.
+          if (!rawTarget) {
+            content = 'Error: agent_id is required. To reset your OWN session, pass your own agent ID explicitly. To reset a sub-agent, pass their agent ID or name.';
+            isError = true;
+            break;
+          }
+
+          const targetId = rawTarget;
+          let agent = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(targetId) as { id: string; name: string; status: string } | undefined;
           if (!agent) {
             // Try by name
-            const byName = db.prepare("SELECT id, name, status FROM agents WHERE name = ? AND status != 'terminated'").get(targetId) as { id: string; name: string; status: string } | undefined;
-            if (!byName) {
+            agent = db.prepare("SELECT id, name, status FROM agents WHERE name = ? AND status != 'terminated'").get(targetId) as { id: string; name: string; status: string } | undefined;
+            if (!agent) {
               content = `Error: Agent "${targetId}" not found`;
               isError = true;
               break;
             }
-            Object.assign(agent ?? {}, byName);
           }
 
-          const resolvedId = agent?.id ?? targetId;
+          const resolvedId = agent.id;
 
           // Archive current conversation to vault
           const { archiveAgentConversation } = await import('../vault/archive.js');
@@ -2263,6 +2353,8 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
           if (newModelId === 'auto') {
             db.prepare("UPDATE agents SET model_id = 'auto', updated_at = datetime('now') WHERE id = ?").run(agent.id);
+            const { sanitizeMessagesOnModelChange } = await import('./model-switch.js');
+            sanitizeMessagesOnModelChange(agent.id);
             content = `${agent.name} switched to auto-routing. The router will select the best model per query.`;
           } else {
             // Verify model exists and is enabled
@@ -2279,7 +2371,10 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
             }
 
             db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?").run(newModelId, agent.id);
-            content = `${agent.name}'s model changed from ${agent.model_id ?? 'auto'} to ${model.name} (${newModelId}).`;
+            // Sanitize tool call messages so the new model doesn't choke on old IDs
+            const { sanitizeMessagesOnModelChange } = await import('./model-switch.js');
+            const { collapsed } = sanitizeMessagesOnModelChange(agent.id);
+            content = `${agent.name}'s model changed from ${agent.model_id ?? 'auto'} to ${model.name} (${newModelId}).${collapsed > 0 ? ` ${collapsed} tool call message(s) were sanitized for compatibility.` : ''}`;
           }
 
           logger.info('Agent model updated via tool', { callerAgentId: agentId, targetAgentId: agent.id, newModelId }, agentId);

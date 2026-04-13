@@ -1198,4 +1198,88 @@ export const rollbackToVersion = async (tag: string): Promise<ApiResponse<{ mess
   });
 };
 
+// ── Healer ──
+
+export interface HealerConfig {
+  modelId: string | null;
+  healerTime: string;
+  healerMode: 'active' | 'monitor' | 'off';
+}
+
+export interface HealerProposal {
+  id: string;
+  diagnostic_id: string | null;
+  category: string;
+  severity: string;
+  title: string;
+  description: string;
+  proposed_fix: string;
+  fix_action: string | null;
+  confidence: number | null;
+  status: string;
+  user_note: string | null;
+  result_summary: string | null;
+  agent_id: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+export interface HealerAction {
+  id: string;
+  diagnostic_id: string | null;
+  category: string;
+  description: string;
+  agent_id: string | null;
+  action_taken: string;
+  result: string | null;
+  created_at: string;
+}
+
+export interface HealerDiagnostic {
+  id: string;
+  report: string;
+  critical_count: number;
+  warning_count: number;
+  info_count: number;
+  created_at: string;
+}
+
+export const getHealerConfig = async (): Promise<ApiResponse<HealerConfig>> => {
+  return request<HealerConfig>('/healer/config');
+};
+
+export const updateHealerConfig = async (config: Partial<HealerConfig>): Promise<ApiResponse<HealerConfig>> => {
+  return request<HealerConfig>('/healer/config', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+};
+
+export const getHealerProposals = async (): Promise<ApiResponse<HealerProposal[]>> => {
+  return request<HealerProposal[]>('/healer/proposals');
+};
+
+export const resolveHealerProposal = async (id: string, action: 'approve' | 'deny', note?: string): Promise<ApiResponse<{ status: string }>> => {
+  return request<{ status: string }>(`/healer/proposals/${id}`, {
+    method: 'POST',
+    body: JSON.stringify({ action, note }),
+  });
+};
+
+export const getHealerActions = async (): Promise<ApiResponse<HealerAction[]>> => {
+  return request<HealerAction[]>('/healer/actions');
+};
+
+export const getHealerDiagnostic = async (): Promise<ApiResponse<HealerDiagnostic | null>> => {
+  return request<HealerDiagnostic | null>('/healer/diagnostics');
+};
+
+export const triggerHealerRun = async (): Promise<ApiResponse<{ diagnosticId: string; autoFixCount: number; llmTriggered: boolean }>> => {
+  return request<{ diagnosticId: string; autoFixCount: number; llmTriggered: boolean }>('/healer/run', { method: 'POST' });
+};
+
+export const sendHealerReport = async (): Promise<ApiResponse<{ message: string }>> => {
+  return request<{ message: string }>('/healer/report/send', { method: 'POST' });
+};
+
 export { getToken, clearToken };

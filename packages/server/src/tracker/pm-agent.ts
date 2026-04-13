@@ -111,8 +111,11 @@ export function ensurePMAgentRunning(): void {
     const syncToolsPolicy = JSON.stringify({
       allow: [
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
-        'tracker_add_notes', 'tracker_pause_schedule', 'tracker_resume_schedule',
-        'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups', 'get_current_time',
+        'tracker_add_notes', 'tracker_complete_step',
+        'tracker_pause_schedule', 'tracker_resume_schedule',
+        'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
+        'vault_search', 'vault_remember', 'memory_grep',
+        'load_tool_docs', 'get_current_time',
       ],
     });
     db.prepare("UPDATE agents SET tools_policy = ?, updated_at = datetime('now') WHERE id = ?").run(syncToolsPolicy, pmId);
@@ -145,8 +148,11 @@ export function ensurePMAgentRunning(): void {
     const reactivateToolsPolicy = JSON.stringify({
       allow: [
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
-        'tracker_add_notes', 'tracker_pause_schedule', 'tracker_resume_schedule',
-        'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups', 'get_current_time',
+        'tracker_add_notes', 'tracker_complete_step',
+        'tracker_pause_schedule', 'tracker_resume_schedule',
+        'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
+        'vault_search', 'vault_remember', 'memory_grep',
+        'load_tool_docs', 'get_current_time',
       ],
     });
     db.prepare(`
@@ -182,8 +188,11 @@ export function ensurePMAgentRunning(): void {
     const pmToolsPolicy = JSON.stringify({
       allow: [
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
-        'tracker_add_notes', 'tracker_pause_schedule', 'tracker_resume_schedule',
-        'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups', 'get_current_time',
+        'tracker_add_notes', 'tracker_complete_step',
+        'tracker_pause_schedule', 'tracker_resume_schedule',
+        'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
+        'vault_search', 'vault_remember', 'memory_grep',
+        'load_tool_docs', 'get_current_time',
       ],
     });
     db.prepare(`
@@ -392,6 +401,11 @@ async function runPMReview(): Promise<void> {
       }
     }
     if (t.status === 'blocked') line += ' [BLOCKED]';
+    // Include task description so PM can make informed decisions
+    if (t.description) {
+      const desc = t.description.length > 150 ? t.description.slice(0, 150) + '...' : t.description;
+      line += `\n  Instructions: ${desc}`;
+    }
     return line;
   }).join('\n');
 
@@ -518,12 +532,13 @@ function runPokeCheck(): void {
     // Also inject into the recipient's conversation so the LLM sees it on the next turn
     const db = getDb();
     const pokeMsgId = uuidv4();
+    const fullPokeContent = `[SOURCE: PM AGENT POKE FROM ${pmName.toUpperCase()} — this is NOT a message from the user, it's an automated poke from the PM agent checking on your progress] ${pokeMessage}`;
     db.prepare(`
       INSERT INTO messages (id, agent_id, role, content, created_at)
       VALUES (?, ?, 'user', ?, datetime('now'))
-    `).run(pokeMsgId, recipient, `[SOURCE: PM AGENT POKE FROM ${pmName.toUpperCase()} — this is NOT a message from the user, it's an automated poke from the PM agent checking on your progress] ${pokeMessage}`);
+    `).run(pokeMsgId, recipient, fullPokeContent);
 
-    // Broadcast so dashboard updates
+    // Broadcast same content to dashboard (consistent with what the agent sees)
     broadcast({
       type: 'chat:message',
       agentId: recipient,
@@ -531,7 +546,7 @@ function runPokeCheck(): void {
         id: pokeMsgId,
         agentId: recipient,
         role: 'user' as Message['role'],
-        content: `[${pmName} — Project Manager] ${pokeMessage}`,
+        content: fullPokeContent,
         tokenCount: null,
         modelId: null,
         cost: null,

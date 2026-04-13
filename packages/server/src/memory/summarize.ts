@@ -39,6 +39,11 @@ export function getDepthPrompt(depth: number, targetTokens: number, previousCont
 
 ${identity}
 
+INPUT FORMAT: The conversation below is formatted as [ROLE] followed by the message content, separated by --- dividers.
+[USER] = messages from the human user
+[ASSISTANT] = responses from the AI assistant
+[TOOL] = results from tool executions
+
 ABSOLUTE RULES — NEVER VIOLATE THESE:
 - Preserve ALL proper nouns: company names, product names, people's names, place names
 - Preserve ALL specific details: numbers, dates, prices, URLs, file paths, version numbers
@@ -70,6 +75,8 @@ ${contextBlock}`;
     return `You are a factual memory condensation engine. You are merging multiple summaries into a unified overview. Factual completeness is more important than brevity.
 
 ${identity}
+
+INPUT FORMAT: Each <summary> block below is a COMPRESSED version of earlier conversation — these are already summarized, not raw messages. They may overlap in time. Merge them, keeping ALL specific details from each.
 
 ABSOLUTE RULES:
 - Preserve ALL proper nouns, specific names, numbers, dates, and concrete details from the source summaries

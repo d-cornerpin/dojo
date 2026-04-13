@@ -60,7 +60,18 @@ export function recordError(agentId: string): boolean {
     pauseAgent(agentId);
     agentErrors.delete(agentId); // Reset after pausing
 
-    // Notify owner via iMessage if the primary agent gets paused
+    // Broadcast structured error to dashboard so the chat shows why the agent was paused
+    const errorMsg = `Agent paused: ${ERROR_LOOP_THRESHOLD} errors in ${ERROR_LOOP_WINDOW_MS / 1000} seconds. Check the Health page for details.`;
+    broadcast({
+      type: 'chat:error',
+      agentId,
+      error: errorMsg,
+      code: 'ERROR_LOOP',
+      severity: 'error',
+      retryable: false,
+    });
+
+    // Notify owner via iMessage
     try {
       const db = getDb();
       const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;

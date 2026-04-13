@@ -23,7 +23,7 @@ import { getProviderCredential } from '../config/loader.js';
 
 const logger = createLogger('capabilities');
 
-export type Capability = 'tools' | 'vision' | 'thinking' | 'embedding' | 'image_generation';
+export type Capability = 'tools' | 'vision' | 'thinking' | 'embedding' | 'image_generation' | 'text';
 
 export interface ProbeInput {
   providerId: string;
@@ -336,7 +336,10 @@ export function getModelCapabilities(modelId: string): Capability[] {
   const row = db.prepare('SELECT capabilities FROM models WHERE id = ?').get(modelId) as
     | { capabilities: string }
     | undefined;
-  if (!row?.capabilities) return [];
+  // No row at all → model not in DB, don't gate (unknown model)
+  if (!row) return [];
+  // Row exists but capabilities column is empty/null → not yet probed, don't gate
+  if (!row.capabilities) return [];
   try {
     const parsed = JSON.parse(row.capabilities);
     if (!Array.isArray(parsed)) return [];
@@ -345,14 +348,16 @@ export function getModelCapabilities(modelId: string): Capability[] {
       if (typeof c !== 'string') continue;
       const norm = c.toLowerCase();
       if ((norm === 'tools' || norm === 'vision' || norm === 'thinking' ||
-           norm === 'embedding' || norm === 'image_generation')
+           norm === 'embedding' || norm === 'image_generation' || norm === 'text')
           && !caps.includes(norm as Capability)) {
         caps.push(norm as Capability);
       }
     }
     return caps;
   } catch {
-    return [];
+    // JSON is corrupt — the row exists and was probed but the data is bad.
+    // Default to text-only (safe) rather than [] (enable everything).
+    return ['text'];
   }
 }
 

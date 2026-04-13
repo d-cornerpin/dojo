@@ -435,7 +435,8 @@ export const Chat = () => {
       if (e.agentId !== agentIdRef.current) return;
       setError(e.error);
       // Don't clear isWorking for rate limits — the background retry is handling it
-      const isRateLimit = e.error.includes('429') || e.error.toLowerCase().includes('rate_limit') || e.error.toLowerCase().includes('overloaded');
+      // Use structured code when available, fall back to string matching for backwards compat
+      const isRateLimit = e.code === 'RATE_LIMITED' || e.error.includes('429') || e.error.toLowerCase().includes('rate_limit') || e.error.toLowerCase().includes('overloaded');
       if (!isRateLimit) {
         setIsWorking(false);
       }
@@ -484,6 +485,13 @@ export const Chat = () => {
       }
     });
 
+    const unsubTerminated = subscribe('agent:terminated', (event: WsEvent) => {
+      const e = event as { agentId: string; reason: string };
+      if (e.agentId !== agentIdRef.current) return;
+      setError(`Agent terminated: ${e.reason}`);
+      setIsWorking(false);
+    });
+
     return () => {
       unsubChunk();
       unsubToolCall();
@@ -491,6 +499,7 @@ export const Chat = () => {
       unsubError();
       unsubMessage();
       unsubStatus();
+      unsubTerminated();
     };
   }, [subscribe, AGENT_ID]);
 

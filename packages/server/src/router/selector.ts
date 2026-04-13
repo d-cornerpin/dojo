@@ -8,6 +8,7 @@ import { createLogger } from '../logger.js';
 import { isRateLimited } from './rate-limits.js';
 import { getDailySpend } from '../costs/tracker.js';
 import { checkBudget } from '../costs/budget.js';
+import { getModelCapabilities } from '../services/capabilities.js';
 import type { DimensionScore } from './types.js';
 
 const logger = createLogger('selector');
@@ -58,8 +59,10 @@ export function selectModel(
   tier: string,
   agentId: string,
   excludeModels?: string[],
+  requireCapabilities?: string[],
 ): SelectedModel | null {
   const excluded = new Set(excludeModels ?? []);
+  const required = requireCapabilities ?? [];
   const fallbackChain = TIER_FALLBACK[tier] ?? [tier];
   let fallbackUsed = false;
 
@@ -69,6 +72,20 @@ export function selectModel(
     for (const model of models) {
       // Skip excluded models
       if (excluded.has(model.model_id)) continue;
+
+      // Skip models lacking required capabilities (e.g., tools, vision)
+      if (required.length > 0) {
+        const caps = getModelCapabilities(model.model_id);
+        // Only filter if the model has known capabilities (non-empty).
+        // Models with no capability data (empty) are allowed through
+        // since we don't want a missing probe to block selection.
+        if (caps.length > 0 && required.some(req => !caps.includes(req as never))) {
+          logger.debug('Model lacks required capabilities, skipping', {
+            modelId: model.model_id, required, caps,
+          }, agentId);
+          continue;
+        }
+      }
 
       // Skip rate-limited models
       if (isRateLimited(model.model_id)) {

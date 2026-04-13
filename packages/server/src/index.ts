@@ -311,6 +311,15 @@ async function main(): Promise<void> {
     logger.warn('Failed to schedule dreaming cycle', { error: err instanceof Error ? err.message : String(err) });
   }
 
+  // Schedule the healer cycle (agent spawns on-demand when the cycle fires)
+  try {
+    const { scheduleHealingCycle } = await import('./healer/healer-agent.js');
+    scheduleHealingCycle();
+    logger.info('Healer cycle scheduled');
+  } catch (err) {
+    logger.warn('Failed to schedule healing cycle', { error: err instanceof Error ? err.message : String(err) });
+  }
+
   const timeoutInterval = setInterval(() => {
     try { checkTimeouts(); } catch (err) {
       logger.error('Timeout checker failed', { error: err instanceof Error ? err.message : String(err) });

@@ -27,6 +27,7 @@ import { updateRouter } from './routes/update.js';
 import { googleRouter } from './routes/google.js';
 import { microsoftRouter } from './routes/microsoft.js';
 import { migrationRouter } from './routes/migration.js';
+import { healerRouter } from './routes/healer.js';
 import { verifyAndTrackClient, removeClient, handleClientMessage } from './ws.js';
 import { getPrimaryAgentId, getPMAgentId } from '../config/platform.js';
 import { createLogger } from '../logger.js';
@@ -129,6 +130,7 @@ export function createServer() {
   app.route('/api/microsoft', microsoftRouter); // /api/microsoft/status, /api/microsoft/callback, etc.
   app.route('/api/migration', migrationRouter); // /api/migration/export, /api/migration/import, etc.
   app.route('/api/setup/migration', migrationRouter); // Same routes, public for OOBE import
+  app.route('/api/healer', healerRouter);   // /api/healer/config, /api/healer/proposals, etc.
   app.route('/api', taskRunsRouter);        // /api/tasks/:taskId/runs
   app.route('/api', systemRouter);        // /api/health, /api/system/logs
 

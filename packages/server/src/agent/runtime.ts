@@ -184,6 +184,7 @@ export function stopAgent(agentId: string): void {
 }
 
 const MAX_TOOL_LOOPS = 25; // Maximum tool call loops per turn
+const TURN_TIME_BUDGET_MS = 15 * 60 * 1000; // 15 minute max per turn (local Ollama models can be slow)
 
 class AgentRuntime {
   async handleMessage(agentId: string, content: string): Promise<void> {
@@ -212,16 +213,19 @@ class AgentRuntime {
         this.setAgentStatus(agentId, 'error');
       }
 
-      // Broadcast error to dashboard
+      // Broadcast error to dashboard with structured code
+      const isRateLimit = message.toLowerCase().includes('429') || message.toLowerCase().includes('rate_limit') || message.toLowerCase().includes('overloaded');
       broadcast({
         type: 'chat:error',
         agentId,
         error: message,
+        code: isRateLimit ? 'RATE_LIMITED' : 'MODEL_FAILED',
+        severity: isRateLimit ? 'warning' : 'error',
+        retryable: isRateLimit,
       });
 
       // For rate limit errors, inject a visible system message into the chat
       // so the user knows what's happening (the error banner can be missed)
-      const isRateLimit = message.toLowerCase().includes('429') || message.toLowerCase().includes('rate_limit') || message.toLowerCase().includes('overloaded');
       if (isRateLimit) {
         const msgId = uuidv4();
         const now = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
@@ -283,6 +287,10 @@ class AgentRuntime {
     let lastUsedModelId: string = isAutoRouted ? contextModelId : configuredModelId;
     let lastResponseText: string | null = null; // For repetition detection
     let lockedModelId: string | null = null; // For auto-routed agents: lock model during tool loops
+    let nudgedForRepetition = false; // Only nudge once for repetition
+    let nudgedForEmptyResponse = false; // Only nudge once for empty output
+    let nudgedForNoResults = false; // Only nudge once for empty search results
+    let nudgedForIncomplete = false; // Only nudge once for incomplete response
 
     // Snapshot the turn boundary so context assembly ignores messages that
     // arrive mid-loop. Without this, a reply from another agent gets baked
@@ -292,8 +300,20 @@ class AgentRuntime {
     const turnStartedAt = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
     turnBoundary.set(agentId, turnStartedAt);
 
+    const turnStartMs = Date.now();
+
     while (loopCount < MAX_TOOL_LOOPS) {
       loopCount++;
+
+      // Check turn time budget
+      if (Date.now() - turnStartMs > TURN_TIME_BUDGET_MS) {
+        logger.warn('Turn time budget exceeded', { elapsed: Date.now() - turnStartMs, agentId }, agentId);
+        const sysMsg = `[System: This turn exceeded the ${TURN_TIME_BUDGET_MS / 60000} minute time budget and has been stopped. Send a follow-up message to continue.]`;
+        const sysMsgId = uuidv4();
+        db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))`).run(sysMsgId, agentId, sysMsg);
+        broadcast({ type: 'chat:message', agentId, message: { id: sysMsgId, agentId, role: 'system' as const, content: sysMsg, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
+        break;
+      }
 
       // Check if agent was stopped
       if (stoppedAgents.has(agentId)) {
@@ -324,7 +344,7 @@ class AgentRuntime {
         } else {
           const scoringResult = scoreQuery(systemPrompt, messages as Array<{ role: string; content: string | object[] }>);
           routerTier = scoringResult.tier;
-          const selected = selectModel(scoringResult.tier, agentId, excludedModels.length > 0 ? excludedModels : undefined);
+          const selected = selectModel(scoringResult.tier, agentId, excludedModels.length > 0 ? excludedModels : undefined, ['tools']);
           if (!selected) {
             throw new AgentError('Auto-router: no models available in any tier', agentId, { code: 'NO_MODEL' });
           }
@@ -355,13 +375,22 @@ class AgentRuntime {
       // the final modelId has been resolved.
       const { useTools } = enforceModelCapabilities(agentId, modelId, messages);
 
+      // If tools are disabled, inject a note into the context so the model
+      // knows it can only respond with text (not tool calls).
+      // Only inject if alternation is safe (last message must be assistant).
+      if (!useTools && loopCount === 1 && messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
+        const toolNote = `[System note: Your current model does not support tool calling. You can only respond with text. If the user asks you to do something that requires tools (file access, web search, tracker, etc.), explain that your model doesn't support it and suggest they switch to a tool-capable model in Settings.]`;
+        messages.push({ role: 'user', content: toolNote });
+        messages.push({ role: 'assistant', content: 'Understood, I will respond with text only.' });
+      }
+
       // Call model with retry logic — for auto-routed agents, try fallback models on failure
       const messageId = uuidv4();
       const streamedChunks: string[] = [];
 
       let callSucceeded = false;
       let result;
-      const maxAttempts = isAutoRouted ? 3 : 1;
+      const maxAttempts = isAutoRouted ? 3 : 2;
 
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         try {
@@ -406,7 +435,7 @@ class AgentRuntime {
           excludedModels.push(modelId);
           // Clear the model lock so fallback can use a different model
           lockedModelId = null;
-          const fallback = selectModel(routerTier!, agentId, excludedModels);
+          const fallback = selectModel(routerTier!, agentId, excludedModels, ['tools']);
           if (!fallback) throw err; // no more models to try
 
           logger.warn(`Auto-router: model ${modelId} failed, falling back to ${fallback.modelId}`, {
@@ -437,6 +466,30 @@ class AgentRuntime {
         }
       }
 
+      // Empty/whitespace response detection — nudge the model once, then give up
+      if (result.toolCalls.length === 0 && (!result.content || result.content.trim().length === 0)) {
+        if (!nudgedForEmptyResponse) {
+          nudgedForEmptyResponse = true;
+          logger.warn('Model returned empty response, injecting nudge', { loopCount }, agentId);
+          const nudgeMsgId = uuidv4();
+          const nudge = '[System: You returned an empty response. Please respond to the user\'s last message or call a tool to continue your task. If you are finished, say so clearly.]';
+          db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
+          continue; // Re-run the loop with the nudge in context
+        }
+        // Already nudged and still empty — break
+        logger.warn('Model returned empty response after nudge, breaking loop', { loopCount }, agentId);
+        break;
+      }
+
+      // Sanitize model output — weak models sometimes produce literal "\n" strings
+      // or excessive whitespace
+      if (result.content) {
+        result.content = result.content
+          .replace(/\\n/g, '\n')        // literal \n → real newline
+          .replace(/\n{3,}/g, '\n\n')   // collapse 3+ newlines to 2
+          .trim();
+      }
+
       // Dedup check: if the model produced the exact same text as the last assistant message,
       // skip persisting it. This catches cases where multiple triggers cause the agent to
       // generate the same response repeatedly.
@@ -451,8 +504,14 @@ class AgentRuntime {
       }
 
       // Build the full content to persist
-      // If there are tool calls, we must store them as content blocks alongside any text
-      if (result.toolCalls.length > 0) {
+      // If there are tool calls, we must store them as content blocks alongside any text.
+      // EXCEPTION: If tool calls came from the XML text-fallback parser (synthetic IDs
+      // starting with "text_tool_"), store as plain text instead of structured blocks.
+      // Structured blocks with synthetic IDs break providers like MiniMax on the next
+      // turn because they reject tool_result blocks referencing IDs they didn't generate.
+      const hasXmlFallbackTools = result.toolCalls.some(tc => tc.id.startsWith('text_tool_'));
+
+      if (result.toolCalls.length > 0 && !hasXmlFallbackTools) {
         const assistantContent: Anthropic.ContentBlockParam[] = [];
 
         if (result.content) {
@@ -510,8 +569,26 @@ class AgentRuntime {
         modelId,
       });
 
-      // If no tool calls, we're done
+      // If no tool calls, we're done — but check for incomplete response first
       if (result.toolCalls.length === 0) {
+        // Detect incomplete responses from weak models
+        if (result.content && !nudgedForIncomplete) {
+          const trimmed = result.content.trim();
+          const looksIncomplete =
+            // Ends mid-sentence (no terminal punctuation)
+            (trimmed.length > 20 && !/[.!?:)\]"'`]$/.test(trimmed)) ||
+            // Contains "I will" / "Let me" / "I'll" with nothing following through
+            (/\b(I will|Let me|I'll|I'm going to)\b/i.test(trimmed) && trimmed.length < 150);
+          if (looksIncomplete) {
+            nudgedForIncomplete = true;
+            logger.warn('Model response looks incomplete, nudging for continuation', { contentLength: trimmed.length }, agentId);
+            const nudgeMsgId = uuidv4();
+            const nudge = '[System: Your response appears incomplete — it ends mid-sentence. Please continue where you left off, or if you are finished, confirm by ending with a complete sentence.]';
+            db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
+            continue; // Re-run the loop to get continuation
+          }
+        }
+
         if (result.content) {
           try {
             const { getPresence } = await import('../services/presence.js');
@@ -584,20 +661,49 @@ class AgentRuntime {
       }
 
       // Persist tool result messages
-      // These need to be stored as a single "user" turn with tool_result content blocks
-      const toolResultContent: Anthropic.ToolResultBlockParam[] = toolResults.map(tr => ({
-        type: 'tool_result' as const,
-        tool_use_id: tr.toolCallId,
-        content: tr.content,
-        is_error: tr.isError,
-      }));
+      if (hasXmlFallbackTools) {
+        // XML fallback path: collapse tool calls + results into a single plain-text
+        // assistant message. This prevents synthetic tool IDs from entering the
+        // message history where they'd break providers on the next turn.
+        const collapsedParts: string[] = [];
+        if (result.content) collapsedParts.push(result.content);
+        for (let i = 0; i < result.toolCalls.length; i++) {
+          const tc = result.toolCalls[i];
+          const tr = toolResults[i];
+          const argSummary = Object.entries(tc.arguments).map(([k, v]) => `${k}=${typeof v === 'string' ? v.slice(0, 80) : JSON.stringify(v)}`).join(', ');
+          collapsedParts.push(`[Called ${tc.name}(${argSummary})]`);
+          if (tr) {
+            const resultPreview = tr.content.length > 300 ? tr.content.slice(0, 300) + '...' : tr.content;
+            collapsedParts.push(`[Result${tr.isError ? ' ERROR' : ''}: ${resultPreview}]`);
+          }
+        }
+        const collapsedText = collapsedParts.join('\n');
+        db.prepare(`
+          INSERT INTO messages (id, agent_id, role, content, token_count, model_id, cost, latency_ms, created_at)
+          VALUES (?, ?, 'assistant', ?, ?, ?, ?, NULL, datetime('now'))
+        `).run(messageId, agentId, collapsedText, result.outputTokens, modelId, null);
+        broadcastMessage(agentId, { id: messageId, role: 'assistant', content: collapsedText, modelId });
 
-      const toolMessageId = uuidv4();
-      db.prepare(`
-        INSERT INTO messages (id, agent_id, role, content, created_at)
-        VALUES (?, ?, 'tool', ?, datetime('now'))
-      `).run(toolMessageId, agentId, JSON.stringify(toolResultContent));
-      broadcastMessage(agentId, { id: toolMessageId, role: 'tool', content: JSON.stringify(toolResultContent) });
+        logger.info('Collapsed XML-fallback tool calls into plain text', {
+          toolCount: result.toolCalls.length,
+          tools: result.toolCalls.map(tc => tc.name),
+        }, agentId);
+      } else {
+        // Normal path: store as structured tool_result content blocks
+        const toolResultContent: Anthropic.ToolResultBlockParam[] = toolResults.map(tr => ({
+          type: 'tool_result' as const,
+          tool_use_id: tr.toolCallId,
+          content: tr.content,
+          is_error: tr.isError,
+        }));
+
+        const toolMessageId = uuidv4();
+        db.prepare(`
+          INSERT INTO messages (id, agent_id, role, content, created_at)
+          VALUES (?, ?, 'tool', ?, datetime('now'))
+        `).run(toolMessageId, agentId, JSON.stringify(toolResultContent));
+        broadcastMessage(agentId, { id: toolMessageId, role: 'tool', content: JSON.stringify(toolResultContent) });
+      }
 
       // Clear error records on successful tool execution
       clearErrors(agentId);
@@ -658,9 +764,17 @@ class AgentRuntime {
       // Detect repetition: if the model produced the same text AND same tool calls as last iteration
       const currentResponseSig = (result.content ?? '') + '|' + result.toolCalls.map(tc => `${tc.name}:${JSON.stringify(tc.arguments)}`).sort().join(',');
       if (lastResponseText === currentResponseSig) {
-        logger.warn('Breaking tool loop: agent is repeating itself (same response and tool calls)', {
-          loopCount,
-        }, agentId);
+        if (!nudgedForRepetition) {
+          nudgedForRepetition = true;
+          logger.warn('Agent repeating itself, injecting nudge for one more try', { loopCount }, agentId);
+          const nudgeMsgId = uuidv4();
+          const nudge = '[System: You are repeating yourself — your last two responses were identical. Try a different approach. If the task is complete, call complete_task or tracker_update_status. If you need help, explain what you are stuck on.]';
+          db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
+          // Don't update lastResponseText so if it repeats again, we break
+          continue;
+        }
+        logger.warn('Breaking tool loop: agent still repeating after nudge', { loopCount }, agentId);
+        broadcast({ type: 'chat:error', agentId, error: 'Agent stopped: repeating the same response after being nudged. Send a follow-up message to retry.', code: 'STUCK_REPEATING', severity: 'warning', retryable: true });
         break;
       }
       lastResponseText = currentResponseSig;
@@ -672,10 +786,17 @@ class AgentRuntime {
       if (allNoResults && toolResults.every(tr => tr.isError === false)) {
         consecutiveNoResultTools++;
         if (consecutiveNoResultTools >= 2) {
-          logger.warn('Breaking tool loop: consecutive empty search results', {
-            loopCount,
-            consecutiveNoResultTools,
-          }, agentId);
+          if (!nudgedForNoResults) {
+            nudgedForNoResults = true;
+            logger.warn('Consecutive empty search results, injecting nudge', { loopCount, consecutiveNoResultTools }, agentId);
+            const nudgeMsgId = uuidv4();
+            const nudge = '[System: Multiple searches returned no results. The information may not exist in memory. Try responding based on what you already know, or ask the user for clarification.]';
+            db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
+            consecutiveNoResultTools = 0; // Reset to give one more chance
+            continue;
+          }
+          logger.warn('Breaking tool loop: still no results after nudge', { loopCount, consecutiveNoResultTools }, agentId);
+          broadcast({ type: 'chat:error', agentId, error: 'Agent stopped: multiple searches returned no results. The information may not be in memory.', code: 'NO_RESULTS', severity: 'warning', retryable: true });
           break;
         }
       } else {
@@ -685,23 +806,31 @@ class AgentRuntime {
       // Loop continues - model will see tool results and respond
     }
 
+    // Surface visible messages when the loop ends abnormally
     if (loopCount >= MAX_TOOL_LOOPS) {
       logger.warn('Agent hit max tool loop limit', { agentId, maxLoops: MAX_TOOL_LOOPS }, agentId);
+      const sysMsg = `[System: This turn used the maximum number of tool calls (${MAX_TOOL_LOOPS}). The agent has paused. You may need to send a follow-up message to continue.]`;
+      const sysMsgId = uuidv4();
+      db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))`).run(sysMsgId, agentId, sysMsg);
+      broadcast({ type: 'chat:message', agentId, message: { id: sysMsgId, agentId, role: 'system' as const, content: sysMsg, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
     }
 
     // ── Auto-route: if this turn was triggered by a send_to_agent message and the
     // agent responded with text but forgot to call send_to_agent back, automatically
     // deliver the response to the original sender. ──
     try {
-      // Get the message that triggered this run
+      // Get the message that triggered this run — use source_agent_id column
+      // for reliable inter-agent detection, fall back to regex for older messages
       const triggerMsg = db.prepare(
-        "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1"
-      ).get(agentId) as { content: string } | undefined;
+        "SELECT content, source_agent_id FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1"
+      ).get(agentId) as { content: string; source_agent_id: string | null } | undefined;
 
       if (triggerMsg?.content) {
-        const senderMatch = triggerMsg.content.match(/^\[Message from .+? \(agent ID: ([^)]+)\)\]/);
-        if (senderMatch) {
-          const senderId = senderMatch[1];
+        // Prefer structured source_agent_id, fall back to regex for backwards compat
+        const senderId = triggerMsg.source_agent_id
+          ?? triggerMsg.content.match(/\(agent ID: ([^)]+)\)/)?.[1]
+          ?? null;
+        if (senderId) {
 
           // Check if the agent already called send_to_agent targeting this sender during the loop
           const sentReply = db.prepare(`
@@ -726,9 +855,9 @@ class AgentRuntime {
               const replyMsgId = uuidv4();
               const replyContent = `[SOURCE: AGENT MESSAGE FROM ${senderName.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's an auto-routed reply from another agent] ${lastResponse.content}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
               db.prepare(`
-                INSERT INTO messages (id, agent_id, role, content, created_at)
-                VALUES (?, ?, 'user', ?, datetime('now'))
-              `).run(replyMsgId, senderId, replyContent);
+                INSERT INTO messages (id, agent_id, role, content, source_agent_id, created_at)
+                VALUES (?, ?, 'user', ?, ?, datetime('now'))
+              `).run(replyMsgId, senderId, replyContent, agentId);
 
               broadcast({
                 type: 'chat:message',
@@ -905,6 +1034,39 @@ function injectAttachmentBlocks(
     messages[i] = { role: 'user', content: blocks };
   }
 }
+
+// ── Stuck-Agent Recovery ──
+// If the runtime crashes mid-turn after setting status to 'working' but before
+// the finally block clears it, the agent stays stuck. This periodic check
+// resets agents that have been 'working' for too long (10+ minutes).
+const STUCK_AGENT_CHECK_MS = 5 * 60 * 1000; // Check every 5 minutes
+const STUCK_AGENT_THRESHOLD_MINUTES = 10;
+
+function recoverStuckAgents(): void {
+  try {
+    const db = getDb();
+    const stuck = db.prepare(`
+      SELECT id, name FROM agents
+      WHERE status = 'working'
+        AND updated_at < datetime('now', '-${STUCK_AGENT_THRESHOLD_MINUTES} minutes')
+    `).all() as Array<{ id: string; name: string }>;
+
+    for (const agent of stuck) {
+      db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(agent.id);
+      activeRuns.delete(agent.id);
+      pendingWakeups.delete(agent.id);
+      broadcast({ type: 'agent:status', agentId: agent.id, status: 'idle' });
+      logger.warn('Recovered stuck agent from permanent working state', { agentId: agent.id, agentName: agent.name });
+    }
+  } catch (err) {
+    logger.error('recoverStuckAgents failed', { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+// Start the stuck-agent recovery check
+setInterval(recoverStuckAgents, STUCK_AGENT_CHECK_MS);
+// Also run immediately on startup to clean up after crashes
+recoverStuckAgents();
 
 // Singleton
 let runtimeInstance: AgentRuntime | null = null;
