@@ -213,13 +213,16 @@ class AgentRuntime {
         this.setAgentStatus(agentId, 'error');
       }
 
-      // Broadcast error to dashboard with structured code
+      // Broadcast error to dashboard with structured code — include root cause
       const isRateLimit = message.toLowerCase().includes('429') || message.toLowerCase().includes('rate_limit') || message.toLowerCase().includes('overloaded');
+      const errorMsg = paused
+        ? `Agent paused due to repeated errors. Last error: ${message}`
+        : message;
       broadcast({
         type: 'chat:error',
         agentId,
-        error: message,
-        code: isRateLimit ? 'RATE_LIMITED' : 'MODEL_FAILED',
+        error: errorMsg,
+        code: isRateLimit ? 'RATE_LIMITED' : paused ? 'ERROR_LOOP' : 'MODEL_FAILED',
         severity: isRateLimit ? 'warning' : 'error',
         retryable: isRateLimit,
       });
@@ -239,24 +242,29 @@ class AgentRuntime {
       activeRuns.delete(agentId);
 
       // If a message arrived while we were busy, re-trigger the loop.
-      // The turnBoundary mechanism ensures the new message was excluded from
-      // the context during the run that just finished, so the agent will see
-      // it fresh in the next run.
+      // Don't clear turnBoundary yet — clear it AFTER the wakeup starts
+      // so messages arriving during the delay window are handled correctly.
       if (pendingWakeups.has(agentId)) {
         pendingWakeups.delete(agentId);
+        // Clear turnBoundary BEFORE the wakeup so the new run sees all messages
+        turnBoundary.delete(agentId);
+        // Use a short delay to let any in-flight DB writes finish
         setTimeout(() => {
           logger.info('Processing queued wakeup', { agentId }, agentId);
+          // Don't pass empty content — the wakeup will pick up all new
+          // messages from the DB via context assembly. The content param
+          // is unused by runAgentLoop (it reads from DB).
           this.handleMessage(agentId, '').catch(err => {
             logger.error('Queued wakeup failed', {
               agentId,
               error: err instanceof Error ? err.message : String(err),
             }, agentId);
           });
-        }, 1500);
+        }, 500); // Reduced from 1500ms — 500ms is enough for DB writes
+      } else {
+        // No wakeup pending — safe to clear turnBoundary immediately
+        turnBoundary.delete(agentId);
       }
-
-      // Clear the turn boundary so the next run sees all messages
-      turnBoundary.delete(agentId);
     }
   }
 
@@ -491,12 +499,16 @@ class AgentRuntime {
       }
 
       // Sanitize model output — weak models sometimes produce literal "\n" strings
-      // or excessive whitespace. Only sanitize if there's actual text content.
+      // or excessive whitespace. Only apply to plain text, not JSON content.
       if (result.content && result.content.trim().length > 0) {
-        result.content = result.content
-          .replace(/\\n/g, '\n')        // literal \n → real newline
-          .replace(/\n{3,}/g, '\n\n')   // collapse 3+ newlines to 2
-          .trim();
+        const trimmed = result.content.trim();
+        const isJson = trimmed.startsWith('{') || trimmed.startsWith('[');
+        if (!isJson) {
+          result.content = result.content
+            .replace(/\\n/g, '\n')        // literal \n → real newline
+            .replace(/\n{3,}/g, '\n\n')   // collapse 3+ newlines to 2
+            .trim();
+        }
       }
 
       // Dedup check: if the model produced the exact same text as the last assistant message,

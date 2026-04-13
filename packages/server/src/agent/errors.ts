@@ -6,9 +6,10 @@ import { isPrimaryAgent } from '../config/platform.js';
 
 const logger = createLogger('agent-errors');
 
-// Track rate limit notifications so we don't spam iMessage
-let lastRateLimitAlert = 0;
-const RATE_LIMIT_ALERT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes between alerts
+// Track rate limit notifications per-agent so we don't spam iMessage
+// but also don't miss alerts for different agents
+const lastRateLimitAlerts = new Map<string, number>();
+const RATE_LIMIT_ALERT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes between alerts per agent
 
 // ── Custom Error Class ──
 
@@ -77,7 +78,9 @@ export function recordError(agentId: string): boolean {
       const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
       const name = agent?.name ?? agentId;
       sendAlert(`${name} has been paused due to repeated errors (${ERROR_LOOP_THRESHOLD} failures in ${ERROR_LOOP_WINDOW_MS / 1000}s). Check the dashboard.`, 'critical');
-    } catch { /* best effort */ }
+    } catch (err) {
+      logger.warn('Failed to send iMessage alert for error loop', { agentId, error: err instanceof Error ? err.message : String(err) });
+    }
 
     return true; // Signal: agent was paused
   }
@@ -95,8 +98,9 @@ export function clearErrors(agentId: string): void {
  */
 export function notifyRateLimitHit(agentId: string, errorType: 'rate_limit' | 'overloaded'): void {
   const now = Date.now();
-  if (now - lastRateLimitAlert < RATE_LIMIT_ALERT_COOLDOWN_MS) return;
-  lastRateLimitAlert = now;
+  const lastAlert = lastRateLimitAlerts.get(agentId) ?? 0;
+  if (now - lastAlert < RATE_LIMIT_ALERT_COOLDOWN_MS) return;
+  lastRateLimitAlerts.set(agentId, now);
 
   try {
     const db = getDb();
@@ -106,7 +110,9 @@ export function notifyRateLimitHit(agentId: string, errorType: 'rate_limit' | 'o
       ? `${name} hit an API rate limit. Requests are being throttled. The agent will retry automatically.`
       : `${name} got an API overloaded error. Anthropic's servers are at capacity. The agent will retry automatically.`;
     sendAlert(msg, 'warning');
-  } catch { /* best effort */ }
+  } catch (err) {
+    logger.warn('Failed to send rate limit iMessage alert', { agentId, error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 function pauseAgent(agentId: string): void {
