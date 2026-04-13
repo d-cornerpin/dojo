@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
 import { v4 as uuidv4 } from 'uuid';
-import fs from 'node:fs';
 import path from 'node:path';
 import { getDb } from '../../db/connection.js';
 import { SendMessageSchema } from '../../config/schema.js';
@@ -14,23 +13,15 @@ import type { Message } from '@dojo/shared';
 
 const logger = createLogger('chat-routes');
 
-const MAX_TEXT_FILE_CHARS = 50000;
-
 function buildContentWithAttachments(text: string, attachments: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: string }>): string {
   const parts: string[] = [text];
 
   for (const att of attachments) {
     if (att.category === 'text' || att.category === 'unknown') {
-      // Read text files and inject inline
-      try {
-        let fileContent = fs.readFileSync(att.path, 'utf-8');
-        if (fileContent.length > MAX_TEXT_FILE_CHARS) {
-          fileContent = fileContent.slice(0, MAX_TEXT_FILE_CHARS) + `\n... [TRUNCATED: file is ${att.size} bytes, showing first ${MAX_TEXT_FILE_CHARS} characters]`;
-        }
-        parts.push(`\n=== File: ${att.filename} ===\n${fileContent}\n=== End File ===`);
-      } catch {
-        parts.push(`\n[Could not read file: ${att.filename}]`);
-      }
+      // Point the agent at the file path — let it use file_read to get the full contents.
+      // Previously we injected content inline with a 50K char cap; this approach has no
+      // size limit and keeps the message layer thin.
+      parts.push(`\n[File attached: ${att.filename} (${att.size} bytes)]\nPath: ${att.path}\nUse file_read with this path to read the file contents.`);
     } else if (att.category === 'office') {
       parts.push(`\n[Office file attached: ${att.filename} (${att.size} bytes). Convert to PDF or text for better analysis.]`);
     }
