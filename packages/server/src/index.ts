@@ -261,7 +261,19 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4i. Backfill model capabilities for any model whose capabilities array is
+  // 4i. Start Teams watcher if Microsoft 365 is connected
+  {
+    try {
+      const { startTeamsWatcher } = await import('./services/teams-watcher.js');
+      startTeamsWatcher();
+    } catch (err) {
+      logger.warn('Teams watcher failed to start', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // 4j. Backfill model capabilities for any model whose capabilities array is
   // empty. Runs in the background so HTTP boot isn't blocked by Ollama
   // /api/show latency or OpenRouter catalog fetches.
   {
