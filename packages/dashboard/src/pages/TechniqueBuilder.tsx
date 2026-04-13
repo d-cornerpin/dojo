@@ -516,26 +516,68 @@ export const TechniqueBuilder = () => {
     }
   }, [messages, scrollToBottom]);
 
-  // Fetch trainer agent name and clear session on mount
+  // Fetch trainer agent name and load existing conversation on mount
   useEffect(() => {
     api.getSetting('trainer_agent_name').then(r => {
       if (r.ok && r.data.value) setAgentName(r.data.value);
     });
 
-    // Clear the trainer's previous session for a fresh start
-    const token = localStorage.getItem('dojo_token');
-    const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
-    const csrf = csrfMatch ? csrfMatch[1] : null;
-    fetch('/api/techniques/clear-session', {
-      method: 'POST',
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-      },
-    }).then(() => setSessionCleared(true)).catch(() => setSessionCleared(true));
-  }, []);
+    // Try to load existing conversation history instead of clearing the session.
+    // Only resume if the conversation is about the SAME technique we're editing.
+    // Otherwise clear and start fresh.
+    const loadExisting = async () => {
+      if (!AGENT_ID) { setSessionCleared(true); return; }
+      const result = await api.getAgentHistory(AGENT_ID, 200);
 
-  // Send builder context on mount (wait for session clear and canvas load in edit mode)
+      // Check if the existing conversation is about this specific technique
+      let conversationMatchesTechnique = false;
+      if (result.ok && result.data.length > 1) {
+        // Look for the technique name in the first user message (the context message)
+        const firstUserMsg = result.data.find((m: Message) => m.role === 'user');
+        if (firstUserMsg) {
+          if (isEditMode && canvas.displayName) {
+            // Edit mode: check if the conversation mentions this technique
+            conversationMatchesTechnique = firstUserMsg.content.includes(canvas.displayName) ||
+              (!!canvas.name && firstUserMsg.content.includes(canvas.name));
+          } else if (!isEditMode) {
+            // New technique mode: check if it's a "build a new technique" conversation
+            conversationMatchesTechnique = firstUserMsg.content.includes('build a new technique');
+          }
+        }
+      }
+
+      if (conversationMatchesTechnique && result.ok && result.data.length > 1) {
+        // Existing conversation about this technique — resume it
+        setMessages(
+          result.data.map((m: Message) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            createdAt: m.createdAt,
+            attachments: m.attachments,
+          })),
+        );
+        setContextSent(true);
+        setSessionCleared(true);
+        setTimeout(() => scrollToBottom(), 200);
+      } else {
+        // Different technique or no conversation — clear session and start fresh
+        const token = localStorage.getItem('dojo_token');
+        const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
+        const csrf = csrfMatch ? csrfMatch[1] : null;
+        fetch('/api/techniques/clear-session', {
+          method: 'POST',
+          headers: {
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+          },
+        }).then(() => setSessionCleared(true)).catch(() => setSessionCleared(true));
+      }
+    };
+    loadExisting();
+  }, [AGENT_ID, canvas.displayName, canvas.name]);
+
+  // Send builder context on mount — only if no existing conversation was loaded
   useEffect(() => {
     if (contextSent || !AGENT_ID || !sessionCleared) return;
     // In edit mode, wait until canvas is populated before sending context

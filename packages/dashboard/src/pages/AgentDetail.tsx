@@ -217,7 +217,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
 
   useEffect(() => {
     const loadHistory = async () => {
-      const result = await api.getAgentHistory(agentId, 50);
+      const result = await api.getAgentHistory(agentId, 200);
       if (result.ok) {
         setMessages(
           result.data.map((m: Message) => ({
@@ -396,7 +396,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
     if (!confirm('Start a new session? The current conversation will be archived to the vault.')) return;
     const res = await api.request<{ archiveId: string; sessionStartedAt: string }>(`/chat/${agentId}/new-session`, { method: 'POST' });
     if (res.ok) {
-      const result = await api.getAgentHistory(agentId, 50);
+      const result = await api.getAgentHistory(agentId, 200);
       if (result.ok) {
         setMessages(result.data.map((m: Message) => ({ id: m.id, role: m.role, content: m.content, createdAt: m.createdAt, attachments: m.attachments })));
       }

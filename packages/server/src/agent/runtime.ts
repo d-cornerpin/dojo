@@ -340,10 +340,15 @@ class AgentRuntime {
       // Inject image/PDF attachment content blocks into user messages
       injectAttachmentBlocks(messages, agentId);
 
-      // Inject in-memory nudge if one is pending (never persisted to DB)
+      // Inject in-memory nudge if one is pending (never persisted to DB).
+      // Only add the user message — no synthetic assistant response, because
+      // the API requires the conversation to end with a user message.
       if (pendingNudge) {
-        messages.push({ role: 'user', content: pendingNudge });
-        messages.push({ role: 'assistant', content: 'Understood, I will try a different approach.' });
+        // If the last message is assistant, the nudge goes after it (correct alternation)
+        // If the last message is user, we need to merge or skip
+        if (messages.length === 0 || messages[messages.length - 1].role === 'assistant') {
+          messages.push({ role: 'user', content: pendingNudge });
+        }
         pendingNudge = null;
       }
 
@@ -397,7 +402,6 @@ class AgentRuntime {
       if (!useTools && loopCount === 1 && messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
         const toolNote = `[System note: Your current model does not support tool calling. You can only respond with text. If the user asks you to do something that requires tools (file access, web search, tracker, etc.), explain that your model doesn't support it and suggest they switch to a tool-capable model in Settings.]`;
         messages.push({ role: 'user', content: toolNote });
-        messages.push({ role: 'assistant', content: 'Understood, I will respond with text only.' });
       }
 
       // Call model with retry logic — for auto-routed agents, try fallback models on failure

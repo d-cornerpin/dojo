@@ -89,8 +89,12 @@ export function ensureTrainerAgentRunning(): void {
       // Technique management
       'save_technique', 'use_technique', 'list_techniques', 'publish_technique',
       'update_technique', 'submit_technique_for_review', 'delete_technique',
-      // File access (for reading/writing technique files)
+      // File access
       'file_read', 'file_write', 'file_list',
+      // Execution (for testing techniques, installing deps, running scripts)
+      'exec',
+      // Network (for testing API-based techniques)
+      'web_search', 'web_fetch',
       // Communication
       'send_to_agent', 'list_agents',
       // Memory
@@ -127,12 +131,12 @@ export function ensureTrainerAgentRunning(): void {
   }
 
   const trainerPermissions = JSON.stringify({
-    file_read: ['~/.dojo/techniques/**'],
+    file_read: '*',
     file_write: ['~/.dojo/techniques/**'],
     file_delete: 'none',
-    exec_allow: [],
-    exec_deny: ['*'],
-    network_domains: 'none',
+    exec_allow: ['*'],
+    exec_deny: [],
+    network_domains: '*',
     can_spawn_agents: false,
     can_assign_permissions: false,
   });
