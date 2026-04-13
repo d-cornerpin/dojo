@@ -8,6 +8,7 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { ToolCallBlock, ToolCallCard, ToolResultBlock } from '../components/ToolCallBlock';
 import { Markdown } from '../components/Markdown';
 import { ChatInput } from '../components/ChatInput';
+import { useToast } from '../hooks/useToast';
 import { AttachmentChips } from '../components/AttachmentChips';
 import { ThinkingBubble } from '../components/ThinkingBubble';
 
@@ -236,7 +237,7 @@ export const Chat = () => {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
   const [wordyMode, setWordyMode] = useState(() => {
     const stored = localStorage.getItem('dojo_wordy_mode');
     return stored === 'true';
@@ -433,11 +434,11 @@ export const Chat = () => {
     const unsubError = subscribe('chat:error', (event: WsEvent) => {
       const e = event as ChatErrorEvent;
       if (e.agentId !== agentIdRef.current) return;
-      setError(e.error);
-      // Don't clear isWorking for rate limits — the background retry is handling it
-      // Use structured code when available, fall back to string matching for backwards compat
       const isRateLimit = e.code === 'RATE_LIMITED' || e.error.includes('429') || e.error.toLowerCase().includes('rate_limit') || e.error.toLowerCase().includes('overloaded');
-      if (!isRateLimit) {
+      if (isRateLimit) {
+        toast.warning(e.error);
+      } else {
+        toast.error(e.error); // stays until dismissed
         setIsWorking(false);
       }
     });
@@ -488,7 +489,7 @@ export const Chat = () => {
     const unsubTerminated = subscribe('agent:terminated', (event: WsEvent) => {
       const e = event as { agentId: string; reason: string };
       if (e.agentId !== agentIdRef.current) return;
-      setError(`Agent terminated: ${e.reason}`);
+      toast.error(`Agent terminated: ${e.reason}`);
       setIsWorking(false);
     });
 
@@ -504,7 +505,6 @@ export const Chat = () => {
   }, [subscribe, AGENT_ID]);
 
   const handleSend = async (content: string, attachments?: AttachmentInfo[]) => {
-    setError(null);
     setIsWorking(true);
 
     const userMsg: ChatMessage = {
@@ -520,9 +520,9 @@ export const Chat = () => {
     if (!result.ok) {
       setIsWorking(false);
       if (result.error.includes('busy')) {
-        setError(`${agentName || 'Agent'} is mid-mission — your message will be delivered when they finish.`);
+        toast.info(`${agentName || 'Agent'} is mid-mission — your message will be delivered when they finish.`);
       } else {
-        setError(result.error);
+        toast.error(result.error);
       }
     }
   };
@@ -549,6 +549,16 @@ export const Chat = () => {
         )}
 
         {messages.map((msg) => {
+          // Hide inter-agent messages unless wordy mode is on
+          if (!wordyMode && msg.role === 'user' && (
+            msg.content.includes('[SOURCE: AGENT MESSAGE FROM') ||
+            msg.content.includes('[SOURCE: PM AGENT POKE FROM') ||
+            msg.content.includes('[SOURCE: TRACKER TASK') ||
+            msg.content.includes('[SOURCE: SCHEDULER') ||
+            msg.content.includes('[SOURCE: HEALER') ||
+            msg.content.includes('[SOURCE: SUB-AGENT COMPLETION') ||
+            msg.content.includes('[SOURCE: SYSTEM')
+          )) return null;
           if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} />;
           if (msg.role === 'tool') {
             if (!wordyMode) return null; // Hide tool results in non-wordy mode
@@ -579,14 +589,6 @@ export const Chat = () => {
         {isWorking && !messages.some(m => m.isStreaming) && <ThinkingBubble />}
         <div ref={messagesEndRef} />
       </div>
-
-      {/* Error banner */}
-      {error && (
-        <div className="shrink-0 mx-4 mb-2 glass-toast glass-toast-error px-4 py-3 text-sm flex items-center justify-between" style={{ color: 'var(--cp-coral)' }}>
-          <span>{error}</span>
-          <button onClick={() => setError(null)} className="hover:opacity-70 ml-2 shrink-0">&times;</button>
-        </div>
-      )}
 
       {/* Input */}
       {/* Input */}
