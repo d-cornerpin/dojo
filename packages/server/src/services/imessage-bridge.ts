@@ -572,7 +572,7 @@ async function pollMessages(): Promise<void> {
           const msgContent = `[SOURCE: IMESSAGE FROM ${ownerName.toUpperCase()} — this message came from iMessage, not the dashboard chat] ${textForModel}`;
 
           db.prepare(`
-            INSERT INTO messages (id, agent_id, role, content, attachments, created_at)
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)
             VALUES (?, ?, 'user', ?, ?, datetime('now'))
           `).run(
             msgId,

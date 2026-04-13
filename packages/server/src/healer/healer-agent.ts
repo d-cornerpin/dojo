@@ -159,9 +159,7 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
             '\n═══ END APPROVED ═══';
         }
 
-        const initialMessage = `${report.reportText}${approvedSection}\n\n${autoFixCount > 0 ? `Note: ${autoFixCount} auto-fix(es) were already applied before this report was delivered to you. Focus on the remaining issues.\n\n` : ''}Analyze the diagnostic report above. For each remaining issue:\n- Tier 2 (need primary agent's context): send ONE message via send_to_agent with a clear question. Then STOP — do NOT call complete_task. Wait for their reply.\n- Tier 3 (need user approval): call healer_propose\n- If everything is clear: call complete_task immediately\n\nIMPORTANT: If you send ANY send_to_agent messages, do NOT call complete_task in the same turn. Wait for replies first, then finish on your next turn.`;
-
-        const logPath = path.join(os.homedir(), '.dojo', 'logs', '*');
+        const initialMessage = `${report.reportText}${approvedSection}\n\n${autoFixCount > 0 ? `Note: ${autoFixCount} auto-fix(es) were already applied before this report was delivered to you. Focus on the remaining issues.\n\n` : ''}For each issue in the diagnostic:\n1. Search the vault for past healer context on similar issues\n2. Fix it yourself, propose it to the user (healer_propose), or log and skip it (healer_log_action)\n3. Do NOT message other agents for advice — you are the diagnostician\n4. When done with all issues, call complete_task with a summary`;
 
         // Spawn temporary Healer agent (like the Dreamer)
         const result = await spawnAgent({
@@ -169,29 +167,21 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
           name: 'Healer',
           systemPrompt,
           modelId,
-          classification: 'apprentice',
-          timeout: 300, // 5 min — finish quickly, don't hang around
+          classification: 'sensei',
+          groupId: 'system-group',
+          timeout: 7200, // 2 hours — the Healer takes whatever time it needs to fix problems
           persist: false, // auto-terminate on complete_task
-          toolsPolicy: {
-            allow: [
-              'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
-              'tracker_add_notes',
-              'vault_search', 'vault_remember',
-              'send_to_agent', 'list_agents', 'list_groups',
-              'memory_grep', 'load_tool_docs', 'get_current_time',
-              'healer_log_action', 'healer_propose',
-              'complete_task',
-            ],
-            deny: [],
-          },
+          // Full access — same as the primary agent. The Healer may need to
+          // read/write files, run commands, query the database, restart services,
+          // or do whatever is needed to diagnose and fix problems.
           permissions: {
-            file_read: [logPath],
-            file_write: [] as string[],
-            file_delete: [] as string[],
-            exec_allow: [],
-            exec_deny: ['*'],
-            network_domains: 'none',
-            max_processes: 0,
+            file_read: '*',
+            file_write: '*',
+            file_delete: 'none',
+            exec_allow: ['*'],
+            exec_deny: [],
+            network_domains: '*',
+            max_processes: 5,
             can_spawn_agents: false,
             can_assign_permissions: false,
             system_control: [],

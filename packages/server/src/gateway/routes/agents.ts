@@ -123,14 +123,14 @@ agentsRouter.post('/', async (c) => {
 
     // Store system prompt as first message (no spawn injection)
     db.prepare(`
-      INSERT INTO messages (id, agent_id, role, content, created_at)
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
       VALUES (?, ?, 'system', ?, datetime('now'))
     `).run(uuidv4(), agentId, body.systemPrompt);
 
     // Store initial user message — just the task, no IMPORTANT INSTRUCTIONS
     const initMsgId = uuidv4();
     db.prepare(`
-      INSERT INTO messages (id, agent_id, role, content, created_at)
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
       VALUES (?, ?, 'user', ?, datetime('now'))
     `).run(initMsgId, agentId, body.systemPrompt);
 
@@ -248,7 +248,7 @@ agentsRouter.put('/:id', async (c) => {
       if (existing) {
         db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(body.systemPrompt, existing.id);
       } else {
-        db.prepare("INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(uuidv4(), id, body.systemPrompt);
+        db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(uuidv4(), id, body.systemPrompt);
       }
     }
   }
@@ -402,7 +402,7 @@ agentsRouter.post('/:id/message', async (c) => {
 
   // Persist as user message
   db.prepare(`
-    INSERT INTO messages (id, agent_id, role, content, created_at)
+    INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
     VALUES (?, ?, 'user', ?, datetime('now'))
   `).run(messageId, id, content);
 

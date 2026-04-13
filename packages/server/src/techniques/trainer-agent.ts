@@ -161,7 +161,7 @@ export function ensureTrainerAgentRunning(): void {
     `).run(trainerId, trainerName, modelId, primaryId, primaryId, trainerPermissions, trainerToolsPolicy);
 
     db.prepare(`
-      INSERT INTO messages (id, agent_id, role, content, created_at)
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
       VALUES (?, ?, 'system', ?, datetime('now'))
     `).run(uuidv4(), trainerId, systemPrompt);
 
@@ -180,7 +180,7 @@ export function clearTrainerSession(): void {
   // Re-inject system prompt so the agent has its identity on next message
   const systemPrompt = loadTrainerSoulPrompt();
   db.prepare(`
-    INSERT INTO messages (id, agent_id, role, content, created_at)
+    INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
     VALUES (?, ?, 'system', ?, datetime('now'))
   `).run(uuidv4(), trainerId, systemPrompt);
 

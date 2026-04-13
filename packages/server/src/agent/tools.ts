@@ -1893,7 +1893,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           const contextMessage = `[SOURCE: AGENT MESSAGE FROM ${senderName.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's from another agent] ${message}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
 
           db.prepare(`
-            INSERT INTO messages (id, agent_id, role, content, attachments, source_agent_id, created_at)
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, source_agent_id, created_at)
             VALUES (?, ?, 'user', ?, ?, ?, datetime('now'))
           `).run(
             msgId,
@@ -1969,7 +1969,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           const bcMsgId = uuidv4();
           const bcContextMsg = `[SOURCE: GROUP BROADCAST FROM ${senderName2.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's a broadcast from another agent to your group] ${broadcastMsg}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
           bcDb.prepare(`
-            INSERT INTO messages (id, agent_id, role, content, created_at)
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
             VALUES (?, ?, 'user', ?, datetime('now'))
           `).run(bcMsgId, member.id, bcContextMsg);
 
@@ -2320,7 +2320,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
           // Insert UI divider
           const markerId = uuidv4();
-          db.prepare("INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', '── New Session ──', ?)").run(markerId, resolvedId, boundary);
+          db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', '── New Session ──', ?)").run(markerId, resolvedId, boundary);
 
           broadcast({ type: 'chat:message', agentId: resolvedId, message: { id: markerId, agentId: resolvedId, role: 'system', content: '── New Session ──', tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
 
@@ -2439,7 +2439,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
             if (existingMsg) {
               db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(newPrompt, existingMsg.id);
             } else {
-              db.prepare("INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(uuidv4(), target.id, newPrompt);
+              db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(uuidv4(), target.id, newPrompt);
             }
             db.prepare("UPDATE agents SET updated_at = datetime('now') WHERE id = ?").run(target.id);
             changes.push(`system prompt rewritten (${newPrompt.length} chars)`);
@@ -2916,7 +2916,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
             // Log the request in Imaginer's chat for audit trail
             const reqMsgId = uuidv4();
             db.prepare(`
-              INSERT INTO messages (id, agent_id, role, content, created_at)
+              INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
               VALUES (?, ?, 'user', ?, datetime('now'))
             `).run(reqMsgId, imaginerId,
               `[IMAGE_CREATE request_id=${requestId} from=${senderName} aspect=${aspectRatio}]\n${description}`,
@@ -2963,7 +2963,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
               // Log failure in Imaginer's chat
               db.prepare(`
-                INSERT INTO messages (id, agent_id, role, content, created_at)
+                INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
                 VALUES (?, ?, 'assistant', ?, datetime('now'))
               `).run(uuidv4(), imaginerId,
                 `[FAILED request_id=${requestId}] ${result.code}: ${result.error}`,
@@ -2978,7 +2978,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
                 `> ${result.error}\n\n` +
                 `You could try simplifying the description or trying again in a moment.`;
               db.prepare(`
-                INSERT INTO messages (id, agent_id, role, content, created_at)
+                INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
                 VALUES (?, ?, 'assistant', ?, datetime('now'))
               `).run(errMsgId, agentId, errContent);
               broadcast({
@@ -2999,7 +2999,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
             // Success! Log in Imaginer's chat
             const costLine = result.costUsd !== null ? ` cost=$${result.costUsd.toFixed(4)}` : '';
             db.prepare(`
-              INSERT INTO messages (id, agent_id, role, content, created_at)
+              INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
               VALUES (?, ?, 'assistant', ?, datetime('now'))
             `).run(uuidv4(), imaginerId,
               `[DONE request_id=${requestId}] ${result.filename} (${result.sizeBytes}B, ${result.latencyMs}ms${costLine})`,
@@ -3045,7 +3045,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
             const deliveryContent = `Here you go! Let me know if you'd like any changes.`;
 
             db.prepare(`
-              INSERT INTO messages (id, agent_id, role, content, attachments, model_id, created_at)
+              INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, model_id, created_at)
               VALUES (?, ?, 'assistant', ?, ?, ?, datetime('now'))
             `).run(deliveryMsgId, agentId, deliveryContent, JSON.stringify([attachment]), imageModelId);
 

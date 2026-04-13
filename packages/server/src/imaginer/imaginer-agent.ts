@@ -194,7 +194,7 @@ export function ensureImaginerAgentRunning(): void {
     );
 
     db.prepare(`
-      INSERT INTO messages (id, agent_id, role, content, created_at)
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
       VALUES (?, ?, 'system', ?, datetime('now'))
     `).run(uuidv4(), imaginerId, systemPrompt);
 
@@ -212,7 +212,7 @@ export function clearImaginerSession(): void {
 
   const systemPrompt = loadImaginerSoulPrompt();
   db.prepare(`
-    INSERT INTO messages (id, agent_id, role, content, created_at)
+    INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
     VALUES (?, ?, 'system', ?, datetime('now'))
   `).run(uuidv4(), imaginerId, systemPrompt);
 

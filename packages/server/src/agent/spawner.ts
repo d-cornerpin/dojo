@@ -78,7 +78,7 @@ export interface SpawnParams {
   taskId?: string;
   contextHints?: string[];
   persist?: boolean;
-  classification?: 'ronin' | 'apprentice';
+  classification?: 'ronin' | 'apprentice' | 'sensei';
   shareUserProfile?: boolean;
   groupId?: string;
   /** Custom initial message to send instead of the default. If set, replaces the entire task message including complete_task instructions. */
@@ -242,7 +242,7 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
 
   // Store the system prompt as the first system message
   db.prepare(`
-    INSERT INTO messages (id, agent_id, role, content, created_at)
+    INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
     VALUES (?, ?, 'system', ?, datetime('now'))
   `).run(uuidv4(), agentId, enhancedPrompt);
 
@@ -327,7 +327,7 @@ IMPORTANT INSTRUCTIONS:
   // Insert initial user message to kick off the agent loop
   const initMsgId = uuidv4();
   db.prepare(`
-    INSERT INTO messages (id, agent_id, role, content, created_at)
+    INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
     VALUES (?, ?, 'user', ?, datetime('now'))
   `).run(initMsgId, agentId, taskMessage);
   broadcastMessage(agentId, { id: initMsgId, role: 'user', content: taskMessage });
@@ -529,7 +529,7 @@ export async function completeAgent(
     const completionMsgId = uuidv4();
     const completionContent = `[SOURCE: SUB-AGENT COMPLETION — automated notification that a sub-agent you spawned has finished, not a message from the user] Sub-agent "${agent.name}" completed: ${status}. ${summary}`;
     db.prepare(`
-      INSERT INTO messages (id, agent_id, role, content, created_at)
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
       VALUES (?, ?, 'system', ?, datetime('now'))
     `).run(completionMsgId, agent.parent_agent, completionContent);
     broadcastMessage(agent.parent_agent as string, { id: completionMsgId, role: 'system', content: completionContent });

@@ -40,7 +40,7 @@ function notifyPrimaryAgent(message: string, callingAgentId: string, forceNotify
     // agent from waking up and responding to every sub-agent status change.
     const content = `[SOURCE: TRACKER TASK UPDATE — automated status update, not a message from the user] ${message}`;
     db.prepare(`
-      INSERT INTO messages (id, agent_id, role, content, created_at)
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
       VALUES (?, ?, 'system', ?, datetime('now'))
     `).run(msgId, primaryId, content);
 
@@ -297,7 +297,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
 
         const notifyMsgId = uuidv4();
         const db = getDb();
-        db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(notifyMsgId, assignedTo, taskNotification);
+        db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(notifyMsgId, assignedTo, taskNotification);
 
         broadcast({
           type: 'chat:message',

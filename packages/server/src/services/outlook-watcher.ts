@@ -116,7 +116,7 @@ async function pollForNewEmails(): Promise<void> {
 
       const msgId = uuidv4();
       db.prepare(`
-        INSERT INTO messages (id, agent_id, role, content, created_at)
+        INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
         VALUES (?, ?, 'user', ?, datetime('now'))
       `).run(msgId, primaryId, content);
 

@@ -231,7 +231,7 @@ export function runAutoFixes(diagnosticId: string, items: DiagnosticItem[]): { f
       const content = `[SOURCE: HEALER AUTO-FIX REPORT — automated maintenance, not a message from the user. No reply needed.]\n\nThe Healer performed ${fixCount} automatic fix(es):\n${fixes.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\nNo action needed — these are routine maintenance tasks.`;
 
       db.prepare(`
-        INSERT INTO messages (id, agent_id, role, content, created_at)
+        INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
         VALUES (?, ?, 'system', ?, datetime('now'))
       `).run(msgId, primaryId, content);
 

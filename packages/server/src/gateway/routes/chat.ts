@@ -75,7 +75,7 @@ chatRouter.post('/:agentId/messages', async (c) => {
 
   // Always persist user message immediately
   db.prepare(`
-    INSERT INTO messages (id, agent_id, role, content, attachments, created_at)
+    INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)
     VALUES (?, ?, 'user', ?, ?, datetime('now'))
   `).run(messageId, agentId, modelContent, attachments ? JSON.stringify(attachments) : null);
 
@@ -203,7 +203,7 @@ chatRouter.post('/:agentId/new-session', async (c) => {
     const markerId = uuidv4();
 
     db.prepare(`
-      INSERT INTO messages (id, agent_id, role, content, created_at)
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
       VALUES (?, ?, 'system', ?, ?)
     `).run(markerId, agentId, '── New Session ──', boundary);
 

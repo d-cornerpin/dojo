@@ -386,7 +386,8 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
       name: 'Dreamer',
       systemPrompt: await buildDreamerPrompt(unprocessed, config.dreamMode, stats),
       modelId,
-      classification: 'apprentice',
+      classification: 'sensei',
+      groupId: 'system-group',
       timeout: 3600, // 1 hour safety net
       persist: false, // auto-terminate on complete_task
       toolsPolicy: {
@@ -495,7 +496,8 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
       name: 'Dreamer',
       systemPrompt: await buildDreamerPrompt([], state.config.dreamMode, state.stats),
       modelId: state.modelId,
-      classification: 'apprentice',
+      classification: 'sensei',
+      groupId: 'system-group',
       timeout: 3600,
       persist: false,
       toolsPolicy: {
@@ -641,7 +643,8 @@ Instructions:
 4. Write the trimmed USER.md to "${profilePath}" using file_write. It should contain ONLY the behavioral and operational content. Do not summarize or reword the behavioral content. Keep the owner's original phrasing.
 5. Call complete_task when done.`,
       modelId,
-      classification: 'apprentice',
+      classification: 'sensei',
+      groupId: 'system-group',
       timeout: 3600,
       persist: false,
       toolsPolicy: {

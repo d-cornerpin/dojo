@@ -133,7 +133,7 @@ export async function checkScheduledTasks(): Promise<void> {
     // Inject as user message and trigger runtime
     const msgId = uuidv4();
     db.prepare(`
-      INSERT INTO messages (id, agent_id, role, content, created_at)
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
       VALUES (?, ?, 'user', ?, datetime('now'))
     `).run(msgId, assignedAgent, `[SOURCE: SCHEDULER — automated scheduled task trigger, not a message from the user] ${message}`);
 

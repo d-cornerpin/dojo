@@ -205,7 +205,7 @@ export function ensurePMAgentRunning(): void {
     `).run(pmId, pmName, modelId, primaryId, primaryId, pmPermissions, pmToolsPolicy);
 
     db.prepare(`
-      INSERT INTO messages (id, agent_id, role, content, created_at)
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
       VALUES (?, ?, 'system', ?, datetime('now'))
     `).run(uuidv4(), pmId, systemPrompt);
 
@@ -427,7 +427,7 @@ If everything looks fine, DO NOT call send_to_agent. Just end your turn silently
 Keep it brief.`;
 
   const msgId = uuidv4();
-  db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`)
+  db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`)
     .run(msgId, pmId, situationReport);
 
   broadcast({
@@ -534,7 +534,7 @@ function runPokeCheck(): void {
     const pokeMsgId = uuidv4();
     const fullPokeContent = `[SOURCE: PM AGENT POKE FROM ${pmName.toUpperCase()} — this is NOT a message from the user, it's an automated poke from the PM agent checking on your progress] ${pokeMessage}`;
     db.prepare(`
-      INSERT INTO messages (id, agent_id, role, content, created_at)
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
       VALUES (?, ?, 'user', ?, datetime('now'))
     `).run(pokeMsgId, recipient, fullPokeContent);
 

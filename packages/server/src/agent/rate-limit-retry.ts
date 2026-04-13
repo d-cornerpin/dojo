@@ -117,7 +117,7 @@ function scheduleNextAttempt(
 
         const db = getDb();
         const noticeMsgId = uuidv4();
-        db.prepare("INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))").run(noticeMsgId, agentId, noticeContent);
+        db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))").run(noticeMsgId, agentId, noticeContent);
         broadcast({
           type: 'chat:message',
           agentId,

@@ -230,7 +230,7 @@ class AgentRuntime {
         const msgId = uuidv4();
         const now = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
         const errDb = getDb();
-        errDb.prepare("INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, ?)").run(
+        errDb.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, ?)").run(
           msgId, agentId, '[Rate limited] The model provider returned a rate limit error. Retrying shortly...', now
         );
         broadcast({ type: 'chat:message', agentId, message: { id: msgId, agentId, role: 'system', content: '[Rate limited] The model provider returned a rate limit error. Retrying shortly...', tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: now } });
@@ -310,7 +310,7 @@ class AgentRuntime {
         logger.warn('Turn time budget exceeded', { elapsed: Date.now() - turnStartMs, agentId }, agentId);
         const sysMsg = `[System: This turn exceeded the ${TURN_TIME_BUDGET_MS / 60000} minute time budget and has been stopped. Send a follow-up message to continue.]`;
         const sysMsgId = uuidv4();
-        db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))`).run(sysMsgId, agentId, sysMsg);
+        db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))`).run(sysMsgId, agentId, sysMsg);
         broadcast({ type: 'chat:message', agentId, message: { id: sysMsgId, agentId, role: 'system' as const, content: sysMsg, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
         break;
       }
@@ -324,12 +324,29 @@ class AgentRuntime {
       }
 
       // Assemble context: system prompt + summaries + fresh tail
-      const context = await assembleContext(agentId, contextModelId);
+      let context;
+      try {
+        context = await assembleContext(agentId, contextModelId);
+      } catch (ctxErr) {
+        logger.error('Context assembly failed — retrying with minimal context', {
+          error: ctxErr instanceof Error ? ctxErr.message : String(ctxErr),
+        }, agentId);
+        // Fall back to minimal context so the agent doesn't halt
+        const { assembleSystemPrompt } = await import('../prompt/assembler.js');
+        const fallbackPrompt = assembleSystemPrompt(agentId, contextModelId);
+        context = { systemPrompt: fallbackPrompt, messages: [] as Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }> };
+      }
       const systemPrompt = context.systemPrompt;
       const messages = context.messages;
 
       // Inject image/PDF attachment content blocks into user messages
-      injectAttachmentBlocks(messages, agentId);
+      try {
+        injectAttachmentBlocks(messages, agentId);
+      } catch (attachErr) {
+        logger.warn('Attachment injection failed — continuing without attachments', {
+          error: attachErr instanceof Error ? attachErr.message : String(attachErr),
+        }, agentId);
+      }
 
       // Resolve the actual model to call
       let modelId: string;
@@ -473,7 +490,7 @@ class AgentRuntime {
           logger.warn('Model returned empty response, injecting nudge', { loopCount }, agentId);
           const nudgeMsgId = uuidv4();
           const nudge = '[System: You returned an empty response. Please respond to the user\'s last message or call a tool to continue your task. If you are finished, say so clearly.]';
-          db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
+          db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
           continue; // Re-run the loop with the nudge in context
         }
         // Already nudged and still empty — break
@@ -528,35 +545,45 @@ class AgentRuntime {
         }
 
         // Always INSERT — content includes both text and tool_use blocks
-        db.prepare(`
-          INSERT INTO messages (id, agent_id, role, content, token_count, model_id, cost, latency_ms, created_at)
-          VALUES (?, ?, 'assistant', ?, ?, ?, ?, NULL, datetime('now'))
-        `).run(
-          messageId,
-          agentId,
-          JSON.stringify(assistantContent),
-          result.outputTokens,
-          modelId,
-          null,
-        );
-        broadcastMessage(agentId, { id: messageId, role: 'assistant', content: JSON.stringify(assistantContent), modelId });
+        try {
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, token_count, model_id, cost, latency_ms, created_at)
+            VALUES (?, ?, 'assistant', ?, ?, ?, ?, NULL, datetime('now'))
+          `).run(
+            messageId,
+            agentId,
+            JSON.stringify(assistantContent),
+            result.outputTokens,
+            modelId,
+            null,
+          );
+          broadcastMessage(agentId, { id: messageId, role: 'assistant', content: JSON.stringify(assistantContent), modelId });
+        } catch (persistErr) {
+          logger.error('Failed to persist assistant message — continuing', {
+            error: persistErr instanceof Error ? persistErr.message : String(persistErr),
+          }, agentId);
+        }
       } else if (result.content) {
         // Text-only response, no tool calls
-        db.prepare(`
-          INSERT INTO messages (id, agent_id, role, content, token_count, model_id, cost, latency_ms, created_at)
-          VALUES (?, ?, 'assistant', ?, ?, ?, ?, NULL, datetime('now'))
-        `).run(
-          messageId,
-          agentId,
-          result.content,
-          result.outputTokens,
-          modelId,
-          null,
-        );
-        // Text-only messages are also streamed via chat:chunk, so broadcastMessage is redundant here
-
-        // Queue embedding for assistant text responses
-        queueEmbedding('message', messageId, agentId, result.content);
+        try {
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, token_count, model_id, cost, latency_ms, created_at)
+            VALUES (?, ?, 'assistant', ?, ?, ?, ?, NULL, datetime('now'))
+          `).run(
+            messageId,
+            agentId,
+            result.content,
+            result.outputTokens,
+            modelId,
+            null,
+          );
+          // Queue embedding for assistant text responses
+          queueEmbedding('message', messageId, agentId, result.content);
+        } catch (persistErr) {
+          logger.error('Failed to persist assistant text message — continuing', {
+            error: persistErr instanceof Error ? persistErr.message : String(persistErr),
+          }, agentId);
+        }
       }
 
       // Broadcast completion for streaming (include modelId so UI can show it)
@@ -584,7 +611,7 @@ class AgentRuntime {
             logger.warn('Model response looks incomplete, nudging for continuation', { contentLength: trimmed.length }, agentId);
             const nudgeMsgId = uuidv4();
             const nudge = '[System: Your response appears incomplete — it ends mid-sentence. Please continue where you left off, or if you are finished, confirm by ending with a complete sentence.]';
-            db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
+            db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
             continue; // Re-run the loop to get continuation
           }
         }
@@ -641,68 +668,94 @@ class AgentRuntime {
         }
 
         // Broadcast tool call to dashboard
-        broadcast({
-          type: 'chat:tool_call',
-          agentId,
-          tool: toolCall.name,
-          args: toolCall.arguments,
-        });
+        try {
+          broadcast({
+            type: 'chat:tool_call',
+            agentId,
+            tool: toolCall.name,
+            args: toolCall.arguments,
+          });
+        } catch { /* broadcast failure is non-fatal */ }
 
-        const toolResult = await executeTool(agentId, toolCall);
+        let toolResult: { toolCallId: string; content: string; isError: boolean; name: string; errorCode?: string };
+        try {
+          toolResult = await executeTool(agentId, toolCall);
+        } catch (toolErr) {
+          // Tool threw an unhandled exception — don't crash the agent loop.
+          // Convert to an error result so the model sees the failure and can adapt.
+          const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+          logger.error('Tool execution threw unhandled exception', {
+            tool: toolCall.name, error: errMsg,
+          }, agentId);
+          toolResult = {
+            toolCallId: toolCall.id,
+            name: toolCall.name,
+            content: `Error: Tool "${toolCall.name}" crashed unexpectedly: ${errMsg}. This is a platform error, not something you did wrong. Try a different approach or skip this step.`,
+            isError: true,
+          };
+        }
         toolResults.push(toolResult);
 
         // Broadcast tool result
-        broadcast({
-          type: 'chat:tool_result',
-          agentId,
-          tool: toolCall.name,
-          result: toolResult.content.slice(0, 500), // Truncate for WS
-        });
+        try {
+          broadcast({
+            type: 'chat:tool_result',
+            agentId,
+            tool: toolCall.name,
+            result: toolResult.content.slice(0, 500),
+          });
+        } catch { /* broadcast failure is non-fatal */ }
       }
 
       // Persist tool result messages
-      if (hasXmlFallbackTools) {
-        // XML fallback path: collapse tool calls + results into a single plain-text
-        // assistant message. This prevents synthetic tool IDs from entering the
-        // message history where they'd break providers on the next turn.
-        const collapsedParts: string[] = [];
-        if (result.content) collapsedParts.push(result.content);
-        for (let i = 0; i < result.toolCalls.length; i++) {
-          const tc = result.toolCalls[i];
-          const tr = toolResults[i];
-          const argSummary = Object.entries(tc.arguments).map(([k, v]) => `${k}=${typeof v === 'string' ? v.slice(0, 80) : JSON.stringify(v)}`).join(', ');
-          collapsedParts.push(`[Called ${tc.name}(${argSummary})]`);
-          if (tr) {
-            const resultPreview = tr.content.length > 300 ? tr.content.slice(0, 300) + '...' : tr.content;
-            collapsedParts.push(`[Result${tr.isError ? ' ERROR' : ''}: ${resultPreview}]`);
+      try {
+        if (hasXmlFallbackTools) {
+          // XML fallback path: collapse tool calls + results into a single plain-text
+          // assistant message. This prevents synthetic tool IDs from entering the
+          // message history where they'd break providers on the next turn.
+          const collapsedParts: string[] = [];
+          if (result.content) collapsedParts.push(result.content);
+          for (let i = 0; i < result.toolCalls.length; i++) {
+            const tc = result.toolCalls[i];
+            const tr = toolResults[i];
+            const argSummary = Object.entries(tc.arguments).map(([k, v]) => `${k}=${typeof v === 'string' ? v.slice(0, 80) : JSON.stringify(v)}`).join(', ');
+            collapsedParts.push(`[Called ${tc.name}(${argSummary})]`);
+            if (tr) {
+              const resultPreview = tr.content.length > 300 ? tr.content.slice(0, 300) + '...' : tr.content;
+              collapsedParts.push(`[Result${tr.isError ? ' ERROR' : ''}: ${resultPreview}]`);
+            }
           }
+          const collapsedText = collapsedParts.join('\n');
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, token_count, model_id, cost, latency_ms, created_at)
+            VALUES (?, ?, 'assistant', ?, ?, ?, ?, NULL, datetime('now'))
+          `).run(messageId, agentId, collapsedText, result.outputTokens, modelId, null);
+          broadcastMessage(agentId, { id: messageId, role: 'assistant', content: collapsedText, modelId });
+
+          logger.info('Collapsed XML-fallback tool calls into plain text', {
+            toolCount: result.toolCalls.length,
+            tools: result.toolCalls.map(tc => tc.name),
+          }, agentId);
+        } else {
+          // Normal path: store as structured tool_result content blocks
+          const toolResultContent: Anthropic.ToolResultBlockParam[] = toolResults.map(tr => ({
+            type: 'tool_result' as const,
+            tool_use_id: tr.toolCallId,
+            content: tr.content,
+            is_error: tr.isError,
+          }));
+
+          const toolMessageId = uuidv4();
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+            VALUES (?, ?, 'tool', ?, datetime('now'))
+          `).run(toolMessageId, agentId, JSON.stringify(toolResultContent));
+          broadcastMessage(agentId, { id: toolMessageId, role: 'tool', content: JSON.stringify(toolResultContent) });
         }
-        const collapsedText = collapsedParts.join('\n');
-        db.prepare(`
-          INSERT INTO messages (id, agent_id, role, content, token_count, model_id, cost, latency_ms, created_at)
-          VALUES (?, ?, 'assistant', ?, ?, ?, ?, NULL, datetime('now'))
-        `).run(messageId, agentId, collapsedText, result.outputTokens, modelId, null);
-        broadcastMessage(agentId, { id: messageId, role: 'assistant', content: collapsedText, modelId });
-
-        logger.info('Collapsed XML-fallback tool calls into plain text', {
-          toolCount: result.toolCalls.length,
-          tools: result.toolCalls.map(tc => tc.name),
+      } catch (persistErr) {
+        logger.error('Failed to persist tool results — continuing', {
+          error: persistErr instanceof Error ? persistErr.message : String(persistErr),
         }, agentId);
-      } else {
-        // Normal path: store as structured tool_result content blocks
-        const toolResultContent: Anthropic.ToolResultBlockParam[] = toolResults.map(tr => ({
-          type: 'tool_result' as const,
-          tool_use_id: tr.toolCallId,
-          content: tr.content,
-          is_error: tr.isError,
-        }));
-
-        const toolMessageId = uuidv4();
-        db.prepare(`
-          INSERT INTO messages (id, agent_id, role, content, created_at)
-          VALUES (?, ?, 'tool', ?, datetime('now'))
-        `).run(toolMessageId, agentId, JSON.stringify(toolResultContent));
-        broadcastMessage(agentId, { id: toolMessageId, role: 'tool', content: JSON.stringify(toolResultContent) });
       }
 
       // Clear error records on successful tool execution
@@ -769,7 +822,7 @@ class AgentRuntime {
           logger.warn('Agent repeating itself, injecting nudge for one more try', { loopCount }, agentId);
           const nudgeMsgId = uuidv4();
           const nudge = '[System: You are repeating yourself — your last two responses were identical. Try a different approach. If the task is complete, call complete_task or tracker_update_status. If you need help, explain what you are stuck on.]';
-          db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
+          db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
           // Don't update lastResponseText so if it repeats again, we break
           continue;
         }
@@ -791,7 +844,7 @@ class AgentRuntime {
             logger.warn('Consecutive empty search results, injecting nudge', { loopCount, consecutiveNoResultTools }, agentId);
             const nudgeMsgId = uuidv4();
             const nudge = '[System: Multiple searches returned no results. The information may not exist in memory. Try responding based on what you already know, or ask the user for clarification.]';
-            db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
+            db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`).run(nudgeMsgId, agentId, nudge);
             consecutiveNoResultTools = 0; // Reset to give one more chance
             continue;
           }
@@ -811,7 +864,7 @@ class AgentRuntime {
       logger.warn('Agent hit max tool loop limit', { agentId, maxLoops: MAX_TOOL_LOOPS }, agentId);
       const sysMsg = `[System: This turn used the maximum number of tool calls (${MAX_TOOL_LOOPS}). The agent has paused. You may need to send a follow-up message to continue.]`;
       const sysMsgId = uuidv4();
-      db.prepare(`INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))`).run(sysMsgId, agentId, sysMsg);
+      db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))`).run(sysMsgId, agentId, sysMsg);
       broadcast({ type: 'chat:message', agentId, message: { id: sysMsgId, agentId, role: 'system' as const, content: sysMsg, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
     }
 
@@ -855,7 +908,7 @@ class AgentRuntime {
               const replyMsgId = uuidv4();
               const replyContent = `[SOURCE: AGENT MESSAGE FROM ${senderName.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's an auto-routed reply from another agent] ${lastResponse.content}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
               db.prepare(`
-                INSERT INTO messages (id, agent_id, role, content, source_agent_id, created_at)
+                INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, created_at)
                 VALUES (?, ?, 'user', ?, ?, datetime('now'))
               `).run(replyMsgId, senderId, replyContent, agentId);
 
