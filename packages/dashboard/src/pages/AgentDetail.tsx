@@ -14,6 +14,7 @@ import { ChatInput } from '../components/ChatInput';
 import { AttachmentChips } from '../components/AttachmentChips';
 import { TechniqueSelector } from '../components/TechniqueSelector';
 import { ThinkingBubble } from '../components/ThinkingBubble';
+import { useToast } from '../hooks/useToast';
 
 // ── Types ──
 
@@ -119,27 +120,35 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
   );
 };
 
-const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
+const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMode?: boolean }) => {
   const { text, blocks } = parseMessageContent(msg.content);
   const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
 
   return (
     <div className="flex justify-start">
-      <div className="max-w-[75%]">
+      <div className="max-w-[92%] sm:max-w-[75%]">
         {text && (
-          <div className="bubble-assistant px-4 py-3 whitespace-pre-wrap">
+          <div className="bubble-assistant px-3 py-2 sm:px-4 sm:py-3 whitespace-pre-wrap text-xs sm:text-sm">
             <Markdown content={text} />
             {msg.isStreaming && (
-              <span className="inline-block w-2 h-4 bg-white/40 animate-pulse ml-0.5" />
+              <span className="inline-flex gap-1 ml-1 align-middle">
+                <span className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+              </span>
             )}
           </div>
         )}
         {!text && msg.isStreaming && (
-          <div className="bubble-assistant px-4 py-3">
-            <span className="inline-block w-2 h-4 bg-white/40 animate-pulse" />
+          <div className="bubble-assistant px-3 py-2 sm:px-4 sm:py-3">
+            <span className="inline-flex gap-1">
+              <span className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+              <span className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+              <span className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+            </span>
           </div>
         )}
-        {hasToolUse && (
+        {wordyMode && hasToolUse && (
           <div className="mt-1">
             {blocks!
               .filter((b) => b.type === 'tool_use')
@@ -152,7 +161,7 @@ const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
               ))}
           </div>
         )}
-        {msg.toolCalls && msg.toolCalls.length > 0 && !hasToolUse && (
+        {wordyMode && msg.toolCalls && msg.toolCalls.length > 0 && !hasToolUse && (
           <div className="mt-1">
             {msg.toolCalls.map((tc, i) => (
               <ToolCallBlock
@@ -183,7 +192,11 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
+  const [wordyMode, setWordyMode] = useState(() => {
+    const stored = localStorage.getItem('dojo_wordy_mode');
+    return stored === 'true';
+  });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const { subscribe } = useWebSocket();
@@ -320,8 +333,20 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
     const unsubError = subscribe('chat:error', (event: WsEvent) => {
       const e = event as ChatErrorEvent;
       if (e.agentId !== agentId) return;
-      setError(e.error);
-      setIsWorking(false);
+      const isRateLimit = (e as { code?: string }).code === 'RATE_LIMITED' || e.error.includes('429') || e.error.toLowerCase().includes('rate_limit');
+      if (isRateLimit) {
+        toast.warning(e.error);
+      } else {
+        toast.error(e.error);
+        setIsWorking(false);
+      }
+    });
+
+    const unsubStatus = subscribe('agent:status', (event: WsEvent) => {
+      const e = event as { agentId: string; status: string };
+      if (e.agentId !== agentId) return;
+      if (e.status === 'working') setIsWorking(true);
+      else if (e.status === 'idle' || e.status === 'error') setIsWorking(false);
     });
 
     return () => {
@@ -329,13 +354,11 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
       unsubToolCall();
       unsubToolResult();
       unsubError();
+      unsubStatus();
     };
   }, [subscribe, agentId]);
 
   const handleSend = async (content: string, attachments?: AttachmentInfo[]) => {
-    if (isWorking) return;
-
-    setError(null);
     setIsWorking(true);
     currentToolCallsRef.current = [];
 
@@ -349,8 +372,30 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
 
     const result = await api.sendAgentMessage(agentId, content, attachments);
     if (!result.ok) {
-      setError(result.error);
+      if (result.error.includes('busy')) {
+        toast.info('Agent is mid-task — your message will be delivered when it finishes.');
+      } else {
+        toast.error(result.error);
+      }
       setIsWorking(false);
+    }
+  };
+
+  const handleStop = async () => {
+    try {
+      await api.request(`/agents/${agentId}/stop`, { method: 'POST' });
+    } catch { /* best effort */ }
+  };
+
+  const handleNewSession = async () => {
+    if (!confirm('Start a new session? The current conversation will be archived to the vault.')) return;
+    const res = await api.request<{ archiveId: string; sessionStartedAt: string }>(`/chat/${agentId}/new-session`, { method: 'POST' });
+    if (res.ok) {
+      const result = await api.getAgentHistory(agentId, 50);
+      if (result.ok) {
+        setMessages(result.data.map((m: Message) => ({ id: m.id, role: m.role, content: m.content, createdAt: m.createdAt, attachments: m.attachments })));
+      }
+      toast.success('Session reset — conversation archived to vault.');
     }
   };
 
@@ -379,26 +424,52 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
           </div>
         )}
         {messages.map((msg) => {
+          // Hide inter-agent and system messages unless wordy mode is on
+          if (!wordyMode && msg.role === 'user' && (
+            msg.content.includes('[SOURCE:') ||
+            msg.content.startsWith('[System:') ||
+            msg.content.startsWith('Tracker review --')
+          )) return null;
+          if (msg.role === 'tool' && !wordyMode) return null;
+          if (msg.role === 'system' && !wordyMode) {
+            if (msg.content.includes('New Session')) {
+              return (
+                <div key={msg.id} className="flex items-center gap-3 py-2">
+                  <div className="flex-1 h-px bg-white/10" />
+                  <span className="text-xs text-white/30 shrink-0">New Session</span>
+                  <div className="flex-1 h-px bg-white/10" />
+                </div>
+              );
+            }
+            return null;
+          }
+          if (!wordyMode && msg.role === 'assistant') {
+            if (msg.content.startsWith('I got stuck on that') || msg.content.startsWith("I'm sorry — I'm having trouble")) return null;
+            // Hide tool-only messages
+            const parsed = parseMessageContent(msg.content);
+            const hasToolUse = parsed.blocks?.some((b) => b.type === 'tool_use');
+            if (!parsed.text && hasToolUse) return null;
+          }
           if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} />;
-          return <AssistantBubble key={msg.id} msg={msg} />;
+          return <AssistantBubble key={msg.id} msg={msg} wordyMode={wordyMode} />;
         })}
         {isWorking && !messages.some(m => m.isStreaming) && <ThinkingBubble />}
         <div ref={messagesEndRef} />
       </div>
 
-      {error && (
-        <div className="alert-banner alert-error shrink-0 mx-4 mb-2 flex items-center justify-between">
-          <span>{error}</span>
-          <button onClick={() => setError(null)} className="text-cp-coral hover:text-cp-coral/80 ml-2">&times;</button>
-        </div>
-      )}
-
       <ChatInput
         agentId={agentId}
         onSend={handleSend}
-        disabled={isWorking}
-        placeholder={isWorking ? 'Meditating...' : undefined}
-        variant="agent"
+        variant="primary"
+        wordyMode={wordyMode}
+        onToggleWordyMode={() => {
+          const next = !wordyMode;
+          setWordyMode(next);
+          localStorage.setItem('dojo_wordy_mode', String(next));
+        }}
+        onNewSession={handleNewSession}
+        isWorking={isWorking}
+        onStop={handleStop}
       />
     </div>
   );
