@@ -1234,6 +1234,21 @@ configRouter.put('/settings/:key', async (c) => {
     clearPlatformConfigCache();
   }
 
+  // Keep agents.model_id in sync when sensei model config keys change from Settings
+  if (key === 'healer_model_id') {
+    const { getHealerAgentId } = await import('../../config/platform.js');
+    db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(body.value, getHealerAgentId());
+  } else if (key === 'dreaming_model_id') {
+    const { getDreamerAgentId } = await import('../../config/platform.js');
+    db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(body.value, getDreamerAgentId());
+  } else if (key === 'imaginer_image_model') {
+    const { getImaginerAgentId } = await import('../../config/platform.js');
+    db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(body.value, getImaginerAgentId());
+  }
+
   return c.json({ ok: true, data: { key, value: body.value } });
 });
 

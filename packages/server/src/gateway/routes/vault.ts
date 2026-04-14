@@ -206,6 +206,15 @@ vaultRouter.put('/dream/config', async (c) => {
     dreamTime: body.dreamTime,
     dreamMode: body.dreamMode,
   });
+
+  // Keep agents.model_id in sync so the agent card reflects the same value
+  if (body.modelId) {
+    const { getDreamerAgentId } = await import('../../config/platform.js');
+    const { getDb } = await import('../../db/connection.js');
+    getDb().prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(body.modelId, getDreamerAgentId());
+  }
+
   // Reschedule if config changed
   const { scheduleDreamingCycle } = await import('../../vault/maintenance.js');
   scheduleDreamingCycle();

@@ -28,6 +28,14 @@ healerRouter.post('/config', async (c) => {
     healerMode: body.healerMode,
   });
 
+  // Keep agents.model_id in sync so the agent card reflects the same value
+  if (body.modelId) {
+    const { getHealerAgentId } = await import('../../config/platform.js');
+    const db = (await import('../../db/connection.js')).getDb();
+    db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(body.modelId, getHealerAgentId());
+  }
+
   // Reschedule with new config
   scheduleHealingCycle();
 
