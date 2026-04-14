@@ -31,6 +31,24 @@
     --text-primary: rgba(255, 255, 255, 0.92);
     --text-secondary: rgba(255, 255, 255, 0.55);
     --text-tertiary: rgba(255, 255, 255, 0.30);
+
+    /* Agent avatar accent palette — cycled by hash */
+    --agent-color-1: #F5A623;
+    --agent-color-2: #00D4AA;
+    --agent-color-3: #5B8DEF;
+    --agent-color-4: #A78BFA;
+    --agent-color-5: #FF6B8A;
+    --agent-color-6: #4AEDC4;
+    --agent-color-7: #7BA4F7;
+
+    /* Threshold / health colors (charts, progress bars) */
+    --threshold-ok: #22c55e;
+    --threshold-warn: #eab308;
+    --threshold-high: #f97316;
+    --threshold-critical: #ef4444;
+
+    /* Overlay backdrop */
+    --overlay-dark: rgba(0, 0, 0, 0.88);
   }
 
   html, body, #root { height: 100%; margin: 0; padding: 0; }
@@ -142,6 +160,51 @@
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
 
+  /* Mobile top bar — translucent header on phones */
+  .glass-topbar {
+    background: rgba(11, 15, 26, 0.85);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  /* Mobile slide-out menu background */
+  .glass-menu {
+    background: rgba(26, 31, 53, 0.95);
+    backdrop-filter: blur(30px);
+    -webkit-backdrop-filter: blur(30px);
+  }
+
+  /* Chat input bar — glass tray at bottom of chat */
+  .glass-input-bar {
+    background: rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+
+  /* Secondary input bar variant (agent detail chat) */
+  .glass-input-bar-subtle {
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  /* Glass panel — used for side panels, detail drawers, etc. */
+  .glass-panel {
+    background: rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(30px);
+    -webkit-backdrop-filter: blur(30px);
+    border-left: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4), inset 1px 0 0 rgba(255, 255, 255, 0.08);
+  }
+
+  /* Vertical divider between panels */
+  .glass-divider-v {
+    width: 1px;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
   /* ════════════════════════════════════════
      FORM INPUTS — glass styled
      ════════════════════════════════════════ */
@@ -152,7 +215,6 @@
     border-radius: 8px;
     color: rgba(255, 255, 255, 0.9);
     padding: 8px 12px;
-    font-size: 14px;
     font-size: 14px;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
     outline: none;
@@ -170,7 +232,6 @@
     border-radius: 8px;
     color: rgba(255, 255, 255, 0.9);
     padding: 8px 12px;
-    font-size: 14px;
     font-size: 14px;
     outline: none;
     cursor: pointer;
@@ -192,7 +253,6 @@
     border-radius: 8px;
     color: rgba(255, 255, 255, 0.9);
     padding: 10px 12px;
-    font-size: 14px;
     font-size: 14px;
     outline: none;
     resize: vertical;
@@ -227,16 +287,6 @@
   }
   .glass-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  .glass-btn-primary {
-    background: linear-gradient(135deg, #F5A623, #FFBA42);
-    color: #1a1a2e;
-    font-weight: 600;
-  }
-  .glass-btn-primary:not(:disabled):hover {
-    box-shadow: 0 0 20px rgba(245, 166, 35, 0.4);
-    transform: translateY(-1px);
-  }
-
   .glass-btn-secondary {
     background: rgba(255, 255, 255, 0.08);
     border: 1px solid rgba(255, 255, 255, 0.15);
@@ -257,16 +307,16 @@
     background: rgba(255, 107, 138, 0.25);
   }
 
-  .glass-btn-blue {
+  .glass-btn-primary {
     background: linear-gradient(135deg, #F5A623, #FFBA42);
     color: #1a1a2e;
     font-weight: 600;
   }
-  .glass-btn-blue:not(:disabled):hover {
+  .glass-btn-primary:not(:disabled):hover {
     box-shadow: 0 0 16px rgba(245, 166, 35, 0.3);
     transform: translateY(-1px);
   }
-  .glass-btn-blue:disabled {
+  .glass-btn-primary:disabled {
     background: rgba(255, 255, 255, 0.08);
     color: rgba(255, 255, 255, 0.4);
     font-weight: 500;
@@ -363,12 +413,17 @@
      UTILITIES
      ════════════════════════════════════════ */
 
+  /* Text color utilities — use these instead of inline style={{ color: 'var(--text-*)' }} */
+  .text-primary   { color: var(--text-primary); }
+  .text-secondary { color: var(--text-secondary); }
+  .text-tertiary  { color: var(--text-tertiary); }
+
   .section-label {
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.55);
+    color: var(--text-secondary);
   }
 
   /* ════════════════════════════════════════
@@ -636,12 +691,9 @@
 
   /* Tier badges */
   .badge-heavy    { background: rgba(139, 92, 246, 0.2); color: #A78BFA; border: 1px solid rgba(139, 92, 246, 0.3); }
-  .badge-standard { background: rgba(91, 141, 239, 0.2); color: #7BA4F7; border: 1px solid rgba(91, 141, 239, 0.3); }
   .badge-light    { background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.6); border: 1px solid rgba(255, 255, 255, 0.12); }
   .badge-system   { background: rgba(0, 212, 170, 0.2); color: #4AEDC4; border: 1px solid rgba(0, 212, 170, 0.3); }
   .badge-permanent { background: rgba(245, 166, 35, 0.2); color: #FFBA42; border: 1px solid rgba(245, 166, 35, 0.3); }
-  .badge-freelance { background: rgba(91, 141, 239, 0.2); color: #7BA4F7; border: 1px solid rgba(91, 141, 239, 0.3); }
-  .badge-temp      { background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.5); border: 1px solid rgba(255, 255, 255, 0.1); }
 }
 
 /* ════════════════════════════════════════
@@ -651,11 +703,6 @@
    interior, so only the thin rotating edge is visible.
    A sibling glow div adds a soft blurred version behind.
    ════════════════════════════════════════ */
-
-/* Wrapper — needed because glass-card already uses ::before/::after in some cases */
-.card-working-wrap {
-  position: relative;
-}
 
 /*
   Structure: the card component renders:

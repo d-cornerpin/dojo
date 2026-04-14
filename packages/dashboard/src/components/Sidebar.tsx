@@ -66,7 +66,7 @@ export const Sidebar = () => {
               <h1 className="text-base font-bold text-white tracking-wide">Agent D.O.J.O.</h1>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className={`status-dot ${ws.dot}`} />
-                <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>{ws.label}</span>
+                <span className="text-[10px] text-tertiary">{ws.label}</span>
               </div>
             </div>
           )}
@@ -162,12 +162,7 @@ const MobileTopBar = ({ connectionStatus }: { connectionStatus: ConnectionStatus
   return (
     <>
       <div
-        className="md:hidden fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-3 py-2.5 safe-area-top"
-        style={{
-          background: 'rgba(11, 15, 26, 0.85)',
-          backdropFilter: 'blur(16px)',
-          borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
-        }}
+        className="glass-topbar md:hidden fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-3 py-2.5 safe-area-top"
       >
         <button onClick={() => setMenuOpen(true)} className="text-white/60 hover:text-white text-xl p-2 -ml-1">
           {'\u2630'}
@@ -181,11 +176,7 @@ const MobileTopBar = ({ connectionStatus }: { connectionStatus: ConnectionStatus
         <div className="md:hidden fixed inset-0 z-50">
           <div className="absolute inset-0 bg-black/60" onClick={() => setMenuOpen(false)} />
           <div
-            className="absolute left-0 top-0 bottom-0 w-[280px] flex flex-col safe-area-top"
-            style={{
-              background: 'rgba(26, 31, 53, 0.95)',
-              backdropFilter: 'blur(30px)',
-            }}
+            className="glass-menu absolute left-0 top-0 bottom-0 w-[280px] flex flex-col safe-area-top"
           >
             <div className="flex items-center gap-3 px-5 py-4 border-b border-white/[0.06]">
               <img src="/dojologo.svg" alt="DOJO" className="w-7 h-7" />

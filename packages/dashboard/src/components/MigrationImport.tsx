@@ -109,14 +109,14 @@ export const MigrationImport = ({ isOobe = false, onComplete }: Props) => {
         {isOobe ? (
           <button
             onClick={() => { window.location.href = '/'; }}
-            className="px-6 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
+            className="px-6 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
           >
             Enter the Dojo
           </button>
         ) : (
           <button
             onClick={() => { window.location.reload(); }}
-            className="px-6 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
+            className="px-6 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
           >
             Reload Dashboard
           </button>
@@ -225,7 +225,7 @@ export const MigrationImport = ({ isOobe = false, onComplete }: Props) => {
               <button
                 type="submit"
                 disabled={!password || password.length < 8}
-                className="w-full px-4 py-2 glass-btn-blue disabled:cursor-not-allowed text-sm font-medium rounded-lg transition-colors"
+                className="w-full px-4 py-2 glass-btn-primary disabled:cursor-not-allowed text-sm font-medium rounded-lg transition-colors"
               >
                 Import
               </button>

@@ -134,7 +134,7 @@ export const HealerVitals = () => {
                       <button
                         onClick={() => handleApprove(p.id)}
                         disabled={resolving === p.id}
-                        className="px-3 py-1 text-xs rounded glass-btn-blue"
+                        className="px-3 py-1 text-xs rounded glass-btn-primary"
                       >
                         {resolving === p.id ? 'Approving...' : 'Approve'}
                       </button>

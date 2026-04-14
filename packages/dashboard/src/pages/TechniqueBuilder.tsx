@@ -124,8 +124,7 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
 
   return (
     <div className="flex justify-end">
-      <div className="max-w-[85%] px-4 py-3 text-white"
-        style={{ background: 'rgba(124, 58, 237, 0.25)', border: '1px solid rgba(124, 58, 237, 0.4)', borderRadius: '16px 16px 4px 16px', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1)' }}>
+      <div className="bubble-user max-w-[85%] px-4 py-3 text-white">
         {displayContent && (
           <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed break-words">
             {displayContent}
@@ -134,7 +133,7 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
         {msg.attachments && msg.attachments.length > 0 && (
           <AttachmentChips attachments={msg.attachments} />
         )}
-        <div className="text-[10px] mt-2" style={{ color: 'var(--text-tertiary)' }}>
+        <div className="text-[10px] mt-2 text-tertiary">
           {formatDate(msg.createdAt)}
         </div>
       </div>
@@ -150,7 +149,7 @@ const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
     <div className="flex justify-start">
       <div className="max-w-[85%]">
         {text && (
-          <div className="px-4 py-3 whitespace-pre-wrap" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '16px 16px 16px 4px', backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)', color: 'rgba(255,255,255,0.92)', boxShadow: '0 4px 16px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)' }}>
+          <div className="bubble-assistant px-4 py-3 whitespace-pre-wrap">
             <Markdown content={text} />
             {msg.isStreaming && (
               <span className="inline-flex gap-1 ml-1 align-middle">
@@ -163,7 +162,7 @@ const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
         )}
 
         {!text && msg.isStreaming && (
-          <div className="px-4 py-3" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '16px 16px 16px 4px', backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1)' }}>
+          <div className="bubble-assistant px-4 py-3">
             <span className="inline-flex gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-cp-amber animate-bounce" style={{ animationDelay: '0ms' }} />
               <span className="w-1.5 h-1.5 rounded-full bg-cp-amber animate-bounce" style={{ animationDelay: '150ms' }} />
@@ -201,7 +200,7 @@ const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
         )}
 
         {!msg.isStreaming && (
-          <div className="text-[10px] mt-1 px-1" style={{ color: 'var(--text-tertiary)' }}>
+          <div className="text-[10px] mt-1 px-1 text-tertiary">
             {formatDate(msg.createdAt)}
           </div>
         )}
@@ -848,7 +847,7 @@ export const TechniqueBuilder = () => {
               <div className="text-center animate-fade-up">
                 <div className="text-3xl mb-3">{'\u{1F3AF}'}</div>
                 <h2 className="text-lg font-semibold text-white/80 mb-1">Technique Trainer</h2>
-                <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>Initializing builder session...</p>
+                <p className="text-xs text-secondary">Initializing builder session...</p>
               </div>
             </div>
           )}
@@ -864,7 +863,7 @@ export const TechniqueBuilder = () => {
 
         {/* Error banner */}
         {error && (
-          <div className="shrink-0 mx-4 mb-2 glass-toast glass-toast-error px-4 py-3 text-sm flex items-center justify-between" style={{ color: 'var(--cp-coral)' }}>
+          <div className="shrink-0 mx-4 mb-2 glass-toast glass-toast-error px-4 py-3 text-sm flex items-center justify-between text-cp-coral">
             <span>{error}</span>
             <button onClick={() => setError(null)} className="hover:opacity-70 ml-2 shrink-0">&times;</button>
           </div>
@@ -886,7 +885,7 @@ export const TechniqueBuilder = () => {
       </div>
 
       {/* Divider — desktop only */}
-      <div className="hidden md:block shrink-0 w-px" style={{ background: 'rgba(255,255,255,0.08)' }} />
+      <div className="hidden md:block shrink-0 glass-divider-v" />
 
       {/* Right Panel — Canvas (40% on desktop, flyout on mobile) */}
       <div className={`

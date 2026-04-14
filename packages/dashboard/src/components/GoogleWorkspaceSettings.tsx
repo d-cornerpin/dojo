@@ -96,7 +96,7 @@ export const GoogleWorkspaceSettings = () => {
             <button
               onClick={handleConnect}
               disabled={connecting}
-              className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors w-full"
+              className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors w-full"
             >
               {connecting ? 'Waiting for sign-in...' : 'Sign in with Google'}
             </button>
@@ -148,7 +148,7 @@ export const GoogleWorkspaceSettings = () => {
             {/* Actions */}
             <div className="flex gap-2 pt-2 flex-wrap">
               <button onClick={handleTest} disabled={testing}
-                className="px-3 py-1.5 glass-btn-blue text-xs rounded-lg transition-colors">
+                className="px-3 py-1.5 glass-btn-primary text-xs rounded-lg transition-colors">
                 {testing ? 'Testing...' : 'Test Connection'}
               </button>
               <button onClick={() => setShowActivity(!showActivity)}

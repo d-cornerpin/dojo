@@ -72,7 +72,7 @@ export const BriefingView = ({ agentId }: BriefingViewProps) => {
         <button
           onClick={handleRegenerate}
           disabled={regenerating}
-          className="px-4 py-2 text-sm rounded-lg glass-btn-blue transition-colors"
+          className="px-4 py-2 text-sm rounded-lg glass-btn-primary transition-colors"
         >
           {regenerating ? 'Generating...' : 'Generate Briefing'}
         </button>
@@ -135,7 +135,7 @@ export const BriefingView = ({ agentId }: BriefingViewProps) => {
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className="px-4 py-1.5 text-xs rounded glass-btn-blue transition-colors"
+                className="px-4 py-1.5 text-xs rounded glass-btn-primary transition-colors"
               >
                 {saving ? 'Saving...' : 'Save'}
               </button>

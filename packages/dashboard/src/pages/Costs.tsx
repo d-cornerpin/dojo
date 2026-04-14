@@ -125,7 +125,7 @@ const OpenRouterBudget = () => {
         <button
           onClick={handleSaveThreshold}
           disabled={savingThreshold || !threshold}
-          className="px-2 py-1 glass-btn-blue text-xs font-medium rounded transition-colors"
+          className="px-2 py-1 glass-btn-primary text-xs font-medium rounded transition-colors"
         >
           {savingThreshold ? '...' : 'Save'}
         </button>

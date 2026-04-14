@@ -177,7 +177,7 @@ export const SummaryDetail = ({
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className="px-4 py-1.5 text-xs rounded glass-btn-blue transition-colors"
+                className="px-4 py-1.5 text-xs rounded glass-btn-primary transition-colors"
               >
                 {saving ? 'Saving...' : 'Save'}
               </button>

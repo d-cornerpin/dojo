@@ -642,7 +642,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
             <button
               onClick={saveName}
               disabled={!editedName.trim() || editedName.trim() === agent.name}
-              className="px-3 py-2 text-sm glass-btn-blue rounded-lg transition-colors"
+              className="px-3 py-2 text-sm glass-btn-primary rounded-lg transition-colors"
             >
               Save
             </button>
@@ -675,7 +675,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
             <button
               onClick={saveModel}
               disabled={selectedModelId === (agent.modelId === 'auto' ? 'auto' : (agent.modelId ?? ''))}
-              className="px-3 py-2 text-sm glass-btn-blue rounded-lg transition-colors"
+              className="px-3 py-2 text-sm glass-btn-primary rounded-lg transition-colors"
             >
               Save
             </button>
@@ -756,7 +756,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
           <div className="flex justify-end mt-2">
             <button
               onClick={saveSystemPrompt}
-              className="px-3 py-1.5 text-sm glass-btn-blue rounded-lg transition-colors"
+              className="px-3 py-1.5 text-sm glass-btn-primary rounded-lg transition-colors"
             >
               Save Prompt
             </button>
@@ -782,7 +782,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
             <div className="flex justify-end mt-4 pt-3 border-t white/[0.08]">
               <button
                 onClick={savePermissions}
-                className="px-4 py-2 text-sm glass-btn-blue rounded-lg transition-colors font-medium"
+                className="px-4 py-2 text-sm glass-btn-primary rounded-lg transition-colors font-medium"
               >
                 Save Permissions
               </button>

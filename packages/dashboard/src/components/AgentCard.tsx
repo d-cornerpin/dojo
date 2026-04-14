@@ -39,12 +39,13 @@ const classificationBadge: Record<string, { cls: string; label: string }> = {
   apprentice: { cls: 'glass-badge-gray', label: 'Apprentice' },
 };
 
-const agentColors = ['#F5A623', '#00D4AA', '#5B8DEF', '#A78BFA', '#FF6B8A', '#4AEDC4', '#7BA4F7'];
+import { getAgentColors } from '../lib/theme';
 
 function getAgentColor(id: string): string {
+  const colors = getAgentColors();
   let hash = 0;
   for (let i = 0; i < id.length; i++) hash = id.charCodeAt(i) + ((hash << 5) - hash);
-  return agentColors[Math.abs(hash) % agentColors.length];
+  return colors[Math.abs(hash) % colors.length];
 }
 
 const formatUptime = (seconds: number): string => {
@@ -154,7 +155,7 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged }: A
       {/* Info rows */}
       <div className="space-y-1.5 sm:space-y-2.5 text-xs sm:text-sm">
         <div className="flex justify-between items-center">
-          <span style={{ color: 'var(--text-secondary)' }}>Model</span>
+          <span className="text-secondary">Model</span>
           {changingModel ? (
             <select
               value={agent.modelId === 'auto' ? 'auto' : (agent.modelId ?? '')}
@@ -186,11 +187,11 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged }: A
         </div>
 
         <div className="flex justify-between">
-          <span style={{ color: 'var(--text-secondary)' }}>Uptime</span>
+          <span className="text-secondary">Uptime</span>
           <span className="text-white/80">{formatUptime(agent.uptime)}</span>
         </div>
         <div className="flex justify-between">
-          <span style={{ color: 'var(--text-secondary)' }}>Messages</span>
+          <span className="text-secondary">Messages</span>
           <span className="text-white/80">{agent.messageCount.toLocaleString()}</span>
         </div>
 

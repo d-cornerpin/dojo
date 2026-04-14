@@ -391,7 +391,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
             <button
               onClick={installAllMissing}
               disabled={allInstalling}
-              className="px-3 py-1.5 text-xs glass-btn-blue rounded-lg transition-colors"
+              className="px-3 py-1.5 text-xs glass-btn-primary rounded-lg transition-colors"
             >
               Retry All
             </button>
@@ -435,7 +435,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
                   onClick={() => pullModel('qwen3.5:9b')}
                   disabled={pulling !== null}
                   className={`px-3 py-1.5 text-xs font-medium rounded-lg shrink-0 transition-colors ${
-                    pulling === 'qwen3.5:9b' ? 'bg-yellow-600/20 text-yellow-400' : 'glass-btn-blue'
+                    pulling === 'qwen3.5:9b' ? 'bg-yellow-600/20 text-yellow-400' : 'glass-btn-primary'
                   }`}
                 >
                   {pulling === 'qwen3.5:9b' ? 'Downloading...' : 'Install'}
@@ -455,7 +455,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
             <button
               onClick={() => { if (manualModel.trim()) pullModel(manualModel.trim()); }}
               disabled={!manualModel.trim() || pulling !== null}
-              className="px-3 py-2 glass-btn-blue text-sm rounded-lg transition-colors shrink-0"
+              className="px-3 py-2 glass-btn-primary text-sm rounded-lg transition-colors shrink-0"
             >
               {pulling && pulling !== 'qwen3.5:9b' ? 'Pulling...' : 'Pull'}
             </button>

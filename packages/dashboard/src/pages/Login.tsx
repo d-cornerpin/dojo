@@ -57,7 +57,7 @@ export const Login = () => {
         <div className="text-center mb-8">
           <img src="/dojologo.svg" alt="DOJO" className="w-14 h-14 mx-auto mb-4" />
           <h1 className="text-2xl font-bold text-white tracking-wide">Agent D.O.J.O.</h1>
-          <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Delegated Operations & Job Orchestration</p>
+          <p className="text-sm mt-1 text-secondary">Delegated Operations & Job Orchestration</p>
         </div>
 
         {/* Login Form */}
@@ -66,7 +66,7 @@ export const Login = () => {
             {isFirstRun ? (
               <>
                 <h2 className="text-sm font-semibold text-white mb-1">Create Your Dashboard Password</h2>
-                <p className="text-xs mb-4" style={{ color: 'var(--text-secondary)' }}>
+                <p className="text-xs mb-4 text-secondary">
                   This password protects your DOJO dashboard. You'll use it each time you log in.
                 </p>
               </>
@@ -85,7 +85,7 @@ export const Login = () => {
           </div>
 
           {error && (
-            <div className="mb-4 px-3 py-2.5 rounded-glass-xs glass-badge-coral text-sm" style={{ background: 'rgba(255, 107, 138, 0.1)', border: '1px solid rgba(255, 107, 138, 0.2)' }}>
+            <div className="mb-4 px-3 py-2.5 rounded-glass-xs alert-banner alert-error text-sm">
               {error}
             </div>
           )}

@@ -195,18 +195,11 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`shrink-0 ${dragOver ? 'ring-2 ring-cp-amber/40' : ''}`}
-      style={isPrimary ? {
-        background: 'rgba(255,255,255,0.08)',
-        backdropFilter: 'blur(24px)',
-        WebkitBackdropFilter: 'blur(24px)',
-        borderTop: '1px solid rgba(255,255,255,0.12)',
-        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)',
-        padding: window.innerWidth < 640 ? '8px 10px' : '16px 24px',
-      } : {
-        borderTop: '1px solid rgba(255,255,255,0.06)',
-        background: 'rgba(255,255,255,0.04)',
-        padding: window.innerWidth < 640 ? '8px 10px' : '12px 16px',
+      className={`shrink-0 ${isPrimary ? 'glass-input-bar' : 'glass-input-bar-subtle'} ${dragOver ? 'ring-2 ring-cp-amber/40' : ''}`}
+      style={{
+        padding: isPrimary
+          ? (window.innerWidth < 640 ? '8px 10px' : '16px 24px')
+          : (window.innerWidth < 640 ? '8px 10px' : '12px 16px'),
       }}
     >
       {/* Error */}
@@ -311,7 +304,7 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
           <button
             onClick={handleSend}
             disabled={disabled || uploading || (!input.trim() && pendingFiles.length === 0)}
-            className="px-4 py-2.5 glass-btn-blue font-medium rounded-xl transition-colors shrink-0"
+            className="px-4 py-2.5 glass-btn-primary font-medium rounded-xl transition-colors shrink-0"
           >
             {uploading ? 'Uploading...' : 'Send'}
           </button>

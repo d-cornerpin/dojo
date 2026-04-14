@@ -1,3 +1,5 @@
+import { getThresholdColor } from '../lib/theme';
+
 interface BarChartItem {
   label: string;
   value: number;
@@ -59,13 +61,7 @@ export const PercentageBar = ({ value, max, color, showLabel = true }: Percentag
   const safeMax = max ?? 100;
   const pct = safeMax > 0 ? Math.min((safeValue / safeMax) * 100, 100) : 0;
 
-  const autoColor = (() => {
-    if (color) return color;
-    if (pct > 90) return '#ef4444';
-    if (pct > 75) return '#f97316';
-    if (pct > 50) return '#eab308';
-    return '#22c55e';
-  })();
+  const autoColor = color || getThresholdColor(pct);
 
   return (
     <div className="flex items-center gap-2">

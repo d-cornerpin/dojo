@@ -280,7 +280,7 @@ const IMBridgeSettings = () => {
               <button
                 onClick={addSender}
                 disabled={!newSender.trim()}
-                className="px-3 py-2 glass-btn-blue text-sm rounded-lg transition-colors"
+                className="px-3 py-2 glass-btn-primary text-sm rounded-lg transition-colors"
               >
                 Add
               </button>
@@ -312,7 +312,7 @@ const IMBridgeSettings = () => {
         <button
           onClick={handleSave}
           disabled={saving}
-          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
@@ -497,7 +497,7 @@ const RemoteAccessSettings = () => {
           <button
             onClick={handleInstall}
             disabled={installing}
-            className="px-3 py-1.5 text-xs glass-btn-blue rounded-lg transition-colors"
+            className="px-3 py-1.5 text-xs glass-btn-primary rounded-lg transition-colors"
           >
             {installing ? 'Installing...' : 'Install cloudflared'}
           </button>
@@ -617,7 +617,7 @@ const RemoteAccessSettings = () => {
               <button
                 onClick={handleEnable}
                 disabled={acting || (mode === 'named' && !token.trim())}
-                className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
+                className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
               >
                 {acting ? 'Connecting...' : mode === 'named' ? 'Save & Connect' : 'Enable Remote Access'}
               </button>
@@ -685,7 +685,7 @@ const OllamaSettings = () => {
         <button
           onClick={handleSave}
           disabled={saving}
-          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
@@ -765,7 +765,7 @@ const AgentLimitsSettings = () => {
         <button
           onClick={handleSave}
           disabled={saving}
-          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
         >
           {saving ? 'Saving...' : 'Save Limits'}
         </button>
@@ -894,7 +894,7 @@ const SearchSettings = () => {
         <button
           onClick={handleSave}
           disabled={saving || !apiKey.trim()}
-          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
@@ -990,7 +990,7 @@ const AgentSdkSetup = () => {
           <button
             onClick={handleVerify}
             disabled={verifying}
-            className="px-3 py-1.5 glass-btn-blue text-xs font-medium rounded-lg transition-colors"
+            className="px-3 py-1.5 glass-btn-primary text-xs font-medium rounded-lg transition-colors"
           >
             {verifying ? 'Verifying...' : 'Verify Connection'}
           </button>
@@ -1112,7 +1112,7 @@ const ProvidersTab = () => {
       ) : (
         <button
           onClick={() => setShowAdd(true)}
-          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
         >
           Add Provider
         </button>
@@ -1261,7 +1261,7 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
         <button
           type="submit"
           disabled={status === 'saving' || status === 'validating' || status === 'valid' || !name.trim() || (type !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())}
-          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
         >
           {status === 'saving' ? 'Adding...' : status === 'validating' ? 'Validating...' : 'Add & Validate'}
         </button>
@@ -1703,7 +1703,7 @@ const ModelRow = ({
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-2 py-1 text-xs glass-btn-blue rounded transition-colors"
+            className="px-2 py-1 text-xs glass-btn-primary rounded transition-colors"
           >
             {saving ? '...' : 'Save'}
           </button>
@@ -1810,7 +1810,7 @@ const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: 
         <button
           onClick={handleSearch}
           disabled={searching || !query.trim()}
-          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors shrink-0"
+          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors shrink-0"
         >
           {searching ? 'Searching...' : 'Search'}
         </button>
@@ -1964,7 +1964,7 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
             <button
               onClick={handleAdd}
               disabled={adding || !modelId.trim()}
-              className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
+              className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
             >
               {adding ? 'Adding...' : 'Add Model'}
             </button>
@@ -2164,7 +2164,7 @@ const ProfileTab = () => {
             />
             <div className="flex items-center gap-2">
               <button onClick={handleSaveName} disabled={savingName || !userName.trim()}
-                className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors">
+                className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors">
                 {savingName ? 'Saving...' : 'Save'}
               </button>
               {savedName && <span className="text-xs text-cp-teal">Saved!</span>}
@@ -2186,7 +2186,7 @@ const ProfileTab = () => {
           <div className="flex items-center gap-2 shrink-0">
             {savedProfile && <span className="text-xs text-cp-teal">Saved!</span>}
             <button onClick={handleSaveProfile} disabled={savingProfile || loadingProfile}
-              className="px-3 py-1.5 glass-btn-blue text-xs font-medium rounded-lg transition-colors">
+              className="px-3 py-1.5 glass-btn-primary text-xs font-medium rounded-lg transition-colors">
               {savingProfile ? 'Saving...' : 'Save'}
             </button>
           </div>
@@ -2377,7 +2377,7 @@ const SecurityTab = () => {
       <button
         type="submit"
         disabled={saving || !currentPassword || !newPassword || !confirmPassword}
-        className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
+        className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
       >
         {saving ? 'Changing...' : 'Change Password'}
       </button>
@@ -2508,7 +2508,7 @@ const DreamingTab = () => {
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
+            className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
           >
             {saving ? 'Saving...' : 'Save'}
           </button>
@@ -2731,7 +2731,7 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
         <button
           onClick={handleSave}
           disabled={saving || !imageModelId || imageCapableModels.length === 0}
-          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
@@ -2911,7 +2911,7 @@ const HealerCard = ({ models }: { models: Model[] }) => {
         <button
           onClick={handleSave}
           disabled={saving}
-          className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
@@ -3079,7 +3079,7 @@ const UpdateTab = () => {
             <button
               onClick={handleUpdate}
               disabled={updating}
-              className="px-4 py-2 glass-btn-blue text-sm font-medium rounded-lg transition-colors"
+              className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
             >
               {updating ? 'Updating...' : 'Update Now'}
             </button>

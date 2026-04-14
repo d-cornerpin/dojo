@@ -73,8 +73,7 @@ const TaskDetailPanel = ({
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
 
       {/* Panel */}
-      <div className="relative w-full max-w-md overflow-y-auto"
-        style={{ background: 'rgba(255,255,255,0.06)', backdropFilter: 'blur(30px)', WebkitBackdropFilter: 'blur(30px)', borderLeft: '1px solid rgba(255,255,255,0.12)', boxShadow: '-8px 0 32px rgba(0,0,0,0.4), inset 1px 0 0 rgba(255,255,255,0.08)' }}>
+      <div className="glass-panel relative w-full max-w-md overflow-y-auto">
         <div className="p-6 space-y-6">
           {/* Header */}
           <div className="flex items-start justify-between">
@@ -221,7 +220,7 @@ const TaskDetailPanel = ({
             <button
               onClick={handleAddNote}
               disabled={saving || !noteInput.trim()}
-              className="mt-2 px-3 py-1.5 text-sm glass-btn-blue rounded-lg transition-colors"
+              className="mt-2 px-3 py-1.5 text-sm glass-btn-primary rounded-lg transition-colors"
             >
               Add Note
             </button>
@@ -415,7 +414,7 @@ const CreateProjectModal = ({
           <button
             onClick={handleCreate}
             disabled={saving || !title.trim()}
-            className="px-4 py-2 text-sm glass-btn-blue rounded-lg transition-colors"
+            className="px-4 py-2 text-sm glass-btn-primary rounded-lg transition-colors"
           >
             {saving ? 'Creating...' : 'Create Project'}
           </button>

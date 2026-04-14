@@ -480,7 +480,7 @@ export const Memory = () => {
               <button
                 onClick={handleInject}
                 disabled={injecting || !injectContent.trim()}
-                className="px-4 py-2 text-xs rounded-lg glass-btn-blue transition-colors"
+                className="px-4 py-2 text-xs rounded-lg glass-btn-primary transition-colors"
               >
                 {injecting ? 'Injecting...' : 'Inject'}
               </button>

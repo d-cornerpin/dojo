@@ -506,7 +506,7 @@ export const Health = () => {
                   <button
                     onClick={handleSendTest}
                     disabled={sendingTest || !testMsg.trim()}
-                    className="px-2 py-1 glass-btn-blue text-xs font-medium rounded transition-colors"
+                    className="px-2 py-1 glass-btn-primary text-xs font-medium rounded transition-colors"
                   >
                     {sendingTest ? '...' : 'Send'}
                   </button>

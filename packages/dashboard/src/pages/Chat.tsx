@@ -98,7 +98,7 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
         {msg.attachments && msg.attachments.length > 0 && (
           <AttachmentChips attachments={msg.attachments} />
         )}
-        <div className="text-[9px] sm:text-[10px] mt-1.5 sm:mt-2" style={{ color: 'var(--text-tertiary)' }}>
+        <div className="text-[9px] sm:text-[10px] mt-1.5 sm:mt-2 text-tertiary">
           {formatDate(msg.createdAt)}
         </div>
       </div>
@@ -181,7 +181,7 @@ const AssistantBubble = ({ msg, wordyMode = true, modelNames = {} }: { msg: Chat
 
         {/* Timestamp */}
         {!msg.isStreaming && (
-          <div className="text-[10px] mt-1 px-1" style={{ color: 'var(--text-tertiary)' }}>
+          <div className="text-[10px] mt-1 px-1 text-tertiary">
             {formatDate(msg.createdAt)}
           </div>
         )}
@@ -547,7 +547,7 @@ export const Chat = () => {
             <div className="text-center animate-fade-up">
               <div className="text-4xl mb-4">{'\u{1F4AC}'}</div>
               <h2 className="text-xl font-semibold text-white/80 mb-2">Chat with {agentName || 'your agent'}</h2>
-              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Send a message to get started.</p>
+              <p className="text-sm text-secondary">Send a message to get started.</p>
             </div>
           </div>
         )}

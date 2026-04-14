@@ -90,7 +90,7 @@ const ImageLightbox = ({
   return (
     <div
       className="fixed inset-0 z-50 flex flex-col items-center justify-center cursor-pointer"
-      style={{ background: 'rgba(0,0,0,0.88)' }}
+      style={{ background: 'var(--overlay-dark)' }}
       onClick={onClose}
     >
       {/* Top-right controls — stopPropagation so clicking buttons
