@@ -35,9 +35,10 @@ export async function checkScheduledTasks(): Promise<void> {
   const db = getDb();
   const now = new Date().toISOString();
 
-  // ── Cleanup: orphaned runs (agent terminated) and stale runs (running too long) ──
+  // ── Cleanup ──
   cleanupOrphanedRuns();
   cleanupStaleRuns();
+  pruneTerminalTasks();
 
   const dueTasks = db.prepare(`
     SELECT * FROM tasks
@@ -322,5 +323,46 @@ function cleanupStaleRuns(): void {
         error: err instanceof Error ? err.message : String(err),
       });
     });
+  }
+}
+
+// ── Prune terminal tasks ──
+
+const TERMINAL_TASK_CAP = 50;
+let lastPruneAt = 0;
+const PRUNE_INTERVAL_MS = 3600_000; // Once per hour is plenty
+
+/**
+ * Keep each terminal state (complete, blocked, fallen) capped at 50 tasks.
+ * Oldest tasks beyond the cap are deleted along with their runs and poke logs.
+ */
+function pruneTerminalTasks(): void {
+  if (Date.now() - lastPruneAt < PRUNE_INTERVAL_MS) return;
+  lastPruneAt = Date.now();
+
+  const db = getDb();
+
+  for (const status of ['complete', 'blocked', 'fallen']) {
+    const overflow = db.prepare(`
+      SELECT id FROM tasks
+      WHERE status = ?
+      ORDER BY updated_at DESC
+      LIMIT -1 OFFSET ?
+    `).all(status, TERMINAL_TASK_CAP) as Array<{ id: string }>;
+
+    if (overflow.length === 0) continue;
+
+    const ids = overflow.map(r => r.id);
+    const placeholders = ids.map(() => '?').join(',');
+
+    // Clear agent references first
+    db.prepare(`UPDATE agents SET task_id = NULL WHERE task_id IN (${placeholders})`).run(...ids);
+    // Delete related records
+    db.prepare(`DELETE FROM poke_log WHERE task_id IN (${placeholders})`).run(...ids);
+    db.prepare(`DELETE FROM task_runs WHERE task_id IN (${placeholders})`).run(...ids);
+    // Delete the tasks
+    db.prepare(`DELETE FROM tasks WHERE id IN (${placeholders})`).run(...ids);
+
+    logger.info(`Scheduler: pruned ${ids.length} old ${status} task(s)`, { status, pruned: ids.length });
   }
 }
