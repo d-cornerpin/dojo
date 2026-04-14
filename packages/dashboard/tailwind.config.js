@@ -12,24 +12,24 @@ export default {
     },
     extend: {
       fontFamily: {
-        sans: ['"DM Sans"', 'system-ui', 'sans-serif'],
-        mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+        sans: ['var(--font-sans)', 'system-ui', 'sans-serif'],
+        mono: ['var(--font-mono)', 'ui-monospace', 'monospace'],
       },
       colors: {
-        // Backgrounds
-        'cp-bg': '#0B0F1A',
-        'cp-bg-secondary': '#141929',
-        'cp-sidebar': '#1A1F35',
+        // Backgrounds — use channel vars for opacity modifier support
+        'cp-bg': 'rgb(var(--cp-bg-ch) / <alpha-value>)',
+        'cp-bg-secondary': 'rgb(var(--cp-bg-secondary-ch) / <alpha-value>)',
+        'cp-sidebar': 'rgb(var(--cp-sidebar-ch) / <alpha-value>)',
         // Accents
-        'cp-amber': '#F5A623',
-        'cp-amber-light': '#FFBA42',
-        'cp-teal': '#00D4AA',
-        'cp-teal-light': '#4AEDC4',
-        'cp-coral': '#FF6B8A',
-        'cp-blue': '#5B8DEF',
-        'cp-blue-light': '#7BA4F7',
-        'cp-purple': '#A78BFA',
-        'cp-purple-deep': '#8B5CF6',
+        'cp-amber': 'rgb(var(--cp-amber-ch) / <alpha-value>)',
+        'cp-amber-light': 'rgb(var(--cp-amber-light-ch) / <alpha-value>)',
+        'cp-teal': 'rgb(var(--cp-teal-ch) / <alpha-value>)',
+        'cp-teal-light': 'rgb(var(--cp-teal-light-ch) / <alpha-value>)',
+        'cp-coral': 'rgb(var(--cp-coral-ch) / <alpha-value>)',
+        'cp-blue': 'rgb(var(--cp-blue-ch) / <alpha-value>)',
+        'cp-blue-light': 'rgb(var(--cp-blue-light-ch) / <alpha-value>)',
+        'cp-purple': 'rgb(var(--cp-purple-ch) / <alpha-value>)',
+        'cp-purple-deep': 'rgb(var(--cp-purple-deep-ch) / <alpha-value>)',
       },
       backdropBlur: {
         glass: '20px',

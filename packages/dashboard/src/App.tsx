@@ -20,6 +20,7 @@ import { Settings } from './pages/Settings';
 import { Costs } from './pages/Costs';
 import * as api from './lib/api';
 import { PostMigrationBanner } from './components/PostMigrationBanner';
+import { ThemeProvider } from './themes/ThemeProvider';
 
 // ── Auth guard — redirects to login if not authenticated ──
 
@@ -182,7 +183,9 @@ const GlobalAlerts = () => {
 export const App = () => {
   return (
     <AuthProvider>
-      <AppRoutes />
+      <ThemeProvider>
+        <AppRoutes />
+      </ThemeProvider>
     </AuthProvider>
   );
 };

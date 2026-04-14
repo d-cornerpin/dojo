@@ -10,6 +10,7 @@ import { MicrosoftWorkspaceSettings } from '../components/MicrosoftWorkspaceSett
 import { formatDate } from '../lib/dates';
 import { MigrationExport } from '../components/MigrationExport';
 import { MigrationImport } from '../components/MigrationImport';
+import { useTheme } from '../themes';
 
 type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'sensei' | 'integrations' | 'update';
 
@@ -86,7 +87,7 @@ export const Settings = () => {
       {activeTab === 'security' && <SecurityTab />}
       {activeTab === 'sensei' && <DreamingTab />}
       {activeTab === 'integrations' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-4xl">
+        <div className="columns-1 lg:columns-2 gap-6 max-w-4xl [&>*]:mb-6 [&>*]:break-inside-avoid">
           <GoogleWorkspaceSettings />
           <MicrosoftWorkspaceSettings />
         </div>
@@ -334,13 +335,53 @@ const IMBridgeSettings = () => {
 
 const PlatformTab = () => {
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-4xl">
+    <div className="columns-1 lg:columns-2 gap-6 max-w-4xl [&>*]:mb-6 [&>*]:break-inside-avoid">
       <AgentLimitsSettings />
       <OllamaSettings />
       <RemoteAccessSettings />
       <IMBridgeSettings />
       <SearchSettings />
       <MigrationSettings />
+      <FengShuiSettings />
+    </div>
+  );
+};
+
+// ── Feng Shui (Theme Picker) ──
+
+const FengShuiSettings = () => {
+  const { themeId, setTheme, themes } = useTheme();
+
+  return (
+    <div className="glass-card p-5 space-y-4">
+      <h3 className="card-header">Feng Shui</h3>
+      <p className="text-xs text-white/40">
+        Choose the visual theme for your Dojo.
+      </p>
+
+      <div className="grid gap-3">
+        {themes.map(theme => (
+          <button
+            key={theme.id}
+            onClick={() => setTheme(theme.id)}
+            className={`flex items-center gap-3 p-3 rounded-xl border transition-all text-left ${
+              themeId === theme.id
+                ? 'border-cp-amber bg-cp-amber/10'
+                : 'border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.06]'
+            }`}
+          >
+            <div className={`w-3 h-3 rounded-full shrink-0 border-2 ${
+              themeId === theme.id
+                ? 'border-cp-amber bg-cp-amber'
+                : 'border-white/30 bg-transparent'
+            }`} />
+            <div>
+              <div className="text-sm font-medium text-white">{theme.name}</div>
+              <div className="text-xs text-white/40">{theme.description}</div>
+            </div>
+          </button>
+        ))}
+      </div>
     </div>
   );
 };
@@ -2438,7 +2479,7 @@ const DreamingTab = () => {
 
   return (
     <div className="max-w-4xl">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="columns-1 lg:columns-2 gap-6 [&>*]:mb-6 [&>*]:break-inside-avoid">
       <div className="glass-card p-4 space-y-4">
         <div>
           <h3 className="card-header">Dreaming</h3>
@@ -3007,7 +3048,7 @@ const UpdateTab = () => {
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-4xl">
+    <div className="columns-1 lg:columns-2 gap-6 max-w-4xl [&>*]:mb-6 [&>*]:break-inside-avoid">
       <div className="glass-card p-4 space-y-4">
         <div>
           <h3 className="card-header">Software Update</h3>
