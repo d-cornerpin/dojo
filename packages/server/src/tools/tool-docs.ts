@@ -44,7 +44,7 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
 export const PM_AGENT_ALWAYS_LOADED = [
   ...DEFAULT_ALWAYS_LOADED_TOOLS,
   'tracker_list_active',
-  'tracker_get_task',
+  'tracker_get_status',
   'tracker_update_status',
   'tracker_add_notes',
   'send_to_agent',

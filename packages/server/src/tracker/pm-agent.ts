@@ -17,10 +17,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ── Poke Thresholds (in seconds) ──
 
-const POKE_THRESHOLDS: Record<string, { first: number; second: number; escalate: number }> = {
-  high:   { first: 180,  second: 600,   escalate: 1200 },
-  normal: { first: 300,  second: 900,   escalate: 1800 },
-  low:    { first: 600,  second: 1200,  escalate: 2400 },
+const POKE_THRESHOLDS: Record<string, { first: number; second: number; escalate: number; autoReset: number }> = {
+  high:   { first: 180,  second: 600,   escalate: 1200, autoReset: 2400 },
+  normal: { first: 300,  second: 900,   escalate: 1800, autoReset: 3600 },
+  low:    { first: 600,  second: 1200,  escalate: 2400, autoReset: 4800 },
 };
 
 const POKE_INTERVAL_MS = 60_000; // 60 seconds
@@ -276,6 +276,7 @@ export function stopPokeLoop(): void {
 // ── PM LLM Review — runs the PM agent's brain periodically ──
 
 let lastLLMReviewAt = 0;
+let lastSituationReportHash = '';
 const LLM_REVIEW_INTERVAL_MS = 600_000; // 10 minutes — gives tasks time to settle before reviewing
 
 // How many recent messages to keep for the PM. The PM is a stateless checker —
@@ -387,6 +388,25 @@ async function runPMReview(): Promise<void> {
         issues.push(`STALE: "${task.title}" has been on_deck for ${staleMin} minutes, assigned to ${agentName} but not started.`);
       }
     }
+
+    // 5. In-progress tasks where the assigned agent has gone silent
+    if (task.status === 'in_progress' && task.assignedTo) {
+      const agent = agents.find(a => a.id === task.assignedTo);
+      if (agent && agent.status !== 'terminated') {
+        // Check agent's last message activity
+        const lastMsg = db.prepare(`
+          SELECT created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1
+        `).get(task.assignedTo) as { created_at: string } | undefined;
+        if (lastMsg) {
+          const lastMsgTs = lastMsg.created_at.includes('Z') ? lastMsg.created_at : lastMsg.created_at + 'Z';
+          const idleMin = Math.floor((nowDate.getTime() - new Date(lastMsgTs).getTime()) / 60000);
+          if (idleMin >= 30) {
+            const agentName = task.assignedToName ?? task.assignedTo;
+            issues.push(`IDLE: "${task.title}" is in_progress but ${agentName} has had no activity for ${idleMin} minutes. Move to on_deck with tracker_update_status if the agent is not responsive.`);
+          }
+        }
+      }
+    }
   }
 
   // Build a compact summary of active tasks for the LLM to review
@@ -425,6 +445,22 @@ If you spot issues, call send_to_agent to tell ${primaryName}. You can also mess
 For engine-detected issues, act on them: call send_to_agent to notify ${primaryName} or poke the relevant agent.
 If everything looks fine, DO NOT call send_to_agent. Just end your turn silently — ${primaryName} does not need to hear "all clear" every check cycle. Only contact ${primaryName} when there is something actionable.
 Keep it brief.`;
+
+  // No engine-detected issues and nothing looks unusual — don't burn tokens
+  // for the PM to say "all clear."
+  if (issues.length === 0) {
+    logger.debug('PM review: no issues detected, skipping LLM call');
+    return;
+  }
+
+  // Skip if the situation hasn't changed since the last review — prevents the PM
+  // from generating identical tool calls and getting stopped for repetition.
+  const reportHash = taskSummary + engineIssues;
+  if (reportHash === lastSituationReportHash) {
+    logger.debug('PM review: situation unchanged since last review, skipping LLM call');
+    return;
+  }
+  lastSituationReportHash = reportHash;
 
   const msgId = uuidv4();
   db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`)
@@ -499,7 +535,10 @@ function runPokeCheck(): void {
     let pokeType: string | null = null;
     let pokeNumber = 0;
 
-    if (idleSeconds >= thresholds.escalate && lastPokeNumber < 3) {
+    if (idleSeconds >= thresholds.autoReset && lastPokeNumber < 4) {
+      pokeType = 'auto_reset';
+      pokeNumber = 4;
+    } else if (idleSeconds >= thresholds.escalate && lastPokeNumber < 3) {
       pokeType = 'escalate_primary';
       pokeNumber = 3;
     } else if (idleSeconds >= thresholds.second && lastPokeNumber < 2) {
@@ -512,13 +551,55 @@ function runPokeCheck(): void {
 
     if (!pokeType) continue;
 
-    // Build poke message with full task context
-    const pokeMessage = buildPokeMessage(task, pokeType, pokeNumber, idleSeconds);
-
-    // Determine recipient: escalation goes to primary agent, others go to assigned agent
     const primaryId = getPrimaryAgentId();
     const pmId = getPMAgentId();
     const pmName = getPMAgentName();
+
+    // ── Auto-reset: escalation failed, take direct action ──
+    if (pokeType === 'auto_reset') {
+      const db = getDb();
+      const idleMinutes = Math.floor(idleSeconds / 60);
+
+      // Move task back to on_deck so it can be retried
+      db.prepare("UPDATE tasks SET status = 'on_deck', updated_at = datetime('now') WHERE id = ?").run(task.id);
+
+      // If this is a scheduled task, also reset schedule_status so the scheduler retries
+      if (task.scheduleStatus === 'running') {
+        // Fail the current run and let onTaskRunComplete reset to waiting
+        import('../scheduler/runner.js').then(({ onTaskRunComplete }) => {
+          onTaskRunComplete(task.id, 'failed', `Auto-failed: agent idle for ${idleMinutes} minutes after full escalation chain`).catch(() => {});
+        });
+      }
+
+      // Notify primary agent
+      const resetMsg = `AUTO-RESET: Task "${task.title}" (${task.id}) was moved back to on_deck after ${idleMinutes} minutes idle. The assigned agent (${task.assignedToName ?? task.assignedTo}) did not respond after 3 pokes and escalation. The task needs to be reassigned or investigated.`;
+      sendAgentMessage(pmId, primaryId, 'status', resetMsg, {
+        taskId: task.id,
+        pokeType: 'auto_reset',
+        idleSeconds,
+      });
+
+      // Inject into primary agent's conversation
+      const resetMsgId = uuidv4();
+      db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, created_at) VALUES (?, ?, 'user', ?, ?, datetime('now'))`)
+        .run(resetMsgId, primaryId, `[SOURCE: PM AGENT AUTO-RESET — task pulled from stalled agent] ${resetMsg}`, pmId);
+      broadcast({ type: 'chat:message', agentId: primaryId, message: { id: resetMsgId, agentId: primaryId, role: 'user' as Message['role'], content: `[SOURCE: PM AGENT AUTO-RESET] ${resetMsg}`, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
+
+      // Trigger primary agent to process
+      const runtime = getAgentRuntime();
+      runtime.handleMessage(primaryId, `[${pmName} — Project Manager] ${resetMsg}`).catch(err => {
+        logger.error('PM auto-reset: failed to notify primary agent', { error: err instanceof Error ? err.message : String(err) });
+      });
+
+      logPoke(task.id, task.assignedTo, pokeNumber, pokeType);
+      logger.warn('PM auto-reset: task moved to on_deck', { taskId: task.id, title: task.title, idleMinutes, assignedTo: task.assignedTo });
+
+      broadcast({ type: 'tracker:poke', data: { taskId: task.id, agentId: task.assignedTo!, pokeType } });
+      continue;
+    }
+
+    // ── Normal poke (nudge / urgent / escalate) ──
+    const pokeMessage = buildPokeMessage(task, pokeType, pokeNumber, idleSeconds);
     const recipient = pokeType === 'escalate_primary' ? primaryId : task.assignedTo;
 
     // Send poke via agent bus
@@ -569,10 +650,6 @@ function runPokeCheck(): void {
         error: err instanceof Error ? err.message : String(err),
       });
     });
-
-    // Escalations go to the primary agent (already sent above via agent bus).
-    // The primary agent decides whether to contact the owner — the PM never
-    // sends iMessages directly.
 
     // Log the poke
     logPoke(task.id, task.assignedTo, pokeNumber, pokeType);

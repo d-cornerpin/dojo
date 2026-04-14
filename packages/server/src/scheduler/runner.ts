@@ -35,8 +35,9 @@ export async function checkScheduledTasks(): Promise<void> {
   const db = getDb();
   const now = new Date().toISOString();
 
-  // ── Orphan cleanup: tasks stuck in 'running' whose assigned agent is terminated ──
+  // ── Cleanup: orphaned runs (agent terminated) and stale runs (running too long) ──
   cleanupOrphanedRuns();
+  cleanupStaleRuns();
 
   const dueTasks = db.prepare(`
     SELECT * FROM tasks
@@ -258,15 +259,66 @@ function cleanupOrphanedRuns(): void {
   logger.info(`Scheduler: cleaning up ${orphans.length} orphaned run(s)`);
 
   for (const orphan of orphans) {
-    // Complete the orphaned run
-    db.prepare(`
-      UPDATE task_runs SET status = 'complete', completed_at = datetime('now'), result_summary = 'Auto-completed: assigned agent was terminated' WHERE id = ?
-    `).run(orphan.run_id);
-
-    // Trigger the normal completion flow so the task advances or finishes
+    // Let onTaskRunComplete handle the full flow — it updates the run status,
+    // increments run_count, calculates next_run_at, and resets schedule_status.
+    // Do NOT update task_runs before this call — onTaskRunComplete queries for
+    // status='running' and will miss the run if we change it first.
     onTaskRunComplete(orphan.task_id, 'complete', 'Auto-completed: assigned agent was terminated').catch(err => {
       logger.error('Scheduler: orphan cleanup failed for task', {
         taskId: orphan.task_id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
+}
+
+/**
+ * Safety net: find scheduled tasks stuck in 'running' where the assigned agent
+ * has gone silent. A task that takes 2 hours is fine as long as the agent is
+ * actively producing messages. But if the agent's last message was 30+ minutes
+ * ago, the agent has stalled and the run should be failed so the scheduler can
+ * retry on the next cycle.
+ */
+function cleanupStaleRuns(): void {
+  const db = getDb();
+  const AGENT_IDLE_THRESHOLD_MINUTES = 30;
+
+  // Find running scheduled tasks where the assigned agent has had no message
+  // activity for longer than the threshold. We check the agent's most recent
+  // message, not the task's updated_at (which gets bumped by PM pokes/notes).
+  const staleTasks = db.prepare(`
+    SELECT t.id, t.title, t.assigned_to
+    FROM tasks t
+    WHERE t.schedule_status = 'running'
+      AND t.assigned_to IS NOT NULL
+      AND (
+        SELECT MAX(m.created_at) FROM messages m WHERE m.agent_id = t.assigned_to
+      ) < datetime('now', '-' || ? || ' minutes')
+  `).all(AGENT_IDLE_THRESHOLD_MINUTES) as Array<{ id: string; title: string; assigned_to: string }>;
+
+  // Also catch running tasks with no assigned agent at all
+  const unassigned = db.prepare(`
+    SELECT t.id, t.title
+    FROM tasks t
+    WHERE t.schedule_status = 'running'
+      AND t.assigned_to IS NULL
+      AND t.last_run_at < datetime('now', '-5 minutes')
+  `).all() as Array<{ id: string; title: string }>;
+
+  const allStale = [
+    ...staleTasks.map(t => ({ id: t.id, title: t.title, reason: `assigned agent idle for ${AGENT_IDLE_THRESHOLD_MINUTES}+ minutes` })),
+    ...unassigned.map(t => ({ id: t.id, title: t.title, reason: 'no agent assigned' })),
+  ];
+
+  if (allStale.length === 0) return;
+
+  logger.warn(`Scheduler: ${allStale.length} stale running task(s) detected, marking failed`);
+
+  for (const task of allStale) {
+    logger.warn('Scheduler: auto-resetting stale task', { taskId: task.id, title: task.title, reason: task.reason });
+    onTaskRunComplete(task.id, 'failed', `Auto-failed: ${task.reason}`).catch(err => {
+      logger.error('Scheduler: stale cleanup failed', {
+        taskId: task.id,
         error: err instanceof Error ? err.message : String(err),
       });
     });

@@ -298,8 +298,29 @@ class AgentRuntime {
     let nudgedForRepetition = false; // Only nudge once for repetition
     let nudgedForEmptyResponse = false; // Only nudge once for empty output
     let nudgedForNoResults = false; // Only nudge once for empty search results
+    let nudgedForTracker = false; // Only nudge once for missing tracker task
+    let trackerToolCalled = false; // Whether agent has used any tracker tool this turn
+    let nonTrackerToolCalls = 0; // Count of non-tracker tool calls this turn
     // In-memory nudge — injected into context on next loop iteration, never persisted to DB
     let pendingNudge: string | null = null;
+
+    // Determine if this agent should be nudged about tracker usage.
+    // Nudge agents that have tracker tools, EXCEPT the PM (who manages the
+    // tracker but shouldn't create tasks for herself) and background system
+    // agents (Healer, Dreamer, Imaginer) that don't do user-facing work.
+    const agentToolsPolicy = JSON.parse((agent.tools_policy as string) || '{}');
+    const hasTrackerTools = !agentToolsPolicy.allow || (Array.isArray(agentToolsPolicy.allow) && agentToolsPolicy.allow.some((t: string) => t.startsWith('tracker_')));
+    let shouldNudgeTracker = hasTrackerTools;
+    try {
+      const { getPMAgentId, getHealerAgentId, getDreamerAgentId, getImaginerAgentId } = await import('../config/platform.js');
+      const excludedIds = [getPMAgentId(), getHealerAgentId(), getDreamerAgentId(), getImaginerAgentId()];
+      if (excludedIds.includes(agentId)) shouldNudgeTracker = false;
+    } catch { /* platform config not ready */ }
+    // If the agent already has in_progress tasks, don't nudge — they're continuing existing work
+    if (shouldNudgeTracker) {
+      const activeTask = db.prepare("SELECT id FROM tasks WHERE assigned_to = ? AND status = 'in_progress' LIMIT 1").get(agentId);
+      if (activeTask) shouldNudgeTracker = false;
+    }
 
     // Snapshot the turn boundary so context assembly ignores messages that
     // arrive mid-loop. Without this, a reply from another agent gets baked
@@ -749,6 +770,22 @@ class AgentRuntime {
       if (calledCompleteTask) {
         logger.info('Agent called complete_task, exiting loop', { agentId }, agentId);
         break;
+      }
+
+      // Track whether the agent is using the tracker. If it makes 3+ non-tracker
+      // tool calls without creating or updating a task, nudge it once.
+      if (shouldNudgeTracker && !nudgedForTracker) {
+        for (const tc of result.toolCalls) {
+          if (tc.name.startsWith('tracker_')) {
+            trackerToolCalled = true;
+          } else if (!['get_current_time', 'load_tool_docs', 'complete_task', 'vault_search', 'vault_remember', 'memory_grep'].includes(tc.name)) {
+            nonTrackerToolCalls++;
+          }
+        }
+        if (!trackerToolCalled && nonTrackerToolCalls >= 3) {
+          nudgedForTracker = true;
+          pendingNudge = '[System: You have made multiple tool calls without creating a tracker task. For any multi-step work, you MUST call tracker_create_task first so the PM can monitor progress. Create the task now, then continue your work.]';
+        }
       }
 
       // image_create is "fire and forget" — the image will appear in the

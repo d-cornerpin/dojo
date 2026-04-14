@@ -25,7 +25,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'Project Tracker',
-    tools: ['tracker_create_project', 'tracker_create_task', 'tracker_update_status', 'tracker_complete_step', 'tracker_add_notes', 'tracker_list_active', 'tracker_pause_schedule', 'tracker_resume_schedule', 'tracker_get_task'],
+    tools: ['tracker_create_project', 'tracker_create_task', 'tracker_update_status', 'tracker_complete_step', 'tracker_add_notes', 'tracker_list_active', 'tracker_pause_schedule', 'tracker_resume_schedule', 'tracker_get_status'],
   },
   {
     // Tools the primary agent uses to create, edit, organize, and communicate
