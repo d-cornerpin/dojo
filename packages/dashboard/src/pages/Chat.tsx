@@ -70,7 +70,7 @@ function parseMessageContent(raw: string): { text: string; blocks?: ContentBlock
       const textParts = parsed
         .filter((b: ContentBlock) => b.type === 'text' && b.text)
         .map((b: ContentBlock) => b.text)
-        .join('');
+        .join('\n\n');
       return { text: textParts, blocks: parsed };
     }
   } catch {
