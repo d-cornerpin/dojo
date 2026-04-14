@@ -35,8 +35,14 @@ interface ThemeProviderProps {
 export const ThemeProvider = ({ children }: ThemeProviderProps) => {
   const [themeId, setThemeId] = useState(DEFAULT_THEME);
 
-  // Load saved theme on mount
+  // Load saved theme on mount — but only if we have an auth token.
+  // Without this check, the API call returns 401 on the login page,
+  // the API client's 401 handler does window.location.href = '/login',
+  // and the page reloads in an infinite loop.
   useEffect(() => {
+    const token = localStorage.getItem('dojo_token');
+    if (!token) return;
+
     api.getSetting(SETTING_KEY).then(res => {
       if (res.ok && res.data.value) {
         const savedId = res.data.value;
@@ -46,7 +52,7 @@ export const ThemeProvider = ({ children }: ThemeProviderProps) => {
         }
       }
     }).catch(() => {
-      // Not authenticated yet or network error — use default theme
+      // Network error — use default theme
     });
   }, []);
 
