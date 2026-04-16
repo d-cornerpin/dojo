@@ -1356,9 +1356,33 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
   // Keep at least the last 4 messages so the agent has immediate context
   while (inputEstimate > hardInputLimit && anthropicMessages.length > 4) {
     anthropicMessages.splice(0, 1);
-    // Ensure we don't leave an orphaned assistant message at the start
-    while (anthropicMessages.length > 0 && anthropicMessages[0].role !== 'user') {
-      anthropicMessages.splice(0, 1);
+    // After trimming, walk forward until we land on a valid first message.
+    // Two invariants to enforce: (1) first message must be role=user, and
+    // (2) that user message must not START with tool_result blocks — if it
+    // does, those tool_result IDs refer to a tool_use we just trimmed away,
+    // which causes the Anthropic API to 400 with
+    // "unexpected tool_use_id found in tool_result blocks". Strip orphan
+    // tool_results off the front of the first user message (or drop it
+    // entirely if that's all it contained).
+    while (anthropicMessages.length > 0) {
+      const first = anthropicMessages[0];
+      if (first.role !== 'user') {
+        anthropicMessages.splice(0, 1);
+        continue;
+      }
+      if (Array.isArray(first.content)) {
+        const blocks = first.content as unknown as Array<Record<string, unknown>>;
+        const kept = blocks.filter(b => b.type !== 'tool_result');
+        if (kept.length === 0) {
+          // Entire message was orphan tool_results — drop it
+          anthropicMessages.splice(0, 1);
+          continue;
+        }
+        if (kept.length < blocks.length) {
+          anthropicMessages[0] = { ...first, content: kept as unknown as Anthropic.ContentBlockParam[] };
+        }
+      }
+      break;
     }
     inputEstimate = systemTokenEstimate + estimateMessageTokens(anthropicMessages) + toolTokenEstimate;
   }
