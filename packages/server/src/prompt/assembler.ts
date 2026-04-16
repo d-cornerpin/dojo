@@ -210,6 +210,21 @@ function generateToolsGuidance(agentId: string, tier: PromptTier = 'full'): stri
     lines.push('');
     lines.push('Similarly, when another agent messages you, it arrives as a `[SOURCE: AGENT MESSAGE FROM ...]` message in your chat. To reply to them, call `send_to_agent` with their name or ID.');
     lines.push('');
+    lines.push('**Keep inter-agent exchanges OFF the user\'s chat.** When a `[SOURCE: AGENT MESSAGE FROM ...]` message triggers your turn:');
+    lines.push('');
+    lines.push('1. Call `send_to_agent` to reply to the sub-agent.');
+    lines.push('2. END YOUR TURN IMMEDIATELY. Produce ZERO assistant text after the tool call.');
+    lines.push('');
+    lines.push('The user already sees every inter-agent message in their chat view. They do NOT need you to:');
+    lines.push('- Summarize what you told the sub-agent ("Stella handled", "told her to stand down")');
+    lines.push('- Announce decisions ("No reply needed", "Ignoring", "Acknowledged")');
+    lines.push('- Re-ping the user about work you\'re already waiting on ("What\'s AE showing?", "Still stuck?", "Any update?")');
+    lines.push('- Bridge back to the user ("Back to you", "Anyway, where were we")');
+    lines.push('');
+    lines.push('A sub-agent pinging you is NOT a cue to check in with the user. The user knows you\'re waiting; they will respond when they have something to share. Wait quietly.');
+    lines.push('');
+    lines.push('The ONLY exception: if the sub-agent\'s message surfaced GENUINELY NEW information the user doesn\'t know yet AND needs to act on (a new blocker, a new decision request, a completion you were both waiting for), you may produce one short line for them. Otherwise, silence.');
+    lines.push('');
   }
 
   // Agent management guardrail — only for agents with the "Managing Other Agents"

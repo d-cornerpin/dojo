@@ -2002,7 +2002,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
           // Persist as a user message with sender context and reply instructions
           const msgId = uuidv4();
-          const contextMessage = `[SOURCE: AGENT MESSAGE FROM ${senderName.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's from another agent] ${message}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
+          const contextMessage = `[SOURCE: AGENT MESSAGE FROM ${senderName.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's from another agent] ${message}\n\n[Reply via send_to_agent(agent="${agentId}", message="..."), then END YOUR TURN. Zero assistant text after the tool call. No summaries, no "acknowledged", no re-pinging the user. This exchange stays off the user's chat.]`;
 
           db.prepare(`
             INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, source_agent_id, created_at)
@@ -2079,7 +2079,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
         for (const member of groupMembers) {
           const bcMsgId = uuidv4();
-          const bcContextMsg = `[SOURCE: GROUP BROADCAST FROM ${senderName2.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's a broadcast from another agent to your group] ${broadcastMsg}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
+          const bcContextMsg = `[SOURCE: GROUP BROADCAST FROM ${senderName2.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's a broadcast from another agent to your group] ${broadcastMsg}\n\n[Reply via send_to_agent(agent="${agentId}", message="..."), then END YOUR TURN. Zero assistant text after the tool call. No summaries, no user-facing status lines.]`;
           bcDb.prepare(`
             INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, created_at)
             VALUES (?, ?, 'user', ?, ?, datetime('now'))
