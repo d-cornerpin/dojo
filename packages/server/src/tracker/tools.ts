@@ -470,6 +470,61 @@ export function trackerAddNotes(agentId: string, args: Record<string, unknown>):
   }
 }
 
+// ── trackerEditTask ──
+// Edit a task's title and/or description. Separate from trackerUpdateStatus
+// because status/priority/assignee changes have side effects (notifications,
+// scheduler callbacks, project completion checks) that should not fire when
+// the agent is simply rewriting the task's text.
+
+export function trackerEditTask(agentId: string, args: Record<string, unknown>): string {
+  try {
+    const rawTaskId = args.taskId as string;
+    if (!rawTaskId) return 'Error: taskId is required';
+
+    const resolved = resolveTaskId(rawTaskId);
+    if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+    const taskId = resolved.id;
+
+    const title = args.title as string | undefined;
+    const description = args.description as string | undefined;
+
+    if (title === undefined && description === undefined) {
+      return 'Error: at least one of title or description must be provided';
+    }
+
+    const updates: { title?: string; description?: string | null } = {};
+    if (title !== undefined) {
+      if (!title.trim()) return 'Error: title cannot be empty';
+      updates.title = title.trim();
+    }
+    if (description !== undefined) {
+      // Allow empty string to clear the description
+      updates.description = description === '' ? null : description;
+    }
+
+    const task = updateTask(taskId, updates);
+    if (!task) {
+      return `Error: Task ${taskId} was deleted before the update completed. It no longer exists.`;
+    }
+
+    const parts = [
+      `[OK] task_id=${task.id}`,
+      ``,
+      `Task updated: ${task.title}`,
+    ];
+    if (title !== undefined) parts.push(`Title changed.`);
+    if (description !== undefined) {
+      parts.push(task.description ? `Description updated (${task.description.length} chars).` : `Description cleared.`);
+    }
+
+    return parts.join('\n');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('trackerEditTask failed', { error: msg }, agentId);
+    return `Error editing task: ${msg}`;
+  }
+}
+
 // ── trackerGetStatus ──
 
 export function trackerGetStatus(agentId: string, args: Record<string, unknown>): string {

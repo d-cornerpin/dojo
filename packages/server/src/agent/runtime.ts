@@ -213,6 +213,19 @@ class AgentRuntime {
         this.setAgentStatus(agentId, 'error');
       }
 
+      // Notify the primary agent that a sub-agent is now injured so it
+      // knows work delegated to that agent has stalled. Without this, the
+      // primary has no way to tell its delegate hit a wall and will keep
+      // waiting forever. Skip when the injured agent IS the primary
+      // (no point notifying yourself), or is a known system agent whose
+      // state the primary isn't supposed to manage.
+      this.notifyPrimaryOfInjury(agentId, message, paused).catch(err => {
+        logger.warn('notifyPrimaryOfInjury failed', {
+          agentId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+
       // Broadcast error to dashboard with structured code — include root cause
       const isRateLimit = message.toLowerCase().includes('429') || message.toLowerCase().includes('rate_limit') || message.toLowerCase().includes('overloaded');
       const errorMsg = paused
@@ -980,6 +993,98 @@ class AgentRuntime {
       logger.error('Post-turn timeout check failed', {
         error: err instanceof Error ? err.message : String(err),
       }, agentId);
+    }
+  }
+
+  // When a sub-agent transitions into 'error' or 'paused' (injured/paused),
+  // drop a [SYSTEM] message into the primary agent's chat so it finds out
+  // immediately instead of discovering later that its delegate never
+  // responded. Injected as role='system' so the primary sees it on its
+  // next turn but is not forced to reply.
+  private async notifyPrimaryOfInjury(
+    injuredAgentId: string,
+    errorMessage: string,
+    pausedByLoop: boolean,
+  ): Promise<void> {
+    const { isPrimaryAgent, getPrimaryAgentId } = await import('../config/platform.js');
+
+    // Don't notify the primary about itself — the user sees the error
+    // banner for the primary agent directly.
+    if (isPrimaryAgent(injuredAgentId)) return;
+
+    const primaryId = getPrimaryAgentId();
+    if (!primaryId || primaryId === injuredAgentId) return;
+
+    try {
+      const db = getDb();
+      const injured = db.prepare('SELECT name, classification FROM agents WHERE id = ?').get(injuredAgentId) as
+        | { name: string; classification: string }
+        | undefined;
+      if (!injured) return;
+
+      // Find any tracker tasks currently assigned to this agent — those are
+      // the ones that just stalled.
+      interface StalledTaskRow { id: string; title: string; status: string }
+      const stalledTasks = db.prepare(`
+        SELECT id, title, status FROM tasks
+        WHERE assigned_to = ? AND status IN ('in_progress', 'on_deck')
+        ORDER BY updated_at DESC
+        LIMIT 5
+      `).all(injuredAgentId) as StalledTaskRow[];
+
+      const stateLabel = pausedByLoop ? 'PAUSED (hit error loop)' : 'INJURED';
+      const firstLineOfError = errorMessage.split('\n')[0].slice(0, 200);
+
+      const parts: string[] = [];
+      parts.push(
+        `[SOURCE: AGENT HEALTH ALERT — automated notification, not a message from the user] ⚠️ ${injured.name} (${injured.classification}, ID: ${injuredAgentId}) is now ${stateLabel}.`,
+      );
+      parts.push(`Last error: ${firstLineOfError}`);
+      if (stalledTasks.length > 0) {
+        parts.push('');
+        parts.push(`Tracker tasks now stalled on ${injured.name}:`);
+        for (const t of stalledTasks) {
+          parts.push(`  • ${t.title} (${t.status}, ID: ${t.id})`);
+        }
+      }
+      parts.push('');
+      parts.push(
+        `Options: (a) reset_session(agent_id="${injuredAgentId}") to heal them and let them retry, (b) reassign their work to another agent, or (c) escalate to the user. Do NOT wait indefinitely — they will not recover on their own.`,
+      );
+
+      const content = parts.join('\n');
+      const msgId = uuidv4();
+      db.prepare(`
+        INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+        VALUES (?, ?, 'system', ?, datetime('now'))
+      `).run(msgId, primaryId, content);
+
+      broadcast({
+        type: 'chat:message',
+        agentId: primaryId,
+        message: {
+          id: msgId,
+          agentId: primaryId,
+          role: 'system' as const,
+          content,
+          tokenCount: null,
+          modelId: null,
+          cost: null,
+          latencyMs: null,
+          createdAt: new Date().toISOString(),
+        },
+      });
+
+      logger.info('Primary agent notified of sub-agent injury', {
+        injuredAgentId,
+        injuredName: injured.name,
+        stalledTaskCount: stalledTasks.length,
+      }, primaryId);
+    } catch (err) {
+      logger.warn('Failed to notify primary of injury', {
+        injuredAgentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

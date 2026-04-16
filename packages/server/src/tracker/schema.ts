@@ -496,6 +496,8 @@ export function updateTask(id: string, updates: Partial<{
   assignedTo: string;
   priority: string;
   notes: string;
+  title: string;
+  description: string | null;
 }>): Task | null {
   const db = getDb();
 
@@ -523,6 +525,16 @@ export function updateTask(id: string, updates: Partial<{
   if (updates.notes !== undefined) {
     setClauses.push('notes = ?');
     params.push(updates.notes);
+  }
+
+  if (updates.title !== undefined) {
+    setClauses.push('title = ?');
+    params.push(updates.title);
+  }
+
+  if (updates.description !== undefined) {
+    setClauses.push('description = ?');
+    params.push(updates.description);
   }
 
   params.push(id);

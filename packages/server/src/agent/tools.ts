@@ -19,6 +19,7 @@ import {
   trackerCreateProject,
   trackerCreateTask,
   trackerUpdateStatus,
+  trackerEditTask,
   trackerAddNotes,
   trackerGetStatus,
   trackerListActive,
@@ -788,6 +789,28 @@ export const toolDefinitions: ToolDefinition[] = [
         },
       },
       required: ['task_id', 'notes'],
+    },
+  },
+  {
+    name: 'tracker_edit_task',
+    description: 'Edit a task\'s title and/or description (the main instructions field). Use this when the scope of a task has changed, or when clarifying/rewriting what needs to be done. Does NOT change status, assignee, priority, or append to notes — use tracker_update_status or tracker_add_notes for those. Pass an empty string for description to clear it.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: {
+          type: 'string',
+          description: 'The task ID to edit',
+        },
+        title: {
+          type: 'string',
+          description: 'New title for the task (optional)',
+        },
+        description: {
+          type: 'string',
+          description: 'New description/instructions for the task (optional). Pass an empty string to clear.',
+        },
+      },
+      required: ['task_id'],
     },
   },
   {
@@ -1876,6 +1899,13 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         } else if (target.status === 'terminated') {
           content = `Agent "${target.name}" (${target.id}) is terminated. Use spawn_agent to create a new one.`;
           isError = true;
+        } else if (target.status === 'error' || target.status === 'paused') {
+          // Block the send outright. An injured agent that keeps receiving
+          // messages just sits stuck in a broken state — the sender ends up
+          // waiting indefinitely. Force the sender to heal or reassign.
+          const stateLabel = target.status === 'error' ? 'INJURED' : 'PAUSED';
+          content = `Agent "${target.name}" (${target.id}) is ${stateLabel} and cannot respond right now. Message was NOT delivered.\n\nTo proceed, do ONE of:\n  1. reset_session(agent_id="${target.id}") — wipes their context and heals them; their conversation is archived to the vault first. After reset, send your message again.\n  2. Reassign the work — pick a different agent (list_agents to see options) or spawn_agent for a fresh one.\n  3. Tell the user the agent is injured and ask them to look at it.\n\nDo NOT just wait on this agent — they will not recover on their own.`;
+          isError = true;
         } else {
           // Get sender agent's name for context
           const senderRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
@@ -2151,6 +2181,16 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         });
         isError = content.startsWith('Error');
         break;
+      case 'tracker_edit_task': {
+        const editArgs: Record<string, unknown> = {
+          taskId: args.task_id as string,
+        };
+        if (args.title !== undefined) editArgs.title = args.title;
+        if (args.description !== undefined) editArgs.description = args.description;
+        content = trackerEditTask(agentId, editArgs);
+        isError = content.startsWith('Error');
+        break;
+      }
       case 'tracker_get_status': {
         // The tool takes a single 'id' param — try as task first, then project
         const lookupId = args.id as string;
@@ -2629,9 +2669,28 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           WHERE 1=1 ${statusFilter}
           ORDER BY a.name ASC
         `).all() as Array<Record<string, unknown>>;
-        content = agentRows.map(a =>
-          `- ${a.name} (ID: ${a.id}) — ${a.status}, ${a.classification}${a.group_name ? `, group: ${a.group_name}` : ''}`
-        ).join('\n') || 'No agents found.';
+        // Map raw status values to workflow-meaningful labels. INJURED and
+        // PAUSED are flagged in ALL-CAPS so the calling agent can't miss them
+        // when scanning the list.
+        const labelForStatus = (s: string): string => {
+          switch (s) {
+            case 'idle': return 'ready';
+            case 'working': return 'working';
+            case 'paused': return 'PAUSED (hit error loop — needs reset_session to recover)';
+            case 'error': return 'INJURED (runtime error — needs reset_session to recover, or will retry on next message but may re-fail)';
+            case 'terminated': return 'terminated';
+            default: return s;
+          }
+        };
+        const lines = agentRows.map(a =>
+          `- ${a.name} (ID: ${a.id}) — ${labelForStatus(a.status as string)}, ${a.classification}${a.group_name ? `, group: ${a.group_name}` : ''}`
+        );
+        const injuredCount = agentRows.filter(a => a.status === 'error' || a.status === 'paused').length;
+        if (injuredCount > 0) {
+          lines.push('');
+          lines.push(`⚠️ ${injuredCount} agent(s) are currently injured/paused and cannot reliably respond. Use reset_session(agent_id=...) to heal them, or reassign their work. Do NOT wait indefinitely on an injured agent.`);
+        }
+        content = lines.join('\n') || 'No agents found.';
         break;
       }
       case 'list_models': {
