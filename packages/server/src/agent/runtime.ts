@@ -314,6 +314,7 @@ class AgentRuntime {
     let nudgedForTracker = false; // Only nudge once for missing tracker task
     let trackerToolCalled = false; // Whether agent has used any tracker tool this turn
     let nonTrackerToolCalls = 0; // Count of non-tracker tool calls this turn
+    let toolCallsExecutedThisTurn = 0; // Total tool calls executed across all loop iterations this turn
     // In-memory nudge — injected into context on next loop iteration, never persisted to DB
     let pendingNudge: string | null = null;
 
@@ -521,8 +522,22 @@ class AgentRuntime {
         }
       }
 
-      // Empty/whitespace response detection — never go silent on the user
+      // Empty/whitespace response detection — never go silent on the user.
+      // EXCEPTION: if the agent already executed one or more tools in this
+      // turn and now returns with no text and no further tool calls, that's
+      // a legitimate end-of-turn ("I did the work, nothing more to say").
+      // This is expected behavior for agents responding to sub-agent messages
+      // where the system prompt explicitly tells them to end silently after
+      // calling send_to_agent. Without this carve-out the runtime nudges the
+      // model, and on the second empty returns a misleading "empty response"
+      // error toast even though the agent's work completed fine.
       if (result.toolCalls.length === 0 && (!result.content || result.content.trim().length === 0)) {
+        if (toolCallsExecutedThisTurn > 0) {
+          logger.debug('Empty response after tool calls — clean end-of-turn', {
+            loopCount, toolCallsExecutedThisTurn,
+          }, agentId);
+          break;
+        }
         if (!nudgedForEmptyResponse) {
           nudgedForEmptyResponse = true;
           logger.warn('Model returned empty response, will nudge on next iteration', { loopCount }, agentId);
@@ -693,6 +708,7 @@ class AgentRuntime {
         } catch { /* broadcast failure is non-fatal */ }
 
         let toolResult: { toolCallId: string; content: string; isError: boolean; name: string; errorCode?: string };
+        toolCallsExecutedThisTurn++;
         try {
           toolResult = await executeTool(agentId, toolCall);
         } catch (toolErr) {
