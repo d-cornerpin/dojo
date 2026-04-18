@@ -259,6 +259,12 @@ async function buildNativeOllamaMessages(
             : JSON.stringify(tr.content);
           native.push({ role: 'tool', content, tool_name: toolName });
         }
+        // Don't `continue` — emit any text blocks that were merged into
+        // this message by the assembler's mergeConsecutiveRoles.
+        const remainingText = blocks.filter(b => b.type === 'text').map(b => (b.text as string) ?? '').join('\n').trim();
+        if (remainingText) {
+          native.push({ role: 'user', content: remainingText });
+        }
         continue;
       }
 
@@ -707,6 +713,14 @@ async function buildOpenAIMessages(
             content: typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content),
           });
         }
+        // Don't `continue` — there may be text blocks in this message too
+        // (the assembler merges consecutive same-role messages, so a
+        // tool_result message can get merged with a text user message).
+        // Fall through to emit any text content as a separate user message.
+        const remainingText = blocks.filter(b => b.type === 'text').map(b => (b.text as string) ?? '').join('\n').trim();
+        if (remainingText) {
+          openaiMessages.push({ role: 'user', content: remainingText });
+        }
         continue;
       }
 
@@ -891,6 +905,12 @@ async function callOpenAIModel(
     // Preserve the system message (first) and the most recent messages.
     // Drop from index 1 forward (oldest conversation messages) until we're
     // under the ceiling. Each dropped message reclaims its estimated tokens.
+    //
+    // IMPORTANT: After dropping, clean up orphaned tool messages. When we
+    // drop an assistant message with tool_calls, the subsequent role='tool'
+    // messages reference tool_call_ids that no longer exist. And vice versa:
+    // dropping a role='tool' message leaves the assistant's tool_calls
+    // dangling. OpenAI-compatible providers reject both cases.
     let currentEstimate = inputEstimate;
     while (currentEstimate > hardCeiling && openaiMessages.length > 2) {
       const dropped = openaiMessages.splice(1, 1)[0];
@@ -898,6 +918,37 @@ async function callOpenAIModel(
         (typeof dropped.content === 'string' ? dropped.content : JSON.stringify(dropped.content ?? '')).length / 3,
       );
       currentEstimate -= droppedTokens;
+
+      // After dropping, walk forward from index 1 stripping orphans:
+      // - role='tool' messages whose tool_call_id has no matching assistant
+      // - assistant messages with tool_calls whose IDs have no matching tool message
+      while (openaiMessages.length > 2) {
+        const first = openaiMessages[1] as unknown as Record<string, unknown>; // index 0 is system
+        if (!first) break;
+        if (first.role === 'tool') {
+          // Orphan tool result — its assistant was just dropped
+          const toolTokens = Math.ceil(
+            (typeof first.content === 'string' ? first.content : JSON.stringify(first.content ?? '')).length / 3,
+          );
+          openaiMessages.splice(1, 1);
+          currentEstimate -= toolTokens;
+          continue;
+        }
+        if (first.role === 'assistant' && Array.isArray(first.tool_calls)) {
+          // Assistant with tool_calls at the front — check if next message
+          // is the matching tool result. If not, drop this assistant too.
+          const next = openaiMessages[2] as unknown as Record<string, unknown> | undefined;
+          if (!next || next.role !== 'tool') {
+            const astTokens = Math.ceil(
+              (typeof first.content === 'string' ? first.content : JSON.stringify(first.content ?? '')).length / 3,
+            );
+            openaiMessages.splice(1, 1);
+            currentEstimate -= astTokens;
+            continue;
+          }
+        }
+        break;
+      }
     }
 
     logger.info('Trimmed context to fit', {
