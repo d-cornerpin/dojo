@@ -336,7 +336,7 @@ async function runPMReview(): Promise<void> {
 
   // ── Engine-level checks (fast, deterministic, no LLM needed) ──
   const allTasks = listTasks({});
-  const activeTasks = allTasks.filter(t => !['complete', 'fallen'].includes(t.status));
+  const activeTasks = allTasks.filter(t => !['complete', 'fallen', 'paused'].includes(t.status));
 
   if (activeTasks.length === 0) return;
 
@@ -379,8 +379,10 @@ async function runPMReview(): Promise<void> {
       }
     }
 
-    // 4. Non-scheduled tasks stuck in on_deck with no activity
-    if (task.status === 'on_deck' && !task.scheduledStart && task.assignedTo) {
+    // 4. Non-scheduled tasks stuck in on_deck with no activity.
+    // Skip scheduled tasks waiting for their next run (schedule_status='waiting') —
+    // they sit in on_deck between runs and that's normal, not stale.
+    if (task.status === 'on_deck' && !task.scheduledStart && task.assignedTo && task.scheduleStatus !== 'waiting') {
       const updatedTime = new Date(task.updatedAt.includes('Z') ? task.updatedAt : task.updatedAt + 'Z');
       const staleMin = Math.floor((nowDate.getTime() - updatedTime.getTime()) / 60000);
       if (staleMin > 15) {
@@ -484,7 +486,7 @@ function runPokeCheck(): void {
   const db = getDb();
 
   // ── Engine-level quick checks (still needed for immediate alerts) ──
-  const allActiveTasks = listTasks({}).filter(t => !['complete', 'fallen'].includes(t.status));
+  const allActiveTasks = listTasks({}).filter(t => !['complete', 'fallen', 'paused'].includes(t.status));
 
   logger.info('PM poke loop tick', { activeTasks: allActiveTasks.length });
 

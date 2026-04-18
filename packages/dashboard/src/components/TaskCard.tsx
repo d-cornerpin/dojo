@@ -48,11 +48,12 @@ export const TaskCard = ({ task, onClick, onDeleted }: TaskCardProps) => {
 
   const isActive = task.status === 'in_progress';
   const isBlocked = task.status === 'blocked';
+  const isPaused = task.status === 'paused';
 
   const card = (
     <div
       onClick={onClick}
-      className="w-full text-left glass-nested p-3 hover:bg-white/[0.06] transition-colors cursor-pointer group relative"
+      className={`w-full text-left glass-nested p-3 hover:bg-white/[0.06] transition-colors cursor-pointer group relative${isPaused ? ' opacity-60' : ''}`}
     >
       <div className="flex items-start justify-between gap-2 mb-2">
         <h4 className="text-sm font-medium text-white/90 leading-tight line-clamp-2">
@@ -72,8 +73,21 @@ export const TaskCard = ({ task, onClick, onDeleted }: TaskCardProps) => {
         </div>
       </div>
 
+      {/* Paused indicator — shown for all paused tasks, with resume time if set */}
+      {isPaused && (
+        <div className="mb-2 space-y-0.5">
+          <div className="text-[10px] text-cp-purple flex items-center gap-1">
+            <span>{'\u23F8'}</span>
+            <span>{task.pausedUntil
+              ? `Paused until ${formatNextRun(task.pausedUntil)}`
+              : 'Paused indefinitely'
+            }</span>
+          </div>
+        </div>
+      )}
+
       {/* Schedule info */}
-      {isScheduled && (
+      {isScheduled && !isPaused && (
         <div className="mb-2 space-y-0.5">
           {task.nextRunAt && task.scheduleStatus === 'waiting' && (
             <div className="text-[10px] text-cp-blue flex items-center gap-1">
@@ -122,7 +136,7 @@ export const TaskCard = ({ task, onClick, onDeleted }: TaskCardProps) => {
     </div>
   );
 
-  if (isActive || isBlocked) {
+  if (isActive || isBlocked || isPaused) {
     return (
       <div className={isActive ? 'card-working-wrap' : ''}>
         {isActive && (
@@ -132,6 +146,7 @@ export const TaskCard = ({ task, onClick, onDeleted }: TaskCardProps) => {
           </>
         )}
         {isBlocked && <div className="card-error-glow" />}
+        {isPaused && <div className="card-error-glow" style={{ background: 'rgb(var(--cp-purple-ch) / 0.15)' }} />}
         {card}
       </div>
     );

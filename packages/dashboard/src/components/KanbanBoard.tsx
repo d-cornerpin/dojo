@@ -18,6 +18,7 @@ interface ColumnDef {
 const columns: ColumnDef[] = [
   { key: 'on_deck', label: 'On Deck', headerColor: 'white/55' },
   { key: 'in_progress', label: 'In Progress', headerColor: 'text-yellow-400' },
+  { key: 'paused', label: 'Paused', headerColor: 'text-purple-400' },
   { key: 'complete', label: 'Complete', headerColor: 'text-green-400' },
   { key: 'blocked', label: 'Blocked', headerColor: 'text-orange-400' },
   { key: 'fallen', label: 'Fallen', headerColor: 'text-red-400' },

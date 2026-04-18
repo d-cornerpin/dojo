@@ -109,6 +109,7 @@ const TaskDetailPanel = ({
             >
               <option value="on_deck">Pending</option>
               <option value="in_progress">In Progress</option>
+              <option value="paused">Paused</option>
               <option value="complete">Complete</option>
               <option value="blocked">Blocked</option>
               <option value="fallen">Failed</option>

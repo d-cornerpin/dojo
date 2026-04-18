@@ -44,6 +44,8 @@ interface TaskRow {
   next_run_at: string | null;
   run_count: number;
   is_paused: number;
+  paused_until: string | null;
+  status_before_pause: string | null;
   last_run_at: string | null;
   schedule_status: string;
   assigned_to_group: string | null;
@@ -122,6 +124,8 @@ function mapTaskRow(row: TaskRow): Task {
     nextRunAt: row.next_run_at ?? null,
     runCount: row.run_count ?? 0,
     isPaused: Boolean(row.is_paused),
+    pausedUntil: row.paused_until ?? null,
+    statusBeforePause: row.status_before_pause ?? null,
     scheduleStatus: row.schedule_status ?? 'unscheduled',
     assignedToGroup: row.assigned_to_group ?? null,
     createdAt: row.created_at,
@@ -248,6 +252,7 @@ export function getProject(id: string): ProjectDetail | null {
     complete: 0,
     blocked: 0,
     failed: 0,
+    paused: 0,
   };
 
   for (const task of tasks) {
@@ -257,6 +262,7 @@ export function getProject(id: string): ProjectDetail | null {
       case 'complete': taskCounts.complete++; break;
       case 'blocked': taskCounts.blocked++; break;
       case 'fallen': taskCounts.failed++; break;
+      case 'paused': taskCounts.paused++; break;
     }
   }
 
@@ -498,6 +504,7 @@ export function updateTask(id: string, updates: Partial<{
   notes: string;
   title: string;
   description: string | null;
+  pausedUntil: string | null;
 }>): Task | null {
   const db = getDb();
 
@@ -510,6 +517,37 @@ export function updateTask(id: string, updates: Partial<{
     if (updates.status === 'complete') {
       setClauses.push("completed_at = datetime('now')");
     }
+    // Keep is_paused in sync with status so the scheduler respects paused
+    // state regardless of whether the pause came from tracker_update_status
+    // or tracker_pause_schedule.
+    if (updates.status === 'paused') {
+      setClauses.push('is_paused = 1');
+      // Save the current status so we can restore it on auto-resume.
+      // Look up the task's current status BEFORE we overwrite it.
+      const currentTask = db.prepare('SELECT status FROM tasks WHERE id = ?').get(id) as { status: string } | undefined;
+      if (currentTask && currentTask.status !== 'paused') {
+        setClauses.push('status_before_pause = ?');
+        params.push(currentTask.status);
+      }
+      // Set paused_until if provided
+      if (updates.pausedUntil !== undefined) {
+        setClauses.push('paused_until = ?');
+        params.push(updates.pausedUntil);
+      }
+    } else {
+      // Moving OUT of paused — clear pause fields
+      if (updates.status !== 'complete') {
+        setClauses.push('is_paused = 0');
+      }
+      setClauses.push('paused_until = NULL');
+      setClauses.push('status_before_pause = NULL');
+    }
+  }
+
+  // Allow setting paused_until without changing status (e.g., updating the resume time)
+  if (updates.pausedUntil !== undefined && updates.status === undefined) {
+    setClauses.push('paused_until = ?');
+    params.push(updates.pausedUntil);
   }
 
   if (updates.assignedTo !== undefined) {

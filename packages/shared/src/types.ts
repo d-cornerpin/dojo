@@ -246,7 +246,7 @@ export interface Project {
 
 export interface ProjectDetail extends Project {
   tasks: Task[];
-  taskCounts: { pending: number; inProgress: number; complete: number; blocked: number; failed: number };
+  taskCounts: { pending: number; inProgress: number; complete: number; blocked: number; failed: number; paused: number };
 }
 
 export interface Task {
@@ -254,7 +254,7 @@ export interface Task {
   projectId: string | null;
   title: string;
   description: string | null;
-  status: 'on_deck' | 'in_progress' | 'complete' | 'blocked' | 'fallen';
+  status: 'on_deck' | 'in_progress' | 'complete' | 'blocked' | 'fallen' | 'paused';
   assignedTo: string | null;
   assignedToName: string | null;
   createdBy: string;
@@ -272,6 +272,8 @@ export interface Task {
   nextRunAt: string | null;
   runCount: number;
   isPaused: boolean;
+  pausedUntil: string | null;
+  statusBeforePause: string | null;
   scheduleStatus: string;
   assignedToGroup: string | null;
   createdAt: string;

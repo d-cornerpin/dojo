@@ -758,12 +758,16 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         status: {
           type: 'string',
-          enum: ['on_deck', 'in_progress', 'complete', 'blocked', 'fallen'],
-          description: 'New status for the task',
+          enum: ['on_deck', 'in_progress', 'complete', 'blocked', 'fallen', 'paused'],
+          description: 'New status for the task. Use "paused" for tasks intentionally put on hold — paused tasks are invisible to stale detection and the PM agent.',
         },
         notes: {
           type: 'string',
           description: 'Optional notes about the status change',
+        },
+        resume_at: {
+          type: 'string',
+          description: 'For paused tasks only: ISO 8601 datetime when the task should auto-resume (e.g., "2026-04-20T15:00:00"). The system will automatically restore the task to its pre-pause status at this time. Omit for an indefinite pause (resume manually). Always call get_current_time first to establish the current time before setting this.',
         },
         complete_all_runs: {
           type: 'boolean',
@@ -2169,6 +2173,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           status: args.status as string,
         };
         if (args.notes) updateArgs.notes = args.notes;
+        if (args.resume_at) updateArgs.resume_at = args.resume_at;
         if (args.complete_all_runs) updateArgs.complete_all_runs = args.complete_all_runs;
         content = trackerUpdateStatus(agentId, updateArgs);
         isError = content.startsWith('Error');

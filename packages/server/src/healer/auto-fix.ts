@@ -102,14 +102,21 @@ function fixOrphanedToolMessages(item: DiagnosticItem): AutoFixResult {
 function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
   if (item.code !== 'ORPHANED_TASK') return { applied: false, description: '' };
 
-  // Extract task info from the detail — unassign the task
+  // Unassign tasks from terminated agents. Paused tasks stay paused
+  // (the user explicitly paused them — don't silently unpause).
+  // Non-paused tasks move to on_deck so they can be reassigned.
   const db = getDb();
-  // Find tasks assigned to terminated agents
-  const orphaned = db.prepare(`
+  const unpaused = db.prepare(`
     UPDATE tasks SET assigned_to = NULL, status = 'on_deck', updated_at = datetime('now')
     WHERE assigned_to IN (SELECT id FROM agents WHERE status = 'terminated')
       AND status IN ('in_progress', 'on_deck')
   `).run();
+  const pausedOrphans = db.prepare(`
+    UPDATE tasks SET assigned_to = NULL, updated_at = datetime('now')
+    WHERE assigned_to IN (SELECT id FROM agents WHERE status = 'terminated')
+      AND status = 'paused'
+  `).run();
+  const orphaned = { changes: unpaused.changes + pausedOrphans.changes };
 
   if (orphaned.changes > 0) {
     return {

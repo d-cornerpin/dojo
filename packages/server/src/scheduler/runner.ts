@@ -39,6 +39,7 @@ export async function checkScheduledTasks(): Promise<void> {
   cleanupOrphanedRuns();
   cleanupStaleRuns();
   pruneTerminalTasks();
+  resumeExpiredPauses();
 
   const dueTasks = db.prepare(`
     SELECT * FROM tasks
@@ -291,6 +292,7 @@ function cleanupStaleRuns(): void {
     SELECT t.id, t.title, t.assigned_to
     FROM tasks t
     WHERE t.schedule_status = 'running'
+      AND t.status != 'paused'
       AND t.assigned_to IS NOT NULL
       AND (
         SELECT MAX(m.created_at) FROM messages m WHERE m.agent_id = t.assigned_to
@@ -302,6 +304,7 @@ function cleanupStaleRuns(): void {
     SELECT t.id, t.title
     FROM tasks t
     WHERE t.schedule_status = 'running'
+      AND t.status != 'paused'
       AND t.assigned_to IS NULL
       AND t.last_run_at < datetime('now', '-5 minutes')
   `).all() as Array<{ id: string; title: string }>;
@@ -331,6 +334,46 @@ function cleanupStaleRuns(): void {
 const TERMINAL_TASK_CAP = 50;
 let lastPruneAt = 0;
 const PRUNE_INTERVAL_MS = 3600_000; // Once per hour is plenty
+
+/**
+ * Auto-resume paused tasks whose paused_until time has passed.
+ * Restores the task to its pre-pause status (status_before_pause) and clears
+ * the pause fields. The PM agent will then see the task in its normal state
+ * and the process continues as usual.
+ */
+function resumeExpiredPauses(): void {
+  const db = getDb();
+  const now = new Date().toISOString();
+
+  const expired = db.prepare(`
+    SELECT id, title, status_before_pause, paused_until
+    FROM tasks
+    WHERE status = 'paused'
+      AND paused_until IS NOT NULL
+      AND paused_until <= ?
+  `).all(now) as Array<{ id: string; title: string; status_before_pause: string | null; paused_until: string }>;
+
+  for (const task of expired) {
+    const restoreStatus = task.status_before_pause ?? 'on_deck';
+    db.prepare(`
+      UPDATE tasks
+      SET status = ?, is_paused = 0, paused_until = NULL, status_before_pause = NULL, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(restoreStatus, task.id);
+
+    logger.info('Auto-resumed paused task (pause expired)', {
+      taskId: task.id,
+      title: task.title,
+      restoredStatus: restoreStatus,
+      pausedUntil: task.paused_until,
+    });
+
+    broadcast({
+      type: 'tracker:task_updated',
+      task: { id: task.id, status: restoreStatus },
+    } as never);
+  }
+}
 
 /**
  * Keep each terminal state (complete, blocked, fallen) capped at 50 tasks.

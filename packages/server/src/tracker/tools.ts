@@ -358,10 +358,16 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     const taskRow = db.prepare('SELECT schedule_status, repeat_interval FROM tasks WHERE id = ?').get(taskId) as { schedule_status: string; repeat_interval: number | null } | undefined;
     const isScheduledRecurring = taskRow && taskRow.schedule_status !== 'unscheduled' && taskRow.repeat_interval;
 
-    const updates: Record<string, string> = {};
+    const updates: Record<string, string | null> = {};
     if (status) updates.status = status;
     if (assignedTo) updates.assignedTo = assignedTo;
     if (priority) updates.priority = priority;
+
+    // Pass resume_at through for timed pauses
+    const resumeAt = args.resume_at as string | undefined;
+    if (status === 'paused' && resumeAt) {
+      updates.pausedUntil = resumeAt;
+    }
 
     // For recurring tasks being marked complete
     if (status === 'complete' && isScheduledRecurring) {
@@ -437,6 +443,11 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     ];
     if (task.assignedTo) parts.push(`Assigned to: ${task.assignedToName ?? task.assignedTo}`);
     parts.push(`Priority: ${task.priority}`);
+    if (task.status === 'paused' && task.pausedUntil) {
+      parts.push(`Auto-resumes: ${new Date(task.pausedUntil).toLocaleString()} (will restore to "${task.statusBeforePause ?? 'on_deck'}")`);
+    } else if (task.status === 'paused') {
+      parts.push('Paused indefinitely — must be resumed manually.');
+    }
 
     return parts.join('\n');
   } catch (err) {
@@ -707,6 +718,16 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
           }
         }
 
+        const paused = listTasks({ status: 'paused', ...taskFilter });
+        if (paused.length > 0) {
+          parts.push('');
+          parts.push(`Paused Tasks (${paused.length}):`);
+          for (const t of paused) {
+            const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
+            parts.push(`  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`);
+          }
+        }
+
         if (inProgress.length === 0 && pending.length === 0 && blocked.length === 0) {
           parts.push('');
           parts.push('No active tasks.');
@@ -744,6 +765,11 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
     // Get the completed task
     const task = getTask(taskId);
     if (!task) return `Error: Task ${taskId} was deleted before completion could be recorded.`;
+
+    // Guard: don't complete a paused task — it was intentionally put on hold
+    if (task.status === 'paused') {
+      return `Error: Task "${task.title}" is paused. It cannot be completed while paused. Unpause it first (tracker_update_status with status="in_progress") or ask ${getOwnerName()} for instructions.`;
+    }
 
     // Mark current task as complete
     updateTask(taskId, { status: 'complete', notes: notes ? `[Completed] ${notes}` : '[Completed]' });
@@ -824,9 +850,9 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
     return `Schedule stopped and task "${task.title}" marked complete.`;
   }
 
-  db.prepare("UPDATE tasks SET is_paused = 1, schedule_status = 'paused', updated_at = datetime('now') WHERE id = ?").run(taskId);
+  db.prepare("UPDATE tasks SET is_paused = 1, schedule_status = 'paused', status = 'paused', updated_at = datetime('now') WHERE id = ?").run(taskId);
   logger.info('Schedule paused', { taskId }, agentId);
-  return `Schedule paused for "${task.title}". It won't run again until resumed. NOTE: Task is still in "on_deck" status — if the work is already done, use mark_complete: true to finalize it.`;
+  return `Schedule paused for "${task.title}". Status set to "paused" — stale detection and PM monitoring will ignore it until resumed.`;
 }
 
 // ── trackerResumeSchedule ──
@@ -859,7 +885,7 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
   };
 
   const nextRun = calculateNextRun(scheduledTask);
-  db.prepare("UPDATE tasks SET is_paused = 0, schedule_status = 'waiting', next_run_at = ?, updated_at = datetime('now') WHERE id = ?").run(nextRun, taskId);
+  db.prepare("UPDATE tasks SET is_paused = 0, schedule_status = 'waiting', status = 'on_deck', next_run_at = ?, updated_at = datetime('now') WHERE id = ?").run(nextRun, taskId);
 
   logger.info('Schedule resumed', { taskId, nextRun }, agentId);
   return `Schedule resumed for "${task.title as string}". Next run: ${nextRun ?? 'none'}`;

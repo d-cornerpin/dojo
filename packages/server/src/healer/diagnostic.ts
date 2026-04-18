@@ -250,7 +250,7 @@ function getTrackerHealth(): DiagnosticItem[] {
     SELECT t.id, t.title, t.assigned_to, a.name as agent_name
     FROM tasks t
     JOIN agents a ON a.id = t.assigned_to
-    WHERE t.status IN ('in_progress', 'on_deck')
+    WHERE t.status IN ('in_progress', 'on_deck', 'paused')
       AND a.status = 'terminated'
   `).all() as Array<{ id: string; title: string; assigned_to: string; agent_name: string }>;
 
