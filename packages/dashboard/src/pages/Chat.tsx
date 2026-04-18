@@ -388,8 +388,11 @@ export const Chat = () => {
               ? [...currentToolCallsRef.current]
               : undefined;
             currentToolCallsRef.current = [];
-            setIsWorking(false);
-            // Ensure we're scrolled to the bottom after streaming completes
+            // NOTE: Do NOT setIsWorking(false) here. chat:chunk done:true
+            // fires on EVERY loop iteration, including mid-tool-loop when
+            // the agent is about to execute tools and call the model again.
+            // Let agent:status idle/error be the sole authority for clearing
+            // isWorking — that only fires when the agent's entire turn ends.
             requestAnimationFrame(() => scrollToBottom());
           }
           return [...prev.slice(0, -1), updated];
@@ -399,7 +402,6 @@ export const Chat = () => {
         } else {
           // New streaming message — but skip if it's empty and already done (ghost bubble)
           if (e.done && (!e.content || e.content.trim().length === 0)) {
-            setIsWorking(false);
             return prev;
           }
           return [

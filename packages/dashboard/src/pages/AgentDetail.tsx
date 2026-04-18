@@ -296,7 +296,8 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
               ? [...currentToolCallsRef.current]
               : undefined;
             currentToolCallsRef.current = [];
-            setIsWorking(false);
+            // Do NOT setIsWorking(false) — chat:chunk done fires mid-tool-loop.
+            // Let agent:status idle/error clear isWorking.
           }
           return [...prev.slice(0, -1), updated];
         } else if (prev.some((m) => m.id === e.messageId)) {
@@ -305,7 +306,6 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
         } else {
           // Skip empty done events (ghost bubbles)
           if (e.done && (!e.content || e.content.trim().length === 0)) {
-            setIsWorking(false);
             return prev;
           }
           return [
