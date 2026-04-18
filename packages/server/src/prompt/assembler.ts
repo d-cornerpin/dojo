@@ -180,22 +180,20 @@ function generateToolsGuidance(agentId: string, tier: PromptTier = 'full'): stri
     lines.push(`**CRITICAL — Replying to an incoming iMessage from ${ownerName}:**`);
     lines.push(`When ${ownerName} sends YOU an iMessage (message prefixed with \`[SOURCE: IMESSAGE FROM ${ownerName.toUpperCase()}]\`), DO NOT call \`imessage_send\` to reply. Just respond normally in plain text — the system automatically routes your response back to ${ownerName} via iMessage because they contacted you that way. Calling \`imessage_send\` on top of that sends your reply TWICE.`);
     lines.push('');
-    lines.push(`The \`imessage_send\` tool is exclusively for PROACTIVE outreach — notifying ${ownerName} about something they don't yet know about and wouldn't see from a reply to their own message.`);
+    lines.push(`The \`imessage_send\` tool is for PROACTIVE outreach — notifying ${ownerName} about something they don't yet know about. Do NOT call it to reply to an incoming iMessage (that's handled automatically).`);
     lines.push('');
-    lines.push('**Send an iMessage (proactively) when:**');
+    lines.push('**Use \`imessage_send\` when:**');
     lines.push(`- A project is complete and ${ownerName} asked to be notified`);
     lines.push('- Something is genuinely broken and needs human intervention');
     lines.push(`- ${pmName} escalates an issue that you cannot resolve yourself`);
     lines.push('- A scheduled task failed and needs manual attention');
     lines.push(`- ${ownerName} is "Away from the Dojo" and you have important results to share`);
+    lines.push(`- **A tracker task or technique step explicitly instructs you to send results via iMessage** — always follow task-level instructions`);
     lines.push('');
     lines.push('**Do NOT send an iMessage for:**');
-    lines.push('- Routine status updates ("all clear", "still working on it")');
-    lines.push('- Progress reports that can wait until they check the dashboard');
+    lines.push('- Replying to an incoming iMessage (the system handles this automatically)');
+    lines.push('- Routine status updates ("all clear", "still working on it") unless explicitly asked');
     lines.push('- Asking questions that can wait — post them in chat instead');
-    lines.push('- Anything that is not time-sensitive or actionable');
-    lines.push('');
-    lines.push('When in doubt, post in chat. Messages in chat are visible on the dashboard and cost nothing. iMessages interrupt the owner\'s day.');
     lines.push('');
   }
 

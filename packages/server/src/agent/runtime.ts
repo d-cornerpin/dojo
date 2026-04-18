@@ -315,6 +315,14 @@ class AgentRuntime {
     let trackerToolCalled = false; // Whether agent has used any tracker tool this turn
     let nonTrackerToolCalls = 0; // Count of non-tracker tool calls this turn
     let toolCallsExecutedThisTurn = 0; // Total tool calls executed across all loop iterations this turn
+    let lastAssistantTextForIM: string | null = null; // Last assistant text this turn — for iMessage routing after loop
+
+    // Detect if this turn was triggered by an incoming iMessage (content-based, not flag-based).
+    // This survives race conditions, server restarts, and abnormal loop exits — the flag alone does not.
+    const triggerRow = db.prepare(
+      "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1"
+    ).get(agentId) as { content: string } | undefined;
+    const triggeredByIMessage = triggerRow?.content?.includes('[SOURCE: IMESSAGE FROM') ?? false;
     // In-memory nudge — injected into context on next loop iteration, never persisted to DB
     let pendingNudge: string | null = null;
 
@@ -551,6 +559,12 @@ class AgentRuntime {
         break;
       }
 
+      // Track the last non-empty text the agent produces this turn.
+      // Used after the loop to route the response via iMessage if needed.
+      if (result.content && result.content.trim().length > 0) {
+        lastAssistantTextForIM = result.content.trim();
+      }
+
       // Sanitize model output — weak models sometimes produce literal "\n" strings
       // or excessive whitespace. Only apply to plain text, not JSON content.
       if (result.content && result.content.trim().length > 0) {
@@ -644,25 +658,8 @@ class AgentRuntime {
         });
       }
 
-      // If no tool calls, we're done
+      // If no tool calls, we're done — iMessage routing happens after the loop
       if (result.toolCalls.length === 0) {
-        if (result.content) {
-          try {
-            const { getPresence } = await import('../services/presence.js');
-            const { isPrimaryAgent } = await import('../config/platform.js');
-            const presence = getPresence();
-
-            if (presence === 'away' && isPrimaryAgent(agentId)) {
-              // Rule 1: User is "away from the dojo" → always send via iMessage
-              sendResponseViaIMessage(result.content, agentId);
-              clearIMResponseFlag(agentId);
-            } else if (isAwaitingIMResponse(agentId)) {
-              // Rule 2: User is "in the dojo" but this turn was triggered by an iMessage → reply via iMessage
-              sendResponseViaIMessage(result.content, agentId);
-              clearIMResponseFlag(agentId);
-            }
-          } catch { /* presence/imessage module may not be available */ }
-        }
 
         // Final response — unlock model for next user message
         lockedModelId = null;
@@ -827,33 +824,7 @@ class AgentRuntime {
       const calledImageCreate = result.toolCalls.some(tc => tc.name === 'image_create');
       if (calledImageCreate) {
         logger.info('Agent called image_create, exiting loop (delivery is async)', { agentId }, agentId);
-
-        // If this turn was triggered by an iMessage, send the agent's
-        // acknowledgment text ("On it, I'll generate that for you") back
-        // to the user NOW — because the normal iMessage-reply path only
-        // fires in the text-only (no tool calls) branch, which we're
-        // about to skip by breaking out of the loop. Without this, the
-        // iMessage user would get silence until the image is ready.
-        if (result.content) {
-          try {
-            const { getPresence } = await import('../services/presence.js');
-            const { isPrimaryAgent } = await import('../config/platform.js');
-            const presence = getPresence();
-            // Trim trailing whitespace — the model often appends \n\n
-            // before a tool_use block, which the dashboard trims on
-            // render but iMessage would display as literal newlines.
-            const ackText = result.content.trim();
-
-            if (presence === 'away' && isPrimaryAgent(agentId)) {
-              sendResponseViaIMessage(ackText, agentId);
-              clearIMResponseFlag(agentId);
-            } else if (isAwaitingIMResponse(agentId)) {
-              sendResponseViaIMessage(ackText, agentId);
-              clearIMResponseFlag(agentId);
-            }
-          } catch { /* presence/imessage module may not be available */ }
-        }
-
+        // iMessage routing for the ack text is handled after the loop
         break;
       }
 
@@ -905,6 +876,41 @@ class AgentRuntime {
       db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))`).run(sysMsgId, agentId, sysMsg);
       broadcast({ type: 'chat:message', agentId, message: { id: sysMsgId, agentId, role: 'system' as const, content: sysMsg, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
     }
+
+    // ── iMessage response routing ──
+    // Runs AFTER the loop regardless of exit path (text-only, tool+text, abnormal
+    // exit). Replaces the old in-loop check that only fired for text-only
+    // responses, missing cases where the agent produced text alongside tool calls
+    // (e.g., text + vault_remember, text + tracker_update_status).
+    //
+    // Two independent detection mechanisms (belt and suspenders):
+    //   1. Content-based: triggeredByIMessage — checks if the last user message
+    //      in the DB has [SOURCE: IMESSAGE FROM]. Survives race conditions, server
+    //      restarts, and abnormal loop exits.
+    //   2. Flag-based: isAwaitingIMResponse — the traditional pendingIMResponseMap.
+    //      Handles edge cases where content detection might miss (e.g., message was
+    //      compacted away between detection and loop end).
+    //
+    // For presence=away, use maybeForwardToImessage which filters out system
+    // messages, distills for text length, and prefixes with agent name.
+    try {
+      const { isPrimaryAgent: isPrimary } = await import('../config/platform.js');
+      if (isPrimary(agentId) && lastAssistantTextForIM) {
+        if (triggeredByIMessage || isAwaitingIMResponse(agentId)) {
+          // Direct reply to an incoming iMessage — send full content
+          sendResponseViaIMessage(lastAssistantTextForIM, agentId);
+        } else {
+          // Not triggered by iMessage — check if user is away for proactive forwarding
+          const { getPresence } = await import('../services/presence.js');
+          if (getPresence() === 'away') {
+            const { maybeForwardToImessage } = await import('../services/presence.js');
+            maybeForwardToImessage(agentId, lastAssistantTextForIM);
+          }
+        }
+      }
+    } catch { /* presence/imessage module may not be available */ }
+    // ALWAYS clear the flag so stale entries don't contaminate future turns
+    clearIMResponseFlag(agentId);
 
     // ── Auto-route: if this turn was triggered by a send_to_agent message and the
     // agent responded with text but forgot to call send_to_agent back, automatically
