@@ -559,7 +559,7 @@ async function pollMessages(): Promise<void> {
           }
 
           const textForModel = bodyParts.join('\n\n');
-          const msgContent = `[SOURCE: IMESSAGE FROM ${ownerName.toUpperCase()} — this message came from iMessage, not the dashboard chat] ${textForModel}`;
+          const msgContent = `[SOURCE: IMESSAGE FROM ${ownerName.toUpperCase()} — this message came from iMessage, not the dashboard chat. Respond to THIS topic ONLY. Do not include unrelated dashboard conversation topics in your response.] ${textForModel}`;
 
           db.prepare(`
             INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)

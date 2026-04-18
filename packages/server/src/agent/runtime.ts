@@ -317,12 +317,20 @@ class AgentRuntime {
     let toolCallsExecutedThisTurn = 0; // Total tool calls executed across all loop iterations this turn
     let lastAssistantTextForIM: string | null = null; // Last assistant text this turn — for iMessage routing after loop
 
-    // Detect if this turn was triggered by an incoming iMessage (content-based, not flag-based).
-    // This survives race conditions, server restarts, and abnormal loop exits — the flag alone does not.
+    // Detect if this turn was triggered by an incoming iMessage.
+    // Two mechanisms — content-based is primary, flag is secondary:
+    //   1. Content-based: check if the most recent user message has the iMessage source tag.
+    //      Survives race conditions, server restarts, and abnormal loop exits.
+    //   2. Flag-based: snapshot pendingIMResponseMap NOW, at the start of the run.
+    //      If the flag is set later during the run (new iMessage arrives while we're busy),
+    //      we do NOT consume it — the wakeup run will handle it. This prevents the wrong
+    //      response (e.g., a mail check) from being sent via iMessage just because an
+    //      unrelated iMessage arrived mid-run.
     const triggerRow = db.prepare(
       "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1"
     ).get(agentId) as { content: string } | undefined;
     const triggeredByIMessage = triggerRow?.content?.includes('[SOURCE: IMESSAGE FROM') ?? false;
+    const imFlagSetAtRunStart = isAwaitingIMResponse(agentId);
     // In-memory nudge — injected into context on next loop iteration, never persisted to DB
     let pendingNudge: string | null = null;
 
@@ -897,7 +905,11 @@ class AgentRuntime {
       const { isPrimaryAgent: isPrimary } = await import('../config/platform.js');
       if (isPrimary(agentId) && lastAssistantTextForIM) {
         let sentViaIMessage = false;
-        if (triggeredByIMessage || isAwaitingIMResponse(agentId)) {
+        // Only route via iMessage if THIS run was triggered by an iMessage.
+        // Use the snapshot (imFlagSetAtRunStart) — NOT the live flag, which
+        // may have been set mid-run by a NEW iMessage that arrived while we
+        // were busy. That new iMessage belongs to the wakeup run, not this one.
+        if (triggeredByIMessage || imFlagSetAtRunStart) {
           // Direct reply to an incoming iMessage — send full content
           sendResponseViaIMessage(lastAssistantTextForIM, agentId);
           sentViaIMessage = true;
@@ -926,8 +938,13 @@ class AgentRuntime {
         }
       }
     } catch { /* presence/imessage module may not be available */ }
-    // ALWAYS clear the flag so stale entries don't contaminate future turns
-    clearIMResponseFlag(agentId);
+    // Only clear the flag if it was set when this run STARTED — meaning this
+    // run consumed it. If the flag was set mid-run (new iMessage arrived while
+    // busy), leave it for the wakeup run. If the flag wasn't set at all, this
+    // is a no-op.
+    if (imFlagSetAtRunStart) {
+      clearIMResponseFlag(agentId);
+    }
 
     // ── Auto-route: if this turn was triggered by a send_to_agent message and the
     // agent responded with text but forgot to call send_to_agent back, automatically
