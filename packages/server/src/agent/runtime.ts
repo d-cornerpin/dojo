@@ -896,16 +896,33 @@ class AgentRuntime {
     try {
       const { isPrimaryAgent: isPrimary } = await import('../config/platform.js');
       if (isPrimary(agentId) && lastAssistantTextForIM) {
+        let sentViaIMessage = false;
         if (triggeredByIMessage || isAwaitingIMResponse(agentId)) {
           // Direct reply to an incoming iMessage — send full content
           sendResponseViaIMessage(lastAssistantTextForIM, agentId);
+          sentViaIMessage = true;
         } else {
           // Not triggered by iMessage — check if user is away for proactive forwarding
           const { getPresence } = await import('../services/presence.js');
           if (getPresence() === 'away') {
             const { maybeForwardToImessage } = await import('../services/presence.js');
             maybeForwardToImessage(agentId, lastAssistantTextForIM);
+            sentViaIMessage = true;
           }
+        }
+
+        // Inject a visible system message so both the agent (on future turns)
+        // and the user (on the dashboard) can see that this response was
+        // delivered via iMessage. Without this tag, outgoing iMessages are
+        // invisible in context — the agent can't distinguish which of its
+        // past responses went to iMessage vs. dashboard, and blends topics
+        // from the two channels together.
+        if (sentViaIMessage) {
+          const { getOwnerName } = await import('../config/platform.js');
+          const imTagId = uuidv4();
+          const imTagContent = `[SENT VIA IMESSAGE to ${getOwnerName()}]`;
+          db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))`).run(imTagId, agentId, imTagContent);
+          broadcast({ type: 'chat:message', agentId, message: { id: imTagId, agentId, role: 'system' as const, content: imTagContent, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
         }
       }
     } catch { /* presence/imessage module may not be available */ }
