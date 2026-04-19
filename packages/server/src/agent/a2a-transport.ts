@@ -22,17 +22,27 @@ import { getAgentRuntime } from './runtime.js';
 // Types are still imported from @dojo/shared as type-only (erased at compile time).
 import type { A2AIntent, A2AEnvelope, A2ADropReason } from '@dojo/shared';
 
+// Terminal intents CLOSE the thread (prevent acknowledgement replies).
+// But closing the thread and waking the receiver are INDEPENDENT concepts.
 const TERMINAL_INTENTS = new Set<A2AIntent>(['DELIVERABLE', 'FYI', 'COMPLETE', 'FAIL', 'ANSWER']);
 const REOPENING_INTENTS = new Set<A2AIntent>(['QUESTION', 'BLOCK', 'ASSIGN']);
+
+// "No-wake" intents: terminal AND the receiver doesn't need to see it now.
+// ANSWER and DELIVERABLE are terminal but DO wake — the receiver is waiting
+// for the content to continue their work. The thread closure prevents
+// acknowledgement loops separately.
+const NO_WAKE_INTENTS = new Set<A2AIntent>(['FYI', 'STATUS', 'COMPLETE', 'FAIL']);
+
 const MAX_HOPS_PER_THREAD = 8;
 const DEDUP_SIMILARITY_THRESHOLD = 0.85;
 const DEDUP_LOOKBACK = 3;
 
 function isTerminalIntent(intent: A2AIntent): boolean { return TERMINAL_INTENTS.has(intent); }
+function isNoWakeIntent(intent: A2AIntent): boolean { return NO_WAKE_INTENTS.has(intent); }
 function isReopeningIntent(intent: A2AIntent): boolean { return REOPENING_INTENTS.has(intent); }
 
 // Re-export for callers that need these (tools.ts)
-export { isTerminalIntent, isReopeningIntent, type A2AIntent };
+export { isTerminalIntent, isNoWakeIntent, isReopeningIntent, type A2AIntent };
 
 const logger = createLogger('a2a-transport');
 
@@ -205,10 +215,18 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
     return { delivered: false, reason: 'AGENT_NOT_FOUND', threadId: envelope.threadId };
   }
 
-  // ── 3. Enforce terminal intent rules ──
+  // ── 3. Enforce intent rules ──
+  // Two independent concepts:
+  //   - Terminal: closes the thread (prevents acknowledgement replies)
+  //   - No-wake: receiver is NOT woken (message is read-only context)
+  //
+  // ANSWER and DELIVERABLE are terminal (close thread) but DO wake the
+  // receiver — the receiver asked for this content and needs it to
+  // continue working. FYI, STATUS, COMPLETE, FAIL are both terminal
+  // AND no-wake — nobody is waiting for them.
   let requiresResponse = envelope.requiresResponse;
-  if (isTerminalIntent(envelope.intent)) {
-    requiresResponse = false; // Force — terminal intents never require a response
+  if (isNoWakeIntent(envelope.intent)) {
+    requiresResponse = false; // Force — these intents never wake the receiver
   }
 
   // ── 4. Thread state checks ──

@@ -211,9 +211,11 @@ function generateToolsGuidance(agentId: string, tier: PromptTier = 'full'): stri
     lines.push('- `ASSIGN` — you are handing off work');
     lines.push('- `BLOCK` — you are stuck and need input');
     lines.push('');
+    lines.push('**Intents that WAKE the receiver but CLOSE the thread (no acknowledgement allowed):**');
+    lines.push('- `ANSWER` — responding to a prior question (receiver needs it to continue)');
+    lines.push('- `DELIVERABLE` — here is the thing you asked for (receiver needs it to continue)');
+    lines.push('');
     lines.push('**Intents that do NOT wake the receiver (read-only context, no response):**');
-    lines.push('- `ANSWER` — responding to a prior question');
-    lines.push('- `DELIVERABLE` — here is the thing you asked for');
     lines.push('- `FYI` — for awareness, no action needed');
     lines.push('- `STATUS` — progress update');
     lines.push('- `COMPLETE` — I am done with my part');

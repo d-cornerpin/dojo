@@ -30,10 +30,17 @@ export interface A2AEnvelope {
   attachPaths?: string[];
 }
 
-// Terminal intents ALWAYS force requires_response to false.
-// After a terminal intent, the thread is closed to non-reopening intents.
+// Terminal intents CLOSE the thread (no further acknowledgements allowed).
+// After a terminal intent, only QUESTION, BLOCK, or ASSIGN can reopen.
 export const TERMINAL_INTENTS: ReadonlySet<A2AIntent> = new Set([
   'DELIVERABLE', 'FYI', 'COMPLETE', 'FAIL', 'ANSWER',
+]);
+
+// No-wake intents: terminal AND the receiver doesn't need to see it now.
+// ANSWER and DELIVERABLE are terminal but DO wake — the receiver is
+// waiting for the content to continue their work.
+export const NO_WAKE_INTENTS: ReadonlySet<A2AIntent> = new Set([
+  'FYI', 'STATUS', 'COMPLETE', 'FAIL',
 ]);
 
 // Only these intents can reopen a terminated thread.

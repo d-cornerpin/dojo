@@ -1909,17 +1909,20 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           ? rawAttachPaths.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
           : [];
 
-        // Determine requires_response from explicit arg, or default by intent
-        const { isTerminalIntent: isTerminal } = await import('./a2a-transport.js');
+        // Determine requires_response from explicit arg, or default by intent.
+        // ANSWER and DELIVERABLE default to true (receiver is waiting for
+        // the content) even though they close the thread. FYI, STATUS,
+        // COMPLETE, FAIL default to false (no one is waiting).
+        const { isNoWakeIntent } = await import('./a2a-transport.js');
         let requiresResponse: boolean;
         if (args.requires_response !== undefined) {
           requiresResponse = !!args.requires_response;
         } else {
-          // Default: QUESTION, ASSIGN, BLOCK expect a response; everything else doesn't
-          requiresResponse = ['QUESTION', 'ASSIGN', 'BLOCK'].includes(intent);
+          // Default: no-wake intents don't wake; everything else does
+          requiresResponse = !isNoWakeIntent(intent as import('./a2a-transport.js').A2AIntent);
         }
-        // Terminal intents ALWAYS force false
-        if (isTerminal(intent as import('./a2a-transport.js').A2AIntent)) {
+        // No-wake intents ALWAYS force false (transport also enforces this)
+        if (isNoWakeIntent(intent as import('./a2a-transport.js').A2AIntent)) {
           requiresResponse = false;
         }
 
