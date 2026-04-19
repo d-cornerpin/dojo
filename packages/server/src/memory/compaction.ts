@@ -84,6 +84,14 @@ export async function checkAndCompact(
       threshold,
     }, agentId);
 
+    // ── Pre-compaction continuity brief ──
+    // BEFORE compaction destroys raw messages, generate a concise summary
+    // of the FULL current context. This is injected after compaction so
+    // the agent knows what it was working on. Without this, the agent
+    // wakes up post-compaction with only chunk summaries (which are
+    // fragmented) and loses the big picture of its current task.
+    await generateContinuityBrief(agentId, modelId, contextWindow);
+
     // Archive raw messages to vault BEFORE compaction destroys them.
     // If archival fails, ABORT compaction — better to have a bloated context than lost data.
     const messagesForArchive = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(contextWindow));
@@ -346,6 +354,103 @@ export function rebuildContextItems(agentId: string): void {
     summaryCount: topLevel.length,
     freshTailCount: freshTail.length,
   }, agentId);
+}
+
+// ── Pre-Compaction Continuity Brief ──
+// Generates a concise summary of the agent's full current context BEFORE
+// compaction destroys the raw messages. This summary is stored as a
+// special "continuity" summary and injected first in context assembly,
+// so the agent always knows what it was doing after compaction.
+
+const CONTINUITY_BRIEF_PROMPT = `You are generating a continuity brief for an AI agent whose conversation history is about to be compressed. The agent will lose access to the raw messages and will only see this brief plus compressed summaries.
+
+Write a concise brief (300-500 words) that answers:
+1. What is the agent currently working on? (specific project, task, or request)
+2. What was the agent doing RIGHT NOW when this brief was generated? (last action taken, current step in the process)
+3. What is the current state? (what's done, what's in progress, what's next)
+4. What specific details does the agent need to continue? (file paths, task IDs, key decisions, important context)
+5. What did the user last ask for or what instructions are active?
+
+Be SPECIFIC. Include file paths, task IDs, names, numbers, and any details the agent needs to pick up exactly where it left off. Do NOT be vague — "working on a project" is useless. "Iterating on the Figma-AE pipeline builder script to improve visual fidelity from 35% to target 95%, currently fixing drop shadow rendering in /Users/Shared/figma-ae-pipeline/src/builder.jsx" is useful.
+
+Write the brief directly — no preamble.`;
+
+async function generateContinuityBrief(agentId: string, modelId: string, contextWindow: number): Promise<void> {
+  try {
+    const db = getDb();
+
+    // Gather ALL current messages (the full context window the agent has right now)
+    const allMessages = getRecentMessages(agentId, getFreshTailCount(contextWindow) * 2);
+    if (allMessages.length < 5) return; // Not enough context to summarize
+
+    // Format messages for the summarizer
+    const formatted = allMessages.map(m => {
+      const role = m.role === 'assistant' ? '[ASSISTANT]' : m.role === 'user' ? '[USER]' : `[${m.role.toUpperCase()}]`;
+      // Truncate very long messages (tool results) to keep the input manageable
+      const content = m.content.length > 2000 ? m.content.slice(0, 2000) + '...[truncated]' : m.content;
+      return `${role}\n${content}`;
+    }).join('\n---\n');
+
+    // Cap the input to avoid sending too much to the summarizer
+    const maxInput = Math.min(formatted.length, 50000);
+    const input = formatted.slice(-maxInput); // Take the most recent portion
+
+    logger.info('Generating pre-compaction continuity brief', {
+      messageCount: allMessages.length,
+      inputChars: input.length,
+    }, agentId);
+
+    const result = await generateSummary({
+      content: input,
+      depth: 0,
+      targetTokens: 800, // Concise but detailed enough to be useful
+      agentId,
+      modelId,
+      previousContext: CONTINUITY_BRIEF_PROMPT,
+    });
+
+    if (!result.text || result.text.length < 50) {
+      logger.warn('Continuity brief generation produced empty/short result — skipping', { agentId });
+      return;
+    }
+
+    // Store as a system message that will appear in the agent's context.
+    // Using role='system' so context assembly includes it but it's clearly
+    // not a user or assistant message.
+    const { v4: uuidv4 } = await import('uuid');
+    const briefId = uuidv4();
+    const briefContent = `[CONTINUITY BRIEF — generated before memory compaction]\n${result.text}\n\nYour older conversation history has been archived to the vault. If you need details beyond what's in this brief, use vault_search or memory_grep to find specific facts, file paths, decisions, or instructions from your earlier conversation.\n[END CONTINUITY BRIEF — use this to orient yourself on what you were doing]`;
+
+    db.prepare(`
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+      VALUES (?, ?, 'user', ?, datetime('now'))
+    `).run(briefId, agentId, briefContent);
+
+    // Also store a canned assistant acknowledgment so the alternation is correct
+    const ackId = uuidv4();
+    db.prepare(`
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+      VALUES (?, ?, 'assistant', ?, datetime('now'))
+    `).run(ackId, agentId, 'Understood, I have reviewed the continuity brief and know what I was working on.');
+
+    logger.info('Continuity brief generated and injected', {
+      briefTokens: result.tokenCount,
+      briefChars: result.text.length,
+    }, agentId);
+  } catch (err) {
+    // Continuity brief is best-effort — don't block compaction if it fails
+    logger.warn('Continuity brief generation failed — compaction will proceed without it', {
+      agentId,
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+}
+
+function getFreshTailCount(contextWindow: number): number {
+  if (contextWindow >= 200000) return 80;
+  if (contextWindow >= 128000) return 64;
+  if (contextWindow >= 32000) return 40;
+  return 24;
 }
 
 // ── Helpers ──

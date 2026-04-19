@@ -91,18 +91,26 @@ export async function assembleContext(
 
   // 2.5. Vault entries (pinned + semantically relevant)
   try {
-    // Use the last few fresh tail messages as the query for relevance
+    // Use the last few fresh tail messages as the query for relevance.
+    // If no recent messages exist (e.g., after a session reset), use a
+    // fallback query so pinned entries and recent vault content are still
+    // loaded. Without this, a session reset causes complete amnesia —
+    // the agent starts with zero vault context.
     const recentForQuery = getRecentMessages(agentId, 3);
-    const queryText = recentForQuery.map(m => m.content).join(' ').slice(0, 500);
-    if (queryText.length > 10) {
-      const vaultResult = await retrieveForContext(queryText, contextWindow);
-      if (vaultResult.section) {
-        const vaultTokens = estimateTokens(vaultResult.section);
-        if (usedTokens + vaultTokens < maxTokens) {
-          messages.push({ role: 'user', content: vaultResult.section });
-          messages.push({ role: 'assistant', content: 'Understood, I have reviewed my vault memories.' });
-          usedTokens += vaultTokens + estimateTokens('Understood, I have reviewed my vault memories.');
-        }
+    let queryText = recentForQuery.map(m => m.content).join(' ').slice(0, 500);
+    if (queryText.length <= 10) {
+      // Fallback query: generic enough to surface pinned entries, recent
+      // project state, and important memories. This ensures the vault is
+      // always loaded, even on a fresh session.
+      queryText = 'current projects active tasks recent work status updates decisions';
+    }
+    const vaultResult = await retrieveForContext(queryText, contextWindow);
+    if (vaultResult.section) {
+      const vaultTokens = estimateTokens(vaultResult.section);
+      if (usedTokens + vaultTokens < maxTokens) {
+        messages.push({ role: 'user', content: vaultResult.section });
+        messages.push({ role: 'assistant', content: 'Understood, I have reviewed my vault memories.' });
+        usedTokens += vaultTokens + estimateTokens('Understood, I have reviewed my vault memories.');
       }
     }
   } catch (err) {
@@ -130,6 +138,34 @@ export async function assembleContext(
       usedTokens += summaryTokens + estimateTokens('Understood, I have reviewed the compressed conversation history and will use it as context.');
     }
   }
+
+  // 3.5. Active task injection — always remind the agent what it's working on.
+  // This survives compaction, context trimming, auto-continuation, and session
+  // resets. The tracker is the ground truth for project state — if the agent
+  // has in_progress tasks, they're injected here so the agent NEVER forgets
+  // what it was doing, even if the conversation history was summarized away.
+  try {
+    const { listTasks } = await import('../tracker/schema.js');
+    const activeTasks = listTasks({ status: 'in_progress', assignedTo: agentId });
+    if (activeTasks.length > 0) {
+      const taskLines = activeTasks.slice(0, 5).map(t => {
+        let line = `• ${t.title} (ID: ${t.id.slice(0, 8)}, priority: ${t.priority})`;
+        if (t.description) line += `\n  Instructions: ${t.description.slice(0, 300)}${t.description.length > 300 ? '...' : ''}`;
+        if (t.notes) {
+          const lastNote = t.notes.split('\n').filter(Boolean).pop();
+          if (lastNote) line += `\n  Last note: ${lastNote.slice(0, 200)}`;
+        }
+        return line;
+      });
+      const taskContext = `═══ YOUR ACTIVE TASKS (from tracker — ground truth) ═══\nYou are currently assigned to these in_progress tasks. This is what you should be working on:\n\n${taskLines.join('\n\n')}\n\n═══ END ACTIVE TASKS ═══`;
+      const taskTokens = estimateTokens(taskContext);
+      if (usedTokens + taskTokens < maxTokens) {
+        messages.push({ role: 'user', content: taskContext });
+        messages.push({ role: 'assistant', content: 'Understood, I will continue working on my active tasks.' });
+        usedTokens += taskTokens + estimateTokens('Understood, I will continue working on my active tasks.');
+      }
+    }
+  } catch { /* tracker may not be available */ }
 
   // 4. Fresh tail — exclude user messages that arrived after the current turn
   // started so they get a clean run via the wakeup mechanism instead of being

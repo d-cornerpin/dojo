@@ -177,8 +177,13 @@ chatRouter.post('/:agentId/new-session', async (c) => {
     const archiveId = archiveAgentConversation(agentId);
     logger.info('Session archived for new session', { agentId, archiveId });
 
-    // 2. Clear context items (summaries) — shed the accumulated conversation weight
-    replaceContextItems(agentId, []);
+    // 2. Preserve context items (summaries) across session reset.
+    // Summaries are compressed history of what the agent was working on.
+    // Clearing them causes amnesia — the agent loses all project context.
+    // The session_started_at boundary prevents old raw messages from
+    // appearing, but summaries are the ONLY continuity across a reset.
+    // (Previously this called replaceContextItems(agentId, []) which
+    // wiped all summaries, causing post-reset amnesia.)
 
     // Clear session-loaded tool docs
     try {
@@ -216,6 +221,13 @@ chatRouter.post('/:agentId/new-session', async (c) => {
         createdAt: boundary,
       },
     });
+
+    // 6. Inject reorientation prompt so the agent recovers context from
+    // vault, tracker, and techniques before doing anything else
+    const reorientId = uuidv4();
+    const reorientContent = '[System: Your session was just reset. Your conversation history has been archived. BEFORE doing anything else, you MUST:\n1. Search the vault (vault_search) for your current projects, active work, and recent decisions\n2. Check the tracker (tracker_list_active) to see your assigned tasks\n3. Load any relevant techniques (list_techniques) for work in progress\n4. Check the current time (get_current_time)\nDo NOT proceed with any work or respond to the user until you have reoriented yourself.]';
+    db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, ?)").run(reorientId, agentId, reorientContent, boundary);
+    broadcast({ type: 'chat:message', agentId, message: { id: reorientId, agentId, role: 'system', content: reorientContent, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
 
     logger.info('New session started', { agentId, agentName: agent.name, archiveId });
 

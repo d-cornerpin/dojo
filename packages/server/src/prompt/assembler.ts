@@ -335,6 +335,14 @@ Your context window only holds recent messages and a handful of pinned vault ent
 
 vault_search is your FIRST choice for recall. If it doesn't have what you need, fall back to memory_grep or memory_expand to search raw conversation history.
 
+### AFTER A SESSION RESET:
+If you see "── New Session ──" in your recent messages, your conversation history was cleared. You MUST reorient before doing ANYTHING:
+1. **vault_search** for current projects, active work, and recent decisions
+2. **tracker_list_active** to see your assigned tasks and their status
+3. **list_techniques** to find any techniques relevant to work in progress
+4. **get_current_time** to know the date
+Do NOT guess what you were working on. Do NOT assume. Search the vault and read the tracker. Your memory is in the vault, not in your conversation history.
+
 ### FORGET (vault_forget) -- when things change:
 - The user explicitly says something is no longer true
 - A decision has been reversed

@@ -2467,9 +2467,14 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           const { archiveAgentConversation } = await import('../vault/archive.js');
           const archiveId = archiveAgentConversation(resolvedId);
 
-          // Clear context items (summaries)
-          const { replaceContextItems } = await import('../memory/dag.js');
-          replaceContextItems(resolvedId, []);
+          // NOTE: we intentionally do NOT clear context items (summaries).
+          // Summaries from before the reset are still valid compressed history
+          // of what the agent was working on. Clearing them causes amnesia —
+          // the agent loses all project context with nothing to replace it
+          // until compaction runs again (which could be hours).
+          // The session_started_at boundary already prevents old raw messages
+          // from appearing in the fresh tail — summaries are the ONLY way
+          // the agent retains context across a reset.
 
           // Set session boundary
           const now = new Date();
@@ -2479,8 +2484,15 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           // Insert UI divider
           const markerId = uuidv4();
           db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', '── New Session ──', ?)").run(markerId, resolvedId, boundary);
-
           broadcast({ type: 'chat:message', agentId: resolvedId, message: { id: markerId, agentId: resolvedId, role: 'system', content: '── New Session ──', tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
+
+          // Inject reorientation prompt so the agent recovers context from
+          // the vault, tracker, and techniques before doing anything. Without
+          // this, agents start with complete amnesia after a session reset.
+          const reorientId = uuidv4();
+          const reorientContent = '[System: Your session was just reset. Your conversation history has been archived. BEFORE doing anything else, you MUST:\n1. Search the vault (vault_search) for your current projects, active work, and recent decisions\n2. Check the tracker (tracker_list_active) to see your assigned tasks\n3. Load any relevant techniques (list_techniques) for work in progress\n4. Check the current time (get_current_time)\nDo NOT proceed with any work or respond to the user until you have reoriented yourself.]';
+          db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, ?)").run(reorientId, resolvedId, reorientContent, boundary);
+          broadcast({ type: 'chat:message', agentId: resolvedId, message: { id: reorientId, agentId: resolvedId, role: 'system', content: reorientContent, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
 
           // If the agent is in error/paused status, heal it by setting to idle.
           // A session reset clears corrupted context, which is often the root
