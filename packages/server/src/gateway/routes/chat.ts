@@ -56,7 +56,6 @@ chatRouter.post('/:agentId/messages', async (c) => {
   const content = body.content as string;
   const attachments = Array.isArray(body.attachments) ? body.attachments : null;
   const messageId = uuidv4();
-  const isBusy = agent.status === 'working';
 
   // Build content for the model — includes attachment data
   let modelContent = content;
@@ -70,21 +69,24 @@ chatRouter.post('/:agentId/messages', async (c) => {
     VALUES (?, ?, 'user', ?, ?, datetime('now'))
   `).run(messageId, agentId, modelContent, attachments ? JSON.stringify(attachments) : null);
 
-  logger.info('User message persisted', { agentId, messageId, queued: isBusy, attachmentCount: attachments?.length ?? 0 }, agentId);
+  logger.info('User message persisted', { agentId, messageId, attachmentCount: attachments?.length ?? 0 }, agentId);
 
   queueEmbedding('message', messageId, agentId, content);
 
-  if (!isBusy) {
-    const runtime = getAgentRuntime();
-    runtime.handleMessage(agentId, modelContent).catch((err) => {
-      logger.error('Agent runtime error', {
-        agentId,
-        error: err instanceof Error ? err.message : String(err),
-      }, agentId);
-    });
-  }
+  // ALWAYS call handleMessage — let the runtime's own activeRuns check
+  // decide whether to process immediately or queue a wakeup. Previously
+  // this checked agent.status === 'working' from the DB, but DB status
+  // can be stale (e.g., a crashed run that didn't clean up). The runtime's
+  // in-memory activeRuns set is the authoritative busy check.
+  const runtime = getAgentRuntime();
+  runtime.handleMessage(agentId, modelContent).catch((err) => {
+    logger.error('Agent runtime error', {
+      agentId,
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  });
 
-  return c.json({ ok: true, data: { messageId, queued: isBusy } });
+  return c.json({ ok: true, data: { messageId } });
 });
 
 // GET /:agentId/messages

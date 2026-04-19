@@ -1706,12 +1706,33 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     const isOverloaded = message.includes('overloaded') || message.includes('529');
     const isServerError = message.includes('500') || message.includes('503');
 
+    // Record the rate limit in the proactive tracker regardless of routing mode.
+    // This lets selectModel skip the rate-limited model on the NEXT turn without
+    // having to hit the 429 again. Extract retry-after to set the cooldown.
+    if (isRateLimited || isOverloaded) {
+      try {
+        if (err instanceof Anthropic.APIError && err.headers) {
+          const rlHeaders: Record<string, string> = {};
+          // Set remaining to 0 so isRateLimited() returns true
+          rlHeaders['x-ratelimit-remaining'] = '0';
+          // Use retry-after to set the reset time
+          const retryAfter = err.headers['retry-after'];
+          if (retryAfter) {
+            const secs = parseInt(retryAfter, 10);
+            if (!isNaN(secs)) {
+              rlHeaders['x-ratelimit-reset'] = new Date(Date.now() + secs * 1000).toISOString();
+            }
+          } else {
+            // Default: assume 60 seconds if no retry-after header
+            rlHeaders['x-ratelimit-reset'] = new Date(Date.now() + 60000).toISOString();
+          }
+          updateRateLimits(modelId, rlHeaders);
+        }
+      } catch { /* best effort */ }
+    }
+
     // Schedule background retry for rate limits — but NOT for auto-routed agents.
-    // Auto-routed agents handle rate limits via the fallback chain in the runtime
-    // (try the next model in the tier, then cross-tier). The background retry
-    // manager would interfere by replaying the message on the SAME rate-limited
-    // model 10 seconds later, conflicting with the fallback that already selected
-    // a different model.
+    // Auto-routed agents handle rate limits via the fallback chain in the runtime.
     if ((isRateLimited || isOverloaded) && !params.routerTier) {
       // Try to extract retry-after header (Anthropic API key responses include this)
       let retryAfterSeconds: number | null = null;
