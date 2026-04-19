@@ -183,7 +183,7 @@ export function stopAgent(agentId: string): void {
   logger.info('Agent stop requested', {}, agentId);
 }
 
-const MAX_TOOL_LOOPS = 25; // Maximum tool call loops per turn
+const MAX_TOOL_LOOPS = 75; // Maximum tool call loops per turn (raised from 25 — real work often needs 30-50+ calls)
 const TURN_TIME_BUDGET_MS = 15 * 60 * 1000; // 15 minute max per turn (local Ollama models can be slow)
 
 class AgentRuntime {
@@ -892,13 +892,30 @@ class AgentRuntime {
       // Loop continues - model will see tool results and respond
     }
 
-    // Surface visible messages when the loop ends abnormally
+    // If the agent hit the tool loop limit but was still actively working
+    // (not stuck repeating), auto-continue with a fresh turn instead of
+    // dead-stopping and requiring user intervention. This lets multi-step
+    // projects (coding tasks, research, etc.) proceed uninterrupted.
     if (loopCount >= MAX_TOOL_LOOPS) {
-      logger.warn('Agent hit max tool loop limit', { agentId, maxLoops: MAX_TOOL_LOOPS }, agentId);
-      const sysMsg = `[System: This turn used the maximum number of tool calls (${MAX_TOOL_LOOPS}). The agent has paused. You may need to send a follow-up message to continue.]`;
+      logger.warn('Agent hit max tool loop limit — auto-continuing', { agentId, maxLoops: MAX_TOOL_LOOPS }, agentId);
+      const sysMsg = `[System: This turn reached ${MAX_TOOL_LOOPS} tool calls. Starting a fresh turn to continue your work. Pick up where you left off.]`;
       const sysMsgId = uuidv4();
       db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))`).run(sysMsgId, agentId, sysMsg);
       broadcast({ type: 'chat:message', agentId, message: { id: sysMsgId, agentId, role: 'system' as const, content: sysMsg, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
+
+      // Schedule a self-continuation after a brief pause (lets DB writes
+      // settle and gives the context assembler fresh state). This fires
+      // via handleMessage which reassembles context from scratch — the
+      // agent sees its full history including the work it just did and
+      // continues naturally.
+      setTimeout(() => {
+        this.handleMessage(agentId, '').catch(err => {
+          logger.error('Auto-continuation after tool limit failed', {
+            agentId,
+            error: err instanceof Error ? err.message : String(err),
+          }, agentId);
+        });
+      }, 1000);
     }
 
     // ── iMessage response routing ──
