@@ -13,11 +13,8 @@
 // event-driven setTimeout per injured agent.
 // ════════════════════════════════════════
 
-import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { broadcast } from '../gateway/ws.js';
-import { getAgentRuntime } from '../agent/runtime.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 
 const logger = createLogger('injury-recovery');
@@ -140,7 +137,7 @@ export function onAgentRecovered(agentId: string): void {
   notifyHealerOfRecovery(agentId);
 }
 
-function notifyHealerOfInjury(agentId: string, errorMessage: string): void {
+async function notifyHealerOfInjury(agentId: string, errorMessage: string): Promise<void> {
   try {
     const db = getDb();
 
@@ -192,43 +189,21 @@ function notifyHealerOfInjury(agentId: string, errorMessage: string): void {
 
     parts.push('');
     parts.push('Please investigate and attempt recovery:');
-    parts.push(`1. If the error is transient (network, rate limit): send_to_agent(agent="${agentId}", message="...") to poke them and see if they can resume.`);
-    parts.push(`2. If the error is context corruption: reset_session(agent_id="${agentId}") to clear their context and let them start fresh.`);
-    parts.push('3. If the error is a config issue (wrong model, auth failure): note it in your chat — you cannot fix this, the user needs to intervene.');
-    parts.push('4. If nothing works after your attempt: send an iMessage alert to the user via imessage_send explaining that the agent is down and needs manual help.');
+    parts.push(`1. If the error is transient (network, rate limit): send_to_agent(agent="${agentId}", intent="QUESTION", payload="...") to poke them.`);
+    parts.push(`2. If the error is context corruption: reset_session(agent_id="${agentId}") to clear their context.`);
+    parts.push('3. If the error is a config issue: send an iMessage alert to the user via imessage_send.');
 
     const content = parts.join('\n');
-    const msgId = uuidv4();
 
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'user', ?, datetime('now'))
-    `).run(msgId, healerId, content);
-
-    broadcast({
-      type: 'chat:message',
-      agentId: healerId,
-      message: {
-        id: msgId,
-        agentId: healerId,
-        role: 'user' as const,
-        content,
-        tokenCount: null,
-        modelId: null,
-        cost: null,
-        latencyMs: null,
-        createdAt: new Date().toISOString(),
-      },
-    });
-
-    // Wake the healer
-    const runtime = getAgentRuntime();
-    runtime.handleMessage(healerId, content).catch(err => {
-      logger.error('Failed to wake healer for injury recovery', {
-        healerId,
-        injuredAgentId: agentId,
-        error: err instanceof Error ? err.message : String(err),
-      });
+    // Deliver via A2A transport — ASSIGN intent wakes the healer to act
+    const { deliverA2AMessage, makeThreadId } = await import('../agent/a2a-transport.js');
+    const result = await deliverA2AMessage({
+      intent: 'ASSIGN',
+      threadId: makeThreadId(`injury-${agentId}`),
+      requiresResponse: true,
+      payload: content,
+      toAgent: healerId,
+      fromAgent: 'system', // System-generated, not from another agent
     });
 
     logger.info('Healer notified of injured agent', {
@@ -246,7 +221,7 @@ function notifyHealerOfInjury(agentId: string, errorMessage: string): void {
   }
 }
 
-function notifyHealerOfRecovery(agentId: string): void {
+async function notifyHealerOfRecovery(agentId: string): Promise<void> {
   try {
     const db = getDb();
 
@@ -262,29 +237,18 @@ function notifyHealerOfRecovery(agentId: string): void {
       .get(healerId) as { id: string; status: string } | undefined;
     if (!healer) return;
 
-    const content = `[RECOVERY NOTICE] ${agent.name} (ID: ${agentId}) has recovered from its injured state and is back online. No further action needed for this agent.`;
-    const msgId = uuidv4();
+    const content = `${agent.name} (ID: ${agentId}) has recovered from its injured state and is back online. No further action needed.`;
 
-    // Insert as system role — informational, doesn't need the healer to wake up and respond
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'system', ?, datetime('now'))
-    `).run(msgId, healerId, content);
-
-    broadcast({
-      type: 'chat:message',
-      agentId: healerId,
-      message: {
-        id: msgId,
-        agentId: healerId,
-        role: 'system' as const,
-        content,
-        tokenCount: null,
-        modelId: null,
-        cost: null,
-        latencyMs: null,
-        createdAt: new Date().toISOString(),
-      },
+    // Deliver via A2A transport — FYI intent does NOT wake the healer.
+    // The recovery notice sits as read-only context, no tokens spent.
+    const { deliverA2AMessage, makeThreadId } = await import('../agent/a2a-transport.js');
+    await deliverA2AMessage({
+      intent: 'FYI',
+      threadId: makeThreadId(`injury-${agentId}`), // Same thread as the injury alert
+      requiresResponse: false,
+      payload: content,
+      toAgent: healerId,
+      fromAgent: 'system',
     });
 
     logger.info('Healer notified of agent recovery', { agentId, agentName: agent.name });

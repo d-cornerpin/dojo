@@ -1222,8 +1222,9 @@ async function callOpenAIModel(
     const isRateLimited = message.includes('rate_limit') || message.includes('429');
     const isOverloaded = message.includes('overloaded') || message.includes('529') || message.includes('503');
 
-    // Schedule background retry for rate limits (alerts handled by retry manager on strike 3)
-    if (isRateLimited || isOverloaded) {
+    // Schedule background retry for rate limits — skip for auto-routed agents
+    // (the auto-router's fallback chain handles model switching)
+    if ((isRateLimited || isOverloaded) && !params.routerTier) {
       // OpenAI and OpenRouter include retry-after headers
       let retryAfterSeconds: number | null = null;
       if (err instanceof OpenAI.APIError && err.headers) {
@@ -1676,8 +1677,13 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     const isOverloaded = message.includes('overloaded') || message.includes('529');
     const isServerError = message.includes('500') || message.includes('503');
 
-    // Schedule background retry for rate limits (alerts handled by retry manager on strike 3)
-    if (isRateLimited || isOverloaded) {
+    // Schedule background retry for rate limits — but NOT for auto-routed agents.
+    // Auto-routed agents handle rate limits via the fallback chain in the runtime
+    // (try the next model in the tier, then cross-tier). The background retry
+    // manager would interfere by replaying the message on the SAME rate-limited
+    // model 10 seconds later, conflicting with the fallback that already selected
+    // a different model.
+    if ((isRateLimited || isOverloaded) && !params.routerTier) {
       // Try to extract retry-after header (Anthropic API key responses include this)
       let retryAfterSeconds: number | null = null;
       if (err instanceof Anthropic.APIError && err.headers) {

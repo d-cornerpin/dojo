@@ -574,7 +574,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'send_to_agent',
-    description: 'Send a direct message to another agent by ID or name. This is THE tool for agent-to-agent messaging — do NOT try to write to databases or files to communicate. Works in any direction: parent to sub-agent, sub-agent to parent, peer to peer, or to the PM. The recipient sees who sent the message and can reply. Optionally attach image or PDF files by absolute path — they\'ll appear as thumbnails in the recipient\'s chat view and as native content blocks in the recipient\'s next model call (Imaginer uses this to deliver generated images).',
+    description: 'Send a structured message to another agent. Every message has an intent that determines whether the recipient is woken to respond. QUESTION and ASSIGN wake the receiver. DELIVERABLE, FYI, COMPLETE, FAIL, ANSWER do NOT wake the receiver — the message is read-only context on their next turn. Messages are grouped by thread_id — omit to start a new thread, or include an existing thread_id to continue a conversation. Silence is a valid response. Do not acknowledge acknowledgements.',
     input_schema: {
       type: 'object',
       properties: {
@@ -582,17 +582,30 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'string',
           description: 'Agent ID or agent name to send the message to',
         },
-        message: {
+        intent: {
           type: 'string',
-          description: 'The message content to send',
+          enum: ['QUESTION', 'ASSIGN', 'ANSWER', 'DELIVERABLE', 'FYI', 'STATUS', 'COMPLETE', 'FAIL', 'BLOCK'],
+          description: 'Message intent. QUESTION/ASSIGN/BLOCK wake the receiver and expect a response. ANSWER/DELIVERABLE/FYI/STATUS/COMPLETE/FAIL are terminal — receiver is NOT woken, no response expected.',
+        },
+        payload: {
+          type: 'string',
+          description: 'The message content',
+        },
+        thread_id: {
+          type: 'string',
+          description: 'Thread ID to continue a conversation. Omit to start a new thread. Use the same thread_id from a received message to reply on that thread.',
+        },
+        requires_response: {
+          type: 'boolean',
+          description: 'Whether the receiver should be woken to respond. Defaults to true for QUESTION/ASSIGN/BLOCK, false for everything else. Terminal intents (ANSWER/DELIVERABLE/FYI/COMPLETE/FAIL) are ALWAYS forced to false regardless of this field.',
         },
         attach_paths: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Optional list of absolute file paths to attach to the message. Supported categories: image (PNG/JPEG/GIF/WEBP) and PDF. Other types are logged and skipped. Files are copied into the recipient agent\'s uploads directory so they appear as thumbnails. Omit or pass an empty array for a plain text message.',
+          description: 'Optional file paths to attach (images, PDFs).',
         },
       },
-      required: ['agent', 'message'],
+      required: ['agent', 'intent', 'payload'],
     },
   },
   {
@@ -1883,201 +1896,112 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         break;
       }
       case 'send_to_agent': {
+        // ── A2A Protocol: Structured inter-agent messaging ──
+        // All agent-to-agent communication goes through the A2A transport
+        // which enforces thread tracking, hop limits, semantic dedup, and
+        // requires_response routing.
         const agentRef = args.agent as string;
-        const message = args.message as string;
+        const intent = (args.intent as string) ?? 'FYI';
+        const payload = (args.payload as string) ?? (args.message as string) ?? '';
+        const threadId = args.thread_id as string | undefined;
         const rawAttachPaths = args.attach_paths;
         const attachPaths: string[] = Array.isArray(rawAttachPaths)
           ? rawAttachPaths.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
           : [];
-        const db = getDb();
 
-        // Look up by ID first, then by name
-        let target = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(agentRef) as { id: string; name: string; status: string } | undefined;
-        if (!target) {
-          target = db.prepare("SELECT id, name, status FROM agents WHERE name = ? AND status NOT IN ('terminated') ORDER BY created_at DESC LIMIT 1").get(agentRef) as { id: string; name: string; status: string } | undefined;
+        // Determine requires_response from explicit arg, or default by intent
+        const { isTerminalIntent: isTerminal } = await import('@dojo/shared');
+        let requiresResponse: boolean;
+        if (args.requires_response !== undefined) {
+          requiresResponse = !!args.requires_response;
+        } else {
+          // Default: QUESTION, ASSIGN, BLOCK expect a response; everything else doesn't
+          requiresResponse = ['QUESTION', 'ASSIGN', 'BLOCK'].includes(intent);
+        }
+        // Terminal intents ALWAYS force false
+        if (isTerminal(intent as import('@dojo/shared').A2AIntent)) {
+          requiresResponse = false;
         }
 
-        if (!target) {
-          content = `No agent found with ID or name "${agentRef}". Use spawn_agent to create a new one.`;
-          isError = true;
-        } else if (target.status === 'terminated') {
-          content = `Agent "${target.name}" (${target.id}) is terminated. Use spawn_agent to create a new one.`;
-          isError = true;
-        } else if (target.status === 'error' || target.status === 'paused') {
-          // The Healer agent is allowed to poke injured agents — that's its
-          // job. Its poke wakes the agent via handleMessage, which sets status
-          // to 'working' and retries the loop. For everyone else, block the
-          // send to prevent futile waiting.
-          let isHealer = false;
+        // Check if target is injured — healer bypass
+        const sendDb = getDb();
+        let targetCheck = sendDb.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(agentRef) as { id: string; name: string; status: string } | undefined;
+        if (!targetCheck) {
+          targetCheck = sendDb.prepare("SELECT id, name, status FROM agents WHERE name = ? AND status != 'terminated' ORDER BY created_at DESC LIMIT 1")
+            .get(agentRef) as { id: string; name: string; status: string } | undefined;
+        }
+        if (targetCheck && (targetCheck.status === 'error' || targetCheck.status === 'paused')) {
+          let isHealerSender = false;
           try {
             const { isHealerAgent } = await import('../config/platform.js');
-            isHealer = isHealerAgent(agentId);
-          } catch { /* platform config may not be available */ }
-
-          if (!isHealer) {
-            const stateLabel = target.status === 'error' ? 'INJURED' : 'PAUSED';
-            content = `Agent "${target.name}" (${target.id}) is ${stateLabel} and cannot respond right now. Message was NOT delivered.\n\nTo proceed, do ONE of:\n  1. reset_session(agent_id="${target.id}") — wipes their context and heals them; their conversation is archived to the vault first. After reset, send your message again.\n  2. Reassign the work — pick a different agent (list_agents to see options) or spawn_agent for a fresh one.\n  3. Tell the user the agent is injured and ask them to look at it.\n\nDo NOT just wait on this agent — they will not recover on their own.`;
+            isHealerSender = isHealerAgent(agentId);
+          } catch { /* */ }
+          if (!isHealerSender) {
+            const stateLabel = targetCheck.status === 'error' ? 'INJURED' : 'PAUSED';
+            content = `Agent "${targetCheck.name}" is ${stateLabel}. Message NOT delivered. Use reset_session(agent_id="${targetCheck.id}") to heal them, or reassign the work.`;
             isError = true;
+            break;
           }
-          // If isHealer, fall through to the normal send path below
         }
 
-        if (!isError && target && target.status !== 'terminated') {
-          // Get sender agent's name for context
-          const senderRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-          const senderName = senderRow?.name ?? agentId;
-
-          // ── Optional attachment pass-through ──
-          // If the caller provided file paths (typically Imaginer delivering
-          // a generated image), copy each readable file into the recipient's
-          // uploads dir and build UploadedFile records. These go into the
-          // `messages.attachments` column so `injectAttachmentBlocks` picks
-          // them up on the next turn and the dashboard chat view renders
-          // the thumbnails immediately.
-          interface UploadedFile {
-            fileId: string;
-            filename: string;
-            mimeType: string;
-            size: number;
-            path: string;
-            category: 'image' | 'pdf' | 'text' | 'office' | 'unknown';
-          }
-          const IMAGE_MIMES: Record<string, 'image'> = {
-            '.png': 'image', '.jpg': 'image', '.jpeg': 'image',
-            '.gif': 'image', '.webp': 'image',
-          };
-          const attachments: UploadedFile[] = [];
-          if (attachPaths.length > 0) {
-            // Dynamic imports to avoid top-of-file churn
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
-            const fs = require('node:fs') as typeof import('node:fs');
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
-            const path = require('node:path') as typeof import('node:path');
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
-            const os = require('node:os') as typeof import('node:os');
-
-            const recipientDir = path.join(os.homedir(), '.dojo', 'uploads', target.id);
-            if (!fs.existsSync(recipientDir)) {
-              fs.mkdirSync(recipientDir, { recursive: true });
-            }
-
-            for (const srcPath of attachPaths) {
-              try {
-                if (!fs.existsSync(srcPath)) {
-                  logger.warn('send_to_agent: attach_path does not exist on disk — skipping', {
-                    srcPath, from: agentId, to: target.id,
-                  });
-                  continue;
-                }
-                const stat = fs.statSync(srcPath);
-                if (stat.size > 20 * 1024 * 1024) {
-                  logger.warn('send_to_agent: attach_path exceeds 20 MB — skipping', {
-                    srcPath, size: stat.size, from: agentId, to: target.id,
-                  });
-                  continue;
-                }
-                const ext = path.extname(srcPath).toLowerCase();
-                const safeName = path.basename(srcPath).replace(/[^a-zA-Z0-9._-]/g, '_');
-                const timestamp = Date.now();
-                const storedName = `agent_${timestamp}_${safeName}`;
-                const destPath = path.join(recipientDir, storedName);
-                fs.copyFileSync(srcPath, destPath);
-
-                let category: UploadedFile['category'] = 'unknown';
-                let mimeType = 'application/octet-stream';
-                if (ext in IMAGE_MIMES) {
-                  category = 'image';
-                  mimeType = ext === '.jpg' ? 'image/jpeg' : `image/${ext.slice(1)}`;
-                } else if (ext === '.pdf') {
-                  category = 'pdf';
-                  mimeType = 'application/pdf';
-                } else {
-                  logger.info('send_to_agent: attach_path is unsupported type — copied but category=unknown', {
-                    srcPath, ext, from: agentId, to: target.id,
-                  });
-                }
-
-                attachments.push({
-                  fileId: uuidv4(),
-                  filename: path.basename(srcPath),
-                  mimeType,
-                  size: stat.size,
-                  path: destPath,
-                  category,
-                });
-              } catch (err) {
-                logger.warn('send_to_agent: failed to copy attachment — skipping', {
-                  srcPath,
-                  error: err instanceof Error ? err.message : String(err),
-                  from: agentId,
-                  to: target.id,
-                });
-              }
-            }
-          }
-
-          // Persist as a user message with sender context and reply instructions
-          const msgId = uuidv4();
-          const contextMessage = `[SOURCE: AGENT MESSAGE FROM ${senderName.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's from another agent] ${message}\n\n[Reply via send_to_agent(agent="${agentId}", message="..."), then END YOUR TURN. Zero assistant text after the tool call. No summaries, no "acknowledged", no re-pinging the user. This exchange stays off the user's chat.]`;
-
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, source_agent_id, created_at)
-            VALUES (?, ?, 'user', ?, ?, ?, datetime('now'))
-          `).run(
-            msgId,
-            target.id,
-            contextMessage,
-            attachments.length > 0 ? JSON.stringify(attachments) : null,
-            agentId, // Track sender for auto-route reply detection
-          );
-
-          // Broadcast so the target agent's chat view updates, including
-          // attachments so thumbnails render in real time (v1.11.5 pattern).
-          broadcast({
-            type: 'chat:message',
-            agentId: target.id,
-            message: {
-              id: msgId,
-              agentId: target.id,
-              role: 'user' as const,
-              content: contextMessage,
-              tokenCount: null,
-              modelId: null,
-              cost: null,
-              latencyMs: null,
-              createdAt: new Date().toISOString(),
-              ...(attachments.length > 0 ? { attachments } : {}),
-            },
+        if (!isError) {
+          const { deliverA2AMessage } = await import('./a2a-transport.js');
+          const result = await deliverA2AMessage({
+            intent: intent as import('@dojo/shared').A2AIntent,
+            threadId: threadId ?? '',  // empty = auto-generate in transport
+            requiresResponse,
+            payload,
+            toAgent: agentRef,
+            fromAgent: agentId,
+            attachPaths: attachPaths.length > 0 ? attachPaths : undefined,
           });
 
-          // Trigger the target agent's runtime
-          const runtime = getAgentRuntime();
-          runtime.handleMessage(target.id, contextMessage).catch(err => {
-            logger.error('send_to_agent: target agent runtime failed', {
-              targetId: target!.id,
-              error: err instanceof Error ? err.message : String(err),
-            }, agentId);
-          });
+          if (result.delivered) {
+            auditLog(agentId, 'tool_call', 'send_to_agent', 'success',
+              `to:${agentRef} intent:${intent} thread:${result.threadId.slice(0, 8)} requires_response:${requiresResponse}`,
+            );
+            content = `[A2A:${intent}] Message delivered to "${agentRef}" on thread ${result.threadId.slice(0, 8)}.` +
+              (requiresResponse ? ' Response expected.' : ' No response expected (read-only context).');
+          } else {
+            // Message was dropped by the protocol — log the reason but don't error
+            // (the protocol is doing its job, this is expected behavior)
+            auditLog(agentId, 'tool_call', 'send_to_agent', 'success',
+              `to:${agentRef} intent:${intent} reason:${result.reason}`,
+            );
+            switch (result.reason) {
+              case 'TERMINAL_THREAD_CLOSED':
+                content = `Thread ${result.threadId.slice(0, 8)} is closed (a terminal intent was already delivered). To continue this conversation, start a new thread by omitting thread_id, or use a QUESTION/BLOCK/ASSIGN intent to reopen it.`;
+                break;
+              case 'HOP_LIMIT_EXCEEDED':
+                content = `Thread ${result.threadId.slice(0, 8)} has reached the maximum of 8 messages. Start a new thread (omit thread_id) if you need to continue.`;
+                break;
+              case 'SEMANTIC_DUPLICATE':
+                content = 'Message not sent — it is semantically identical to a recent message on this thread.';
+                break;
+              case 'AGENT_NOT_FOUND':
+                content = `No agent found with ID or name "${agentRef}".`;
+                isError = true;
+                break;
+              default:
+                content = `Message not delivered: ${result.reason}`;
+                break;
+            }
+          }
+        }
 
-          auditLog(
-            agentId, 'tool_call', 'send_to_agent', 'success',
-            `to:${target.id} (${target.name})${attachments.length > 0 ? ` with ${attachments.length} attachment(s)` : ''}`,
-          );
-          content = `Message sent to agent "${target.name}" (${target.id}). Status: ${target.status}.` +
-            (attachments.length > 0
-              ? ` Attached ${attachments.length} file(s): ${attachments.map(a => a.filename).join(', ')}.`
-              : '');
+        // Clear iMessage auto-reply flag if the agent explicitly sent an iMessage
+        if (isAwaitingIMResponse(agentId)) {
+          clearIMResponseFlag(agentId);
         }
         break;
       }
       case 'broadcast_to_group': {
         const groupId = args.group_id as string;
-        const broadcastMsg = args.message as string;
-        if (!groupId || !broadcastMsg) { content = 'Error: group_id and message are required'; isError = true; break; }
+        const broadcastPayload = (args.payload as string) ?? (args.message as string) ?? '';
+        const bcIntent = (args.intent as string) ?? 'FYI';
+        if (!groupId || !broadcastPayload) { content = 'Error: group_id and payload are required'; isError = true; break; }
 
         const bcDb = getDb();
-        const senderRow2 = bcDb.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-        const senderName2 = senderRow2?.name ?? agentId;
 
         // Get all non-terminated agents in the group (excluding the sender)
         const groupMembers = bcDb.prepare(`
@@ -2090,38 +2014,23 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           break;
         }
 
-        const bcRuntime = getAgentRuntime();
+        const { deliverA2AMessage: deliverBc } = await import('./a2a-transport.js');
+        const bcThreadId = args.thread_id as string | undefined;
         const sent: string[] = [];
 
-        for (const member of groupMembers) {
-          const bcMsgId = uuidv4();
-          const bcContextMsg = `[SOURCE: GROUP BROADCAST FROM ${senderName2.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's a broadcast from another agent to your group] ${broadcastMsg}\n\n[Reply via send_to_agent(agent="${agentId}", message="..."), then END YOUR TURN. Zero assistant text after the tool call. No summaries, no user-facing status lines.]`;
-          bcDb.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, created_at)
-            VALUES (?, ?, 'user', ?, ?, datetime('now'))
-          `).run(bcMsgId, member.id, bcContextMsg, agentId);
+        // Filter out injured/paused agents — don't try to wake broken agents
+        const healthyMembers = groupMembers.filter(m => m.status !== 'error' && m.status !== 'paused');
 
-          broadcast({
-            type: 'chat:message',
-            agentId: member.id,
-            message: {
-              id: bcMsgId,
-              agentId: member.id,
-              role: 'user' as const,
-              content: bcContextMsg,
-              tokenCount: null, modelId: null, cost: null, latencyMs: null,
-              createdAt: new Date().toISOString(),
-            },
+        for (const member of healthyMembers) {
+          const bcResult = await deliverBc({
+            intent: bcIntent as import('@dojo/shared').A2AIntent,
+            threadId: bcThreadId ?? '',
+            requiresResponse: ['QUESTION', 'ASSIGN', 'BLOCK'].includes(bcIntent),
+            payload: broadcastPayload,
+            toAgent: member.id,
+            fromAgent: agentId,
           });
-
-          bcRuntime.handleMessage(member.id, bcContextMsg).catch(err => {
-            logger.error('broadcast_to_group: member runtime failed', {
-              memberId: member.id,
-              error: err instanceof Error ? err.message : String(err),
-            }, agentId);
-          });
-
-          sent.push(member.name);
+          if (bcResult.delivered) sent.push(member.name);
         }
 
         content = `Broadcast sent to ${sent.length} agent(s): ${sent.join(', ')}`;

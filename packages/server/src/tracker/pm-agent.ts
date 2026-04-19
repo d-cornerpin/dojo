@@ -379,11 +379,12 @@ async function runPMReview(): Promise<void> {
       }
     }
 
-    // Grace period: don't flag tasks that were just created or recently changed status.
-    // A brand-new task is not stale — give agents time to start working.
+    // Grace period: don't flag tasks that recently changed status (created,
+    // unpaused, resumed, reassigned). Uses updatedAt, not createdAt, so
+    // auto-resumed tasks and status changes also get the grace period.
     const GRACE_PERIOD_MINUTES = 30;
-    const taskCreatedTime = new Date(task.createdAt.includes('Z') ? task.createdAt : task.createdAt + 'Z');
-    const taskAgeMin = Math.floor((nowDate.getTime() - taskCreatedTime.getTime()) / 60000);
+    const taskUpdatedTime = new Date(task.updatedAt.includes('Z') ? task.updatedAt : task.updatedAt + 'Z');
+    const timeSinceUpdateMin = Math.floor((nowDate.getTime() - taskUpdatedTime.getTime()) / 60000);
 
     // 4. Non-scheduled tasks stuck in on_deck with no activity.
     // Skip scheduled tasks waiting for their next run (schedule_status='waiting') —
@@ -391,7 +392,7 @@ async function runPMReview(): Promise<void> {
     if (task.status === 'on_deck' && !task.scheduledStart && task.assignedTo && task.scheduleStatus !== 'waiting') {
       const updatedTime = new Date(task.updatedAt.includes('Z') ? task.updatedAt : task.updatedAt + 'Z');
       const staleMin = Math.floor((nowDate.getTime() - updatedTime.getTime()) / 60000);
-      if (staleMin > GRACE_PERIOD_MINUTES && taskAgeMin > GRACE_PERIOD_MINUTES) {
+      if (staleMin > GRACE_PERIOD_MINUTES && timeSinceUpdateMin > GRACE_PERIOD_MINUTES) {
         const agentName = task.assignedToName ?? task.assignedTo;
         issues.push(`STALE: "${task.title}" has been on_deck for ${staleMin} minutes, assigned to ${agentName} but not started.`);
       }
@@ -399,7 +400,7 @@ async function runPMReview(): Promise<void> {
 
     // 5. In-progress tasks where the assigned agent has gone silent.
     // Grace period: don't flag tasks less than GRACE_PERIOD_MINUTES old.
-    if (task.status === 'in_progress' && task.assignedTo && taskAgeMin > GRACE_PERIOD_MINUTES) {
+    if (task.status === 'in_progress' && task.assignedTo && timeSinceUpdateMin > GRACE_PERIOD_MINUTES) {
       const agent = agents.find(a => a.id === task.assignedTo);
       if (agent && agent.status !== 'terminated') {
         // Check agent's last message activity
@@ -515,8 +516,9 @@ function runPokeCheck(): void {
 
     // Grace period: don't poke tasks that were just created. Give agents
     // time to actually start working before flagging them.
-    const taskCreated = new Date(task.createdAt.includes('Z') ? task.createdAt : task.createdAt + 'Z').getTime();
-    if (now - taskCreated < POKE_GRACE_PERIOD_MS) continue;
+    // Use updatedAt so auto-resumed and recently-changed tasks also get the grace period
+    const taskUpdated = new Date(task.updatedAt.includes('Z') ? task.updatedAt : task.updatedAt + 'Z').getTime();
+    if (now - taskUpdated < POKE_GRACE_PERIOD_MS) continue;
 
     // Skip tasks with a future scheduled_start -- they're waiting for the scheduler, not stale
     if (task.scheduledStart) {
@@ -587,24 +589,20 @@ function runPokeCheck(): void {
         });
       }
 
-      // Notify primary agent
+      // Notify primary agent via A2A transport
       const resetMsg = `AUTO-RESET: Task "${task.title}" (${task.id}) was moved back to on_deck after ${idleMinutes} minutes idle. The assigned agent (${task.assignedToName ?? task.assignedTo}) did not respond after 3 pokes and escalation. The task needs to be reassigned or investigated.`;
-      sendAgentMessage(pmId, primaryId, 'status', resetMsg, {
-        taskId: task.id,
-        pokeType: 'auto_reset',
-        idleSeconds,
-      });
 
-      // Inject into primary agent's conversation
-      const resetMsgId = uuidv4();
-      db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, created_at) VALUES (?, ?, 'user', ?, ?, datetime('now'))`)
-        .run(resetMsgId, primaryId, `[SOURCE: PM AGENT AUTO-RESET — task pulled from stalled agent] ${resetMsg}`, pmId);
-      broadcast({ type: 'chat:message', agentId: primaryId, message: { id: resetMsgId, agentId: primaryId, role: 'user' as Message['role'], content: `[SOURCE: PM AGENT AUTO-RESET] ${resetMsg}`, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
-
-      // Trigger primary agent to process
-      const runtime = getAgentRuntime();
-      runtime.handleMessage(primaryId, `[${pmName} — Project Manager] ${resetMsg}`).catch(err => {
-        logger.error('PM auto-reset: failed to notify primary agent', { error: err instanceof Error ? err.message : String(err) });
+      import('../agent/a2a-transport.js').then(({ deliverA2AMessage: deliverReset }) => {
+        deliverReset({
+          intent: 'FYI',
+          threadId: '',
+          requiresResponse: false,
+          payload: resetMsg,
+          toAgent: primaryId,
+          fromAgent: pmId,
+        }).catch(err => {
+          logger.error('PM auto-reset: A2A delivery failed', { error: err instanceof Error ? err.message : String(err) });
+        });
       });
 
       logPoke(task.id, task.assignedTo, pokeNumber, pokeType);
@@ -618,59 +616,30 @@ function runPokeCheck(): void {
     const pokeMessage = buildPokeMessage(task, pokeType, pokeNumber, idleSeconds);
     const recipient = pokeType === 'escalate_primary' ? primaryId : task.assignedTo;
 
-    // Send poke via agent bus
-    sendAgentMessage(pmId, recipient, 'poke', pokeMessage, {
-      taskId: task.id,
-      pokeType,
-      pokeNumber,
-      idleSeconds,
-    });
-
-    // Also inject into the recipient's conversation so the LLM sees it on the next turn
-    const db = getDb();
-    const pokeMsgId = uuidv4();
-    const fullPokeContent = `[SOURCE: PM AGENT POKE FROM ${pmName.toUpperCase()} — this is NOT a message from the user, it's an automated poke from the PM agent checking on your progress] ${pokeMessage}`;
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, created_at)
-      VALUES (?, ?, 'user', ?, ?, datetime('now'))
-    `).run(pokeMsgId, recipient, fullPokeContent, pmId);
-
-    // Broadcast same content to dashboard (consistent with what the agent sees)
-    broadcast({
-      type: 'chat:message',
-      agentId: recipient,
-      message: {
-        id: pokeMsgId,
-        agentId: recipient,
-        role: 'user' as Message['role'],
-        content: fullPokeContent,
-        tokenCount: null,
-        modelId: null,
-        cost: null,
-        latencyMs: null,
-        createdAt: new Date().toISOString(),
-      },
-    });
-
-    broadcast({
-      type: 'tracker:poke',
-      data: { taskId: task.id, agentId: task.assignedTo!, pokeType },
-    });
-
-    // Trigger the recipient's agent runtime so they actually process the poke
-    const pokeContent = `[${pmName} — Project Manager] ${pokeMessage}`;
-    const runtime = getAgentRuntime();
-    runtime.handleMessage(recipient, pokeContent).catch(err => {
-      logger.error('PM poke: failed to trigger agent runtime', {
-        recipient,
-        error: err instanceof Error ? err.message : String(err),
+    // Deliver poke via A2A transport. Pokes use QUESTION intent (we want
+    // a response) with a thread seeded by task ID + poke stage so each
+    // escalation level gets its own thread and hop counter.
+    import('../agent/a2a-transport.js').then(({ deliverA2AMessage, makeThreadId }) => {
+      const pokeThreadId = makeThreadId(`poke-${task.id}-${pokeType}`);
+      deliverA2AMessage({
+        intent: pokeType === 'escalate_primary' ? 'ASSIGN' : 'QUESTION',
+        threadId: pokeThreadId,
+        requiresResponse: true, // All pokes expect a response — even escalations to primary
+        payload: pokeMessage,
+        toAgent: recipient,
+        fromAgent: pmId,
+      }).catch(err => {
+        logger.error('PM poke: A2A delivery failed', {
+          recipient,
+          error: err instanceof Error ? err.message : String(err),
+        });
       });
-    });
+    }); // close .then()
 
     // Log the poke
     logPoke(task.id, task.assignedTo, pokeNumber, pokeType);
 
-    logger.info('PM poke sent and agent runtime triggered', {
+    logger.info('PM poke sent via A2A transport', {
       taskId: task.id,
       taskTitle: task.title,
       recipient,

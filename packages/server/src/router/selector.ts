@@ -20,11 +20,12 @@ export interface SelectedModel {
   fallbackUsed: boolean;
 }
 
-// Tier fallback order: light -> standard -> heavy
+// Tier fallback order: every tier can fall back downward. A rate-limited
+// Opus (heavy) should fall back to Sonnet (standard), not crash the agent.
 const TIER_FALLBACK: Record<string, string[]> = {
   light: ['light', 'standard', 'heavy'],
-  standard: ['standard', 'heavy'],
-  heavy: ['heavy'],
+  standard: ['standard', 'heavy', 'light'],
+  heavy: ['heavy', 'standard', 'light'],
 };
 
 interface TierModelRow {

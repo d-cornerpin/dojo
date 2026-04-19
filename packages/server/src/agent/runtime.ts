@@ -331,6 +331,7 @@ class AgentRuntime {
     let trackerToolCalled = false; // Whether agent has used any tracker tool this turn
     let nonTrackerToolCalls = 0; // Count of non-tracker tool calls this turn
     let toolCallsExecutedThisTurn = 0; // Total tool calls executed across all loop iterations this turn
+    let sentToAgentThisTurn = false; // Whether the agent called send_to_agent during this turn
     let lastAssistantTextForIM: string | null = null; // Last assistant text this turn — for iMessage routing after loop
 
     // Detect if this turn was triggered by an incoming iMessage.
@@ -523,11 +524,23 @@ class AgentRuntime {
           // Clear the model lock so fallback can use a different model
           lockedModelId = null;
           const fallback = selectModel(routerTier!, agentId, excludedModels, ['tools']);
-          if (!fallback) throw err; // no more models to try
+          if (!fallback) {
+            logger.error('Auto-router: no fallback models available — all models exhausted or ineligible', {
+              failedModel: modelId,
+              tier: routerTier,
+              excludedModels,
+              attempt,
+              maxAttempts,
+            }, agentId);
+            throw err;
+          }
 
           logger.warn(`Auto-router: model ${modelId} failed, falling back to ${fallback.modelId}`, {
             failedModel: modelId,
             fallbackModel: fallback.modelId,
+            tier: routerTier,
+            fallbackUsed: fallback.fallbackUsed,
+            excludedModels,
             error: err instanceof Error ? err.message.slice(0, 100) : String(err),
           }, agentId);
           modelId = fallback.modelId;
@@ -684,6 +697,28 @@ class AgentRuntime {
 
       // If no tool calls, we're done — iMessage routing happens after the loop
       if (result.toolCalls.length === 0) {
+        // Engine-level inter-agent silence: if this turn was triggered by
+        // an inter-agent message AND the agent already explicitly replied
+        // via send_to_agent, the trailing text is ALWAYS filler (the agent
+        // already communicated through the proper channel). Suppress it
+        // from being persisted — it's noise that clutters the chat and
+        // feeds acknowledgement loops.
+        //
+        // This is a STRUCTURAL check, not pattern matching. It doesn't
+        // matter what the text says — if the agent already called
+        // send_to_agent, any remaining text is by definition not the
+        // primary response.
+        const isInterAgentTurn = triggerRow?.content?.includes('[SOURCE: AGENT MESSAGE FROM') ||
+                                  triggerRow?.content?.includes('[SOURCE: GROUP BROADCAST FROM') ||
+                                  triggerRow?.content?.includes('[SOURCE: PM AGENT POKE FROM') ||
+                                  triggerRow?.content?.startsWith('[A2A:');
+        if (isInterAgentTurn && sentToAgentThisTurn && result.content) {
+          logger.debug('Suppressed trailing text on inter-agent turn (agent already replied via send_to_agent)', {
+            agentId, textLength: result.content.trim().length,
+          }, agentId);
+          result.content = null as unknown as string;
+          lastAssistantTextForIM = null;
+        }
 
         // Final response — unlock model for next user message
         lockedModelId = null;
@@ -730,6 +765,9 @@ class AgentRuntime {
 
         let toolResult: { toolCallId: string; content: string; isError: boolean; name: string; errorCode?: string };
         toolCallsExecutedThisTurn++;
+        if (toolCall.name === 'send_to_agent' || toolCall.name === 'broadcast_to_group') {
+          sentToAgentThisTurn = true;
+        }
         try {
           toolResult = await executeTool(agentId, toolCall);
         } catch (toolErr) {
@@ -979,88 +1017,14 @@ class AgentRuntime {
       clearIMResponseFlag(agentId);
     }
 
-    // ── Auto-route: if this turn was triggered by a send_to_agent message and the
-    // agent responded with text but forgot to call send_to_agent back, automatically
-    // deliver the response to the original sender. ──
-    try {
-      // Get the message that triggered this run — use source_agent_id column
-      // for reliable inter-agent detection, fall back to regex for older messages
-      const triggerMsg = db.prepare(
-        "SELECT content, source_agent_id FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1"
-      ).get(agentId) as { content: string; source_agent_id: string | null } | undefined;
-
-      if (triggerMsg?.content) {
-        // Prefer structured source_agent_id, fall back to regex for backwards compat
-        const senderId = triggerMsg.source_agent_id
-          ?? triggerMsg.content.match(/\(agent ID: ([^)]+)\)/)?.[1]
-          ?? null;
-        if (senderId) {
-
-          // Check if the agent already called send_to_agent targeting this sender during the loop
-          const sentReply = db.prepare(`
-            SELECT id FROM audit_log
-            WHERE agent_id = ? AND action_type = 'tool_call' AND target = 'send_to_agent'
-              AND detail LIKE ? AND created_at >= datetime('now', '-2 minutes')
-            LIMIT 1
-          `).get(agentId, `%${senderId}%`) as { id: string } | undefined;
-
-          if (!sentReply) {
-            // Agent didn't call send_to_agent — auto-route the last assistant response
-            const lastResponse = db.prepare(
-              "SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' ORDER BY created_at DESC, rowid DESC LIMIT 1"
-            ).get(agentId) as { content: string } | undefined;
-
-            if (lastResponse?.content && typeof lastResponse.content === 'string' && lastResponse.content.trim().length > 0) {
-              // Get sender agent name for context
-              const senderAgent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-              const senderName = senderAgent?.name ?? agentId;
-
-              // Deliver to the original sender's messages table (same as send_to_agent does)
-              const replyMsgId = uuidv4();
-              const replyContent = `[SOURCE: AGENT MESSAGE FROM ${senderName.toUpperCase()} (agent ID: ${agentId}) — this is NOT a message from the user, it's an auto-routed reply from another agent] ${lastResponse.content}\n\n[To reply, call: send_to_agent(agent="${agentId}", message="your reply")]`;
-              db.prepare(`
-                INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, created_at)
-                VALUES (?, ?, 'user', ?, ?, datetime('now'))
-              `).run(replyMsgId, senderId, replyContent, agentId);
-
-              broadcast({
-                type: 'chat:message',
-                agentId: senderId,
-                message: {
-                  id: replyMsgId,
-                  agentId: senderId,
-                  role: 'user' as const,
-                  content: replyContent,
-                  tokenCount: null,
-                  modelId: null,
-                  cost: null,
-                  latencyMs: null,
-                  createdAt: new Date().toISOString(),
-                },
-              });
-
-              // Trigger the sender's runtime so they process the reply
-              this.handleMessage(senderId, replyContent).catch(err => {
-                logger.error('Auto-route reply delivery failed', {
-                  senderId,
-                  error: err instanceof Error ? err.message : String(err),
-                }, agentId);
-              });
-
-              logger.info('Auto-routed text response to original sender', {
-                agentId,
-                senderId,
-                responseLength: lastResponse.content.length,
-              }, agentId);
-            }
-          }
-        }
-      }
-    } catch (err) {
-      logger.debug('Auto-route check failed (non-fatal)', {
-        error: err instanceof Error ? err.message : String(err),
-      }, agentId);
-    }
+    // ── Auto-route: REMOVED (v1.15.58) ──
+    // The old auto-route mechanism delivered trailing text to the original
+    // sender when the agent forgot to call send_to_agent. This was the
+    // primary cause of acknowledgement loops. The A2A protocol replaces
+    // it structurally: terminal intents don't wake the receiver, thread
+    // state prevents post-closure messages, and the hop counter provides
+    // a hard backstop. Agents that need to reply must call send_to_agent
+    // explicitly with the correct intent and thread_id.
 
     // Set agent back to idle — but only if it wasn't already terminated (e.g., by complete_task)
     const currentAgent = db.prepare('SELECT status, task_id FROM agents WHERE id = ?').get(agentId) as { status: string; task_id: string | null } | undefined;

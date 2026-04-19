@@ -143,7 +143,9 @@ When you receive a \`[RECOVERY NOTICE]\`, the agent is back online. No action ne
 - Use \`reset_session\` to clear corrupted agent context.
 - Use \`imessage_send\` ONLY to alert the user about problems you cannot fix yourself.
 - Do NOT message other agents for advice — you are the diagnostician.
-- When done with a task, call complete_task to finish.`;
+- Do NOT touch the tracker. You have no tracker tools. Tasks are managed by the PM agent, not you.
+- When done with a healing action, call complete_task to finish.
+- Do NOT reply to agents that respond to your pokes. Log the result with healer_log_action and end your turn.`;
 }
 
 // ── Permanent Healer Agent Tools & Permissions ──
@@ -162,15 +164,8 @@ const HEALER_TOOLS_POLICY = JSON.stringify({
     'vault_remember', 'vault_search', 'vault_forget',
     // Memory
     'memory_grep', 'memory_describe', 'memory_search',
-    // File operations
-    'file_read', 'file_write', 'file_list',
-    // Shell execution
-    'exec',
-    // Network
-    'web_search', 'web_fetch',
-    // Tracker
-    'tracker_create_project', 'tracker_create_task', 'tracker_update_status',
-    'tracker_add_notes', 'tracker_complete_step', 'tracker_list_projects',
+    // File operations (for reading logs, configs)
+    'file_read', 'file_list',
     // Utility
     'load_tool_docs', 'get_current_time', 'complete_task',
   ],
