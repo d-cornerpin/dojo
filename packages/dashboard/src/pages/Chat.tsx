@@ -307,14 +307,17 @@ export const Chat = () => {
           })),
         );
         setHasMore(result.data.length >= 50);
-        // Scroll to bottom on initial load — use instant (not smooth)
-        // and a double-frame delay to ensure the DOM is fully painted
-        // after the mobile padding/layout settles.
+        // Scroll to bottom on initial load — use instant (not smooth).
+        // Multiple fallbacks because DOM layout isn't always complete
+        // after a single rAF (long message lists, images, attachments).
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
             scrollToBottom(true);
           });
         });
+        // Fallback: catch any remaining layout shifts (lazy images, etc.)
+        setTimeout(() => scrollToBottom(true), 150);
+        setTimeout(() => scrollToBottom(true), 500);
       }
       setLoading(false);
     };
@@ -614,6 +617,14 @@ export const Chat = () => {
           const next = !wordyMode;
           setWordyMode(next);
           localStorage.setItem('dojo_wordy_mode', String(next));
+          // Toggling shows/hides many messages (tool calls, system messages),
+          // which changes content height drastically. Scroll to bottom after
+          // React re-renders with the new message visibility.
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              scrollToBottom(true);
+            });
+          });
         }}
         onNewSession={async () => {
           if (!confirm('Start a new session? The current conversation will be archived to the vault. Your agent won\'t lose any knowledge.')) return;

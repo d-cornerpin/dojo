@@ -203,8 +203,13 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
   const currentToolCallsRef = useRef<ToolCallData[]>([]);
 
   const lastMessageIdRef = useRef<string | null>(null);
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const scrollToBottom = useCallback((instant?: boolean) => {
+    if (instant) {
+      const container = messagesEndRef.current?.parentElement;
+      if (container) container.scrollTop = container.scrollHeight;
+    } else {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, []);
 
   useEffect(() => {
@@ -229,9 +234,14 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
           })),
         );
         setHasMore(result.data.length >= 50);
-        setTimeout(() => {
-          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }, 100);
+        // Scroll to bottom on initial load — instant, with fallbacks
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            scrollToBottom(true);
+          });
+        });
+        setTimeout(() => scrollToBottom(true), 150);
+        setTimeout(() => scrollToBottom(true), 500);
       }
       setLoading(false);
     };
@@ -471,6 +481,11 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
           const next = !wordyMode;
           setWordyMode(next);
           localStorage.setItem('dojo_wordy_mode', String(next));
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              scrollToBottom(true);
+            });
+          });
         }}
         onNewSession={handleNewSession}
         isWorking={isWorking}
