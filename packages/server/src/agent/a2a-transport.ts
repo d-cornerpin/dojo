@@ -16,16 +16,23 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
-import {
-  isTerminalIntent,
-  isReopeningIntent,
-  MAX_HOPS_PER_THREAD,
-  DEDUP_SIMILARITY_THRESHOLD,
-  DEDUP_LOOKBACK,
-  type A2AIntent,
-  type A2AEnvelope,
-  type A2ADropReason,
-} from '@dojo/shared';
+// A2A protocol constants and helpers — inlined here to avoid runtime
+// imports from @dojo/shared (which points at .ts source and can't be
+// loaded by Node.js in production without a TS loader).
+// Types are still imported from @dojo/shared as type-only (erased at compile time).
+import type { A2AIntent, A2AEnvelope, A2ADropReason } from '@dojo/shared';
+
+const TERMINAL_INTENTS = new Set<A2AIntent>(['DELIVERABLE', 'FYI', 'COMPLETE', 'FAIL', 'ANSWER']);
+const REOPENING_INTENTS = new Set<A2AIntent>(['QUESTION', 'BLOCK', 'ASSIGN']);
+const MAX_HOPS_PER_THREAD = 8;
+const DEDUP_SIMILARITY_THRESHOLD = 0.85;
+const DEDUP_LOOKBACK = 3;
+
+function isTerminalIntent(intent: A2AIntent): boolean { return TERMINAL_INTENTS.has(intent); }
+function isReopeningIntent(intent: A2AIntent): boolean { return REOPENING_INTENTS.has(intent); }
+
+// Re-export for callers that need these (tools.ts)
+export { isTerminalIntent, isReopeningIntent, type A2AIntent };
 
 const logger = createLogger('a2a-transport');
 

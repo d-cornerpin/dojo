@@ -1910,7 +1910,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           : [];
 
         // Determine requires_response from explicit arg, or default by intent
-        const { isTerminalIntent: isTerminal } = await import('@dojo/shared');
+        const { isTerminalIntent: isTerminal } = await import('./a2a-transport.js');
         let requiresResponse: boolean;
         if (args.requires_response !== undefined) {
           requiresResponse = !!args.requires_response;
@@ -1919,7 +1919,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           requiresResponse = ['QUESTION', 'ASSIGN', 'BLOCK'].includes(intent);
         }
         // Terminal intents ALWAYS force false
-        if (isTerminal(intent as import('@dojo/shared').A2AIntent)) {
+        if (isTerminal(intent as import('./a2a-transport.js').A2AIntent)) {
           requiresResponse = false;
         }
 
@@ -1947,7 +1947,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         if (!isError) {
           const { deliverA2AMessage } = await import('./a2a-transport.js');
           const result = await deliverA2AMessage({
-            intent: intent as import('@dojo/shared').A2AIntent,
+            intent: intent as import('./a2a-transport.js').A2AIntent,
             threadId: threadId ?? '',  // empty = auto-generate in transport
             requiresResponse,
             payload,
@@ -2023,7 +2023,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
         for (const member of healthyMembers) {
           const bcResult = await deliverBc({
-            intent: bcIntent as import('@dojo/shared').A2AIntent,
+            intent: bcIntent as import('./a2a-transport.js').A2AIntent,
             threadId: bcThreadId ?? '',
             requiresResponse: ['QUESTION', 'ASSIGN', 'BLOCK'].includes(bcIntent),
             payload: broadcastPayload,
