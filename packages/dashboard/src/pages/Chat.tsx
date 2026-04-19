@@ -209,14 +209,36 @@ const ToolResultBubble = ({ msg }: { msg: ChatMessage }) => {
       <div className="max-w-[75%]">
         {blocks
           .filter((b) => b.type === 'tool_result')
-          .map((b, i) => (
-            <ToolResultBlock
-              key={`${msg.id}-result-${i}`}
-              toolUseId={b.tool_use_id ?? ''}
-              content={b.content ?? ''}
-              isError={!!b.is_error}
-            />
-          ))}
+          .map((b, i) => {
+            // content can be a string OR an array of content blocks
+            // (e.g., file_read on an image returns [{type:'text',...},{type:'image',...}]).
+            // Extract text for display; images are shown as placeholders.
+            let displayContent: string;
+            const rawContent = b.content as unknown;
+            if (typeof rawContent === 'string') {
+              displayContent = rawContent;
+            } else if (Array.isArray(rawContent)) {
+              displayContent = (rawContent as Array<Record<string, unknown>>)
+                .map((block: Record<string, unknown>) => {
+                  if (block.type === 'text') return block.text as string;
+                  if (block.type === 'image') return '[Image content — visible to model via vision]';
+                  if (block.type === 'document') return `[PDF: ${(block.title as string) ?? 'document'}]`;
+                  return '';
+                })
+                .filter(Boolean)
+                .join('\n');
+            } else {
+              displayContent = JSON.stringify(rawContent);
+            }
+            return (
+              <ToolResultBlock
+                key={`${msg.id}-result-${i}`}
+                toolUseId={b.tool_use_id ?? ''}
+                content={displayContent}
+                isError={!!b.is_error}
+              />
+            );
+          })}
       </div>
     </div>
   );
