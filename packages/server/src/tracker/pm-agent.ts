@@ -379,20 +379,27 @@ async function runPMReview(): Promise<void> {
       }
     }
 
+    // Grace period: don't flag tasks that were just created or recently changed status.
+    // A brand-new task is not stale — give agents time to start working.
+    const GRACE_PERIOD_MINUTES = 30;
+    const taskCreatedTime = new Date(task.createdAt.includes('Z') ? task.createdAt : task.createdAt + 'Z');
+    const taskAgeMin = Math.floor((nowDate.getTime() - taskCreatedTime.getTime()) / 60000);
+
     // 4. Non-scheduled tasks stuck in on_deck with no activity.
     // Skip scheduled tasks waiting for their next run (schedule_status='waiting') —
     // they sit in on_deck between runs and that's normal, not stale.
     if (task.status === 'on_deck' && !task.scheduledStart && task.assignedTo && task.scheduleStatus !== 'waiting') {
       const updatedTime = new Date(task.updatedAt.includes('Z') ? task.updatedAt : task.updatedAt + 'Z');
       const staleMin = Math.floor((nowDate.getTime() - updatedTime.getTime()) / 60000);
-      if (staleMin > 15) {
+      if (staleMin > GRACE_PERIOD_MINUTES && taskAgeMin > GRACE_PERIOD_MINUTES) {
         const agentName = task.assignedToName ?? task.assignedTo;
         issues.push(`STALE: "${task.title}" has been on_deck for ${staleMin} minutes, assigned to ${agentName} but not started.`);
       }
     }
 
-    // 5. In-progress tasks where the assigned agent has gone silent
-    if (task.status === 'in_progress' && task.assignedTo) {
+    // 5. In-progress tasks where the assigned agent has gone silent.
+    // Grace period: don't flag tasks less than GRACE_PERIOD_MINUTES old.
+    if (task.status === 'in_progress' && task.assignedTo && taskAgeMin > GRACE_PERIOD_MINUTES) {
       const agent = agents.find(a => a.id === task.assignedTo);
       if (agent && agent.status !== 'terminated') {
         // Check agent's last message activity
@@ -501,8 +508,15 @@ function runPokeCheck(): void {
   const inProgressTasks = allActiveTasks.filter(t => t.status === 'in_progress');
   const now = Date.now();
 
+  const POKE_GRACE_PERIOD_MS = 30 * 60 * 1000; // 30 minutes
+
   for (const task of inProgressTasks) {
     if (!task.assignedTo) continue;
+
+    // Grace period: don't poke tasks that were just created. Give agents
+    // time to actually start working before flagging them.
+    const taskCreated = new Date(task.createdAt.includes('Z') ? task.createdAt : task.createdAt + 'Z').getTime();
+    if (now - taskCreated < POKE_GRACE_PERIOD_MS) continue;
 
     // Skip tasks with a future scheduled_start -- they're waiting for the scheduler, not stale
     if (task.scheduledStart) {
