@@ -488,9 +488,19 @@ export const Tracker = () => {
       });
     });
 
+    // Track agent working status in real-time so task card animations
+    // reflect whether the assigned agent is ACTUALLY working right now.
+    const unsubAgentStatus = subscribe('agent:status', (event: WsEvent) => {
+      const e = event as { agentId: string; status: string };
+      setAgents((prev) => prev.map(a =>
+        a.id === e.agentId ? { ...a, status: e.status as AgentDetail['status'] } : a
+      ));
+    });
+
     return () => {
       unsubTask();
       unsubProject();
+      unsubAgentStatus();
     };
   }, [subscribe]);
 
@@ -584,6 +594,7 @@ export const Tracker = () => {
       <div className="flex-1 min-h-0">
         <KanbanBoard
           tasks={tasks}
+          workingAgentIds={new Set(agents.filter(a => a.status === 'working').map(a => a.id))}
           onTaskClick={(taskId) => setSelectedTaskId(taskId)}
           onStatusChange={handleStatusChange}
           onTaskDeleted={loadData}

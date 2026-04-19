@@ -4,6 +4,7 @@ import { TaskCard } from './TaskCard';
 
 interface KanbanBoardProps {
   tasks: Task[];
+  workingAgentIds?: Set<string>;
   onTaskClick: (taskId: string) => void;
   onStatusChange: (taskId: string, newStatus: Task['status']) => void;
   onTaskDeleted?: () => void;
@@ -27,12 +28,14 @@ const columns: ColumnDef[] = [
 const KanbanColumn = ({
   column,
   tasks,
+  workingAgentIds,
   onTaskClick,
   onTaskDeleted,
   onDrop,
 }: {
   column: ColumnDef;
   tasks: Task[];
+  workingAgentIds?: Set<string>;
   onTaskClick: (taskId: string) => void;
   onTaskDeleted?: () => void;
   onDrop: (taskId: string, newStatus: Task['status']) => void;
@@ -83,6 +86,7 @@ const KanbanColumn = ({
           <DraggableTaskCard
             key={task.id}
             task={task}
+            agentIsWorking={!!(task.assignedTo && workingAgentIds?.has(task.assignedTo))}
             onClick={() => onTaskClick(task.id)}
             onDeleted={onTaskDeleted}
           />
@@ -102,10 +106,12 @@ const KanbanColumn = ({
 
 const DraggableTaskCard = ({
   task,
+  agentIsWorking,
   onClick,
   onDeleted,
 }: {
   task: Task;
+  agentIsWorking?: boolean;
   onClick: () => void;
   onDeleted?: () => void;
 }) => {
@@ -128,12 +134,12 @@ const DraggableTaskCard = ({
       onDragEnd={handleDragEnd}
       className={`cursor-grab active:cursor-grabbing ${dragging ? 'opacity-40' : ''}`}
     >
-      <TaskCard task={task} onClick={onClick} onDeleted={onDeleted} />
+      <TaskCard task={task} agentIsWorking={agentIsWorking} onClick={onClick} onDeleted={onDeleted} />
     </div>
   );
 };
 
-export const KanbanBoard = ({ tasks, onTaskClick, onStatusChange, onTaskDeleted }: KanbanBoardProps) => {
+export const KanbanBoard = ({ tasks, workingAgentIds, onTaskClick, onStatusChange, onTaskDeleted }: KanbanBoardProps) => {
   const tasksByStatus = columns.reduce(
     (acc, col) => {
       acc[col.key] = tasks
@@ -159,6 +165,7 @@ export const KanbanBoard = ({ tasks, onTaskClick, onStatusChange, onTaskDeleted 
           key={col.key}
           column={col}
           tasks={tasksByStatus[col.key] || []}
+          workingAgentIds={workingAgentIds}
           onTaskClick={onTaskClick}
           onTaskDeleted={onTaskDeleted}
           onDrop={handleDrop}

@@ -4,6 +4,7 @@ import * as api from '../lib/api';
 
 interface TaskCardProps {
   task: Task;
+  agentIsWorking?: boolean;
   onClick: () => void;
   onDeleted?: () => void;
 }
@@ -34,7 +35,7 @@ const formatRepeat = (interval: number, unit: string): string => {
   return `Every ${interval} ${unit}`;
 };
 
-export const TaskCard = ({ task, onClick, onDeleted }: TaskCardProps) => {
+export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardProps) => {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const priority = priorityColors[task.priority] || priorityColors.normal;
   const isScheduled = task.scheduleStatus && task.scheduleStatus !== 'unscheduled';
@@ -46,7 +47,10 @@ export const TaskCard = ({ task, onClick, onDeleted }: TaskCardProps) => {
     setConfirmDelete(false);
   };
 
-  const isActive = task.status === 'in_progress';
+  // Only show the "actively being worked on" animation when the assigned
+  // agent is ACTUALLY working right now — not just because the task status
+  // is in_progress (which can persist after the agent finishes or errors).
+  const isActive = task.status === 'in_progress' && !!agentIsWorking;
   const isBlocked = task.status === 'blocked';
   const isPaused = task.status === 'paused';
 
