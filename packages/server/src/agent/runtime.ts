@@ -771,6 +771,11 @@ class AgentRuntime {
         }
         try {
           toolResult = await executeTool(agentId, toolCall);
+          // Transfer content blocks from the tool call (set by file_read for images/PDFs)
+          const contentBlocks = (toolCall as unknown as Record<string, unknown>).__contentBlocks as Array<{ type: string; [key: string]: unknown }> | undefined;
+          if (contentBlocks) {
+            (toolResult as { contentBlocks?: unknown }).contentBlocks = contentBlocks;
+          }
         } catch (toolErr) {
           // Tool threw an unhandled exception — don't crash the agent loop.
           // Convert to an error result so the model sees the failure and can adapt.
@@ -850,13 +855,21 @@ class AgentRuntime {
             tools: result.toolCalls.map(tc => tc.name),
           }, agentId);
         } else {
-          // Normal path: store as structured tool_result content blocks
-          const toolResultContent: Anthropic.ToolResultBlockParam[] = toolResults.map(tr => ({
-            type: 'tool_result' as const,
-            tool_use_id: tr.toolCallId,
-            content: tr.content,
-            is_error: tr.isError,
-          }));
+          // Normal path: store as structured tool_result content blocks.
+          // If a tool result has contentBlocks (e.g., file_read on an image),
+          // use those instead of the plain string — the model sees the image
+          // via its vision capabilities.
+          const toolResultContent = toolResults.map(tr => {
+            const blocks = (tr as { contentBlocks?: Array<{ type: string; [key: string]: unknown }> }).contentBlocks;
+            return {
+              type: 'tool_result' as const,
+              tool_use_id: tr.toolCallId,
+              content: blocks
+                ? blocks as unknown as Anthropic.ToolResultBlockParam['content']
+                : tr.content,
+              is_error: tr.isError,
+            };
+          }) as Anthropic.ToolResultBlockParam[];
 
           const toolMessageId = uuidv4();
           db.prepare(`

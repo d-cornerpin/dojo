@@ -324,7 +324,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'file_read',
-    description: 'Read the contents of a file at the given absolute path. Large files are truncated at 50,000 characters. Example: file_read({ path: "/Users/me/project/src/index.ts" }).',
+    description: 'Read the contents of a file at the given absolute path. For text files, returns the text content (large files truncated at 50K chars). For images (PNG, JPEG, GIF, WEBP), returns the image so you can see it using your vision capabilities — use this to view screenshots, renders, diagrams, or any visual content. For PDFs, returns the document so you can read it. Example: file_read({ path: "/Users/me/output/render.png" }).',
     input_schema: {
       type: 'object',
       properties: {
@@ -1517,7 +1517,19 @@ async function executeExec(agentId: string, args: Record<string, unknown>): Prom
   }
 }
 
-async function executeFileRead(agentId: string, args: Record<string, unknown>): Promise<string> {
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+const PDF_EXTENSIONS = new Set(['.pdf']);
+const IMAGE_MEDIA_TYPES: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp',
+};
+// Max file size for vision injection (20MB)
+const MAX_VISION_FILE_SIZE = 20 * 1024 * 1024;
+
+async function executeFileRead(
+  agentId: string,
+  args: Record<string, unknown>,
+): Promise<string | { text: string; contentBlocks: Array<{ type: string; [key: string]: unknown }> }> {
   const filePath = resolvePath(args.path as string);
 
   if (!path.isAbsolute(filePath)) {
@@ -1537,6 +1549,52 @@ async function executeFileRead(agentId: string, args: Record<string, unknown>): 
       return 'Error: Path is a directory, use file_list instead';
     }
 
+    const ext = path.extname(filePath).toLowerCase();
+
+    // ── Image files: return as vision content block ──
+    // The model sees the actual image via its vision capabilities,
+    // same as when a user attaches an image to a chat message.
+    if (IMAGE_EXTENSIONS.has(ext)) {
+      if (stat.size > MAX_VISION_FILE_SIZE) {
+        auditLog(agentId, 'file_read', filePath, 'error', `Image too large: ${stat.size} bytes`);
+        return `Error: Image is too large (${(stat.size / 1024 / 1024).toFixed(1)}MB). Max is 20MB.`;
+      }
+      const data = await fs.promises.readFile(filePath);
+      const base64 = data.toString('base64');
+      const mediaType = IMAGE_MEDIA_TYPES[ext] ?? 'image/png';
+
+      auditLog(agentId, 'file_read', filePath, 'success', `image ${stat.size} bytes`);
+
+      return {
+        text: `Image loaded: ${filePath} (${(stat.size / 1024).toFixed(0)}KB, ${mediaType})`,
+        contentBlocks: [
+          { type: 'text', text: `Image: ${path.basename(filePath)} (${(stat.size / 1024).toFixed(0)}KB)` },
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+        ],
+      };
+    }
+
+    // ── PDF files: return as document content block ──
+    if (PDF_EXTENSIONS.has(ext)) {
+      if (stat.size > MAX_VISION_FILE_SIZE) {
+        auditLog(agentId, 'file_read', filePath, 'error', `PDF too large: ${stat.size} bytes`);
+        return `Error: PDF is too large (${(stat.size / 1024 / 1024).toFixed(1)}MB). Max is 20MB.`;
+      }
+      const data = await fs.promises.readFile(filePath);
+      const base64 = data.toString('base64');
+
+      auditLog(agentId, 'file_read', filePath, 'success', `pdf ${stat.size} bytes`);
+
+      return {
+        text: `PDF loaded: ${filePath} (${(stat.size / 1024).toFixed(0)}KB)`,
+        contentBlocks: [
+          { type: 'text', text: `PDF: ${path.basename(filePath)} (${(stat.size / 1024).toFixed(0)}KB)` },
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 }, title: path.basename(filePath) },
+        ],
+      };
+    }
+
+    // ── Text files: return as text (existing behavior) ──
     const content = await fs.promises.readFile(filePath, 'utf-8');
 
     auditLog(agentId, 'file_read', filePath, 'success', `${stat.size} bytes`);
@@ -1798,10 +1856,20 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         content = await executeExec(agentId, args);
         isError = content.startsWith('Error');
         break;
-      case 'file_read':
-        content = await executeFileRead(agentId, args);
-        isError = content.startsWith('Error');
+      case 'file_read': {
+        const fileResult = await executeFileRead(agentId, args);
+        if (typeof fileResult === 'string') {
+          content = fileResult;
+          isError = content.startsWith('Error');
+        } else {
+          // Structured result with content blocks (images, PDFs)
+          content = fileResult.text;
+          // Attach the content blocks to the tool result so the runtime
+          // can include them in the tool_result sent to the model
+          (toolCall as unknown as Record<string, unknown>).__contentBlocks = fileResult.contentBlocks;
+        }
         break;
+      }
       case 'file_write':
         content = await executeFileWrite(agentId, args);
         isError = content.startsWith('Error');

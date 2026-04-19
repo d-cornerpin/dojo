@@ -158,6 +158,11 @@ export interface ToolResult {
   content: string;
   isError: boolean;
   errorCode?: ToolErrorCode;
+  // Structured content blocks for rich tool results (images, documents).
+  // When present, the runtime uses these instead of `content` for the
+  // tool_result sent to the model. `content` is still the text fallback
+  // for persistence and display.
+  contentBlocks?: Array<{ type: string; [key: string]: unknown }>;
 }
 
 // ── Memory ──
