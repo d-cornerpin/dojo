@@ -142,7 +142,7 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
 
   if (isActive || isBlocked || isPaused) {
     return (
-      <div className={isActive ? 'card-working-wrap' : ''}>
+      <div className={isActive ? 'card-working-wrap' : 'relative'}>
         {isActive && (
           <>
             <div className="card-working-glow card-glow-amber" />
