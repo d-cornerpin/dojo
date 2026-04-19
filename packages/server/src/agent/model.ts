@@ -251,16 +251,42 @@ async function buildNativeOllamaMessages(
       const toolResults = blocks.filter(b => b.type === 'tool_result');
 
       if (toolResults.length > 0) {
+        const pendingOllamaImages: string[] = []; // base64 data for images
+
         for (const tr of toolResults) {
           const toolUseId = tr.tool_use_id as string;
           const toolName = toolIdToName.get(toolUseId) ?? '';
-          const content = typeof tr.content === 'string'
-            ? tr.content
-            : JSON.stringify(tr.content);
-          native.push({ role: 'tool', content, tool_name: toolName });
+
+          if (typeof tr.content === 'string') {
+            native.push({ role: 'tool', content: tr.content, tool_name: toolName });
+          } else if (Array.isArray(tr.content)) {
+            // Structured content blocks — extract text for tool result,
+            // queue images for a follow-up user message
+            const contentBlocks = tr.content as Array<Record<string, unknown>>;
+            const textParts = contentBlocks.filter(b => b.type === 'text').map(b => (b.text as string) ?? '').join('\n');
+            native.push({ role: 'tool', content: textParts || '[Image loaded]', tool_name: toolName });
+
+            for (const img of contentBlocks.filter(b => b.type === 'image')) {
+              const source = img.source as Record<string, unknown> | undefined;
+              if (source?.type === 'base64' && typeof source.data === 'string') {
+                pendingOllamaImages.push(source.data as string);
+              }
+            }
+          } else {
+            native.push({ role: 'tool', content: JSON.stringify(tr.content), tool_name: toolName });
+          }
         }
-        // Don't `continue` — emit any text blocks that were merged into
-        // this message by the assembler's mergeConsecutiveRoles.
+
+        // Ollama supports images in user messages via the 'images' field
+        if (pendingOllamaImages.length > 0) {
+          native.push({
+            role: 'user',
+            content: '[Image from tool result — analyze this image]',
+            images: pendingOllamaImages,
+          } as unknown as typeof native[0]);
+        }
+
+        // Emit any remaining text blocks
         const remainingText = blocks.filter(b => b.type === 'text').map(b => (b.text as string) ?? '').join('\n').trim();
         if (remainingText) {
           native.push({ role: 'user', content: remainingText });
@@ -706,17 +732,80 @@ async function buildOpenAIMessages(
       const toolResults = blocks.filter(b => b.type === 'tool_result');
 
       if (toolResults.length > 0) {
+        // Collect any image blocks from tool results that contain structured
+        // content (e.g., file_read on an image). OpenAI tool results only
+        // support string content, so we extract the text portion for the tool
+        // result and emit any images as a follow-up user message.
+        const pendingImages: Array<Record<string, unknown>> = [];
+
         for (const tr of toolResults) {
-          openaiMessages.push({
-            role: 'tool',
-            tool_call_id: tr.tool_use_id as string,
-            content: typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content),
-          });
+          if (typeof tr.content === 'string') {
+            openaiMessages.push({
+              role: 'tool',
+              tool_call_id: tr.tool_use_id as string,
+              content: tr.content,
+            });
+          } else if (Array.isArray(tr.content)) {
+            // Structured content blocks — extract text and images separately
+            const contentBlocks = tr.content as Array<Record<string, unknown>>;
+            const textParts = contentBlocks.filter(b => b.type === 'text').map(b => (b.text as string) ?? '').join('\n');
+            const imageBlks = contentBlocks.filter(b => b.type === 'image');
+            const docBlks = contentBlocks.filter(b => b.type === 'document');
+
+            openaiMessages.push({
+              role: 'tool',
+              tool_call_id: tr.tool_use_id as string,
+              content: textParts || '[Image loaded — see below]',
+            });
+
+            // Queue images to be emitted as a user message after tool results
+            for (const img of imageBlks) {
+              const source = img.source as Record<string, unknown> | undefined;
+              if (source?.type === 'base64' && typeof source.data === 'string') {
+                const mediaType = (source.media_type as string) || 'image/png';
+                pendingImages.push({
+                  type: 'image_url',
+                  image_url: { url: `data:${mediaType};base64,${source.data}` },
+                });
+              }
+            }
+
+            // Inline PDF text for non-vision document blocks
+            for (const doc of docBlks) {
+              const source = doc.source as Record<string, unknown> | undefined;
+              if (source?.type === 'base64' && typeof source.data === 'string') {
+                try {
+                  const { extractPdfText } = await import('../services/pdf-extract.js');
+                  const extracted = await extractPdfText(source.data as string);
+                  const title = (doc.title as string) ?? 'document';
+                  openaiMessages.push({
+                    role: 'user',
+                    content: `[PDF: ${title}]\n${extracted.text}\n[end of ${title}]`,
+                  });
+                } catch { /* PDF extraction failed — skip */ }
+              }
+            }
+          } else {
+            openaiMessages.push({
+              role: 'tool',
+              tool_call_id: tr.tool_use_id as string,
+              content: JSON.stringify(tr.content),
+            });
+          }
         }
-        // Don't `continue` — there may be text blocks in this message too
-        // (the assembler merges consecutive same-role messages, so a
-        // tool_result message can get merged with a text user message).
-        // Fall through to emit any text content as a separate user message.
+
+        // Emit queued images as a user message so the model can see them.
+        // OpenAI doesn't support images in tool results, but a follow-up
+        // user message with the image works for vision-capable models.
+        if (pendingImages.length > 0) {
+          const parts: OpenAI.ChatCompletionContentPart[] = [
+            { type: 'text', text: '[Image from tool result — analyze this image]' },
+            ...(pendingImages as unknown as OpenAI.ChatCompletionContentPart[]),
+          ];
+          openaiMessages.push({ role: 'user', content: parts });
+        }
+
+        // Fall through to emit any remaining text blocks
         const remainingText = blocks.filter(b => b.type === 'text').map(b => (b.text as string) ?? '').join('\n').trim();
         if (remainingText) {
           openaiMessages.push({ role: 'user', content: remainingText });
