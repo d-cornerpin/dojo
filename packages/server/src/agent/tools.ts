@@ -161,6 +161,45 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
     filtered = filtered.filter(t => !removeTools.includes(t.name));
   }
 
+  // ── Permission-aware tool descriptions ──
+  // Customize tool descriptions with the agent's specific permissions so
+  // the agent knows upfront what it CAN do, not just what will be denied.
+  // This prevents loops where the agent tries a disallowed command 20+
+  // times because the generic description says "run a command" without
+  // specifying which commands are allowed.
+  if (hasExec && manifest.exec_allow[0] !== '*') {
+    const allowedCmds = manifest.exec_allow.join(', ');
+    filtered = filtered.map(t => {
+      if (t.name !== 'exec') return t;
+      return {
+        ...t,
+        description: `Execute a shell command. You can ONLY run these commands: ${allowedCmds}. Any other command will be blocked. If you need a command that's not in this list, use send_to_agent to ask an agent with broader permissions, or call complete_task(status="blocked"). Has a 30-second timeout.`,
+      };
+    });
+  }
+
+  if (hasFileRead && manifest.file_read !== '*' && Array.isArray(manifest.file_read)) {
+    const allowedPaths = manifest.file_read.join(', ');
+    filtered = filtered.map(t => {
+      if (t.name !== 'file_read') return t;
+      return {
+        ...t,
+        description: `Read a file. You can only read from: ${allowedPaths}. Other paths will be blocked.`,
+      };
+    });
+  }
+
+  if (hasFileWrite && manifest.file_write !== '*' && Array.isArray(manifest.file_write)) {
+    const allowedPaths = manifest.file_write.join(', ');
+    filtered = filtered.map(t => {
+      if (t.name !== 'file_write') return t;
+      return {
+        ...t,
+        description: `Write a file. You can only write to: ${allowedPaths}. Other paths will be blocked.`,
+      };
+    });
+  }
+
   // ── Google Workspace tools (access-level gated) ──
   const isPrimary = isPrimaryAgent(agentId);
   const isPM = isPMAgent(agentId);

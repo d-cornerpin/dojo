@@ -310,7 +310,8 @@ function checkExecPermission(manifest: PermissionManifest, command: string): Per
     }
   }
 
-  return { allowed: false, reason: `Command not in allow list: "${baseCommand}"` };
+  const allowedList = manifest.exec_allow.join(', ');
+  return { allowed: false, reason: `Command "${baseCommand}" is not allowed. Your permitted commands are: ${allowedList}` };
 }
 
 function checkSpawnPermission(manifest: PermissionManifest): PermissionResult {

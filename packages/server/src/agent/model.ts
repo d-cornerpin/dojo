@@ -1107,6 +1107,7 @@ async function callOpenAIModel(
     if (toolCalls.length === 0 && (
       fullText.includes('<invoke name="') ||
       fullText.includes('<tool_call>') ||
+      fullText.includes('<|tool_call>') ||
       fullText.includes('<function_call') ||
       /```json\s*\{\s*"name"\s*:/.test(fullText)
     )) {
@@ -1178,11 +1179,39 @@ async function callOpenAIModel(
         }
       }
 
+      // Pattern 5: <|tool_call>call:tool_name(key="value", ...)<tool_call|>
+      // Used by some Qwen/DeepSeek-derived models
+      if (toolCalls.length === 0) {
+        const pipeRegex = /<\|tool_call>call:(\w+)\(([^)]*)\)<(?:tool_call\||\|tool_call)>/g;
+        let pipeMatch;
+        while ((pipeMatch = pipeRegex.exec(fullText)) !== null) {
+          const toolName = pipeMatch[1];
+          const rawArgs = pipeMatch[2];
+          const args: Record<string, unknown> = {};
+          // Parse key="value" or key=value pairs
+          const argPairs = rawArgs.matchAll(/(\w+)="([^"]*)"/g);
+          for (const pair of argPairs) {
+            args[pair[1]] = pair[2];
+          }
+          // Also try key=value (unquoted)
+          const unquotedPairs = rawArgs.matchAll(/(\w+)=([^,)"]+)/g);
+          for (const pair of unquotedPairs) {
+            if (!(pair[1] in args)) args[pair[1]] = pair[2].trim();
+          }
+          toolCalls.push({
+            id: `text_tool_${Date.now()}_${toolCalls.length}`,
+            name: toolName,
+            arguments: args,
+          });
+        }
+      }
+
       if (toolCalls.length > 0) {
         // Strip all recognized tool call patterns from visible text
         fullText = fullText.replace(/<minimax:tool_call>[\s\S]*?<\/minimax:tool_call>/g, '')
           .replace(/<invoke name="[^"]*">[\s\S]*?<\/invoke>/g, '')
           .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+          .replace(/<\|tool_call>[\s\S]*?<(?:tool_call\||\|tool_call)>/g, '')
           .replace(/<function_call[^>]*\/>/g, '')
           .replace(/```json\s*\{[\s\S]*?\}\s*```/g, '')
           .trim();

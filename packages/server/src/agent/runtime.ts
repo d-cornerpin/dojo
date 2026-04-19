@@ -332,6 +332,7 @@ class AgentRuntime {
     let nonTrackerToolCalls = 0; // Count of non-tracker tool calls this turn
     let toolCallsExecutedThisTurn = 0; // Total tool calls executed across all loop iterations this turn
     let sentToAgentThisTurn = false; // Whether the agent called send_to_agent during this turn
+    let consecutivePermissionDenials = 0; // Count of consecutive [BLOCKED] tool results
     let lastAssistantTextForIM: string | null = null; // Last assistant text this turn — for iMessage routing after loop
 
     // Detect if this turn was triggered by an incoming iMessage.
@@ -795,6 +796,28 @@ class AgentRuntime {
             result: toolResult.content.slice(0, 500),
           });
         } catch { /* broadcast failure is non-fatal */ }
+      }
+
+      // Detect consecutive permission denials — agent keeps trying tools it
+      // can't use. After 3, nudge. After 5, break the loop — the agent is
+      // stuck and burning tokens on tools that will never succeed.
+      const allBlocked = toolResults.every(tr => tr.isError && tr.content.includes('[BLOCKED]'));
+      if (allBlocked && toolResults.length > 0) {
+        consecutivePermissionDenials += toolResults.length;
+        if (consecutivePermissionDenials >= 5) {
+          logger.warn('Breaking tool loop: agent stuck on permission-denied tools', {
+            agentId, denials: consecutivePermissionDenials,
+          }, agentId);
+          const blockMsg = `[System: You have been blocked ${consecutivePermissionDenials} times in a row. The tools you are trying to use are NOT available to you. STOP trying them. Use a different tool (file_read, send_to_agent) or call complete_task(status="blocked", summary="Need permission for ...") to report you are stuck.]`;
+          const blockMsgId = uuidv4();
+          db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))`).run(blockMsgId, agentId, blockMsg);
+          broadcast({ type: 'chat:message', agentId, message: { id: blockMsgId, agentId, role: 'system' as const, content: blockMsg, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
+          break;
+        } else if (consecutivePermissionDenials >= 3 && !pendingNudge) {
+          pendingNudge = `[System: You have been blocked ${consecutivePermissionDenials} times. These tools are not available to you. Try a completely different approach — use file_read to read files, send_to_agent to ask another agent for help, or complete_task if you are stuck.]`;
+        }
+      } else {
+        consecutivePermissionDenials = 0; // Reset on any successful tool call
       }
 
       // Persist tool result messages
