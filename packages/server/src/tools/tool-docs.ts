@@ -74,6 +74,19 @@ export const TRAINER_AGENT_ALWAYS_LOADED = [
   'file_write',
 ];
 
+// Healer agent: diagnostic + agent management for injury recovery.
+export const HEALER_AGENT_ALWAYS_LOADED = [
+  ...DEFAULT_ALWAYS_LOADED_TOOLS,
+  'list_agents',
+  'send_to_agent',
+  'reset_session',
+  'imessage_send',
+  'vault_search',
+  'vault_remember',
+  'healer_log_action',
+  'healer_propose',
+];
+
 // Imaginer agent: doesn't run through the LLM runtime at all — its
 // image model gets called directly by the image_create tool's async
 // background task. The always-loaded set is minimal just in case the
@@ -214,6 +227,10 @@ function getDefaultForAgent(agentId: string): string[] {
     if (agentId === (configMap['pm_agent_id'] ?? 'pm')) return PM_AGENT_ALWAYS_LOADED;
     if (agentId === (configMap['trainer_agent_id'] ?? 'trainer')) return TRAINER_AGENT_ALWAYS_LOADED;
     if (agentId === (configMap['imaginer_agent_id'] ?? 'imaginer')) return IMAGINER_AGENT_ALWAYS_LOADED;
+
+    // Check healer by config (key may not exist on older installs)
+    const healerRow = db.prepare("SELECT value FROM config WHERE key = 'healer_agent_id'").get() as { value: string } | undefined;
+    if (healerRow && agentId === healerRow.value) return HEALER_AGENT_ALWAYS_LOADED;
 
     // Non-system agents: check by name (Dreamer) or classification
     const row = db.prepare('SELECT name, classification FROM agents WHERE id = ?').get(agentId) as

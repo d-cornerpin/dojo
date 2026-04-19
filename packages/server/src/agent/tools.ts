@@ -1904,13 +1904,25 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           content = `Agent "${target.name}" (${target.id}) is terminated. Use spawn_agent to create a new one.`;
           isError = true;
         } else if (target.status === 'error' || target.status === 'paused') {
-          // Block the send outright. An injured agent that keeps receiving
-          // messages just sits stuck in a broken state — the sender ends up
-          // waiting indefinitely. Force the sender to heal or reassign.
-          const stateLabel = target.status === 'error' ? 'INJURED' : 'PAUSED';
-          content = `Agent "${target.name}" (${target.id}) is ${stateLabel} and cannot respond right now. Message was NOT delivered.\n\nTo proceed, do ONE of:\n  1. reset_session(agent_id="${target.id}") — wipes their context and heals them; their conversation is archived to the vault first. After reset, send your message again.\n  2. Reassign the work — pick a different agent (list_agents to see options) or spawn_agent for a fresh one.\n  3. Tell the user the agent is injured and ask them to look at it.\n\nDo NOT just wait on this agent — they will not recover on their own.`;
-          isError = true;
-        } else {
+          // The Healer agent is allowed to poke injured agents — that's its
+          // job. Its poke wakes the agent via handleMessage, which sets status
+          // to 'working' and retries the loop. For everyone else, block the
+          // send to prevent futile waiting.
+          let isHealer = false;
+          try {
+            const { isHealerAgent } = await import('../config/platform.js');
+            isHealer = isHealerAgent(agentId);
+          } catch { /* platform config may not be available */ }
+
+          if (!isHealer) {
+            const stateLabel = target.status === 'error' ? 'INJURED' : 'PAUSED';
+            content = `Agent "${target.name}" (${target.id}) is ${stateLabel} and cannot respond right now. Message was NOT delivered.\n\nTo proceed, do ONE of:\n  1. reset_session(agent_id="${target.id}") — wipes their context and heals them; their conversation is archived to the vault first. After reset, send your message again.\n  2. Reassign the work — pick a different agent (list_agents to see options) or spawn_agent for a fresh one.\n  3. Tell the user the agent is injured and ask them to look at it.\n\nDo NOT just wait on this agent — they will not recover on their own.`;
+            isError = true;
+          }
+          // If isHealer, fall through to the normal send path below
+        }
+
+        if (!isError && target && target.status !== 'terminated') {
           // Get sender agent's name for context
           const senderRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
           const senderName = senderRow?.name ?? agentId;
@@ -2451,8 +2463,22 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
           broadcast({ type: 'chat:message', agentId: resolvedId, message: { id: markerId, agentId: resolvedId, role: 'system', content: '── New Session ──', tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
 
+          // If the agent is in error/paused status, heal it by setting to idle.
+          // A session reset clears corrupted context, which is often the root
+          // cause of the error. Without this, reset_session clears the context
+          // but leaves the agent stuck in error status.
+          if (agent.status === 'error' || agent.status === 'paused') {
+            db.prepare("UPDATE agents SET status = 'idle', last_error = NULL, last_error_at = NULL, updated_at = datetime('now') WHERE id = ?").run(resolvedId);
+            broadcast({ type: 'agent:status', agentId: resolvedId, status: 'idle' });
+            // Notify injury recovery that the agent is healed
+            try {
+              const { onAgentRecovered } = await import('../healer/injury-recovery.js');
+              onAgentRecovered(resolvedId);
+            } catch { /* module may not be available */ }
+          }
+
           const targetLabel = resolvedId === agentId ? 'your' : `${agent?.name ?? resolvedId}'s`;
-          content = `Session reset complete for ${targetLabel} session. Previous conversation archived to vault.`;
+          content = `Session reset complete for ${targetLabel} session. Previous conversation archived to vault.${agent.status === 'error' || agent.status === 'paused' ? ' Agent status restored to idle.' : ''}`;
           logger.info('Session reset via tool', { callerAgentId: agentId, targetAgentId: resolvedId, archiveId }, agentId);
         } catch (err) {
           content = `Error resetting session: ${err instanceof Error ? err.message : String(err)}`;
@@ -2668,6 +2694,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         const statusFilter = includeTerminated ? '' : "AND status != 'terminated'";
         const agentRows = listDb.prepare(`
           SELECT a.id, a.name, a.status, a.classification, a.group_id,
+                 a.last_error, a.last_error_at,
                  g.name as group_name
           FROM agents a
           LEFT JOIN agent_groups g ON g.id = a.group_id
@@ -2687,9 +2714,15 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
             default: return s;
           }
         };
-        const lines = agentRows.map(a =>
-          `- ${a.name} (ID: ${a.id}) — ${labelForStatus(a.status as string)}, ${a.classification}${a.group_name ? `, group: ${a.group_name}` : ''}`
-        );
+        const lines = agentRows.map(a => {
+          let line = `- ${a.name} (ID: ${a.id}) — ${labelForStatus(a.status as string)}, ${a.classification}${a.group_name ? `, group: ${a.group_name}` : ''}`;
+          // Show last error for injured/paused agents so the healer can diagnose
+          if ((a.status === 'error' || a.status === 'paused') && a.last_error) {
+            const errorSnippet = (a.last_error as string).slice(0, 150);
+            line += `\n    Last error: ${errorSnippet}`;
+          }
+          return line;
+        });
         const injuredCount = agentRows.filter(a => a.status === 'error' || a.status === 'paused').length;
         if (injuredCount > 0) {
           lines.push('');

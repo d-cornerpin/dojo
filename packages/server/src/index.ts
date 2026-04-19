@@ -364,6 +364,18 @@ async function main(): Promise<void> {
     logger.warn('Failed to schedule healing cycle', { error: err instanceof Error ? err.message : String(err) });
   }
 
+  // Injury recovery is event-driven — when an agent enters 'error' status,
+  // runtime.ts calls onAgentInjured() which schedules a 5-minute grace
+  // period, then notifies the Healer agent if the agent hasn't recovered.
+  // On startup, rehydrate any agents that were injured before a restart
+  // (in-memory timers are lost on restart).
+  try {
+    const { rehydrateInjuredAgents } = await import('./healer/injury-recovery.js');
+    rehydrateInjuredAgents();
+  } catch (err) {
+    logger.warn('Failed to rehydrate injured agents', { error: err instanceof Error ? err.message : String(err) });
+  }
+
   const timeoutInterval = setInterval(() => {
     try { checkTimeouts(); } catch (err) {
       logger.error('Timeout checker failed', { error: err instanceof Error ? err.message : String(err) });

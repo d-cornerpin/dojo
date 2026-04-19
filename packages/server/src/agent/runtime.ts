@@ -213,6 +213,22 @@ class AgentRuntime {
         this.setAgentStatus(agentId, 'error');
       }
 
+      // Persist the error details so the injury recovery system can
+      // diagnose and attempt auto-recovery without needing the in-memory state.
+      try {
+        const errDetail = cause ? `${message} (${cause})` : message;
+        const errDb = getDb();
+        errDb.prepare(`
+          UPDATE agents SET last_error = ?, last_error_at = datetime('now'), updated_at = datetime('now') WHERE id = ?
+        `).run(errDetail.slice(0, 500), agentId);
+      } catch { /* best effort */ }
+
+      // Schedule healer notification after grace period. If the agent
+      // recovers within 5 minutes, the timer is cancelled automatically.
+      import('../healer/injury-recovery.js').then(({ onAgentInjured }) => {
+        onAgentInjured(agentId, message);
+      }).catch(() => { /* module may not be available */ });
+
       // Notify the primary agent that a sub-agent is now injured so it
       // knows work delegated to that agent has stalled. Without this, the
       // primary has no way to tell its delegate hit a wall and will keep
@@ -1147,9 +1163,25 @@ class AgentRuntime {
   private setAgentStatus(agentId: string, status: string): void {
     try {
       const db = getDb();
-      db.prepare(`
-        UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?
-      `).run(status, agentId);
+      // Clear last_error when the agent recovers (transitions to a healthy state).
+      // Keep it when transitioning to error/paused so the injury recovery system
+      // can read it to diagnose the problem.
+      if (status === 'idle' || status === 'working') {
+        // Check if the agent WAS injured — if so, notify healer of recovery
+        const prevStatus = db.prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status: string } | undefined;
+        db.prepare(`
+          UPDATE agents SET status = ?, last_error = NULL, last_error_at = NULL, updated_at = datetime('now') WHERE id = ?
+        `).run(status, agentId);
+        if (prevStatus && (prevStatus.status === 'error' || prevStatus.status === 'paused')) {
+          import('../healer/injury-recovery.js').then(({ onAgentRecovered }) => {
+            onAgentRecovered(agentId);
+          }).catch(() => { /* module may not be available */ });
+        }
+      } else {
+        db.prepare(`
+          UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?
+        `).run(status, agentId);
+      }
 
       broadcast({
         type: 'agent:status',
