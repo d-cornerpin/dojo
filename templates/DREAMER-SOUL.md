@@ -56,6 +56,7 @@ If yes: read the file, make targeted edits, write it back. Preserve the file's e
 
 # Vault Entry Rules
 
+- **ALWAYS prefix entries with the date** from the archive being processed, e.g.: `[2026-04-15] Kevin decided to use A2A protocol for inter-agent messaging`. This is critical — without dates, vault entries become a timeless blob and agents cannot judge their relevance or recency.
 - Write each entry as a standalone statement
 - Use the correct type: fact, relationship, decision, procedure, event, preference, note
 - Mark stable facts as permanent: true (names, family, businesses, locations, birth dates)

@@ -346,10 +346,35 @@ async function runPMReview(): Promise<void> {
     SELECT id, name, status, classification FROM agents WHERE status != 'terminated'
   `).all() as Array<{ id: string; name: string; status: string; classification: string }>;
 
+  // Build a set of dormant agent IDs (no activity in 7+ days) so the PM
+  // doesn't raise false alarms about agents from old test groups or paused projects.
+  const DORMANT_THRESHOLD_MS = 7 * 86400000;
+  const dormantAgentIds = new Set<string>();
+  const nowMs = Date.now();
+  for (const agent of agents) {
+    const lastMsg = db.prepare(
+      'SELECT created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
+    ).get(agent.id) as { created_at: string } | undefined;
+    if (lastMsg) {
+      const lastTs = lastMsg.created_at.includes('Z') ? lastMsg.created_at : lastMsg.created_at + 'Z';
+      if (nowMs - new Date(lastTs).getTime() >= DORMANT_THRESHOLD_MS) {
+        dormantAgentIds.add(agent.id);
+      }
+    } else {
+      dormantAgentIds.add(agent.id);
+    }
+  }
+
   const issues: string[] = [];
   const nowDate = new Date();
 
   for (const task of activeTasks) {
+    // Skip tasks assigned to dormant agents — they belong to old test groups
+    // or paused projects and should not trigger false alarms.
+    // EXCEPTION: in_progress tasks are never skipped — if someone manually
+    // activated a task on a dormant agent, the PM should still monitor it.
+    if (task.assignedTo && dormantAgentIds.has(task.assignedTo) && task.status !== 'in_progress') continue;
+
     // 1. Orphaned tasks: assigned to terminated agents
     if (task.assignedTo) {
       const agent = agents.find(a => a.id === task.assignedTo);

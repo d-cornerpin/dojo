@@ -590,12 +590,14 @@ export const Chat = () => {
             msg.content.includes('[SOURCE: SUB-AGENT COMPLETION') ||
             msg.content.includes('[SOURCE: SYSTEM') ||
             msg.content.startsWith('[System:') ||
+            msg.content.startsWith('[CONTINUITY BRIEF') ||
             msg.content.startsWith('Tracker review --')
           )) return null;
           // Hide system-generated fallback messages from the agent
           if (!wordyMode && msg.role === 'assistant' && (
             msg.content.startsWith('I got stuck on that') ||
-            msg.content.startsWith("I'm sorry — I'm having trouble")
+            msg.content.startsWith("I'm sorry — I'm having trouble") ||
+            msg.content.startsWith('Understood, I have reviewed the continuity brief')
           )) return null;
           if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} />;
           if (msg.role === 'tool') {

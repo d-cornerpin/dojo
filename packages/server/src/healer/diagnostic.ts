@@ -38,13 +38,32 @@ function getAgentStatusAnomalies(): DiagnosticItem[] {
   const items: DiagnosticItem[] = [];
 
   // Agents in error or paused state
+  // Skip dormant agents (no activity in 7+ days) to avoid false alarms from
+  // old test groups or paused projects.
   const troubled = db.prepare(`
     SELECT id, name, status, updated_at FROM agents
     WHERE status IN ('error', 'paused', 'rate_limited')
       AND status != 'terminated'
   `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
 
+  const DORMANT_THRESHOLD_MS = 7 * 86400000;
   for (const agent of troubled) {
+    // Check if this agent is dormant (no messages in 7+ days).
+    // EXCEPTION: if the agent's status was updated recently (e.g., a server
+    // restart set it to error), it's a real issue even if messages are old.
+    const agentUpdatedMs = new Date(agent.updated_at.includes('Z') ? agent.updated_at : agent.updated_at + 'Z').getTime();
+    const statusIsRecent = (Date.now() - agentUpdatedMs) < DORMANT_THRESHOLD_MS;
+    if (!statusIsRecent) {
+      const lastMsg = db.prepare(
+        'SELECT created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
+      ).get(agent.id) as { created_at: string } | undefined;
+      if (lastMsg) {
+        const lastTs = lastMsg.created_at.includes('Z') ? lastMsg.created_at : lastMsg.created_at + 'Z';
+        if (Date.now() - new Date(lastTs).getTime() >= DORMANT_THRESHOLD_MS) continue; // dormant — skip
+      } else {
+        continue; // no messages at all — skip
+      }
+    }
     const updatedMs = new Date(agent.updated_at.includes('Z') ? agent.updated_at : agent.updated_at + 'Z').getTime();
     const durationMin = Math.floor((Date.now() - updatedMs) / 60000);
 
@@ -90,6 +109,22 @@ function getAgentStatusAnomalies(): DiagnosticItem[] {
   `).all() as Array<{ id: string; name: string; updated_at: string }>;
 
   for (const agent of stuck) {
+    // Skip dormant agents (no messages in 7+ days), unless their status
+    // was updated recently (e.g., server restart set them to working).
+    const stuckUpdatedMs = new Date(agent.updated_at.includes('Z') ? agent.updated_at : agent.updated_at + 'Z').getTime();
+    const stuckStatusRecent = (Date.now() - stuckUpdatedMs) < DORMANT_THRESHOLD_MS;
+    if (!stuckStatusRecent) {
+      const stuckLastMsg = db.prepare(
+        'SELECT created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
+      ).get(agent.id) as { created_at: string } | undefined;
+      if (stuckLastMsg) {
+        const stuckTs = stuckLastMsg.created_at.includes('Z') ? stuckLastMsg.created_at : stuckLastMsg.created_at + 'Z';
+        if (Date.now() - new Date(stuckTs).getTime() >= DORMANT_THRESHOLD_MS) continue;
+      } else {
+        continue;
+      }
+    }
+
     const updatedMs = new Date(agent.updated_at.includes('Z') ? agent.updated_at : agent.updated_at + 'Z').getTime();
     const durationMin = Math.floor((Date.now() - updatedMs) / 60000);
     const hours = Math.floor(durationMin / 60);

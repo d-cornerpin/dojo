@@ -325,6 +325,7 @@ class AgentRuntime {
     let lastResponseText: string | null = null; // For repetition detection
     let lockedModelId: string | null = null; // For auto-routed agents: lock model during tool loops
     let nudgedForRepetition = false; // Only nudge once for repetition
+    let retriedEmptyResponse = false; // Silent retry before nudging for empty output
     let nudgedForEmptyResponse = false; // Only nudge once for empty output
     let nudgedForNoResults = false; // Only nudge once for empty search results
     let nudgedForTracker = false; // Only nudge once for missing tracker task
@@ -584,14 +585,30 @@ class AgentRuntime {
           }, agentId);
           break;
         }
+        // Phase 1: Silent retry — just re-run the model call without injecting
+        // any nudge. Many empty responses are transient (streaming hiccup, model
+        // hesitation) and resolve on a simple retry.
+        if (!retriedEmptyResponse) {
+          retriedEmptyResponse = true;
+          logger.warn('Model returned empty response, retrying silently', {
+            loopCount, stopReason: result.stopReason,
+          }, agentId);
+          continue;
+        }
+        // Phase 2: Explicit nudge — inject a system instruction asking the
+        // model to respond or call a tool.
         if (!nudgedForEmptyResponse) {
           nudgedForEmptyResponse = true;
-          logger.warn('Model returned empty response, will nudge on next iteration', { loopCount }, agentId);
+          logger.warn('Model returned empty after silent retry, nudging', {
+            loopCount, stopReason: result.stopReason,
+          }, agentId);
           pendingNudge = '[System: You returned an empty response. Please respond to the user\'s last message or call a tool to continue your task. If you are finished, say so clearly.]';
           continue; // Re-run the loop — nudge will be injected in-memory at context assembly
         }
-        // Nudge didn't work — toast only, no DB changes
-        logger.warn('Model returned empty after nudge, breaking', { loopCount }, agentId);
+        // Phase 3: Give up — toast only, no DB changes
+        logger.warn('Model returned empty after nudge, breaking', {
+          loopCount, stopReason: result.stopReason,
+        }, agentId);
         pendingNudge = null;
         broadcast({ type: 'chat:error', agentId, error: 'The model returned an empty response. Try sending your message again.', code: 'MODEL_FAILED', severity: 'warning', retryable: true });
         break;

@@ -44,6 +44,12 @@ INPUT FORMAT: The conversation below is formatted as [ROLE] followed by the mess
 [ASSISTANT] = responses from the AI assistant
 [TOOL] = results from tool executions
 
+TEMPORAL ANCHORING — CRITICAL:
+- Begin the summary with the time period it covers: [YYYY-MM-DD HH:MM – HH:MM] or [YYYY-MM-DD] if timestamps are unclear.
+- Preserve ALL dates, times, and temporal references from the original messages.
+- When events happened at specific times, include those times in the summary.
+- This temporal context is essential — downstream systems use it to judge the age and relevance of information.
+
 ABSOLUTE RULES — NEVER VIOLATE THESE:
 - Preserve ALL proper nouns: company names, product names, people's names, place names
 - Preserve ALL specific details: numbers, dates, prices, URLs, file paths, version numbers
@@ -64,7 +70,7 @@ ABSOLUTE RULES — NEVER VIOLATE THESE:
 - Do NOT include preamble — write the factual summary directly
 
 BAD: "The user discussed their work and business ventures"
-GOOD: "The user runs two businesses: Acme Corp (advertising and video production, primary client is BigTech) and SideProject (wedding videography serving the greater metro area)"
+GOOD: "[2026-04-19 09:00–11:30] The user runs two businesses: Acme Corp (advertising and video production, primary client is BigTech) and SideProject (wedding videography serving the greater metro area)"
 
 BAD: "The user mentioned their entertainment preferences"
 GOOD: "The user's favorite movie is Meet Joe Black. Favorite TV show is Schitt's Creek."
@@ -77,6 +83,12 @@ ${contextBlock}`;
 ${identity}
 
 INPUT FORMAT: Each <summary> block below is a COMPRESSED version of earlier conversation — these are already summarized, not raw messages. They may overlap in time. Merge them, keeping ALL specific details from each.
+
+TEMPORAL ANCHORING — CRITICAL:
+- Preserve the time period from each source summary. Each source summary should begin with a date/time range — carry these forward.
+- When merging overlapping summaries, note the combined time range at the top: [YYYY-MM-DD to YYYY-MM-DD].
+- Within each topic, preserve chronological order so the reader can tell what happened when.
+- NEVER strip dates or temporal references — they are essential for judging relevance downstream.
 
 ABSOLUTE RULES:
 - Preserve ALL proper nouns, specific names, numbers, dates, and concrete details from the source summaries
@@ -95,12 +107,19 @@ ${contextBlock}`;
 
 ${identity}
 
+TEMPORAL ANCHORING — CRITICAL:
+- Begin the document with the overall date range it covers: [YYYY-MM-DD to YYYY-MM-DD].
+- Begin each topic section with the date range it covers (e.g., "## Projects [2026-03-15 to 2026-04-19]").
+- Within topics, organize chronologically so the reader can tell what happened when and what is most recent.
+- Mark decisions and events with their dates — "Decided on 2026-04-10 to use A2A protocol" not just "Decided to use A2A protocol".
+- NEVER strip dates or temporal references — they are essential for judging relevance.
+
 ABSOLUTE RULES:
 - This is a REFERENCE DOCUMENT, not a narrative — optimize for fact density
 - Preserve ALL proper nouns, specific names, numbers, and concrete details
 - Preserve ALL stated preferences, decisions, and instructions from the user
 - Preserve ALL business/project details with their specific descriptions
-- Organize by topic (e.g., "User Profile", "Projects", "Preferences", "Technical Decisions") rather than chronologically
+- Organize by topic (e.g., "User Profile", "Projects", "Preferences", "Technical Decisions") with date ranges
 - Drop only: routine tool calls, small talk, resolved errors with no lasting impact
 - Keep: anything that would be needed to resume a conversation months later
 - Maintain correct attribution

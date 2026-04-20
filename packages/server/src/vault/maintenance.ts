@@ -400,6 +400,25 @@ function wakeupDreamer(cycleMessage: string): void {
   const db = getDb();
   const dreamerId = getDreamerAgentId();
 
+  // ── Fresh-start reset ──
+  // The Dreamer doesn't need conversational continuity between runs.
+  // Each batch message is self-contained. Without this reset, old messages
+  // and compaction summaries accumulate until they fill the context window,
+  // triggering repeated compaction/continuity-brief loops that stall the agent.
+  const boundary = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+  db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief') WHERE id = ?")
+    .run(boundary, boundary, dreamerId);
+
+  // Clear accumulated compaction summaries (context items)
+  db.prepare('DELETE FROM context_items WHERE agent_id = ?').run(dreamerId);
+
+  // Clear session-loaded tool docs (fire-and-forget — best effort)
+  import('../tools/tool-docs.js')
+    .then(({ clearSessionLoadedTools }) => clearSessionLoadedTools(dreamerId))
+    .catch(() => { /* ignore */ });
+
+  logger.debug('Dreamer session reset for fresh context', { dreamerId });
+
   const msgId = uuidv4();
   db.prepare(`
     INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)

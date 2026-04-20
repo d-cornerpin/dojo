@@ -195,7 +195,7 @@ chatRouter.post('/:agentId/new-session', async (c) => {
     //    Use SQLite datetime format (not ISO) to match the messages table format
     const now = new Date();
     const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-    db.prepare('UPDATE agents SET session_started_at = ?, updated_at = ? WHERE id = ?').run(boundary, boundary, agentId);
+    db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief') WHERE id = ?").run(boundary, boundary, agentId);
 
     // 4. Insert session marker for the UI divider only
     const markerId = uuidv4();

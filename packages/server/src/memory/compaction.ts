@@ -414,26 +414,22 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
       return;
     }
 
-    // Store as a system message that will appear in the agent's context.
-    // Using role='system' so context assembly includes it but it's clearly
-    // not a user or assistant message.
-    const { v4: uuidv4 } = await import('uuid');
-    const briefId = uuidv4();
-    const briefContent = `[CONTINUITY BRIEF — generated before memory compaction]\n${result.text}\n\nYour older conversation history has been archived to the vault. If you need details beyond what's in this brief, use vault_search or memory_grep to find specific facts, file paths, decisions, or instructions from your earlier conversation.\n[END CONTINUITY BRIEF — use this to orient yourself on what you were doing]`;
+    // Store the brief in the agent's config JSON. The context assembler reads
+    // it and injects it at assembly time — no messages, no wasted turns, no
+    // chat feed clutter. The brief persists until the next compaction replaces it.
+    const briefTimestamp = new Date().toLocaleString('en-US', {
+      year: 'numeric', month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: true,
+      timeZoneName: 'short',
+    });
+    const briefContent = `[CONTINUITY BRIEF — ${briefTimestamp}, generated before memory compaction]\n${result.text}\n\nYour older conversation history has been archived to the vault. If you need details beyond what's in this brief, use vault_search or memory_grep to find specific facts, file paths, decisions, or instructions from your earlier conversation.`;
 
     db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'user', ?, datetime('now'))
-    `).run(briefId, agentId, briefContent);
+      UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.continuityBrief', ?)
+      WHERE id = ?
+    `).run(briefContent, agentId);
 
-    // Also store a canned assistant acknowledgment so the alternation is correct
-    const ackId = uuidv4();
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'assistant', ?, datetime('now'))
-    `).run(ackId, agentId, 'Understood, I have reviewed the continuity brief and know what I was working on.');
-
-    logger.info('Continuity brief generated and injected', {
+    logger.info('Continuity brief stored in agent config', {
       briefTokens: result.tokenCount,
       briefChars: result.text.length,
     }, agentId);

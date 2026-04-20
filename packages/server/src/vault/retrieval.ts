@@ -34,7 +34,9 @@ function formatEntryForPrompt(entry: VaultEntry): string {
   let label = entry.type;
   if (entry.isPinned) label = 'pinned';
   if (entry.isPermanent) label = 'permanent';
-  return `- [${label}] ${entry.content}`;
+  // Include creation date so agents can judge temporal relevance
+  const dateStr = entry.createdAt ? entry.createdAt.split('T')[0]?.split(' ')[0] ?? '' : '';
+  return dateStr ? `- [${label}, ${dateStr}] ${entry.content}` : `- [${label}] ${entry.content}`;
 }
 
 // ── Retrieve Relevant Vault Entries ──

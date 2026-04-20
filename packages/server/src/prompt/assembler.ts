@@ -420,7 +420,24 @@ export function assembleSystemPrompt(agentId: string, modelId: string): string {
   const soul = getSoulContent(agentId);
   const tools = generateToolsGuidance(agentId, tier);
 
-  const parts = [soul, tools];
+  // Inject current date/time at the top so every agent is temporally anchored
+  // from the very first turn — no tool call required.
+  const now = new Date();
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const localStr = now.toLocaleString('en-US', {
+    timeZone: tz,
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+    timeZoneName: 'short',
+  });
+  const timeHeader = `**Current date/time: ${localStr}**\n\nUse this to judge the age and relevance of any context, vault entries, or summaries you see. Recent information is more reliable than old information.`;
+
+  const parts = [timeHeader, soul, tools];
 
   // Conditionally include USER.md
   if (shouldShareUserProfile(agentId)) {

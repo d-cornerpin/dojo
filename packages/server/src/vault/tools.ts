@@ -15,7 +15,7 @@ export async function executeVaultRemember(
   agentId: string,
   args: Record<string, unknown>,
 ): Promise<string> {
-  const content = args.content as string;
+  let content = args.content as string;
   const type = args.type as string;
   const tags = (args.tags as string[]) ?? [];
   const pin = (args.pin as boolean) ?? false;
@@ -23,6 +23,14 @@ export async function executeVaultRemember(
 
   if (!content) return 'Error: content is required.';
   if (!type) return 'Error: type is required (fact, preference, decision, procedure, relationship, event, or note).';
+
+  // Auto-prepend today's date if the content doesn't already start with a
+  // date stamp. This ensures every vault entry is temporally anchored so
+  // agents can judge its age and relevance.
+  if (!/^\[?\d{4}-\d{2}/.test(content)) {
+    const dateStr = new Date().toISOString().split('T')[0];
+    content = `[${dateStr}] ${content}`;
+  }
 
   const validTypes = ['fact', 'preference', 'decision', 'procedure', 'relationship', 'event', 'note'];
   if (!validTypes.includes(type)) {

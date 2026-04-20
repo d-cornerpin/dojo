@@ -167,6 +167,28 @@ export async function assembleContext(
     }
   } catch { /* tracker may not be available */ }
 
+  // 3.7. Continuity brief — injected from agent config (written by compaction.ts).
+  // Unlike summaries, this is a concise snapshot of what the agent was doing RIGHT
+  // BEFORE compaction ran. It bridges the gap between compressed history and the
+  // fresh tail. Stored in config, not as a message, so it doesn't waste a turn or
+  // clutter the chat feed.
+  try {
+    const db = getDb();
+    const configRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
+    if (configRow?.config) {
+      const agentConfig = JSON.parse(configRow.config) as Record<string, unknown>;
+      const continuityBrief = agentConfig.continuityBrief as string | undefined;
+      if (continuityBrief && continuityBrief.length > 50) {
+        const briefTokens = estimateTokens(continuityBrief);
+        if (usedTokens + briefTokens < maxTokens) {
+          messages.push({ role: 'user', content: continuityBrief });
+          messages.push({ role: 'assistant', content: 'Understood, I know what I was working on.' });
+          usedTokens += briefTokens + estimateTokens('Understood, I know what I was working on.');
+        }
+      }
+    }
+  } catch { /* best effort */ }
+
   // 4. Fresh tail — exclude user messages that arrived after the current turn
   // started so they get a clean run via the wakeup mechanism instead of being
   // buried mid-context where the LLM might ignore them

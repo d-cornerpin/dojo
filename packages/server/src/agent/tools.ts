@@ -527,7 +527,7 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         model_id: {
           type: 'string',
-          description: 'Optional model ID to use. Defaults to parent agent\'s model.',
+          description: 'Model ID for the sub-agent. Call list_models first to see available IDs and capabilities. Pick based on task needs: cheaper/faster models for simple tasks, expensive ones for complex reasoning, vision-capable models for image work. Use "auto" for smart routing. Defaults to parent agent\'s model if omitted.',
         },
         permissions: {
           type: 'object',
@@ -1113,7 +1113,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'list_models',
-    description: 'List all enabled models with name, ID, provider, and cost per million tokens. Use to pick a model when spawning agents — choose cheaper models for simple tasks, expensive ones for complex reasoning.',
+    description: 'List all enabled models with name, ID, provider, cost, capabilities (vision, tools, thinking), context window, and max output tokens. ALWAYS call this before spawn_agent if you need to choose a model — it shows which models support vision, tool use, extended thinking, and their cost/performance trade-offs.',
     input_schema: {
       type: 'object',
       properties: {},
@@ -2476,10 +2476,10 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           // from appearing in the fresh tail — summaries are the ONLY way
           // the agent retains context across a reset.
 
-          // Set session boundary
+          // Set session boundary and clear stale continuity brief
           const now = new Date();
           const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-          db.prepare('UPDATE agents SET session_started_at = ?, updated_at = ? WHERE id = ?').run(boundary, boundary, resolvedId);
+          db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief') WHERE id = ?").run(boundary, boundary, resolvedId);
 
           // Insert UI divider
           const markerId = uuidv4();
@@ -2725,7 +2725,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         const statusFilter = includeTerminated ? '' : "AND status != 'terminated'";
         const agentRows = listDb.prepare(`
           SELECT a.id, a.name, a.status, a.classification, a.group_id,
-                 a.last_error, a.last_error_at,
+                 a.last_error, a.last_error_at, a.created_at,
                  g.name as group_name
           FROM agents a
           LEFT JOIN agent_groups g ON g.id = a.group_id
@@ -2745,12 +2745,49 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
             default: return s;
           }
         };
+        const nowMs = Date.now();
+        const DORMANT_DAYS = 7;
         const lines = agentRows.map(a => {
-          let line = `- ${a.name} (ID: ${a.id}) — ${labelForStatus(a.status as string)}, ${a.classification}${a.group_name ? `, group: ${a.group_name}` : ''}`;
+          // Query last message activity for this agent
+          const lastMsg = listDb.prepare(
+            'SELECT created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
+          ).get(a.id as string) as { created_at: string } | undefined;
+
+          // Check if agent was created recently — newly spawned agents are NOT dormant
+          const createdTs = a.created_at ? ((a.created_at as string).includes('Z') ? a.created_at as string : (a.created_at as string) + 'Z') : null;
+          const createdMs = createdTs ? new Date(createdTs).getTime() : 0;
+          const isNewlyCreated = (nowMs - createdMs) < DORMANT_DAYS * 86400000;
+
+          let activityStr = '';
+          let dormant = false;
+          if (lastMsg) {
+            const lastTs = lastMsg.created_at.includes('Z') ? lastMsg.created_at : lastMsg.created_at + 'Z';
+            const lastMs = new Date(lastTs).getTime();
+            const ageDays = Math.floor((nowMs - lastMs) / 86400000);
+            if (ageDays >= DORMANT_DAYS && !isNewlyCreated) {
+              dormant = true;
+              activityStr = `, DORMANT (last active ${ageDays} days ago)`;
+            } else if (ageDays >= 1) {
+              activityStr = `, last active ${ageDays}d ago`;
+            } else {
+              const ageHours = Math.floor((nowMs - lastMs) / 3600000);
+              activityStr = ageHours > 0 ? `, last active ${ageHours}h ago` : ', active recently';
+            }
+          } else if (isNewlyCreated) {
+            activityStr = ', newly created';
+          } else {
+            activityStr = ', no activity';
+            dormant = true;
+          }
+
+          let line = `- ${a.name} (ID: ${a.id}) — ${labelForStatus(a.status as string)}, ${a.classification}${a.group_name ? `, group: ${a.group_name}` : ''}${activityStr}`;
           // Show last error for injured/paused agents so the healer can diagnose
           if ((a.status === 'error' || a.status === 'paused') && a.last_error) {
             const errorSnippet = (a.last_error as string).slice(0, 150);
             line += `\n    Last error: ${errorSnippet}`;
+          }
+          if (dormant && a.status !== 'error' && a.status !== 'paused') {
+            line += '\n    ^ Dormant — no recent activity, safe to ignore unless explicitly needed';
           }
           return line;
         });
@@ -2766,7 +2803,8 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         const modelDb = getDb();
         const modelRows = modelDb.prepare(`
           SELECT m.id, m.name, m.api_model_id, p.name as provider_name, p.type as provider_type,
-                 m.input_cost_per_m, m.output_cost_per_m, m.context_window
+                 m.input_cost_per_m, m.output_cost_per_m, m.context_window,
+                 m.max_output_tokens, m.thinking_enabled, m.capabilities
           FROM models m
           JOIN providers p ON p.id = m.provider_id
           WHERE m.is_enabled = 1
@@ -2779,7 +2817,17 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
             ? 'FREE (local)'
             : `$${inputCost}/M in, $${outputCost}/M out`;
           const ctx = m.context_window ? `${Math.round((m.context_window as number) / 1000)}k ctx` : '';
-          return `- ${m.name} (ID: ${m.id}) — ${m.provider_name} (${m.provider_type}), ${costStr}${ctx ? ', ' + ctx : ''}`;
+          const maxOut = m.max_output_tokens ? `${Math.round((m.max_output_tokens as number) / 1000)}k max out` : '';
+          // Parse capabilities
+          let caps: string[] = [];
+          if (m.capabilities) {
+            try { caps = JSON.parse(m.capabilities as string); } catch { /* ignore */ }
+          }
+          const capStr = caps.length > 0 ? caps.join(', ') : 'text';
+          const thinking = m.thinking_enabled ? 'thinking' : '';
+          // Build feature tags
+          const features = [capStr, thinking, ctx, maxOut].filter(Boolean).join(', ');
+          return `- ${m.name} (ID: ${m.id}) — ${m.provider_name} (${m.provider_type}), ${costStr} | ${features}`;
         }).join('\n') || 'No enabled models found.';
         break;
       }
