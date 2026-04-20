@@ -1567,6 +1567,43 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     }, agentId);
   }
 
+  // Final orphan tool_use/tool_result check — budget trimming above can create
+  // new orphans that the assembler's sanitizeToolBlocks already cleaned once.
+  // Anthropic rejects any tool_use without a matching tool_result in the next
+  // message. Scan and strip orphans before sending.
+  for (let i = anthropicMessages.length - 1; i >= 0; i--) {
+    const msg = anthropicMessages[i];
+    if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+    const blocks = msg.content as unknown as Array<Record<string, unknown>>;
+    const useIds = blocks.filter(b => b.type === 'tool_use' && typeof b.id === 'string').map(b => b.id as string);
+    if (useIds.length === 0) continue;
+
+    // Check the next message for matching tool_results
+    const next = i + 1 < anthropicMessages.length ? anthropicMessages[i + 1] : null;
+    const resultIds = new Set<string>();
+    if (next && next.role === 'user' && Array.isArray(next.content)) {
+      for (const b of next.content as unknown as Array<Record<string, unknown>>) {
+        if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') resultIds.add(b.tool_use_id as string);
+      }
+    }
+
+    // Strip unmatched tool_use blocks
+    const orphanIds = useIds.filter(id => !resultIds.has(id));
+    if (orphanIds.length > 0) {
+      const orphanSet = new Set(orphanIds);
+      const kept = blocks.filter(b => !(b.type === 'tool_use' && orphanSet.has(b.id as string)));
+      if (kept.length === 0) {
+        anthropicMessages.splice(i, 1);
+      } else {
+        anthropicMessages[i] = { ...msg, content: kept as unknown as Anthropic.MessageParam['content'] };
+      }
+      logger.warn('Stripped orphan tool_use blocks before Anthropic call', {
+        droppedCount: orphanIds.length,
+        messageIndex: i,
+      }, agentId);
+    }
+  }
+
   const anthropicAvailable = Math.max(1024, modelInfo.contextWindow - inputEstimate - 500);
   const anthropicMaxTokens = Math.min(modelInfo.maxOutputTokens, anthropicAvailable);
 
