@@ -122,6 +122,58 @@ function getMaxOutputTokens(apiModelId: string, providerType: string): number {
   return 16384;
 }
 
+// ── Universal orphan tool_use/tool_result sanitization ──
+// Mutates the messages array in place. Strips tool_use blocks from assistant
+// messages that don't have matching tool_result blocks in the immediately
+// following message. Works on both the assembler's output format and
+// provider-specific formats (Anthropic MessageParam, OpenAI ChatCompletionMessage).
+function sanitizeOrphanToolBlocks(
+  messages: Array<{ role: string; content: unknown }>,
+  agentId: string,
+): void {
+  let stripped = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+    const blocks = msg.content as Array<Record<string, unknown>>;
+    const useIds = blocks
+      .filter(b => b.type === 'tool_use' && typeof b.id === 'string')
+      .map(b => b.id as string);
+    if (useIds.length === 0) continue;
+
+    // Collect tool_result IDs from the next message
+    const next = i + 1 < messages.length ? messages[i + 1] : null;
+    const resultIds = new Set<string>();
+    if (next && (next.role === 'user' || next.role === 'tool') && Array.isArray(next.content)) {
+      for (const b of next.content as Array<Record<string, unknown>>) {
+        if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+          resultIds.add(b.tool_use_id as string);
+        }
+      }
+    }
+
+    const orphanIds = useIds.filter(id => !resultIds.has(id));
+    if (orphanIds.length === 0) continue;
+
+    const orphanSet = new Set(orphanIds);
+    const kept = blocks.filter(b => !(b.type === 'tool_use' && orphanSet.has(b.id as string)));
+    stripped += orphanIds.length;
+
+    if (kept.length === 0) {
+      messages.splice(i, 1);
+    } else {
+      messages[i] = { ...msg, content: kept };
+    }
+  }
+
+  if (stripped > 0) {
+    logger.warn('Stripped orphan tool_use blocks from messages', {
+      droppedCount: stripped,
+      messageCount: messages.length,
+    }, agentId);
+  }
+}
+
 function getModelInfo(modelId: string): { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[]; numCtxOverride: number | null; numCtxRecommended: number | null } {
   const db = getDb();
   const row = db.prepare(`
@@ -1461,6 +1513,13 @@ async function callAnthropicSdkModel(
 export async function callModel(params: ModelCallParams): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
 
+  // ── Universal orphan tool_use/tool_result sanitization ──
+  // Runs BEFORE provider dispatch so ALL code paths (Anthropic, OpenAI, Ollama,
+  // Agent SDK) get clean messages. The assembler has its own sanitization, but
+  // provider-specific budget trimming and message transforms can create new
+  // orphans after that runs.
+  sanitizeOrphanToolBlocks(messages, agentId);
+
   const modelInfo = getModelInfo(modelId);
 
   // Ollama uses OpenAI-compatible API, not Anthropic SDK
@@ -1567,42 +1626,9 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     }, agentId);
   }
 
-  // Final orphan tool_use/tool_result check — budget trimming above can create
-  // new orphans that the assembler's sanitizeToolBlocks already cleaned once.
-  // Anthropic rejects any tool_use without a matching tool_result in the next
-  // message. Scan and strip orphans before sending.
-  for (let i = anthropicMessages.length - 1; i >= 0; i--) {
-    const msg = anthropicMessages[i];
-    if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
-    const blocks = msg.content as unknown as Array<Record<string, unknown>>;
-    const useIds = blocks.filter(b => b.type === 'tool_use' && typeof b.id === 'string').map(b => b.id as string);
-    if (useIds.length === 0) continue;
-
-    // Check the next message for matching tool_results
-    const next = i + 1 < anthropicMessages.length ? anthropicMessages[i + 1] : null;
-    const resultIds = new Set<string>();
-    if (next && next.role === 'user' && Array.isArray(next.content)) {
-      for (const b of next.content as unknown as Array<Record<string, unknown>>) {
-        if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') resultIds.add(b.tool_use_id as string);
-      }
-    }
-
-    // Strip unmatched tool_use blocks
-    const orphanIds = useIds.filter(id => !resultIds.has(id));
-    if (orphanIds.length > 0) {
-      const orphanSet = new Set(orphanIds);
-      const kept = blocks.filter(b => !(b.type === 'tool_use' && orphanSet.has(b.id as string)));
-      if (kept.length === 0) {
-        anthropicMessages.splice(i, 1);
-      } else {
-        anthropicMessages[i] = { ...msg, content: kept as unknown as Anthropic.MessageParam['content'] };
-      }
-      logger.warn('Stripped orphan tool_use blocks before Anthropic call', {
-        droppedCount: orphanIds.length,
-        messageIndex: i,
-      }, agentId);
-    }
-  }
+  // Also run on the post-trim anthropicMessages in case budget trimming
+  // created new orphans (the universal check above ran on the pre-trim input)
+  sanitizeOrphanToolBlocks(anthropicMessages as unknown as Array<{ role: string; content: unknown }>, agentId);
 
   const anthropicAvailable = Math.max(1024, modelInfo.contextWindow - inputEstimate - 500);
   const anthropicMaxTokens = Math.min(modelInfo.maxOutputTokens, anthropicAvailable);
