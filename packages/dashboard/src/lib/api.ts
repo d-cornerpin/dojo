@@ -1124,8 +1124,8 @@ export const getVaultStats = async (): Promise<ApiResponse<VaultStats>> => {
   return request<VaultStats>('/vault/stats');
 };
 
-export const triggerDream = async (): Promise<ApiResponse<Record<string, number>>> => {
-  return request<Record<string, number>>('/vault/dream', { method: 'POST' });
+export const triggerDream = async (): Promise<ApiResponse<{ dreamerId: string | null; message: string }>> => {
+  return request<{ dreamerId: string | null; message: string }>('/vault/dream', { method: 'POST' });
 };
 
 export const getDreamHistory = async (limit = 10): Promise<ApiResponse<DreamReport[]>> => {

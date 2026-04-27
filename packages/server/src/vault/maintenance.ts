@@ -23,6 +23,7 @@ import {
 import type { Message } from '@dojo/shared';
 import { v4 as uuidv4 } from 'uuid';
 import {
+  getConversation,
   getUnprocessedConversations,
   getVaultStats,
   type VaultConversation,
@@ -119,32 +120,79 @@ function runEngineMaintenance(): { pruned: number; decayed: number } {
   return { pruned, decayed: decayResult.changes };
 }
 
-// Rough token estimate: ~4 characters per token
-const CHARS_PER_TOKEN = 4;
+// Conservative token estimate: 3 chars/token. The /4 heuristic underestimates
+// for technical content (JSON, code, tool calls), which is most of what Dreamer
+// processes. Underestimating leads to over-budget batches.
+const CHARS_PER_TOKEN = 3;
 
-// Reserve this much of the context window for system prompt, tools, and response
-const CONTEXT_OVERHEAD_TOKENS = 8000;
+// Reserve this much of the context window for system prompt, tool definitions
+// (Dreamer has ~15 tools, ~20K tokens of schemas), vault retrieval injection,
+// active task injection, continuity brief, and other context the assembler
+// adds before the cycle message. Was 8K — way too low.
+const CONTEXT_OVERHEAD_TOKENS = 50000;
 
-function formatArchive(conv: VaultConversation): string | null {
-  let parsedMessages: Array<{ role: string; content: string; createdAt?: string }>;
+// Multiplier for batch text growth during processing. As the Dreamer extracts
+// knowledge from a batch, each archive generates many tool calls (vault_search,
+// vault_remember, file_read, file_write) and tool results that accumulate in
+// the conversation. Empirically the conversation can grow to ~1.5x the original
+// batch text by the time complete_task fires. Budget the batch text down so
+// the FULL turn (batch + accumulated tool calls) stays under context window.
+const PROCESSING_GROWTH_FACTOR = 1.5;
+
+// Cap any single message inside an archive (most often a huge tool_result with
+// a file dump or scraped page) so one bloated row can't blow the batch budget.
+// The Dreamer doesn't need the full payload — the gist suffices for knowledge
+// extraction. 8K chars ≈ 2.5K tokens, plenty for context.
+const MAX_MESSAGE_CHARS = 8000;
+
+// Hard ceiling on per-batch text regardless of context window — never exceed
+// 35% of the model's window for raw archive text. Leaves 65% for system
+// prompt, tools, and turn-by-turn tool-call accumulation.
+const BATCH_BUDGET_CAP_RATIO = 0.35;
+
+function truncateMessageContent(content: string): string {
+  if (content.length <= MAX_MESSAGE_CHARS) return content;
+  const head = content.slice(0, MAX_MESSAGE_CHARS);
+  const truncatedChars = content.length - MAX_MESSAGE_CHARS;
+  return `${head}\n…[truncated ${truncatedChars} chars from this message — original was ${content.length} chars]`;
+}
+
+interface ParsedArchiveMessage {
+  role: string;
+  content: string;
+  createdAt?: string;
+}
+
+function parseArchiveMessages(conv: VaultConversation): ParsedArchiveMessage[] | null {
   try {
-    parsedMessages = JSON.parse(conv.messages);
+    return JSON.parse(conv.messages) as ParsedArchiveMessage[];
   } catch {
     return null;
   }
+}
 
-  const formatted = parsedMessages.map(m => {
-    const role = (m.role ?? 'unknown').toUpperCase();
-    const ts = m.createdAt ? ` [${m.createdAt}]` : '';
-    return `[${role}${ts}] ${m.content}`;
-  }).join('\n\n');
+function formatArchiveMessage(m: ParsedArchiveMessage): string {
+  const role = (m.role ?? 'unknown').toUpperCase();
+  const ts = m.createdAt ? ` [${m.createdAt}]` : '';
+  const body = truncateMessageContent(m.content ?? '');
+  return `[${role}${ts}] ${body}`;
+}
 
-  return `=== ARCHIVE: ${conv.agentName ?? conv.agentId} (ID: ${conv.id}) ===
+function wrapArchive(conv: VaultConversation, body: string, partLabel?: string): string {
+  const partTag = partLabel ? ` — ${partLabel}` : '';
+  return `=== ARCHIVE: ${conv.agentName ?? conv.agentId} (ID: ${conv.id})${partTag} ===
 ${conv.messageCount} messages, ${conv.earliestAt} to ${conv.latestAt}
 
-${formatted}
+${body}
 
-=== END ARCHIVE ===`;
+=== END ARCHIVE${partTag} ===`;
+}
+
+function formatArchive(conv: VaultConversation): string | null {
+  const messages = parseArchiveMessages(conv);
+  if (!messages) return null;
+  const body = messages.map(formatArchiveMessage).join('\n\n');
+  return wrapArchive(conv, body);
 }
 
 function estimateTokens(text: string): number {
@@ -152,16 +200,100 @@ function estimateTokens(text: string): number {
 }
 
 /**
+ * Split a single oversized archive into multiple batches at message boundaries.
+ * Each part includes the archive header so the Dreamer knows it's a continuation.
+ * Returns array of {text} objects — caller maps the same archive ID to all parts.
+ */
+function splitArchive(conv: VaultConversation, perBatchBudget: number): Array<{ text: string }> {
+  const messages = parseArchiveMessages(conv);
+  if (!messages || messages.length === 0) return [];
+
+  const formatted = messages.map(formatArchiveMessage);
+  const parts: Array<{ text: string }> = [];
+
+  let currentMsgs: string[] = [];
+  let currentTokens = 0;
+  let partNum = 1;
+
+  for (const msgText of formatted) {
+    const msgTokens = estimateTokens(msgText);
+
+    // Even after per-message truncation, a single message can still exceed
+    // budget on tiny-context models. Force-add it as its own part.
+    if (msgTokens > perBatchBudget) {
+      if (currentMsgs.length > 0) {
+        const partLabel = `PART ${partNum} (continued)`;
+        parts.push({ text: wrapArchive(conv, currentMsgs.join('\n\n'), partLabel) });
+        partNum++;
+        currentMsgs = [];
+        currentTokens = 0;
+      }
+      const partLabel = `PART ${partNum} (single oversized message)`;
+      parts.push({ text: wrapArchive(conv, msgText, partLabel) });
+      partNum++;
+      continue;
+    }
+
+    if (currentTokens + msgTokens > perBatchBudget && currentMsgs.length > 0) {
+      const partLabel = `PART ${partNum} (continued)`;
+      parts.push({ text: wrapArchive(conv, currentMsgs.join('\n\n'), partLabel) });
+      partNum++;
+      currentMsgs = [];
+      currentTokens = 0;
+    }
+
+    currentMsgs.push(msgText);
+    currentTokens += msgTokens;
+  }
+
+  if (currentMsgs.length > 0) {
+    const partLabel = parts.length === 0 ? undefined : `PART ${partNum} (final)`;
+    parts.push({ text: wrapArchive(conv, currentMsgs.join('\n\n'), partLabel) });
+  }
+
+  return parts;
+}
+
+/**
  * Batch archives into chunks that fit within the model's context window.
  * Returns array of batches, each containing the archive IDs and formatted text.
+ *
+ * Budget calculation:
+ *   raw_budget   = contextWindow - CONTEXT_OVERHEAD_TOKENS
+ *   growth_budget = raw_budget / (1 + PROCESSING_GROWTH_FACTOR)
+ *   final_budget  = min(growth_budget, contextWindow * BATCH_BUDGET_CAP_RATIO)
+ *
+ * For a 262K-token model: raw=212K → growth=85K → cap=92K → final=85K per batch.
+ * For a 200K-token model: raw=150K → growth=60K → cap=70K → final=60K per batch.
+ * For a  32K-token model: raw=−18K (clamped) → cap=11K → final=~10K per batch.
  */
 function batchArchives(unprocessed: VaultConversation[], contextWindow: number): Array<{ ids: string[]; text: string }> {
-  const budgetTokens = contextWindow - CONTEXT_OVERHEAD_TOKENS;
+  const rawBudget = Math.max(contextWindow - CONTEXT_OVERHEAD_TOKENS, Math.floor(contextWindow * 0.2));
+  const growthBudget = Math.floor(rawBudget / (1 + PROCESSING_GROWTH_FACTOR));
+  const cap = Math.floor(contextWindow * BATCH_BUDGET_CAP_RATIO);
+  const budgetTokens = Math.max(2000, Math.min(growthBudget, cap));
+
+  logger.info('Dreamer batch budget computed', {
+    contextWindow,
+    overhead: CONTEXT_OVERHEAD_TOKENS,
+    growthFactor: PROCESSING_GROWTH_FACTOR,
+    capRatio: BATCH_BUDGET_CAP_RATIO,
+    budgetTokens,
+  });
+
   const batches: Array<{ ids: string[]; text: string }> = [];
 
   let currentIds: string[] = [];
   let currentTexts: string[] = [];
   let currentTokens = 0;
+
+  const flush = () => {
+    if (currentTexts.length === 0) return;
+    batches.push({ ids: [...currentIds], text: currentTexts.join('\n\n') });
+    currentIds = [];
+    currentTexts = [];
+    currentTokens = 0;
+  };
 
   for (const conv of unprocessed) {
     const formatted = formatArchive(conv);
@@ -169,33 +301,32 @@ function batchArchives(unprocessed: VaultConversation[], contextWindow: number):
 
     const archiveTokens = estimateTokens(formatted);
 
-    // If a single archive exceeds the budget, truncate it to fit
+    // If a single archive exceeds the budget, split it into multiple batches
+    // at message boundaries. Previously we truncated the tail with "[TRUNCATED]"
+    // which silently dropped data; splitting preserves everything but spreads
+    // it across multiple Dreamer cycles.
     if (archiveTokens > budgetTokens) {
-      // Flush current batch first
-      if (currentTexts.length > 0) {
-        batches.push({ ids: [...currentIds], text: currentTexts.join('\n\n') });
-        currentIds = [];
-        currentTexts = [];
-        currentTokens = 0;
-      }
+      flush();
 
-      const maxChars = budgetTokens * CHARS_PER_TOKEN;
-      const truncated = formatted.slice(0, maxChars) + '\n\n[TRUNCATED — archive too large for single batch]';
-      batches.push({ ids: [conv.id], text: truncated });
-      logger.warn('Archive truncated to fit context window', {
+      const parts = splitArchive(conv, budgetTokens);
+      if (parts.length === 0) continue;
+
+      logger.warn('Archive too large for single batch — splitting', {
         archiveId: conv.id,
         originalTokens: archiveTokens,
         budgetTokens,
+        partCount: parts.length,
       });
+
+      for (const part of parts) {
+        batches.push({ ids: [conv.id], text: part.text });
+      }
       continue;
     }
 
     // If adding this archive would exceed the budget, flush and start new batch
     if (currentTokens + archiveTokens > budgetTokens && currentTexts.length > 0) {
-      batches.push({ ids: [...currentIds], text: currentTexts.join('\n\n') });
-      currentIds = [];
-      currentTexts = [];
-      currentTokens = 0;
+      flush();
     }
 
     currentIds.push(conv.id);
@@ -203,9 +334,17 @@ function batchArchives(unprocessed: VaultConversation[], contextWindow: number):
     currentTokens += archiveTokens;
   }
 
-  // Flush remaining
-  if (currentTexts.length > 0) {
-    batches.push({ ids: [...currentIds], text: currentTexts.join('\n\n') });
+  flush();
+
+  for (let i = 0; i < batches.length; i++) {
+    const tokens = estimateTokens(batches[i].text);
+    logger.info('Dreamer batch sized', {
+      batchIndex: i + 1,
+      totalBatches: batches.length,
+      archiveCount: batches[i].ids.length,
+      tokens,
+      budgetTokens,
+    });
   }
 
   return batches;
@@ -558,7 +697,14 @@ interface PendingBatchState {
   primaryId: string;
   modelId: string;
   stats: ReturnType<typeof getVaultStats>;
+  // Number of context-overflow recoveries applied to the current batch.
+  // Reset to 0 when advancing to the next batch (spawnNextDreamerBatch).
+  // Capped at MAX_RECOVERY_DEPTH — beyond that, splitting further is
+  // unlikely to help and we let the error propagate.
+  recoveryDepth?: number;
 }
+
+const MAX_RECOVERY_DEPTH = 3;
 
 const pendingBatches = new Map<string, PendingBatchState>();
 
@@ -580,6 +726,7 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
   }
 
   state.currentIndex = nextIndex;
+  state.recoveryDepth = 0; // fresh batch — reset overflow-recovery counter
   const batch = state.batches[nextIndex];
 
   logger.info(`Injecting next Dreamer batch ${nextIndex + 1}/${state.batches.length}`, {
@@ -671,6 +818,168 @@ export function markDreamerArchivesProcessed(dreamerAgentId: string): void {
   } catch {
     // Best effort
   }
+}
+
+// ── Context Overflow Recovery ──
+
+/**
+ * Detect provider responses that indicate the prompt exceeded the model's
+ * context window. Different providers phrase this differently, so we match
+ * on common substrings rather than error codes.
+ */
+export function isContextOverflowError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('maximum context length') ||
+    lower.includes('context_length_exceeded') ||
+    lower.includes('prompt is too long') ||
+    lower.includes('context length is') ||
+    lower.includes('exceeds the context window') ||
+    lower.includes('reduce the length') ||
+    lower.includes('please reduce the length of the messages') ||
+    lower.includes('input is too long') ||
+    lower.includes('context window of')
+  );
+}
+
+/**
+ * Recover the Dreamer when its current batch produced a context-overflow error
+ * mid-cycle. Re-batches the failed batch's archives with a halved token budget
+ * (and message-level splitting if a single archive is the culprit), replaces
+ * the failed batch with the smaller sub-batches in the pending queue, and
+ * re-wakes the Dreamer with the first sub-batch.
+ *
+ * Returns true if a smaller batch was successfully prepared and the Dreamer
+ * was re-woken; false if no further splitting is possible (caller should
+ * treat as a hard error in that case).
+ */
+export async function recoverDreamerFromContextOverflow(
+  dreamerAgentId: string,
+  errorMessage: string,
+): Promise<boolean> {
+  if (dreamerAgentId !== getDreamerAgentId()) return false;
+
+  const db = getDb();
+  const dreamerRow = db.prepare('SELECT parent_agent FROM agents WHERE id = ?').get(dreamerAgentId) as
+    | { parent_agent: string | null }
+    | undefined;
+  const primaryId = dreamerRow?.parent_agent;
+  if (!primaryId) return false;
+
+  const state = pendingBatches.get(primaryId);
+  if (!state) {
+    logger.warn('Context overflow detected but no pending batches — cannot recover', { dreamerAgentId });
+    return false;
+  }
+
+  const currentBatch = state.batches[state.currentIndex];
+  if (!currentBatch || currentBatch.ids.length === 0) return false;
+
+  const depth = state.recoveryDepth ?? 0;
+  if (depth >= MAX_RECOVERY_DEPTH) {
+    logger.error('Context overflow recovery exhausted retries — giving up', {
+      dreamerAgentId,
+      depth,
+      maxDepth: MAX_RECOVERY_DEPTH,
+    });
+    return false;
+  }
+
+  // Look up the source archives so we can re-batch them with a tighter budget.
+  const archives: VaultConversation[] = [];
+  for (const id of currentBatch.ids) {
+    const conv = getConversation(id);
+    if (conv) archives.push(conv);
+  }
+  if (archives.length === 0) return false;
+
+  const modelRow = db.prepare('SELECT context_window FROM models WHERE id = ?').get(state.modelId) as
+    | { context_window: number }
+    | undefined;
+  const originalWindow = modelRow?.context_window ?? 200000;
+
+  // Progressive shrink: each recovery attempt halves the prior budget so a
+  // pathological batch that survives one split still gets caught on the next.
+  // depth=0: window/2, depth=1: window/4, depth=2: window/8.
+  const shrinkFactor = 1 / Math.pow(2, depth + 1);
+  const shrunkWindow = Math.max(4000, Math.floor(originalWindow * shrinkFactor));
+
+  let newBatches = batchArchives(archives, shrunkWindow);
+
+  // If batchArchives produced only one batch (the archive(s) still fit the
+  // shrunk budget by char/token estimate), force a tighter split. This
+  // happens when the real tokenizer is ~2x denser than our estimate.
+  if (newBatches.length <= 1) {
+    const tighter = Math.max(2000, Math.floor(shrunkWindow / 2));
+    newBatches = batchArchives(archives, tighter);
+  }
+
+  if (newBatches.length <= 1) {
+    logger.error('Context overflow recovery cannot split further', {
+      dreamerAgentId,
+      archiveIds: currentBatch.ids,
+      originalWindow,
+      shrunkWindow,
+      depth,
+    });
+    return false;
+  }
+
+  state.recoveryDepth = depth + 1;
+
+  // Replace the failed batch with the new sub-batches. currentIndex stays
+  // the same — it now points at the first sub-batch.
+  state.batches.splice(state.currentIndex, 1, ...newBatches);
+
+  logger.warn('Dreamer batch split for context overflow recovery', {
+    dreamerAgentId,
+    archiveCount: archives.length,
+    newSubBatchCount: newBatches.length,
+    originalWindow,
+    shrunkWindow,
+    recoveryDepth: state.recoveryDepth,
+    error: errorMessage.slice(0, 200),
+  });
+
+  const nextBatch = state.batches[state.currentIndex];
+  if (!nextBatch) return false;
+
+  // Update archive IDs on the dreamer agent record so completion handler
+  // marks the right archives as processed.
+  db.prepare(`
+    UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', ?)
+    WHERE id = ?
+  `).run(JSON.stringify(nextBatch.ids), dreamerAgentId);
+
+  const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
+  const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
+
+  const recoveryMessage = buildDreamerCycleMessage(
+    nextBatch.text,
+    state.currentIndex,
+    state.batches.length,
+    state.stats,
+    profilePath,
+    soulPath,
+    state.config.dreamMode,
+    [],
+  );
+
+  const noticedMessage = `[RECOVERY: The previous batch overflowed the model context. It was split into smaller pieces. Process this piece, then call complete_task to receive the next.]\n\n${recoveryMessage}`;
+
+  wakeupDreamer(noticedMessage);
+
+  broadcast({
+    type: 'dream:recovery',
+    data: {
+      reason: 'context_overflow',
+      newSubBatchCount: newBatches.length,
+      currentIndex: state.currentIndex,
+      totalBatches: state.batches.length,
+    },
+  } as never);
+
+  return true;
 }
 
 // ── First-Run Profile Bootstrap ──

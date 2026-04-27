@@ -2437,6 +2437,8 @@ const DreamingTab = () => {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [lastDream, setLastDream] = useState<api.DreamReport | null>(null);
+  const [running, setRunning] = useState(false);
+  const [runStatus, setRunStatus] = useState<{ kind: 'ok' | 'err' | 'idle'; message: string }>({ kind: 'idle', message: '' });
 
   useEffect(() => {
     const load = async () => {
@@ -2473,6 +2475,21 @@ const DreamingTab = () => {
       setTimeout(() => setSaved(false), 2000);
     }
     setSaving(false);
+  };
+
+  const handleRunNow = async () => {
+    if (running) return;
+    if (!confirm('Start a Dreamer cycle now? It will process all unprocessed conversation archives.')) return;
+    setRunning(true);
+    setRunStatus({ kind: 'idle', message: '' });
+    const result = await api.triggerDream();
+    if (result.ok) {
+      setRunStatus({ kind: 'ok', message: result.data.message });
+    } else {
+      setRunStatus({ kind: 'err', message: result.error || 'Failed to start Dreamer.' });
+    }
+    setRunning(false);
+    setTimeout(() => setRunStatus({ kind: 'idle', message: '' }), 6000);
   };
 
   if (loading) return <div className="loading-state">Loading...</div>;
@@ -2545,7 +2562,7 @@ const DreamingTab = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-3 pt-2">
+        <div className="flex items-center gap-3 pt-2 flex-wrap">
           <button
             onClick={handleSave}
             disabled={saving}
@@ -2553,7 +2570,17 @@ const DreamingTab = () => {
           >
             {saving ? 'Saving...' : 'Save'}
           </button>
+          <button
+            onClick={handleRunNow}
+            disabled={running}
+            className="px-4 py-2 glass-btn text-sm font-medium rounded-lg transition-colors"
+            title="Wake the Dreamer now to process unprocessed archives"
+          >
+            {running ? 'Starting...' : 'Run Now'}
+          </button>
           {saved && <span className="text-xs text-cp-teal">Saved!</span>}
+          {runStatus.kind === 'ok' && <span className="text-xs text-cp-teal">{runStatus.message}</span>}
+          {runStatus.kind === 'err' && <span className="text-xs text-red-400">{runStatus.message}</span>}
         </div>
       </div>
 

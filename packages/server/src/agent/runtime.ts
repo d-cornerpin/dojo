@@ -204,6 +204,54 @@ class AgentRuntime {
       const message = err instanceof Error ? err.message : String(err);
       const cause = err instanceof AgentError && err.cause instanceof Error ? err.cause.message : undefined;
       const code = err instanceof AgentError ? err.code : undefined;
+      const fullErrText = cause ? `${message} ${cause}` : message;
+
+      // ── Context-overflow recovery ──
+      // If the provider rejected the request because the prompt exceeded
+      // the model's context window, the agent isn't broken — the input was
+      // too big. Try to recover by splitting before treating it as an injury.
+      // Currently only the Dreamer has a structured pending-batch queue we
+      // can re-shape; for other agents we force a compaction and retry once.
+      try {
+        const { isContextOverflowError, recoverDreamerFromContextOverflow } = await import('../vault/maintenance.js');
+        if (isContextOverflowError(fullErrText)) {
+          logger.warn(`Context overflow detected: ${message}`, { agentId, code, cause }, agentId);
+          const { getDreamerAgentId } = await import('../config/platform.js');
+          if (agentId === getDreamerAgentId()) {
+            const recovered = await recoverDreamerFromContextOverflow(agentId, fullErrText);
+            if (recovered) {
+              logger.warn('Recovered from Dreamer context overflow by splitting batch', { agentId }, agentId);
+              return; // skip error/injury path entirely
+            }
+          } else {
+            // Non-Dreamer agents: force a compaction so the next turn has a
+            // smaller context, then queue a wakeup. This keeps the agent
+            // working instead of going into the error/injury loop.
+            try {
+              const lastModelRow = getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined;
+              const compactModelId = lastModelRow?.model_id ?? null;
+              if (compactModelId && compactModelId !== 'auto') {
+                const cw = getContextWindow(compactModelId);
+                await checkAndCompact(agentId, compactModelId, cw, { force: true });
+                logger.warn('Forced compaction after context overflow on non-Dreamer agent', { agentId }, agentId);
+                pendingWakeups.add(agentId);
+                return;
+              }
+            } catch (compErr) {
+              logger.warn('Forced compaction after overflow failed', {
+                agentId,
+                error: compErr instanceof Error ? compErr.message : String(compErr),
+              }, agentId);
+            }
+          }
+        }
+      } catch (recovErr) {
+        logger.warn('Context overflow recovery attempt failed', {
+          agentId,
+          error: recovErr instanceof Error ? recovErr.message : String(recovErr),
+        }, agentId);
+      }
+
       logger.error(`Agent loop failed: ${message}`, { agentId, code, cause }, agentId);
 
       // Record error for loop detection
