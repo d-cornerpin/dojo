@@ -2573,7 +2573,7 @@ const DreamingTab = () => {
           <button
             onClick={handleRunNow}
             disabled={running}
-            className="px-4 py-2 glass-btn text-sm font-medium rounded-lg transition-colors"
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-white/[0.06] text-white/60 border border-white/10 hover:border-white/20 hover:text-white/80 transition-colors disabled:opacity-40"
             title="Wake the Dreamer now to process unprocessed archives"
           >
             {running ? 'Starting...' : 'Run Now'}
