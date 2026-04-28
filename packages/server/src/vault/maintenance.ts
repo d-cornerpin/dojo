@@ -380,7 +380,7 @@ function buildDreamerCycleMessage(
   const trainerName = getTrainerAgentName();
   const trainerId = getTrainerAgentId();
   const techniqueNote = dreamMode === 'full'
-    ? `\n- If a conversation shows a reusable multi-step procedure, send it to Trainer agent (${trainerName}, ID: ${trainerId}) via send_to_agent.`
+    ? `\n- If a conversation shows a reusable multi-step procedure, hand it off to Trainer agent (${trainerName}, ID: ${trainerId}) via send_to_agent. MUST use intent="ASSIGN" — without it the Trainer will not wake.`
     : '';
 
   const batchNote = totalBatches > 1

@@ -30,15 +30,15 @@ latency_ms: 12450
 cost_usd: 0.038700
 ```
 
-On error, the tool returns a plain error string with the failure code (MODEL_NOT_FOUND, NO_CREDENTIAL, CAPABILITY_MISSING, HTTP_ERROR, NO_IMAGE_RETURNED, DECODE_ERROR, WRITE_ERROR, UNKNOWN) and a human-readable message. Imaginer should relay this to the requesting agent via `send_to_agent` so they can tell the user what went wrong.
+On error, the tool returns a plain error string with the failure code (MODEL_NOT_FOUND, NO_CREDENTIAL, CAPABILITY_MISSING, HTTP_ERROR, NO_IMAGE_RETURNED, DECODE_ERROR, WRITE_ERROR, UNKNOWN) and a human-readable message. Imaginer should relay this to the requesting agent via `send_to_agent` with `intent="ANSWER"` (wakes the requester so they can tell the user what went wrong).
 
 ## Flow
 
 This tool is called exactly once per `image_create` request, in the middle of Imaginer's standard four-step flow:
 
-1. Send immediate ack to requesting agent via `send_to_agent`
+1. Send immediate ack to requesting agent via `send_to_agent` with `intent="FYI"` (no-wake — informational)
 2. Craft a prompt
 3. **Call `image_generate_internal` with the crafted prompt** ← this tool
-4. Deliver result to requesting agent via `send_to_agent` with `attach_paths` set to the returned `file_path`
+4. Deliver result to requesting agent via `send_to_agent` with `intent="DELIVERABLE"` and `attach_paths` set to the returned `file_path` (DELIVERABLE wakes the requesting agent so the user actually gets the image)
 
 Do NOT call this tool outside of that flow. Do NOT call it twice for the same request. Do NOT skip steps 1 or 4.

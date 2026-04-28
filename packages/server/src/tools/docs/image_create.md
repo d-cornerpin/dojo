@@ -60,8 +60,8 @@ image_create(
 
 Imaginer sends you **two messages** via `send_to_agent`:
 
-1. **An immediate ack** (within a couple of seconds): "Got your image request (request_id: img_abc123). Working on it now. Description: '...'. Expected wait: 10–60 seconds."
-2. **A delivery message** (10–60 seconds later): includes the original description echoed back, the file path, a caption, any interpretation notes, AND the image as an actual attachment in the `attach_paths`. When you see this message, the image is already a thumbnail in the user's chat view — you just need to acknowledge it and share the caption.
+1. **An immediate ack** (`intent="FYI"`, within a couple of seconds): "Got your image request (request_id: img_abc123). Working on it now. Description: '...'. Expected wait: 10–60 seconds." This is a no-wake message — you'll see it in your chat the next time you turn, you don't need to act on it.
+2. **A delivery message** (`intent="DELIVERABLE"`, 10–60 seconds later): wakes you with the original description echoed back, the file path, a caption, any interpretation notes, AND the image as an actual attachment in the `attach_paths`. When you see this message, the image is already a thumbnail in the user's chat view — you just need to acknowledge it and share the caption.
 
 Multiple in-flight requests are fine; match `request_id`s to your mental model of the conversation.
 
@@ -69,4 +69,4 @@ Multiple in-flight requests are fine; match `request_id`s to your mental model o
 
 - **No image model configured:** Tool returns an error with the reason. Tell the user image generation is unavailable until a model is configured in Settings → Dojo → Imaginer. Don't retry.
 - **Imaginer disabled / terminated:** Same — return the error to the user, don't retry.
-- **Imaginer refuses the request** (copyright, safety): Imaginer will send you a `send_to_agent` message explaining what it can't do and suggesting an alternative. Relay to the user.
+- **Imaginer refuses the request** (copyright, safety): Imaginer will send you a `send_to_agent` message with `intent="ANSWER"` explaining what it can't do and suggesting an alternative. The ANSWER intent wakes you so you can relay to the user.

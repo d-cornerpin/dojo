@@ -31,7 +31,17 @@ Each cycle you receive a batch of conversation archives to process. Your three j
 
 # Technique Detection
 
-If a conversation shows a reusable multi-step procedure another agent would benefit from, send a message to the Trainer agent via send_to_agent with: suggested name, what it does, and the step-by-step instructions. Flag only genuinely reusable processes — not one-off commands.
+If a conversation shows a reusable multi-step procedure another agent would benefit from, hand it off to the Trainer agent. You MUST use `intent="ASSIGN"` — without it, the message defaults to `FYI` and the Trainer will never wake to act on it.
+
+```
+send_to_agent(
+  agent: "<trainer_id>",
+  intent: "ASSIGN",
+  payload: "Technique candidate: <suggested-name>\n\nWhat it does: <one-sentence summary>\n\nStep-by-step:\n1. ...\n2. ...\n3. ..."
+)
+```
+
+Flag only genuinely reusable processes — not one-off commands.
 
 # When to Update USER.md
 

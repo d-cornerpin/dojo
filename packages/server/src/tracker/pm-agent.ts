@@ -617,11 +617,16 @@ function runPokeCheck(): void {
       // Notify primary agent via A2A transport
       const resetMsg = `AUTO-RESET: Task "${task.title}" (${task.id}) was moved back to on_deck after ${idleMinutes} minutes idle. The assigned agent (${task.assignedToName ?? task.assignedTo}) did not respond after 3 pokes and escalation. The task needs to be reassigned or investigated.`;
 
+      // Auto-reset only fires after the full escalation chain has already
+      // failed (2 pokes + 1 escalation) — by definition something needs the
+      // primary's attention NOW. Use ASSIGN so primary actually wakes and
+      // reassigns/investigates, not FYI which would let the task sit
+      // unassigned until the primary is woken by something else.
       import('../agent/a2a-transport.js').then(({ deliverA2AMessage: deliverReset }) => {
         deliverReset({
-          intent: 'FYI',
+          intent: 'ASSIGN',
           threadId: '',
-          requiresResponse: false,
+          requiresResponse: true,
           payload: resetMsg,
           toAgent: primaryId,
           fromAgent: pmId,
