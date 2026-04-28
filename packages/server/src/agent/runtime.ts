@@ -372,6 +372,7 @@ class AgentRuntime {
     let lastUsedModelId: string = isAutoRouted ? contextModelId : configuredModelId;
     let lastResponseText: string | null = null; // For repetition detection
     let lockedModelId: string | null = null; // For auto-routed agents: lock model during tool loops
+    let lockedTier: string | null = null;    // Tier paired with lockedModelId — used so the fallback path always knows which tier to search even when scoring was skipped this iteration
     let nudgedForRepetition = false; // Only nudge once for repetition
     let retriedEmptyResponse = false; // Silent retry before nudging for empty output
     let nudgedForEmptyResponse = false; // Only nudge once for empty output
@@ -476,10 +477,14 @@ class AgentRuntime {
       const excludedModels: string[] = [];
 
       if (isAutoRouted) {
-        // If we're mid-tool-loop, keep the same model for consistency
+        // If we're mid-tool-loop, keep the same model for consistency.
+        // Carry lockedTier into routerTier so the fallback path knows the
+        // tier without re-running scoring. Without this, a mid-loop model
+        // failure produced selectModel(null, ...) → no fallback → injury.
         if (lockedModelId && loopCount > 1) {
           modelId = lockedModelId;
-          logger.info(`Auto-router: using locked model (mid-task)`, { modelId: lockedModelId }, agentId);
+          routerTier = lockedTier;
+          logger.info(`Auto-router: using locked model (mid-task)`, { modelId: lockedModelId, tier: lockedTier }, agentId);
         } else {
           const scoringResult = scoreQuery(systemPrompt, messages as Array<{ role: string; content: string | object[] }>);
           routerTier = scoringResult.tier;
@@ -573,11 +578,19 @@ class AgentRuntime {
           excludedModels.push(modelId);
           // Clear the model lock so fallback can use a different model
           lockedModelId = null;
-          const fallback = selectModel(routerTier!, agentId, excludedModels, ['tools']);
+          lockedTier = null;
+          // Fallback tier resolution. Order:
+          //   1. routerTier (from this iteration's scoring or carried-over lock)
+          //   2. lockedTier (defensive — should already be in routerTier)
+          //   3. 'standard' last-resort default — better to try SOMETHING than
+          //      injure the agent because tier resolution failed
+          const fallbackTier = routerTier ?? lockedTier ?? 'standard';
+          const fallback = selectModel(fallbackTier, agentId, excludedModels, ['tools']);
           if (!fallback) {
             logger.error('Auto-router: no fallback models available — all models exhausted or ineligible', {
               failedModel: modelId,
-              tier: routerTier,
+              tier: fallbackTier,
+              originalTier: routerTier,
               excludedModels,
               attempt,
               maxAttempts,
@@ -788,13 +801,15 @@ class AgentRuntime {
 
         // Final response — unlock model for next user message
         lockedModelId = null;
+        lockedTier = null;
         break;
       }
 
       // Tool calls present — lock the model for the rest of this turn's tool loop
       if (isAutoRouted && !lockedModelId) {
         lockedModelId = modelId;
-        logger.info('Auto-router: locking model for tool loop', { modelId }, agentId);
+        lockedTier = routerTier;
+        logger.info('Auto-router: locking model for tool loop', { modelId, tier: routerTier }, agentId);
       }
 
       // Execute each tool call — check stop flag between each one

@@ -613,7 +613,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'send_to_agent',
-    description: 'Send a structured message to another agent. Every message has an intent that determines whether the recipient is woken to respond. QUESTION and ASSIGN wake the receiver. DELIVERABLE, FYI, COMPLETE, FAIL, ANSWER do NOT wake the receiver — the message is read-only context on their next turn. Messages are grouped by thread_id — omit to start a new thread, or include an existing thread_id to continue a conversation. Silence is a valid response. Do not acknowledge acknowledgements.',
+    description: 'Send a structured message to another agent. Every message MUST specify an intent — there is no default. The intent controls whether the receiver wakes to act. Wake intents: QUESTION, ASSIGN, BLOCK (open thread, response expected) and ANSWER, DELIVERABLE (close thread, but receiver still wakes because they were waiting for the content). No-wake intents: FYI, STATUS, COMPLETE, FAIL (read-only context, receiver is NOT woken). Messages are grouped by thread_id — omit to start a new thread, or include an existing thread_id to continue a conversation. Silence is a valid response. Do not acknowledge acknowledgements.',
     input_schema: {
       type: 'object',
       properties: {
@@ -624,7 +624,7 @@ export const toolDefinitions: ToolDefinition[] = [
         intent: {
           type: 'string',
           enum: ['QUESTION', 'ASSIGN', 'ANSWER', 'DELIVERABLE', 'FYI', 'STATUS', 'COMPLETE', 'FAIL', 'BLOCK'],
-          description: 'Message intent. QUESTION/ASSIGN/BLOCK wake the receiver and expect a response. ANSWER/DELIVERABLE/FYI/STATUS/COMPLETE/FAIL are terminal — receiver is NOT woken, no response expected.',
+          description: 'REQUIRED. Choose by asking: does the receiver need to act on this message? If yes → QUESTION (you need an answer), ASSIGN (you are handing off work), BLOCK (you are stuck), ANSWER (replying to a prior question with the content they need to continue), or DELIVERABLE (here is the thing they asked for). If no → FYI (informational), STATUS (progress update), COMPLETE (you finished your part), FAIL (you could not). When in doubt and the receiver is waiting on you for something, use a wake intent.',
         },
         payload: {
           type: 'string',
@@ -636,7 +636,7 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         requires_response: {
           type: 'boolean',
-          description: 'Whether the receiver should be woken to respond. Defaults to true for QUESTION/ASSIGN/BLOCK, false for everything else. Terminal intents (ANSWER/DELIVERABLE/FYI/COMPLETE/FAIL) are ALWAYS forced to false regardless of this field.',
+          description: 'Optional override. By default the intent decides: QUESTION/ASSIGN/BLOCK/ANSWER/DELIVERABLE wake the receiver, FYI/STATUS/COMPLETE/FAIL do not. Only override when you have a specific reason — usually you should just pick the right intent.',
         },
         attach_paths: {
           type: 'array',
@@ -649,7 +649,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'broadcast_to_group',
-    description: 'Send a message to every agent in a group at once. This is THE tool for group-wide announcements, status updates, or coordinating a squad. Each member receives it as if via send_to_agent.',
+    description: 'Send a message to every agent in a group at once. This is THE tool for group-wide announcements, status updates, or coordinating a squad. Each member receives it as if via send_to_agent. Like send_to_agent, intent is REQUIRED — choose carefully because broadcasting a wake intent will wake every member of the group.',
     input_schema: {
       type: 'object',
       properties: {
@@ -657,12 +657,17 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'string',
           description: 'The group ID to broadcast to',
         },
+        intent: {
+          type: 'string',
+          enum: ['QUESTION', 'ASSIGN', 'ANSWER', 'DELIVERABLE', 'FYI', 'STATUS', 'COMPLETE', 'FAIL', 'BLOCK'],
+          description: 'REQUIRED. Same semantics as send_to_agent. Wake intents (QUESTION/ASSIGN/BLOCK/ANSWER/DELIVERABLE) wake EVERY member of the group — use sparingly. Most broadcasts should be FYI or STATUS.',
+        },
         message: {
           type: 'string',
           description: 'The message to send to all group members',
         },
       },
-      required: ['group_id', 'message'],
+      required: ['group_id', 'intent', 'message'],
     },
   },
   {
@@ -2008,8 +2013,32 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         // which enforces thread tracking, hop limits, semantic dedup, and
         // requires_response routing.
         const agentRef = args.agent as string;
-        const intent = (args.intent as string) ?? 'FYI';
+        const intent = args.intent as string | undefined;
         const payload = (args.payload as string) ?? (args.message as string) ?? '';
+
+        // Intent is REQUIRED — no silent default. Previously this fell back
+        // to 'FYI', which is a no-wake intent. Agents that didn't specify
+        // an intent for a wake-needing message (deliver work, ask Kevin to
+        // iMessage, etc.) had their messages silently dead-on-arrival.
+        // Force a deliberate choice every call by erroring on missing intent.
+        const VALID_INTENTS = ['QUESTION', 'ASSIGN', 'BLOCK', 'ANSWER', 'DELIVERABLE', 'FYI', 'STATUS', 'COMPLETE', 'FAIL'];
+        if (!intent || !VALID_INTENTS.includes(intent)) {
+          content = `Error: \`intent\` is required for send_to_agent. Choose by asking "does the receiver need to act on this?":
+  • Wake intents (receiver wakes and acts):
+    - QUESTION  — you need an answer
+    - ASSIGN    — you are handing off work
+    - BLOCK     — you are stuck and need input
+    - ANSWER    — replying to a prior question
+    - DELIVERABLE — here is the thing they asked for
+  • No-wake intents (informational, receiver does NOT wake):
+    - FYI       — for awareness
+    - STATUS    — progress update
+    - COMPLETE  — your part is done
+    - FAIL      — you could not do it
+Re-call send_to_agent with the right intent. When in doubt and the receiver is waiting on you for something, use a wake intent.`;
+          isError = true;
+          break;
+        }
         const threadId = args.thread_id as string | undefined;
         const rawAttachPaths = args.attach_paths;
         const attachPaths: string[] = Array.isArray(rawAttachPaths)
@@ -2108,8 +2137,16 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'broadcast_to_group': {
         const groupId = args.group_id as string;
         const broadcastPayload = (args.payload as string) ?? (args.message as string) ?? '';
-        const bcIntent = (args.intent as string) ?? 'FYI';
+        const bcIntent = args.intent as string | undefined;
         if (!groupId || !broadcastPayload) { content = 'Error: group_id and payload are required'; isError = true; break; }
+
+        // Intent is REQUIRED — same rationale as send_to_agent.
+        const BC_VALID_INTENTS = ['QUESTION', 'ASSIGN', 'BLOCK', 'ANSWER', 'DELIVERABLE', 'FYI', 'STATUS', 'COMPLETE', 'FAIL'];
+        if (!bcIntent || !BC_VALID_INTENTS.includes(bcIntent)) {
+          content = `Error: \`intent\` is required for broadcast_to_group. Wake intents (QUESTION/ASSIGN/BLOCK/ANSWER/DELIVERABLE) wake EVERY group member — use sparingly. Most broadcasts should be FYI (informational) or STATUS (progress update). Re-call with an explicit intent.`;
+          isError = true;
+          break;
+        }
 
         const bcDb = getDb();
 

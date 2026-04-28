@@ -57,14 +57,28 @@ function estimateRequestCost(model: TierModelRow): number {
 }
 
 export function selectModel(
-  tier: string,
+  tier: string | null | undefined,
   agentId: string,
   excludeModels?: string[],
   requireCapabilities?: string[],
 ): SelectedModel | null {
   const excluded = new Set(excludeModels ?? []);
   const required = requireCapabilities ?? [];
-  const fallbackChain = TIER_FALLBACK[tier] ?? [tier];
+
+  // Defensive: callers occasionally pass null/undefined/unknown tier (e.g.,
+  // when fallback fires mid-tool-loop and scoring was skipped this iteration).
+  // Without this, TIER_FALLBACK[null] is undefined and we end up searching
+  // a single tier with id 'null', which finds nothing and forces an injury.
+  // Default to 'standard' so we still try every tier via the fallback chain.
+  const effectiveTier = (tier && TIER_FALLBACK[tier]) ? tier : 'standard';
+  if (effectiveTier !== tier) {
+    logger.warn('selectModel called with unknown tier — defaulting to standard fallback chain', {
+      requestedTier: tier ?? null,
+      effectiveTier,
+    }, agentId);
+  }
+
+  const fallbackChain = TIER_FALLBACK[effectiveTier];
   let fallbackUsed = false;
 
   for (const candidateTier of fallbackChain) {
