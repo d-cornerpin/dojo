@@ -930,6 +930,23 @@ class AgentRuntime {
         messages.push({ role: 'user', content: toolNote });
       }
 
+      // Guard: never ship an empty messages array to the provider. Anthropic
+      // (and others) 400 with "messages: at least one message is required",
+      // which the catch path treats as a real error → injury → auto-wake →
+      // same empty context → same 400, looping until the error-loop limit
+      // pauses the agent. This typically happens when an auto-wake fires
+      // for an agent whose entire conversation sits before session_started_at
+      // (post-reset state with no new user message yet). The right behavior
+      // is "nothing to say, end the run cleanly" — not "page the model with
+      // an empty payload".
+      if (messages.length === 0) {
+        logger.info('Skipping model call: assembled context has zero messages (likely post-reset auto-wake with no new user message)', {
+          agentId, loopCount,
+        }, agentId);
+        this.setAgentStatus(agentId, 'idle');
+        return;
+      }
+
       // Call model with retry logic — for auto-routed agents, try fallback models on failure
       const messageId = uuidv4();
       const streamedChunks: string[] = [];
