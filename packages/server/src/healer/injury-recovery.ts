@@ -16,11 +16,72 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { sendAlert } from '../services/imessage-bridge.js';
+import { broadcast } from '../gateway/ws.js';
 
 const logger = createLogger('injury-recovery');
 
-// Grace period before notifying the healer (gives transient errors time to self-resolve)
-const GRACE_PERIOD_MS = 5 * 60 * 1000; // 5 minutes
+// ── Persisted attempt counter ──
+// The counter lives on agents.recovery_attempts (migration 035) so it
+// survives restarts and can be inspected/reset. Pre-2026-04-29 it was
+// in-memory only, which meant a long-running server could silently
+// accumulate attempts past MAX_RECOVERY_ATTEMPTS and the healer would
+// stop trying for that agent.
+function getAttempts(agentId: string): number {
+  try {
+    const db = getDb();
+    const row = db.prepare('SELECT recovery_attempts FROM agents WHERE id = ?').get(agentId) as { recovery_attempts: number | null } | undefined;
+    return row?.recovery_attempts ?? 0;
+  } catch { return 0; }
+}
+function setAttempts(agentId: string, value: number): void {
+  try {
+    const db = getDb();
+    db.prepare("UPDATE agents SET recovery_attempts = ?, updated_at = datetime('now') WHERE id = ?").run(value, agentId);
+  } catch { /* best effort */ }
+}
+
+// Broadcast a chat:error so the dashboard surfaces healer activity.
+// Without this, every silent return path (max attempts hit, healer missing,
+// agent already recovered) leaves the user staring at a stuck agent with no
+// idea what's happening.
+type HealerEventCode =
+  | 'HEALER_DISPATCHED'
+  | 'HEALER_SUPPRESSED_MAX_ATTEMPTS'
+  | 'HEALER_MISSING'
+  | 'HEALER_SELF_INJURED'
+  | 'HEALER_DELIVERY_FAILED';
+function broadcastInjuryEvent(agentId: string, severity: 'info' | 'warning' | 'error', message: string, code: HealerEventCode): void {
+  try {
+    broadcast({
+      type: 'chat:error',
+      agentId,
+      error: message,
+      code,
+      severity,
+      retryable: false,
+    });
+  } catch { /* best effort */ }
+}
+
+// Auto-wake delay — fires once before the Healer is involved. Functions as
+// a free "are you ok?" poke: the engine just re-runs the agent's loop.
+// If it succeeds (transient error cleared) or in-loop recovery handles it,
+// the agent recovers without ever bothering the Healer. If it re-injures,
+// the Healer dispatches at the (much shorter) grace period below.
+const AUTO_WAKE_DELAY_MS = 5 * 1000; // 5s — enough for DB writes to settle
+
+// Grace period before notifying the Healer. With the auto-wake step above,
+// the Healer's job is now "agent is genuinely stuck after a free retry
+// didn't fix it" — not "let's wait and see if it self-resolves". Cut hard.
+// Transient errors (rate limit, network) keep a longer grace because they
+// may need an upstream window to tick over.
+// History:
+//   - pre-2026-04-29: single 5-minute period for everything
+//   - 2026-04-29:     60s transient / 15s non-transient
+//   - 2026-04-29 v2:  30s transient / 5s non-transient (this version,
+//                     paired with engine auto-wake)
+const GRACE_PERIOD_MS_TRANSIENT = 30 * 1000;
+const GRACE_PERIOD_MS_NON_TRANSIENT = 5 * 1000;
 
 // Max recovery attempts per agent before giving up and alerting the user
 const MAX_RECOVERY_ATTEMPTS = 3;
@@ -29,9 +90,9 @@ const MAX_RECOVERY_ATTEMPTS = 3;
 // within the grace period (no need to bother the healer).
 const pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-// Track how many times the healer has been notified per agent.
-// Prevents infinite poke loops. Cleared on recovery.
-const recoveryAttempts = new Map<string, number>();
+// Pending auto-wake timers — same lifecycle as pendingTimers but for the
+// engine-level "are you ok?" poke that fires before the Healer is involved.
+const autoWakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 // Classify the error for the healer's diagnostic context
 function classifyError(error: string | null): string {
@@ -61,24 +122,26 @@ function classifyError(error: string | null): string {
  */
 export function onAgentInjured(agentId: string, errorMessage: string): void {
   // The healer cannot heal itself — that would create an infinite loop.
-  // Instead, alert the user directly via iMessage.
+  // Instead, alert the user directly via iMessage AND broadcast to the
+  // dashboard so the user sees the alert without needing iMessage.
   try {
     const db = getDb();
     const healerRow = db.prepare("SELECT value FROM config WHERE key = 'healer_agent_id'").get() as { value: string } | undefined;
     if (healerRow && agentId === healerRow.value) {
       logger.warn('Healer agent is injured — alerting user directly (cannot self-heal)', { agentId });
       const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-      sendAlert(
-        `The Healer agent${agent ? ` (${agent.name})` : ''} is injured and cannot self-heal. Error: ${errorMessage.slice(0, 200)}. Check the dashboard.`,
-        'critical',
-      );
+      const msg = `The Healer agent${agent ? ` (${agent.name})` : ''} is injured and cannot self-heal. Error: ${errorMessage.slice(0, 200)}. Manual intervention needed.`;
+      sendAlert(msg, 'critical');
+      broadcastInjuryEvent(agentId, 'error', msg, 'HEALER_SELF_INJURED');
       return;
     }
   } catch { /* config not available */ }
 
   // Check if we've already hit the max recovery attempts for this agent.
-  // If so, don't schedule another healer notification — alert the user instead.
-  const attempts = recoveryAttempts.get(agentId) ?? 0;
+  // If so, don't schedule another healer notification — alert the user
+  // instead, AND broadcast to the dashboard. Pre-2026-04-29 this only sent
+  // an iMessage which the user could miss, leaving an agent silently stuck.
+  const attempts = getAttempts(agentId);
   if (attempts >= MAX_RECOVERY_ATTEMPTS) {
     logger.warn('Max recovery attempts reached for agent — alerting user', {
       agentId, attempts, max: MAX_RECOVERY_ATTEMPTS,
@@ -86,30 +149,80 @@ export function onAgentInjured(agentId: string, errorMessage: string): void {
     try {
       const db = getDb();
       const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-      sendAlert(
-        `${agent?.name ?? agentId} has been injured ${attempts} times and auto-recovery has not worked. Error: ${errorMessage.slice(0, 200)}. Manual intervention needed.`,
-        'warning',
-      );
+      const msg = `${agent?.name ?? agentId} has been injured ${attempts} times and auto-recovery has not worked. Healer is suppressed for this agent until it recovers. To unstick: send a message, call reset_session, or use update_agent_profile. Last error: ${errorMessage.slice(0, 200)}`;
+      sendAlert(msg, 'warning');
+      broadcastInjuryEvent(agentId, 'warning', msg, 'HEALER_SUPPRESSED_MAX_ATTEMPTS');
     } catch { /* best effort */ }
     return;
   }
 
-  // Cancel any existing timer for this agent (in case of rapid re-injury)
-  const existing = pendingTimers.get(agentId);
-  if (existing) clearTimeout(existing);
+  // Cancel any existing timers for this agent (rapid re-injury)
+  const existingHealer = pendingTimers.get(agentId);
+  if (existingHealer) clearTimeout(existingHealer);
+  const existingWake = autoWakeTimers.get(agentId);
+  if (existingWake) clearTimeout(existingWake);
 
-  logger.info('Agent injured — scheduling healer notification', {
+  // Classify error and pick the matching grace period. Transient errors
+  // (rate_limit, network) get a longer grace because they often resolve on
+  // their own. Non-transient errors are unlikely to self-resolve, so the
+  // healer should engage almost immediately.
+  const errorClass = classifyError(errorMessage);
+  const isTransient = errorClass === 'rate_limit' || errorClass === 'network';
+  const gracePeriodMs = isTransient ? GRACE_PERIOD_MS_TRANSIENT : GRACE_PERIOD_MS_NON_TRANSIENT;
+
+  logger.info('Agent injured — scheduling auto-wake + healer notification', {
     agentId,
-    gracePeriodMs: GRACE_PERIOD_MS,
+    errorClass,
+    isTransient,
+    autoWakeDelayMs: AUTO_WAKE_DELAY_MS,
+    gracePeriodMs,
     attempt: attempts + 1,
     maxAttempts: MAX_RECOVERY_ATTEMPTS,
   });
 
+  // Step 1 — engine-level auto-wake. Fires first. Just re-runs the agent's
+  // loop without involving the Healer (no LLM cost). If transient errors
+  // cleared or in-loop recovery handles the failure, the agent recovers
+  // here and onAgentRecovered cancels the Healer timer below.
+  const wakeTimer = setTimeout(async () => {
+    autoWakeTimers.delete(agentId);
+    try {
+      const db = getDb();
+      const stillInjured = db.prepare("SELECT status FROM agents WHERE id = ?").get(agentId) as { status: string } | undefined;
+      if (!stillInjured || (stillInjured.status !== 'error' && stillInjured.status !== 'paused')) {
+        logger.debug('Auto-wake skipped — agent already recovered', { agentId });
+        return;
+      }
+      // Don't auto-wake paused agents — that's the error-loop signal.
+      if (stillInjured.status === 'paused') {
+        logger.debug('Auto-wake skipped — agent is paused (error loop)', { agentId });
+        return;
+      }
+      const { getAgentRuntime } = await import('../agent/runtime.js');
+      logger.info('Auto-wake firing — engine re-running injured agent before Healer is involved', { agentId });
+      getAgentRuntime().handleMessage(agentId, '').catch(err => {
+        logger.warn('Auto-wake handleMessage threw', {
+          agentId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    } catch (err) {
+      logger.warn('Auto-wake step failed', {
+        agentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, AUTO_WAKE_DELAY_MS);
+  autoWakeTimers.set(agentId, wakeTimer);
+
+  // Step 2 — Healer notification. Fires after the grace period if the
+  // agent is still injured. With the auto-wake above, this only fires
+  // when the agent is genuinely stuck.
   const timer = setTimeout(() => {
     pendingTimers.delete(agentId);
-    recoveryAttempts.set(agentId, attempts + 1);
+    setAttempts(agentId, attempts + 1);
     notifyHealerOfInjury(agentId, errorMessage);
-  }, GRACE_PERIOD_MS);
+  }, gracePeriodMs);
 
   pendingTimers.set(agentId, timer);
 }
@@ -121,8 +234,17 @@ export function onAgentInjured(agentId: string, errorMessage: string): void {
  */
 export function onAgentRecovered(agentId: string): void {
   // Clear recovery attempt counter — the agent is healthy again.
-  // If it errors again later, the counter starts fresh.
-  recoveryAttempts.delete(agentId);
+  // If it errors again later, the counter starts fresh. Persisted to DB
+  // so a future restart sees a clean state.
+  setAttempts(agentId, 0);
+
+  // Cancel the engine auto-wake timer if it's still pending — agent recovered
+  // before we needed to poke them.
+  const wakeTimer = autoWakeTimers.get(agentId);
+  if (wakeTimer) {
+    clearTimeout(wakeTimer);
+    autoWakeTimers.delete(agentId);
+  }
 
   const timer = pendingTimers.get(agentId);
   if (timer) {
@@ -153,11 +275,17 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
       .get() as { value: string } | undefined;
     const healerId = healerRow?.value ?? 'healer';
 
-    // Verify the healer exists and is not terminated
+    // Verify the healer exists and is not terminated. Pre-2026-04-29 this
+    // returned silently, leaving an injured agent stuck with no surface
+    // signal. Now we alert via iMessage AND broadcast to the dashboard so
+    // the user actually finds out.
     const healer = db.prepare("SELECT id, status FROM agents WHERE id = ? AND status != 'terminated'")
       .get(healerId) as { id: string; status: string } | undefined;
     if (!healer) {
       logger.warn('Healer agent not available — cannot auto-recover injured agent', { agentId, healerId });
+      const msg = `${agent.name} is injured but the Healer agent is missing or terminated, so auto-recovery cannot run. Restore the Healer in Settings → Sensei, or manually unstick this agent. Last error: ${errorMessage.slice(0, 200)}`;
+      try { sendAlert(msg, 'warning'); } catch { /* best effort */ }
+      broadcastInjuryEvent(agentId, 'error', msg, 'HEALER_MISSING');
       return;
     }
 
@@ -173,7 +301,7 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
     `).all(agentId) as StalledTask[];
 
     const parts: string[] = [];
-    parts.push(`[INJURY ALERT] ${agent.name} (${agent.classification}, ID: ${agentId}) has been injured for 5+ minutes and has not recovered on its own.`);
+    parts.push(`[INJURY ALERT] ${agent.name} (${agent.classification}, ID: ${agentId}) is injured and has not recovered on its own within the grace period.`);
     parts.push('');
     parts.push(`Status: ${agent.status}`);
     parts.push(`Error type: ${errorClass}`);
@@ -206,13 +334,36 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
       fromAgent: 'system', // System-generated, not from another agent
     });
 
-    logger.info('Healer notified of injured agent', {
-      healerId,
-      injuredAgentId: agentId,
-      injuredName: agent.name,
-      errorClass,
-      stalledTaskCount: stalledTasks.length,
-    });
+    if (result.delivered) {
+      logger.info('Healer notified of injured agent', {
+        healerId,
+        injuredAgentId: agentId,
+        injuredName: agent.name,
+        errorClass,
+        stalledTaskCount: stalledTasks.length,
+      });
+      // Surface to the dashboard so the user can see the healer kicked in.
+      // Without this, the healer's actions happen invisibly — the user is
+      // left wondering whether anything is happening at all.
+      broadcastInjuryEvent(
+        agentId,
+        'info',
+        `Healer dispatched to investigate ${agent.name} (error: ${errorClass}). The Healer agent is now working on recovery.`,
+        'HEALER_DISPATCHED',
+      );
+    } else {
+      // Delivery failed (semantic dedup, hop limit, etc.) — surface so the
+      // user knows the healer wasn't reached and can act manually.
+      logger.warn('Healer notification delivery failed', {
+        healerId, injuredAgentId: agentId, reason: result.reason,
+      });
+      broadcastInjuryEvent(
+        agentId,
+        'error',
+        `${agent.name} is injured but the Healer notification could not be delivered (${result.reason}). To unstick: send a message, call reset_session, or restore the Healer agent. Last error: ${errorSnippet.slice(0, 200)}`,
+        'HEALER_DELIVERY_FAILED',
+      );
+    }
   } catch (err) {
     logger.error('Failed to notify healer of injury', {
       agentId,

@@ -22,6 +22,102 @@ import type { Message } from '@dojo/shared';
 // this we'd broadcast the same banner on every single turn.
 const toolsUnavailableNotified = new Set<string>();
 
+// ── Recoverable provider 4xx classifier ──
+//
+// Some provider errors aren't "the agent broke" — they're "the request was
+// wrong for this model". The agent can adapt and retry differently if we
+// just tell them what went wrong instead of injuring them and waiting for
+// a human to intervene.
+//
+// Returns null if the error is NOT recoverable (real failure, transient
+// 5xx, rate limit, network — those should keep their existing flow).
+interface RecoverableProviderError {
+  kind: 'vision_mismatch' | 'unsupported_modality' | 'unsupported_input' | 'tool_format_rejected' | 'malformed_request';
+  userFacingReason: string;
+  guidance: string;
+}
+function classifyRecoverableProviderError(err: string): RecoverableProviderError | null {
+  if (!err) return null;
+  const lower = err.toLowerCase();
+
+  // Don't recover transient or auth errors — those go through the existing
+  // healer / rate-limit retry paths, not in-loop recovery.
+  if (lower.includes('429') || lower.includes('rate_limit') || lower.includes('rate limit') ||
+      lower.includes('overloaded') || lower.includes('529') ||
+      lower.includes('econnrefused') || lower.includes('econnreset') || lower.includes('etimedout') ||
+      lower.includes('fetch failed') || lower.includes('socket hang up') ||
+      lower.includes('timeout') || lower.includes('timed out') ||
+      lower.includes('503') || lower.includes('502') || lower.includes('500') ||
+      lower.includes('401') || lower.includes('403') || lower.includes('unauthorized') ||
+      lower.includes('invalid_api_key') || lower.includes('api key')) {
+    return null;
+  }
+
+  // Vision / image input not supported — most common case the user hits.
+  // Pattern: 404 "no endpoints found that support image input", 400
+  // "this model does not support vision", "image_url" rejected, etc.
+  if (
+    (lower.includes('image') || lower.includes('vision') || lower.includes('image_url')) &&
+    (lower.includes('not support') || lower.includes("don't support") || lower.includes('does not support') ||
+     lower.includes('unsupported') || lower.includes('endpoints found that support') ||
+     lower.includes('no endpoints found') || lower.includes("can't handle") || lower.includes('cannot handle'))
+  ) {
+    return {
+      kind: 'vision_mismatch',
+      userFacingReason: 'the configured model does not support image input',
+      guidance: 'Continue without trying to look at images. If the user asked you to analyze an image and you have a path to it, describe what you can infer from the filename, surrounding text, or metadata — or tell the user this model can\'t see images and they may want to switch.',
+    };
+  }
+
+  // Generic "modality not supported" — audio, video, etc.
+  if (lower.includes('modality') && (lower.includes('not support') || lower.includes('unsupported'))) {
+    return {
+      kind: 'unsupported_modality',
+      userFacingReason: 'the model does not support the type of input that was sent',
+      guidance: 'Try the same request without the unsupported attachment, or use a different tool.',
+    };
+  }
+
+  // Tool format rejected — agent constructed a malformed tool call. Common
+  // pattern: provider says invalid_request_error / "tool_use ids" / "tool calls".
+  if ((lower.includes('tool_use') || lower.includes('tool_call') || lower.includes('tool calls')) &&
+      (lower.includes('invalid') || lower.includes('malformed') || lower.includes('not found') ||
+       lower.includes('does not match'))) {
+    return {
+      kind: 'tool_format_rejected',
+      userFacingReason: 'the tool call format was rejected by the provider',
+      guidance: 'Re-issue the tool call with the correct argument types and required fields. Call load_tool_docs for the tool first if you need to recheck its schema.',
+    };
+  }
+
+  // Generic malformed/unsupported 400 with enough specificity to be safe.
+  if (lower.includes('400') &&
+      (lower.includes('not support') || lower.includes('unsupported') ||
+       lower.includes('invalid_request_error') || lower.includes('malformed') ||
+       lower.includes('unrecognized'))) {
+    return {
+      kind: 'malformed_request',
+      userFacingReason: 'the provider rejected the request as malformed or unsupported',
+      guidance: 'Adjust your approach — try a different tool, simpler input, or skip the step that triggered this.',
+    };
+  }
+
+  // 404 specifically about input/endpoint support (catches OpenRouter-style
+  // "404 No endpoints found that support image input" even if our other
+  // matchers missed). Conservative — only fire on clear input/support phrasing.
+  if (lower.includes('404') &&
+      (lower.includes('endpoints found that support') ||
+       lower.includes('does not support') || lower.includes('not supported'))) {
+    return {
+      kind: 'unsupported_input',
+      userFacingReason: 'the model does not support what was sent',
+      guidance: 'Try the same request without the unsupported attachment or tool, or take a different approach.',
+    };
+  }
+
+  return null;
+}
+
 function enforceModelCapabilities(
   agentId: string,
   modelId: string,
@@ -252,6 +348,71 @@ class AgentRuntime {
         }, agentId);
       }
 
+      // ── Provider 4xx in-loop recovery ──
+      // When the provider rejects the request for a reason the agent itself
+      // can adapt to (capability mismatch, malformed input, unsupported
+      // modality), we don't want to halt the agent — that requires user
+      // intervention for what is essentially "try a different approach".
+      // Instead, persist a [System: ...] note explaining what failed and why,
+      // then queue a wakeup. The agent reads the note on the next turn and
+      // adapts. No injury status, no healer involvement.
+      try {
+        const recovery = classifyRecoverableProviderError(fullErrText);
+        if (recovery) {
+          logger.warn(`Recoverable provider error — injecting system note instead of injuring`, {
+            agentId, kind: recovery.kind, message: message.slice(0, 200),
+          }, agentId);
+
+          // For vision-mismatch errors, also correct the model's capability
+          // cache so the pre-flight gate strips images on every subsequent
+          // turn for any agent using this model. Self-healing capability probe.
+          if (recovery.kind === 'vision_mismatch') {
+            try {
+              const lastModelRow = getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined;
+              if (lastModelRow?.model_id && lastModelRow.model_id !== 'auto') {
+                const { removeCapability } = await import('../services/capabilities.js');
+                removeCapability(lastModelRow.model_id, 'vision');
+              }
+            } catch { /* best effort — recovery still proceeds */ }
+          }
+
+          // Persist a system note that the agent will see on its next turn.
+          // Keep it terse and instructional — the agent needs to know what
+          // failed and what to do differently.
+          const systemNote = `[System: Your last action failed because the model could not handle the request as sent. Reason: ${recovery.userFacingReason}. ${recovery.guidance} Do not retry the exact same action; adapt your approach and continue.]`;
+          const noteId = uuidv4();
+          getDb().prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+            VALUES (?, ?, 'system', ?, datetime('now'))
+          `).run(noteId, agentId, systemNote);
+          broadcast({
+            type: 'chat:message',
+            agentId,
+            message: {
+              id: noteId,
+              agentId,
+              role: 'system' as const,
+              content: systemNote,
+              tokenCount: null,
+              modelId: null,
+              cost: null,
+              latencyMs: null,
+              createdAt: new Date().toISOString(),
+            },
+          });
+
+          // Don't mark error/injury. Queue a wakeup so the agent retries with
+          // the system note in context.
+          pendingWakeups.add(agentId);
+          return;
+        }
+      } catch (recovErr) {
+        logger.warn('Provider 4xx recovery attempt failed', {
+          agentId,
+          error: recovErr instanceof Error ? recovErr.message : String(recovErr),
+        }, agentId);
+      }
+
       logger.error(`Agent loop failed: ${message}`, { agentId, code, cause }, agentId);
 
       // Record error for loop detection
@@ -399,8 +560,32 @@ class AgentRuntime {
     ).get(agentId) as { content: string } | undefined;
     const triggeredByIMessage = triggerRow?.content?.includes('[SOURCE: IMESSAGE FROM') ?? false;
     const imFlagSetAtRunStart = isAwaitingIMResponse(agentId);
+
+    // Detect if this turn was triggered by an A2A reply-needed intent.
+    // Pattern: "[A2A:<INTENT> thread:<id> from:<name>] ..."
+    // QUESTION / ASSIGN / BLOCK are open-thread intents where the sender is
+    // expecting a reply. If the agent ends its turn with text but no
+    // send_to_agent call, that's a missed reply — the text was written in
+    // chat (where only the user sees it) instead of being sent to the actual
+    // recipient. We catch this at end-of-turn and nudge the agent to retry.
+    //
+    // ANSWER and DELIVERABLE are NOT nudged — those are content-deliveries
+    // on a closed thread; the agent's job is to USE the content (e.g., relay
+    // to user), not reply.
+    const a2aMatch = triggerRow?.content?.match(/^\[A2A:([A-Z]+)\s+thread:([0-9a-f]{8})\s+from:([^\]]+)\]/);
+    const triggeredByA2AReplyIntent = (() => {
+      if (!a2aMatch) return null;
+      const intent = a2aMatch[1];
+      const threadShort = a2aMatch[2];
+      const fromName = a2aMatch[3].trim();
+      const REPLY_NEEDED_INTENTS = new Set(['QUESTION', 'ASSIGN', 'BLOCK']);
+      if (!REPLY_NEEDED_INTENTS.has(intent)) return null;
+      return { intent, threadShort, fromName };
+    })();
+
     // In-memory nudge — injected into context on next loop iteration, never persisted to DB
     let pendingNudge: string | null = null;
+    let nudgedForMissedA2AReply = false; // Only nudge once per turn for missed A2A replies
 
     // Determine if this agent should be nudged about tracker usage.
     // Nudge agents that have tracker tools, EXCEPT the PM (who manages the
@@ -797,6 +982,48 @@ class AgentRuntime {
           }, agentId);
           result.content = null as unknown as string;
           lastAssistantTextForIM = null;
+        }
+
+        // Missed-reply detection: agent received an A2A reply-needed intent
+        // (QUESTION/ASSIGN/BLOCK) and ended its turn with text but never
+        // called send_to_agent. The text landed in their chat where only
+        // the user sees it — the actual sender got nothing. Inject a system
+        // note and continue the loop so the agent retries through the proper
+        // channel. Fire at most once per turn to avoid an infinite nudge loop.
+        if (
+          triggeredByA2AReplyIntent &&
+          !sentToAgentThisTurn &&
+          !nudgedForMissedA2AReply &&
+          result.content && result.content.trim().length > 0
+        ) {
+          nudgedForMissedA2AReply = true;
+          const { intent, threadShort, fromName } = triggeredByA2AReplyIntent;
+          const nudgeText = `[System: You received an [A2A:${intent}] message from ${fromName} on thread ${threadShort} but you wrote your reply as text in your own chat instead of calling send_to_agent. Other agents CANNOT see your chat — only the user can. ${fromName} got nothing. Retry your reply now using send_to_agent with the same thread_id from the message you received. Choose an intent that matches your response (ANSWER if you're answering a QUESTION, COMPLETE/STATUS/FAIL if you finished or are still working, ASSIGN if delegating further). Then end your turn.]`;
+          const nudgeId = uuidv4();
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+            VALUES (?, ?, 'system', ?, datetime('now'))
+          `).run(nudgeId, agentId, nudgeText);
+          broadcast({
+            type: 'chat:message',
+            agentId,
+            message: {
+              id: nudgeId,
+              agentId,
+              role: 'system' as const,
+              content: nudgeText,
+              tokenCount: null,
+              modelId: null,
+              cost: null,
+              latencyMs: null,
+              createdAt: new Date().toISOString(),
+            },
+          });
+          logger.warn('Nudged agent — received A2A reply-needed intent but did not call send_to_agent', {
+            agentId, intent, threadShort, fromName,
+          }, agentId);
+          // Don't break — loop again so the agent reads the nudge and retries
+          continue;
         }
 
         // Final response — unlock model for next user message

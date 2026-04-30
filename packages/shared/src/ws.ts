@@ -43,7 +43,13 @@ export interface ChatErrorEvent {
   type: 'chat:error';
   agentId: string;
   error: string;
-  code?: 'RATE_LIMITED' | 'MODEL_FAILED' | 'PERMISSION_DENIED' | 'ERROR_LOOP' | 'TIMEOUT' | 'TERMINATED' | 'STUCK_REPEATING' | 'NO_RESULTS';
+  code?:
+    | 'RATE_LIMITED' | 'MODEL_FAILED' | 'PERMISSION_DENIED' | 'ERROR_LOOP'
+    | 'TIMEOUT' | 'TERMINATED' | 'STUCK_REPEATING' | 'NO_RESULTS'
+    // Healer visibility codes (added 2026-04-29) — surface every silent
+    // return path so the user always knows whether auto-recovery is running.
+    | 'HEALER_DISPATCHED' | 'HEALER_SUPPRESSED_MAX_ATTEMPTS' | 'HEALER_MISSING'
+    | 'HEALER_SELF_INJURED' | 'HEALER_DELIVERY_FAILED';
   severity?: 'info' | 'warning' | 'error';
   retryable?: boolean;
 }

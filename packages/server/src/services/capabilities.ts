@@ -361,6 +361,40 @@ export function getModelCapabilities(modelId: string): Capability[] {
   }
 }
 
+// ── Runtime capability correction ──
+//
+// Called when a provider response definitively proves the model can't do X
+// (e.g., 404 "no endpoints found that support image input" → no vision).
+// Removes the capability from the stored set so the pre-flight gate catches
+// it on every subsequent turn instead of finding out the same way every time.
+// Idempotent — calling with a cap that's already absent is a no-op.
+export function removeCapability(modelId: string, cap: Capability): boolean {
+  const current = getModelCapabilities(modelId);
+  if (current.length === 0) {
+    // Unknown caps — set the row to "everything except this cap" so the gate
+    // becomes meaningful. Defaults match what most modern chat models can do.
+    const inferred: Capability[] = (['text', 'tools', 'vision', 'thinking'] as Capability[]).filter(c => c !== cap);
+    const db = getDb();
+    db.prepare("UPDATE models SET capabilities = ?, updated_at = datetime('now') WHERE id = ?").run(
+      JSON.stringify(inferred), modelId,
+    );
+    logger.warn('Capability removed via runtime correction (caps were unknown — inferred default minus cap)', {
+      modelId, removedCap: cap, newCaps: inferred,
+    });
+    return true;
+  }
+  if (!current.includes(cap)) return false;
+  const next = current.filter(c => c !== cap);
+  const db = getDb();
+  db.prepare("UPDATE models SET capabilities = ?, updated_at = datetime('now') WHERE id = ?").run(
+    JSON.stringify(next), modelId,
+  );
+  logger.warn('Capability removed via runtime correction', {
+    modelId, removedCap: cap, oldCaps: current, newCaps: next,
+  });
+  return true;
+}
+
 // ── DB helper: resolve provider info + persist capabilities for one model ──
 
 export async function probeAndStoreCapabilities(modelId: string): Promise<Capability[]> {

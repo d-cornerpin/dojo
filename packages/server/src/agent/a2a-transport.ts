@@ -349,27 +349,32 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
 
   // ── 13. Route based on requires_response ──
   if (requiresResponse) {
-    // Don't try to wake agents in error/paused status — it will likely
-    // fail or compound the error. Exception: system-level senders
-    // (injury alerts) and the healer agent can poke injured agents.
-    const targetIsDown = target.status === 'error' || target.status === 'paused';
-    let senderCanWakeDown = envelope.fromAgent === 'system';
-    if (!senderCanWakeDown && targetIsDown) {
+    // Wake-block for paused-only. Pre-2026-04-29 we also blocked waking
+    // agents in `error` status — meant to prevent compound failures, but
+    // it caused injured agents to silently ignore PM/peer messages, leaving
+    // them stuck until the Healer's grace timer expired. With the in-loop
+    // error recovery added in v1.15.76 (capability mismatch / 4xx → system
+    // note → adapt), re-waking an injured agent is safe: worst case it
+    // re-injures and the Healer takes over, best case it transiently
+    // recovers or self-corrects. `paused` (error-loop signal) keeps the
+    // block — re-waking there would just compound.
+    const targetIsLockedOut = target.status === 'paused';
+    let senderCanWakeLockedOut = envelope.fromAgent === 'system';
+    if (!senderCanWakeLockedOut && targetIsLockedOut) {
       try {
         const { isHealerAgent } = await import('../config/platform.js');
-        senderCanWakeDown = isHealerAgent(envelope.fromAgent);
+        senderCanWakeLockedOut = isHealerAgent(envelope.fromAgent);
       } catch { /* */ }
     }
 
-    if (targetIsDown && !senderCanWakeDown) {
-      logger.info('A2A delivery: skipping handleMessage for injured/paused agent', {
+    if (targetIsLockedOut && !senderCanWakeLockedOut) {
+      logger.info('A2A delivery: skipping handleMessage for paused agent (error loop)', {
         targetId: target.id,
         targetStatus: target.status,
         from: envelope.fromAgent,
       });
-      // Message is persisted and broadcast (steps 10-12 above), but the
-      // agent is not woken. The message becomes read-only context, same as
-      // requires_response=false. The healer will handle recovery separately.
+      // Message persisted and broadcast (steps 10-12 above), but the agent
+      // is not woken. Healer or system can still wake them.
     } else {
       const runtime = getAgentRuntime();
       runtime.handleMessage(target.id, contextMessage).catch(err => {
