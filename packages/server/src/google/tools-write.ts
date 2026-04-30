@@ -127,7 +127,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'drive_share',
-    description: 'Share a Google Drive file or folder. Two modes: (1) share with a specific email address, or (2) make it accessible to "anyone with the link" — no email required, useful when delivering a deck or doc to a client whose email you don\'t have.',
+    description: 'Share a Google Drive file or folder.\n\nFor "anyone with the link" sharing: pass audience: "anyone" — DO NOT pass "anyone" as the email value, that will fail. Email-share is only used when audience is "user" (the default).\n\nExamples:\n  • Share with a specific person:  { file_id, email: "alice@example.com", role: "reader" }\n  • Share via link (no email):     { file_id, audience: "anyone", role: "reader" }',
     input_schema: {
       type: 'object',
       properties: {
@@ -135,9 +135,9 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
         audience: {
           type: 'string',
           enum: ['user', 'anyone'],
-          description: '"user" (default) shares with a specific email — `email` is required. "anyone" turns on link-share — anyone with the URL can access at the given role, no email needed.',
+          description: '"user" (default) shares with a specific email — `email` is required. "anyone" turns on link-share — anyone with the URL can access at the given role, no email needed. Aliases accepted: "public", "link", "everyone" all map to "anyone".',
         },
-        email: { type: 'string', description: 'Email address to share with. Required when audience is "user" (the default). Ignored for "anyone".' },
+        email: { type: 'string', description: 'Email address to share with. Required when audience is "user" (the default). Ignored for "anyone". Do NOT pass "anyone"/"public"/"everyone" here — use the `audience` parameter instead.' },
         role: { type: 'string', description: "Permission level: 'reader' (default), 'writer', or 'commenter'." },
         discoverable: { type: 'boolean', description: 'Only relevant when audience is "anyone". When true, the file appears in Google Drive search results for anyone (broad public). Default false — the file is link-share only and not discoverable via search.' },
       },
@@ -426,10 +426,34 @@ export async function executeGoogleWriteTool(
 
     case 'drive_share': {
       const fileId = args.file_id as string;
-      const audience = ((args.audience as string | undefined) ?? 'user').toLowerCase();
       const role = (args.role as string) ?? 'reader';
       if (!['reader', 'writer', 'commenter'].includes(role)) {
         return `Error: role must be 'reader', 'writer', or 'commenter' (got ${role}).`;
+      }
+
+      // Resolve audience with alias support. Pre-fix, agents that didn't
+      // notice the new `audience` param tried to invoke link-share by
+      // passing "anyone" as the email value, which routed through the
+      // user-share branch and Google rejected with a confusing
+      // "emailAddress is invalid" error. Now we accept common synonyms
+      // for "anyone" and ALSO auto-correct when an audience-keyword shows
+      // up in the email slot — better than failing with a cryptic message.
+      const ANYONE_ALIASES = new Set(['anyone', 'public', 'link', 'everyone', 'world', '*']);
+      let audience = ((args.audience as string | undefined) ?? '').toLowerCase().trim();
+      if (ANYONE_ALIASES.has(audience)) audience = 'anyone';
+
+      const rawEmail = (args.email as string | undefined)?.trim() ?? '';
+      const emailLooksLikeAudienceKeyword = rawEmail.length > 0 && !rawEmail.includes('@') && ANYONE_ALIASES.has(rawEmail.toLowerCase());
+
+      // If audience wasn't set explicitly but `email` carries an audience
+      // keyword, treat it as a link-share request rather than failing.
+      if (!audience && emailLooksLikeAudienceKeyword) {
+        audience = 'anyone';
+      }
+      if (!audience) audience = 'user';
+
+      if (!['user', 'anyone'].includes(audience)) {
+        return `Error: audience must be 'user' or 'anyone' (got '${audience}'). Aliases accepted: public/link/everyone → anyone.`;
       }
 
       const url = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}/permissions?supportsAllDrives=true&sendNotificationEmail=false`;
@@ -438,8 +462,7 @@ export async function executeGoogleWriteTool(
         // "Anyone with the link" public share. Pre-2026-04-30 drive_share
         // only supported per-email sharing, which forced agents to punt
         // back to the user when delivering decks to clients whose email
-        // wasn't known. Now they can just enable link-share and send the
-        // URL.
+        // wasn't known. Now they can just enable link-share and send the URL.
         const discoverable = args.discoverable === true;
         const result = await googleWrite(
           'POST', url,
@@ -449,22 +472,27 @@ export async function executeGoogleWriteTool(
         );
         if (!result.ok) return `Error sharing file: ${result.error}`;
         const accessNote = discoverable ? 'discoverable via Drive search' : 'link-share only (not discoverable)';
-        return `File ${fileId} is now accessible to anyone with the link as ${role} (${accessNote}). Share the file's URL directly — no email required.`;
+        const correctedNote = emailLooksLikeAudienceKeyword && !args.audience
+          ? ` (Note: I auto-corrected your call — pass audience: "anyone" rather than email: "${rawEmail}" next time.)`
+          : '';
+        return `File ${fileId} is now accessible to anyone with the link as ${role} (${accessNote}). Share the file's URL directly — no email required.${correctedNote}`;
       }
 
       // Default: share with a specific email.
-      const email = args.email as string | undefined;
-      if (!email || !email.trim()) {
-        return `Error: email is required when audience is "user". Either pass an email, or set audience="anyone" for link-share.`;
+      if (!rawEmail) {
+        return `Error: email is required when audience is "user". Either pass a real email address, or set audience: "anyone" to enable link-share (no email required).`;
+      }
+      if (!rawEmail.includes('@')) {
+        return `Error: "${rawEmail}" is not a valid email address. For link-share use audience: "anyone" instead — DO NOT pass "anyone"/"public"/"everyone" as the email value.`;
       }
       const result = await googleWrite(
         'POST', url,
-        { role, type: 'user', emailAddress: email },
+        { role, type: 'user', emailAddress: rawEmail },
         agentId, agentName, 'drive_share',
-        { fileId, email, role },
+        { fileId, email: rawEmail, role },
       );
       if (!result.ok) return `Error sharing file: ${result.error}`;
-      return `File ${fileId} shared with ${email} as ${role}.`;
+      return `File ${fileId} shared with ${rawEmail} as ${role}.`;
     }
 
     case 'docs_create': {
