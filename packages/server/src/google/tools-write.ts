@@ -127,15 +127,21 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'drive_share',
-    description: 'Share a Google Drive file or folder with someone.',
+    description: 'Share a Google Drive file or folder. Two modes: (1) share with a specific email address, or (2) make it accessible to "anyone with the link" — no email required, useful when delivering a deck or doc to a client whose email you don\'t have.',
     input_schema: {
       type: 'object',
       properties: {
         file_id: { type: 'string', description: 'File or folder ID to share' },
-        email: { type: 'string', description: 'Email address to share with' },
-        role: { type: 'string', description: "Permission level: 'reader', 'writer', or 'commenter' (default: 'reader')" },
+        audience: {
+          type: 'string',
+          enum: ['user', 'anyone'],
+          description: '"user" (default) shares with a specific email — `email` is required. "anyone" turns on link-share — anyone with the URL can access at the given role, no email needed.',
+        },
+        email: { type: 'string', description: 'Email address to share with. Required when audience is "user" (the default). Ignored for "anyone".' },
+        role: { type: 'string', description: "Permission level: 'reader' (default), 'writer', or 'commenter'." },
+        discoverable: { type: 'boolean', description: 'Only relevant when audience is "anyone". When true, the file appears in Google Drive search results for anyone (broad public). Default false — the file is link-share only and not discoverable via search.' },
       },
-      required: ['file_id', 'email'],
+      required: ['file_id'],
     },
   },
   {
@@ -420,13 +426,45 @@ export async function executeGoogleWriteTool(
 
     case 'drive_share': {
       const fileId = args.file_id as string;
-      const email = args.email as string;
+      const audience = ((args.audience as string | undefined) ?? 'user').toLowerCase();
       const role = (args.role as string) ?? 'reader';
+      if (!['reader', 'writer', 'commenter'].includes(role)) {
+        return `Error: role must be 'reader', 'writer', or 'commenter' (got ${role}).`;
+      }
 
-      const url = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}/permissions`;
-      const result = await googleWrite('POST', url, { role, type: 'user', emailAddress: email }, agentId, agentName, 'drive_share', { fileId, email, role });
+      const url = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}/permissions?supportsAllDrives=true&sendNotificationEmail=false`;
+
+      if (audience === 'anyone') {
+        // "Anyone with the link" public share. Pre-2026-04-30 drive_share
+        // only supported per-email sharing, which forced agents to punt
+        // back to the user when delivering decks to clients whose email
+        // wasn't known. Now they can just enable link-share and send the
+        // URL.
+        const discoverable = args.discoverable === true;
+        const result = await googleWrite(
+          'POST', url,
+          { role, type: 'anyone', allowFileDiscovery: discoverable },
+          agentId, agentName, 'drive_share',
+          { fileId, audience: 'anyone', role, discoverable },
+        );
+        if (!result.ok) return `Error sharing file: ${result.error}`;
+        const accessNote = discoverable ? 'discoverable via Drive search' : 'link-share only (not discoverable)';
+        return `File ${fileId} is now accessible to anyone with the link as ${role} (${accessNote}). Share the file's URL directly — no email required.`;
+      }
+
+      // Default: share with a specific email.
+      const email = args.email as string | undefined;
+      if (!email || !email.trim()) {
+        return `Error: email is required when audience is "user". Either pass an email, or set audience="anyone" for link-share.`;
+      }
+      const result = await googleWrite(
+        'POST', url,
+        { role, type: 'user', emailAddress: email },
+        agentId, agentName, 'drive_share',
+        { fileId, email, role },
+      );
       if (!result.ok) return `Error sharing file: ${result.error}`;
-      return `File ${fileId} shared with ${email} as ${role}`;
+      return `File ${fileId} shared with ${email} as ${role}.`;
     }
 
     case 'docs_create': {

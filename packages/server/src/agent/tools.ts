@@ -2564,11 +2564,12 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
           db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', '── New Session ──', ?)").run(markerId, resolvedId, boundary);
           broadcast({ type: 'chat:message', agentId: resolvedId, message: { id: markerId, agentId: resolvedId, role: 'system', content: '── New Session ──', tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
 
-          // Inject reorientation prompt so the agent recovers context from
-          // the vault, tracker, and techniques before doing anything. Without
-          // this, agents start with complete amnesia after a session reset.
+          // Inject the reorientation prompt. Picks between full reorient
+          // (agent has active tasks → pick up where you left off) and
+          // fresh-start (no active tasks → don't dredge up old work).
+          const { buildSessionResetMessage } = await import('./session-reset.js');
           const reorientId = uuidv4();
-          const reorientContent = '[System: Your session was just reset. Your conversation history has been archived. BEFORE doing anything else, you MUST:\n1. Search the vault (vault_search) for your current projects, active work, and recent decisions\n2. Check the tracker (tracker_list_active) to see your assigned tasks\n3. Load any relevant techniques (list_techniques) for work in progress\n4. Check the current time (get_current_time)\nDo NOT proceed with any work or respond to the user until you have reoriented yourself.]';
+          const reorientContent = buildSessionResetMessage(resolvedId);
           db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, ?)").run(reorientId, resolvedId, reorientContent, boundary);
           broadcast({ type: 'chat:message', agentId: resolvedId, message: { id: reorientId, agentId: resolvedId, role: 'system', content: reorientContent, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
 

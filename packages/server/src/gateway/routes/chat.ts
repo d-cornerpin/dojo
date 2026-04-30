@@ -231,10 +231,14 @@ chatRouter.post('/:agentId/new-session', async (c) => {
       },
     });
 
-    // 6. Inject reorientation prompt so the agent recovers context from
-    // vault, tracker, and techniques before doing anything else
+    // 6. Inject the reorientation prompt. The helper picks between full
+    // reorient (agent has active tasks → resume) and fresh-start (no
+    // active tasks → clean slate, don't dredge up old work). Pre-2026-04-30
+    // this always inserted the full reorient, which fought the user's
+    // intent when they reset specifically to start over.
+    const { buildSessionResetMessage } = await import('../../agent/session-reset.js');
     const reorientId = uuidv4();
-    const reorientContent = '[System: Your session was just reset. Your conversation history has been archived. BEFORE doing anything else, you MUST:\n1. Search the vault (vault_search) for your current projects, active work, and recent decisions\n2. Check the tracker (tracker_list_active) to see your assigned tasks\n3. Load any relevant techniques (list_techniques) for work in progress\n4. Check the current time (get_current_time)\nDo NOT proceed with any work or respond to the user until you have reoriented yourself.]';
+    const reorientContent = buildSessionResetMessage(agentId);
     db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, ?)").run(reorientId, agentId, reorientContent, boundary);
     broadcast({ type: 'chat:message', agentId, message: { id: reorientId, agentId, role: 'system', content: reorientContent, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
 

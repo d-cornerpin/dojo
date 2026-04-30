@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import type { AgentDetail as AgentDetailType, Message, AgentMessage, Model, PermissionManifest } from '@dojo/shared';
-import type { ChatChunkEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, WsEvent } from '@dojo/shared';
+import type { ChatChunkEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, ChatMessageEvent, WsEvent } from '@dojo/shared';
 import * as api from '../lib/api';
 import type { AttachmentInfo } from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -95,6 +95,24 @@ const getClassification = (agent: AgentDetailType) => {
 // PermissionsView removed — replaced by PermissionsEditor component
 
 // ── Message Bubbles (same pattern as Chat.tsx) ──
+
+// Compact pill shown in non-wordy mode when an assistant turn was tool-calls only.
+const ToolOnlyPill = ({ msg }: { msg: ChatMessage }) => {
+  const { blocks } = parseMessageContent(msg.content);
+  const toolUses = (blocks ?? []).filter(b => b.type === 'tool_use');
+  if (toolUses.length === 0) return null;
+  const label = toolUses.length === 1
+    ? toolUses[0].name ?? 'tool'
+    : `${toolUses.length} tools`;
+  return (
+    <div className="flex justify-start">
+      <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/[0.04] text-tertiary text-[11px] font-mono">
+        <span className="text-white/40">⚙</span>
+        <span>{label}</span>
+      </div>
+    </div>
+  );
+};
 
 const UserBubble = ({ msg }: { msg: ChatMessage }) => {
   const displayContent = msg.attachments?.length
@@ -357,6 +375,44 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
       }
     });
 
+    // chat:message — canonical persisted messages (tool result rows, system
+    // notes, and the finalized assistant message with full tool_use blocks).
+    // Pre-2026-04-30 this page didn't subscribe at all, which is why mid-turn
+    // tool calls and results would stop appearing live and only show up after
+    // navigating away and back (the DB fetch picks them up). Mirrors the
+    // handler in Chat.tsx, with one difference: when the incoming message
+    // matches an existing bubble (e.g., the streaming assistant bubble), we
+    // REPLACE its content with the canonical JSON instead of skipping. That
+    // lets wordy-mode render tool_use cards live, since the streamed plain
+    // text doesn't carry tool_use block metadata.
+    const unsubMessage = subscribe('chat:message', (event: WsEvent) => {
+      const e = event as ChatMessageEvent;
+      if (e.agentId !== agentId) return;
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === e.message.id);
+        if (idx >= 0) {
+          const existing = prev[idx];
+          const updated = [...prev];
+          updated[idx] = {
+            ...existing,
+            content: e.message.content,
+            attachments: e.message.attachments ?? existing.attachments,
+          };
+          return updated;
+        }
+        return [
+          ...prev,
+          {
+            id: e.message.id,
+            role: e.message.role,
+            content: e.message.content,
+            createdAt: e.message.createdAt,
+            attachments: e.message.attachments,
+          },
+        ];
+      });
+    });
+
     const unsubStatus = subscribe('agent:status', (event: WsEvent) => {
       const e = event as { agentId: string; status: string };
       if (e.agentId !== agentId) return;
@@ -369,6 +425,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
       unsubToolCall();
       unsubToolResult();
       unsubError();
+      unsubMessage();
       unsubStatus();
     };
   }, [subscribe, agentId]);
@@ -460,10 +517,11 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
           }
           if (!wordyMode && msg.role === 'assistant') {
             if (msg.content.startsWith('I got stuck on that') || msg.content.startsWith("I'm sorry — I'm having trouble")) return null;
-            // Hide tool-only messages
+            // Tool-only turns become a compact pill (rather than disappearing)
+            // so the user still sees that the agent did something.
             const parsed = parseMessageContent(msg.content);
             const hasToolUse = parsed.blocks?.some((b) => b.type === 'tool_use');
-            if (!parsed.text && hasToolUse) return null;
+            if (!parsed.text && hasToolUse) return <ToolOnlyPill key={msg.id} msg={msg} />;
           }
           if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} />;
           return <AssistantBubble key={msg.id} msg={msg} wordyMode={wordyMode} />;

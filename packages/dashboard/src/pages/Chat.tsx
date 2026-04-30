@@ -190,6 +190,26 @@ const AssistantBubble = ({ msg, wordyMode = true, modelNames = {} }: { msg: Chat
   );
 };
 
+// Compact pill shown in non-wordy mode when an assistant turn was tool-calls only
+// (no text reply). Replaces what used to be a `return null` skip — that hid the
+// fact that the agent did anything at all, which read as silence.
+const ToolOnlyPill = ({ msg }: { msg: ChatMessage }) => {
+  const { blocks } = parseMessageContent(msg.content);
+  const toolUses = (blocks ?? []).filter(b => b.type === 'tool_use');
+  if (toolUses.length === 0) return null;
+  const label = toolUses.length === 1
+    ? toolUses[0].name ?? 'tool'
+    : `${toolUses.length} tools`;
+  return (
+    <div className="flex justify-start">
+      <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/[0.04] text-tertiary text-[11px] font-mono">
+        <span className="text-white/40">⚙</span>
+        <span>{label}</span>
+      </div>
+    </div>
+  );
+};
+
 const ToolResultBubble = ({ msg }: { msg: ChatMessage }) => {
   const { blocks } = parseMessageContent(msg.content);
 
@@ -475,16 +495,27 @@ export const Chat = () => {
     });
 
     // Subscribe to full message events (tool results, system messages, etc.)
+    // When the canonical assistant message arrives for a streaming bubble we
+    // REPLACE the bubble's content with the JSON payload (which has the
+    // tool_use blocks the chunked plain-text version is missing). Pre-2026-
+    // 04-30 this skipped on id match, so tool-call cards in wordy mode only
+    // appeared after a page reload.
     const unsubMessage = subscribe('chat:message', (event: WsEvent) => {
       const e = event as ChatMessageEvent;
       if (e.agentId !== agentIdRef.current) return;
 
       setMessages((prev) => {
-        // Don't add if we already have this message (from streaming or optimistic add)
-        if (prev.some((m) => m.id === e.message.id)) return prev;
-        // Don't add if there's a streaming message in progress with the same ID
-        const last = prev[prev.length - 1];
-        if (last?.isStreaming && last.id === e.message.id) return prev;
+        const idx = prev.findIndex((m) => m.id === e.message.id);
+        if (idx >= 0) {
+          const existing = prev[idx];
+          const updated = [...prev];
+          updated[idx] = {
+            ...existing,
+            content: e.message.content,
+            attachments: e.message.attachments ?? existing.attachments,
+          };
+          return updated;
+        }
 
         return [
           ...prev,
@@ -617,12 +648,15 @@ export const Chat = () => {
             }
             if (!wordyMode) return null; // Hide other system messages in non-wordy mode
           }
-          // For assistant messages, hide tool-only messages in non-wordy mode
+          // For assistant messages, replace tool-only turns with a compact pill
+          // in non-wordy mode. Pre-2026-04-30 this returned null which hid the
+          // turn entirely — users saw long silences when the agent was actually
+          // running tools (e.g., building a slide deck). The pill keeps the feed
+          // honest without dumping the full tool-call cards.
           if (msg.role === 'assistant' && !wordyMode) {
             const { text, blocks } = parseMessageContent(msg.content);
             const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
-            // If the message has ONLY tool calls and no text, skip it
-            if (!text && hasToolUse) return null;
+            if (!text && hasToolUse) return <ToolOnlyPill key={msg.id} msg={msg} />;
           }
           return <AssistantBubble key={msg.id} msg={msg} wordyMode={wordyMode} modelNames={modelNames} />;
         })}

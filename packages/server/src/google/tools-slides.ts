@@ -817,6 +817,28 @@ export const slidesToolDefinitions: ToolDefinition[] = [
     },
   },
 
+  // ── Macro builder ──
+  {
+    name: 'slides_build_slide',
+    description: 'Build an entire slide from a freeform list of elements in ONE Slides API call. Much faster than chaining slides_add_text_box / slides_add_shape / slides_add_image / etc., because every element creation, styling, text insert, and the slide background are bundled into a single batchUpdate (one HTTP round trip instead of N). Use this when designing a custom slide that doesn\'t match a layout helper. Omit slide_id to create a new slide; pass slide_id to add elements to an existing slide. Each element kind is fully optional — leave kinds out if you don\'t need them. Returns { slide_id, element_ids: [...] } where element_ids is in the same order as the elements you supplied.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        presentation_id: { type: 'string', description: 'Presentation ID' },
+        slide_id: { type: 'string', description: 'Existing slide ID. Omit to create a new slide.' },
+        layout: { type: 'string', description: 'When creating a new slide: BLANK, TITLE, TITLE_AND_BODY, TITLE_AND_TWO_COLUMNS, SECTION_HEADER, or CAPTION_ONLY. Default BLANK.' },
+        insertion_index: { type: 'number', description: 'When creating a new slide: 0-based position, -1 to append (default).' },
+        background_hex: { type: 'string', description: 'Optional hex color for the slide background. If omitted, the deck style\'s slide_background_color is used when creating a new slide; existing slides are left untouched.' },
+        elements: {
+          type: 'array',
+          description: 'Array of elements to place on the slide. Each element is one of these kinds (all kinds are optional — include only what you need):\n- { kind: "rect", x_pt, y_pt, width_pt, height_pt, fill_hex, outline_hex?, outline_weight_pt?, text? } — solid filled rectangle, optional outline and body-styled text\n- { kind: "shape", shape_type, x_pt, y_pt, width_pt, height_pt, fill_hex?, outline_hex?, outline_weight_pt?, text? } — any Slides shape_type (RECTANGLE, ROUND_RECTANGLE, ELLIPSE, TRIANGLE, DIAMOND, etc.)\n- { kind: "text_box", x_pt, y_pt, width_pt, height_pt, text, role?, color_hex?, size?, font?, bold?, italic?, underline?, line_spacing? } — styled text (role: title/heading/body/subtitle/caption; the role-specific properties from the deck style are applied first, then per-call overrides)\n- { kind: "bullet_list", x_pt, y_pt, width_pt, height_pt, items, role? } — bulleted list, prefix items with \\t to nest\n- { kind: "image_url", x_pt, y_pt, width_pt, height_pt, image_url } — image from a publicly accessible URL\n- { kind: "image_drive", x_pt, y_pt, width_pt, height_pt, drive_file_id } — image from a Drive file\n- { kind: "image_local", x_pt, y_pt, width_pt, height_pt, file_path } — image from a local path; uploads to Drive transparently\n- { kind: "line", x1_pt, y1_pt, x2_pt, y2_pt, color_hex?, weight_pt?, dash_style? } — straight line (dash_style: SOLID, DOT, DASH, DASH_DOT, LONG_DASH)',
+          items: { type: 'object' },
+        },
+      },
+      required: ['presentation_id', 'elements'],
+    },
+  },
+
   // ── Utility ──
   {
     name: 'slides_get_slides',
@@ -2221,6 +2243,357 @@ export async function executeGoogleSlidesTool(
         const r = await batchUpdate(presentationId, allReqs, agentId, agentName, 'slides_layout_comparison', { slideId, n });
         if (!r.ok) return `Error building comparison slide: ${r.error}`;
         return ok({ slide_id: slideId, title_id: titleId, item_ids: itemIds });
+      }
+
+      // ── Macro builder ──
+
+      case 'slides_build_slide': {
+        const presentationId = args.presentation_id as string;
+        const elementsRaw = args.elements;
+        if (!Array.isArray(elementsRaw) || elementsRaw.length === 0) {
+          return err('elements must be a non-empty array');
+        }
+        const elements = elementsRaw as Array<Record<string, unknown>>;
+
+        const style = getStoredStyle(presentationId);
+        const allReqs: Req[] = [];
+        const elementIds: Array<string | string[] | null> = [];
+        const cleanups: Array<() => Promise<void>> = [];
+
+        // ── Resolve slide_id (or schedule its creation in the same batch) ──
+        let slideId: string;
+        let createdNewSlide = false;
+        if (typeof args.slide_id === 'string' && args.slide_id) {
+          slideId = args.slide_id;
+        } else {
+          slideId = genId('slide');
+          createdNewSlide = true;
+          const layout = ((args.layout as string | undefined) ?? 'BLANK').toUpperCase();
+          const insertionIndex = typeof args.insertion_index === 'number' ? args.insertion_index : -1;
+          const createReq: Record<string, unknown> = {
+            objectId: slideId,
+            slideLayoutReference: { predefinedLayout: layout },
+          };
+          if (insertionIndex >= 0) createReq.insertionIndex = insertionIndex;
+          allReqs.push({ createSlide: createReq });
+        }
+
+        // ── Background ──
+        // Validate background_hex first so a bad color fails fast before any uploads.
+        const bgHex = (args.background_hex as string | undefined);
+        if (bgHex) {
+          try { hexToRgb(bgHex); } catch (e) { return err(e instanceof Error ? e.message : String(e)); }
+        }
+        // For new slides, default to the deck style background. For existing slides,
+        // only touch the background if the caller explicitly passed background_hex.
+        const effectiveBg = bgHex ?? (createdNewSlide ? style.slide_background_color : undefined);
+        if (effectiveBg) {
+          const bgReq = backgroundRequest(slideId, effectiveBg);
+          if (bgReq) allReqs.push(bgReq);
+        }
+
+        // ── Phase 1: upload local files to Drive in parallel ──
+        // Each image_local element is replaced (in our local copy) with a
+        // resolved drive_file_id so the same code path then handles both.
+        const UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3';
+        const uploadPromises: Array<Promise<{ index: number; ok: boolean; driveFileId?: string; error?: string }>> = [];
+        for (let i = 0; i < elements.length; i++) {
+          const el = elements[i];
+          if (el.kind !== 'image_local') continue;
+          const filePath = el.file_path as string | undefined;
+          if (!filePath) {
+            return err(`elements[${i}] (image_local) is missing file_path`);
+          }
+          if (!fs.existsSync(filePath)) {
+            return err(`elements[${i}] (image_local): file not found at ${filePath}`);
+          }
+          const driveName = (el.drive_name as string | undefined) ?? path.basename(filePath);
+          uploadPromises.push((async () => {
+            try {
+              const fileContent = fs.readFileSync(filePath);
+              const boundary = `---dojo-build-slide-upload-${i}---`;
+              const metadata = JSON.stringify({ name: driveName });
+              const head = [
+                `--${boundary}`,
+                'Content-Type: application/json; charset=UTF-8',
+                '',
+                metadata,
+                `--${boundary}`,
+                'Content-Type: application/octet-stream',
+                '',
+              ].join('\r\n');
+              const body = Buffer.concat([
+                Buffer.from(head + '\r\n'),
+                fileContent,
+                Buffer.from(`\r\n--${boundary}--`),
+              ]);
+              const up = await googleWrite(
+                'POST',
+                `${UPLOAD_BASE}/files?uploadType=multipart`,
+                body,
+                agentId, agentName, 'slides_build_slide_upload',
+                { filePath, driveName, slideId, elementIndex: i },
+                `multipart/related; boundary=${boundary}`,
+              );
+              if (!up.ok) return { index: i, ok: false, error: up.error };
+              const driveFileId = (up.data as { id?: string } | undefined)?.id;
+              if (!driveFileId) return { index: i, ok: false, error: 'upload returned no file id' };
+              return { index: i, ok: true, driveFileId };
+            } catch (e) {
+              return { index: i, ok: false, error: e instanceof Error ? e.message : String(e) };
+            }
+          })());
+        }
+        if (uploadPromises.length > 0) {
+          const results = await Promise.all(uploadPromises);
+          for (const r of results) {
+            if (!r.ok) {
+              return err(`elements[${r.index}] (image_local) upload failed: ${r.error}`);
+            }
+            // Mutate our local element copy: convert image_local → image_drive
+            elements[r.index] = { ...elements[r.index], kind: 'image_drive', drive_file_id: r.driveFileId };
+          }
+        }
+
+        // ── Phase 2: prepare share-link URLs for all Drive images (parallel) ──
+        const drivePrepPromises: Array<Promise<{ index: number; prep: DriveImagePrep }>> = [];
+        for (let i = 0; i < elements.length; i++) {
+          const el = elements[i];
+          if (el.kind !== 'image_drive') continue;
+          const driveFileId = el.drive_file_id as string | undefined;
+          if (!driveFileId) {
+            return err(`elements[${i}] (image_drive) is missing drive_file_id`);
+          }
+          drivePrepPromises.push(
+            prepareDriveImageUrl(driveFileId, agentId, agentName, 'slides_build_slide')
+              .then(prep => ({ index: i, prep })),
+          );
+        }
+        const drivePreps = new Map<number, DriveImagePrep>();
+        if (drivePrepPromises.length > 0) {
+          const results = await Promise.all(drivePrepPromises);
+          for (const { index, prep } of results) {
+            cleanups.push(prep.cleanup);
+            if (!prep.ok || !prep.url) {
+              // Run cleanups for any other preps already collected, then bail.
+              for (const c of cleanups) await c();
+              return err(`elements[${index}] (image_drive): ${prep.error ?? 'failed to prepare image URL'}`);
+            }
+            drivePreps.set(index, prep);
+          }
+        }
+
+        // ── Phase 3: build per-element request ops ──
+        return await runWithCleanups(cleanups, async () => {
+          for (let i = 0; i < elements.length; i++) {
+            const el = elements[i];
+            const kind = el.kind as string;
+
+            if (kind === 'rect' || kind === 'shape') {
+              const shapeType = kind === 'rect' ? 'RECTANGLE' : (el.shape_type as string | undefined);
+              if (!shapeType) {
+                return err(`elements[${i}] (shape) is missing shape_type`);
+              }
+              const x = el.x_pt as number, y = el.y_pt as number;
+              const w = el.width_pt as number, h = el.height_pt as number;
+              const fillColor = (el.fill_hex as string | undefined) ?? (kind === 'rect' ? undefined : style.accent_color);
+              const outlineColor = el.outline_hex as string | undefined;
+              const outlineWeightPt = el.outline_weight_pt as number | undefined;
+              const text = el.text as string | undefined;
+
+              const shapeId = genId(kind === 'rect' ? 'rect' : 'shape');
+              allReqs.push({
+                createShape: {
+                  objectId: shapeId,
+                  shapeType,
+                  elementProperties: {
+                    pageObjectId: slideId,
+                    size: pageSize(w, h),
+                    transform: pageTransform(x, y),
+                  },
+                },
+              });
+              if (fillColor) {
+                allReqs.push({
+                  updateShapeProperties: {
+                    objectId: shapeId,
+                    shapeProperties: { shapeBackgroundFill: { solidFill: solidFill(fillColor) } },
+                    fields: 'shapeBackgroundFill.solidFill.color',
+                  },
+                });
+              }
+              if (outlineColor || outlineWeightPt != null) {
+                const outline: Record<string, unknown> = {};
+                const fields: string[] = [];
+                if (outlineColor) {
+                  outline.outlineFill = { solidFill: solidFill(outlineColor) };
+                  fields.push('outline.outlineFill.solidFill.color');
+                }
+                if (outlineWeightPt != null) {
+                  outline.weight = { magnitude: outlineWeightPt, unit: 'PT' };
+                  fields.push('outline.weight');
+                }
+                allReqs.push({
+                  updateShapeProperties: {
+                    objectId: shapeId,
+                    shapeProperties: { outline },
+                    fields: fields.join(','),
+                  },
+                });
+              }
+              if (text) {
+                const textStyle = roleTextStyle(style, 'body');
+                allReqs.push({ insertText: { objectId: shapeId, insertionIndex: 0, text } });
+                allReqs.push({
+                  updateTextStyle: {
+                    objectId: shapeId,
+                    textRange: { type: 'ALL' },
+                    style: textStyle,
+                    fields: TEXT_STYLE_FIELDS,
+                  },
+                });
+              }
+              elementIds.push(shapeId);
+            } else if (kind === 'text_box' || kind === 'bullet_list') {
+              const x = el.x_pt as number, y = el.y_pt as number;
+              const w = el.width_pt as number, h = el.height_pt as number;
+              const role = ((el.role as string | undefined) ?? 'body') as TextRole;
+              if (!VALID_ROLES.includes(role)) {
+                return err(`elements[${i}] has invalid role '${role}'`);
+              }
+
+              // Build per-element style overrides from the element's loose props
+              const overrides: Partial<DeckStyle> = {};
+              if (typeof el.color_hex === 'string') (overrides as Record<string, unknown>)[`${role}_color`] = el.color_hex;
+              if (typeof el.size === 'number') (overrides as Record<string, unknown>)[`${role}_size`] = el.size;
+              if (typeof el.font === 'string') (overrides as Record<string, unknown>)[`${role}_font`] = el.font;
+              if (typeof el.bold === 'boolean') (overrides as Record<string, unknown>)[`${role}_bold`] = el.bold;
+              const textStyle = roleTextStyle(style, role, overrides);
+              const lineSpacing = typeof el.line_spacing === 'number' ? el.line_spacing : style.line_spacing;
+
+              let text: string;
+              if (kind === 'text_box') {
+                text = (el.text as string | undefined) ?? '';
+              } else {
+                const items = el.items;
+                if (!Array.isArray(items) || items.length === 0) {
+                  return err(`elements[${i}] (bullet_list) requires non-empty items array`);
+                }
+                text = items.map(it => String(it)).join('\n');
+              }
+
+              const { textBoxId, requests } = buildTextBoxRequests(
+                slideId, text, x, y, w, h, textStyle, lineSpacing,
+              );
+              allReqs.push(...requests);
+
+              // Apply italic/underline as a separate updateTextStyle pass —
+              // buildTextBoxRequests only sets the role-default fields.
+              if (typeof el.italic === 'boolean' || typeof el.underline === 'boolean') {
+                const extraStyle: Record<string, unknown> = {};
+                const extraFields: string[] = [];
+                if (typeof el.italic === 'boolean') { extraStyle.italic = el.italic; extraFields.push('italic'); }
+                if (typeof el.underline === 'boolean') { extraStyle.underline = el.underline; extraFields.push('underline'); }
+                allReqs.push({
+                  updateTextStyle: {
+                    objectId: textBoxId,
+                    textRange: { type: 'ALL' },
+                    style: extraStyle,
+                    fields: extraFields.join(','),
+                  },
+                });
+              }
+
+              if (kind === 'bullet_list') {
+                allReqs.push({
+                  createParagraphBullets: {
+                    objectId: textBoxId,
+                    textRange: { type: 'ALL' },
+                    bulletPreset: 'BULLET_DISC_CIRCLE_SQUARE',
+                  },
+                });
+              }
+              elementIds.push(textBoxId);
+            } else if (kind === 'image_url' || kind === 'image_drive') {
+              // image_local was already converted to image_drive in phase 1.
+              const x = el.x_pt as number, y = el.y_pt as number;
+              const w = el.width_pt as number, h = el.height_pt as number;
+              const url = kind === 'image_url'
+                ? (el.image_url as string | undefined)
+                : drivePreps.get(i)?.url;
+              if (!url) {
+                return err(`elements[${i}] (${kind}) is missing image URL`);
+              }
+              const imageId = genId('img');
+              allReqs.push({
+                createImage: {
+                  objectId: imageId,
+                  url,
+                  elementProperties: {
+                    pageObjectId: slideId,
+                    size: pageSize(w, h),
+                    transform: pageTransform(x, y),
+                  },
+                },
+              });
+              elementIds.push(imageId);
+            } else if (kind === 'line') {
+              const sx = el.x1_pt as number, sy = el.y1_pt as number;
+              const ex = el.x2_pt as number, ey = el.y2_pt as number;
+              const color = (el.color_hex as string | undefined) ?? style.accent_color;
+              const weightPt = (el.weight_pt as number | undefined) ?? 2;
+              const dashStyle = ((el.dash_style as string | undefined) ?? 'SOLID').toUpperCase();
+              const validDash = ['SOLID', 'DOT', 'DASH', 'DASH_DOT', 'LONG_DASH'];
+              if (!validDash.includes(dashStyle)) {
+                return err(`elements[${i}] (line): dash_style must be one of ${validDash.join(', ')}`);
+              }
+              const x = Math.min(sx, ex);
+              const y = Math.min(sy, ey);
+              const w = Math.max(Math.abs(ex - sx), 1);
+              const h = Math.max(Math.abs(ey - sy), 1);
+              const lineId = genId('line');
+              allReqs.push({
+                createLine: {
+                  objectId: lineId,
+                  lineCategory: 'STRAIGHT',
+                  elementProperties: {
+                    pageObjectId: slideId,
+                    size: pageSize(w, h),
+                    transform: pageTransform(x, y),
+                  },
+                },
+              });
+              allReqs.push({
+                updateLineProperties: {
+                  objectId: lineId,
+                  lineProperties: {
+                    lineFill: { solidFill: solidFill(color) },
+                    weight: { magnitude: weightPt, unit: 'PT' },
+                    dashStyle,
+                  },
+                  fields: 'lineFill.solidFill.color,weight,dashStyle',
+                },
+              });
+              elementIds.push(lineId);
+            } else {
+              return err(`elements[${i}] has unknown kind '${kind}'`);
+            }
+          }
+
+          // ── Phase 4: ONE batchUpdate ──
+          const r = await batchUpdate(
+            presentationId, allReqs, agentId, agentName, 'slides_build_slide',
+            { slideId, createdNewSlide, elementCount: elements.length, requestCount: allReqs.length },
+          );
+          if (!r.ok) return `Error building slide: ${r.error}`;
+
+          return ok({
+            slide_id: slideId,
+            created_new_slide: createdNewSlide,
+            element_ids: elementIds,
+            request_count: allReqs.length,
+          });
+        });
       }
 
       // ── Utility ──

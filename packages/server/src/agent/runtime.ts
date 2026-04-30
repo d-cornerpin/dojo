@@ -140,19 +140,52 @@ function enforceModelCapabilities(
     let imagesStripped = 0;
     let docsStripped = 0;
 
+    // Helper that strips images/documents from a top-level block array AND
+    // recursively from any tool_result blocks. Pre-2026-04-30 this only
+    // checked top-level types, so an image returned by file_read (which
+    // arrives nested as tool_result.content[0].type='image') sailed past
+    // the strip unchanged. The provider 400'd, in-loop recovery fired,
+    // wakeup re-ran the same turn, the same nested image was still there,
+    // 400 again — runaway loop until something killed the server.
+    const stripBlocks = (blocks: Array<Record<string, unknown>>): Array<Record<string, unknown>> => {
+      const kept: Array<Record<string, unknown>> = [];
+      for (const b of blocks) {
+        if (b.type === 'image') { imagesStripped++; continue; }
+        if (b.type === 'document') { docsStripped++; continue; }
+        if (b.type === 'tool_result' && Array.isArray(b.content)) {
+          // Recurse into the tool_result's content array.
+          const innerKept = stripBlocks(b.content as Array<Record<string, unknown>>);
+          // If the tool_result ends up with NO content after stripping
+          // (was image/doc only), replace with a text note. The model
+          // needs to know there was a result, just not what it contained.
+          if (innerKept.length === 0) {
+            kept.push({
+              ...b,
+              content: [{
+                type: 'text',
+                text: '(Image/PDF attachment removed — this model does not support vision input)',
+              }],
+            });
+          } else {
+            kept.push({ ...b, content: innerKept });
+          }
+          continue;
+        }
+        kept.push(b);
+      }
+      return kept;
+    };
+
     for (let i = 0; i < messages.length; i++) {
       const m = messages[i];
       if (m.role !== 'user' || typeof m.content === 'string' || !Array.isArray(m.content)) continue;
 
       const blocks = m.content as unknown as Array<Record<string, unknown>>;
-      const hasMedia = blocks.some(b => b.type === 'image' || b.type === 'document');
-      if (!hasMedia) continue;
-
-      const kept = blocks.filter(b => {
-        if (b.type === 'image') { imagesStripped++; return false; }
-        if (b.type === 'document') { docsStripped++; return false; }
-        return true;
-      });
+      const beforeImg = imagesStripped;
+      const beforeDoc = docsStripped;
+      const kept = stripBlocks(blocks);
+      const changed = imagesStripped !== beforeImg || docsStripped !== beforeDoc;
+      if (!changed) continue;
 
       // If nothing but text remains, collapse to a plain string so older call
       // paths that prefer strings don't choke. Otherwise preserve the array.
@@ -250,6 +283,18 @@ const activeAbortControllers = new Map<string, AbortController>();
 // path checks this flag (same pattern as stoppedAgents) and ends the loop
 // cleanly without escalating to injury.
 const preemptedAgents = new Set<string>();
+
+// Tracks consecutive in-loop recovery attempts of the same kind per agent.
+// In-loop recovery is supposed to handle a one-off provider 4xx by injecting
+// a system note + queueing a wakeup. But if the recovery itself can't fix
+// the underlying issue (e.g. images nested in tool_result blocks not being
+// stripped), each retry hits the same error and fires recovery again,
+// creating a runaway loop. Pre-2026-04-30 this could blow through 100+
+// iterations in seconds. Now we cap consecutive same-kind recoveries at
+// MAX_CONSECUTIVE_INLOOP_RECOVERIES — beyond that, we let the error
+// propagate to injury so the Healer takes over.
+const recoveryRunStreak = new Map<string, { kind: string; count: number }>();
+const MAX_CONSECUTIVE_INLOOP_RECOVERIES = 3;
 
 // Heartbeat timers — re-broadcast agent:status='working' every 30s while
 // the runAgentLoop is active. See the call site in runAgentLoop for the
@@ -429,52 +474,95 @@ class AgentRuntime {
       try {
         const recovery = classifyRecoverableProviderError(fullErrText);
         if (recovery) {
-          logger.warn(`Recoverable provider error — injecting system note instead of injuring`, {
-            agentId, kind: recovery.kind, message: message.slice(0, 200),
-          }, agentId);
+          // Cap consecutive same-kind recoveries. Without this cap, a
+          // recovery whose underlying fix can't actually clear the error
+          // (e.g. a stripping bug elsewhere, or a model that ignores the
+          // injected system note) will loop forever — we saw 132 retries
+          // in seconds before manual server kill. After
+          // MAX_CONSECUTIVE_INLOOP_RECOVERIES of the same kind, escalate
+          // to injury so the Healer takes over.
+          const prev = recoveryRunStreak.get(agentId);
+          const sameKind = prev?.kind === recovery.kind;
+          const newCount = sameKind ? prev!.count + 1 : 1;
+          recoveryRunStreak.set(agentId, { kind: recovery.kind, count: newCount });
 
-          // For vision-mismatch errors, also correct the model's capability
-          // cache so the pre-flight gate strips images on every subsequent
-          // turn for any agent using this model. Self-healing capability probe.
-          if (recovery.kind === 'vision_mismatch') {
+          if (newCount > MAX_CONSECUTIVE_INLOOP_RECOVERIES) {
+            // Give up on in-loop recovery. Clear the streak so a future
+            // unrelated error starts fresh, and let the existing injury
+            // path handle it (logged below + healer dispatch).
+            recoveryRunStreak.delete(agentId);
+            logger.error('In-loop recovery cap reached — escalating to injury', {
+              agentId, kind: recovery.kind, count: newCount, max: MAX_CONSECUTIVE_INLOOP_RECOVERIES,
+            }, agentId);
+            // Persist a final system note so the chat surface shows why the
+            // agent is being injured (instead of looking like a silent halt).
+            const giveUpNote = `[System: Recovery has been attempting to fix the same problem (${recovery.kind}) ${newCount} times in a row without success. Stopping the recovery loop and routing this to the Healer. The underlying issue: ${recovery.userFacingReason}.]`;
             try {
-              const lastModelRow = getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined;
-              if (lastModelRow?.model_id && lastModelRow.model_id !== 'auto') {
-                const { removeCapability } = await import('../services/capabilities.js');
-                removeCapability(lastModelRow.model_id, 'vision');
-              }
-            } catch { /* best effort — recovery still proceeds */ }
-          }
+              const noteId = uuidv4();
+              getDb().prepare(`
+                INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+                VALUES (?, ?, 'system', ?, datetime('now'))
+              `).run(noteId, agentId, giveUpNote);
+              broadcast({
+                type: 'chat:message',
+                agentId,
+                message: {
+                  id: noteId, agentId, role: 'system' as const, content: giveUpNote,
+                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                  createdAt: new Date().toISOString(),
+                },
+              });
+            } catch { /* best effort */ }
+            // Fall through past the recovery block — the existing injury
+            // path below will record the error and notify the Healer.
+          } else {
+            logger.warn(`Recoverable provider error — injecting system note instead of injuring`, {
+              agentId, kind: recovery.kind, count: newCount, message: message.slice(0, 200),
+            }, agentId);
 
-          // Persist a system note that the agent will see on its next turn.
-          // Keep it terse and instructional — the agent needs to know what
-          // failed and what to do differently.
-          const systemNote = `[System: Your last action failed because the model could not handle the request as sent. Reason: ${recovery.userFacingReason}. ${recovery.guidance} Do not retry the exact same action; adapt your approach and continue.]`;
-          const noteId = uuidv4();
-          getDb().prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-            VALUES (?, ?, 'system', ?, datetime('now'))
-          `).run(noteId, agentId, systemNote);
-          broadcast({
-            type: 'chat:message',
-            agentId,
-            message: {
-              id: noteId,
+            // For vision-mismatch errors, also correct the model's capability
+            // cache so the pre-flight gate strips images on every subsequent
+            // turn for any agent using this model. Self-healing capability probe.
+            if (recovery.kind === 'vision_mismatch') {
+              try {
+                const lastModelRow = getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined;
+                if (lastModelRow?.model_id && lastModelRow.model_id !== 'auto') {
+                  const { removeCapability } = await import('../services/capabilities.js');
+                  removeCapability(lastModelRow.model_id, 'vision');
+                }
+              } catch { /* best effort — recovery still proceeds */ }
+            }
+
+            // Persist a system note that the agent will see on its next turn.
+            // Keep it terse and instructional — the agent needs to know what
+            // failed and what to do differently.
+            const systemNote = `[System: Your last action failed because the model could not handle the request as sent. Reason: ${recovery.userFacingReason}. ${recovery.guidance} Do not retry the exact same action; adapt your approach and continue.]`;
+            const noteId = uuidv4();
+            getDb().prepare(`
+              INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+              VALUES (?, ?, 'system', ?, datetime('now'))
+            `).run(noteId, agentId, systemNote);
+            broadcast({
+              type: 'chat:message',
               agentId,
-              role: 'system' as const,
-              content: systemNote,
-              tokenCount: null,
-              modelId: null,
-              cost: null,
-              latencyMs: null,
-              createdAt: new Date().toISOString(),
-            },
-          });
+              message: {
+                id: noteId,
+                agentId,
+                role: 'system' as const,
+                content: systemNote,
+                tokenCount: null,
+                modelId: null,
+                cost: null,
+                latencyMs: null,
+                createdAt: new Date().toISOString(),
+              },
+            });
 
-          // Don't mark error/injury. Queue a wakeup so the agent retries with
-          // the system note in context.
-          pendingWakeups.add(agentId);
-          return;
+            // Don't mark error/injury. Queue a wakeup so the agent retries with
+            // the system note in context.
+            pendingWakeups.add(agentId);
+            return;
+          }
         }
       } catch (recovErr) {
         logger.warn('Provider 4xx recovery attempt failed', {
@@ -1180,6 +1268,10 @@ class AgentRuntime {
         // budget. (If the agent had auto-continued mid-task and finally
         // reached a clean stop, that counts as success.)
         turnContinuationCounts.delete(agentId);
+        // Also clear the in-loop recovery streak — the agent reached a
+        // clean end without further recovery, so any prior recovery
+        // attempts are presumed resolved.
+        recoveryRunStreak.delete(agentId);
         break;
       }
 
