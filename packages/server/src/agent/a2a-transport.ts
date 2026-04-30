@@ -438,6 +438,31 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
       // Message persisted and broadcast (steps 10-12 above), but the agent
       // is not woken. Healer or system can still wake them.
     } else {
+      // Urgent-sender preempt. If this delivery comes from PM (poke), the
+      // Healer (injury recovery), or system (engine-level alert) AND the
+      // target is currently mid-turn, abort the in-flight model call so
+      // the urgent message is processed promptly. Without this preempt,
+      // the message gets queued in pendingWakeups and waits up to the
+      // 15-minute turn-time-budget for the current turn to end.
+      try {
+        let isUrgentSender = envelope.fromAgent === 'system';
+        if (!isUrgentSender) {
+          const { isPMAgent, isHealerAgent } = await import('../config/platform.js');
+          isUrgentSender = isPMAgent(envelope.fromAgent) || isHealerAgent(envelope.fromAgent);
+        }
+        if (isUrgentSender) {
+          const { preemptAgentForUrgentMessage } = await import('./runtime.js');
+          const preempted = preemptAgentForUrgentMessage(target.id);
+          if (preempted) {
+            logger.info('A2A delivery: preempted target run for urgent wakeup', {
+              targetId: target.id,
+              from: envelope.fromAgent,
+              intent: envelope.intent,
+            });
+          }
+        }
+      } catch { /* preempt is best-effort */ }
+
       const runtime = getAgentRuntime();
       runtime.handleMessage(target.id, contextMessage).catch(err => {
         logger.error('A2A delivery: failed to wake receiver', {

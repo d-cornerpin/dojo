@@ -73,6 +73,15 @@ chatRouter.post('/:agentId/messages', async (c) => {
 
   queueEmbedding('message', messageId, agentId, content);
 
+  // Urgent preempt — direct user messages count as urgent. If the agent
+  // is mid-turn on something else, abort the in-flight model call so the
+  // user's message is processed immediately instead of queued behind a
+  // potentially-15-minute model call.
+  try {
+    const { preemptAgentForUrgentMessage } = await import('../../agent/runtime.js');
+    preemptAgentForUrgentMessage(agentId);
+  } catch { /* best effort */ }
+
   // ALWAYS call handleMessage — let the runtime's own activeRuns check
   // decide whether to process immediately or queue a wakeup. Previously
   // this checked agent.status === 'working' from the DB, but DB status

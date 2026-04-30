@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { AgentDetail, Model, PermissionManifest } from '@dojo/shared';
 import type { WsEvent, AgentCreatedEvent, AgentStatusEvent, AgentTerminatedEvent } from '@dojo/shared';
@@ -332,7 +332,8 @@ export const Agents = () => {
   const [showAllHistory, setShowAllHistory] = useState(false);
   const [ollamaWarnings, setOllamaWarnings] = useState<api.OllamaLockWarning[]>([]);
   const [ollamaWarningExpanded, setOllamaWarningExpanded] = useState(false);
-  const { subscribe } = useWebSocket();
+  const { subscribe, connectionStatus } = useWebSocket();
+  const prevConnectionRef = useRef<typeof connectionStatus>('disconnected');
 
   const loadAgents = async () => {
     const [agentResult, groupResult] = await Promise.all([
@@ -395,6 +396,21 @@ export const Agents = () => {
 
     return () => { unsubCreated(); unsubStatus(); unsubTerminated(); };
   }, [subscribe]);
+
+  // Re-fetch agents on WebSocket reconnect.
+  // Pre-2026-04-30 the page only loaded on mount and trusted live WS events
+  // for updates. If the connection dropped (network blip, sleep/wake, etc.)
+  // any agent:status broadcasts during the disconnect window were missed
+  // and the grid showed stale state — most visibly an agent stuck on 'idle'
+  // when it had actually flipped to 'working' mid-disconnect. Now any
+  // disconnected -> connected transition triggers a fresh fetch.
+  useEffect(() => {
+    const prev = prevConnectionRef.current;
+    prevConnectionRef.current = connectionStatus;
+    if (prev !== 'connected' && connectionStatus === 'connected') {
+      loadAgents().catch(() => { /* best effort */ });
+    }
+  }, [connectionStatus]);
 
   const activeAgents = agents.filter(
     (a) => a.status !== 'terminated' && a.agentType !== 'archived'

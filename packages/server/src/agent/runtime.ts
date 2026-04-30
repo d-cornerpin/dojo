@@ -241,6 +241,42 @@ const stoppedAgents = new Set<string>();
 // AbortControllers for in-flight API calls — aborting these kills the request immediately
 const activeAbortControllers = new Map<string, AbortController>();
 
+// Agents that should treat the next aborted model call as a soft-end so a
+// queued urgent wakeup can fire promptly. Pre-2026-04-30 a PM poke or user
+// message arriving during a busy run got queued in pendingWakeups and didn't
+// fire until the active turn naturally ended — which could be 15 minutes
+// later if the agent was mid long model call. Now an external caller can
+// preempt the current turn for high-priority traffic. The runtime catch
+// path checks this flag (same pattern as stoppedAgents) and ends the loop
+// cleanly without escalating to injury.
+const preemptedAgents = new Set<string>();
+
+// Heartbeat timers — re-broadcast agent:status='working' every 30s while
+// the runAgentLoop is active. See the call site in runAgentLoop for the
+// motivation (clients reconnecting mid-turn don't pick up stale state).
+const statusHeartbeats = new Map<string, ReturnType<typeof setInterval>>();
+const STATUS_HEARTBEAT_INTERVAL_MS = 30_000;
+
+function startStatusHeartbeat(agentId: string): void {
+  // Clear any prior timer for this agent (defensive — shouldn't normally happen)
+  const existing = statusHeartbeats.get(agentId);
+  if (existing) clearInterval(existing);
+  const timer = setInterval(() => {
+    try {
+      broadcast({ type: 'agent:status', agentId, status: 'working' });
+    } catch { /* best effort */ }
+  }, STATUS_HEARTBEAT_INTERVAL_MS);
+  statusHeartbeats.set(agentId, timer);
+}
+
+function stopStatusHeartbeat(agentId: string): void {
+  const timer = statusHeartbeats.get(agentId);
+  if (timer) {
+    clearInterval(timer);
+    statusHeartbeats.delete(agentId);
+  }
+}
+
 /** Stop a running agent — aborts in-flight API call and halts the loop.
  *
  * Sets a `stopMarkerPending` flag on the agent's `config` JSON so the next
@@ -277,6 +313,29 @@ export function stopAgent(agentId: string): void {
   }
 
   logger.info('Agent stop requested', {}, agentId);
+}
+
+/**
+ * Preempt an agent's current turn so a queued urgent wakeup fires now,
+ * not whenever the current run happens to end. Aborts the in-flight model
+ * call (if any) and marks the agent as preempted so the runtime catch
+ * treats the abort as a clean end rather than an error/injury. The next
+ * tick of handleMessage's finally block fires the queued wakeup.
+ *
+ * Returns true if there was an in-flight model call to abort.
+ *
+ * Use sparingly — every preempt costs whatever in-flight model work was
+ * mid-stream. Call it for genuinely urgent traffic only: PM pokes,
+ * Healer alerts, direct user messages.
+ */
+export function preemptAgentForUrgentMessage(agentId: string): boolean {
+  const controller = activeAbortControllers.get(agentId);
+  if (!controller) return false;
+  preemptedAgents.add(agentId);
+  controller.abort();
+  activeAbortControllers.delete(agentId);
+  logger.info('Agent run preempted for urgent wakeup', {}, agentId);
+  return true;
 }
 
 const MAX_TOOL_LOOPS = 75; // Maximum tool call loops per turn (raised from 25 — real work often needs 30-50+ calls)
@@ -489,6 +548,10 @@ class AgentRuntime {
       }
     } finally {
       activeRuns.delete(agentId);
+      // Safety net for any path that broke out of runAgentLoop without
+      // calling stopStatusHeartbeat (e.g., uncaught throw, early return).
+      // Idempotent — no-op if the heartbeat was already stopped.
+      stopStatusHeartbeat(agentId);
 
       // If a message arrived while we were busy, re-trigger the loop.
       // Don't clear turnBoundary yet — clear it AFTER the wakeup starts
@@ -538,6 +601,19 @@ class AgentRuntime {
 
     // Set agent to working
     this.setAgentStatus(agentId, 'working');
+
+    // Heartbeat status re-broadcast every 30s while the loop is active.
+    // Pre-2026-04-30 setAgentStatus('working') only broadcast ONCE at the
+    // start of a turn. If a dashboard client reconnected mid-turn (which
+    // happens on tab focus, network blips, etc.), it missed the original
+    // broadcast and the Agents grid showed stale 'idle' state for the
+    // entire duration of a long turn — making the agent look like it had
+    // stopped working when it was actively running. Heartbeat fixes that
+    // self-correctingly: any reconnected client sees a fresh 'working'
+    // event within 30s. Tracked in module-level statusHeartbeats so the
+    // cleanup is guaranteed even if runAgentLoop throws — handleMessage's
+    // finally block clears it via stopStatusHeartbeat().
+    startStatusHeartbeat(agentId);
 
     let loopCount = 0;
     let consecutiveNoResultTools = 0;
@@ -813,6 +889,17 @@ class AgentRuntime {
           if (stoppedAgents.has(agentId)) {
             stoppedAgents.delete(agentId);
             activeAbortControllers.delete(agentId);
+            this.setAgentStatus(agentId, 'idle');
+            return;
+          }
+          // If agent was preempted for an urgent wakeup, end this run
+          // cleanly — no error, no injury, no retry. The handleMessage
+          // finally block will fire the queued wakeup so the urgent
+          // message is processed promptly.
+          if (preemptedAgents.has(agentId)) {
+            preemptedAgents.delete(agentId);
+            activeAbortControllers.delete(agentId);
+            logger.info('Run ending due to preempt — queued wakeup will fire', {}, agentId);
             this.setAgentStatus(agentId, 'idle');
             return;
           }
@@ -1432,6 +1519,11 @@ class AgentRuntime {
     // state prevents post-closure messages, and the hop counter provides
     // a hard backstop. Agents that need to reply must call send_to_agent
     // explicitly with the correct intent and thread_id.
+
+    // Stop the heartbeat — the loop has ended, the agent is going idle (or
+    // already terminated). handleMessage's finally also calls
+    // stopStatusHeartbeat as a safety net for paths that throw.
+    stopStatusHeartbeat(agentId);
 
     // Set agent back to idle — but only if it wasn't already terminated (e.g., by complete_task)
     const currentAgent = db.prepare('SELECT status, task_id FROM agents WHERE id = ?').get(agentId) as { status: string; task_id: string | null } | undefined;
