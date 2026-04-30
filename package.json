@@ -1,6 +1,6 @@
 {
   "name": "dojo-platform",
-  "version": "1.15.97",
+  "version": "1.15.98",
   "private": true,
   "type": "module",
   "workspaces": [

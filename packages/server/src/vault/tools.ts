@@ -11,6 +11,26 @@ const logger = createLogger('vault-tools');
 
 // ── vault_remember ──
 
+// Soft length budgets per type. Real-world entries that drift well past
+// these are almost always narrative bloat — debugging session retellings,
+// chronological recaps, "root cause was X and the fix was Y" stories.
+// We don't reject (the agent's next call would just retry blindly), but
+// we surface a strongly-worded compression hint in the success message
+// so the *next* vault_remember from this agent runs tighter.
+const TYPE_SOFT_BUDGET_CHARS: Record<string, number> = {
+  fact: 200,
+  preference: 200,
+  note: 250,
+  relationship: 250,
+  decision: 350,
+  procedure: 400,
+  event: 350,
+};
+// Above this, the entry is almost certainly a narrative dump that should
+// have been multiple smaller entries (or no entry at all). We still save
+// it, but the response leads with a hard correction.
+const HARD_BLOAT_CHARS = 1000;
+
 export async function executeVaultRemember(
   agentId: string,
   args: Record<string, unknown>,
@@ -58,7 +78,17 @@ export async function executeVaultRemember(
     if (permanent) flags.push('permanent');
     const flagStr = flags.length > 0 ? ` (${flags.join(', ')})` : '';
 
-    return `Remembered [${type}]${flagStr}: "${entry.content.slice(0, 100)}${entry.content.length > 100 ? '...' : ''}"\nEntry ID: ${entry.id}`;
+    // Length-based push-back. Telegraphic shorthand is the goal; long
+    // entries dilute search results and burn retrieval budget.
+    const budget = TYPE_SOFT_BUDGET_CHARS[type] ?? 300;
+    let warning = '';
+    if (entry.content.length > HARD_BLOAT_CHARS) {
+      warning = `\n\n⚠ This entry is ${entry.content.length} chars — that's narrative bloat, not a memory. Vault entries should be telegraphic shorthand (≤${budget} chars for type "${type}"). Either you're writing a debugging recap that doesn't belong here, or you're storing a story when one fact would suffice. NEXT entries: lead with the noun. Cut every word that doesn't carry information. If you can't say it in ${budget} chars, it's probably not vault-worthy.`;
+    } else if (entry.content.length > budget) {
+      warning = `\n\nNote: this entry is ${entry.content.length} chars; soft target for type "${type}" is ≤${budget}. Compress next time — strip narrative ("initially failed because…", "root cause was…", "the fix was…") and lead with the durable fact.`;
+    }
+
+    return `Remembered [${type}]${flagStr}: "${entry.content.slice(0, 100)}${entry.content.length > 100 ? '...' : ''}"\nEntry ID: ${entry.id}${warning}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('vault_remember failed', { error: msg }, agentId);
