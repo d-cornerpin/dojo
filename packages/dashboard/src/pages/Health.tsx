@@ -7,6 +7,7 @@ import { formatDate } from '../lib/dates';
 import { PercentageBar } from '../components/CostCharts';
 import { ProviderHealth } from '../components/ProviderHealth';
 import { HealerVitals } from '../components/HealerVitals';
+import { WatcherCards } from '../components/WatcherCards';
 
 const formatBytes = (bytes: number): string => {
   if (bytes < 1024) return `${bytes} B`;
@@ -346,6 +347,9 @@ export const Health = () => {
 
       {/* Healer Vitals */}
       <HealerVitals />
+
+      {/* Email & Teams Watchers */}
+      <WatcherCards />
 
       {/* Memory gauge */}
       <div className="glass-card p-4 mb-6">

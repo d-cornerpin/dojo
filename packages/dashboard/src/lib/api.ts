@@ -378,6 +378,35 @@ export const getHealth = async (): Promise<ApiResponse<HealthResponse>> => {
   return request<HealthResponse>('/health');
 };
 
+// Email/Teams watchers — visible health surface for the integrations'
+// background polling. Returned shape mirrors WatcherStatus on the server.
+export interface WatcherStatusDto {
+  name: 'gmail' | 'outlook' | 'teams';
+  running: boolean;
+  enabled: boolean;
+  connected: boolean;
+  pollIntervalMs: number;
+  lastPollAt: string | null;
+  lastPollOk: boolean | null;
+  lastPollError: string | null;
+  consecutiveFailures: number;
+  lastCheckedAt: string | null;
+  totalPolls: number;
+  totalNotifications: number;
+  lastNotifiedAt: string | null;
+  recentNotifications: Array<{ at: string; from: string; subject: string }>;
+}
+
+export interface WatchersResponse {
+  gmail: WatcherStatusDto;
+  outlook: WatcherStatusDto;
+  teams: WatcherStatusDto;
+}
+
+export const getWatcherStatus = async (): Promise<ApiResponse<WatchersResponse>> => {
+  return request<WatchersResponse>('/system/watchers');
+};
+
 export const getLogs = async (
   level?: string,
   component?: string,

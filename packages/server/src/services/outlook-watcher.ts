@@ -11,13 +11,40 @@ import { getPrimaryAgentId } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { msGraphRead } from '../microsoft/client.js';
 import { isMicrosoftEnabled, isMicrosoftConnected, getEnabledMsServices } from '../microsoft/auth.js';
+import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure } from './watcher-status.js';
 
 const logger = createLogger('outlook-watcher');
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-let lastCheckedAt: string | null = null;
 
 const POLL_INTERVAL_MS = 300_000; // Check every 5 minutes (same as Gmail)
+const MAX_RESULTS_PER_POLL = 50;
+
+// ── Status state ──
+const status: WatcherStatus = {
+  name: 'outlook',
+  running: false,
+  enabled: false,
+  connected: false,
+  pollIntervalMs: POLL_INTERVAL_MS,
+  lastPollAt: null,
+  lastPollOk: null,
+  lastPollError: null,
+  consecutiveFailures: 0,
+  lastCheckedAt: null,
+  totalPolls: 0,
+  totalNotifications: 0,
+  lastNotifiedAt: null,
+  recentNotifications: [],
+};
+let alreadyAlerted = false;
+
+export function getOutlookWatcherStatus(): WatcherStatus {
+  status.enabled = isMicrosoftEnabled() && getEnabledMsServices().outlook;
+  status.connected = isMicrosoftConnected();
+  status.running = pollTimer !== null;
+  return { ...status, recentNotifications: [...status.recentNotifications] };
+}
 
 // ── Persistence ──
 
@@ -48,30 +75,69 @@ function saveLastCheckedAt(timestamp: string): void {
 // ── Polling ──
 
 async function pollForNewEmails(): Promise<void> {
-  if (!isMicrosoftEnabled() || !isMicrosoftConnected()) return;
+  status.totalPolls++;
+  const pollStartIso = new Date().toISOString();
+
+  const recordSuccess = (): void => {
+    status.lastPollAt = new Date().toISOString();
+    status.lastPollOk = true;
+    status.lastPollError = null;
+    status.consecutiveFailures = 0;
+    if (alreadyAlerted) {
+      alreadyAlerted = false;
+      logger.info('Outlook watcher recovered — clearing failure alert state');
+    }
+  };
+  const recordFailure = (msg: string): void => {
+    status.lastPollAt = new Date().toISOString();
+    status.lastPollOk = false;
+    status.lastPollError = msg;
+    status.consecutiveFailures++;
+    alreadyAlerted = maybeAlertOnFailure({
+      name: 'outlook', consecutiveFailures: status.consecutiveFailures,
+      lastError: msg, alreadyAlerted,
+    });
+  };
+
+  if (!isMicrosoftEnabled() || !isMicrosoftConnected()) {
+    status.lastPollAt = new Date().toISOString();
+    status.lastPollOk = null;
+    status.lastPollError = !isMicrosoftEnabled() ? 'Microsoft integration disabled in Settings' : 'Microsoft not connected — re-auth in Settings';
+    return;
+  }
 
   const services = getEnabledMsServices();
-  if (!services.outlook) return;
+  if (!services.outlook) {
+    status.lastPollAt = new Date().toISOString();
+    status.lastPollOk = null;
+    status.lastPollError = 'Outlook service disabled in Settings → Microsoft';
+    return;
+  }
 
   try {
-    // Query for unread messages in inbox, newer than lastCheckedAt
-    // Graph API filter: isRead eq false and receivedDateTime gt {iso}
-    const filter = lastCheckedAt
-      ? `isRead eq false and receivedDateTime gt ${lastCheckedAt}`
-      : `isRead eq false`;
-    const endpoint = `me/mailFolders/inbox/messages?$filter=${encodeURIComponent(filter)}&$top=10&$select=id,from,subject,receivedDateTime,bodyPreview,isRead&$orderby=receivedDateTime desc`;
+    // Build filter: all inbox emails since lastCheckedAt. Pre-2026-04-30
+    // we filtered by isRead eq false, but that meant any email the user
+    // opened on their phone before the next poll fired was silently lost.
+    // Now we include all inbox messages and rely on notifiedIds dedup.
+    const filter = status.lastCheckedAt
+      ? `receivedDateTime gt ${status.lastCheckedAt}`
+      : null;
+    const filterClause = filter ? `&$filter=${encodeURIComponent(filter)}` : '';
+    const endpoint = `me/mailFolders/inbox/messages?$top=${MAX_RESULTS_PER_POLL}${filterClause}&$select=id,from,subject,receivedDateTime,bodyPreview,isRead&$orderby=receivedDateTime desc`;
 
     const result = await msGraphRead(endpoint, 'system', 'Outlook Watcher', 'outlook_inbox_poll', { filter });
 
     if (!result.ok) {
-      logger.debug('Outlook poll returned error', { error: result.error });
+      logger.warn('Outlook poll failed', { error: result.error });
+      recordFailure(result.error ?? 'Unknown poll error');
       return;
     }
 
     const data = result.data as { value?: Array<{ id: string; from?: { emailAddress?: { name?: string; address?: string } }; subject?: string; receivedDateTime?: string; bodyPreview?: string }> };
     if (!data?.value || data.value.length === 0) {
-      lastCheckedAt = new Date().toISOString();
-      saveLastCheckedAt(lastCheckedAt);
+      status.lastCheckedAt = pollStartIso;
+      saveLastCheckedAt(pollStartIso);
+      recordSuccess();
       return;
     }
 
@@ -108,10 +174,11 @@ async function pollForNewEmails(): Promise<void> {
       const date = msg.receivedDateTime ?? '';
       const snippet = msg.bodyPreview ?? '';
 
-      // Skip messages from the agent's own account
-      if (ownEmail && fromAddress.toLowerCase() === ownEmail.toLowerCase()) continue;
+      if (ownEmail && fromAddress.toLowerCase() === ownEmail.toLowerCase()) {
+        notifiedIds.add(msg.id);
+        continue;
+      }
 
-      // Inject notification into primary agent's conversation
       const content = `[SOURCE: OUTLOOK NOTIFICATION — not a message from the user, this is an automated alert about a new email that arrived in the Outlook inbox]\n\nFrom: ${from}\nSubject: ${subject}\nDate: ${date}\nPreview: ${snippet}\nMessage ID: ${msg.id}`;
 
       const msgId = uuidv4();
@@ -138,15 +205,17 @@ async function pollForNewEmails(): Promise<void> {
 
       notifiedIds.add(msg.id);
       newCount++;
+      status.totalNotifications++;
+      status.lastNotifiedAt = new Date().toISOString();
+      status.recentNotifications = pushRecent(status.recentNotifications, {
+        at: status.lastNotifiedAt, from, subject,
+      });
 
       logger.info('New Outlook email notification sent to primary agent', {
-        from,
-        subject,
-        messageId: msg.id,
+        from, subject, messageId: msg.id,
       });
     }
 
-    // Trigger the agent runtime if we sent any notifications
     if (newCount > 0) {
       const runtime = getAgentRuntime();
       const summary = newCount === 1
@@ -160,19 +229,19 @@ async function pollForNewEmails(): Promise<void> {
       });
     }
 
-    // Persist notified IDs (keep last 200)
     const recentIds = [...notifiedIds].slice(-200);
     db.prepare(`
       INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
       ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
     `).run(notifiedKey, JSON.stringify(recentIds), JSON.stringify(recentIds));
 
-    lastCheckedAt = new Date().toISOString();
-    saveLastCheckedAt(lastCheckedAt);
+    status.lastCheckedAt = pollStartIso;
+    saveLastCheckedAt(pollStartIso);
+    recordSuccess();
   } catch (err) {
-    logger.error('Outlook poll failed', {
-      error: err instanceof Error ? err.message : String(err),
-    });
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Outlook poll threw', { error: msg });
+    recordFailure(msg);
   }
 }
 
@@ -195,16 +264,15 @@ export function startOutlookWatcher(): void {
     return;
   }
 
-  lastCheckedAt = loadLastCheckedAt();
+  status.lastCheckedAt = loadLastCheckedAt();
 
-  // Seed to now on first run so we don't process the entire inbox
-  if (!lastCheckedAt) {
-    lastCheckedAt = new Date().toISOString();
-    saveLastCheckedAt(lastCheckedAt);
+  if (!status.lastCheckedAt) {
+    status.lastCheckedAt = new Date().toISOString();
+    saveLastCheckedAt(status.lastCheckedAt);
     logger.info('Outlook watcher: first run, seeded lastCheckedAt to now');
   }
 
-  logger.info('Starting Outlook watcher', { pollInterval: POLL_INTERVAL_MS, lastCheckedAt });
+  logger.info('Starting Outlook watcher', { pollInterval: POLL_INTERVAL_MS, lastCheckedAt: status.lastCheckedAt });
 
   pollTimer = setInterval(() => {
     pollForNewEmails().catch(err => {
@@ -214,9 +282,8 @@ export function startOutlookWatcher(): void {
     });
   }, POLL_INTERVAL_MS);
 
-  // Initial poll after 10s delay
   setTimeout(() => {
-    pollForNewEmails().catch(() => {});
+    pollForNewEmails().catch(() => { /* logged inside */ });
   }, 10_000);
 }
 

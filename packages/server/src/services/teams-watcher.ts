@@ -17,8 +17,69 @@ import { getPrimaryAgentId } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { msGraphRead } from '../microsoft/client.js';
 import { isMicrosoftEnabled, isMicrosoftConnected, getEnabledMsServices } from '../microsoft/auth.js';
+import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure } from './watcher-status.js';
 
 const logger = createLogger('teams-watcher');
+
+// ── Status state ──
+const status: WatcherStatus = {
+  name: 'teams',
+  running: false,
+  enabled: false,
+  connected: false,
+  pollIntervalMs: 15_000, // overwritten below from POLL_INTERVAL_MS
+  lastPollAt: null,
+  lastPollOk: null,
+  lastPollError: null,
+  consecutiveFailures: 0,
+  lastCheckedAt: null,
+  totalPolls: 0,
+  totalNotifications: 0,
+  lastNotifiedAt: null,
+  recentNotifications: [],
+};
+let alreadyAlerted = false;
+
+export function getTeamsWatcherStatus(): WatcherStatus {
+  status.enabled = isMicrosoftEnabled() && getEnabledMsServices().teams;
+  status.connected = isMicrosoftConnected();
+  status.running = pollTimer !== null;
+  return { ...status, recentNotifications: [...status.recentNotifications] };
+}
+
+function recordPollSuccess(): void {
+  status.lastPollAt = new Date().toISOString();
+  status.lastPollOk = true;
+  status.lastPollError = null;
+  status.consecutiveFailures = 0;
+  if (alreadyAlerted) {
+    alreadyAlerted = false;
+    logger.info('Teams watcher recovered — clearing failure alert state');
+  }
+}
+
+function recordPollFailure(msg: string): void {
+  status.lastPollAt = new Date().toISOString();
+  status.lastPollOk = false;
+  status.lastPollError = msg;
+  status.consecutiveFailures++;
+  alreadyAlerted = maybeAlertOnFailure({
+    name: 'teams', consecutiveFailures: status.consecutiveFailures,
+    lastError: msg, alreadyAlerted,
+  });
+}
+
+function recordPollSkip(reason: string): void {
+  status.lastPollAt = new Date().toISOString();
+  status.lastPollOk = null;
+  status.lastPollError = reason;
+}
+
+function recordNotification(n: RecentNotification): void {
+  status.totalNotifications++;
+  status.lastNotifiedAt = n.at;
+  status.recentNotifications = pushRecent(status.recentNotifications, n);
+}
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let ownUserId: string | null = null;
@@ -80,15 +141,23 @@ async function fetchChatMembers(chatId: string): Promise<void> {
 // ── Main poll ──
 
 async function pollForNewMessages(): Promise<void> {
-  if (!isMicrosoftEnabled() || !isMicrosoftConnected()) return;
+  status.totalPolls++;
+  if (!isMicrosoftEnabled() || !isMicrosoftConnected()) {
+    recordPollSkip(!isMicrosoftEnabled() ? 'Microsoft integration disabled in Settings' : 'Microsoft not connected — re-auth in Settings');
+    return;
+  }
 
   const services = getEnabledMsServices();
-  if (!services.teams) return;
+  if (!services.teams) {
+    recordPollSkip('Teams service disabled in Settings → Microsoft');
+    return;
+  }
 
   try {
     const myId = await getOwnUserId();
     if (!myId) {
-      logger.debug('Teams watcher: could not determine own user ID, skipping poll');
+      logger.warn('Teams watcher: could not determine own user ID, skipping poll');
+      recordPollFailure('Could not determine own user ID');
       return;
     }
 
@@ -98,7 +167,8 @@ async function pollForNewMessages(): Promise<void> {
       'system', 'Teams Watcher', 'teams_watcher_list_chats', {},
     );
     if (!chatsResult.ok) {
-      logger.debug('Teams watcher: chat list error', { error: chatsResult.error });
+      logger.warn('Teams watcher: chat list error', { error: chatsResult.error });
+      recordPollFailure(chatsResult.error ?? 'Chat list error');
       return;
     }
 
@@ -222,6 +292,11 @@ async function pollForNewMessages(): Promise<void> {
 
         notifiedIds.add(msg.id);
         totalNewCount++;
+        recordNotification({
+          at: new Date().toISOString(),
+          from: senderLabel,
+          subject: chat.topic ?? `${chat.chatType} chat`,
+        });
 
         logger.info('New Teams message notification sent to primary agent', {
           chatId: chat.id,
@@ -255,10 +330,11 @@ async function pollForNewMessages(): Promise<void> {
       `).run(notifiedKey, JSON.stringify(recentIds), JSON.stringify(recentIds));
     }
 
+    recordPollSuccess();
   } catch (err) {
-    logger.error('Teams poll cycle failed', {
-      error: err instanceof Error ? err.message : String(err),
-    });
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Teams poll cycle failed', { error: msg });
+    recordPollFailure(msg);
   }
 }
 

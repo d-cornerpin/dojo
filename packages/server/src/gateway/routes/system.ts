@@ -52,6 +52,34 @@ systemRouter.get('/system/logs', (c) => {
   return c.json({ ok: true, data: entries });
 });
 
+// GET /system/watchers — status of Gmail, Outlook, and Teams watchers.
+// Pre-2026-04-30 watcher state was completely invisible — silent failures
+// on a stale OAuth token or broken poll left the user with no signal that
+// new emails weren't being delivered. This endpoint exposes everything
+// the dashboard Health page needs to diagnose at a glance.
+systemRouter.get('/system/watchers', async (c) => {
+  try {
+    const [{ getGmailWatcherStatus }, { getOutlookWatcherStatus }, { getTeamsWatcherStatus }] = await Promise.all([
+      import('../../services/gmail-watcher.js'),
+      import('../../services/outlook-watcher.js'),
+      import('../../services/teams-watcher.js'),
+    ]);
+    return c.json({
+      ok: true,
+      data: {
+        gmail: getGmailWatcherStatus(),
+        outlook: getOutlookWatcherStatus(),
+        teams: getTeamsWatcherStatus(),
+      },
+    });
+  } catch (err) {
+    return c.json({
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    }, 500);
+  }
+});
+
 // GET /system/time — current server time and timezone
 systemRouter.get('/system/time', (c) => {
   const now = new Date();
