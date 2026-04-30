@@ -7,9 +7,64 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { estimateTokens } from '../memory/store.js';
 import { archiveConversation } from './store.js';
+import { isSystemServiceAgent, getSystemServiceAgentIds } from '../config/platform.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('vault-archive');
+
+/**
+ * Service agents (Dreamer, Trainer, Healer, PM, Imaginer) have conversation
+ * histories that are pure platform mechanics: system prompts, cycle
+ * messages, recovery pokes, image-gen requests. None of it is memory-
+ * worthy, and feeding it back through the Dreamer is a recursive
+ * token-burn loop. Always skip.
+ *
+ * Returns true if the archive should be silently dropped. Caller must
+ * treat the return-null path the same way it does for dreamer-ignored
+ * agents.
+ */
+function shouldSkipServiceAgent(agentId: string): boolean {
+  if (isSystemServiceAgent(agentId)) {
+    logger.debug('Skipping archive: service agent (Dreamer/Trainer/Healer/PM/Imaginer)', { agentId });
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Idempotent cleanup that nukes any unprocessed archives belonging to a
+ * service agent. Pre-2026-04-30 the Dreamer/PM/Healer/etc. were getting
+ * archived alongside everything else. The user repeatedly discarded the
+ * backlog only to see fresh archives reappear because each service-agent
+ * compaction recreated one. This function purges the residue from the
+ * existing DB on server startup; the source-side `shouldSkipServiceAgent`
+ * checks above prevent any new ones from being created.
+ *
+ * Returns the number of archives deleted. Safe to call repeatedly.
+ */
+export function purgeServiceAgentArchives(): number {
+  try {
+    const db = getDb();
+    const ids = getSystemServiceAgentIds();
+    if (ids.length === 0) return 0;
+    const placeholders = ids.map(() => '?').join(', ');
+    const res = db.prepare(
+      `DELETE FROM vault_conversations WHERE is_processed = 0 AND agent_id IN (${placeholders})`,
+    ).run(...ids);
+    if (res.changes > 0) {
+      logger.info('Purged unprocessed service-agent archives from backlog', {
+        deleted: res.changes,
+        agentIds: ids,
+      });
+    }
+    return res.changes;
+  } catch (err) {
+    logger.warn('purgeServiceAgentArchives failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return 0;
+  }
+}
 
 /**
  * Check whether the Dreamer should ignore this agent. Returns true if the
@@ -53,6 +108,11 @@ export function archiveAgentConversation(agentId: string): string | null {
     logger.debug('Agent on Dreamer ignore list — skipping archive', {}, agentId);
     return null;
   }
+
+  // Skip service agents (Dreamer, Trainer, Healer, PM, Imaginer). Their
+  // histories are pure platform plumbing — see the comment on
+  // shouldSkipServiceAgent for the recursion-loop rationale.
+  if (shouldSkipServiceAgent(agentId)) return null;
 
   // Check if this agent already has an unprocessed archive — avoid duplicates
   const existing = db.prepare(
@@ -106,6 +166,13 @@ export function archiveMessagesBeforeCompaction(
     logger.debug('Agent on Dreamer ignore list — skipping pre-compaction archive', {}, agentId);
     return null;
   }
+
+  // Skip service agents — see shouldSkipServiceAgent for rationale. This is
+  // the place that was producing the giant Dreamer-self archives the user
+  // saw: the Dreamer's compaction was archiving its own conversation
+  // (containing its SOUL.md + every old cycle message + every full
+  // 3000+ archive enumeration), which then re-entered the Dreamer queue.
+  if (shouldSkipServiceAgent(agentId)) return null;
 
   try {
     // Get agent name for attribution

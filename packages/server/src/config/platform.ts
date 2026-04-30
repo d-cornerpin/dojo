@@ -171,3 +171,33 @@ export function isDreamerAgent(agentId: string): boolean {
 export function isPermanentAgent(agentId: string): boolean {
   return isPrimaryAgent(agentId) || isPMAgent(agentId) || isTrainerAgent(agentId) || isHealerAgent(agentId) || isDreamerAgent(agentId);
 }
+
+/**
+ * Service agents whose conversations are pure platform mechanics — system
+ * prompts, cycle messages, recovery pokes, image-gen requests — and contain
+ * zero memory-worthy content. Their archives must NEVER enter the Dreamer
+ * pipeline; doing so is a recursive token-burn loop (the Dreamer was being
+ * fed its own past cycle messages, each of which already enumerated all
+ * unprocessed archives… growing the next cycle's input every time).
+ *
+ * The primary agent is intentionally NOT in this set — primary chat is
+ * exactly the user content the Dreamer should curate.
+ */
+export function isSystemServiceAgent(agentId: string): boolean {
+  return isDreamerAgent(agentId)
+    || isTrainerAgent(agentId)
+    || isHealerAgent(agentId)
+    || isPMAgent(agentId)
+    || isImaginerAgent(agentId);
+}
+
+/** Resolved IDs of every service agent. Used by bulk-cleanup queries. */
+export function getSystemServiceAgentIds(): string[] {
+  return [
+    getDreamerAgentId(),
+    getTrainerAgentId(),
+    getHealerAgentId(),
+    getPMAgentId(),
+    getImaginerAgentId(),
+  ];
+}

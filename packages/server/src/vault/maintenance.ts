@@ -220,6 +220,20 @@ const PLATFORM_NOISE_PATTERNS: RegExp[] = [
   /^Understood, I have reviewed/i, // synthetic ack messages from the assembler
   /^Understood, I know what I was working on/i,
   /^Understood, I will continue working on my active tasks/i,
+  // Dreamer cycle messages and embedded SOUL prompts — these were the
+  // single biggest source of recursive bloat (the Dreamer's own past
+  // cycle messages and SOUL.md were being re-archived and re-fed). We
+  // now block service agents from archiving entirely (see archive.ts),
+  // but if an old archive somehow contains a relayed cycle message or
+  // SOUL excerpt, drop it here too.
+  /^\s*═══ DREAM CYCLE ═══/,
+  /^\s*═══ COMPRESSED HISTORY/,
+  /^\s*Vault state: \d+ entries/,
+  /^\s*Process the archives below/i,
+  /^\s*Full archive list \(\d+ total\)/i,
+  /^\s*This is batch \d+ of \d+/i,
+  /^\s*# Identity\s*$/m, // start of any SOUL.md prompt embedded in a message
+  /^\s*You are the (Dreamer|Trainer|Healer|PM|Imaginer)\b/i,
 ];
 
 // Conversational filler — short standalone acknowledgments. Drop the whole

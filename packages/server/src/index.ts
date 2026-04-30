@@ -192,6 +192,18 @@ async function main(): Promise<void> {
           error: err instanceof Error ? err.message : String(err),
         });
       }
+
+      // One-shot purge of service-agent archives still sitting in the
+      // backlog from before service agents were excluded from archiving.
+      // Idempotent — runs on every boot but is a no-op once clean.
+      try {
+        const { purgeServiceAgentArchives } = await import('./vault/archive.js');
+        purgeServiceAgentArchives();
+      } catch (err) {
+        logger.warn('Service-agent archive purge failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 
