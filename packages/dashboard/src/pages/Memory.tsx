@@ -274,7 +274,7 @@ export const Memory = () => {
       </div>
 
       {/* Stats bar (vault tab only) */}
-      {mainTab === 'vault' && <VaultStats stats={vaultStats} loading={vaultLoading} />}
+      {mainTab === 'vault' && <VaultStats stats={vaultStats} loading={vaultLoading} onArchivesDiscarded={loadVault} />}
 
       {/* Main content area */}
       <div className="flex-1 flex min-h-0">

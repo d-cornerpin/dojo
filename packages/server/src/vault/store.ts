@@ -564,6 +564,44 @@ export function deleteConversation(id: string): boolean {
   return res.changes > 0;
 }
 
+/**
+ * Bulk delete unprocessed conversation archives matching the given filter.
+ * Surfaces from the dashboard as the "nuke the backlog" button when the
+ * Dreamer's queue has gotten out of hand. Only touches is_processed = 0
+ * rows so we never accidentally remove archives that have already had
+ * their vault entries extracted (that would orphan source-tracking).
+ *
+ * Filter options:
+ *   - agentId: only this agent's archives
+ *   - olderThanIso: only archives created before this timestamp
+ *   - all: discard every unprocessed archive
+ * If no filter is provided, returns 0 (refuses to nuke without intent).
+ */
+export function bulkDiscardUnprocessedConversations(filter: {
+  agentId?: string;
+  olderThanIso?: string;
+  all?: boolean;
+}): number {
+  const db = getDb();
+  const conds: string[] = ['is_processed = 0'];
+  const params: unknown[] = [];
+
+  if (filter.agentId) {
+    conds.push('agent_id = ?');
+    params.push(filter.agentId);
+  }
+  if (filter.olderThanIso) {
+    conds.push('created_at < ?');
+    params.push(filter.olderThanIso);
+  }
+  // If no narrowing filter is given AND `all` isn't explicitly set, refuse.
+  if (!filter.agentId && !filter.olderThanIso && !filter.all) return 0;
+
+  const sql = `DELETE FROM vault_conversations WHERE ${conds.join(' AND ')}`;
+  const res = db.prepare(sql).run(...params);
+  return res.changes;
+}
+
 export function getConversation(id: string): VaultConversation | null {
   const db = getDb();
   const row = db.prepare('SELECT * FROM vault_conversations WHERE id = ?').get(id) as VaultConversationRow | undefined;

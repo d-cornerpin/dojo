@@ -17,6 +17,7 @@ import {
   getVaultStats,
   getDreamReports,
   getLatestDreamReport,
+  bulkDiscardUnprocessedConversations,
 } from '../../vault/store.js';
 import { runDreamingCycle, getDreamingConfig, setDreamingConfig } from '../../vault/maintenance.js';
 import { extractFromConversation, storeExtractedMemories } from '../../vault/extraction.js';
@@ -123,6 +124,34 @@ vaultRouter.get('/conversations/:id', (c) => {
   const conv = getConversation(c.req.param('id'));
   if (!conv) return c.json({ ok: false, error: 'Conversation not found' }, 404);
   return c.json({ ok: true, data: conv });
+});
+
+// Bulk-discard unprocessed conversation archives. Provides a fast path
+// for users who have built up a backlog of junk archives and want to
+// reset the Dreamer queue without waiting for it to grind through them.
+// Body shape (one of the three required to act):
+//   { agentId: string }      — discard all unprocessed archives from this agent
+//   { olderThanDays: number } — discard archives older than N days
+//   { all: true }             — nuke every unprocessed archive
+vaultRouter.post('/conversations/discard', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const filter: { agentId?: string; olderThanIso?: string; all?: boolean } = {};
+  if (typeof body.agentId === 'string' && body.agentId.length > 0) {
+    filter.agentId = body.agentId;
+  }
+  if (typeof body.olderThanDays === 'number' && body.olderThanDays > 0) {
+    const cutoff = new Date(Date.now() - body.olderThanDays * 24 * 60 * 60 * 1000);
+    filter.olderThanIso = cutoff.toISOString();
+  }
+  if (body.all === true) {
+    filter.all = true;
+  }
+  if (!filter.agentId && !filter.olderThanIso && !filter.all) {
+    return c.json({ ok: false, error: 'Specify one of: agentId, olderThanDays, or all=true' }, 400);
+  }
+  const deleted = bulkDiscardUnprocessedConversations(filter);
+  logger.info('Bulk-discarded unprocessed archives', { deleted, filter });
+  return c.json({ ok: true, data: { deleted } });
 });
 
 vaultRouter.post('/conversations/:id/process', async (c) => {

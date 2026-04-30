@@ -26,6 +26,7 @@ import {
   getConversation,
   getUnprocessedConversations,
   getVaultStats,
+  createDreamReport,
   type VaultConversation,
 } from './store.js';
 import { MAX_PINNED_ENTRIES } from './retrieval.js';
@@ -88,7 +89,7 @@ function getDefaultDreamModel(): string | null {
 
 // ── Engine-Level Maintenance (no LLM needed) ──
 
-function runEngineMaintenance(): { pruned: number; decayed: number } {
+function runEngineMaintenance(): { pruned: number; decayed: number; unpinned: number; agedOut: number } {
   const db = getDb();
   let pruned = 0;
 
@@ -114,10 +115,45 @@ function runEngineMaintenance(): { pruned: number; decayed: number } {
       AND created_at < ?
   `).run(thirtyDaysAgo, thirtyDaysAgo);
 
+  // ── Pinning audit ──
+  // Auto-unpin entries that have been pinned for 60+ days but haven't been
+  // retrieved in the last 60 days. Pinning is supposed to mean "I keep
+  // reaching for this" — if the agent's not reaching for it, it shouldn't
+  // be earning premium context space. Permanent entries are exempt
+  // (USER.md-grade facts that should always be top-of-context).
+  const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+  const unpinResult = db.prepare(`
+    UPDATE vault_entries SET is_pinned = 0, updated_at = datetime('now')
+    WHERE is_pinned = 1 AND is_permanent = 0 AND is_obsolete = 0
+      AND created_at < ?
+      AND (last_retrieved_at IS NULL OR last_retrieved_at < ?)
+  `).run(sixtyDaysAgo, sixtyDaysAgo);
+
+  // ── Age-out for cold entries ──
+  // Mark obsolete: not pinned, not permanent, never retrieved, older than
+  // 180 days. The vault should not be a dumping ground — entries that the
+  // agent never reached for in 6 months are noise. They stay in the DB
+  // (is_obsolete = 1) so they're still searchable via memory_grep if a
+  // future agent needs them, but they don't burn vault retrieval slots.
+  const oneEightyDaysAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
+  const agedOutResult = db.prepare(`
+    UPDATE vault_entries SET is_obsolete = 1, updated_at = datetime('now')
+    WHERE is_obsolete = 0 AND is_pinned = 0 AND is_permanent = 0
+      AND retrieval_count = 0
+      AND created_at < ?
+  `).run(oneEightyDaysAgo);
+
   if (pruned > 0) logger.info(`Engine maintenance: pruned ${pruned} low-value vault entries`);
   if (decayResult.changes > 0) logger.info(`Engine maintenance: decayed confidence on ${decayResult.changes} entries`);
+  if (unpinResult.changes > 0) logger.info(`Engine maintenance: auto-unpinned ${unpinResult.changes} stale entries (pinned but not retrieved in 60 days)`);
+  if (agedOutResult.changes > 0) logger.info(`Engine maintenance: aged out ${agedOutResult.changes} cold entries (never retrieved in 180 days)`);
 
-  return { pruned, decayed: decayResult.changes };
+  return {
+    pruned,
+    decayed: decayResult.changes,
+    unpinned: unpinResult.changes,
+    agedOut: agedOutResult.changes,
+  };
 }
 
 // Conservative token estimate: 3 chars/token. The /4 heuristic underestimates
@@ -142,13 +178,143 @@ const PROCESSING_GROWTH_FACTOR = 1.5;
 // Cap any single message inside an archive (most often a huge tool_result with
 // a file dump or scraped page) so one bloated row can't blow the batch budget.
 // The Dreamer doesn't need the full payload — the gist suffices for knowledge
-// extraction. 8K chars ≈ 2.5K tokens, plenty for context.
-const MAX_MESSAGE_CHARS = 8000;
+// extraction.
+const MAX_MESSAGE_CHARS = 4000;
+// tool_result blocks specifically are noise for memory extraction (file dumps,
+// HTML, vault search results). Truncate them harder than prose messages.
+const MAX_TOOL_RESULT_CHARS = 800;
 
 // Hard ceiling on per-batch text regardless of context window — never exceed
 // 35% of the model's window for raw archive text. Leaves 65% for system
 // prompt, tools, and turn-by-turn tool-call accumulation.
 const BATCH_BUDGET_CAP_RATIO = 0.35;
+
+// ── Engine-side noise stripping ──
+//
+// The vault Dreamer was burning millions of tokens because the raw archives
+// it processed were stuffed with platform mechanics (system nudges, session
+// markers, healer pokes, tracker reorientation prompts, [SOURCE: AGENT
+// MESSAGE FROM …] envelopes) and giant tool_result payloads (file_read
+// dumps, web_fetch HTML, vault_search hit lists). None of that is
+// memory-worthy. We pre-process archives in pure code before they reach
+// the model, slashing the token cost of every cycle while keeping the
+// signal — what the agent and user actually said and decided.
+
+// Patterns to drop entirely: any user/assistant/system message whose
+// content matches is omitted from the formatted archive.
+const PLATFORM_NOISE_PATTERNS: RegExp[] = [
+  /^\s*\[CONTINUITY BRIEF/i,
+  /^\s*\[New Session\]/i,
+  /^\s*── New Session ──/,
+  /^\s*\[System: /i,
+  /^\s*\[SOURCE: SYSTEM/i,
+  /^\s*\[SOURCE: HEALER/i,
+  /^\s*\[SOURCE: SCHEDULER/i,
+  /^\s*\[SOURCE: SUB-AGENT COMPLETION/i,
+  /^\s*\[SOURCE: TRACKER TASK/i,
+  /^\s*\[SOURCE: PM AGENT POKE/i,
+  /^\s*\[SOURCE: AGENT HEALTH ALERT/i,
+  /^\s*\[Context note: the user just hit the Stop button/i,
+  /^\s*Tracker review --/i,
+  /^I got stuck on that/i,
+  /^I'm sorry — I'm having trouble/i,
+  /^Understood, I have reviewed/i, // synthetic ack messages from the assembler
+  /^Understood, I know what I was working on/i,
+  /^Understood, I will continue working on my active tasks/i,
+];
+
+// Conversational filler — short standalone acknowledgments. Drop the whole
+// message if its trimmed content matches one of these patterns. We only
+// drop when the message is short enough that the filler IS the message.
+const FILLER_PATTERNS: RegExp[] = [
+  /^(sure|got it|okay|ok|alright|understood|will do|on it|working on it now?|let me think( about (this|that))?|let me check|one moment|hmm|hmmm|right|yep|yes|no problem|sounds good|makes sense|of course)[.!]?$/i,
+  /^(thanks|thank you)[.!]?$/i,
+];
+
+function isPlatformNoise(content: string): boolean {
+  for (const pat of PLATFORM_NOISE_PATTERNS) {
+    if (pat.test(content)) return true;
+  }
+  return false;
+}
+
+function isFiller(content: string): boolean {
+  const trimmed = content.trim();
+  if (trimmed.length === 0) return true;
+  if (trimmed.length > 60) return false; // prose isn't filler
+  for (const pat of FILLER_PATTERNS) {
+    if (pat.test(trimmed)) return true;
+  }
+  return false;
+}
+
+// Compress a tool_use / tool_result payload into a one-liner. The model
+// doesn't need the full file content / HTML / search hits — it needs to
+// know what the agent did. "[file_read /path → 2,341 chars, 'export function …']"
+// preserves the action and a tiny shape hint at ~95% token savings.
+function summarizeToolBlock(block: Record<string, unknown>): string | null {
+  if (block.type === 'tool_use') {
+    const name = String(block.name ?? 'tool');
+    const input = block.input as Record<string, unknown> | undefined;
+    const summary = summarizeToolInput(name, input);
+    return summary ? `[tool_use ${name}${summary}]` : `[tool_use ${name}]`;
+  }
+  if (block.type === 'tool_result') {
+    const raw = typeof block.content === 'string'
+      ? block.content
+      : Array.isArray(block.content)
+      ? (block.content as Array<{ type?: string; text?: string }>)
+          .map(b => (b.type === 'text' ? (b.text ?? '') : `[${b.type ?? 'block'}]`))
+          .filter(Boolean)
+          .join(' ')
+      : '';
+    const isError = block.is_error === true;
+    if (raw.length === 0) return `[tool_result${isError ? ' ERROR' : ''} (empty)]`;
+    const oneLine = raw.replace(/\s+/g, ' ').trim();
+    const head = oneLine.slice(0, MAX_TOOL_RESULT_CHARS);
+    const note = oneLine.length > MAX_TOOL_RESULT_CHARS ? `…+${oneLine.length - MAX_TOOL_RESULT_CHARS}c` : '';
+    return `[tool_result${isError ? ' ERROR' : ''} ${head}${note}]`;
+  }
+  if (block.type === 'image') return '[image]';
+  if (block.type === 'document') return '[document]';
+  return null;
+}
+
+function summarizeToolInput(name: string, input: Record<string, unknown> | undefined): string {
+  if (!input) return '';
+  const fields: string[] = [];
+  for (const key of ['path', 'file_path', 'url', 'query', 'agent', 'agent_id', 'task_id', 'name', 'shape_type', 'presentation_id', 'image_url', 'drive_file_id']) {
+    if (key in input && typeof input[key] === 'string') {
+      const val = input[key] as string;
+      const trimmed = val.length > 80 ? val.slice(0, 80) + '…' : val;
+      fields.push(`${key}=${JSON.stringify(trimmed)}`);
+      if (fields.length >= 2) break;
+    }
+  }
+  return fields.length > 0 ? ` ${fields.join(' ')}` : '';
+}
+
+// Some assistant content is a JSON-encoded array of content blocks
+// (e.g. [{ type: 'text', text: '…' }, { type: 'tool_use', … }]).
+// Summarize each block individually instead of feeding the raw JSON.
+function compressContentBlocks(content: string): string {
+  if (!content) return content;
+  const trimmed = content.trim();
+  if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return content;
+  let parsed: unknown;
+  try { parsed = JSON.parse(trimmed); } catch { return content; }
+  if (!Array.isArray(parsed)) return content;
+  const parts: string[] = [];
+  for (const blk of parsed as Array<Record<string, unknown>>) {
+    if (blk?.type === 'text' && typeof blk.text === 'string') {
+      parts.push(blk.text);
+    } else {
+      const summary = summarizeToolBlock(blk);
+      if (summary) parts.push(summary);
+    }
+  }
+  return parts.join('\n');
+}
 
 function truncateMessageContent(content: string): string {
   if (content.length <= MAX_MESSAGE_CHARS) return content;
@@ -171,6 +337,37 @@ function parseArchiveMessages(conv: VaultConversation): ParsedArchiveMessage[] |
   }
 }
 
+// Collapse runs of consecutive same-role messages into one (e.g., 5 tool
+// messages in a row → one "[5 tool results: …]" line). Reduces structural
+// noise without losing information.
+function preprocessMessages(messages: ParsedArchiveMessage[]): ParsedArchiveMessage[] {
+  const filtered: ParsedArchiveMessage[] = [];
+  for (const m of messages) {
+    const role = (m.role ?? '').toLowerCase();
+    let content = m.content ?? '';
+
+    // Tool messages: their content is always a JSON-encoded array of
+    // tool_result blocks. Compress them.
+    if (role === 'tool') {
+      content = compressContentBlocks(content);
+    } else if (role === 'assistant') {
+      // Assistant messages may be plain text OR a JSON content-block array
+      // when the turn included tool_use blocks. Compress either way.
+      content = compressContentBlocks(content);
+    }
+
+    // Drop platform noise messages outright.
+    if (isPlatformNoise(content)) continue;
+    // Drop conversational filler outright.
+    if ((role === 'assistant' || role === 'user') && isFiller(content)) continue;
+    // Drop empty messages.
+    if (content.trim().length === 0) continue;
+
+    filtered.push({ role: m.role, content, createdAt: m.createdAt });
+  }
+  return filtered;
+}
+
 function formatArchiveMessage(m: ParsedArchiveMessage): string {
   const role = (m.role ?? 'unknown').toUpperCase();
   const ts = m.createdAt ? ` [${m.createdAt}]` : '';
@@ -189,10 +386,49 @@ ${body}
 }
 
 function formatArchive(conv: VaultConversation): string | null {
-  const messages = parseArchiveMessages(conv);
-  if (!messages) return null;
+  const raw = parseArchiveMessages(conv);
+  if (!raw) return null;
+  const messages = preprocessMessages(raw);
+  if (messages.length === 0) return null;
   const body = messages.map(formatArchiveMessage).join('\n\n');
   return wrapArchive(conv, body);
+}
+
+// ── Triviality check (engine-side auto-skip) ──
+//
+// Decides whether an archive can be discarded without ever calling the
+// Dreamer. "Trivial" = nothing here is worth a model token. Returns a
+// reason string when the archive should be skipped, or null to keep it.
+//
+// Conservative on purpose: better to feed an extra archive through the
+// model than to throw away something the user actually wanted remembered.
+function classifyTrivial(conv: VaultConversation): string | null {
+  const raw = parseArchiveMessages(conv);
+  if (!raw || raw.length === 0) return 'unparseable or empty';
+
+  const cleaned = preprocessMessages(raw);
+  if (cleaned.length === 0) return 'no content after platform-noise strip';
+
+  // Count what's left: prose vs. tool noise.
+  let proseChars = 0;
+  let assistantText = 0;
+  let userText = 0;
+  for (const m of cleaned) {
+    const role = (m.role ?? '').toLowerCase();
+    const content = m.content ?? '';
+    // Skip tool-only content (already collapsed to one-liners).
+    if (role === 'tool') continue;
+    proseChars += content.length;
+    if (role === 'assistant') assistantText += content.length;
+    if (role === 'user') userText += content.length;
+  }
+
+  // Tiny conversations: not enough content to be worth extracting from.
+  if (cleaned.length < 4 && proseChars < 400) return `tiny (${cleaned.length} msgs, ${proseChars} prose chars)`;
+  if (proseChars < 200) return `low signal (${proseChars} prose chars after compression)`;
+  if (assistantText < 100 && userText < 100) return 'no substantive prose from either side';
+
+  return null;
 }
 
 function estimateTokens(text: string): number {
@@ -387,10 +623,22 @@ function buildDreamerCycleMessage(
     ? `\n\nThis is batch ${batchIndex + 1} of ${totalBatches}. Focus on these archives only. The remaining batches will be delivered after you call complete_task.`
     : '';
 
+  // Cap the archive overview list. Pre-2026-04-30 we listed every
+  // unprocessed archive (hundreds or thousands of lines) on every cycle
+  // message, burning tens of thousands of tokens before the Dreamer even
+  // saw the actual archive content. The Dreamer doesn't need a full
+  // manifest — a count + a sample is enough to know the queue depth.
+  const ARCHIVE_LIST_PREVIEW = 25;
   const archiveSummary = allUnprocessed.length > 0
-    ? `\n\nFull archive list (${allUnprocessed.length} total):\n` + allUnprocessed.map((conv, i) =>
-        `  ${i + 1}. ${conv.agentName ?? conv.agentId} — ${conv.messageCount} messages (${conv.earliestAt} to ${conv.latestAt})`
-      ).join('\n')
+    ? (() => {
+        const preview = allUnprocessed.slice(0, ARCHIVE_LIST_PREVIEW).map((conv, i) =>
+          `  ${i + 1}. ${conv.agentName ?? conv.agentId} — ${conv.messageCount} messages (${conv.earliestAt} to ${conv.latestAt})`,
+        ).join('\n');
+        const overflow = allUnprocessed.length > ARCHIVE_LIST_PREVIEW
+          ? `\n  …and ${allUnprocessed.length - ARCHIVE_LIST_PREVIEW} more (oldest first; not enumerated to save tokens)`
+          : '';
+        return `\n\nQueue depth: ${allUnprocessed.length} archive(s) total. First ${Math.min(ARCHIVE_LIST_PREVIEW, allUnprocessed.length)}:\n${preview}${overflow}`;
+      })()
     : '';
 
   return `═══ DREAM CYCLE ═══
@@ -482,6 +730,34 @@ export function ensureDreamerAgentRunning(): void {
     db.prepare(
       "UPDATE agents SET tools_policy = ?, permissions = ?, updated_at = datetime('now') WHERE id = ?",
     ).run(DREAMER_TOOLS_POLICY, dreamerPermissions, dreamerId);
+
+    // Refresh the system prompt from the (potentially updated) DREAMER-SOUL.md
+    // template. Pre-2026-04-30 the prompt was inserted once on agent creation
+    // and never updated, so changes to the soul template only took effect
+    // when the Dreamer was destroyed and recreated. Now we update the
+    // earliest system message on every check so a SOUL.md rewrite (like
+    // the curator-bias overhaul in v1.15.94) flows through immediately.
+    try {
+      const freshPrompt = loadDreamerSoulPrompt();
+      const earliestSystem = db.prepare(
+        "SELECT id, content FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY created_at ASC, rowid ASC LIMIT 1"
+      ).get(dreamerId) as { id: string; content: string } | undefined;
+      if (earliestSystem) {
+        if (earliestSystem.content !== freshPrompt) {
+          db.prepare("UPDATE messages SET content = ? WHERE id = ?").run(freshPrompt, earliestSystem.id);
+          logger.info('Dreamer SOUL.md refreshed in messages table', { dreamerId });
+        }
+      } else {
+        // No system message yet — insert one.
+        db.prepare(
+          "INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))"
+        ).run(uuidv4(), dreamerId, freshPrompt);
+        logger.info('Dreamer SOUL.md inserted (was missing)', { dreamerId });
+      }
+    } catch (err) {
+      logger.warn('Failed to refresh Dreamer SOUL.md', { error: err instanceof Error ? err.message : String(err) });
+    }
+
     return;
   }
 
@@ -620,10 +896,37 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
   logger.info('Engine maintenance complete', maintenance);
 
   // Step 2: Check for unprocessed archives
-  const unprocessed = getUnprocessedConversations();
-  if (unprocessed.length === 0) {
+  const allUnprocessed = getUnprocessedConversations();
+  if (allUnprocessed.length === 0) {
     logger.info('No unprocessed conversation archives, skipping Dreamer spawn');
     broadcast({ type: 'dream:complete', data: { skipped: true, reason: 'no_archives', ...maintenance } } as never);
+    return { dreamerId: null };
+  }
+
+  // Step 2.5: Engine-side triage — auto-skip archives that are clearly not
+  // worth a model token (tiny conversations, platform-noise-only, etc.).
+  // This is the biggest single token win in the Dreamer rewrite: most
+  // sub-agent sessions are 5-message question/answer exchanges with
+  // nothing to remember, but they used to go through the model anyway.
+  const { markConversationProcessed } = await import('./store.js');
+  const unprocessed: VaultConversation[] = [];
+  let autoSkipped = 0;
+  for (const conv of allUnprocessed) {
+    const reason = classifyTrivial(conv);
+    if (reason) {
+      markConversationProcessed(conv.id);
+      autoSkipped++;
+      logger.debug('Auto-skipped trivial archive', { archiveId: conv.id, reason });
+    } else {
+      unprocessed.push(conv);
+    }
+  }
+  if (autoSkipped > 0) {
+    logger.info(`Engine triage: auto-skipped ${autoSkipped} trivial archives, ${unprocessed.length} remain for the Dreamer`);
+  }
+  if (unprocessed.length === 0) {
+    logger.info('No archives left after engine triage — Dreamer cycle skipped');
+    broadcast({ type: 'dream:complete', data: { skipped: true, reason: 'all_trivial', autoSkipped, ...maintenance } } as never);
     return { dreamerId: null };
   }
 
@@ -665,8 +968,23 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
     return { dreamerId };
   }
 
-  // Store remaining batches for sequential processing
-  pendingBatches.set(primaryId, { batches, currentIndex: 0, config, primaryId, modelId, stats });
+  // Store remaining batches for sequential processing — plus the cycle-
+  // reporting state used to write a single dream_reports row when the
+  // final batch completes.
+  pendingBatches.set(primaryId, {
+    batches,
+    currentIndex: 0,
+    config,
+    primaryId,
+    modelId,
+    stats,
+    cycleStartedAtMs: Date.now(),
+    archivesProcessedThisCycle: 0,
+    autoSkippedThisCycle: autoSkipped,
+    totalArchivesAtStart: allUnprocessed.length,
+    maintenanceAtStart: maintenance,
+    vaultStatsBefore: stats,
+  });
 
   // Store the first batch's archive IDs on the Dreamer agent record
   db.prepare(`
@@ -703,11 +1021,72 @@ interface PendingBatchState {
   // Capped at MAX_RECOVERY_DEPTH — beyond that, splitting further is
   // unlikely to help and we let the error propagate.
   recoveryDepth?: number;
+
+  // Cycle-level reporting state — used by writeDreamReportForCycle when
+  // the final batch completes. Pre-2026-04-30 createDreamReport was defined
+  // but never called, so the dashboard's "Dreams" tab was permanently
+  // empty no matter how long the platform had been running.
+  cycleStartedAtMs: number;
+  archivesProcessedThisCycle: number;
+  autoSkippedThisCycle: number;
+  totalArchivesAtStart: number;
+  maintenanceAtStart: { pruned: number; decayed: number; unpinned: number; agedOut: number };
+  vaultStatsBefore: ReturnType<typeof getVaultStats>;
 }
 
 const MAX_RECOVERY_DEPTH = 3;
 
 const pendingBatches = new Map<string, PendingBatchState>();
+
+/**
+ * Write a dream_reports row summarizing the cycle. Called when the final
+ * batch completes (or when a cycle is force-finalized due to abort).
+ * Pre-2026-04-30 createDreamReport was defined but never invoked, so the
+ * dashboard's "Dreams" tab was permanently empty no matter how long the
+ * platform had been running. This is the missing link.
+ */
+function writeDreamReportForCycle(state: PendingBatchState, outcome: 'complete' | 'aborted'): void {
+  try {
+    const after = getVaultStats();
+    const before = state.vaultStatsBefore;
+    const memoriesExtracted = Math.max(0, after.totalEntries - before.totalEntries);
+    const durationMs = Date.now() - state.cycleStartedAtMs;
+
+    const reportText = [
+      `Dream cycle ${outcome} — ${state.archivesProcessedThisCycle}/${state.totalArchivesAtStart} archives processed by the Dreamer (${state.autoSkippedThisCycle} auto-skipped as trivial before the model was involved).`,
+      `Vault entries: ${before.totalEntries} → ${after.totalEntries} (${memoriesExtracted >= 0 ? '+' : ''}${memoriesExtracted}).`,
+      `Pinned: ${before.pinnedCount} → ${after.pinnedCount}. Permanent: ${before.permanentCount} → ${after.permanentCount}.`,
+      `Engine maintenance: pruned ${state.maintenanceAtStart.pruned}, decayed ${state.maintenanceAtStart.decayed}, unpinned ${state.maintenanceAtStart.unpinned}, aged-out ${state.maintenanceAtStart.agedOut}.`,
+      `Batches: ${state.batches.length}. Duration: ${Math.round(durationMs / 1000)}s. Mode: ${state.config.dreamMode}.`,
+    ].join('\n');
+
+    createDreamReport({
+      archivesProcessed: state.archivesProcessedThisCycle,
+      memoriesExtracted,
+      techniquesFound: 0, // not tracked end-to-end yet — Trainer hand-offs happen out of band
+      duplicatesMerged: 0,
+      contradictionsResolved: 0,
+      entriesPruned: state.maintenanceAtStart.pruned,
+      entriesConsolidated: 0,
+      totalEntries: after.totalEntries,
+      pinnedCount: after.pinnedCount,
+      permanentCount: after.permanentCount,
+      reportText,
+      dreamMode: state.config.dreamMode,
+      modelId: state.modelId,
+      durationMs,
+    });
+
+    logger.info('Dream report written', {
+      outcome,
+      archivesProcessed: state.archivesProcessedThisCycle,
+      memoriesExtracted,
+      durationMs,
+    });
+  } catch (err) {
+    logger.warn('Failed to write dream report', { error: err instanceof Error ? err.message : String(err) });
+  }
+}
 
 /**
  * After the Dreamer completes a batch, check if there are more batches to process.
@@ -719,7 +1098,11 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
 
   const nextIndex = state.currentIndex + 1;
   if (nextIndex >= state.batches.length) {
-    // All batches done
+    // All batches done — write the cycle's dream report so the dashboard's
+    // Dreams tab actually has something to show. Pre-2026-04-30 the cycle
+    // ended silently with no record; the tab was empty even after months
+    // of dreaming.
+    writeDreamReportForCycle(state, 'complete');
     pendingBatches.delete(primaryId);
     logger.info('All Dreamer batches complete', { totalBatches: state.batches.length });
     broadcast({ type: 'dream:complete', data: { batches: state.batches.length } } as never);
@@ -807,9 +1190,14 @@ export function markDreamerArchivesProcessed(dreamerAgentId: string): void {
 
     logger.info(`Marked ${archiveIds.length} archives as processed after Dreamer completion`, { dreamerAgentId });
 
-    // Check if there are more batches to process
+    // Bump the per-cycle counter so the eventual dream report reflects the
+    // total archives the Dreamer actually processed end-to-end.
     const primaryId = agent.parent_agent;
     if (primaryId) {
+      const state = pendingBatches.get(primaryId);
+      if (state) {
+        state.archivesProcessedThisCycle += archiveIds.length;
+      }
       spawnNextDreamerBatch(primaryId).catch(err => {
         logger.error('Failed to wake Dreamer for next batch', {
           error: err instanceof Error ? err.message : String(err),

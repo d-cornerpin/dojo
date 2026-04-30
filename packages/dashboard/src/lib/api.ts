@@ -1155,6 +1155,17 @@ export const getVaultStats = async (): Promise<ApiResponse<VaultStats>> => {
   return request<VaultStats>('/vault/stats');
 };
 
+export const bulkDiscardArchives = async (filter: {
+  agentId?: string;
+  olderThanDays?: number;
+  all?: boolean;
+}): Promise<ApiResponse<{ deleted: number }>> => {
+  return request<{ deleted: number }>('/vault/conversations/discard', {
+    method: 'POST',
+    body: JSON.stringify(filter),
+  });
+};
+
 export const triggerDream = async (): Promise<ApiResponse<{ dreamerId: string | null; message: string }>> => {
   return request<{ dreamerId: string | null; message: string }>('/vault/dream', { method: 'POST' });
 };
