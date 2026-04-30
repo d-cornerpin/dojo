@@ -15,10 +15,11 @@ export const GroupCard = ({ group, agents, models, providerNameById, onReload }:
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(group.name);
   const [description, setDescription] = useState(group.description ?? '');
+  const [dreamerIgnore, setDreamerIgnore] = useState(group.dreamerIgnore === true);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const handleSave = async () => {
-    await api.updateGroupApi(group.id, { name, description });
+    await api.updateGroupApi(group.id, { name, description, dreamerIgnore });
     setEditing(false);
     onReload();
   };
@@ -65,6 +66,20 @@ export const GroupCard = ({ group, agents, models, providerNameById, onReload }:
                 className="glass-textarea text-xs mt-1 py-1 px-2 min-h-[40px]" rows={2} />
             ) : (
               group.description && <p className="text-xs text-white/40 mt-0.5">{group.description}</p>
+            )}
+            {editing && (
+              <label className="mt-2 flex items-center gap-2 text-xs text-white/55 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={dreamerIgnore}
+                  onChange={(e) => setDreamerIgnore(e.target.checked)}
+                  className="accent-cp-teal"
+                />
+                Skip in Dreamer cycle (members' chats won't enter the vault)
+              </label>
+            )}
+            {!editing && group.dreamerIgnore === true && (
+              <p className="mt-1 text-[10px] text-cp-amber/80">Dreamer ignore: ON — members' chats are not archived for the nightly cycle.</p>
             )}
           </div>
         </div>

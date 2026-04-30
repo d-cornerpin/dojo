@@ -410,6 +410,7 @@ ${batchText}`;
 const DREAMER_TOOLS_POLICY = JSON.stringify({
   allow: [
     'vault_remember', 'vault_search', 'vault_forget',
+    'vault_discard_archives',
     'memory_grep', 'memory_search', 'memory_describe',
     'file_read', 'file_write',
     'tracker_create_project', 'tracker_create_task',

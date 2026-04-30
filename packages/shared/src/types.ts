@@ -80,6 +80,10 @@ export interface AgentDetail extends Agent {
   messageCount: number;
   uptime: number; // seconds since last start
   model: Model | null;
+  /** When true, the agent's conversations are skipped by the vault archive
+   * layer entirely — Dreamer never sees them. Toggleable on the agent
+   * detail page. Falls through from the group's flag if either is set. */
+  dreamerIgnore?: boolean;
 }
 
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';

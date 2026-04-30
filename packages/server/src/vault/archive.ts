@@ -12,11 +12,47 @@ import type { Message } from '@dojo/shared';
 const logger = createLogger('vault-archive');
 
 /**
+ * Check whether the Dreamer should ignore this agent. Returns true if the
+ * agent itself or its group has dreamer_ignore=1. When true, callers
+ * should skip archiving entirely — conversations stay in the live messages
+ * table for the agent's lifetime but never enter vault_conversations,
+ * so the Dreamer never sees them.
+ *
+ * Exported so compaction.ts can pre-check and skip the post-archive abort
+ * path: archiveMessagesBeforeCompaction returns null both when archive
+ * fails AND when the agent is intentionally ignored. Compaction needs to
+ * differentiate so it doesn't refuse-to-compact an ignored agent.
+ */
+export function isDreamerIgnored(agentId: string): boolean {
+  try {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT a.dreamer_ignore AS agent_ignore, g.dreamer_ignore AS group_ignore
+      FROM agents a
+      LEFT JOIN agent_groups g ON g.id = a.group_id
+      WHERE a.id = ?
+    `).get(agentId) as { agent_ignore: number | null; group_ignore: number | null } | undefined;
+    if (!row) return false;
+    return row.agent_ignore === 1 || row.group_ignore === 1;
+  } catch {
+    return false; // Best effort — never block archiving on a lookup error
+  }
+}
+
+/**
  * Archive ALL messages for a terminated/completed agent.
  * Called on agent termination to ensure conversations are preserved for the Dreamer.
  */
 export function archiveAgentConversation(agentId: string): string | null {
   const db = getDb();
+
+  // Skip entirely if this agent (or its group) is on the Dreamer ignore list.
+  // The user explicitly opted out of having this agent's conversations
+  // remembered. Their chatter just goes away.
+  if (isDreamerIgnored(agentId)) {
+    logger.debug('Agent on Dreamer ignore list — skipping archive', {}, agentId);
+    return null;
+  }
 
   // Check if this agent already has an unprocessed archive — avoid duplicates
   const existing = db.prepare(
@@ -60,6 +96,14 @@ export function archiveMessagesBeforeCompaction(
 ): string | null {
   if (messages.length === 0) {
     logger.debug('No messages to archive', {}, agentId);
+    return null;
+  }
+
+  // Skip entirely if this agent (or its group) is on the Dreamer ignore list.
+  // Returning null here means the agent's compaction continues, but the raw
+  // messages just don't get copied to vault_conversations.
+  if (isDreamerIgnored(agentId)) {
+    logger.debug('Agent on Dreamer ignore list — skipping pre-compaction archive', {}, agentId);
     return null;
   }
 

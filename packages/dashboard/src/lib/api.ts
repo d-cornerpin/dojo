@@ -638,7 +638,7 @@ export const getAgentSystemPrompt = async (id: string): Promise<ApiResponse<{ co
 
 export const updateAgentConfig = async (
   id: string,
-  updates: { modelId?: string; systemPrompt?: string; permissions?: Record<string, unknown>; toolsPolicy?: { allow: string[]; deny: string[] } },
+  updates: { modelId?: string; systemPrompt?: string; permissions?: Record<string, unknown>; toolsPolicy?: { allow: string[]; deny: string[] }; dreamerIgnore?: boolean },
 ): Promise<ApiResponse<AgentDetailResponse>> => {
   return request<AgentDetailResponse>(`/agents/${id}`, {
     method: 'PUT',
@@ -951,6 +951,7 @@ export interface AgentGroup {
   createdBy: string;
   color: string;
   memberCount: number;
+  dreamerIgnore?: boolean;
   createdAt: string;
 }
 
@@ -969,7 +970,7 @@ export const deleteGroupApi = async (id: string): Promise<ApiResponse<void>> => 
   return request<void>(`/groups/${id}`, { method: 'DELETE' });
 };
 
-export const updateGroupApi = async (id: string, updates: { name?: string; description?: string; color?: string }): Promise<ApiResponse<unknown>> => {
+export const updateGroupApi = async (id: string, updates: { name?: string; description?: string; color?: string; dreamerIgnore?: boolean }): Promise<ApiResponse<unknown>> => {
   return request(`/groups/${id}`, { method: 'PUT', body: JSON.stringify(updates) });
 };
 

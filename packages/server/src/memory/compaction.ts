@@ -10,7 +10,7 @@ import {
   replaceContextItems,
 } from './dag.js';
 import { generateSummary } from './summarize.js';
-import { archiveMessagesBeforeCompaction } from '../vault/archive.js';
+import { archiveMessagesBeforeCompaction, isDreamerIgnored } from '../vault/archive.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('memory-compaction');
@@ -94,10 +94,12 @@ export async function checkAndCompact(
 
     // Archive raw messages to vault BEFORE compaction destroys them.
     // If archival fails, ABORT compaction — better to have a bloated context than lost data.
+    // Exception: if the agent is on the Dreamer ignore list, the archive is
+    // intentionally skipped (returns null). Don't abort compaction in that case.
     const messagesForArchive = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(contextWindow));
     const archiveCompactedIds = getCompactedMessageIds(agentId);
     const uncompactedForArchive = messagesForArchive.filter(m => !archiveCompactedIds.has(m.id));
-    if (uncompactedForArchive.length > 0) {
+    if (uncompactedForArchive.length > 0 && !isDreamerIgnored(agentId)) {
       const archiveId = archiveMessagesBeforeCompaction(agentId, uncompactedForArchive);
       if (!archiveId) {
         logger.error('Archive failed — aborting compaction to prevent data loss', { agentId, messageCount: uncompactedForArchive.length }, agentId);
@@ -142,7 +144,8 @@ export async function checkAndCompact(
 
     // Archive raw messages to vault BEFORE proactive compaction.
     // If archival fails, ABORT — don't compact without preserving the data.
-    if (uncompactedMessages.length > 0) {
+    // Exception: dreamer-ignored agents intentionally skip archive.
+    if (uncompactedMessages.length > 0 && !isDreamerIgnored(agentId)) {
       const archiveId = archiveMessagesBeforeCompaction(agentId, uncompactedMessages);
       if (!archiveId) {
         logger.error('Archive failed — aborting proactive compaction to prevent data loss', { agentId, messageCount: uncompactedMessages.length }, agentId);

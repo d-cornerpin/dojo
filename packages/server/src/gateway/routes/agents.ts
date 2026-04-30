@@ -298,6 +298,13 @@ agentsRouter.put('/:id', async (c) => {
     params.push(JSON.stringify(body.equippedTechniques));
   }
 
+  if (body.dreamerIgnore !== undefined) {
+    // Boolean toggle. When true, the agent's conversations are skipped
+    // by the vault archive layer entirely — Dreamer never sees them.
+    updates.push('dreamer_ignore = ?');
+    params.push(body.dreamerIgnore ? 1 : 0);
+  }
+
   if (updates.length > 0) {
     updates.push("updated_at = datetime('now')");
     params.push(id);
@@ -560,6 +567,7 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
     messageCount: msgCount,
     uptime,
     model,
+    dreamerIgnore: row.dreamer_ignore === 1,
   };
 }
 

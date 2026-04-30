@@ -28,6 +28,9 @@ export interface AgentGroup {
   createdBy: string;
   color: string;
   memberCount: number;
+  /** When true, every member of this group has its conversations skipped
+   * by the vault archive layer — Dreamer never sees any of them. */
+  dreamerIgnore?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -91,6 +94,7 @@ export function getGroups(): AgentGroup[] {
     createdBy: r.created_by as string,
     color: r.color as string,
     memberCount: (r.member_count as number) ?? 0,
+    dreamerIgnore: r.dreamer_ignore === 1,
     createdAt: r.created_at as string,
     updatedAt: r.updated_at as string,
   }));
@@ -116,13 +120,14 @@ export function getGroupDetail(id: string): AgentGroupDetail | null {
     createdBy: row.created_by as string,
     color: row.color as string,
     memberCount,
+    dreamerIgnore: row.dreamer_ignore === 1,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
     members,
   };
 }
 
-export function updateGroup(id: string, updates: { name?: string; description?: string; color?: string }): boolean {
+export function updateGroup(id: string, updates: { name?: string; description?: string; color?: string; dreamerIgnore?: boolean }): boolean {
   const db = getDb();
   const parts: string[] = ["updated_at = datetime('now')"];
   const params: unknown[] = [];
@@ -130,6 +135,7 @@ export function updateGroup(id: string, updates: { name?: string; description?: 
   if (updates.name !== undefined) { parts.push('name = ?'); params.push(updates.name); }
   if (updates.description !== undefined) { parts.push('description = ?'); params.push(updates.description); }
   if (updates.color !== undefined) { parts.push('color = ?'); params.push(updates.color); }
+  if (updates.dreamerIgnore !== undefined) { parts.push('dreamer_ignore = ?'); params.push(updates.dreamerIgnore ? 1 : 0); }
 
   params.push(id);
   const result = db.prepare(`UPDATE agent_groups SET ${parts.join(', ')} WHERE id = ?`).run(...params);

@@ -43,6 +43,7 @@ groupsRouter.put('/:id', async (c) => {
     name: z.string().optional(),
     description: z.string().optional(),
     color: z.string().optional(),
+    dreamerIgnore: z.boolean().optional(),
   }).parse(await c.req.json());
 
   const updated = updateGroup(id, body);

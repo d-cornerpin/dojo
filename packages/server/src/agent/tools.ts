@@ -1471,6 +1471,25 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['entry_id', 'reason'],
     },
   },
+  {
+    name: 'vault_discard_archives',
+    description: 'Permanently delete one or more conversation archives from vault_conversations WITHOUT extracting any vault entries from them. Use when the conversations are junk (test runs, error spam, repetitive nonsense, ephemeral chatter) that does not need to be remembered. Unlike complete_task on a Dreamer batch (which marks archives as processed because real work was done), this tool throws the archives away unread. Returns the number of archives actually deleted. Dreamer-only.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        archive_ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Archive IDs to discard. Get IDs from your cycle message\'s "Full archive list" or from the batch text.',
+        },
+        reason: {
+          type: 'string',
+          description: 'Brief explanation for the audit log (e.g., "test conversation, no meaningful content").',
+        },
+      },
+      required: ['archive_ids', 'reason'],
+    },
+  },
 ];
 
 // ── Path Resolution ──
@@ -3678,6 +3697,46 @@ Present the image to the user with whatever short commentary fits. Do NOT reply 
       case 'vault_forget': {
         content = executeVaultForget(agentId, args);
         isError = content.startsWith('Error');
+        break;
+      }
+      case 'vault_discard_archives': {
+        // Dreamer-only — silently no-op for everyone else so the dispatcher
+        // doesn't crash if a non-Dreamer agent somehow calls it. The
+        // permission gate at tools-policy / always-loaded should prevent
+        // this anyway.
+        const { isDreamerAgent } = await import('../config/platform.js');
+        if (!isDreamerAgent(agentId)) {
+          content = 'Error: vault_discard_archives is Dreamer-only.';
+          isError = true;
+          break;
+        }
+        const archiveIds = (args.archive_ids as unknown[] | undefined)?.filter((id): id is string => typeof id === 'string') ?? [];
+        const reason = (args.reason as string | undefined)?.trim() || '(no reason given)';
+        if (archiveIds.length === 0) {
+          content = 'Error: archive_ids is required and must contain at least one ID.';
+          isError = true;
+          break;
+        }
+        const { deleteConversation } = await import('../vault/store.js');
+        let deleted = 0;
+        const skipped: string[] = [];
+        for (const id of archiveIds) {
+          try {
+            const ok = deleteConversation(id);
+            if (ok) deleted++;
+            else skipped.push(id);
+          } catch {
+            skipped.push(id);
+          }
+        }
+        auditLog(agentId, 'tool_call', 'vault_discard_archives', 'success',
+          `deleted=${deleted} skipped=${skipped.length} reason=${reason.slice(0, 200)}`,
+        );
+        logger.info('Dreamer discarded vault archives', {
+          deleted, skipped: skipped.length, reason: reason.slice(0, 200),
+        }, agentId);
+        content = `Discarded ${deleted} archive${deleted === 1 ? '' : 's'}` +
+          (skipped.length > 0 ? `. ${skipped.length} archive ID${skipped.length === 1 ? '' : 's'} could not be deleted (already gone or invalid): ${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? '…' : ''}` : '.');
         break;
       }
 

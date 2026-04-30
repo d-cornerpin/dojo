@@ -552,6 +552,18 @@ export function markConversationProcessed(id: string): void {
   db.prepare('UPDATE vault_conversations SET is_processed = 1, processed_at = datetime(\'now\') WHERE id = ?').run(id);
 }
 
+/**
+ * Permanently delete a conversation archive without extracting any vault
+ * entries. Used by the Dreamer's vault_discard_archives tool to throw away
+ * junk batches the user has decided don't need to be remembered.
+ * Returns true if a row was deleted, false if no such archive existed.
+ */
+export function deleteConversation(id: string): boolean {
+  const db = getDb();
+  const res = db.prepare('DELETE FROM vault_conversations WHERE id = ?').run(id);
+  return res.changes > 0;
+}
+
 export function getConversation(id: string): VaultConversation | null {
   const db = getDb();
   const row = db.prepare('SELECT * FROM vault_conversations WHERE id = ?').get(id) as VaultConversationRow | undefined;

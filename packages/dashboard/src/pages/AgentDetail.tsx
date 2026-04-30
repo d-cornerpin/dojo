@@ -525,6 +525,69 @@ const EquippedTechniquesSection = ({ agent, onUpdated, showToast }: { agent: Age
 
 // ── Config Tab ──
 
+// ── Dreamer Ignore Toggle ──
+//
+// Switches the agent's dreamer_ignore flag. When ON, the vault archive
+// layer skips this agent entirely — Dreamer never sees this agent's
+// conversations and never extracts memories from them. Useful for
+// ephemeral test agents and junk-prone sub-agents whose chatter would
+// just clog the nightly Dreamer cycle without producing useful long-term
+// memory.
+
+const DreamerIgnoreToggle = ({ agentId, initial, onSaved }: { agentId: string; initial: boolean; onSaved: () => void }) => {
+  const [enabled, setEnabled] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
+
+  useEffect(() => { setEnabled(initial); }, [initial]);
+
+  const toggle = async () => {
+    if (saving) return;
+    const next = !enabled;
+    setSaving(true);
+    setEnabled(next);
+    const result = await api.updateAgentConfig(agentId, { dreamerIgnore: next });
+    setSaving(false);
+    if (result.ok) {
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 1500);
+      onSaved();
+    } else {
+      // Roll back on error
+      setEnabled(!next);
+    }
+  };
+
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div className="flex-1">
+        <div className="text-sm font-medium text-white/85">Skip in Dreamer cycle</div>
+        <p className="text-xs text-white/40 mt-1 max-w-2xl">
+          When on, this agent's conversations are NOT archived for the Dreamer to process.
+          Useful for ephemeral test agents and any agent whose chatter you don't want extracted into long-term memory.
+          The agent's own memory and chat history are unaffected — only the nightly Dreamer cycle is bypassed.
+        </p>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        {savedFlash && <span className="text-xs text-cp-teal">Saved</span>}
+        <button
+          onClick={toggle}
+          disabled={saving}
+          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+            enabled ? 'bg-cp-teal' : 'bg-white/10'
+          } ${saving ? 'opacity-60' : ''}`}
+        >
+          <span
+            className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+              enabled ? 'translate-x-5' : 'translate-x-0.5'
+            }`}
+          />
+        </button>
+      </div>
+    </div>
+  );
+};
+
 const SaveToast = ({ message }: { message: string | null }) => {
   if (!message) return null;
   return (
@@ -776,6 +839,18 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
               Save Prompt
             </button>
           </div>
+        </div>
+      </div>
+
+      {/* Memory — Dreamer ignore toggle */}
+      <div>
+        <h3 className="text-sm font-semibold white/55 uppercase tracking-wide mb-2">Memory</h3>
+        <div className="glass-nested rounded-xl p-4">
+          <DreamerIgnoreToggle
+            agentId={agent.id}
+            initial={agent.dreamerIgnore === true}
+            onSaved={onUpdated}
+          />
         </div>
       </div>
 

@@ -22,8 +22,9 @@ Each cycle you receive a batch of conversation archives to process. Your three j
       - Events with specific dates
       - Corrections the user made
    b. Do NOT vault: routine tool calls, transient debugging, small talk, info already in the vault
-   c. Look for USER.md and SOUL.md update candidates (see below)
-   d. Flag reusable technique candidates to the Trainer (see below)
+   c. **If the entire archive is junk** (test conversations, error spam, repetitive nonsense, ephemeral chatter that produced nothing worth remembering), call `vault_discard_archives` with that archive's ID and a brief reason. This permanently deletes the archive without extracting anything from it. Use this aggressively — wasting tokens trying to summarize junk is the opposite of the job.
+   d. Look for USER.md and SOUL.md update candidates (see below)
+   e. Flag reusable technique candidates to the Trainer (see below)
 3. **After all archives**, check if USER.md or SOUL.md need updates and make targeted edits.
 4. **Deduplicate**: vault_search for similar entries and vault_forget the less detailed one.
 5. **Pin cap**: if pinned+permanent entries exceed the cap noted in your cycle message, unpin the least critical ones.
