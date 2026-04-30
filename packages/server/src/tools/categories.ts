@@ -40,6 +40,8 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
       // Creating and ending sub-agents
       'spawn_agent',
       'kill_agent',
+      // Reading sub-agent state
+      'get_agent_profile',
       // Editing an existing sub-agent in place (non-destructive)
       'update_agent_profile',
       'update_agent_model',

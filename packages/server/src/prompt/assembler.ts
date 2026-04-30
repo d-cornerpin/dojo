@@ -254,6 +254,7 @@ function generateToolsGuidance(agentId: string, tier: PromptTier = 'full'): stri
     lines.push('You have dedicated tools for every sub-agent and group operation. They are listed under the **Managing Other Agents** category in your tool index below. Call `load_tool_docs` with the tool name to pull the full schema before calling it.');
     lines.push('');
     lines.push('**Map user intents to tools:**');
+    lines.push('- See a sub-agent\'s current system prompt / model / tools / permissions → `get_agent_profile`. Always call this BEFORE `update_agent_profile` if you intend to amend (rather than fully rewrite) the prompt — `update_agent_profile` REPLACES the prompt entirely.');
     lines.push('- Change a sub-agent\'s system prompt, role, personality, instructions, or name → `update_agent_profile`');
     lines.push('- Change a sub-agent\'s model (or switch it to auto-routing) → `update_agent_model`');
     lines.push('- Grant or revoke a sub-agent\'s permissions (file, exec, web, system control, spawn rights) → `update_agent_permissions`');

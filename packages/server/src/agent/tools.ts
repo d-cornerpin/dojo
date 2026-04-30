@@ -147,7 +147,7 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
 
   // Only primary-level agents should have group management, session, and presence tools
   if (!isPrimaryAgent(agentId)) {
-    removeTools.push('create_agent_group', 'update_group', 'assign_to_group', 'delete_group', 'reset_session', 'set_user_presence', 'update_agent_model', 'update_agent_profile', 'tunnel_start', 'tunnel_stop', 'tunnel_restart');
+    removeTools.push('create_agent_group', 'update_group', 'assign_to_group', 'delete_group', 'reset_session', 'set_user_presence', 'update_agent_model', 'update_agent_profile', 'get_agent_profile', 'tunnel_start', 'tunnel_stop', 'tunnel_restart');
   }
 
   // Technique tools: only Sensei can save/publish/update, everyone can use/list
@@ -1055,13 +1055,24 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'update_agent_profile',
-    description: 'Change another agent\'s system prompt, role, personality, instructions, or name. This is THE tool for editing a sub-agent\'s identity — do NOT try to modify files, SOUL.md, or the database directly. Provide at least one of name or system_prompt. Conversation history, tracker tasks, group membership, permissions, and model are all preserved. The agent uses the new identity on its next turn. Cannot be used on the primary agent (edit its SOUL.md via Settings instead).',
+    description: 'Change another agent\'s system prompt, role, personality, instructions, or name. This is THE tool for editing a sub-agent\'s identity — do NOT try to modify files, SOUL.md, or the database directly. Provide at least one of name or system_prompt. Conversation history, tracker tasks, group membership, permissions, and model are all preserved. The agent uses the new identity on its next turn. Cannot be used on the primary agent (edit its SOUL.md via Settings instead). Pair with get_agent_profile if you need to read the current prompt before rewriting it.',
     input_schema: {
       type: 'object',
       properties: {
         agent_id: { type: 'string', description: 'The agent ID or name to update' },
         name: { type: 'string', description: 'New name for the agent. Omit to keep the current name.' },
         system_prompt: { type: 'string', description: 'New system prompt defining the agent\'s role, personality, and instructions. REPLACES the existing prompt entirely — include everything you want the agent to remember. Omit to keep the current prompt.' },
+      },
+      required: ['agent_id'],
+    },
+  },
+  {
+    name: 'get_agent_profile',
+    description: 'Read another agent\'s current identity: name, system prompt, model, tools policy, permissions, classification, group, status, and parent. Use this to audit what a sub-agent is currently set up as, or to read the existing system prompt before calling update_agent_profile (which fully REPLACES the prompt — without reading first you can\'t append). Read-only — no side effects.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'The agent ID or name to read' },
       },
       required: ['agent_id'],
     },
@@ -2674,6 +2685,111 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
           }
         } catch (err) {
           content = `Error updating agent profile: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
+        break;
+      }
+      case 'get_agent_profile': {
+        try {
+          const db = getDb();
+          const targetRef = args.agent_id as string;
+
+          if (!targetRef) {
+            content = 'Error: agent_id is required';
+            isError = true;
+            break;
+          }
+
+          // Resolve by ID first, then by name (matches update_agent_profile semantics)
+          interface AgentProfileRow {
+            id: string;
+            name: string;
+            status: string;
+            classification: string | null;
+            model_id: string | null;
+            tools_policy: string | null;
+            permissions: string | null;
+            parent_agent: string | null;
+            group_id: string | null;
+            agent_type: string | null;
+            spawn_depth: number | null;
+            created_at: string;
+            updated_at: string;
+          }
+          let target = db.prepare(`
+            SELECT id, name, status, classification, model_id, tools_policy, permissions,
+                   parent_agent, group_id, agent_type, spawn_depth, created_at, updated_at
+            FROM agents WHERE id = ?
+          `).get(targetRef) as AgentProfileRow | undefined;
+          if (!target) {
+            target = db.prepare(`
+              SELECT id, name, status, classification, model_id, tools_policy, permissions,
+                     parent_agent, group_id, agent_type, spawn_depth, created_at, updated_at
+              FROM agents WHERE name = ? AND status != 'terminated'
+              ORDER BY created_at DESC LIMIT 1
+            `).get(targetRef) as AgentProfileRow | undefined;
+          }
+          if (!target) {
+            content = `Error: Agent "${targetRef}" not found`;
+            isError = true;
+            break;
+          }
+
+          // System prompt = first system-role message (mirrors update_agent_profile)
+          const promptRow = db.prepare(
+            "SELECT content FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY rowid ASC LIMIT 1"
+          ).get(target.id) as { content: string } | undefined;
+          const systemPrompt = promptRow?.content ?? '';
+
+          // Resolve model name if a model is configured
+          let modelLabel = '(none / auto-routed)';
+          if (target.model_id && target.model_id !== 'auto') {
+            const modelRow = db.prepare('SELECT name, api_model_id FROM models WHERE id = ?').get(target.model_id) as { name: string; api_model_id: string } | undefined;
+            modelLabel = modelRow ? `${modelRow.name} (${modelRow.api_model_id}, id=${target.model_id})` : `id=${target.model_id} (model row missing)`;
+          } else if (target.model_id === 'auto') {
+            modelLabel = 'auto-routed';
+          }
+
+          // Resolve group name
+          let groupLabel = '(none)';
+          if (target.group_id) {
+            const groupRow = db.prepare('SELECT name FROM agent_groups WHERE id = ?').get(target.group_id) as { name: string } | undefined;
+            groupLabel = groupRow ? `${groupRow.name} (id=${target.group_id})` : `id=${target.group_id}`;
+          }
+
+          // Pretty-print tools_policy and permissions JSON, but degrade gracefully on bad JSON
+          const formatJson = (raw: string | null, fallback: string): string => {
+            if (!raw) return fallback;
+            try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return raw; }
+          };
+          const toolsPolicyText = formatJson(target.tools_policy, '(default — no policy set)');
+          const permissionsText = formatJson(target.permissions, '(default — no permissions set)');
+
+          content = [
+            `Agent: ${target.name} (id=${target.id})`,
+            `Status: ${target.status}`,
+            `Classification: ${target.classification ?? '(none)'}`,
+            `Type: ${target.agent_type ?? 'sub-agent'}`,
+            `Spawn depth: ${target.spawn_depth ?? 0}`,
+            `Parent agent: ${target.parent_agent ?? '(none)'}`,
+            `Group: ${groupLabel}`,
+            `Model: ${modelLabel}`,
+            `Created: ${target.created_at}`,
+            `Updated: ${target.updated_at}`,
+            '',
+            '── System prompt ──',
+            systemPrompt || '(empty — no system prompt set)',
+            '',
+            '── Tools policy ──',
+            toolsPolicyText,
+            '',
+            '── Permissions ──',
+            permissionsText,
+          ].join('\n');
+
+          logger.info('Agent profile read via tool', { callerAgentId: agentId, targetAgentId: target.id }, agentId);
+        } catch (err) {
+          content = `Error reading agent profile: ${err instanceof Error ? err.message : String(err)}`;
           isError = true;
         }
         break;
