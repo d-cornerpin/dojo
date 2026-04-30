@@ -66,7 +66,7 @@ function loadImaginerSoulPrompt(): string {
   }
 
   // Minimal fallback — production always has the template
-  return `You are ${imaginerName}, the dojo's image generation specialist. When you receive an image_create request from another agent, (1) send them an immediate ack via send_to_agent, (2) craft a great prompt, (3) call image_generate_internal with the prompt + aspect ratio, (4) send the file path back via send_to_agent. Never skip the ack, never chat, never refuse reasonable requests. You are invisible infrastructure.`;
+  return `You are ${imaginerName}, the dojo's image generation specialist. When another agent calls image_create, the engine handles the entire image generation flow programmatically — your LLM does NOT run for those requests, and the engine delivers the finished image to the requester via send_to_agent automatically using your name as the sender. Your LLM only runs when someone messages you directly (e.g., follow-up questions about a generation). Be direct, brief, and useful. Do NOT try to call image_generate_internal — you don't have a working image-generation tool.`;
 }
 
 // ── Ensure Imaginer running ───────────────────────────────────────────
@@ -77,8 +77,11 @@ const IMAGINER_TOOLS_POLICY = JSON.stringify({
     'load_tool_docs',
     'complete_task',
     'get_current_time',
-    // Imaginer's two actual jobs
-    'image_generate_internal',
+    // Imaginer talks back if someone messages it directly. The actual
+    // image_create flow is engine-handled — Imaginer's LLM doesn't run
+    // for that path, so it doesn't need (and shouldn't have) image tools.
+    // 'image_generate_internal' was historically listed here but the tool
+    // is not registered in the tool dispatcher — it never worked.
     'send_to_agent',
     // Occasionally useful
     'list_agents',

@@ -58,15 +58,15 @@ image_create(
 
 ## What You'll Hear Back
 
-Imaginer sends you **two messages** via `send_to_agent`:
+When the image is ready (typically 10–60 seconds), you'll receive a single `[A2A:DELIVERABLE from:Imaginer]` message in your chat with the image attached. The DELIVERABLE intent wakes you. Your job at that point is to present the image to the user with whatever short commentary fits the conversation. The image attachment will already render as a thumbnail — you don't need to upload, copy, or describe the file path.
 
-1. **An immediate ack** (`intent="FYI"`, within a couple of seconds): "Got your image request (request_id: img_abc123). Working on it now. Description: '...'. Expected wait: 10–60 seconds." This is a no-wake message — you'll see it in your chat the next time you turn, you don't need to act on it.
-2. **A delivery message** (`intent="DELIVERABLE"`, 10–60 seconds later): wakes you with the original description echoed back, the file path, a caption, any interpretation notes, AND the image as an actual attachment in the `attach_paths`. When you see this message, the image is already a thumbnail in the user's chat view — you just need to acknowledge it and share the caption.
+The thread is closed (DELIVERABLE is terminal) so don't reply to Imaginer — just respond to the user.
 
-Multiple in-flight requests are fine; match `request_id`s to your mental model of the conversation.
+Multiple in-flight requests are fine; match `request_id`s in the delivery message to the mental model of which conversation each belongs to.
 
 ## Error Cases
 
 - **No image model configured:** Tool returns an error with the reason. Tell the user image generation is unavailable until a model is configured in Settings → Dojo → Imaginer. Don't retry.
 - **Imaginer disabled / terminated:** Same — return the error to the user, don't retry.
-- **Imaginer refuses the request** (copyright, safety): Imaginer will send you a `send_to_agent` message with `intent="ANSWER"` explaining what it can't do and suggesting an alternative. The ANSWER intent wakes you so you can relay to the user.
+- **Generation failed** (model error, content policy, etc.): The engine writes an error message into your chat as an assistant turn ("I wasn't able to generate that image: …") that you can present to the user.
+- **Delivery failed** (rare — A2A semantic dedup, hop limit): The engine writes a `[System: ...]` note into your chat with the file path so you can fall back to telling the user the image was generated but the system path didn't work, and offer to retry.

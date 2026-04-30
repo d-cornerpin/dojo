@@ -272,15 +272,21 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
 
   const contextMessage = `[A2A:${envelope.intent} thread:${threadId.slice(0, 8)} from:${senderName}] ${envelope.payload}${threadInfo}`;
 
-  // ── 10. Persist to messages table ──
-  const msgId = uuidv4();
-  db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, created_at)
-    VALUES (?, ?, 'user', ?, ?, ?, ?, ?, datetime('now'))
-  `).run(msgId, target.id, contextMessage, envelope.fromAgent, threadId, envelope.intent, requiresResponse ? 1 : 0);
-
-  // ── 11. Handle attachments (if any) ──
-  // Attachment pass-through follows the same pattern as the old send_to_agent
+  // ── 10. Process attachments BEFORE persist+broadcast ──
+  // Pre-2026-04-30: attachments were processed AFTER the message was inserted
+  // and the broadcast went out, so the dashboard's chat feed got the message
+  // with no attachments. The image only appeared on page refresh (which loads
+  // from the persisted DB row). Now we copy and build the attachments list
+  // first, then persist and broadcast in one consistent pass.
+  interface UploadedFile {
+    fileId: string;
+    filename: string;
+    mimeType: string;
+    size: number;
+    path: string;
+    category: 'unknown' | 'text' | 'image' | 'pdf' | 'office';
+  }
+  let attachmentsList: UploadedFile[] = [];
   if (envelope.attachPaths && envelope.attachPaths.length > 0) {
     try {
       const fs = await import('node:fs');
@@ -292,21 +298,18 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
         fs.mkdirSync(recipientDir, { recursive: true });
       }
 
-      interface UploadedFile {
-        fileId: string;
-        filename: string;
-        mimeType: string;
-        size: number;
-        path: string;
-        category: string;
-      }
       const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
-      const attachments: UploadedFile[] = [];
 
       for (const srcPath of envelope.attachPaths) {
-        if (!fs.existsSync(srcPath)) continue;
+        if (!fs.existsSync(srcPath)) {
+          logger.warn('A2A attachment source missing — skipping', { srcPath });
+          continue;
+        }
         const stat = fs.statSync(srcPath);
-        if (stat.size > 20 * 1024 * 1024) continue;
+        if (stat.size > 20 * 1024 * 1024) {
+          logger.warn('A2A attachment too large — skipping', { srcPath, size: stat.size });
+          continue;
+        }
 
         const ext = path.extname(srcPath).toLowerCase();
         const safeName = path.basename(srcPath).replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -314,23 +317,33 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
         const destPath = path.join(recipientDir, storedName);
         fs.copyFileSync(srcPath, destPath);
 
-        attachments.push({
+        attachmentsList.push({
           fileId: uuidv4(),
           filename: path.basename(srcPath),
           mimeType: IMAGE_EXTS.includes(ext) ? `image/${ext.slice(1)}` : 'application/octet-stream',
           size: stat.size,
           path: destPath,
-          category: IMAGE_EXTS.includes(ext) ? 'image' : 'unknown',
+          category: IMAGE_EXTS.includes(ext) ? 'image' as const : 'unknown' as const,
         });
       }
-
-      if (attachments.length > 0) {
-        db.prepare('UPDATE messages SET attachments = ? WHERE id = ?').run(JSON.stringify(attachments), msgId);
-      }
-    } catch { /* attachment pass-through is best-effort */ }
+    } catch (err) {
+      logger.warn('A2A attachment processing failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      attachmentsList = [];
+    }
   }
+  const attachmentsJson = attachmentsList.length > 0 ? JSON.stringify(attachmentsList) : null;
 
-  // ── 12. Broadcast to dashboard ──
+  // ── 11. Persist to messages table (with attachments) ──
+  const msgId = uuidv4();
+  db.prepare(`
+    INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, attachments, created_at)
+    VALUES (?, ?, 'user', ?, ?, ?, ?, ?, ?, datetime('now'))
+  `).run(msgId, target.id, contextMessage, envelope.fromAgent, threadId, envelope.intent, requiresResponse ? 1 : 0, attachmentsJson);
+
+  // ── 12. Broadcast to dashboard (with attachments so the live UI shows the
+  // image immediately, not just on page refresh) ──
   broadcast({
     type: 'chat:message',
     agentId: target.id,
@@ -344,6 +357,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
       cost: null,
       latencyMs: null,
       createdAt: new Date().toISOString(),
+      attachments: attachmentsList.length > 0 ? attachmentsList : undefined,
     },
   });
 

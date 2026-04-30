@@ -3430,56 +3430,87 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
               });
             } catch { /* best effort */ }
 
-            // ── Deliver the image as a synthetic assistant message with
-            // the thumbnail attached. Clean and reliable — no second LLM
-            // turn, no risk of hallucinated URLs or exposed system prompts.
-            const fs = (await import('node:fs')).default;
-            const path = (await import('node:path')).default;
-            const os = (await import('node:os')).default;
+            // ── Deliver the image via A2A DELIVERABLE from Imaginer ──
+            // Pre-2026-04-30 we synthesized a fake assistant message in the
+            // requesting agent's own chat. That had three problems:
+            //   1. The agent had false memory of "delivering" content they
+            //      never actually generated.
+            //   2. The agent was never woken to react to or comment on the
+            //      image — it just sat idle.
+            //   3. Silent failures in copy/insert left the chat blank with
+            //      no error surface.
+            // Now Imaginer programmatically sends a real A2A message with
+            // intent=DELIVERABLE, which (a) gives the agent true memory of
+            // an inbound delivery, (b) wakes them to respond/forward to the
+            // user, and (c) carries the image attachment via the standard
+            // A2A pipeline that already handles attachments + broadcasts.
+            try {
+              const { deliverA2AMessage, makeThreadId } = await import('./a2a-transport.js');
+              const deliveryPayload = `Here is the image you requested (request_id: ${requestId}).\n\nOriginal request: "${description}"\n\nThe image is attached. Present it to the user with whatever commentary fits the conversation. The thread is closed — do not reply to me; respond to the user instead.`;
+              const a2aResult = await deliverA2AMessage({
+                intent: 'DELIVERABLE',
+                threadId: makeThreadId(`image-${requestId}`),
+                requiresResponse: true, // wakes the receiver
+                payload: deliveryPayload,
+                toAgent: agentId,
+                fromAgent: imaginerId,
+                attachPaths: [result.filePath],
+              });
 
-            const recipientDir = path.join(os.homedir(), '.dojo', 'uploads', agentId);
-            if (!fs.existsSync(recipientDir)) fs.mkdirSync(recipientDir, { recursive: true });
-            const copiedName = `imaginer_${Date.now()}_${result.filename}`;
-            const copiedPath = path.join(recipientDir, copiedName);
-            fs.copyFileSync(result.filePath, copiedPath);
-
-            const attachment = {
-              fileId: uuidv4(),
-              filename: result.filename,
-              mimeType: result.mimeType,
-              size: result.sizeBytes,
-              path: copiedPath,
-              category: 'image' as const,
-            };
-
-            const deliveryMsgId = uuidv4();
-            const deliveryContent = `Here you go! Let me know if you'd like any changes.`;
-
-            db.prepare(`
-              INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, model_id, created_at)
-              VALUES (?, ?, 'assistant', ?, ?, ?, datetime('now'))
-            `).run(deliveryMsgId, agentId, deliveryContent, JSON.stringify([attachment]), imageModelId);
-
-            broadcast({
-              type: 'chat:message', agentId,
-              message: {
-                id: deliveryMsgId, agentId, role: 'assistant' as const, content: deliveryContent,
-                tokenCount: null, modelId: imageModelId, cost: null, latencyMs: null,
-                createdAt: new Date().toISOString(),
-                attachments: [attachment],
-              },
-            });
-
-            broadcast({
-              type: 'chat:chunk', agentId,
-              messageId: deliveryMsgId,
-              content: '', done: true, modelId: imageModelId,
-            });
-
-            logger.info('Imaginer: image delivered as assistant message', {
-              requestId, requesterId: agentId, filePath: result.filePath,
-              sizeBytes: result.sizeBytes, latencyMs: result.latencyMs,
-            });
+              if (a2aResult.delivered) {
+                logger.info('Imaginer: image delivered to requester via A2A DELIVERABLE', {
+                  requestId, requesterId: agentId, filePath: result.filePath,
+                  sizeBytes: result.sizeBytes, latencyMs: result.latencyMs,
+                  threadId: a2aResult.threadId,
+                });
+              } else {
+                // A2A delivery itself failed (semantic dedup, hop limit,
+                // agent terminated, etc.). Fall back to writing an error
+                // message to the requesting agent's chat so the user isn't
+                // left staring at silence.
+                logger.error('Imaginer: A2A delivery failed — writing fallback message', {
+                  requestId, requesterId: agentId, reason: a2aResult.reason,
+                });
+                const fallbackId = uuidv4();
+                const fallbackContent = `Image was generated successfully but the delivery failed: ${a2aResult.reason}. The image file is at ${result.filePath}.`;
+                db.prepare(`
+                  INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+                  VALUES (?, ?, 'system', ?, datetime('now'))
+                `).run(fallbackId, agentId, fallbackContent);
+                broadcast({
+                  type: 'chat:message', agentId,
+                  message: {
+                    id: fallbackId, agentId, role: 'system' as const, content: fallbackContent,
+                    tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                    createdAt: new Date().toISOString(),
+                  },
+                });
+              }
+            } catch (deliveryErr) {
+              // Anything unexpected in the delivery path — file copy throws,
+              // module import fails, etc. Surface as a fallback chat message
+              // so silent fails are gone.
+              logger.error('Imaginer: image delivery threw — writing fallback message', {
+                requestId, requesterId: agentId,
+                error: deliveryErr instanceof Error ? deliveryErr.message : String(deliveryErr),
+              });
+              const fallbackId = uuidv4();
+              const fallbackContent = `Image was generated successfully but delivery threw an error: ${deliveryErr instanceof Error ? deliveryErr.message : String(deliveryErr)}. The image file is at ${result.filePath}.`;
+              try {
+                db.prepare(`
+                  INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+                  VALUES (?, ?, 'system', ?, datetime('now'))
+                `).run(fallbackId, agentId, fallbackContent);
+                broadcast({
+                  type: 'chat:message', agentId,
+                  message: {
+                    id: fallbackId, agentId, role: 'system' as const, content: fallbackContent,
+                    tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                    createdAt: new Date().toISOString(),
+                  },
+                });
+              } catch { /* best effort */ }
+            }
 
             // Send via iMessage if user is away or request came from iMessage
             try {
@@ -3517,9 +3548,9 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
 
         content =
           `Image generation started (request_id: ${requestId}). ` +
-          `The finished image will appear in the chat automatically when ready — you do NOT need to do anything else. ` +
-          `Do NOT send another message to the user about this. Your earlier acknowledgment (before this tool call) is sufficient. ` +
-          `Just end your turn now. The image will show up on its own.`;
+          `Imaginer will deliver the finished image to you via send_to_agent with intent=DELIVERABLE in 10-60 seconds. ` +
+          `When the [A2A:DELIVERABLE from:Imaginer] message arrives, present the image to the user with any short commentary that fits — the image attachment will be on that message and will already appear in your chat as a thumbnail. ` +
+          `Just end your turn now. You'll be woken when the image is ready.`;
         break;
       }
 
