@@ -312,10 +312,24 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
         }
 
         const ext = path.extname(srcPath).toLowerCase();
-        const safeName = path.basename(srcPath).replace(/[^a-zA-Z0-9._-]/g, '_');
-        const storedName = `a2a_${Date.now()}_${safeName}`;
-        const destPath = path.join(recipientDir, storedName);
-        fs.copyFileSync(srcPath, destPath);
+
+        // If the caller already placed the file in the recipient's uploads
+        // dir (e.g., image_create pre-copies to a deterministic path so it
+        // can include that path in the message text), skip the re-copy.
+        // Otherwise we'd end up with two identical files and the agent
+        // would not know which one to use.
+        const srcDir = path.dirname(srcPath);
+        const alreadyInRecipientDir = path.resolve(srcDir) === path.resolve(recipientDir);
+
+        let destPath: string;
+        if (alreadyInRecipientDir) {
+          destPath = srcPath;
+        } else {
+          const safeName = path.basename(srcPath).replace(/[^a-zA-Z0-9._-]/g, '_');
+          const storedName = `a2a_${Date.now()}_${safeName}`;
+          destPath = path.join(recipientDir, storedName);
+          fs.copyFileSync(srcPath, destPath);
+        }
 
         attachmentsList.push({
           fileId: uuidv4(),

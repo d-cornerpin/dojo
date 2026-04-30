@@ -614,6 +614,21 @@ export const slidesToolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'slides_add_image_from_local_path',
+    description: 'Insert an image from a LOCAL file path (e.g., an image just delivered by Imaginer at ~/.dojo/uploads/<agent>/...) into a slide. Uploads the file to Drive internally and embeds it in one call — you don\'t have to chain drive_upload + slides_add_image_from_drive yourself. Returns the slide image_id and the Drive file_id (so you can reuse the same upload across multiple slides without re-uploading).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        presentation_id: { type: 'string' },
+        slide_id: { type: 'string' },
+        file_path: { type: 'string', description: 'Absolute local file path. PNG, JPG, JPEG, GIF, or WebP.' },
+        drive_name: { type: 'string', description: 'Optional name for the file once uploaded to Drive. Defaults to the local filename.' },
+        ...geomParams,
+      },
+      required: ['presentation_id', 'slide_id', 'file_path', ...geomRequired],
+    },
+  },
+  {
     name: 'slides_replace_shape_with_image',
     description: 'Find every shape containing placeholder_text and replace it with the image. Useful for template workflows.',
     input_schema: {
@@ -1400,6 +1415,96 @@ export async function executeGoogleSlidesTool(
           }], agentId, agentName, 'slides_add_image_from_drive', { slideId, driveFileId });
           if (!r.ok) return `Error adding Drive image: ${r.error}`;
           return ok({ image_id: imageId });
+        } finally {
+          await prep.cleanup();
+        }
+      }
+
+      case 'slides_add_image_from_local_path': {
+        const presentationId = args.presentation_id as string;
+        const slideId = args.slide_id as string;
+        const filePath = args.file_path as string;
+        const driveName = (args.drive_name as string | undefined) ?? path.basename(filePath);
+        const xPt = args.x_pt as number;
+        const yPt = args.y_pt as number;
+        const widthPt = args.width_pt as number;
+        const heightPt = args.height_pt as number;
+
+        // 1. Read the local file
+        if (!fs.existsSync(filePath)) {
+          return err(`Local file not found: ${filePath}`);
+        }
+        let fileContent: Buffer;
+        try {
+          fileContent = fs.readFileSync(filePath);
+        } catch (readErr) {
+          return err(`Could not read local file ${filePath}: ${readErr instanceof Error ? readErr.message : String(readErr)}`);
+        }
+
+        // 2. Upload to Drive via multipart. Same shape as drive_upload's
+        // case so behavior is consistent.
+        const UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3';
+        const boundary = '---dojo-slides-upload-boundary---';
+        const metadata = JSON.stringify({ name: driveName });
+        const multipartHead = [
+          `--${boundary}`,
+          'Content-Type: application/json; charset=UTF-8',
+          '',
+          metadata,
+          `--${boundary}`,
+          'Content-Type: application/octet-stream',
+          '',
+        ].join('\r\n');
+        const bodyBuffer = Buffer.concat([
+          Buffer.from(multipartHead + '\r\n'),
+          fileContent,
+          Buffer.from(`\r\n--${boundary}--`),
+        ]);
+
+        const uploadResult = await googleWrite(
+          'POST',
+          `${UPLOAD_BASE}/files?uploadType=multipart`,
+          bodyBuffer.toString('base64'),
+          agentId, agentName, 'slides_add_image_from_local_path',
+          { filePath, driveName, slideId },
+          `multipart/related; boundary=${boundary}`,
+        );
+        if (!uploadResult.ok) {
+          return `Error uploading file to Drive: ${uploadResult.error}`;
+        }
+        const uploadData = uploadResult.data as { id?: string; name?: string };
+        const driveFileId = uploadData?.id;
+        if (!driveFileId) {
+          return err('Drive upload returned no file ID');
+        }
+
+        // 3. Reuse the same prepare-then-create-image path as
+        // slides_add_image_from_drive so behavior matches exactly.
+        const prep = await prepareDriveImageUrl(driveFileId, agentId, agentName, 'slides_add_image_from_local_path');
+        if (!prep.ok || !prep.url) {
+          return err(prep.error ?? 'Failed to prepare Drive image URL');
+        }
+
+        try {
+          const imageId = genId('img');
+          const r = await batchUpdate(presentationId, [{
+            createImage: {
+              objectId: imageId,
+              url: prep.url,
+              elementProperties: {
+                pageObjectId: slideId,
+                size: pageSize(widthPt, heightPt),
+                transform: pageTransform(xPt, yPt),
+              },
+            },
+          }], agentId, agentName, 'slides_add_image_from_local_path', { slideId, driveFileId });
+          if (!r.ok) return `Error adding image to slide: ${r.error}`;
+          return ok({
+            image_id: imageId,
+            drive_file_id: driveFileId,
+            drive_file_name: uploadData.name ?? driveName,
+            note: 'Image uploaded to Drive once and embedded. To reuse the same image on another slide without re-uploading, call slides_add_image_from_drive with this drive_file_id.',
+          });
         } finally {
           await prep.cleanup();
         }

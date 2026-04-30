@@ -237,6 +237,17 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
     // They still cannot send email, edit docs, or modify Drive files directly.
     filtered.push(...googleReadToolDefinitions.filter(t => isToolEnabledByService(t.name)));
     filtered.push(...slidesToolDefinitions.filter(t => isToolEnabledByService(t.name)));
+    // drive_upload is also exposed because it's the only way to get a local
+    // file (e.g. an Imaginer-generated image) into a deck via
+    // slides_add_image_from_drive. Without it the Slides toolkit is half
+    // broken for any deck that needs an inline image. The upload goes into
+    // the dojo owner's Drive — same account these read-tier agents already
+    // have read access to — so the trust delta is small.
+    filtered.push(
+      ...googleWriteToolDefinitions
+        .filter(t => t.name === 'drive_upload')
+        .filter(t => isToolEnabledByService(t.name)),
+    );
   }
   // googleAccess === 'none': no Google tools added
 
@@ -3444,9 +3455,52 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
             // an inbound delivery, (b) wakes them to respond/forward to the
             // user, and (c) carries the image attachment via the standard
             // A2A pipeline that already handles attachments + broadcasts.
+            // Pre-copy the generated image into the requester's uploads dir
+            // at a deterministic path so we can tell the agent EXACTLY where
+            // to find the file. Without this, the agent gets the image via
+            // vision but doesn't know the on-disk path — which they need
+            // for downstream tools like drive_upload + slides_add_image_from_drive.
+            // a2a-transport.ts now skips its own re-copy when the source is
+            // already in the recipient's uploads dir, so no duplicate file.
+            const fs = (await import('node:fs')).default;
+            const path = (await import('node:path')).default;
+            const os = (await import('node:os')).default;
+            const recipientDir = path.join(os.homedir(), '.dojo', 'uploads', agentId);
+            if (!fs.existsSync(recipientDir)) fs.mkdirSync(recipientDir, { recursive: true });
+            const stableFilename = `imaginer_${requestId}_${result.filename}`;
+            const stablePath = path.join(recipientDir, stableFilename);
+            let deliveredPath = result.filePath;
+            try {
+              fs.copyFileSync(result.filePath, stablePath);
+              deliveredPath = stablePath;
+            } catch (copyErr) {
+              logger.warn('Imaginer: pre-copy to requester uploads dir failed — falling back to original path', {
+                requestId, src: result.filePath, dest: stablePath,
+                error: copyErr instanceof Error ? copyErr.message : String(copyErr),
+              });
+            }
+
             try {
               const { deliverA2AMessage, makeThreadId } = await import('./a2a-transport.js');
-              const deliveryPayload = `Here is the image you requested (request_id: ${requestId}).\n\nOriginal request: "${description}"\n\nThe image is attached. Present it to the user with whatever commentary fits the conversation. The thread is closed — do not reply to me; respond to the user instead.`;
+              const deliveryPayload = `Here is the image you requested (request_id: ${requestId}).
+
+Original request: "${description}"
+
+The image is attached above (visible to your model via vision). The file is saved on disk at:
+${deliveredPath}
+
+Use that exact path with downstream tools — for example:
+  • To embed this image directly into a Google Slides deck (one shot):
+      slides_add_image_from_local_path(
+        presentation_id=..., slide_id=..., file_path="${deliveredPath}",
+        x_pt=..., y_pt=..., width_pt=..., height_pt=...
+      )
+  • Or, if you want to reuse the same upload across multiple slides:
+      drive_upload(file_path="${deliveredPath}", name="${result.filename}")  // returns a Drive file_id
+      slides_add_image_from_drive(presentation_id=..., slide_id=..., drive_file_id=..., ...)
+  • To inspect the image more closely: file_read(path="${deliveredPath}")
+
+Present the image to the user with whatever commentary fits the conversation. The thread is closed — do not reply to me; respond to the user instead.`;
               const a2aResult = await deliverA2AMessage({
                 intent: 'DELIVERABLE',
                 threadId: makeThreadId(`image-${requestId}`),
@@ -3454,7 +3508,7 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
                 payload: deliveryPayload,
                 toAgent: agentId,
                 fromAgent: imaginerId,
-                attachPaths: [result.filePath],
+                attachPaths: [deliveredPath],
               });
 
               if (a2aResult.delivered) {
@@ -3472,7 +3526,7 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
                   requestId, requesterId: agentId, reason: a2aResult.reason,
                 });
                 const fallbackId = uuidv4();
-                const fallbackContent = `Image was generated successfully but the delivery failed: ${a2aResult.reason}. The image file is at ${result.filePath}.`;
+                const fallbackContent = `Image was generated successfully but the delivery failed: ${a2aResult.reason}. The image file is at ${deliveredPath}.`;
                 db.prepare(`
                   INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
                   VALUES (?, ?, 'system', ?, datetime('now'))
@@ -3495,7 +3549,7 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
                 error: deliveryErr instanceof Error ? deliveryErr.message : String(deliveryErr),
               });
               const fallbackId = uuidv4();
-              const fallbackContent = `Image was generated successfully but delivery threw an error: ${deliveryErr instanceof Error ? deliveryErr.message : String(deliveryErr)}. The image file is at ${result.filePath}.`;
+              const fallbackContent = `Image was generated successfully but delivery threw an error: ${deliveryErr instanceof Error ? deliveryErr.message : String(deliveryErr)}. The image file is at ${deliveredPath}.`;
               try {
                 db.prepare(`
                   INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
