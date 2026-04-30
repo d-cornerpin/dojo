@@ -827,6 +827,30 @@ export const slidesToolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'slides_export_pngs',
+    description: 'Export Google Slides as individual PNG files so a vision-capable agent can actually look at how the slides render. Returns a list of {slide_index, page_id, path, width, height}. After this tool returns, call file_read on each path to load the image into context — your model must support vision for this to be useful. Tip: export only the slides you need (slide_indices) rather than the whole deck, since each loaded image consumes a lot of context tokens.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        presentation_id: {
+          type: 'string',
+          description: 'The Google Slides presentation ID.',
+        },
+        slide_indices: {
+          type: 'array',
+          items: { type: 'number' },
+          description: 'Optional 0-based slide indices to export (e.g., [0, 2, 5] for the first, third, and sixth slides). Omit to export every slide in the deck.',
+        },
+        thumbnail_size: {
+          type: 'string',
+          enum: ['SMALL', 'MEDIUM', 'LARGE'],
+          description: 'Thumbnail resolution. LARGE (~1600px on the longest side) is best for vision review; MEDIUM/SMALL produce smaller files for quick previews. Default: LARGE.',
+        },
+      },
+      required: ['presentation_id'],
+    },
+  },
+  {
     name: 'slides_delete_element',
     description: 'Delete any page element by object ID.',
     input_schema: {
@@ -2133,6 +2157,118 @@ export async function executeGoogleSlidesTool(
           };
         });
         return ok({ elements });
+      }
+
+      case 'slides_export_pngs': {
+        const presentationId = args.presentation_id as string;
+        const requestedIndices = Array.isArray(args.slide_indices)
+          ? (args.slide_indices as unknown[]).filter((n): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0)
+          : null;
+        const thumbnailSize = (() => {
+          const raw = (args.thumbnail_size as string | undefined)?.toUpperCase();
+          if (raw === 'SMALL' || raw === 'MEDIUM' || raw === 'LARGE') return raw;
+          return 'LARGE';
+        })();
+
+        // 1. Enumerate slides in the deck
+        const pres = await getPresentation(presentationId, agentId, agentName, 'slides_export_pngs');
+        if (!pres.ok) return `Error reading presentation: ${pres.error}`;
+        const allSlides = (pres.data as { slides?: Array<{ objectId?: string }> }).slides ?? [];
+        if (allSlides.length === 0) return err('Presentation has no slides');
+
+        // 2. Filter to requested indices (default: all)
+        const targetSlides = requestedIndices !== null
+          ? requestedIndices
+              .filter(i => i < allSlides.length)
+              .map(i => ({ index: i, pageId: allSlides[i].objectId as string | undefined }))
+              .filter((s): s is { index: number; pageId: string } => Boolean(s.pageId))
+          : allSlides
+              .map((s, i) => ({ index: i, pageId: s.objectId as string | undefined }))
+              .filter((s): s is { index: number; pageId: string } => Boolean(s.pageId));
+
+        if (targetSlides.length === 0) {
+          return err(`No valid slides matched the requested indices. Deck has ${allSlides.length} slides.`);
+        }
+
+        // 3. Prepare output dir under the calling agent's uploads tree.
+        // file_read permissions on this path follow whatever the agent has,
+        // typically '*' for primary or the agent's own uploads dir.
+        const recipientDir = path.join(os.homedir(), '.dojo', 'uploads', agentId);
+        if (!fs.existsSync(recipientDir)) fs.mkdirSync(recipientDir, { recursive: true });
+
+        // 4. For each slide, request a thumbnail URL then download the PNG bytes.
+        // The Slides thumbnail endpoint returns a temporary signed contentUrl
+        // (no auth header needed for the actual image fetch). Run sequentially
+        // — Google rate-limits parallel requests on the same presentation.
+        interface ExportedSlide {
+          slide_index: number;
+          page_id: string;
+          path: string;
+          width: number;
+          height: number;
+        }
+        const exported: ExportedSlide[] = [];
+        const errors: string[] = [];
+        const ts = Date.now();
+
+        for (const { index, pageId } of targetSlides) {
+          const thumbUrl =
+            `${SLIDES_BASE}/${encodeURIComponent(presentationId)}` +
+            `/pages/${encodeURIComponent(pageId)}/thumbnail` +
+            `?thumbnailProperties.thumbnailSize=${thumbnailSize}` +
+            `&thumbnailProperties.mimeType=PNG`;
+
+          const thumbResp = await googleRead(
+            thumbUrl, agentId, agentName, 'slides_export_pngs',
+            { presentationId, pageId, slideIndex: index, thumbnailSize },
+          );
+          if (!thumbResp.ok) {
+            errors.push(`slide ${index}: ${thumbResp.error ?? 'thumbnail request failed'}`);
+            continue;
+          }
+          const thumbData = thumbResp.data as { contentUrl?: string; width?: number; height?: number };
+          if (!thumbData.contentUrl) {
+            errors.push(`slide ${index}: thumbnail response missing contentUrl`);
+            continue;
+          }
+
+          // Fetch the actual PNG bytes from the signed contentUrl.
+          // No auth header — the URL is pre-signed and short-lived.
+          try {
+            const imgResp = await fetch(thumbData.contentUrl, { signal: AbortSignal.timeout(30_000) });
+            if (!imgResp.ok) {
+              errors.push(`slide ${index}: download HTTP ${imgResp.status}`);
+              continue;
+            }
+            const buf = Buffer.from(await imgResp.arrayBuffer());
+            const filename = `slides_${presentationId.slice(0, 8)}_${ts}_${String(index).padStart(3, '0')}.png`;
+            const outPath = path.join(recipientDir, filename);
+            fs.writeFileSync(outPath, buf);
+            exported.push({
+              slide_index: index,
+              page_id: pageId,
+              path: outPath,
+              width: thumbData.width ?? 0,
+              height: thumbData.height ?? 0,
+            });
+          } catch (downloadErr) {
+            const msg = downloadErr instanceof Error ? downloadErr.message : String(downloadErr);
+            errors.push(`slide ${index}: download threw — ${msg}`);
+          }
+        }
+
+        if (exported.length === 0) {
+          return err(`No slides exported. Errors: ${errors.join('; ')}`);
+        }
+
+        return ok({
+          presentation_id: presentationId,
+          thumbnail_size: thumbnailSize,
+          exported_count: exported.length,
+          slides: exported,
+          errors: errors.length > 0 ? errors : undefined,
+          next_step: 'Call file_read on each path to load the image into context (vision-capable model required).',
+        });
       }
 
       case 'slides_delete_element': {
