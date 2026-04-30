@@ -1,17 +1,76 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { estimateTokens, getMessagesOutsideFreshTail, getRecentMessages, getTotalTokensByAgent } from './store.js';
+import { estimateTokens, getMessagesOutsideFreshTail, getRecentMessages } from './store.js';
 import {
   createLeafSummary,
   createCondensedSummary,
   getLeafSummariesNotCondensed,
   getCompactedMessageIds,
+  getContextSummaries,
   replaceContextItems,
 } from './dag.js';
 import { generateSummary } from './summarize.js';
 import { archiveMessagesBeforeCompaction, isDreamerIgnored } from '../vault/archive.js';
 import type { Message } from '@dojo/shared';
+
+// ── Assembled-context token estimate ──
+//
+// This is the right metric to gate compaction on: what the assembler will
+// actually load into the next model call. Pre-2026-04-30 we summed every
+// message ever written to the messages table this session, which never went
+// down after compaction (raw messages are preserved for archive/search even
+// when their content has been folded into summaries). Result: total tokens
+// climbed monotonically into millions and compaction fired every turn,
+// burning the model budget on summaries while the agent's effective context
+// stayed pinned at the fresh-tail size.
+//
+// The assembler loads:
+//   - summaries pinned to context_items (top-level DAG nodes)
+//   - the fresh tail (last N raw messages, sized by contextWindow)
+//   - the continuity brief (a short snapshot stored in agent config)
+//   - vault snippets and tracker tasks (variable, bounded by their own logic)
+//
+// We approximate the compressible portion: summaries + fresh tail + brief.
+// Vault and active tasks aren't compressible by this engine, so leaving
+// them out of the gating metric is correct.
+function estimateAssembledTokens(agentId: string, contextWindow: number): {
+  total: number;
+  summaryTokens: number;
+  freshTailTokens: number;
+  briefTokens: number;
+  freshTailCount: number;
+  summaryCount: number;
+} {
+  const summaries = getContextSummaries(agentId);
+  const summaryTokens = summaries.reduce((sum, s) => sum + (s.tokenCount ?? 0), 0);
+
+  const freshTail = getRecentMessages(agentId, getCompactionTailCount(contextWindow));
+  const freshTailTokens = freshTail.reduce(
+    (sum, m) => sum + (m.tokenCount ?? estimateTokens(m.content)),
+    0,
+  );
+
+  let briefTokens = 0;
+  try {
+    const db = getDb();
+    const row = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
+    if (row?.config) {
+      const cfg = JSON.parse(row.config) as Record<string, unknown>;
+      const brief = cfg.continuityBrief as string | undefined;
+      if (brief) briefTokens = estimateTokens(brief);
+    }
+  } catch { /* best effort */ }
+
+  return {
+    total: summaryTokens + freshTailTokens + briefTokens,
+    summaryTokens,
+    freshTailTokens,
+    briefTokens,
+    freshTailCount: freshTail.length,
+    summaryCount: summaries.length,
+  };
+}
 
 const logger = createLogger('memory-compaction');
 
@@ -64,13 +123,19 @@ export async function checkAndCompact(
     }
   }
 
-  const totalTokens = getTotalTokensByAgent(agentId);
+  const assembled = estimateAssembledTokens(agentId, contextWindow);
+  const totalTokens = assembled.total;
   const threshold = DEFAULTS.contextThreshold * contextWindow;
 
   const force = options?.force ?? false;
 
-  logger.info(`Compaction check: ${totalTokens} total tokens, threshold at ${Math.round(threshold)} (${Math.round(DEFAULTS.contextThreshold * 100)}% of ${contextWindow})${force ? ' [FORCED]' : ''}`, {
-    totalTokens,
+  logger.info(`Compaction check: assembled=${totalTokens} (summaries=${assembled.summaryTokens}, freshTail=${assembled.freshTailTokens}, brief=${assembled.briefTokens}), threshold=${Math.round(threshold)} (${Math.round(DEFAULTS.contextThreshold * 100)}% of ${contextWindow})${force ? ' [FORCED]' : ''}`, {
+    assembledTokens: totalTokens,
+    summaryTokens: assembled.summaryTokens,
+    freshTailTokens: assembled.freshTailTokens,
+    briefTokens: assembled.briefTokens,
+    freshTailCount: assembled.freshTailCount,
+    summaryCount: assembled.summaryCount,
     threshold: Math.round(threshold),
     contextWindow,
     needsCompaction: totalTokens > threshold,
@@ -80,7 +145,7 @@ export async function checkAndCompact(
   if (force || totalTokens > threshold) {
     // Full reactive compaction
     logger.info('Running full reactive compaction', {
-      totalTokens,
+      assembledTokens: totalTokens,
       threshold,
     }, agentId);
 
@@ -112,7 +177,7 @@ export async function checkAndCompact(
     const condensedCreated = await runCondensation(agentId, modelId, DEFAULTS.incrementalMaxDepth);
     rebuildContextItems(agentId);
 
-    const tokensAfter = getTotalTokensByAgent(agentId);
+    const tokensAfter = estimateAssembledTokens(agentId, contextWindow).total;
     const tokensReclaimed = tokensBefore - tokensAfter;
 
     const result = { leafCreated, condensedCreated, tokensReclaimed: Math.max(tokensReclaimed, 0) };
@@ -378,9 +443,46 @@ Be SPECIFIC. Include file paths, task IDs, names, numbers, and any details the a
 
 Write the brief directly — no preamble.`;
 
+// Don't regenerate the brief if a fresh one already exists. Compaction can
+// fire several times in a row when assembled context hovers around the
+// threshold; without this guard the brief is overwritten before the agent
+// has a chance to read it. 5 minutes is generous enough that the agent has
+// ALMOST CERTAINLY had a turn or two with the existing brief in context.
+const BRIEF_OVERWRITE_GUARD_MS = 5 * 60 * 1000;
+
+// Brief target size. Pre-2026-04-30 this was 800 tokens, which was too
+// small to capture file paths, task IDs, current step in a multi-step
+// process, etc. — exactly the load-bearing details the brief is supposed to
+// preserve through compaction. 2500 tokens fits comfortably in the assembler
+// budget while leaving room for the genuinely critical context the agent
+// needs to keep working.
+const BRIEF_TARGET_TOKENS = 2500;
+
 async function generateContinuityBrief(agentId: string, modelId: string, contextWindow: number): Promise<void> {
   try {
     const db = getDb();
+
+    // Skip if a fresh brief already exists. Stored via continuityBriefAt
+    // (ISO timestamp); legacy briefs without a timestamp are treated as
+    // stale so they get replaced once.
+    try {
+      const cfgRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
+      if (cfgRow?.config) {
+        const cfg = JSON.parse(cfgRow.config) as Record<string, unknown>;
+        const existingBrief = cfg.continuityBrief as string | undefined;
+        const existingAt = cfg.continuityBriefAt as string | undefined;
+        if (existingBrief && existingAt) {
+          const ageMs = Date.now() - new Date(existingAt).getTime();
+          if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < BRIEF_OVERWRITE_GUARD_MS) {
+            logger.info('Skipping continuity brief regen — existing brief is fresh', {
+              ageSeconds: Math.round(ageMs / 1000),
+              guardSeconds: Math.round(BRIEF_OVERWRITE_GUARD_MS / 1000),
+            }, agentId);
+            return;
+          }
+        }
+      }
+    } catch { /* best effort */ }
 
     // Gather ALL current messages (the full context window the agent has right now)
     const allMessages = getRecentMessages(agentId, getFreshTailCount(contextWindow) * 2);
@@ -401,12 +503,13 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
     logger.info('Generating pre-compaction continuity brief', {
       messageCount: allMessages.length,
       inputChars: input.length,
+      targetTokens: BRIEF_TARGET_TOKENS,
     }, agentId);
 
     const result = await generateSummary({
       content: input,
       depth: 0,
-      targetTokens: 800, // Concise but detailed enough to be useful
+      targetTokens: BRIEF_TARGET_TOKENS,
       agentId,
       modelId,
       previousContext: CONTINUITY_BRIEF_PROMPT,
@@ -419,7 +522,9 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
 
     // Store the brief in the agent's config JSON. The context assembler reads
     // it and injects it at assembly time — no messages, no wasted turns, no
-    // chat feed clutter. The brief persists until the next compaction replaces it.
+    // chat feed clutter. continuityBriefAt is the source of truth for the
+    // overwrite guard above.
+    const nowIso = new Date().toISOString();
     const briefTimestamp = new Date().toLocaleString('en-US', {
       year: 'numeric', month: 'short', day: 'numeric',
       hour: '2-digit', minute: '2-digit', hour12: true,
@@ -428,9 +533,9 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
     const briefContent = `[CONTINUITY BRIEF — ${briefTimestamp}, generated before memory compaction]\n${result.text}\n\nYour older conversation history has been archived to the vault. If you need details beyond what's in this brief, use vault_search or memory_grep to find specific facts, file paths, decisions, or instructions from your earlier conversation.`;
 
     db.prepare(`
-      UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.continuityBrief', ?)
+      UPDATE agents SET config = json_set(json_set(COALESCE(config, '{}'), '$.continuityBrief', ?), '$.continuityBriefAt', ?)
       WHERE id = ?
-    `).run(briefContent, agentId);
+    `).run(briefContent, nowIso, agentId);
 
     logger.info('Continuity brief stored in agent config', {
       briefTokens: result.tokenCount,
