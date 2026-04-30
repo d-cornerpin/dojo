@@ -282,6 +282,17 @@ export function stopAgent(agentId: string): void {
 const MAX_TOOL_LOOPS = 75; // Maximum tool call loops per turn (raised from 25 — real work often needs 30-50+ calls)
 const TURN_TIME_BUDGET_MS = 15 * 60 * 1000; // 15 minute max per turn (local Ollama models can be slow)
 
+// When a turn hits the time budget, the engine no longer hard-stops the
+// agent and waits for the user to send a follow-up. Instead it forces a
+// compaction (the long-running turn has bloated context) and queues a
+// wakeup so the agent picks up where it left off. This counter caps the
+// number of consecutive auto-continuations per agent, so a genuinely
+// stuck/looping agent eventually stops instead of grinding forever.
+// At 15 min/budget × 3 caps, that's roughly 45-60 min of autonomous
+// work before the engine stops and asks the user for direction.
+const MAX_TURN_AUTO_CONTINUATIONS = 3;
+const turnContinuationCounts = new Map<string, number>();
+
 class AgentRuntime {
   async handleMessage(agentId: string, content: string): Promise<void> {
     // If agent is already running, queue a wakeup so we re-run after current loop finishes
@@ -618,13 +629,61 @@ class AgentRuntime {
     while (loopCount < MAX_TOOL_LOOPS) {
       loopCount++;
 
-      // Check turn time budget
+      // ── Turn time budget — auto-continue, don't halt ──
+      // Pre-2026-04-30 this hard-stopped the agent and dumped a "send a
+      // follow-up message to continue" note in their chat, defeating
+      // autonomy. Now we treat the budget as a *checkpoint*: force a
+      // compaction (the long-running turn bloated context), persist a
+      // brief system note so the user/agent knows what happened, and
+      // queue a wakeup. The agent's next turn picks up where it left
+      // off — checks in_progress tracker tasks, resumes work.
+      // After MAX_TURN_AUTO_CONTINUATIONS consecutive checkpoints the
+      // engine gives up and stops, which usually indicates a stuck loop.
       if (Date.now() - turnStartMs > TURN_TIME_BUDGET_MS) {
-        logger.warn('Turn time budget exceeded', { elapsed: Date.now() - turnStartMs, agentId }, agentId);
-        const sysMsg = `[System: This turn exceeded the ${TURN_TIME_BUDGET_MS / 60000} minute time budget and has been stopped. Send a follow-up message to continue.]`;
+        const elapsedMin = Math.round((Date.now() - turnStartMs) / 60000);
+        const continuationCount = (turnContinuationCounts.get(agentId) ?? 0) + 1;
+
+        if (continuationCount > MAX_TURN_AUTO_CONTINUATIONS) {
+          // Cap hit — stop auto-continuing. Reset the counter so the next
+          // run from a fresh user message starts clean.
+          turnContinuationCounts.delete(agentId);
+          logger.error('Turn auto-continuation cap reached — stopping', {
+            elapsedMin, continuationCount, max: MAX_TURN_AUTO_CONTINUATIONS, agentId,
+          }, agentId);
+          const stuckMsg = `[System: This work has been auto-continuing for ${MAX_TURN_AUTO_CONTINUATIONS + 1} turns of ${TURN_TIME_BUDGET_MS / 60000} minutes each (≈${(MAX_TURN_AUTO_CONTINUATIONS + 1) * (TURN_TIME_BUDGET_MS / 60000)} minutes total) without finishing. Pausing here — this usually means a stuck loop, an over-scoped task, or a slow model. The user can send a follow-up message to resume, or break the work into smaller pieces.]`;
+          const stuckId = uuidv4();
+          db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))`).run(stuckId, agentId, stuckMsg);
+          broadcast({ type: 'chat:message', agentId, message: { id: stuckId, agentId, role: 'system' as const, content: stuckMsg, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
+          break;
+        }
+
+        turnContinuationCounts.set(agentId, continuationCount);
+        logger.warn('Turn time budget reached — auto-continuing with forced compaction', {
+          elapsedMin, continuationCount, agentId,
+        }, agentId);
+
+        // Force a compaction so the next turn starts with summarized
+        // history rather than the full bloated context. Best-effort —
+        // if it fails we still queue the wakeup. The agent's continuity
+        // brief (written by compaction) gives them the "where I left off"
+        // context.
+        try {
+          await checkAndCompact(agentId, lastUsedModelId, getContextWindow(lastUsedModelId), { force: true });
+        } catch (compErr) {
+          logger.warn('Forced compaction at turn-budget checkpoint failed', {
+            agentId, error: compErr instanceof Error ? compErr.message : String(compErr),
+          }, agentId);
+        }
+
+        const sysMsg = `[System: This turn ran for ${elapsedMin} minutes — pausing for context health and auto-continuing (continuation ${continuationCount} of ${MAX_TURN_AUTO_CONTINUATIONS}). The conversation history has been compacted; you have a continuity brief for context. On the next turn, check tracker_list_active for any in_progress task you were working on and pick up exactly where you left off — do not start over.]`;
         const sysMsgId = uuidv4();
         db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))`).run(sysMsgId, agentId, sysMsg);
         broadcast({ type: 'chat:message', agentId, message: { id: sysMsgId, agentId, role: 'system' as const, content: sysMsg, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
+
+        // Queue a wakeup so the loop fires again after the current turn
+        // exits. The handleMessage finally block already processes
+        // pendingWakeups with a small delay.
+        pendingWakeups.add(agentId);
         break;
       }
 
@@ -1029,6 +1088,11 @@ class AgentRuntime {
         // Final response — unlock model for next user message
         lockedModelId = null;
         lockedTier = null;
+        // Clean turn end — reset the time-budget continuation counter so
+        // the next turn from a fresh user message starts with a full
+        // budget. (If the agent had auto-continued mid-task and finally
+        // reached a clean stop, that counts as success.)
+        turnContinuationCounts.delete(agentId);
         break;
       }
 
