@@ -1428,6 +1428,17 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['name'],
     },
   },
+  {
+    name: 'technique_list_versions',
+    description: 'List the on-disk version history of a technique. Returns each version\'s number, change summary, who made it, when, and the absolute file path you can `file_read` to inspect the prior content. Use this when you (the Trainer) need to look at how a technique evolved or restore a prior version. The current TECHNIQUE.md is always the latest version; older versions live in <technique-dir>/versions/TECHNIQUE_v{N}.md.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Technique ID (slug) to list versions for' },
+      },
+      required: ['name'],
+    },
+  },
 
   // ── Vault (Long-Term Memory) ──
 
@@ -3679,6 +3690,34 @@ Present the image to the user with whatever short commentary fits. Do NOT reply 
         } else {
           content = `Error: technique "${techName}" not found.`;
           isError = true;
+        }
+        break;
+      }
+
+      case 'technique_list_versions': {
+        const techName = args.name as string;
+        if (!techName) { content = 'Error: technique name is required'; isError = true; break; }
+        const { getTechnique } = await import('../techniques/store.js');
+        const tech = getTechnique(techName);
+        if (!tech) { content = `Error: technique "${techName}" not found.`; isError = true; break; }
+        const { listDiskVersions, backfillDiskVersionsFromDb } = await import('../techniques/versioning.js');
+        let versions = listDiskVersions(tech.directoryPath);
+        if (versions.length === 0) {
+          // First call after upgrading to v1.15.97 — hydrate disk from the
+          // DB so techniques that pre-date the disk-snapshot system still
+          // expose their history through file_read.
+          const written = backfillDiskVersionsFromDb(techName, tech.directoryPath);
+          if (written > 0) {
+            versions = listDiskVersions(tech.directoryPath);
+          }
+        }
+        if (versions.length === 0) {
+          content = `Technique "${techName}" has no version snapshots yet. The first snapshot is written on the next update_technique call.`;
+        } else {
+          const lines = versions.map(v =>
+            `v${v.versionNumber} — ${v.createdAt ?? 'unknown date'} by ${v.changedBy ?? 'unknown'}: ${v.changeSummary ?? '(no summary)'}\n  file: ${v.filePath} (${v.sizeBytes} bytes)`,
+          );
+          content = `Technique "${techName}" — ${versions.length} version(s) on disk (newest first):\n\n${lines.join('\n\n')}\n\nUse file_read with the listed paths to view any prior version. Current TECHNIQUE.md (latest version) is at ${tech.directoryPath}/TECHNIQUE.md.`;
         }
         break;
       }

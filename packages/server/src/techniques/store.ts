@@ -9,6 +9,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
+import { writeDiskVersionSnapshot } from './versioning.js';
 
 const logger = createLogger('technique-store');
 
@@ -127,12 +128,18 @@ export function createTechnique(params: CreateTechniqueParams): TechniqueMetadat
     params.publish ? new Date().toISOString() : null,
   );
 
-  // Create version 1 snapshot
+  // Create version 1 snapshot (DB + disk).
   const filesSnapshot = getFilesSnapshot(dirPath);
+  const createdAt = new Date().toISOString();
   db.prepare(`
     INSERT INTO technique_versions (id, technique_id, version_number, technique_md, changed_by, change_summary, files_snapshot, created_at)
     VALUES (?, ?, 1, ?, ?, 'Initial version', ?, datetime('now'))
   `).run(uuidv4(), id, params.instructions, params.authorAgentId ?? 'system', JSON.stringify(filesSnapshot));
+  writeDiskVersionSnapshot(dirPath, 1, params.instructions, {
+    changedBy: params.authorAgentId ?? 'system',
+    changeSummary: 'Initial version',
+    createdAt,
+  });
 
   logger.info('Technique created', { id, name: params.displayName, state });
 
@@ -254,12 +261,18 @@ export function updateTechniqueInstructions(id: string, content: string, changeS
   const db = getDb();
   db.prepare("UPDATE techniques SET version = ?, updated_at = datetime('now') WHERE id = ?").run(newVersion, id);
 
-  // Create version snapshot
+  // Create version snapshot (DB + disk so the Trainer can file_read prior versions).
   const filesSnapshot = getFilesSnapshot(technique.directoryPath);
+  const createdAt = new Date().toISOString();
   db.prepare(`
     INSERT INTO technique_versions (id, technique_id, version_number, technique_md, changed_by, change_summary, files_snapshot, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `).run(uuidv4(), id, newVersion, content, changedBy ?? 'system', changeSummary, JSON.stringify(filesSnapshot));
+  writeDiskVersionSnapshot(technique.directoryPath, newVersion, content, {
+    changedBy: changedBy ?? 'system',
+    changeSummary,
+    createdAt,
+  });
 
   logger.info('Technique instructions updated', { id, version: newVersion, changedBy });
 
