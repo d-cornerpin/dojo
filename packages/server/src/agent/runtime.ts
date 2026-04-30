@@ -596,18 +596,13 @@ class AgentRuntime {
         onAgentInjured(agentId, message);
       }).catch(() => { /* module may not be available */ });
 
-      // Notify the primary agent that a sub-agent is now injured so it
-      // knows work delegated to that agent has stalled. Without this, the
-      // primary has no way to tell its delegate hit a wall and will keep
-      // waiting forever. Skip when the injured agent IS the primary
-      // (no point notifying yourself), or is a known system agent whose
-      // state the primary isn't supposed to manage.
-      this.notifyPrimaryOfInjury(agentId, message, paused).catch(err => {
-        logger.warn('notifyPrimaryOfInjury failed', {
-          agentId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
+      // The primary agent is notified later — from injury-recovery's
+      // notifyHealerOfInjury after the engine auto-wake + grace period
+      // have already failed to unstick the agent. Pre-2026-04-30 this
+      // fired immediately on every injury, which meant transient rate
+      // limits and network blips alerted the primary even when the agent
+      // self-recovered seconds later. The new path keeps the primary in
+      // the loop only for agents that genuinely need help.
 
       // Broadcast error to dashboard with structured code — include root cause
       const isRateLimit = message.toLowerCase().includes('429') || message.toLowerCase().includes('rate_limit') || message.toLowerCase().includes('overloaded');
@@ -1642,10 +1637,14 @@ class AgentRuntime {
 
   // When a sub-agent transitions into 'error' or 'paused' (injured/paused),
   // drop a [SYSTEM] message into the primary agent's chat so it finds out
-  // immediately instead of discovering later that its delegate never
-  // responded. Injected as role='system' so the primary sees it on its
-  // next turn but is not forced to reply.
-  private async notifyPrimaryOfInjury(
+  // its delegate stalled. Injected as role='system' so the primary sees it
+  // on its next turn but is not forced to reply.
+  //
+  // This is now called from injury-recovery's notifyHealerOfInjury AFTER
+  // the engine auto-wake + grace period have run, so the primary is only
+  // told about agents that genuinely need help — transient rate-limit /
+  // network errors that self-resolve never trigger this alert.
+  public async notifyPrimaryOfInjury(
     injuredAgentId: string,
     errorMessage: string,
     pausedByLoop: boolean,
@@ -1693,7 +1692,7 @@ class AgentRuntime {
       }
       parts.push('');
       parts.push(
-        `Options: (a) reset_session(agent_id="${injuredAgentId}") to heal them and let them retry, (b) reassign their work to another agent, or (c) escalate to the user. Do NOT wait indefinitely — they will not recover on their own.`,
+        `Auto-recovery (engine retry + grace period) already ran and did not unstick them. Options: (a) reset_session(agent_id="${injuredAgentId}") to heal them and let them retry, (b) reassign their work to another agent, or (c) escalate to the user. The Healer agent is also being notified in parallel — if they post a recovery action shortly, you can wait it out before stepping in.`,
       );
 
       const content = parts.join('\n');

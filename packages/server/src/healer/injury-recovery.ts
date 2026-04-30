@@ -271,6 +271,23 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
       return;
     }
 
+    // Notify the primary agent in parallel with the Healer. Pre-2026-04-30
+    // the primary was alerted at the moment of injury, before auto-wake
+    // and grace period had a chance to clear transient errors — so a
+    // momentary 429 would fire a misleading "they will not recover on
+    // their own" message even though the agent self-resolved seconds
+    // later. Doing it here means the primary only hears about agents that
+    // genuinely need help.
+    try {
+      const { getAgentRuntime } = await import('../agent/runtime.js');
+      const pausedByLoop = agent.status === 'paused';
+      await getAgentRuntime().notifyPrimaryOfInjury(agentId, agent.last_error ?? errorMessage, pausedByLoop);
+    } catch (err) {
+      logger.warn('Primary-agent injury notification failed', {
+        agentId, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     const healerRow = db.prepare("SELECT value FROM config WHERE key = 'healer_agent_id'")
       .get() as { value: string } | undefined;
     const healerId = healerRow?.value ?? 'healer';
