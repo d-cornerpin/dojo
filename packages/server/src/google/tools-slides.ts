@@ -843,7 +843,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'slides_export_pngs',
-    description: 'Export Google Slides as individual PNG files so a vision-capable agent can actually look at how the slides render. Returns a list of {slide_index, page_id, path, width, height}. After this tool returns, call file_read on each path to load the image into context — your model must support vision for this to be useful. Tip: export only the slides you need (slide_indices) rather than the whole deck, since each loaded image consumes a lot of context tokens.',
+    description: 'Export Google Slides as individual PNG files so a vision-capable agent can actually look at how the slides render. Returns a list of {slide_index, page_id, path, width, height}. After this tool returns, call file_read on each path to load the image into context. REQUIRES A VISION-CAPABLE MODEL — if your model lacks vision the tool will refuse rather than waste an export, and you should either ask the user to switch your model or delegate the review to a vision-capable peer. Tip: export only the slides you need (slide_indices) rather than the whole deck, since each loaded image consumes a lot of context tokens.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2278,6 +2278,37 @@ export async function executeGoogleSlidesTool(
           if (raw === 'SMALL' || raw === 'MEDIUM' || raw === 'LARGE') return raw;
           return 'LARGE';
         })();
+
+        // ── Vision preflight ──
+        // The whole point of this tool is to let the agent file_read each
+        // PNG into vision context. If the agent's current model can't see
+        // images, the export work + Drive thumbnail bytes are wasted —
+        // enforceModelCapabilities strips the image blocks before the
+        // model call, and the agent doesn't actually look at anything.
+        // Bail early with a clear message so the agent either gives up
+        // gracefully or delegates to a vision-capable peer.
+        try {
+          const { getDb } = await import('../db/connection.js');
+          const { getModelCapabilities } = await import('../services/capabilities.js');
+          const agentRow = getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined;
+          const modelId = agentRow?.model_id ?? null;
+          // Auto-routed agents pick a model per-turn so we can't guarantee
+          // the file_read call lands on a vision model; let it through with
+          // a warning. Same for missing model_id (unusual). Only block when
+          // we KNOW the model can't see.
+          if (modelId && modelId !== 'auto') {
+            const caps = getModelCapabilities(modelId);
+            // caps.length === 0 means "unknown — never probed" — don't block,
+            // just like enforceModelCapabilities. We only block when we have
+            // a known cap list AND vision isn't in it.
+            if (caps.length > 0 && !caps.includes('vision')) {
+              return err(
+                `Your model does not support vision input — exporting slide PNGs would be wasteful because file_read on the resulting paths would have its image blocks stripped before the model sees them. ` +
+                `Skip slides_export_pngs for this turn. Options: (a) ask the user to switch your model to a vision-capable one (look for the "Vision" badge in Settings → Models), or (b) delegate the visual review to a vision-capable peer agent via send_to_agent + spawn_agent.`,
+              );
+            }
+          }
+        } catch { /* preflight is best-effort — don't fail the tool on lookup hiccups */ }
 
         // 1. Enumerate slides in the deck
         const pres = await getPresentation(presentationId, agentId, agentName, 'slides_export_pngs');
