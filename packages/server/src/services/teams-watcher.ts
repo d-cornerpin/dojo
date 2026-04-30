@@ -17,7 +17,7 @@ import { getPrimaryAgentId } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { msGraphRead } from '../microsoft/client.js';
 import { isMicrosoftEnabled, isMicrosoftConnected, getEnabledMsServices } from '../microsoft/auth.js';
-import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure } from './watcher-status.js';
+import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError } from './watcher-status.js';
 
 const logger = createLogger('teams-watcher');
 
@@ -32,6 +32,7 @@ const status: WatcherStatus = {
   lastPollOk: null,
   lastPollError: null,
   consecutiveFailures: 0,
+  firstFailureAt: null,
   lastCheckedAt: null,
   totalPolls: 0,
   totalNotifications: 0,
@@ -39,6 +40,7 @@ const status: WatcherStatus = {
   recentNotifications: [],
 };
 let alreadyAlerted = false;
+let notificationsSinceFailureAlert = 0;
 
 export function getTeamsWatcherStatus(): WatcherStatus {
   status.enabled = isMicrosoftEnabled() && getEnabledMsServices().teams;
@@ -52,20 +54,30 @@ function recordPollSuccess(): void {
   status.lastPollOk = true;
   status.lastPollError = null;
   status.consecutiveFailures = 0;
+  status.firstFailureAt = null;
   if (alreadyAlerted) {
-    alreadyAlerted = false;
-    logger.info('Teams watcher recovered — clearing failure alert state');
+    logger.info('Teams watcher recovered — sending recovery alert');
+    alreadyAlerted = maybeAlertOnRecovery({
+      name: 'teams', alreadyAlerted, totalNotificationsSinceFailure: notificationsSinceFailureAlert,
+    });
+    notificationsSinceFailureAlert = 0;
   }
 }
 
-function recordPollFailure(msg: string): void {
-  status.lastPollAt = new Date().toISOString();
+function recordPollFailure(rawMsg: string): void {
+  const msg = normalizeError(rawMsg);
+  const nowIso = new Date().toISOString();
+  status.lastPollAt = nowIso;
   status.lastPollOk = false;
   status.lastPollError = msg;
   status.consecutiveFailures++;
+  if (!status.firstFailureAt) status.firstFailureAt = nowIso;
   alreadyAlerted = maybeAlertOnFailure({
-    name: 'teams', consecutiveFailures: status.consecutiveFailures,
-    lastError: msg, alreadyAlerted,
+    name: 'teams',
+    consecutiveFailures: status.consecutiveFailures,
+    firstFailureAt: status.firstFailureAt,
+    lastError: msg,
+    alreadyAlerted,
   });
 }
 
@@ -77,6 +89,7 @@ function recordPollSkip(reason: string): void {
 
 function recordNotification(n: RecentNotification): void {
   status.totalNotifications++;
+  if (alreadyAlerted) notificationsSinceFailureAlert++;
   status.lastNotifiedAt = n.at;
   status.recentNotifications = pushRecent(status.recentNotifications, n);
 }
@@ -175,7 +188,13 @@ async function pollForNewMessages(): Promise<void> {
     const chatsData = chatsResult.data as {
       value?: Array<{ id: string; topic: string | null; chatType: string; lastUpdatedDateTime: string }>;
     };
-    if (!chatsData?.value) return;
+    if (!chatsData?.value) {
+      // No chats — that's not an error, just nothing to do. Pre-2026-04-30
+      // this returned silently without recording success, leaving the status
+      // panel stale (and potentially making the watcher look "not running").
+      recordPollSuccess();
+      return;
+    }
 
     const db = getDb();
     const primaryId = getPrimaryAgentId();

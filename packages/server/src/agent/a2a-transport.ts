@@ -266,11 +266,30 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   const senderName = senderRow?.name ?? envelope.fromAgent;
 
   // ── 9. Build the message content with structured tag ──
-  const threadInfo = requiresResponse
-    ? `\n\n[Thread ${threadId.slice(0, 8)} | Reply expected — use send_to_agent with thread_id="${threadId}" and an appropriate intent]`
-    : `\n\n[Thread ${threadId.slice(0, 8)} | No reply expected — this is read-only context]`;
+  // The footer must accurately reflect the intent's reply rules. Pre-2026-04-30
+  // it branched on `requiresResponse`, which collapsed terminal-wake intents
+  // (ANSWER/DELIVERABLE — wake but thread is closed) into the same footer as
+  // open-thread intents (QUESTION/ASSIGN/BLOCK — wake AND reply). The result:
+  // a DELIVERABLE message body said "do not reply" while the footer said
+  // "Reply expected — use send_to_agent". Receiving agents read both and
+  // got confused. Now there are three honest states, one per intent group.
+  const threadShort = threadId.slice(0, 8);
+  let threadInfo: string;
+  if (envelope.intent === 'QUESTION' || envelope.intent === 'ASSIGN' || envelope.intent === 'BLOCK') {
+    // Open-thread reply intents — receiver should reply on the same thread.
+    threadInfo = `\n\n[Thread ${threadShort} | Reply on this thread — use send_to_agent with thread_id="${threadId}" and an appropriate intent]`;
+  } else if (envelope.intent === 'ANSWER' || envelope.intent === 'DELIVERABLE') {
+    // Terminal but wake — receiver should USE the content (relay to user,
+    // act on it) but the thread is closed; replying on it will fail with
+    // TERMINAL_THREAD_CLOSED. To continue with the sender, start a NEW
+    // thread (omit thread_id) with a reopening intent.
+    threadInfo = `\n\n[Thread ${threadShort} | Closed — use the content above (do NOT reply on this thread). To start a new conversation with the sender, omit thread_id and pick QUESTION/ASSIGN/BLOCK.]`;
+  } else {
+    // No-wake intents (FYI/STATUS/COMPLETE/FAIL) — informational only.
+    threadInfo = `\n\n[Thread ${threadShort} | No reply expected — this is read-only context]`;
+  }
 
-  const contextMessage = `[A2A:${envelope.intent} thread:${threadId.slice(0, 8)} from:${senderName}] ${envelope.payload}${threadInfo}`;
+  const contextMessage = `[A2A:${envelope.intent} thread:${threadShort} from:${senderName}] ${envelope.payload}${threadInfo}`;
 
   // ── 10. Process attachments BEFORE persist+broadcast ──
   // Pre-2026-04-30: attachments were processed AFTER the message was inserted

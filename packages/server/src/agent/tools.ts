@@ -3482,25 +3482,23 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
 
             try {
               const { deliverA2AMessage, makeThreadId } = await import('./a2a-transport.js');
-              const deliveryPayload = `Here is the image you requested (request_id: ${requestId}).
+              const deliveryPayload = `Image ready. The file is saved at this exact path — use it directly, do NOT search the filesystem for it:
 
-Original request: "${description}"
-
-The image is attached above (visible to your model via vision). The file is saved on disk at:
 ${deliveredPath}
 
-Use that exact path with downstream tools — for example:
-  • To embed this image directly into a Google Slides deck (one shot):
-      slides_add_image_from_local_path(
-        presentation_id=..., slide_id=..., file_path="${deliveredPath}",
-        x_pt=..., y_pt=..., width_pt=..., height_pt=...
-      )
-  • Or, if you want to reuse the same upload across multiple slides:
-      drive_upload(file_path="${deliveredPath}", name="${result.filename}")  // returns a Drive file_id
-      slides_add_image_from_drive(presentation_id=..., slide_id=..., drive_file_id=..., ...)
-  • To inspect the image more closely: file_read(path="${deliveredPath}")
+The image is also attached to this message (your vision model can see it inline above).
 
-Present the image to the user with whatever commentary fits the conversation. The thread is closed — do not reply to me; respond to the user instead.`;
+Recipes (pick one):
+  • Embed in a Slides deck in one shot:
+      slides_add_image_from_local_path(presentation_id=..., slide_id=..., file_path="${deliveredPath}", x_pt=..., y_pt=..., width_pt=..., height_pt=...)
+  • Reuse the same upload across multiple slides:
+      drive_upload(file_path="${deliveredPath}", name="${result.filename}")  // → drive_file_id
+      slides_add_image_from_drive(presentation_id=..., slide_id=..., drive_file_id=..., ...)
+  • Inspect the image bytes: file_read(path="${deliveredPath}")
+
+Present the image to the user with whatever short commentary fits. Do NOT reply to me — the thread is closed; respond to the user instead.
+
+— Original request: "${description}" (request_id: ${requestId})`;
               const a2aResult = await deliverA2AMessage({
                 intent: 'DELIVERABLE',
                 threadId: makeThreadId(`image-${requestId}`),

@@ -390,6 +390,7 @@ export interface WatcherStatusDto {
   lastPollOk: boolean | null;
   lastPollError: string | null;
   consecutiveFailures: number;
+  firstFailureAt: string | null;
   lastCheckedAt: string | null;
   totalPolls: number;
   totalNotifications: number;

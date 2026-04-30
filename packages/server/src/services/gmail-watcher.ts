@@ -11,7 +11,7 @@ import { getPrimaryAgentId, getOwnerName } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { googleRead } from '../google/client.js';
 import { isGoogleEnabled, isGoogleConnected, getEnabledServices } from '../google/auth.js';
-import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure } from './watcher-status.js';
+import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError } from './watcher-status.js';
 
 const logger = createLogger('gmail-watcher');
 
@@ -37,6 +37,7 @@ const status: WatcherStatus = {
   lastPollOk: null,
   lastPollError: null,
   consecutiveFailures: 0,
+  firstFailureAt: null,
   lastCheckedAt: null,
   totalPolls: 0,
   totalNotifications: 0,
@@ -44,6 +45,7 @@ const status: WatcherStatus = {
   recentNotifications: [],
 };
 let alreadyAlerted = false;
+let notificationsSinceFailureAlert = 0;
 
 export function getGmailWatcherStatus(): WatcherStatus {
   // Refresh enabled/connected on every read so the panel reflects current
@@ -94,20 +96,32 @@ async function pollForNewEmails(): Promise<void> {
     status.lastPollOk = true;
     status.lastPollError = null;
     status.consecutiveFailures = 0;
+    status.firstFailureAt = null;
     if (alreadyAlerted) {
-      // Recovered — clear the alarm so future failures will alert again.
-      alreadyAlerted = false;
-      logger.info('Gmail watcher recovered — clearing failure alert state');
+      // Recovered after a failure alert was sent — close the loop with a
+      // recovery iMessage so the user doesn't stare at a green panel
+      // wondering whether the failure alert was current.
+      logger.info('Gmail watcher recovered — sending recovery alert');
+      alreadyAlerted = maybeAlertOnRecovery({
+        name: 'gmail', alreadyAlerted, totalNotificationsSinceFailure: notificationsSinceFailureAlert,
+      });
+      notificationsSinceFailureAlert = 0;
     }
   };
-  const recordFailure = (msg: string): void => {
-    status.lastPollAt = new Date().toISOString();
+  const recordFailure = (rawMsg: string): void => {
+    const msg = normalizeError(rawMsg);
+    const nowIso = new Date().toISOString();
+    status.lastPollAt = nowIso;
     status.lastPollOk = false;
     status.lastPollError = msg;
     status.consecutiveFailures++;
+    if (!status.firstFailureAt) status.firstFailureAt = nowIso;
     alreadyAlerted = maybeAlertOnFailure({
-      name: 'gmail', consecutiveFailures: status.consecutiveFailures,
-      lastError: msg, alreadyAlerted,
+      name: 'gmail',
+      consecutiveFailures: status.consecutiveFailures,
+      firstFailureAt: status.firstFailureAt,
+      lastError: msg,
+      alreadyAlerted,
     });
   };
 
@@ -253,6 +267,7 @@ async function pollForNewEmails(): Promise<void> {
       notifiedIds.add(msg.id);
       newCount++;
       status.totalNotifications++;
+      if (alreadyAlerted) notificationsSinceFailureAlert++;
       status.lastNotifiedAt = new Date().toISOString();
       const recent: RecentNotification = {
         at: status.lastNotifiedAt,

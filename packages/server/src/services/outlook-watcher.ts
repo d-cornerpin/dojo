@@ -11,7 +11,7 @@ import { getPrimaryAgentId } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { msGraphRead } from '../microsoft/client.js';
 import { isMicrosoftEnabled, isMicrosoftConnected, getEnabledMsServices } from '../microsoft/auth.js';
-import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure } from './watcher-status.js';
+import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError } from './watcher-status.js';
 
 const logger = createLogger('outlook-watcher');
 
@@ -31,6 +31,7 @@ const status: WatcherStatus = {
   lastPollOk: null,
   lastPollError: null,
   consecutiveFailures: 0,
+  firstFailureAt: null,
   lastCheckedAt: null,
   totalPolls: 0,
   totalNotifications: 0,
@@ -38,6 +39,7 @@ const status: WatcherStatus = {
   recentNotifications: [],
 };
 let alreadyAlerted = false;
+let notificationsSinceFailureAlert = 0;
 
 export function getOutlookWatcherStatus(): WatcherStatus {
   status.enabled = isMicrosoftEnabled() && getEnabledMsServices().outlook;
@@ -83,19 +85,29 @@ async function pollForNewEmails(): Promise<void> {
     status.lastPollOk = true;
     status.lastPollError = null;
     status.consecutiveFailures = 0;
+    status.firstFailureAt = null;
     if (alreadyAlerted) {
-      alreadyAlerted = false;
-      logger.info('Outlook watcher recovered — clearing failure alert state');
+      logger.info('Outlook watcher recovered — sending recovery alert');
+      alreadyAlerted = maybeAlertOnRecovery({
+        name: 'outlook', alreadyAlerted, totalNotificationsSinceFailure: notificationsSinceFailureAlert,
+      });
+      notificationsSinceFailureAlert = 0;
     }
   };
-  const recordFailure = (msg: string): void => {
-    status.lastPollAt = new Date().toISOString();
+  const recordFailure = (rawMsg: string): void => {
+    const msg = normalizeError(rawMsg);
+    const nowIso = new Date().toISOString();
+    status.lastPollAt = nowIso;
     status.lastPollOk = false;
     status.lastPollError = msg;
     status.consecutiveFailures++;
+    if (!status.firstFailureAt) status.firstFailureAt = nowIso;
     alreadyAlerted = maybeAlertOnFailure({
-      name: 'outlook', consecutiveFailures: status.consecutiveFailures,
-      lastError: msg, alreadyAlerted,
+      name: 'outlook',
+      consecutiveFailures: status.consecutiveFailures,
+      firstFailureAt: status.firstFailureAt,
+      lastError: msg,
+      alreadyAlerted,
     });
   };
 
@@ -206,6 +218,7 @@ async function pollForNewEmails(): Promise<void> {
       notifiedIds.add(msg.id);
       newCount++;
       status.totalNotifications++;
+      if (alreadyAlerted) notificationsSinceFailureAlert++;
       status.lastNotifiedAt = new Date().toISOString();
       status.recentNotifications = pushRecent(status.recentNotifications, {
         at: status.lastNotifiedAt, from, subject,
