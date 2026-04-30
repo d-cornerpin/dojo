@@ -394,10 +394,15 @@ export async function executeGoogleWriteTool(
         Buffer.from(`\r\n--${boundary}--`),
       ]);
 
+      // Pass the multipart body as a raw Buffer. Pre-2026-04-30 this called
+      // .toString('base64') here, sending a base64 string with content-type
+      // multipart/related — which Google rejects with 400 because it expects
+      // raw bytes for the multipart payload, not a base64 wrapper. The
+      // Google client now passes Uint8Array/Buffer through to fetch as-is.
       const result = await googleWrite(
         'POST',
         `${UPLOAD_BASE}/files?uploadType=multipart`,
-        bodyBuffer.toString('base64'),
+        bodyBuffer,
         agentId, agentName, 'drive_upload',
         { filePath, name: fileName, folderId },
         `multipart/related; boundary=${boundary}`,

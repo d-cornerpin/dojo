@@ -1461,10 +1461,14 @@ export async function executeGoogleSlidesTool(
           Buffer.from(`\r\n--${boundary}--`),
         ]);
 
+        // Pass the multipart body as a raw Buffer (NOT base64). Pre-2026-04-30
+        // this called .toString('base64') here, which made Google 400 every
+        // upload — the receiving side expects raw bytes for the multipart
+        // payload, not a base64 wrapper.
         const uploadResult = await googleWrite(
           'POST',
           `${UPLOAD_BASE}/files?uploadType=multipart`,
-          bodyBuffer.toString('base64'),
+          bodyBuffer,
           agentId, agentName, 'slides_add_image_from_local_path',
           { filePath, driveName, slideId },
           `multipart/related; boundary=${boundary}`,

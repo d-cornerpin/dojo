@@ -42,11 +42,31 @@ async function googleFetch(
     headers['Content-Type'] = 'application/json';
   }
 
+  // Body handling — keep raw binary intact for multipart uploads.
+  // Pre-2026-04-30 this branched only on string-vs-other, JSON.stringify()-ing
+  // any Buffer or Uint8Array passed in. drive_upload's multipart body got
+  // mangled into a JSON object string, Google rejected with 400, and the
+  // caller pre-emptively base64-encoded its body to dodge that — which made
+  // things worse (multipart/related with a base64 string body always 400s).
+  // Now: strings pass through, Buffer/Uint8Array pass through as binary,
+  // everything else gets JSON.stringify'd as before.
+  let fetchBody: string | Uint8Array | undefined;
+  if (body === undefined || body === null) {
+    fetchBody = undefined;
+  } else if (typeof body === 'string') {
+    fetchBody = body;
+  } else if (body instanceof Uint8Array) {
+    // Covers both Node Buffer (subclass of Uint8Array) and plain Uint8Array.
+    fetchBody = body;
+  } else {
+    fetchBody = JSON.stringify(body);
+  }
+
   try {
     const resp = await fetch(url, {
       method,
       headers,
-      body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
+      body: fetchBody as RequestInit['body'],
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
 
