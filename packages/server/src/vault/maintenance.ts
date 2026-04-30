@@ -16,7 +16,6 @@ import { spawnAgent } from '../agent/spawner.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import {
   getPrimaryAgentId,
-  getTrainerAgentId, getTrainerAgentName,
   getDreamerAgentId, getDreamerAgentName,
   isSetupCompleted,
 } from '../config/platform.js';
@@ -613,12 +612,6 @@ function buildDreamerCycleMessage(
   dreamMode: DreamMode,
   allUnprocessed: VaultConversation[],
 ): string {
-  const trainerName = getTrainerAgentName();
-  const trainerId = getTrainerAgentId();
-  const techniqueNote = dreamMode === 'full'
-    ? `\n- If a conversation shows a reusable multi-step procedure, hand it off to Trainer agent (${trainerName}, ID: ${trainerId}) via send_to_agent. MUST use intent="ASSIGN" — without it the Trainer will not wake.`
-    : '';
-
   const batchNote = totalBatches > 1
     ? `\n\nThis is batch ${batchIndex + 1} of ${totalBatches}. Focus on these archives only. The remaining batches will be delivered after you call complete_task.`
     : '';
@@ -641,20 +634,30 @@ function buildDreamerCycleMessage(
       })()
     : '';
 
+  // Note: file paths are NOT advertised in the cycle header anymore. Doing
+  // so cued the Dreamer to read USER.md/SOUL.md every batch as a matter of
+  // routine, even when nothing in the archives required it. The SOUL prompt
+  // tells the Dreamer where the files live and when to touch them. The
+  // header is kept terse so the only routine work is what's in the archives.
+  void profilePath; void soulPath;
+
   return `═══ DREAM CYCLE ═══
-Files:
-- USER.md: ${profilePath}
-- SOUL.md: ${soulPath}
+Vault state: ${stats.totalEntries} entries (${stats.pinnedCount} pinned, ${stats.permanentCount} permanent). Pin cap: ${MAX_PINNED_ENTRIES}${stats.pinnedCount > MAX_PINNED_ENTRIES ? ' — OVER CAP, prune now' : ''}.${archiveSummary}${batchNote}
 
-Vault state: ${stats.totalEntries} entries (${stats.pinnedCount} pinned, ${stats.permanentCount} permanent). Pin cap: ${MAX_PINNED_ENTRIES}${stats.pinnedCount > MAX_PINNED_ENTRIES ? ' — OVER CAP, prune now' : ''}.${archiveSummary}${techniqueNote}${batchNote}
-
-Process the archives below. Extract vault memories, update USER.md/SOUL.md if needed, then call complete_task.
+Process the archives below. Extract durable vault memories. Discard junk archives. Only touch USER.md / SOUL.md if an archive contains a clear, explicit trigger (see your SOUL). Then call complete_task.
 
 ${batchText}`;
 }
 
 // ── Permanent Dreamer Tools & Permissions ──
 
+// Note: send_to_agent and list_agents are intentionally NOT in this list.
+// Pre-2026-04-30 the Dreamer was allowed to hand off "technique candidates"
+// to the Trainer; that pattern caused extra token burn (Trainer wakes,
+// runs its own loop) and sometimes broke other techniques the user had
+// built. Memory curation should not have a side effect of spawning more
+// agent work. The Dreamer is now strictly read/write of vault + USER.md
+// + SOUL.md, plus its own tracker bookkeeping.
 const DREAMER_TOOLS_POLICY = JSON.stringify({
   allow: [
     'vault_remember', 'vault_search', 'vault_forget',
@@ -664,7 +667,6 @@ const DREAMER_TOOLS_POLICY = JSON.stringify({
     'tracker_create_project', 'tracker_create_task',
     'tracker_update_status', 'tracker_add_notes', 'tracker_complete_step',
     'tracker_list_projects',
-    'send_to_agent', 'list_agents',
     'get_current_time', 'load_tool_docs', 'complete_task',
   ],
 });
@@ -1063,7 +1065,7 @@ function writeDreamReportForCycle(state: PendingBatchState, outcome: 'complete' 
     createDreamReport({
       archivesProcessed: state.archivesProcessedThisCycle,
       memoriesExtracted,
-      techniquesFound: 0, // not tracked end-to-end yet — Trainer hand-offs happen out of band
+      techniquesFound: 0, // Dreamer no longer hands off to the Trainer (v1.15.96)
       duplicatesMerged: 0,
       contradictionsResolved: 0,
       entriesPruned: state.maintenanceAtStart.pruned,

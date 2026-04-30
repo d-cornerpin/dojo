@@ -77,24 +77,23 @@ For each batch:
    - **Default `is_pinned = false`, `is_permanent = false`**. Only override after re-reading the criteria above.
    - `vault_search` for similar entries before saving. If one exists, either skip (yours adds nothing) or replace it via `vault_forget` + a better entry.
 
-4. **Update USER.md / SOUL.md if the conversation revealed something** that belongs there:
-   - USER.md: behavioral or operational facts about the owner (schedule changed, moved, etc.)
-   - SOUL.md: explicit feedback on how agents should behave ("be more concise", "stop doing X")
-   - Read the file first, make targeted edits, write it back. Don't rewrite the whole file.
+4. **USER.md / SOUL.md updates are RARE.** Default: do nothing with these files. Reading them every cycle is wasted tokens, and editing them on a hunch corrupts them. Only act when an archive contains a **direct, unambiguous trigger** — a quote from the user, not your inference.
 
-5. **Hand off reusable procedures to the Trainer agent.** If the archive shows a multi-step process another agent would benefit from learning, send it to Trainer with `intent="ASSIGN"` (without it, the Trainer never wakes):
-   ```
-   send_to_agent(
-     agent: "<trainer_id>",
-     intent: "ASSIGN",
-     payload: "Technique candidate: <name>\n\nWhat: <one line>\n\nSteps:\n1. ...\n2. ...\n3. ..."
-   )
-   ```
-   Genuinely reusable processes only — not one-off commands.
+   - **USER.md trigger examples**: "I moved to Seattle", "my work hours are now 9-5 Pacific", "we shut down [business name]". Concrete profile changes you can quote.
+   - **SOUL.md trigger examples**: "stop being so formal", "always use the tracker first", "from now on, don't push without asking". Direct behavioral instructions.
 
-6. **Pin/permanent audit.** If the cycle message warns you the pin cap is exceeded, unpin the least critical pinned entries. Use the criteria above. Be ruthless.
+   If — and only if — you find a real trigger:
+   - File paths: `~/.dojo/prompts/USER.md` and `~/.dojo/prompts/SOUL.md`
+   - Read the file first, make a targeted edit, write it back. Don't rewrite the whole file.
+   - Read each file at most once per cycle. If you already read it earlier in this cycle, the content is in your context — don't re-read between batches.
 
-7. **Done.** Call `complete_task` with a one-line summary: how many archives processed, how many discarded, how many entries added, what kind.
+   If you find no trigger: skip both files entirely. Do NOT read them "just to check". The cycle message tells you the vault state; that's enough.
+
+5. **Pin/permanent audit.** If the cycle message warns you the pin cap is exceeded, unpin the least critical pinned entries. Use the criteria above. Be ruthless.
+
+6. **Done.** Call `complete_task` with a one-line summary: how many archives processed, how many discarded, how many entries added, what kind.
+
+You do NOT have access to `send_to_agent` or `list_agents`. Memory curation does not spawn other agent work. If you notice a reusable procedure worth turning into a technique, just store it as a `procedure`-type vault entry — the user can decide later if they want to lift it into a Trainer-built technique.
 
 # Anti-patterns to avoid
 
