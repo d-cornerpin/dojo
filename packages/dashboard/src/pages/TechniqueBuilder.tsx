@@ -475,28 +475,31 @@ export const TechniqueBuilder = () => {
     files: [],
   });
 
-  // Load existing technique in edit mode
+  // Load existing technique in edit mode. Extracted so we can also call it
+  // from the technique:updated WS subscription below to keep the canvas in
+  // sync with disk after the trainer commits a change via update_technique.
+  const loadTechniqueFromDisk = useCallback(async (id: string) => {
+    const token = localStorage.getItem('dojo_token');
+    const res = await fetch(`/api/techniques/${id}`, {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    const data = await res.json();
+    if (data.ok) {
+      setCanvas({
+        name: data.data.id,
+        displayName: data.data.name,
+        description: data.data.description ?? '',
+        tags: data.data.tags ?? [],
+        instructions: data.data.instructions ?? '',
+        files: (data.data.files ?? []).filter((f: { isDirectory: boolean }) => !f.isDirectory).map((f: { path: string }) => ({ path: f.path })),
+      });
+    }
+  }, []);
+
   useEffect(() => {
     if (!editId) return;
-    const loadTechnique = async () => {
-      const token = localStorage.getItem('dojo_token');
-      const res = await fetch(`/api/techniques/${editId}`, {
-        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setCanvas({
-          name: data.data.id,
-          displayName: data.data.name,
-          description: data.data.description ?? '',
-          tags: data.data.tags ?? [],
-          instructions: data.data.instructions ?? '',
-          files: (data.data.files ?? []).filter((f: { isDirectory: boolean }) => !f.isDirectory).map((f: { path: string }) => ({ path: f.path })),
-        });
-      }
-    };
-    loadTechnique();
-  }, [editId]);
+    loadTechniqueFromDisk(editId);
+  }, [editId, loadTechniqueFromDisk]);
 
   const { subscribe } = useWebSocket();
   const currentToolCallsRef = useRef<ToolCallData[]>([]);
@@ -608,7 +611,10 @@ export const TechniqueBuilder = () => {
     sendContext();
   }, [AGENT_ID, contextSent, sessionCleared, canvas.displayName]);
 
-  // Watch for save_technique tool calls to update canvas and track created ID
+  // Watch for save_technique / update_technique tool calls so the canvas
+  // mirrors what the trainer just wrote to disk. Without this, the canvas
+  // stays stale and the next "Save Draft" / "Publish" click overwrites the
+  // trainer's fresh writes with the stale canvas state.
   const handleToolCallForCanvas = useCallback((toolName: string, args: Record<string, unknown>) => {
     if (toolName === 'save_technique') {
       const techName = (args.name as string) || '';
@@ -625,6 +631,20 @@ export const TechniqueBuilder = () => {
         tags: Array.isArray(args.tags) ? (args.tags as string[]) : prev.tags,
         files: Array.isArray(args.files)
           ? (args.files as Array<{ path: string; content?: string }>)
+          : prev.files,
+      }));
+    } else if (toolName === 'update_technique') {
+      // update_technique only includes the fields the agent is changing.
+      // Merge: only overwrite a canvas field if the agent provided it.
+      setCanvas(prev => ({
+        ...prev,
+        instructions: typeof args.instructions === 'string' ? (args.instructions as string) : prev.instructions,
+        files: Array.isArray(args.files)
+          ? [
+              // Replace any existing file at the same path, append new ones
+              ...prev.files.filter(p => !(args.files as Array<{ path: string }>).some(nf => nf.path === p.path)),
+              ...(args.files as Array<{ path: string; content?: string }>),
+            ]
           : prev.files,
       }));
     }
@@ -712,14 +732,27 @@ export const TechniqueBuilder = () => {
       });
     });
 
+    // Listen for technique:updated broadcasts (fired by updateTechniqueInstructions
+    // on disk write). When the trainer commits a change to THIS technique, refetch
+    // from disk so the canvas reflects the authoritative state. Without this, a
+    // tool_call event missed by the dashboard (network blip, page refresh) would
+    // leave the canvas stale and the next save would overwrite the trainer's work.
+    const unsubTechUpdated = subscribe('technique:updated', (event: WsEvent) => {
+      const e = event as { type: 'technique:updated'; data: { id: string } };
+      const currentId = createdTechniqueId || editId;
+      if (!currentId || e.data?.id !== currentId) return;
+      loadTechniqueFromDisk(currentId).catch(() => { /* best effort */ });
+    });
+
     return () => {
       unsubChunk();
       unsubToolCall();
       unsubToolResult();
       unsubError();
       unsubMessage();
+      unsubTechUpdated();
     };
-  }, [subscribe, AGENT_ID, handleToolCallForCanvas]);
+  }, [subscribe, AGENT_ID, handleToolCallForCanvas, createdTechniqueId, editId, loadTechniqueFromDisk]);
 
   const handleSend = async (content: string, attachments?: AttachmentInfo[]) => {
     setError(null);
