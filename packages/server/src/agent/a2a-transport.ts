@@ -86,18 +86,23 @@ function recordDelivery(threadId: string, intent: A2AIntent, senderId: string): 
 
 // ── Semantic Deduplication ──
 
-async function checkSemanticDedup(payload: string, threadId: string): Promise<boolean> {
+async function checkSemanticDedup(payload: string, threadId: string, fromAgent: string): Promise<boolean> {
   try {
     const { generateEmbedding } = await import('../memory/embeddings.js');
 
-    // Get last N messages on this thread
+    // Get last N messages on this thread FROM THE SAME SENDER. Pre-2026-04-30
+    // dedup compared against messages from any sender on the thread, which
+    // meant an agent's reply could be flagged as duplicate against the
+    // receiver's earlier question (because the reply naturally repeats the
+    // question's terms). The honest signal is "this sender is repeating
+    // themselves" — that's what we now check.
     const db = getDb();
     const recentMessages = db.prepare(`
       SELECT content FROM messages
-      WHERE a2a_thread_id = ?
+      WHERE a2a_thread_id = ? AND source_agent_id = ?
       ORDER BY created_at DESC, rowid DESC
       LIMIT ?
-    `).all(threadId, DEDUP_LOOKBACK) as Array<{ content: string }>;
+    `).all(threadId, fromAgent, DEDUP_LOOKBACK) as Array<{ content: string }>;
 
     if (recentMessages.length === 0) return false;
 
@@ -114,8 +119,9 @@ async function checkSemanticDedup(payload: string, threadId: string): Promise<bo
       const similarity = cosineSimilarity(newEmbedding, existingEmbedding);
 
       if (similarity > DEDUP_SIMILARITY_THRESHOLD) {
-        logger.info('Semantic dedup: message is too similar to recent thread message', {
+        logger.info('Semantic dedup: sender is repeating themselves on thread', {
           threadId,
+          fromAgent,
           similarity: similarity.toFixed(3),
           threshold: DEDUP_SIMILARITY_THRESHOLD,
         });
@@ -252,10 +258,19 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   }
 
   // ── 6. Semantic dedup ──
-  const isDuplicate = await checkSemanticDedup(envelope.payload, threadId);
-  if (isDuplicate) {
-    logDrop(envelope, 'SEMANTIC_DUPLICATE');
-    return { delivered: false, reason: 'SEMANTIC_DUPLICATE', threadId };
+  // Skip for completion intents (ANSWER, DELIVERABLE, COMPLETE, FAIL).
+  // Those are work-finished announcements — meaningful checkpoints that
+  // need to land regardless of phrasing similarity. Dedup was meant to
+  // silence acknowledgement loops ("thanks!" / "you're welcome!"), not
+  // completion notices. FYI keeps dedup because it's the prime culprit
+  // for back-and-forth ack loops between agents.
+  const COMPLETION_INTENTS_SKIP_DEDUP = new Set<A2AIntent>(['ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL']);
+  if (!COMPLETION_INTENTS_SKIP_DEDUP.has(envelope.intent)) {
+    const isDuplicate = await checkSemanticDedup(envelope.payload, threadId, envelope.fromAgent);
+    if (isDuplicate) {
+      logDrop(envelope, 'SEMANTIC_DUPLICATE');
+      return { delivered: false, reason: 'SEMANTIC_DUPLICATE', threadId };
+    }
   }
 
   // ── 7. Record delivery in thread state ──

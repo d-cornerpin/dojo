@@ -2137,7 +2137,7 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
                 content = `Thread ${result.threadId.slice(0, 8)} has reached the maximum of 8 messages. Start a new thread (omit thread_id) if you need to continue.`;
                 break;
               case 'SEMANTIC_DUPLICATE':
-                content = 'Message not sent — it is semantically identical to a recent message on this thread.';
+                content = 'Message not sent — your last few messages on this thread are too similar to this one. The platform thinks you are repeating yourself. Options: (a) if you are reporting work completion, use intent="ANSWER" or intent="DELIVERABLE" — those bypass dedup because completion notices need to land regardless of phrasing; (b) rephrase substantively (not just word swaps); (c) start a fresh thread by omitting thread_id.';
                 break;
               case 'AGENT_NOT_FOUND':
                 content = `No agent found with ID or name "${agentRef}".`;
