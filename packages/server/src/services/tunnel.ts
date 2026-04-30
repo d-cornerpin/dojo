@@ -57,6 +57,45 @@ function setConfig(key: string, value: string): void {
   `).run(key, value, value);
 }
 
+// ── Output buffering ──
+//
+// cloudflared writes its useful diagnostics (auth failures, port conflicts,
+// network errors, certificate issues) to stderr. Pre-2026-04-30 we threw
+// all of that away and only kept the trycloudflare URL match, so when the
+// process exited with a non-zero code the dashboard surfaced "cloudflared
+// exited with code N" with no further context. Now we keep a rolling
+// 4KB tail and include it in the error message.
+
+const TUNNEL_OUTPUT_TAIL_BYTES = 4000;
+
+function createOutputBuffer() {
+  let buf = '';
+  return {
+    append(chunk: string): void {
+      buf += chunk;
+      if (buf.length > TUNNEL_OUTPUT_TAIL_BYTES * 2) {
+        buf = buf.slice(-TUNNEL_OUTPUT_TAIL_BYTES);
+      }
+    },
+    tail(): string {
+      // Strip ANSI color codes (cloudflared prints colored logs) and trim.
+      const cleaned = buf.replace(/\[[0-9;]*m/g, '').trim();
+      return cleaned.slice(-TUNNEL_OUTPUT_TAIL_BYTES);
+    },
+  };
+}
+
+function formatTunnelExitError(code: number, tail: string): string {
+  const base = `cloudflared exited with code ${code}`;
+  if (!tail) return base;
+  // Pull the most informative line(s) — typically the last error/warning
+  // entries. We pick the last 6 non-empty lines, which is usually enough
+  // context to read what went wrong without flooding the dashboard.
+  const lines = tail.split('\n').map(l => l.trim()).filter(Boolean);
+  const recent = lines.slice(-6).join('\n');
+  return `${base}\n${recent}`;
+}
+
 // ── cloudflared detection ──
 
 export function isCloudflaredInstalled(): boolean {
@@ -141,11 +180,17 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
 
     tunnelProcess = proc;
 
-    // Parse stdout/stderr for the URL
-    // cloudflared prints the URL to stderr
+    // Buffer cloudflared's recent output. When it exits non-zero we surface
+    // the tail to the dashboard — pre-2026-04-30 the only signal was
+    // "cloudflared exited with code 1" with no clue WHY (auth failure,
+    // bad token, port conflict, network, …) which made tunnel breakage
+    // very hard to diagnose.
+    const outputBuffer = createOutputBuffer();
+
+    // Parse stdout/stderr for the URL. cloudflared prints to stderr.
     const handleOutput = (data: Buffer) => {
       const text = data.toString();
-      // Look for the trycloudflare.com URL
+      outputBuffer.append(text);
       const urlMatch = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
       if (urlMatch && !tunnelUrl) {
         tunnelUrl = urlMatch[0];
@@ -174,6 +219,7 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
 
     proc.on('exit', (code) => {
       const wasActive = tunnelStatus === 'active';
+      const tail = outputBuffer.tail();
       tunnelStatus = 'inactive';
       tunnelUrl = null;
       tunnelProcess = null;
@@ -182,12 +228,12 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
       if (wasActive && !restartAttempted && code !== 0) {
         // Attempt one restart
         restartAttempted = true;
-        logger.warn('Tunnel crashed, attempting restart', { exitCode: code });
+        logger.warn('Tunnel crashed, attempting restart', { exitCode: code, output: tail });
         setTimeout(() => startQuickTunnel(port), 2000);
       } else if (code !== 0 && code !== null) {
         tunnelStatus = 'error';
-        tunnelError = `cloudflared exited with code ${code}`;
-        logger.error('Tunnel exited', { code });
+        tunnelError = formatTunnelExitError(code, tail);
+        logger.error('Tunnel exited', { code, output: tail });
       }
       broadcastStatus();
     });
@@ -231,10 +277,13 @@ function startNamedTunnel(): { ok: boolean; error?: string } {
 
     tunnelProcess = proc;
 
+    const outputBuffer = createOutputBuffer();
+
     const handleOutput = (data: Buffer) => {
       const text = data.toString();
+      outputBuffer.append(text);
       // Named tunnels log "Connection registered" when active
-      if (text.includes('Registered tunnel connection') || text.includes('Connection') && text.includes('registered')) {
+      if (text.includes('Registered tunnel connection') || (text.includes('Connection') && text.includes('registered'))) {
         if (tunnelStatus !== 'active') {
           tunnelStatus = 'active';
           tunnelStartedAt = Date.now();
@@ -258,6 +307,7 @@ function startNamedTunnel(): { ok: boolean; error?: string } {
 
     proc.on('exit', (code) => {
       const wasActive = tunnelStatus === 'active';
+      const tail = outputBuffer.tail();
       tunnelStatus = 'inactive';
       tunnelUrl = null;
       tunnelProcess = null;
@@ -265,12 +315,12 @@ function startNamedTunnel(): { ok: boolean; error?: string } {
 
       if (wasActive && !restartAttempted && code !== 0) {
         restartAttempted = true;
-        logger.warn('Named tunnel crashed, attempting restart', { exitCode: code });
+        logger.warn('Named tunnel crashed, attempting restart', { exitCode: code, output: tail });
         setTimeout(() => startNamedTunnel(), 2000);
       } else if (code !== 0 && code !== null) {
         tunnelStatus = 'error';
-        tunnelError = `cloudflared exited with code ${code}`;
-        logger.error('Named tunnel exited', { code });
+        tunnelError = formatTunnelExitError(code, tail);
+        logger.error('Named tunnel exited', { code, output: tail });
       }
       broadcastStatus();
     });
