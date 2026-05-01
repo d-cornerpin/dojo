@@ -1196,6 +1196,26 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['agent_id', 'permissions'],
     },
   },
+  // ── Show files to user ──
+  {
+    name: 'show_to_user',
+    description: 'Display one or more files (images, PDFs, etc.) to the user IN THE CHAT as part of your reply. Use this when you have a file you want the user to actually look at — a slide PNG that a sub-agent sent you, a Drive file you downloaded, an image from your uploads folder. WITHOUT this tool, "take a look at this image" is a lie — the file is on disk but the user sees no thumbnail.\n\nThis tool inserts an assistant-role message into your chat with the files attached and your `caption` as the bubble text. The user sees: your caption + thumbnails. After calling, end your turn (or continue with more tool calls if needed).\n\nExample (Kevin forwarding a slide preview Maddy sent):\n  show_to_user({ file_paths: ["/Users/.../uploads/kevin/maddy_slide_preview.png"], caption: "Maddy finished a draft of the Verve Health title slide. Looks good to me — anything you want changed?" })\n\nFile paths must already exist (typically under ~/.dojo/uploads/<your-agent-id>/ or wherever a sub-agent delivered them). Files outside the uploads dir are copied in.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Absolute paths to the files to display. Images render as thumbnails; PDFs render as document chips. Up to 10 files per call.',
+        },
+        caption: {
+          type: 'string',
+          description: 'Your message text accompanying the files. This becomes the bubble content (e.g., "Here\'s the slide — looks good?"). Keep it natural; this is your reply to the user.',
+        },
+      },
+      required: ['file_paths'],
+    },
+  },
   // ── iMessage Tool ──
   {
     name: 'imessage_send',
@@ -3221,6 +3241,137 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
         });
         isError = content.startsWith('Error');
         break;
+
+      // ── Show files to user ──
+      case 'show_to_user': {
+        const filePaths = args.file_paths as string[] | undefined;
+        const caption = (args.caption as string | undefined) ?? '';
+        if (!Array.isArray(filePaths) || filePaths.length === 0) {
+          content = 'Error: file_paths is required and must be a non-empty array of absolute file paths.';
+          isError = true;
+          break;
+        }
+        if (filePaths.length > 10) {
+          content = 'Error: too many files (max 10 per call). Make multiple show_to_user calls if needed.';
+          isError = true;
+          break;
+        }
+
+        const os = (await import('node:os')).default;
+        const uploadsDir = path.join(os.homedir(), '.dojo', 'uploads', agentId);
+        try { fs.mkdirSync(uploadsDir, { recursive: true }); } catch { /* best effort */ }
+
+        const guessMime = (filename: string): string => {
+          const ext = path.extname(filename).toLowerCase();
+          if (ext === '.png') return 'image/png';
+          if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+          if (ext === '.gif') return 'image/gif';
+          if (ext === '.webp') return 'image/webp';
+          if (ext === '.pdf') return 'application/pdf';
+          if (['.txt', '.md', '.csv', '.json', '.xml', '.html', '.js', '.ts', '.py', '.sh', '.yaml', '.yml'].includes(ext)) return 'text/plain';
+          if (ext === '.docx') return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+          if (ext === '.xlsx') return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+          if (ext === '.pptx') return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+          return 'application/octet-stream';
+        };
+        const categorize = (mimeType: string, filename: string): 'image' | 'pdf' | 'text' | 'office' | 'unknown' => {
+          if (['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mimeType)) return 'image';
+          if (mimeType === 'application/pdf') return 'pdf';
+          const ext = path.extname(filename).toLowerCase();
+          if (['.txt', '.md', '.csv', '.json', '.xml', '.html', '.js', '.ts', '.py', '.sh', '.yaml', '.yml'].includes(ext)) return 'text';
+          if (['.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'].includes(ext)) return 'office';
+          if (mimeType.startsWith('text/')) return 'text';
+          return 'unknown';
+        };
+
+        const attachments: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: 'image' | 'pdf' | 'text' | 'office' | 'unknown' }> = [];
+        for (const srcPath of filePaths) {
+          try {
+            // Permission check — agents can only show files they're allowed to read.
+            const allowed = checkPermission(agentId, { type: 'file_read', path: srcPath });
+            if (!allowed.allowed) {
+              content = `Error: not allowed to read ${srcPath} (${allowed.reason ?? 'permission denied'}). show_to_user respects file_read permissions.`;
+              isError = true;
+              break;
+            }
+            if (!fs.existsSync(srcPath)) {
+              content = `Error: file not found: ${srcPath}`;
+              isError = true;
+              break;
+            }
+            const stat = fs.statSync(srcPath);
+            if (!stat.isFile()) {
+              content = `Error: not a file: ${srcPath}`;
+              isError = true;
+              break;
+            }
+            const filename = path.basename(srcPath);
+            const mimeType = guessMime(filename);
+            const category = categorize(mimeType, filename);
+
+            // If file is already in this agent's uploads dir, use it directly.
+            // Otherwise copy in so the dashboard's /api/upload/file/<agentId>/<name>
+            // serve route can find it.
+            let destPath = srcPath;
+            if (path.dirname(path.resolve(srcPath)) !== path.resolve(uploadsDir)) {
+              const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+              const storedName = `${Date.now()}_${safeFilename}`;
+              destPath = path.join(uploadsDir, storedName);
+              fs.copyFileSync(srcPath, destPath);
+            }
+
+            attachments.push({
+              fileId: uuidv4(),
+              filename,
+              mimeType,
+              size: stat.size,
+              path: destPath,
+              category,
+            });
+          } catch (err) {
+            content = `Error processing ${srcPath}: ${err instanceof Error ? err.message : String(err)}`;
+            isError = true;
+            break;
+          }
+        }
+        if (isError) break;
+
+        // Insert assistant message with attachments.
+        const messageId = uuidv4();
+        const createdAt = new Date().toISOString();
+        try {
+          getDb().prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)
+            VALUES (?, ?, 'assistant', ?, ?, datetime('now'))
+          `).run(messageId, agentId, caption, JSON.stringify(attachments));
+
+          broadcast({
+            type: 'chat:message',
+            agentId,
+            message: {
+              id: messageId,
+              agentId,
+              role: 'assistant' as const,
+              content: caption,
+              tokenCount: null,
+              modelId: null,
+              cost: null,
+              latencyMs: null,
+              createdAt,
+              attachments,
+            },
+          });
+
+          const captionPreview = caption.length > 0
+            ? ` with caption: "${caption.slice(0, 80)}${caption.length > 80 ? '…' : ''}"`
+            : '';
+          content = `Showed ${attachments.length} file(s) to user${captionPreview}. The user sees this as a chat bubble with thumbnails. End your turn now unless you have more to add.`;
+        } catch (err) {
+          content = `Error persisting show_to_user message: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
+        break;
+      }
 
       // ── iMessage Tool ──
       case 'imessage_send': {
