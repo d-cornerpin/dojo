@@ -1444,15 +1444,16 @@ export const toolDefinitions: ToolDefinition[] = [
 
   {
     name: 'vault_remember',
-    description: 'Save an important piece of knowledge to the dojo\'s long-term memory vault. Use this when you learn something worth remembering permanently -- facts about the user, decisions made, procedures discovered, preferences stated. This is saved immediately and visible to all agents. Example: vault_remember({ content: "User prefers dark mode", tags: ["preferences"] }).',
+    description: 'Save an important piece of knowledge to the dojo\'s long-term memory vault. Saved immediately and visible to all agents.\n\nWHEN THE USER EXPLICITLY ASKS YOU TO REMEMBER SOMETHING — phrases like "remember that…", "I want you to remember…", "always do X", "never do Y", "from now on, …", "make sure you always…" — call this tool with `verbatim: true` and `pin: true`. Pass the user\'s instruction word-for-word in `content`. Do NOT paraphrase or compress; the user\'s exact wording is the point.\n\nFor everything else (facts you observed, decisions made, preferences inferred), write a tight summary and let the engine handle filler-stripping.\n\nExample (user-explicit): vault_remember({ content: "Always confirm with David before pushing to main.", type: "preference", verbatim: true, pin: true }).\nExample (observed): vault_remember({ content: "Tunnel: Cloudflare named.", type: "fact" }).',
     input_schema: {
       type: 'object',
       properties: {
-        content: { type: 'string', description: 'The knowledge to remember, written as a standalone statement (max 500 tokens)' },
+        content: { type: 'string', description: 'The knowledge to remember. Write a tight summary unless verbatim=true, in which case pass the user\'s exact words.' },
         type: { type: 'string', enum: ['fact', 'preference', 'decision', 'procedure', 'relationship', 'event', 'note'], description: 'Type of knowledge' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Tags for categorization' },
-        pin: { type: 'boolean', description: 'If true, this memory is always included in context regardless of relevance' },
-        permanent: { type: 'boolean', description: 'If true, this fact never decays over time (use for definitionally stable truths like names, relationships, birth dates)' },
+        pin: { type: 'boolean', description: 'If true, this memory is always included in context regardless of relevance. Set true when the user explicitly tells you to remember something.' },
+        permanent: { type: 'boolean', description: 'If true, this fact never decays over time (use for definitionally stable truths like names, relationships, birth dates).' },
+        verbatim: { type: 'boolean', description: 'If true, the engine preserves your content exactly — no bloat-phrase stripping, no date prefix, no compression. Use when capturing the user\'s explicit memory instruction word-for-word ("remember that…", "always X", "never Y", "from now on…").' },
       },
       required: ['content', 'type'],
     },

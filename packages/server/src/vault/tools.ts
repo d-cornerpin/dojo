@@ -10,26 +10,45 @@ import { createEntry, semanticSearch, markObsolete, getEntry } from './store.js'
 const logger = createLogger('vault-tools');
 
 // ── vault_remember ──
+//
+// Goals (per user direction): every entry should be a SUMMARY of source
+// content (not a transcription) and should have a REASON to exist. We
+// don't reject entries by length, prose shape, or technique overlap —
+// the prompt sets the bar, the engine just helps quietly:
+//   - Strip common narrative cruft so transcribed-feeling entries lose
+//     their filler before saving.
+//   - Surface near-duplicate alerts so the agent sees when it's drifting.
+//   - Surface technique-overlap as info (not a block).
 
-// Soft length budgets per type. Real-world entries that drift well past
-// these are almost always narrative bloat — debugging session retellings,
-// chronological recaps, "root cause was X and the fix was Y" stories.
-// We don't reject (the agent's next call would just retry blindly), but
-// we surface a strongly-worded compression hint in the success message
-// so the *next* vault_remember from this agent runs tighter.
-const TYPE_SOFT_BUDGET_CHARS: Record<string, number> = {
-  fact: 200,
-  preference: 200,
-  note: 250,
-  relationship: 250,
-  decision: 350,
-  procedure: 400,
-  event: 350,
-};
-// Above this, the entry is almost certainly a narrative dump that should
-// have been multiple smaller entries (or no entry at all). We still save
-// it, but the response leads with a hard correction.
-const HARD_BLOAT_CHARS = 1000;
+// Common bloat-phrase patterns the engine strips silently. These are
+// narrative fillers the model writes that carry no information ("the
+// user mentioned that…", "during a conversation on…"). Conservative by
+// design — only patterns that are unambiguous filler.
+const BLOAT_STRIP_PATTERNS: Array<{ re: RegExp; replacement: string }> = [
+  // Date prefix — we already auto-prepend [YYYY-MM-DD], so a duplicate
+  // "On YYYY-MM-DD," or "During a conversation on YYYY-MM-DD," is redundant.
+  { re: /\b[Oo]n \d{4}-\d{2}-\d{2}[,:]?\s+/g, replacement: '' },
+  { re: /\b[Dd]uring (?:a|the) conversation on \d{4}-\d{2}-\d{2}[,:]?\s+/g, replacement: '' },
+  // "The user (mentioned|said|noted|stated|indicated) (that)?"
+  { re: /\b[Tt]he user (?:mentioned|said|noted|stated|indicated|told (?:[Kk]evin|me|us)|expressed) (?:that )?/g, replacement: '' },
+  // "It was (determined|noted|observed|found|decided) that"
+  { re: /\b[Ii]t was (?:determined|noted|observed|found|decided|established|confirmed) that\s+/g, replacement: '' },
+  // Narrative scaffolding
+  { re: /\b(?:[Ll]ooking back|[Gg]oing forward|[Mm]oving forward|[Ii]n summary|[Tt]o summarize)[,:]\s+/g, replacement: '' },
+  // Collapse whitespace introduced by stripping
+  { re: /[ \t]{2,}/g, replacement: ' ' },
+  { re: /\n{3,}/g, replacement: '\n\n' },
+];
+
+function stripBloatPhrases(content: string): { stripped: string; charsRemoved: number } {
+  const before = content;
+  let after = content;
+  for (const { re, replacement } of BLOAT_STRIP_PATTERNS) {
+    after = after.replace(re, replacement);
+  }
+  after = after.trim();
+  return { stripped: after, charsRemoved: before.length - after.length };
+}
 
 export async function executeVaultRemember(
   agentId: string,
@@ -40,21 +59,34 @@ export async function executeVaultRemember(
   const tags = (args.tags as string[]) ?? [];
   const pin = (args.pin as boolean) ?? false;
   const permanent = (args.permanent as boolean) ?? false;
+  const verbatim = (args.verbatim as boolean) ?? false;
 
   if (!content) return 'Error: content is required.';
   if (!type) return 'Error: type is required (fact, preference, decision, procedure, relationship, event, or note).';
 
-  // Auto-prepend today's date if the content doesn't already start with a
-  // date stamp. This ensures every vault entry is temporally anchored so
-  // agents can judge its age and relevance.
-  if (!/^\[?\d{4}-\d{2}/.test(content)) {
-    const dateStr = new Date().toISOString().split('T')[0];
-    content = `[${dateStr}] ${content}`;
-  }
-
   const validTypes = ['fact', 'preference', 'decision', 'procedure', 'relationship', 'event', 'note'];
   if (!validTypes.includes(type)) {
     return `Error: type must be one of: ${validTypes.join(', ')}`;
+  }
+
+  // ── Verbatim mode ──
+  // When the user explicitly says "remember that X", "always Y", "never Z",
+  // etc., the agent passes verbatim: true so the engine preserves the
+  // instruction exactly: no bloat-strip, no date prefix, no compression.
+  // The point of the entry is to capture the user's words faithfully.
+  let charsRemoved = 0;
+  if (!verbatim) {
+    // Strip common narrative cruft silently.
+    const result = stripBloatPhrases(content);
+    content = result.stripped;
+    charsRemoved = result.charsRemoved;
+
+    // Auto-prepend today's date if the content doesn't already start with a
+    // date stamp. Keeps every entry temporally anchored.
+    if (!/^\[?\d{4}-\d{2}/.test(content)) {
+      const dateStr = new Date().toISOString().split('T')[0];
+      content = `[${dateStr}] ${content}`;
+    }
   }
 
   // Get agent name
@@ -78,17 +110,26 @@ export async function executeVaultRemember(
     if (permanent) flags.push('permanent');
     const flagStr = flags.length > 0 ? ` (${flags.join(', ')})` : '';
 
-    // Length-based push-back. Telegraphic shorthand is the goal; long
-    // entries dilute search results and burn retrieval budget.
-    const budget = TYPE_SOFT_BUDGET_CHARS[type] ?? 300;
-    let warning = '';
-    if (entry.content.length > HARD_BLOAT_CHARS) {
-      warning = `\n\n⚠ This entry is ${entry.content.length} chars — that's narrative bloat, not a memory. Vault entries should be telegraphic shorthand (≤${budget} chars for type "${type}"). Either you're writing a debugging recap that doesn't belong here, or you're storing a story when one fact would suffice. NEXT entries: lead with the noun. Cut every word that doesn't carry information. If you can't say it in ${budget} chars, it's probably not vault-worthy.`;
-    } else if (entry.content.length > budget) {
-      warning = `\n\nNote: this entry is ${entry.content.length} chars; soft target for type "${type}" is ≤${budget}. Compress next time — strip narrative ("initially failed because…", "root cause was…", "the fix was…") and lead with the durable fact.`;
-    }
+    // Near-duplicate alert (informational, never blocking). The 0.92
+    // auto-supersede path in createEntry handles near-identical paraphrases;
+    // this catches the 0.78–0.92 zone where two entries are about the
+    // same topic but worded differently. Helps the agent self-correct
+    // toward dedup without us forcing it.
+    let nearDupNote = '';
+    try {
+      const hits = await semanticSearch(content, { limit: 3 });
+      const sameSubject = hits.filter(h => h.id !== entry.id && h.similarity >= 0.78 && h.similarity < 0.92);
+      if (sameSubject.length > 0) {
+        const top = sameSubject[0];
+        nearDupNote = `\n\nFYI: similar entry already exists — "${top.content.slice(0, 80)}…" (id ${top.id}, similarity ${top.similarity.toFixed(2)}). Consider vault_forget on the older one if yours supersedes it.`;
+      }
+    } catch { /* best effort */ }
 
-    return `Remembered [${type}]${flagStr}: "${entry.content.slice(0, 100)}${entry.content.length > 100 ? '...' : ''}"\nEntry ID: ${entry.id}${warning}`;
+    const compressionNote = charsRemoved > 0
+      ? `\n(Engine stripped ${charsRemoved} chars of narrative filler before saving.)`
+      : '';
+
+    return `Remembered [${type}]${flagStr}: "${entry.content.slice(0, 120)}${entry.content.length > 120 ? '…' : ''}"\nEntry ID: ${entry.id}${nearDupNote}${compressionNote}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('vault_remember failed', { error: msg }, agentId);

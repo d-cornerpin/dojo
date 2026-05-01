@@ -174,14 +174,25 @@ const CONTEXT_OVERHEAD_TOKENS = 50000;
 // the FULL turn (batch + accumulated tool calls) stays under context window.
 const PROCESSING_GROWTH_FACTOR = 1.5;
 
-// Cap any single message inside an archive (most often a huge tool_result with
-// a file dump or scraped page) so one bloated row can't blow the batch budget.
-// The Dreamer doesn't need the full payload — the gist suffices for knowledge
-// extraction.
-const MAX_MESSAGE_CHARS = 4000;
-// tool_result blocks specifically are noise for memory extraction (file dumps,
-// HTML, vault search results). Truncate them harder than prose messages.
-const MAX_TOOL_RESULT_CHARS = 800;
+// Per-message char cap. The Dreamer doesn't need the full prose of any
+// single message — the gist is enough. Aggressively low; if a single
+// message has more than this much signal, it almost always belongs in a
+// vault entry of its own (which the Dreamer will create from the truncated
+// version anyway).
+const MAX_MESSAGE_CHARS = 1500;
+
+// Per-archive char cap. Once preprocessing is done, if the archive body
+// is still over this, head + tail keep the bookends and the middle gets
+// elided. Most projects' "what was decided" lives in the first and last
+// turns; the middle is exploration.
+const MAX_ARCHIVE_BODY_CHARS = 8000;
+
+// tool_result content is essentially noise for memory extraction (file
+// dumps, HTML, vault search hits, command output). We now drop tool
+// messages entirely (see preprocessMessages) AND drop tool_use blocks
+// from assistant content blocks. This constant is kept only as a fallback
+// for legacy code paths.
+const MAX_TOOL_RESULT_CHARS = 200;
 
 // Hard ceiling on per-batch text regardless of context window — never exceed
 // 35% of the model's window for raw archive text. Leaves 65% for system
@@ -236,12 +247,16 @@ const PLATFORM_NOISE_PATTERNS: RegExp[] = [
   /^\s*You are the (Dreamer|Trainer|Healer|PM|Imaginer)\b/i,
 ];
 
-// Conversational filler — short standalone acknowledgments. Drop the whole
-// message if its trimmed content matches one of these patterns. We only
-// drop when the message is short enough that the filler IS the message.
+// Conversational filler — acknowledgments and process narration. Drop the
+// whole message if its trimmed content matches. Length-bounded so prose
+// containing "got it" doesn't get false-positived.
 const FILLER_PATTERNS: RegExp[] = [
   /^(sure|got it|okay|ok|alright|understood|will do|on it|working on it now?|let me think( about (this|that))?|let me check|one moment|hmm|hmmm|right|yep|yes|no problem|sounds good|makes sense|of course)[.!]?$/i,
   /^(thanks|thank you)[.!]?$/i,
+  // Process narration the agent emits between tool calls — pure scaffolding.
+  /^(let me |i'?ll |i'?m going to |now i'?ll |first,? |next,? |then,? )/i,
+  /^(checking|searching|reading|writing|looking at|analyzing|processing|continuing|proceeding)\b/i,
+  /^(i found|i see|i notice|i can see|i'?ve found)\b/i,
 ];
 
 function isPlatformNoise(content: string): boolean {
@@ -254,11 +269,38 @@ function isPlatformNoise(content: string): boolean {
 function isFiller(content: string): boolean {
   const trimmed = content.trim();
   if (trimmed.length === 0) return true;
-  if (trimmed.length > 60) return false; // prose isn't filler
+  // Allow process-narration patterns to be caught up to ~80 chars (one
+  // sentence). True prose >100 chars is never filler.
+  if (trimmed.length > 100) return false;
   for (const pat of FILLER_PATTERNS) {
     if (pat.test(trimmed)) return true;
   }
   return false;
+}
+
+// Extract just the text portion from an assistant content-block array.
+// Drops tool_use blocks entirely — the Dreamer doesn't need to know
+// which tools the agent called, only what it said. Pre-2026-04-30 we
+// summarized tool_use blocks as one-liners (`[tool_use file_read path=…]`)
+// which still added significant token cost across long conversations.
+// Memory curation cares about the *content* of the conversation, not the
+// process scaffolding.
+function extractAssistantText(content: string): string {
+  if (!content) return '';
+  const trimmed = content.trim();
+  // Plain text — return as-is.
+  if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return content;
+  let parsed: unknown;
+  try { parsed = JSON.parse(trimmed); } catch { return content; }
+  if (!Array.isArray(parsed)) return content;
+  const parts: string[] = [];
+  for (const blk of parsed as Array<Record<string, unknown>>) {
+    if (blk?.type === 'text' && typeof blk.text === 'string' && blk.text.trim().length > 0) {
+      parts.push(blk.text);
+    }
+    // tool_use, image, document, etc. — silently dropped.
+  }
+  return parts.join('\n');
 }
 
 // Compress a tool_use / tool_result payload into a one-liner. The model
@@ -350,31 +392,63 @@ function parseArchiveMessages(conv: VaultConversation): ParsedArchiveMessage[] |
   }
 }
 
-// Collapse runs of consecutive same-role messages into one (e.g., 5 tool
-// messages in a row → one "[5 tool results: …]" line). Reduces structural
-// noise without losing information.
+// Aggressive pre-LLM trimming. The Dreamer needs the conversation —
+// what the user wanted, what the agent decided. Everything else is
+// process scaffolding the model doesn't need.
+//
+// Rules (most aggressive at the top):
+//   1. Drop role='tool' messages entirely. Tool results carry no memory
+//      signal — file content, HTML, search hits.
+//   2. From assistant messages that are JSON content-block arrays,
+//      keep ONLY text blocks. Drop tool_use entirely.
+//   3. From user messages whose content is purely tool_result blocks
+//      (a sub-agent reply container), drop them.
+//   4. Drop platform-noise messages (system nudges, cycle markers, etc.).
+//   5. Drop conversational filler and process narration ("let me check…",
+//      "now I'll search…").
+//   6. Drop messages with < 30 chars after compression — almost always
+//      acks, single words, or unhelpful fragments.
 function preprocessMessages(messages: ParsedArchiveMessage[]): ParsedArchiveMessage[] {
   const filtered: ParsedArchiveMessage[] = [];
   for (const m of messages) {
     const role = (m.role ?? '').toLowerCase();
     let content = m.content ?? '';
 
-    // Tool messages: their content is always a JSON-encoded array of
-    // tool_result blocks. Compress them.
-    if (role === 'tool') {
-      content = compressContentBlocks(content);
-    } else if (role === 'assistant') {
-      // Assistant messages may be plain text OR a JSON content-block array
-      // when the turn included tool_use blocks. Compress either way.
-      content = compressContentBlocks(content);
+    // (1) Drop tool messages outright.
+    if (role === 'tool') continue;
+
+    // (2/3) Compress assistant/user content blocks.
+    if (role === 'assistant') {
+      content = extractAssistantText(content);
+    } else if (role === 'user') {
+      // User messages are usually plain text. But a "user" message can
+      // also be a tool_result wrapper (sub-agent replies, model API
+      // shape). Detect and drop those — they have no prose value.
+      const trimmed = content.trim();
+      if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (Array.isArray(parsed)) {
+            const blocks = parsed as Array<Record<string, unknown>>;
+            const allToolResults = blocks.length > 0 && blocks.every(b => b.type === 'tool_result');
+            if (allToolResults) continue; // drop entirely
+            // Mixed — keep text portions only.
+            const textParts = blocks
+              .filter(b => b.type === 'text' && typeof b.text === 'string')
+              .map(b => b.text as string);
+            if (textParts.length === 0) continue;
+            content = textParts.join('\n');
+          }
+        } catch { /* not JSON, leave as-is */ }
+      }
     }
 
-    // Drop platform noise messages outright.
+    // (4) Platform noise.
     if (isPlatformNoise(content)) continue;
-    // Drop conversational filler outright.
+    // (5) Filler / process narration.
     if ((role === 'assistant' || role === 'user') && isFiller(content)) continue;
-    // Drop empty messages.
-    if (content.trim().length === 0) continue;
+    // (6) Tiny / empty.
+    if (content.trim().length < 30) continue;
 
     filtered.push({ role: m.role, content, createdAt: m.createdAt });
   }
@@ -403,7 +477,22 @@ function formatArchive(conv: VaultConversation): string | null {
   if (!raw) return null;
   const messages = preprocessMessages(raw);
   if (messages.length === 0) return null;
-  const body = messages.map(formatArchiveMessage).join('\n\n');
+  let body = messages.map(formatArchiveMessage).join('\n\n');
+
+  // Per-archive hard cap. After preprocessing, if an archive is still
+  // bigger than MAX_ARCHIVE_BODY_CHARS, the middle is the boring part —
+  // exploration, false starts, intermediate reasoning. Keep the head
+  // (what the user wanted) and the tail (what was decided / delivered)
+  // and elide the middle. A sub-agent that did a 200-message build
+  // session still produces a < 8KB summary worth feeding to the Dreamer.
+  if (body.length > MAX_ARCHIVE_BODY_CHARS) {
+    const half = Math.floor(MAX_ARCHIVE_BODY_CHARS / 2);
+    const head = body.slice(0, half);
+    const tail = body.slice(-half);
+    const elided = body.length - head.length - tail.length;
+    body = `${head}\n\n…[mid-archive elided: ${elided} chars of exploration/process between the bookends]…\n\n${tail}`;
+  }
+
   return wrapArchive(conv, body);
 }
 
