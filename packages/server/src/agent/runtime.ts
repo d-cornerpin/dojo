@@ -239,36 +239,54 @@ function enforceModelCapabilities(
 // Broadcast a persisted message to the dashboard so it appears in real-time
 /**
  * Canonical signature for a tool call, used to detect loops.
- * Normalizes timestamp-like numeric runs in string args (so a call like
- * file_read on slides_..._1777674358570_000.png matches another call on
- * slides_..._1777674244353_000.png — the runtime treats them as "the
- * same operation"). Drops very long values to keep the signature stable
- * even if the agent passes slightly-different prose. Sorted JSON keys
- * to avoid ordering noise.
+ *
+ * The sig captures the *operation*, not the agent's prose around it. Two
+ * calls to show_to_user with the same file but different captions are
+ * the same operation; two file_reads on slides_..._<timestamp>_000.png
+ * are the same operation. We achieve this by:
+ *   1. Dropping fields that are agent prose (caption, message, content,
+ *      text, payload, summary, description, query) — these always vary
+ *      across retry attempts but don't reflect a different action.
+ *   2. Replacing 6+ digit numeric runs in remaining strings with "*"
+ *      (catches timestamps, large UUIDs) so timestamped filenames match.
+ *   3. Truncating long string values to a short prefix.
+ *   4. Sorting keys so JSON ordering doesn't matter.
  */
+const PROSE_FIELDS = new Set([
+  'caption', 'message', 'content', 'text', 'payload',
+  'summary', 'description', 'query', 'reason', 'note', 'notes',
+  'change_summary', 'instructions',
+]);
+
 function canonicalToolSignature(name: string, args: Record<string, unknown> | undefined): string {
   if (!args) return `${name}:{}`;
   const normalized: Record<string, unknown> = {};
   for (const k of Object.keys(args).sort()) {
+    if (PROSE_FIELDS.has(k)) continue; // agent prose — drop entirely from sig
     const v = args[k];
     if (typeof v === 'string') {
-      // Replace runs of 6+ digits (timestamps, large IDs) with a placeholder.
       let s = v.replace(/\d{6,}/g, '*');
-      // Truncate long string values — only the shape matters for sig.
-      if (s.length > 200) s = s.slice(0, 200) + '…';
+      // Drop strings clearly meant as prose (long natural-language text)
+      // even when the field name didn't tip us off.
+      if (s.length > 80) s = '<prose>';
       normalized[k] = s;
     } else if (typeof v === 'number' || typeof v === 'boolean' || v === null) {
       normalized[k] = v;
     } else if (Array.isArray(v)) {
       // For arrays of strings (e.g., file_paths), normalize each element.
+      // Keep only the first 5 entries.
       normalized[k] = v.slice(0, 5).map(item => {
-        if (typeof item === 'string') return item.replace(/\d{6,}/g, '*').slice(0, 200);
+        if (typeof item === 'string') {
+          const s = item.replace(/\d{6,}/g, '*');
+          return s.length > 80 ? '<prose>' : s;
+        }
         return item;
       });
     } else {
-      // Objects / unknowns: shallow-stringify, capped.
-      try { normalized[k] = JSON.stringify(v).slice(0, 200); }
-      catch { normalized[k] = '<obj>'; }
+      try {
+        const s = JSON.stringify(v);
+        normalized[k] = s.length > 80 ? '<obj>' : s;
+      } catch { normalized[k] = '<obj>'; }
     }
   }
   return `${name}:${JSON.stringify(normalized)}`;

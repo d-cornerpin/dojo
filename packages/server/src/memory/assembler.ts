@@ -265,6 +265,17 @@ export async function assembleContext(
     // Skip system messages in history
   }
 
+  // ── Prune old image / document blocks from tool_result history ──
+  // file_read on an image returns the image as a base64 content block
+  // inside the tool_result. Each ~647KB PNG ≈ 250K tokens base64. After
+  // 4 file_reads on slide PNGs, the fresh tail can exceed the model's
+  // context window before any text is even considered (user reported
+  // inputEstimate=777K with messageCount=3 — caused entirely by stacked
+  // image blocks). Only the MOST RECENT image is needed for vision; older
+  // ones can be replaced with a text stub. The agent can re-call
+  // file_read on the path if it genuinely needs to re-examine.
+  pruneOldImageBlocksInPlace(messages, /* maxKeepImages */ 1);
+
   // Ensure messages start with user role (Anthropic API requirement).
   // Drop leading assistant messages and pure tool_result messages that
   // reference tool_use IDs no longer in context. Stop at the first
@@ -469,6 +480,83 @@ function budgetSummaries(summaries: Summary[], availableTokens: number): Summary
 
   // Return in chronological order
   return keptFromNewest.reverse();
+}
+
+/**
+ * Walk the assembled messages newest-first and replace image / document
+ * blocks beyond the keep limit with text placeholders. The model only
+ * needs to "see" the most recent image; older ones blow context budget
+ * for no semantic gain. Mutates messages in place.
+ *
+ * Specifically prunes:
+ *   - tool_result blocks whose content array contains image / document blocks
+ *   - top-level image / document blocks (rare, but possible)
+ *
+ * Keeps:
+ *   - The MOST RECENT N images (default 1)
+ *   - All text blocks
+ *   - All tool_use blocks (those are tiny)
+ */
+function pruneOldImageBlocksInPlace(
+  messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
+  maxKeepImages: number,
+): void {
+  let imagesKept = 0;
+  let prunedCount = 0;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (typeof msg.content === 'string') continue;
+    if (!Array.isArray(msg.content)) continue;
+
+    const newContent: Anthropic.ContentBlockParam[] = msg.content.map(block => {
+      const blk = block as unknown as Record<string, unknown>;
+
+      // tool_result blocks: walk their nested content array
+      if (blk.type === 'tool_result' && Array.isArray(blk.content)) {
+        const nestedContent = blk.content as Array<Record<string, unknown>>;
+        const newNested = nestedContent.map(nested => {
+          if (nested.type === 'image') {
+            if (imagesKept < maxKeepImages) {
+              imagesKept++;
+              return nested;
+            }
+            prunedCount++;
+            return { type: 'text', text: '[image previously loaded — call file_read again on the same path if you need to re-examine it]' };
+          }
+          if (nested.type === 'document') {
+            prunedCount++;
+            return { type: 'text', text: '[document previously loaded — call file_read again if you need to re-examine it]' };
+          }
+          return nested;
+        });
+        return { ...blk, content: newNested } as unknown as Anthropic.ContentBlockParam;
+      }
+
+      // Top-level image (e.g., user attachment) — same rules.
+      if (blk.type === 'image') {
+        if (imagesKept < maxKeepImages) {
+          imagesKept++;
+          return block;
+        }
+        prunedCount++;
+        return { type: 'text', text: '[image previously loaded]' } as Anthropic.ContentBlockParam;
+      }
+
+      if (blk.type === 'document') {
+        prunedCount++;
+        return { type: 'text', text: '[document previously loaded]' } as Anthropic.ContentBlockParam;
+      }
+
+      return block;
+    });
+
+    messages[i] = { ...msg, content: newContent };
+  }
+
+  if (prunedCount > 0) {
+    logger.debug('Pruned old image/document blocks from context', { prunedCount, imagesKept });
+  }
 }
 
 function budgetFreshTail(messages: Message[], availableTokens: number): Message[] {
