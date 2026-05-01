@@ -503,17 +503,21 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             msg.content.startsWith('Tracker review --')
           )) return null;
           if (msg.role === 'tool' && !wordyMode) return null;
-          if (msg.role === 'system' && !wordyMode) {
-            if (msg.content.includes('New Session')) {
+          if (msg.role === 'system') {
+            // Always show divider-style markers: any system message shaped
+            // "── label ──" becomes a horizontal divider, regardless of
+            // wordy mode. Covers New Session, Memory Compacted, etc.
+            const dividerMatch = msg.content.trim().match(/^──\s*(.+?)\s*──$/);
+            if (dividerMatch) {
               return (
                 <div key={msg.id} className="flex items-center gap-3 py-2">
                   <div className="flex-1 h-px bg-white/10" />
-                  <span className="text-xs text-white/30 shrink-0">New Session</span>
+                  <span className="text-xs text-white/30 shrink-0">{dividerMatch[1]}</span>
                   <div className="flex-1 h-px bg-white/10" />
                 </div>
               );
             }
-            return null;
+            if (!wordyMode) return null;
           }
           if (!wordyMode && msg.role === 'assistant') {
             if (msg.content.startsWith('I got stuck on that') || msg.content.startsWith("I'm sorry — I'm having trouble")) return null;

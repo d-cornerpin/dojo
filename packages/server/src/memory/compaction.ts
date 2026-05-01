@@ -1,3 +1,4 @@
+import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -91,6 +92,52 @@ function getCompactionTailCount(contextWindow: number): number {
   if (contextWindow >= 128000) return 64;
   if (contextWindow >= 32000) return 40;
   return 24;
+}
+
+// ── Chat divider helpers ──
+//
+// After compaction, we drop a "── Memory Compacted ──" system message
+// into the agent's chat so the user sees a horizontal divider in the
+// timeline. Mirrors the existing "── New Session ──" pattern. The
+// dashboard renders any system message shaped "── label ──" as a
+// divider with the label centered.
+
+function formatTokens(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}K tokens`;
+  return `${n} tokens`;
+}
+
+function insertCompactionDivider(agentId: string, opts: { label: string }): void {
+  try {
+    const db = getDb();
+    const id = uuidv4();
+    const content = `── ${opts.label} ──`;
+    const createdAt = new Date().toISOString();
+    db.prepare(`
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+      VALUES (?, ?, 'system', ?, datetime('now'))
+    `).run(id, agentId, content);
+    broadcast({
+      type: 'chat:message',
+      agentId,
+      message: {
+        id,
+        agentId,
+        role: 'system' as const,
+        content,
+        tokenCount: null,
+        modelId: null,
+        cost: null,
+        latencyMs: null,
+        createdAt,
+      },
+    });
+  } catch (err) {
+    logger.warn('Failed to insert compaction divider', {
+      agentId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 // ── Main Entry Point ──
@@ -188,6 +235,14 @@ export async function checkAndCompact(
       ...result,
     });
 
+    // Insert a chat divider so the user sees in the timeline that
+    // memory was compacted. Mirrors the "── New Session ──" pattern;
+    // the dashboard renders any "── label ──" system message as a
+    // horizontal divider with the label centered.
+    insertCompactionDivider(agentId, {
+      label: `Memory Compacted${result.tokensReclaimed > 0 ? ` — reclaimed ~${formatTokens(result.tokensReclaimed)}` : ''}${result.leafCreated > 0 ? ` (${result.leafCreated} new summar${result.leafCreated === 1 ? 'y' : 'ies'})` : ''}`,
+    });
+
     logger.info('Compaction complete', result, agentId);
     return result;
   }
@@ -228,6 +283,14 @@ export async function checkAndCompact(
       agentId,
       ...result,
     });
+
+    // Lighter divider for proactive compaction (no token threshold hit;
+    // we just folded some old leaves so they wouldn't accumulate).
+    if (leafCreated > 0) {
+      insertCompactionDivider(agentId, {
+        label: `Memory Compacted (proactive — ${leafCreated} summar${leafCreated === 1 ? 'y' : 'ies'})`,
+      });
+    }
 
     logger.info('Proactive compaction complete', result, agentId);
     return result;
@@ -430,18 +493,37 @@ export function rebuildContextItems(agentId: string): void {
 // special "continuity" summary and injected first in context assembly,
 // so the agent always knows what it was doing after compaction.
 
-const CONTINUITY_BRIEF_PROMPT = `You are generating a continuity brief for an AI agent whose conversation history is about to be compressed. The agent will lose access to the raw messages and will only see this brief plus compressed summaries.
+const CONTINUITY_BRIEF_PROMPT = `You are generating a CONTINUITY BRIEF for an AI agent whose conversation history is about to be compressed. After compaction the agent will only see this brief + compressed summaries — not the raw messages. If you are vague, the agent loses its mind on the next turn. Specificity is everything.
 
-Write a concise brief (300-500 words) that answers:
-1. What is the agent currently working on? (specific project, task, or request)
-2. What was the agent doing RIGHT NOW when this brief was generated? (last action taken, current step in the process)
-3. What is the current state? (what's done, what's in progress, what's next)
-4. What specific details does the agent need to continue? (file paths, task IDs, key decisions, important context)
-5. What did the user last ask for or what instructions are active?
+Length: aim for 1500–3000 words. This is the single most important context the agent will see; do NOT under-write it.
 
-Be SPECIFIC. Include file paths, task IDs, names, numbers, and any details the agent needs to pick up exactly where it left off. Do NOT be vague — "working on a project" is useless. "Iterating on the Figma-AE pipeline builder script to improve visual fidelity from 35% to target 95%, currently fixing drop shadow rendering in /Users/Shared/figma-ae-pipeline/src/builder.jsx" is useful.
+Required sections (use these headings literally, in this order):
 
-Write the brief directly — no preamble.`;
+## What the user has told the agent
+Quote the user's last 3–5 direct instructions or messages **verbatim** if they are short, or paraphrase tightly with quotes around the load-bearing phrases. The user's exact words matter more than your interpretation. Include any "remember to…", "always…", "never…", "from now on…" instructions verbatim.
+
+## Current project / task
+What is the agent actually working on right now? Be concrete: specific project name, what stage, what they're trying to achieve. Reject "working on a project" — that's useless. "Fixing the drop-shadow rendering on Layout 7 of the Verve Health deck so it matches Figma reference (file: /Users/.../decks/verve.pptx, slide ID: g3a8f2)" is useful.
+
+## What was happening RIGHT BEFORE compaction
+Last 1–3 turns: what tool calls just ran, what they returned, what the agent was about to do next. The agent has to continue exactly from here.
+
+## Specific details to preserve
+File paths, URLs, task IDs, agent IDs, deck IDs, technique names, drive file IDs, model names, error messages, decision rationale — anything an agent picking this up tomorrow couldn't rederive in five seconds. Bullet list of facts. Be exhaustive.
+
+## Active threads / tasks
+Tracker tasks the agent is owning, A2A threads the agent is in the middle of (with thread IDs), files the agent has been editing, tools the agent has loaded.
+
+## Known constraints
+Standing rules from this conversation (don't push without approval, the user is testing X, don't touch Y, etc.). Anything the agent would otherwise blunder into.
+
+Anti-patterns to avoid:
+- "The agent has been working on various tasks." Useless.
+- "The user wants the project to succeed." Useless.
+- "Several decisions were made." Useless — list them.
+- Filler transitions ("As mentioned above", "In summary", "Looking forward").
+
+Write the brief directly — no preamble, no meta-commentary about being a continuity brief. The first character should start the "## What the user has told the agent" heading.`;
 
 // Don't regenerate the brief if a fresh one already exists. Compaction can
 // fire several times in a row when assembled context hovers around the
@@ -450,13 +532,12 @@ Write the brief directly — no preamble.`;
 // ALMOST CERTAINLY had a turn or two with the existing brief in context.
 const BRIEF_OVERWRITE_GUARD_MS = 5 * 60 * 1000;
 
-// Brief target size. Pre-2026-04-30 this was 800 tokens, which was too
-// small to capture file paths, task IDs, current step in a multi-step
-// process, etc. — exactly the load-bearing details the brief is supposed to
-// preserve through compaction. 2500 tokens fits comfortably in the assembler
-// budget while leaving room for the genuinely critical context the agent
-// needs to keep working.
-const BRIEF_TARGET_TOKENS = 2500;
+// Brief target size. Pre-2026-04-30 this was 800 tokens; v1.15.92 raised
+// to 2500. The structured prompt rewrite (verbatim user quotes + required
+// sections) needs more room to fully capture state, so 4000 tokens — a
+// chunky but bounded brief that can hold weeks of project context across
+// compactions. Still well under typical context windows.
+const BRIEF_TARGET_TOKENS = 4000;
 
 async function generateContinuityBrief(agentId: string, modelId: string, contextWindow: number): Promise<void> {
   try {

@@ -636,12 +636,16 @@ export const Chat = () => {
             return <ToolResultBubble key={msg.id} msg={msg} />;
           }
           if (msg.role === 'system') {
-            // Always show session dividers
-            if (msg.content.includes('New Session')) {
+            // Always show divider-style markers: any system message shaped
+            // "── label ──" renders as a horizontal divider with the label
+            // centered. Used for New Session, Memory Compacted, and any
+            // future inline timeline markers.
+            const dividerMatch = msg.content.trim().match(/^──\s*(.+?)\s*──$/);
+            if (dividerMatch) {
               return (
                 <div key={msg.id} className="flex items-center gap-3 my-4 px-4">
                   <div className="flex-1 h-px bg-white/10" />
-                  <span className="text-xs text-white/30 shrink-0">New Session</span>
+                  <span className="text-xs text-white/30 shrink-0">{dividerMatch[1]}</span>
                   <div className="flex-1 h-px bg-white/10" />
                 </div>
               );
