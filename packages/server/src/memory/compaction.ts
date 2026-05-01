@@ -203,10 +203,31 @@ export async function checkAndCompact(
   }, agentId);
 
   if (force || totalTokens > threshold) {
+    // No-op guard: if the gate metric is over threshold but there's
+    // nothing outside the fresh tail to compact, the bloat IS the fresh
+    // tail and compaction can't help. Pre-2026-05-01 we still ran the
+    // whole reactive path (continuity brief LLM call, condensation,
+    // rebuild, divider broadcast) even when leafCreated would be 0 —
+    // and the next turn's gate check tripped again, looping. Now we
+    // detect the no-op case and log out cleanly.
+    const guardMessagesOutside = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(contextWindow));
+    const guardCompactedIds = getCompactedMessageIds(agentId);
+    const guardUncompactedCount = guardMessagesOutside.filter(m => !guardCompactedIds.has(m.id)).length;
+    if (!force && guardUncompactedCount === 0) {
+      logger.warn('Compaction gate exceeded but nothing outside fresh tail to compact — skipping (bloat is in fresh tail itself)', {
+        assembledTokens: totalTokens,
+        threshold,
+        freshTailCount: assembled.freshTailCount,
+        freshTailTokens: assembled.freshTailTokens,
+      }, agentId);
+      return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
+    }
+
     // Full reactive compaction
     logger.info('Running full reactive compaction', {
       assembledTokens: totalTokens,
       threshold,
+      uncompactedOutsideTail: guardUncompactedCount,
     }, agentId);
 
     // ── Pre-compaction continuity brief ──
@@ -248,13 +269,17 @@ export async function checkAndCompact(
       ...result,
     });
 
-    // Insert a chat divider so the user sees in the timeline that
-    // memory was compacted. Mirrors the "── New Session ──" pattern;
-    // the dashboard renders any "── label ──" system message as a
-    // horizontal divider with the label centered.
-    insertCompactionDivider(agentId, {
-      label: `Memory Compacted${result.tokensReclaimed > 0 ? ` — reclaimed ~${formatTokens(result.tokensReclaimed)}` : ''}${result.leafCreated > 0 ? ` (${result.leafCreated} new summar${result.leafCreated === 1 ? 'y' : 'ies'})` : ''}`,
-    });
+    // Insert a chat divider only when something *actually* changed.
+    // A reactive compaction that created no summaries and reclaimed no
+    // meaningful tokens is just noise in the timeline (and was a symptom
+    // of the pre-v1.15.108 runaway-loop bug). The no-op guard above
+    // should catch most of those, but also gate the divider as
+    // belt-and-braces.
+    if (result.leafCreated > 0 || result.condensedCreated > 0 || result.tokensReclaimed > 1000) {
+      insertCompactionDivider(agentId, {
+        label: `Memory Compacted${result.tokensReclaimed > 0 ? ` — reclaimed ~${formatTokens(result.tokensReclaimed)}` : ''}${result.leafCreated > 0 ? ` (${result.leafCreated} new summar${result.leafCreated === 1 ? 'y' : 'ies'})` : ''}`,
+      });
+    }
 
     logger.info('Compaction complete', result, agentId);
     return result;
