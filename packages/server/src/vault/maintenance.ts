@@ -1091,9 +1091,15 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
     vaultStatsBefore: stats,
   });
 
-  // Store the first batch's archive IDs on the Dreamer agent record
+  // Store the first batch's archive IDs on the Dreamer agent record.
+  // CRITICAL: wrap the bound parameter in SQLite's json() function. Without
+  // it, json_set treats a TEXT parameter as a literal string value and
+  // stores it AS A STRING at $.dreamerArchiveIds. The downstream reader
+  // would then iterate the *characters* of that JSON string instead of
+  // the array elements, marking nothing as processed and leaving the
+  // backlog stuck forever (this was the v1.15.100 "stays at 48" bug).
   db.prepare(`
-    UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', ?)
+    UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', json(?))
     WHERE id = ?
   `).run(JSON.stringify(firstBatch.ids), dreamerId);
 
@@ -1231,9 +1237,11 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
     const dreamerId = getDreamerAgentId();
     const db = getDb();
 
-    // Update archive IDs on the permanent Dreamer record for this batch
+    // Update archive IDs on the permanent Dreamer record for this batch.
+    // json(?) is required so SQLite stores the array AS JSON, not as a
+    // quoted string — see the matching note in runDreamingCycle.
     db.prepare(`
-      UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', ?)
+      UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', json(?))
       WHERE id = ?
     `).run(JSON.stringify(batch.ids), dreamerId);
 
@@ -1286,10 +1294,36 @@ export function markDreamerArchivesProcessed(dreamerAgentId: string): void {
 
   try {
     const config = JSON.parse(agent.config || '{}');
-    const archiveIds = config.dreamerArchiveIds as string[] | undefined;
-    if (!archiveIds || archiveIds.length === 0) return;
+    let archiveIds = config.dreamerArchiveIds as string[] | string | undefined;
+
+    // Defensive guard for the v1.15.100 bug: dreamerArchiveIds was
+    // historically stored AS A STRING (the JSON-encoded array literally
+    // serialized into a string field) because json_set was called without
+    // wrapping the parameter in json(). If we encounter that legacy shape,
+    // parse it back into an array. Without this, we'd iterate the string's
+    // characters and "Mark N archives" would log a character count while
+    // updating zero rows — exactly the symptom that left users stuck with
+    // a backlog that never decreased.
+    if (typeof archiveIds === 'string') {
+      try {
+        const parsed = JSON.parse(archiveIds);
+        if (Array.isArray(parsed)) {
+          archiveIds = parsed as string[];
+          logger.warn('Recovered legacy string-encoded dreamerArchiveIds — parsing as JSON', { dreamerAgentId, count: archiveIds.length });
+        } else {
+          logger.error('dreamerArchiveIds is a string but not a JSON array — refusing to iterate as chars', { dreamerAgentId });
+          return;
+        }
+      } catch {
+        logger.error('dreamerArchiveIds is a string but not valid JSON — refusing to iterate as chars', { dreamerAgentId });
+        return;
+      }
+    }
+
+    if (!Array.isArray(archiveIds) || archiveIds.length === 0) return;
 
     for (const id of archiveIds) {
+      if (typeof id !== 'string' || id.length < 8) continue; // sanity: archive IDs are uuids
       db.prepare("UPDATE vault_conversations SET is_processed = 1, processed_at = datetime('now') WHERE id = ?").run(id);
     }
 
@@ -1439,9 +1473,10 @@ export async function recoverDreamerFromContextOverflow(
   if (!nextBatch) return false;
 
   // Update archive IDs on the dreamer agent record so completion handler
-  // marks the right archives as processed.
+  // marks the right archives as processed. json(?) required — see note
+  // in runDreamingCycle.
   db.prepare(`
-    UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', ?)
+    UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', json(?))
     WHERE id = ?
   `).run(JSON.stringify(nextBatch.ids), dreamerAgentId);
 

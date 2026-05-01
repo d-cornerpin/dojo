@@ -546,13 +546,20 @@ export async function completeAgent(
     `).run(taskStatus, taskStatus, `[${new Date().toISOString()}] Agent completed: ${summary}`, agent.task_id);
   }
 
-  // If this is the Dreamer completing, mark its archives as processed
+  // If this is the Dreamer completing, mark its archives as processed.
+  // Pre-2026-04-30 the catch here swallowed all errors silently, hiding
+  // the v1.15.100 json_set bug for who-knows-how-long. Log them instead.
   const { isDreamerAgent } = await import('../config/platform.js');
   if ((agent.name === 'Dreamer' || isDreamerAgent(agentId)) && status === 'complete') {
     try {
       const { markDreamerArchivesProcessed } = await import('../vault/maintenance.js');
       markDreamerArchivesProcessed(agentId);
-    } catch { /* best effort */ }
+    } catch (err) {
+      logger.error('markDreamerArchivesProcessed threw — archives may not be marked processed', {
+        agentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   logger.info('Agent completed', {
