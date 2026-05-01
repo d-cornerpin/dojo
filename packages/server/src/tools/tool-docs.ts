@@ -38,6 +38,7 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'list_agents',
   'imessage_send',
   'image_create',
+  'show_to_user',
 ];
 
 // PM agent: tracker-focused, monitors tasks and sends messages to other agents.
@@ -72,6 +73,7 @@ export const TRAINER_AGENT_ALWAYS_LOADED = [
   'exec',
   'file_read',
   'file_write',
+  'show_to_user',
 ];
 
 // Healer agent: diagnostic + agent management for injury recovery.
@@ -109,6 +111,7 @@ export const SUB_AGENT_ALWAYS_LOADED = [
   'vault_search',
   'tracker_update_status',
   'image_create',
+  'show_to_user',
 ];
 
 // ── Per-session tool loading state ──
