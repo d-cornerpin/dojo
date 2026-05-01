@@ -35,6 +35,16 @@ import type { Message } from '@dojo/shared';
 // We approximate the compressible portion: summaries + fresh tail + brief.
 // Vault and active tasks aren't compressible by this engine, so leaving
 // them out of the gating metric is correct.
+// Per-message cap for the compaction gate. A single oversized message
+// (think: file_read of a code file, web_fetch of a long page, list_agents
+// returning tons of metadata) used to count its full token weight here,
+// so one tool-heavy turn could trigger compaction by itself even when
+// the conversation was otherwise quiet. The assembler's own
+// budgetFreshTail already trims what the model actually sees; the gate
+// just needs to know "is the fresh tail genuinely full of conversation",
+// not "did somebody dump a 30K file into a single tool result".
+const MAX_GATE_MESSAGE_TOKENS = 4000;
+
 function estimateAssembledTokens(agentId: string, contextWindow: number): {
   total: number;
   summaryTokens: number;
@@ -48,7 +58,10 @@ function estimateAssembledTokens(agentId: string, contextWindow: number): {
 
   const freshTail = getRecentMessages(agentId, getCompactionTailCount(contextWindow));
   const freshTailTokens = freshTail.reduce(
-    (sum, m) => sum + (m.tokenCount ?? estimateTokens(m.content)),
+    (sum, m) => {
+      const raw = m.tokenCount ?? estimateTokens(m.content);
+      return sum + Math.min(raw, MAX_GATE_MESSAGE_TOKENS);
+    },
     0,
   );
 

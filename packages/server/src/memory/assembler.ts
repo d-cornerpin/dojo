@@ -76,6 +76,10 @@ export async function assembleContext(
     return { systemPrompt, messages };
   }
 
+  // Track whether any scaffolding section was injected so we can push a
+  // single combined ack at the end (instead of one ack per section).
+  let injectedAnyScaffolding = false;
+
   // 2. Morning briefing
   const briefing = getLatestBriefing(agentId);
   if (briefing) {
@@ -84,8 +88,8 @@ export async function assembleContext(
 
     if (usedTokens + briefingTokens < maxTokens) {
       messages.push({ role: 'user', content: briefingText });
-      messages.push({ role: 'assistant', content: 'Understood, I have reviewed the morning briefing.' });
-      usedTokens += briefingTokens + estimateTokens('Understood, I have reviewed the morning briefing.');
+      usedTokens += briefingTokens;
+      injectedAnyScaffolding = true;
     }
   }
 
@@ -109,8 +113,8 @@ export async function assembleContext(
       const vaultTokens = estimateTokens(vaultResult.section);
       if (usedTokens + vaultTokens < maxTokens) {
         messages.push({ role: 'user', content: vaultResult.section });
-        messages.push({ role: 'assistant', content: 'Understood, I have reviewed my vault memories.' });
-        usedTokens += vaultTokens + estimateTokens('Understood, I have reviewed my vault memories.');
+        usedTokens += vaultTokens;
+        injectedAnyScaffolding = true;
       }
     }
   } catch (err) {
@@ -134,8 +138,8 @@ export async function assembleContext(
       const wrappedText = `═══ COMPRESSED HISTORY (summaries of earlier messages — not live conversation) ═══\nThe following are compressed summaries of older conversation history. These capture key facts and decisions but are NOT live messages. Do not respond to them directly — they are context only.\n\n${summaryText}\n\n═══ END COMPRESSED HISTORY ═══`;
 
       messages.push({ role: 'user', content: wrappedText });
-      messages.push({ role: 'assistant', content: 'Understood, I have reviewed the compressed conversation history and will use it as context.' });
-      usedTokens += summaryTokens + estimateTokens('Understood, I have reviewed the compressed conversation history and will use it as context.');
+      usedTokens += summaryTokens;
+      injectedAnyScaffolding = true;
     }
   }
 
@@ -161,8 +165,8 @@ export async function assembleContext(
       const taskTokens = estimateTokens(taskContext);
       if (usedTokens + taskTokens < maxTokens) {
         messages.push({ role: 'user', content: taskContext });
-        messages.push({ role: 'assistant', content: 'Understood, I will continue working on my active tasks.' });
-        usedTokens += taskTokens + estimateTokens('Understood, I will continue working on my active tasks.');
+        usedTokens += taskTokens;
+        injectedAnyScaffolding = true;
       }
     }
   } catch { /* tracker may not be available */ }
@@ -182,12 +186,25 @@ export async function assembleContext(
         const briefTokens = estimateTokens(continuityBrief);
         if (usedTokens + briefTokens < maxTokens) {
           messages.push({ role: 'user', content: continuityBrief });
-          messages.push({ role: 'assistant', content: 'Understood, I know what I was working on.' });
-          usedTokens += briefTokens + estimateTokens('Understood, I know what I was working on.');
+          usedTokens += briefTokens;
+          injectedAnyScaffolding = true;
         }
       }
     }
   } catch { /* best effort */ }
+
+  // Single combined ack for ALL scaffolding sections. Pre-2026-05-01 each
+  // section pushed its own assistant ack ("Understood, I have reviewed
+  // the morning briefing." / "…my vault memories." / etc.) — five
+  // separate assistant messages of pure scaffolding, ~80 tokens. The
+  // mergeConsecutiveRoles pass later collapses the consecutive user
+  // sections into one merged user message anyway, so a single ack is
+  // sufficient and structurally cleaner.
+  if (injectedAnyScaffolding) {
+    const combinedAck = 'Understood, I have reviewed my background context (briefing, vault, summaries, active tasks, and continuity brief). Continuing.';
+    messages.push({ role: 'assistant', content: combinedAck });
+    usedTokens += estimateTokens(combinedAck);
+  }
 
   // 4. Fresh tail — exclude user messages that arrived after the current turn
   // started so they get a clean run via the wakeup mechanism instead of being

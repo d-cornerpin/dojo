@@ -8,7 +8,15 @@ import { estimateTokens } from './store.js';
 
 const logger = createLogger('memory-large-files');
 
-const LARGE_FILE_TOKEN_THRESHOLD = 25000;
+// Lowered from 25000 → 8000 (2026-05-01). Above this token count, a tool
+// result (file_read, web_fetch, etc.) is replaced with a stub + retrievable
+// file ID; the agent can re-load the full content on demand. The previous
+// threshold left 25K tokens of raw content sitting in the fresh tail every
+// time someone opened a moderately-sized code file or fetched a web page,
+// which by itself could trip the compaction gate within a few turns. 8K is
+// roughly "a long blog post" — anything bigger is almost always faster to
+// re-fetch than to keep in context.
+const LARGE_FILE_TOKEN_THRESHOLD = 8000;
 const FILES_BASE_DIR = path.join(os.homedir(), '.dojo', 'data', 'files');
 
 // ── Interception Check ──

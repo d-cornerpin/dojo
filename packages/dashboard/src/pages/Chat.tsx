@@ -628,7 +628,8 @@ export const Chat = () => {
           if (!wordyMode && msg.role === 'assistant' && (
             msg.content.startsWith('I got stuck on that') ||
             msg.content.startsWith("I'm sorry — I'm having trouble") ||
-            msg.content.startsWith('Understood, I have reviewed the continuity brief')
+            msg.content.startsWith('Understood, I have reviewed the continuity brief') ||
+            msg.content.startsWith('Understood, I have reviewed my background context')
           )) return null;
           if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} />;
           if (msg.role === 'tool') {
