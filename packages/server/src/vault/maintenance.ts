@@ -719,22 +719,15 @@ function buildDreamerCycleMessage(
     ? `\n\nThis is batch ${batchIndex + 1} of ${totalBatches}. Focus on these archives only. The remaining batches will be delivered after you call complete_task.`
     : '';
 
-  // Cap the archive overview list. Pre-2026-04-30 we listed every
-  // unprocessed archive (hundreds or thousands of lines) on every cycle
-  // message, burning tens of thousands of tokens before the Dreamer even
-  // saw the actual archive content. The Dreamer doesn't need a full
-  // manifest — a count + a sample is enough to know the queue depth.
-  const ARCHIVE_LIST_PREVIEW = 25;
+  // Queue overview. Pre-2026-04-30 we enumerated the first N archives in
+  // a numbered list, which (a) wasted tokens and (b) misled the Dreamer
+  // into thinking only the listed ones were in scope — its complete_task
+  // summaries kept saying "Processed N archives" matching the preview
+  // count, not the actual batch size. Now we just state the total. The
+  // batch text below contains every archive's content; that's what the
+  // Dreamer reads anyway.
   const archiveSummary = allUnprocessed.length > 0
-    ? (() => {
-        const preview = allUnprocessed.slice(0, ARCHIVE_LIST_PREVIEW).map((conv, i) =>
-          `  ${i + 1}. ${conv.agentName ?? conv.agentId} — ${conv.messageCount} messages (${conv.earliestAt} to ${conv.latestAt})`,
-        ).join('\n');
-        const overflow = allUnprocessed.length > ARCHIVE_LIST_PREVIEW
-          ? `\n  …and ${allUnprocessed.length - ARCHIVE_LIST_PREVIEW} more (oldest first; not enumerated to save tokens)`
-          : '';
-        return `\n\nQueue depth: ${allUnprocessed.length} archive(s) total. First ${Math.min(ARCHIVE_LIST_PREVIEW, allUnprocessed.length)}:\n${preview}${overflow}`;
-      })()
+    ? `\n\nQueue: ${allUnprocessed.length} archive(s), all included in the batch text below. Process every archive in the batch.`
     : '';
 
   // Note: file paths are NOT advertised in the cycle header anymore. Doing
