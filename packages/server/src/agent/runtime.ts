@@ -237,6 +237,43 @@ function enforceModelCapabilities(
 }
 
 // Broadcast a persisted message to the dashboard so it appears in real-time
+/**
+ * Canonical signature for a tool call, used to detect loops.
+ * Normalizes timestamp-like numeric runs in string args (so a call like
+ * file_read on slides_..._1777674358570_000.png matches another call on
+ * slides_..._1777674244353_000.png — the runtime treats them as "the
+ * same operation"). Drops very long values to keep the signature stable
+ * even if the agent passes slightly-different prose. Sorted JSON keys
+ * to avoid ordering noise.
+ */
+function canonicalToolSignature(name: string, args: Record<string, unknown> | undefined): string {
+  if (!args) return `${name}:{}`;
+  const normalized: Record<string, unknown> = {};
+  for (const k of Object.keys(args).sort()) {
+    const v = args[k];
+    if (typeof v === 'string') {
+      // Replace runs of 6+ digits (timestamps, large IDs) with a placeholder.
+      let s = v.replace(/\d{6,}/g, '*');
+      // Truncate long string values — only the shape matters for sig.
+      if (s.length > 200) s = s.slice(0, 200) + '…';
+      normalized[k] = s;
+    } else if (typeof v === 'number' || typeof v === 'boolean' || v === null) {
+      normalized[k] = v;
+    } else if (Array.isArray(v)) {
+      // For arrays of strings (e.g., file_paths), normalize each element.
+      normalized[k] = v.slice(0, 5).map(item => {
+        if (typeof item === 'string') return item.replace(/\d{6,}/g, '*').slice(0, 200);
+        return item;
+      });
+    } else {
+      // Objects / unknowns: shallow-stringify, capped.
+      try { normalized[k] = JSON.stringify(v).slice(0, 200); }
+      catch { normalized[k] = '<obj>'; }
+    }
+  }
+  return `${name}:${JSON.stringify(normalized)}`;
+}
+
 function broadcastMessage(agentId: string, msg: {
   id: string;
   role: string;
@@ -720,6 +757,15 @@ class AgentRuntime {
     let trackerToolCalled = false; // Whether agent has used any tracker tool this turn
     let nonTrackerToolCalls = 0; // Count of non-tracker tool calls this turn
     let toolCallsExecutedThisTurn = 0; // Total tool calls executed across all loop iterations this turn
+    // Loop-break for repeated tool calls. Agents in a verification spiral
+    // call the same tool with substantially-similar args repeatedly
+    // (slides_export_pngs → file_read → show_to_user, then "wait, let me
+    // verify" → repeat). After 3 occurrences of the same tool signature
+    // in the recent window, we refuse the call with an error and a
+    // strong instruction to stop verifying and respond with text.
+    const recentToolSignatures: string[] = [];
+    const RECENT_TOOL_WINDOW = 8; // last 8 tool calls considered "recent"
+    const MAX_REPEATS_BEFORE_BREAK = 3; // 3 calls of the same sig → loop-break
     let sentToAgentThisTurn = false; // Whether the agent called send_to_agent during this turn
     let consecutivePermissionDenials = 0; // Count of consecutive [BLOCKED] tool results
     let lastAssistantTextForIM: string | null = null; // Last assistant text this turn — for iMessage routing after loop
@@ -1372,6 +1418,32 @@ class AgentRuntime {
         if (toolCall.name === 'send_to_agent' || toolCall.name === 'broadcast_to_group') {
           sentToAgentThisTurn = true;
         }
+
+        // ── Loop-break: detect repeated tool signatures ──
+        const sig = canonicalToolSignature(toolCall.name, toolCall.arguments);
+        const repeatCount = recentToolSignatures.filter(s => s === sig).length;
+        if (repeatCount >= MAX_REPEATS_BEFORE_BREAK) {
+          logger.warn('Tool-call loop break: refusing repeated call', {
+            agentId, tool: toolCall.name, signature: sig.slice(0, 200), repeatCount: repeatCount + 1,
+          }, agentId);
+          toolResult = {
+            toolCallId: toolCall.id,
+            name: toolCall.name,
+            content: `STOP — you have called \`${toolCall.name}\` ${repeatCount + 1} times with substantially-similar arguments in the last few turns. The user does not need more verification. The previous result is the answer; trust it. Respond to the user with TEXT now — do NOT call this tool again, and do NOT call related verification tools (file_read, exec, ls, etc.) on the same artifact. If you genuinely need different information, ask the user a direct question instead.`,
+            isError: true,
+          };
+          toolResults.push(toolResult);
+          recentToolSignatures.push(sig);
+          if (recentToolSignatures.length > RECENT_TOOL_WINDOW) recentToolSignatures.shift();
+          // Broadcast as if it ran (so dashboard shows the refusal in the chat)
+          try {
+            broadcast({ type: 'chat:tool_result', agentId, tool: toolCall.name, result: toolResult.content.slice(0, 500) });
+          } catch { /* best effort */ }
+          continue;
+        }
+        recentToolSignatures.push(sig);
+        if (recentToolSignatures.length > RECENT_TOOL_WINDOW) recentToolSignatures.shift();
+
         try {
           toolResult = await executeTool(agentId, toolCall);
           // Transfer content blocks from the tool call (set by file_read for images/PDFs)

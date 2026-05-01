@@ -41,11 +41,75 @@ function formatEntryForPrompt(entry: VaultEntry): string {
 
 // ── Retrieve Relevant Vault Entries ──
 
+// Significant-token extractor for vault-vs-task overlap detection.
+// Words ≥ 5 chars, lowercased, common stopwords removed. Yields a
+// fuzzy "topic" set for cheap Jaccard-style overlap comparison without
+// embeddings.
+const VAULT_OVERLAP_STOPWORDS = new Set([
+  'the', 'and', 'for', 'that', 'with', 'this', 'from', 'have', 'been',
+  'when', 'were', 'will', 'into', 'their', 'about', 'they', 'them', 'these',
+  'those', 'which', 'where', 'while', 'after', 'before', 'because', 'than',
+  'should', 'would', 'could', 'might', 'also', 'other', 'something',
+  'agent', 'agents', 'tool', 'tools', 'using', 'used', 'task',
+]);
+
+function significantTokensFor(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9_\-]+/g, ' ')
+      .split(/\s+/)
+      .filter(t => t.length >= 5 && !VAULT_OVERLAP_STOPWORDS.has(t)),
+  );
+}
+
+function tokenOverlapRatio(entry: Set<string>, task: Set<string>): number {
+  if (entry.size === 0 || task.size === 0) return 0;
+  let shared = 0;
+  for (const t of entry) if (task.has(t)) shared++;
+  // Coverage of the (smaller) entry by the task — high values mean
+  // the entry is mostly "about" the same thing as the task.
+  return shared / entry.size;
+}
+
 export async function retrieveForContext(
   query: string,
   contextWindow: number,
+  agentId?: string,
 ): Promise<{ section: string; entryIds: string[] }> {
   const budget = getVaultBudget(contextWindow);
+
+  // ── Active-task topic suppression ──
+  // If the agent has in-progress tracker tasks, drop any vault entries
+  // of type 'procedure' or 'event' that substantially overlap a task's
+  // topic. Those entries are about work currently in flight — they
+  // duplicate the tracker (and often contradict it, since vault entries
+  // get written before the work is done). The tracker is the source of
+  // truth for active state; vault is for durable past facts.
+  const activeTaskTopics: Array<{ id: string; topic: Set<string> }> = [];
+  if (agentId) {
+    try {
+      const { listTasks } = await import('../tracker/schema.js');
+      const tasks = listTasks({ status: 'in_progress', assignedTo: agentId });
+      for (const t of tasks) {
+        const topicText = `${t.title} ${t.description ?? ''}`;
+        activeTaskTopics.push({ id: t.id, topic: significantTokensFor(topicText) });
+      }
+    } catch { /* tracker not available */ }
+  }
+
+  const isSuppressed = (entry: VaultEntry): { suppressed: boolean; taskId?: string } => {
+    if (activeTaskTopics.length === 0) return { suppressed: false };
+    if (entry.type !== 'procedure' && entry.type !== 'event') return { suppressed: false };
+    if (entry.isPermanent) return { suppressed: false }; // permanent entries are USER.md-grade — never suppress
+    const entryTokens = significantTokensFor(entry.content);
+    if (entryTokens.size < 4) return { suppressed: false }; // too short to judge
+    for (const task of activeTaskTopics) {
+      const overlap = tokenOverlapRatio(entryTokens, task.topic);
+      if (overlap >= 0.45) return { suppressed: true, taskId: task.id };
+    }
+    return { suppressed: false };
+  };
 
   // Get pinned entries, capped at MAX_PINNED_ENTRIES.
   // Permanent entries get priority, then sort by recency.
@@ -91,9 +155,19 @@ export async function retrieveForContext(
   const lines: string[] = [];
   const includedIds: string[] = [];
   let usedTokens = 0;
+  let suppressedCount = 0;
 
-  // Add pinned entries first (always included)
+  // Add pinned entries first (always included unless they overlap an
+  // active task's topic — see isSuppressed comment).
   for (const entry of pinned) {
+    const sup = isSuppressed(entry);
+    if (sup.suppressed) {
+      suppressedCount++;
+      logger.debug('Vault entry suppressed (overlaps active task)', {
+        entryId: entry.id, taskId: sup.taskId, type: entry.type,
+      });
+      continue;
+    }
     const line = formatEntryForPrompt(entry);
     const tokens = estimateTokens(line);
     lines.push(line);
@@ -104,12 +178,23 @@ export async function retrieveForContext(
   // Add relevant entries up to budget
   for (const entry of relevant) {
     if (includedIds.length - pinned.length >= budget.maxEntries) break;
+    const sup = isSuppressed(entry);
+    if (sup.suppressed) {
+      suppressedCount++;
+      logger.debug('Vault entry suppressed (overlaps active task)', {
+        entryId: entry.id, taskId: sup.taskId, type: entry.type,
+      });
+      continue;
+    }
     const line = formatEntryForPrompt(entry);
     const tokens = estimateTokens(line);
     if (usedTokens + tokens > budget.maxTokens && includedIds.length > pinned.length) break;
     lines.push(line);
     includedIds.push(entry.id);
     usedTokens += tokens;
+  }
+  if (suppressedCount > 0) {
+    logger.info(`Suppressed ${suppressedCount} vault entries that overlapped active tracker tasks`, { agentId });
   }
 
   if (lines.length === 0) {

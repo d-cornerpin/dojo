@@ -108,7 +108,7 @@ export async function assembleContext(
       // always loaded, even on a fresh session.
       queryText = 'current projects active tasks recent work status updates decisions';
     }
-    const vaultResult = await retrieveForContext(queryText, contextWindow);
+    const vaultResult = await retrieveForContext(queryText, contextWindow, agentId);
     if (vaultResult.section) {
       const vaultTokens = estimateTokens(vaultResult.section);
       if (usedTokens + vaultTokens < maxTokens) {
@@ -183,9 +183,16 @@ export async function assembleContext(
       const agentConfig = JSON.parse(configRow.config) as Record<string, unknown>;
       const continuityBrief = agentConfig.continuityBrief as string | undefined;
       if (continuityBrief && continuityBrief.length > 50) {
-        const briefTokens = estimateTokens(continuityBrief);
+        // Wrap with explicit framing so the agent doesn't treat the brief
+        // as authoritative when it conflicts with the fresh tail. The brief
+        // is a snapshot from BEFORE the last compaction; the live conversation
+        // below is more recent. Pre-2026-05-01 the brief was injected raw,
+        // and agents often anchored on its (stale) state when fresh-tail
+        // showed something newer — leading to verification spirals.
+        const wrappedBrief = `═══ CONTINUITY BRIEF (snapshot from before the last compaction — the live conversation below is more recent and authoritative when in conflict) ═══\n\n${continuityBrief}\n\n═══ END CONTINUITY BRIEF ═══`;
+        const briefTokens = estimateTokens(wrappedBrief);
         if (usedTokens + briefTokens < maxTokens) {
-          messages.push({ role: 'user', content: continuityBrief });
+          messages.push({ role: 'user', content: wrappedBrief });
           usedTokens += briefTokens;
           injectedAnyScaffolding = true;
         }
@@ -194,14 +201,14 @@ export async function assembleContext(
   } catch { /* best effort */ }
 
   // Single combined ack for ALL scaffolding sections. Pre-2026-05-01 each
-  // section pushed its own assistant ack ("Understood, I have reviewed
-  // the morning briefing." / "…my vault memories." / etc.) — five
-  // separate assistant messages of pure scaffolding, ~80 tokens. The
-  // mergeConsecutiveRoles pass later collapses the consecutive user
-  // sections into one merged user message anyway, so a single ack is
-  // sufficient and structurally cleaner.
+  // section pushed its own assistant ack — five separate scaffolding
+  // messages. Now one ack closes them all. The ack also names the
+  // source-priority hierarchy explicitly so the agent doesn't anchor
+  // on a stale brief or vault entry when the live conversation
+  // (below) shows different state — a common failure mode that drove
+  // verification spirals before this framing was added.
   if (injectedAnyScaffolding) {
-    const combinedAck = 'Understood, I have reviewed my background context (briefing, vault, summaries, active tasks, and continuity brief). Continuing.';
+    const combinedAck = 'Understood, I have reviewed my background context (briefing, vault, summaries, active tasks, continuity brief). Source priority for this turn: live conversation below > active tracker tasks > continuity brief > vault entries > briefing. When sources disagree, trust the most recent and most specific.';
     messages.push({ role: 'assistant', content: combinedAck });
     usedTokens += estimateTokens(combinedAck);
   }
