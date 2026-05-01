@@ -3246,6 +3246,7 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
       case 'show_to_user': {
         const filePaths = args.file_paths as string[] | undefined;
         const caption = (args.caption as string | undefined) ?? '';
+        void caption; // caption is the agent's responsibility — they'll write it as their reply text
         if (!Array.isArray(filePaths) || filePaths.length === 0) {
           content = 'Error: file_paths is required and must be a non-empty array of absolute file paths.';
           isError = true;
@@ -3336,40 +3337,17 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
         }
         if (isError) break;
 
-        // Insert assistant message with attachments.
-        const messageId = uuidv4();
-        const createdAt = new Date().toISOString();
-        try {
-          getDb().prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)
-            VALUES (?, ?, 'assistant', ?, ?, datetime('now'))
-          `).run(messageId, agentId, caption, JSON.stringify(attachments));
+        // Queue the attachments for the agent's NEXT assistant message rather
+        // than inserting a synthetic message here. Inserting mid-tool-loop
+        // broke the alternation invariant and confused the model into
+        // re-calling show_to_user repeatedly. The runtime drains this queue
+        // when it persists the agent's next assistant write — the user sees
+        // a single bubble with the agent's text reply AND the thumbnails.
+        const { queuePendingAttachments } = await import('./pending-attachments.js');
+        queuePendingAttachments(agentId, attachments);
 
-          broadcast({
-            type: 'chat:message',
-            agentId,
-            message: {
-              id: messageId,
-              agentId,
-              role: 'assistant' as const,
-              content: caption,
-              tokenCount: null,
-              modelId: null,
-              cost: null,
-              latencyMs: null,
-              createdAt,
-              attachments,
-            },
-          });
-
-          const captionPreview = caption.length > 0
-            ? ` with caption: "${caption.slice(0, 80)}${caption.length > 80 ? '…' : ''}"`
-            : '';
-          content = `Showed ${attachments.length} file(s) to user${captionPreview}. The user sees this as a chat bubble with thumbnails. End your turn now unless you have more to add.`;
-        } catch (err) {
-          content = `Error persisting show_to_user message: ${err instanceof Error ? err.message : String(err)}`;
-          isError = true;
-        }
+        const fileList = attachments.map(a => `${a.filename} (${a.category})`).join(', ');
+        content = `Queued ${attachments.length} file(s) for your next reply: ${fileList}. Now write your reply text in your next assistant message — the engine will attach these files to whatever you say next so the user sees one chat bubble with your text + thumbnails. Do NOT call show_to_user again for these same files.`;
         break;
       }
 

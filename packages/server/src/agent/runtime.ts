@@ -237,7 +237,14 @@ function enforceModelCapabilities(
 }
 
 // Broadcast a persisted message to the dashboard so it appears in real-time
-function broadcastMessage(agentId: string, msg: { id: string; role: string; content: string; createdAt?: string; modelId?: string | null }) {
+function broadcastMessage(agentId: string, msg: {
+  id: string;
+  role: string;
+  content: string;
+  createdAt?: string;
+  modelId?: string | null;
+  attachments?: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: 'image' | 'pdf' | 'text' | 'office' | 'unknown' }>;
+}) {
   broadcast({
     type: 'chat:message',
     agentId,
@@ -251,6 +258,7 @@ function broadcastMessage(agentId: string, msg: { id: string; role: string; cont
       cost: null,
       latencyMs: null,
       createdAt: msg.createdAt ?? new Date().toISOString(),
+      attachments: msg.attachments,
     },
   });
 }
@@ -1146,6 +1154,14 @@ class AgentRuntime {
       // turn because they reject tool_result blocks referencing IDs they didn't generate.
       const hasXmlFallbackTools = result.toolCalls.some(tc => tc.id.startsWith('text_tool_'));
 
+      // Drain any attachments queued by show_to_user during prior tool
+      // calls in this turn. The runtime owns assistant-message persistence,
+      // so we attach here rather than letting the tool insert a synthetic
+      // message (that broke alternation and caused show_to_user loops).
+      const { drainPendingAttachments } = await import('./pending-attachments.js');
+      const queuedAttachments = drainPendingAttachments(agentId);
+      const queuedAttachmentsJson = queuedAttachments.length > 0 ? JSON.stringify(queuedAttachments) : null;
+
       if (result.toolCalls.length > 0 && !hasXmlFallbackTools) {
         const assistantContent: Anthropic.ContentBlockParam[] = [];
 
@@ -1164,32 +1180,57 @@ class AgentRuntime {
 
         // Always INSERT — content includes both text and tool_use blocks
         db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, token_count, model_id, cost, latency_ms, created_at)
-          VALUES (?, ?, 'assistant', ?, ?, ?, ?, NULL, datetime('now'))
+          INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, token_count, model_id, cost, latency_ms, created_at)
+          VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, NULL, datetime('now'))
         `).run(
           messageId,
           agentId,
           JSON.stringify(assistantContent),
+          queuedAttachmentsJson,
           result.outputTokens,
           modelId,
           null,
         );
-        broadcastMessage(agentId, { id: messageId, role: 'assistant', content: JSON.stringify(assistantContent), modelId });
+        broadcastMessage(agentId, {
+          id: messageId,
+          role: 'assistant',
+          content: JSON.stringify(assistantContent),
+          modelId,
+          attachments: queuedAttachments.length > 0 ? queuedAttachments : undefined,
+        });
       } else if (result.content) {
         // Text-only response, no tool calls
         db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, token_count, model_id, cost, latency_ms, created_at)
-          VALUES (?, ?, 'assistant', ?, ?, ?, ?, NULL, datetime('now'))
+          INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, token_count, model_id, cost, latency_ms, created_at)
+          VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, NULL, datetime('now'))
         `).run(
           messageId,
           agentId,
           result.content,
+          queuedAttachmentsJson,
           result.outputTokens,
           modelId,
           null,
         );
         // Queue embedding for assistant text responses
         queueEmbedding('message', messageId, agentId, result.content);
+
+        // Broadcast a chat:message ONLY when this text-only message has
+        // attachments (e.g. show_to_user queued files). The chunk-stream
+        // path already delivered the text live; firing chat:message here
+        // unconditionally would dupe-render. With attachments, the
+        // dashboard's chat:message handler updates the streaming bubble
+        // in-place to attach the files — that's the only way they reach
+        // the live UI without a page reload.
+        if (queuedAttachments.length > 0) {
+          broadcastMessage(agentId, {
+            id: messageId,
+            role: 'assistant',
+            content: result.content,
+            modelId,
+            attachments: queuedAttachments,
+          });
+        }
       }
 
       // Broadcast completion for streaming — only if we actually sent content or have tool calls.
