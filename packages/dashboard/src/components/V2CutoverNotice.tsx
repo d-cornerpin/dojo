@@ -2,23 +2,24 @@
 // V2CutoverNotice — one-time welcome banner
 // ════════════════════════════════════════
 //
-// Shows once per browser when the user first lands on the dashboard
+// Shows once per installation when the user first lands on the dashboard
 // after this version of the DOJO is installed. Tells them about the
 // new architecture and offers a one-click "Reset all idle sessions"
 // for a clean start (existing v1-era conversation history works on v2
 // but the first few turns carry slightly more context than steady-state
 // until stub-and-store kicks in).
 //
-// Trigger: localStorage flag `dojo_v2_welcome_seen`. If absent, show.
-// On dismiss or after Reset, set it. Simple and reliable across update
-// flows — the welcome surfaces exactly once per browser, regardless of
-// what the prior install was.
+// Trigger: server-side setting `v2_cutover_dismissed`. localStorage is a
+// fast-path optimistic suppress so we don't flash the banner before the
+// settings GET resolves. Once dismissed (explicit or via Reset), we
+// persist to the server so other browsers / restarts also stay quiet.
 
 import { useEffect, useState } from 'react';
-import { resetIdleSessions } from '../lib/api';
+import { resetIdleSessions, getSetting, setSetting } from '../lib/api';
 import { useToast } from '../hooks/useToast';
 
 const SEEN_KEY = 'dojo_v2_welcome_seen';
+const SERVER_KEY = 'v2_cutover_dismissed';
 
 export const V2CutoverNotice = () => {
   const toast = useToast();
@@ -26,10 +27,34 @@ export const V2CutoverNotice = () => {
   const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
-    if (localStorage.getItem(SEEN_KEY) !== '1') {
-      setShow(true);
-    }
+    let cancelled = false;
+    // Fast-path: localStorage already says we dismissed it here. Don't bother
+    // the server.
+    if (localStorage.getItem(SEEN_KEY) === '1') return;
+    (async () => {
+      try {
+        const r = await getSetting(SERVER_KEY);
+        if (cancelled) return;
+        if (r.ok && r.data?.value === 'true') {
+          // Server says dismissed — sync localStorage so we don't keep asking.
+          localStorage.setItem(SEEN_KEY, '1');
+          return;
+        }
+        setShow(true);
+      } catch {
+        // Network error fetching the setting — safer to show than to swallow.
+        if (!cancelled) setShow(true);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
+
+  const persistDismissed = () => {
+    localStorage.setItem(SEEN_KEY, '1');
+    // Best-effort: on failure the user just sees the banner again on a
+    // different browser. Not worth blocking dismissal on.
+    setSetting(SERVER_KEY, 'true').catch(() => { /* ignore */ });
+  };
 
   const handleReset = async () => {
     setResetting(true);
@@ -53,7 +78,7 @@ export const V2CutoverNotice = () => {
   };
 
   const handleDismiss = () => {
-    localStorage.setItem(SEEN_KEY, '1');
+    persistDismissed();
     setShow(false);
   };
 
