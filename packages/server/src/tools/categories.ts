@@ -13,7 +13,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'File & System',
-    tools: ['file_read', 'file_list', 'file_write', 'file_delete', 'exec', 'screen_read', 'keyboard_type', 'mouse_click', 'mouse_move', 'applescript_run', 'get_current_time'],
+    tools: ['file_read', 'file_list', 'file_write', 'file_patch', 'file_delete', 'exec', 'screen_read', 'keyboard_type', 'mouse_click', 'mouse_move', 'applescript_run', 'get_current_time'],
   },
   {
     label: 'Web',

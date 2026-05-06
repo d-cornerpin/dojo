@@ -422,6 +422,47 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'file_patch',
+    description: 'Surgically edit an existing file in place by find-and-replace, without rewriting the whole thing. Use this when you want to change a specific section of a file you have ALREADY read — the agent equivalent of opening a file, ctrl-F replacing a few strings, and saving. Strongly preferred over file_write for edits, because file_write requires you to reconstruct the entire file from memory and routinely drops content the model didn\'t explicitly type back.\n\nEach patch is `{ search, replace, replace_all? }`. The tool reads the file, applies every patch in order against the in-memory copy, and only writes to disk if every search string matched. If any patch\'s search string is not found, the call FAILS with a hard error and the file on disk is not touched — there is no silent no-op. Patches apply sequentially, so a later patch sees the result of earlier patches.\n\nExamples:\n  • Rename a heading: file_patch({ path: "/Users/me/site.html", patches: [{ search: "<h1>Old Title</h1>", replace: "<h1>New Title</h1>" }] })\n  • Replace every occurrence: file_patch({ path: "/Users/me/style.css", patches: [{ search: "color: red", replace: "color: var(--brand)", replace_all: true }] })\n  • Multiple edits at once: file_patch({ path: "...", patches: [{ search: "...", replace: "..." }, { search: "...", replace: "..." }] })\n  • Preview without writing: pass dry_run=true to see what would change without touching disk.\n\nWorks on any text file (encoding stays as-is on disk; the in-memory edit is utf-8). Refuses files that look binary. Refuses empty search strings.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Absolute path to the file to edit. Must already exist.',
+        },
+        patches: {
+          type: 'array',
+          description: 'Ordered list of find/replace operations. Each is applied against the current in-memory state of the file, so a later patch can match content produced by an earlier one. If any patch\'s search string is not found, the whole call fails and nothing is written.',
+          items: {
+            type: 'object',
+            properties: {
+              search: {
+                type: 'string',
+                description: 'Exact string to find. Whitespace and line endings count. Empty strings rejected.',
+              },
+              replace: {
+                type: 'string',
+                description: 'String to substitute in. Use empty string to delete the matched span.',
+              },
+              replace_all: {
+                type: 'boolean',
+                description: 'When true, replace every occurrence of search; default false (replace only the first).',
+              },
+            },
+            required: ['search', 'replace'],
+          },
+        },
+        dry_run: {
+          type: 'boolean',
+          description: 'When true, validate the patches and report what would change without writing to disk. Default false.',
+        },
+      },
+      required: ['path', 'patches'],
+    },
+    maxResultTokens: 2000,
+  },
+  {
     name: 'file_list',
     description: 'List the contents of a directory at the given absolute path. Returns file names, sizes, and types. Example: file_list({ path: "~/projects" }).',
     input_schema: {
@@ -2157,6 +2198,153 @@ async function executeFileWrite(agentId: string, args: Record<string, unknown>):
   }
 }
 
+// ── file_patch ──
+//
+// Surgical in-place edit. Reads the file, applies every patch in sequence
+// against the in-memory copy, refuses to write if any search string isn't
+// found, writes via temp-file + rename for atomicity. Binary files are
+// rejected (we only deal with text). Sensitive paths (secrets.yaml, .env,
+// SSH keys, cloud credentials) are blocked the same way file_read is.
+
+interface FilePatch {
+  search: string;
+  replace: string;
+  replace_all?: boolean;
+}
+
+export async function executeFilePatch(
+  agentId: string,
+  args: Record<string, unknown>,
+): Promise<string> {
+  const filePath = resolvePath(args.path as string);
+  const patches = args.patches as FilePatch[];
+  const dryRun = args.dry_run === true;
+
+  if (!path.isAbsolute(filePath)) {
+    auditLog(agentId, 'file_patch', filePath, 'error', 'Path must be absolute');
+    return 'Error: Path must be absolute. Use ~ for home directory or provide a full path.';
+  }
+
+  if (isSensitivePath(filePath)) {
+    auditLog(agentId, 'file_patch', filePath, 'denied', 'sensitive path block list');
+    return `[BLOCKED] file_patch refused: ${filePath} is on the sensitive-files block list (secrets.yaml, .env files, SSH keys, cloud credentials). The DOJO never lets agents rewrite secret files.`;
+  }
+
+  // Validate every patch up front so we fail fast before reading the file.
+  for (let i = 0; i < patches.length; i++) {
+    const p = patches[i];
+    if (!p || typeof p !== 'object') {
+      return `Error: patches[${i}] must be an object with { search, replace }.`;
+    }
+    if (typeof p.search !== 'string' || p.search.length === 0) {
+      return `Error: patches[${i}].search must be a non-empty string. An empty search would match everywhere.`;
+    }
+    if (typeof p.replace !== 'string') {
+      return `Error: patches[${i}].replace must be a string (use "" to delete the matched span).`;
+    }
+  }
+
+  let stat: import('node:fs').Stats;
+  try {
+    stat = await fs.promises.stat(filePath);
+  } catch {
+    auditLog(agentId, 'file_patch', filePath, 'error', 'File not found');
+    return `Error: File not found: ${filePath}. file_patch only edits files that already exist — use file_write to create new ones.`;
+  }
+  if (stat.isDirectory()) {
+    return `Error: ${filePath} is a directory, not a file.`;
+  }
+
+  let original: string;
+  try {
+    const buf = await fs.promises.readFile(filePath);
+    // Binary detection: text files don't contain NUL bytes. Sample first
+    // 8KB so we don't scan a 20MB HTML for every patch call.
+    const sample = buf.subarray(0, Math.min(8192, buf.length));
+    if (sample.includes(0)) {
+      auditLog(agentId, 'file_patch', filePath, 'error', 'binary file');
+      return `Error: ${filePath} appears to be binary (contains null bytes). file_patch only operates on text files.`;
+    }
+    original = buf.toString('utf-8');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    auditLog(agentId, 'file_patch', filePath, 'error', `read failed: ${msg}`);
+    return `Error reading file: ${msg}`;
+  }
+
+  // Apply each patch in sequence. Track replacement counts. If ANY patch
+  // fails to find its search string, abort with a clear error — never a
+  // silent zero-replacement success.
+  let working = original;
+  const counts: number[] = [];
+  for (let i = 0; i < patches.length; i++) {
+    const p = patches[i];
+    if (!working.includes(p.search)) {
+      const preview = p.search.length > 120 ? p.search.slice(0, 120) + '…' : p.search;
+      auditLog(agentId, 'file_patch', filePath, 'error', `patch ${i + 1} not found`);
+      return (
+        `Error: patch ${i + 1} of ${patches.length} did not match. Search string was not found in the file:\n` +
+        `  search: ${JSON.stringify(preview)}\n` +
+        `No changes have been written. Read the file again to confirm the exact text — whitespace, line endings, and case all matter.`
+      );
+    }
+    if (p.replace_all) {
+      // Use split/join to count and replace every occurrence safely (no regex
+      // escaping pitfalls with `.replaceAll`'s string overload? It uses
+      // string-mode but we'd need a stable count anyway).
+      const parts = working.split(p.search);
+      counts.push(parts.length - 1);
+      working = parts.join(p.replace);
+    } else {
+      const idx = working.indexOf(p.search);
+      working = working.slice(0, idx) + p.replace + working.slice(idx + p.search.length);
+      counts.push(1);
+    }
+  }
+
+  const summary = patches
+    .map((p, i) => {
+      const tag = p.replace_all ? 'replace_all' : 'replace';
+      const sPreview = p.search.length > 60 ? p.search.slice(0, 60) + '…' : p.search;
+      return `  patch ${i + 1}: ${counts[i]} replacement${counts[i] === 1 ? '' : 's'} (${tag}, search=${JSON.stringify(sPreview)})`;
+    })
+    .join('\n');
+
+  if (dryRun) {
+    const beforeBytes = Buffer.byteLength(original, 'utf-8');
+    const afterBytes = Buffer.byteLength(working, 'utf-8');
+    auditLog(agentId, 'file_patch', filePath, 'success', `dry_run: ${counts.reduce((a, b) => a + b, 0)} total replacements`);
+    return (
+      `[Dry run — no changes written.]\n` +
+      `${filePath} (${beforeBytes} → ${afterBytes} bytes)\n${summary}`
+    );
+  }
+
+  // Atomic write: temp file in the same dir, then rename. fs.rename is
+  // atomic on the same filesystem, so a crash mid-write either leaves the
+  // original intact or commits the new content — never a half file.
+  const tmpName = `.${path.basename(filePath)}.patch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp`;
+  const tmpPath = path.join(path.dirname(filePath), tmpName);
+  try {
+    await fs.promises.writeFile(tmpPath, working, 'utf-8');
+    await fs.promises.rename(tmpPath, filePath);
+  } catch (err) {
+    // Best-effort tmp cleanup, then return the error.
+    try { await fs.promises.unlink(tmpPath); } catch { /* ignore */ }
+    const msg = err instanceof Error ? err.message : String(err);
+    auditLog(agentId, 'file_patch', filePath, 'error', `write failed: ${msg}`);
+    return `Error writing patched file: ${msg}`;
+  }
+
+  const beforeBytes = Buffer.byteLength(original, 'utf-8');
+  const afterBytes = Buffer.byteLength(working, 'utf-8');
+  const totalReplacements = counts.reduce((a, b) => a + b, 0);
+  auditLog(agentId, 'file_patch', filePath, 'success', `${totalReplacements} replacements across ${patches.length} patches`);
+  return (
+    `Patched ${filePath} (${beforeBytes} → ${afterBytes} bytes, ${totalReplacements} total replacements)\n${summary}`
+  );
+}
+
 async function executeFileList(agentId: string, args: Record<string, unknown>): Promise<string> {
   const dirPath = resolvePath(args.path as string);
 
@@ -2242,7 +2430,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
     }
   }
 
-  if (name === 'file_write') {
+  if (name === 'file_write' || name === 'file_patch') {
     const filePath = args.path as string | undefined;
     if (filePath) {
       const perm = checkPermission(agentId, { type: 'file_write', path: filePath });
@@ -2416,6 +2604,20 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         ]);
         if (writeErr) { content = writeErr; isError = true; break; }
         content = await executeFileWrite(agentId, args);
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'file_patch': {
+        const patchErr = checkRequired([
+          { name: 'path', value: args.path, type: 'string' },
+        ]);
+        if (patchErr) { content = patchErr; isError = true; break; }
+        if (!Array.isArray(args.patches) || args.patches.length === 0) {
+          content = 'Error: patches must be a non-empty array of { search, replace } objects.';
+          isError = true;
+          break;
+        }
+        content = await executeFilePatch(agentId, args);
         isError = content.startsWith('Error');
         break;
       }
