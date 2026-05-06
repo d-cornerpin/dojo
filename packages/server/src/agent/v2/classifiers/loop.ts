@@ -60,29 +60,38 @@ export function canonicalToolSignature(
 ): string {
   if (!args) return `${name}:{}`;
   const normalized: Record<string, unknown> = {};
+  // Truncate long values to a stable prefix instead of a blob marker. The
+  // pre-2026-05-06 implementation replaced every >80-char string with the
+  // literal "<prose>", which collapsed distinct exec commands (grep vs
+  // sed vs python3) into the same signature — three real, different exec
+  // calls would trip the loop detector and the fourth got blocked. The
+  // PROSE_FIELDS drop above already removes truly free-form agent text;
+  // here we just want to ignore late variation (timestamps, trailing
+  // arguments) within the same operation.
+  const fingerprintLong = (s: string): string =>
+    s.length > 80 ? `${s.slice(0, 60)}…[len=${s.length}]` : s;
   for (const k of Object.keys(args).sort()) {
     if (PROSE_FIELDS.has(k)) continue;
     const v = args[k];
     if (typeof v === 'string') {
-      let s = v.replace(/\d{6,}/g, '*');
-      if (s.length > 80) s = '<prose>';
-      normalized[k] = s;
+      const s = v.replace(/\d{6,}/g, '*');
+      normalized[k] = fingerprintLong(s);
     } else if (typeof v === 'number' || typeof v === 'boolean' || v === null) {
       normalized[k] = v;
     } else if (Array.isArray(v)) {
       normalized[k] = v.slice(0, 5).map((item) => {
         if (typeof item === 'string') {
           const s = item.replace(/\d{6,}/g, '*');
-          return s.length > 80 ? '<prose>' : s;
+          return fingerprintLong(s);
         }
         return item;
       });
     } else {
       try {
         const s = JSON.stringify(v);
-        normalized[k] = s.length > 80 ? '<obj>' : s;
+        normalized[k] = fingerprintLong(s);
       } catch {
-        normalized[k] = '<obj>';
+        normalized[k] = '<unserializable>';
       }
     }
   }

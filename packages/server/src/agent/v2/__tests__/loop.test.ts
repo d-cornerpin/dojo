@@ -47,10 +47,32 @@ describe('canonicalToolSignature', () => {
     expect(sig).toBe('get_current_time:{}');
   });
 
-  it('replaces long strings with <prose>', () => {
-    const longString = 'x'.repeat(100);
-    const sig = canonicalToolSignature('foo', { some_param: longString });
-    expect(sig).toContain('<prose>');
+  it('truncates long strings to a stable prefix (not a blob marker)', () => {
+    // Pre-2026-05-06 this collapsed every long string to literal "<prose>",
+    // which made every long exec command share a signature and trip the
+    // loop detector after 3 unrelated calls. Now we keep a 60-char prefix
+    // plus a length tag so distinct operations stay distinguishable.
+    const sig1 = canonicalToolSignature('exec', {
+      command: 'grep -n -i "invoice\\|closing" /Users/x/.dojo/techniques/some-technique/TECHNIQUE.md | head -40',
+    });
+    const sig2 = canonicalToolSignature('exec', {
+      command: 'sed -i "" "s/Old/New/" /Users/x/.dojo/techniques/some-technique/TECHNIQUE.md',
+    });
+    const sig3 = canonicalToolSignature('exec', {
+      command: 'python3 -c "import sys; print(\'hi\')" /Users/x/.dojo/techniques/some-technique/TECHNIQUE.md',
+    });
+    expect(sig1).not.toBe(sig2);
+    expect(sig1).not.toBe(sig3);
+    expect(sig2).not.toBe(sig3);
+    // And the length tag is in there for stability
+    expect(sig1).toMatch(/\[len=\d+\]/);
+  });
+
+  it('treats two identical long commands as the same signature (loop detector still works)', () => {
+    const cmd = 'grep -rn "needle in a haystack" /very/long/path/to/somewhere/specific/in/the/repo';
+    const sig1 = canonicalToolSignature('exec', { command: cmd });
+    const sig2 = canonicalToolSignature('exec', { command: cmd });
+    expect(sig1).toBe(sig2);
   });
 
   it('preserves number, boolean, null literally', () => {
