@@ -2062,11 +2062,22 @@ async function executeFileRead(
       // ~500 token margin so the friendly pagination trailer doesn't trip
       // the generic applyMaxResultTokensCap (8000 tokens) and get re-truncated.
       const MAX_CHARS = 30_000; // ~7.5K tokens, room for trailer
+      // Per-line cap: protects against files where a single line is huge —
+      // e.g. an HTML file with embedded `<img src="data:image/png;base64,...">`.
+      // Without this, the whole-file cap below was bypassed via the
+      // `slice.length > 0` clause (we always included the first line, no
+      // matter how big), and a 5.9MB single-line file blew the entire model
+      // context window.
+      const MAX_LINE_CHARS = 4_000;
+      const truncateLine = (line: string): string =>
+        line.length > MAX_LINE_CHARS
+          ? `${line.slice(0, MAX_LINE_CHARS)} … [line truncated; original ${line.length} chars — likely contains base64/binary data. Use grep/exec to inspect specific patterns.]`
+          : line;
       const slice: string[] = [];
       let chars = 0;
       let actualEnd = startLine;
       for (let i = startLine; i < endLine; i++) {
-        const line = allLines[i] ?? '';
+        const line = truncateLine(allLines[i] ?? '');
         if (chars + line.length + 1 > MAX_CHARS && slice.length > 0) break;
         slice.push(`${i + 1}\t${line}`);
         chars += line.length + 1;
@@ -5141,18 +5152,27 @@ export function applyMaxResultTokensCap(toolName: string, content: string): stri
   // If the tool already appended its own friendly trailer (file_read's
   // pagination stub, end-of-file marker, etc.), don't re-truncate — that
   // would eat the more-helpful per-tool guidance. The tool already capped
-  // itself; the engine just slightly overshot the char budget. Generic
-  // truncation only fires for tools that didn't paginate themselves.
-  const TOOL_TRAILER_PATTERNS = [
-    /\[Read lines \d+-\d+ of \d+ total\./,
-    /\[End of file\. Read lines \d+-\d+ of \d+ total\.\]$/,
-    /\[Read chars \d+-\d+ of \d+ total\./,
-    /\[End of content\. Read chars \d+-\d+ of \d+ total\.\]$/,
-    /\[End of content\. Total: \d+ chars\. Requested offset/,
-  ];
-  const tail = content.slice(-400);
-  if (TOOL_TRAILER_PATTERNS.some((re) => re.test(tail))) {
-    return content;
+  // itself; the engine just slightly overshot the char budget.
+  //
+  // EXCEPTION: if the content is way over budget (more than 2x), the tool's
+  // self-cap is broken — apply the generic truncation regardless of the
+  // trailer. Pre-2026-05-06 fix: file_read's per-line cap was missing, so a
+  // single-line 5.9MB HTML file appended a "[End of file]" trailer and then
+  // bypassed this entire safety net, blowing the model's context window.
+  const HARD_OVERSHOOT_RATIO = 2;
+  const isHardOvershoot = content.length > charBudget * HARD_OVERSHOOT_RATIO;
+  if (!isHardOvershoot) {
+    const TOOL_TRAILER_PATTERNS = [
+      /\[Read lines \d+-\d+ of \d+ total\./,
+      /\[End of file\. Read lines \d+-\d+ of \d+ total\.\]$/,
+      /\[Read chars \d+-\d+ of \d+ total\./,
+      /\[End of content\. Read chars \d+-\d+ of \d+ total\.\]$/,
+      /\[End of content\. Total: \d+ chars\. Requested offset/,
+    ];
+    const tail = content.slice(-400);
+    if (TOOL_TRAILER_PATTERNS.some((re) => re.test(tail))) {
+      return content;
+    }
   }
 
   const approxOriginalTokens = Math.round(content.length / 4);

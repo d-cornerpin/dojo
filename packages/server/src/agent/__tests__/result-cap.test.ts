@@ -185,12 +185,27 @@ describe('applyTextPagination (Phase 3.5)', () => {
     expect(out.length).toBeLessThan(500);
   });
 
-  it('engine cap carve-out preserves the pagination trailer', () => {
+  it('engine cap carve-out preserves the pagination trailer on minor overshoots', () => {
     // applyMaxResultTokensCap should NOT re-truncate content with the new
-    // pagination trailer pattern.
-    const body = 'q'.repeat(40_000) + '\n\n[Read chars 0-40000 of 100000 total. 60000 more chars remain.\n To continue: gmail_read(message_id="x", offset=40000, limit=40000).]';
+    // pagination trailer pattern when overshoot is minor (≤ 2x budget).
+    // gmail_read cap is 4000 tokens ≈ 16K char budget — body of 18K chars
+    // is a 1.13x overshoot, well under the 2x hard-overshoot cutoff.
+    const body = 'q'.repeat(18_000) + '\n\n[Read chars 0-18000 of 100000 total. 82000 more chars remain.\n To continue: gmail_read(message_id="x", offset=18000, limit=18000).]';
     const out = applyMaxResultTokensCap('gmail_read', body);
     expect(out).toBe(body);
     expect(out).not.toMatch(/Truncated by engine/);
+  });
+
+  it('engine cap overrides the trailer carve-out on hard overshoot (>2x budget)', () => {
+    // Pre-2026-05-06 a tool that appended a pagination trailer could ship
+    // arbitrarily-large content and bypass the engine cap entirely. file_read
+    // hit this path with a single-line 5.9MB HTML file: per-line cap missing,
+    // self-cap bypassed, trailer appended, generic cap skipped, model context
+    // blown. New behavior: when content is >2x the budget, the trailer
+    // carve-out doesn't save it.
+    const body = 'q'.repeat(50_000) + '\n\n[Read chars 0-50000 of 100000 total. 50000 more chars remain.\n To continue: gmail_read(message_id="x", offset=50000, limit=50000).]';
+    const out = applyMaxResultTokensCap('gmail_read', body);
+    expect(out.length).toBeLessThan(body.length);
+    expect(out).toMatch(/Truncated by engine/);
   });
 });

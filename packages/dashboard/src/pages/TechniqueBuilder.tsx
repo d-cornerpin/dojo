@@ -647,6 +647,17 @@ export const TechniqueBuilder = () => {
 
   // Subscribe to WebSocket events
   useEffect(() => {
+    // Engine-agnostic backstop for stuck "thinking" dots — see Chat.tsx
+    // for the full rationale. Drops empty streaming bubbles and clears
+    // the flag on bubbles that already have content.
+    const reconcileStreamingBubbles = () => {
+      setMessages((prev) =>
+        prev
+          .filter((m) => !(m.isStreaming && (!m.content || m.content.length === 0)))
+          .map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)),
+      );
+    };
+
     const unsubChunk = subscribe('chat:chunk', (event: WsEvent) => {
       const e = event as ChatChunkEvent;
       if (e.agentId !== agentIdRef.current) return;
@@ -706,11 +717,15 @@ export const TechniqueBuilder = () => {
       // HEALER_DISPATCHED, dedup) as errors in the technique builder UI.
       // Recovered → clear isWorking but don't pin a red error banner.
       if (e.severity === 'info') {
-        if (e.code === 'AGENT_RECOVERED') setIsWorking(false);
+        if (e.code === 'AGENT_RECOVERED') {
+          setIsWorking(false);
+          reconcileStreamingBubbles();
+        }
         return;
       }
       setError(e.error);
       setIsWorking(false);
+      reconcileStreamingBubbles();
     });
 
     const unsubMessage = subscribe('chat:message', (event: WsEvent) => {
@@ -739,6 +754,20 @@ export const TechniqueBuilder = () => {
     // from disk so the canvas reflects the authoritative state. Without this, a
     // tool_call event missed by the dashboard (network blip, page refresh) would
     // leave the canvas stale and the next save would overwrite the trainer's work.
+    // Mirror the agent:status backstop the other chat pages have so a
+    // trainer turn that ends without firing chat:chunk done:true (model
+    // error, recovery cascade, etc.) doesn't leave dots stuck on screen.
+    const unsubStatus = subscribe('agent:status', (event: WsEvent) => {
+      const e = event as { agentId: string; status: string };
+      if (e.agentId !== agentIdRef.current) return;
+      if (e.status === 'working') {
+        setIsWorking(true);
+      } else if (e.status === 'idle' || e.status === 'error') {
+        setIsWorking(false);
+        reconcileStreamingBubbles();
+      }
+    });
+
     const unsubTechUpdated = subscribe('technique:updated', (event: WsEvent) => {
       const e = event as { type: 'technique:updated'; data: { id: string } };
       const currentId = createdTechniqueId || editId;
@@ -753,6 +782,7 @@ export const TechniqueBuilder = () => {
     });
 
     return () => {
+      unsubStatus();
       unsubChunk();
       unsubToolCall();
       unsubToolResult();

@@ -310,6 +310,21 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
   }, [hasMore, loadingMore, loadOlderMessages]);
 
   useEffect(() => {
+    // Engine-agnostic backstop for stuck "thinking" dots: when the agent
+    // reaches a terminal state via any code path (model error, MAX_TOOL_LOOPS,
+    // compaction-block, network drop, etc.) and chat:chunk done:true never
+    // fires, the streaming bubble's isStreaming flag stays true and its dots
+    // bounce forever. Reconciling on agent:status idle/error/terminated
+    // drops empty bubbles (ghost dots) and clears the flag on non-empty
+    // ones (stale dots).
+    const reconcileStreamingBubbles = () => {
+      setMessages((prev) =>
+        prev
+          .filter((m) => !(m.isStreaming && (!m.content || m.content.length === 0)))
+          .map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)),
+      );
+    };
+
     const unsubChunk = subscribe('chat:chunk', (event: WsEvent) => {
       const e = event as ChatChunkEvent;
       if (e.agentId !== agentId) return;
@@ -372,12 +387,16 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
       const sev: 'info' | 'warning' | 'error' = e.severity ?? (isRateLimit ? 'warning' : 'error');
       if (sev === 'info') {
         toast.success(e.error);
-        if (e.code === 'AGENT_RECOVERED') setIsWorking(false);
+        if (e.code === 'AGENT_RECOVERED') {
+          setIsWorking(false);
+          reconcileStreamingBubbles();
+        }
       } else if (sev === 'warning') {
         toast.warning(e.error);
       } else {
         toast.error(e.error);
         setIsWorking(false);
+        reconcileStreamingBubbles();
       }
     });
 
@@ -446,7 +465,10 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
       const e = event as { agentId: string; status: string };
       if (e.agentId !== agentId) return;
       if (e.status === 'working') setIsWorking(true);
-      else if (e.status === 'idle' || e.status === 'error') setIsWorking(false);
+      else if (e.status === 'idle' || e.status === 'error') {
+        setIsWorking(false);
+        reconcileStreamingBubbles();
+      }
     });
 
     return () => {

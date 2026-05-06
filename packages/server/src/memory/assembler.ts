@@ -294,8 +294,16 @@ export async function assembleContext(
   const turnCutoff = turnBoundary.get(agentId);
   const freshTail = getRecentMessages(agentId, freshTailCount, turnCutoff);
 
+  // Pre-cap oversized tool_result content BEFORE budgeting. capLargeToolResultsInPlace
+  // runs later (post-parse, on the in-memory message array) but by then it's too
+  // late — budgetFreshTail has already used the raw uncapped token counts to decide
+  // what fits. Without this pre-cap, a single 5.9MB tool_result would consume the
+  // entire context budget and evict everything older — including the user's
+  // actual question — leaving the model with no idea what was being asked.
+  const cappedFreshTail = capLargeToolResultStrings(freshTail);
+
   // Budget: only include messages that fit
-  const tailMessages = budgetFreshTail(freshTail, maxTokens - usedTokens);
+  const tailMessages = budgetFreshTail(cappedFreshTail, maxTokens - usedTokens);
 
   // Sanitize fresh tail: drop orphaned tool_result messages whose tool_use
   // was trimmed by budget constraints, and ensure valid pairing
@@ -751,6 +759,51 @@ function isV2SessionStart(agentId: string): boolean {
  * Per Part V — without this, a single file_read of a 50K-token file dominates
  * the context budget and triggers the 90% WARN within a few turns.
  */
+/**
+ * Pre-budget cap for raw tool messages (content is still a JSON string at
+ * this point). Walks any tool-role message, parses its tool_result blocks,
+ * truncates each block's text content to V2_MAX_TOOL_RESULT_TOKENS, and
+ * re-serializes. Mirrors capLargeToolResultsInPlace but operates BEFORE
+ * budgetFreshTail so the budget sees realistic token counts.
+ *
+ * Without this, a single oversized tool_result could consume the entire
+ * fresh-tail budget and force older messages — including the user's
+ * question — out of context.
+ */
+function capLargeToolResultStrings(messages: Message[]): Message[] {
+  return messages.map((msg) => {
+    if (msg.role !== 'tool') return msg;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(msg.content);
+    } catch {
+      return msg;
+    }
+    if (!Array.isArray(parsed)) return msg;
+
+    let mutated = false;
+    const newBlocks = parsed.map((block: unknown) => {
+      const blk = block as Record<string, unknown>;
+      if (blk.type !== 'tool_result') return block;
+      const c = blk.content;
+      if (typeof c !== 'string') return block;
+      const tokens = estimateTokens(c);
+      if (tokens <= V2_MAX_TOOL_RESULT_TOKENS) return block;
+      const keepChars = Math.max(
+        500,
+        Math.floor(c.length * (V2_MAX_TOOL_RESULT_TOKENS / tokens)),
+      );
+      const truncated =
+        c.slice(0, keepChars) +
+        `\n\n[... ${tokens - V2_MAX_TOOL_RESULT_TOKENS} tokens truncated. Call the same tool again with narrower arguments (e.g. file_read with offset/limit) to see more.]`;
+      mutated = true;
+      return { ...blk, content: truncated };
+    });
+    if (!mutated) return msg;
+    return { ...msg, content: JSON.stringify(newBlocks), tokenCount: null };
+  });
+}
+
 function capLargeToolResultsInPlace(
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
 ): void {

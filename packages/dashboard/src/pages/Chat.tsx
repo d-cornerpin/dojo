@@ -417,6 +417,20 @@ export const Chat = () => {
 
   // Subscribe to WebSocket events
   useEffect(() => {
+    // Hoisted at the top of the effect so every handler below can use it.
+    // See the call sites for the full reasoning — short version: when the
+    // agent reaches a terminal state via any code path, drop empty
+    // streaming bubbles (ghost dots) and stop the dots on bubbles that
+    // already have content. Engine-agnostic backstop for the "agent is
+    // done but the dots are still bouncing" class of bug.
+    const reconcileStreamingBubbles = () => {
+      setMessages((prev) =>
+        prev
+          .filter((m) => !(m.isStreaming && (!m.content || m.content.length === 0)))
+          .map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)),
+      );
+    };
+
     const unsubChunk = subscribe('chat:chunk', (event: WsEvent) => {
       const e = event as ChatChunkEvent;
       if (e.agentId !== agentIdRef.current) return;
@@ -494,12 +508,16 @@ export const Chat = () => {
       if (sev === 'info') {
         toast.success(e.error);
         // Recovered → clear isWorking lock so UI re-enables input.
-        if (e.code === 'AGENT_RECOVERED') setIsWorking(false);
+        if (e.code === 'AGENT_RECOVERED') {
+          setIsWorking(false);
+          reconcileStreamingBubbles();
+        }
       } else if (sev === 'warning') {
         toast.warning(e.error);
       } else {
         toast.error(e.error); // stays until dismissed
         setIsWorking(false);
+        reconcileStreamingBubbles();
       }
     });
 
@@ -584,6 +602,7 @@ export const Chat = () => {
         setIsWorking(true);
       } else if (e.status === 'idle' || e.status === 'error') {
         setIsWorking(false);
+        reconcileStreamingBubbles();
       }
     });
 
@@ -592,6 +611,7 @@ export const Chat = () => {
       if (e.agentId !== agentIdRef.current) return;
       toast.error(`Agent terminated: ${e.reason}`);
       setIsWorking(false);
+      reconcileStreamingBubbles();
     });
 
     return () => {
