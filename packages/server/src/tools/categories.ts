@@ -73,7 +73,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'Communication',
-    tools: ['show_to_user', 'imessage_send'],
+    tools: ['show_to_user', 'imessage_send', 'share_publicly'],
   },
   {
     label: 'Tunnel (Remote Access)',

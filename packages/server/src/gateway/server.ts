@@ -53,6 +53,67 @@ export function createServer() {
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   }));
 
+  // Public file shares — served unauthenticated so anyone with the slug
+  // URL can view (this is the whole point of share_publicly). The slug
+  // includes a 28-bit random tag, so URLs are unguessable in practice.
+  // We hand-roll the static handler here instead of using serveStatic so
+  // we can validate the slug shape and prevent path traversal.
+  app.get('/share/:slug/*', async (c) => {
+    const fs = (await import('node:fs')).default;
+    const path = (await import('node:path')).default;
+    const { OUT_DIR } = await import('../services/public-share.js');
+    const slug = c.req.param('slug');
+    if (!/^[a-zA-Z0-9._-]+$/.test(slug)) {
+      return c.json({ ok: false, error: 'invalid share slug' }, 400);
+    }
+    // Hono gives us the rest of the path as `:slug/*` — extract it from the URL.
+    const url = new URL(c.req.url);
+    const pathname = url.pathname;
+    const relMatch = pathname.match(/^\/share\/[^/]+\/(.*)$/);
+    const rel = relMatch ? relMatch[1] : '';
+    const shareDir = path.join(OUT_DIR, slug);
+    const fullPath = rel ? path.join(shareDir, rel) : path.join(shareDir, 'index.html');
+    // Block traversal — fullPath must stay inside shareDir.
+    const resolved = path.resolve(fullPath);
+    if (!resolved.startsWith(path.resolve(shareDir) + path.sep) && resolved !== path.resolve(shareDir)) {
+      return c.json({ ok: false, error: 'invalid path' }, 400);
+    }
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+      return c.json({ ok: false, error: 'not found' }, 404);
+    }
+    const ext = path.extname(resolved).toLowerCase();
+    const mime: Record<string, string> = {
+      '.html': 'text/html; charset=utf-8',
+      '.htm':  'text/html; charset=utf-8',
+      '.css':  'text/css; charset=utf-8',
+      '.js':   'application/javascript; charset=utf-8',
+      '.mjs':  'application/javascript; charset=utf-8',
+      '.json': 'application/json; charset=utf-8',
+      '.txt':  'text/plain; charset=utf-8',
+      '.md':   'text/markdown; charset=utf-8',
+      '.svg':  'image/svg+xml',
+      '.png':  'image/png',
+      '.jpg':  'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif':  'image/gif',
+      '.webp': 'image/webp',
+      '.pdf':  'application/pdf',
+      '.mp4':  'video/mp4',
+      '.mov':  'video/quicktime',
+      '.webm': 'video/webm',
+      '.mp3':  'audio/mpeg',
+      '.wav':  'audio/wav',
+    };
+    const buf = fs.readFileSync(resolved);
+    return new Response(buf, {
+      status: 200,
+      headers: {
+        'Content-Type': mime[ext] ?? 'application/octet-stream',
+        'Cache-Control': 'public, max-age=300',
+      },
+    });
+  });
+
   // Auth middleware (skips public paths)
   app.use('/api/*', authMiddleware);
 

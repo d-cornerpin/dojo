@@ -1300,6 +1300,25 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['agent_id', 'permissions'],
     },
   },
+  // ── Public file sharing ──
+  {
+    name: 'share_publicly',
+    description: 'Publish a file (or a small directory of files, e.g. an HTML page with linked CSS/images) to a publicly-accessible URL and return that URL. Use this when the user wants to view or share something outside the DOJO — e.g. an HTML page another agent built, a PDF report, an image, a static website. The DOJO copies the source into ~/.dojo/out/<slug>/ and exposes it at /share/<slug>/<filename> (no auth). If the DOJO has a Cloudflare tunnel running, the URL works from anywhere on the internet; otherwise it falls back to localhost (only viewable on the same machine). Use the returned URL directly — do NOT try to construct one yourself.\n\nExamples:\n  • Share a single HTML page Maddy built: share_publicly({ source_path: "/Users/.../uploads/kevin/report.html" })\n  • Share an HTML site with assets: share_publicly({ source_path: "/Users/.../uploads/kevin/site/", entry_filename: "index.html" })\n  • Share an image: share_publicly({ source_path: "/Users/.../uploads/kevin/chart.png" })',
+    input_schema: {
+      type: 'object',
+      properties: {
+        source_path: {
+          type: 'string',
+          description: 'Absolute path to the file or directory to share. Must already exist on disk.',
+        },
+        entry_filename: {
+          type: 'string',
+          description: 'Optional. When sharing a directory, the filename inside it the URL should point to (e.g. "index.html"). If omitted, defaults to index.html when present, otherwise the directory root.',
+        },
+      },
+      required: ['source_path'],
+    },
+  },
   // ── Show files to user ──
   {
     name: 'show_to_user',
@@ -4073,6 +4092,33 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
         break;
       }
 
+      // ── Public file sharing ──
+      case 'share_publicly': {
+        const sourcePath = (args.source_path as string | undefined)?.trim();
+        const entryFilename = (args.entry_filename as string | undefined)?.trim() || undefined;
+        if (!sourcePath) {
+          content = 'Error: source_path is required.';
+          isError = true;
+          break;
+        }
+        try {
+          const { createPublicShare } = await import('../services/public-share.js');
+          const result = createPublicShare({ sourcePath, entryFilename });
+          auditLog(agentId, 'share_publicly', sourcePath, 'success', `Slug ${result.slug}, base ${result.baseSource}`);
+          content =
+            `Public URL: ${result.url}\n\n` +
+            (result.baseSource === 'tunnel'
+              ? 'Cloudflare tunnel is active — this URL is reachable from anywhere on the internet.'
+              : 'No tunnel is running, so this URL only works from the same machine. To share off-device, start the Cloudflare tunnel from the dashboard and run share_publicly again.');
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          auditLog(agentId, 'share_publicly', sourcePath, 'error', msg);
+          content = `Error sharing file: ${msg}`;
+          isError = true;
+        }
+        break;
+      }
+
       // ── Image Generation ──
       //
       // image_create: Any agent calls this. The tool returns immediately
@@ -4320,23 +4366,18 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
 
             try {
               const { deliverA2AMessage, makeThreadId } = await import('./a2a-transport.js');
-              const deliveryPayload = `Image ready. The file is saved at this exact path — use it directly, do NOT search the filesystem for it:
+              // Keep this payload minimal. The previous version was a
+              // multi-line tutorial with slides/drive recipes and behavior
+              // instructions ("present to the user with short commentary",
+              // etc.) that the recipient agent often echoed verbatim,
+              // making image deliveries read like an engineering manual to
+              // the user. Slides/Drive integration details belong in the
+              // relevant tool docs, not in every Imaginer delivery.
+              const deliveryPayload = `Image ready at ${deliveredPath} (also attached above for vision).
 
-${deliveredPath}
+Original request: "${description}"
 
-The image is also attached to this message (your vision model can see it inline above).
-
-Recipes (pick one):
-  • Embed in a Slides deck in one shot:
-      slides_add_image_from_local_path(presentation_id=..., slide_id=..., file_path="${deliveredPath}", x_pt=..., y_pt=..., width_pt=..., height_pt=...)
-  • Reuse the same upload across multiple slides:
-      drive_upload(file_path="${deliveredPath}", name="${result.filename}")  // → drive_file_id
-      slides_add_image_from_drive(presentation_id=..., slide_id=..., drive_file_id=..., ...)
-  • Inspect the image bytes: file_read(path="${deliveredPath}")
-
-Present the image to the user with whatever short commentary fits. Do NOT reply to me — the thread is closed; respond to the user instead.
-
-— Original request: "${description}" (request_id: ${requestId})`;
+Thread is closed — respond to the user, not Imaginer.`;
               const a2aResult = await deliverA2AMessage({
                 intent: 'DELIVERABLE',
                 threadId: makeThreadId(`image-${requestId}`),
