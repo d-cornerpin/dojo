@@ -303,10 +303,26 @@ function pruneOldPMMessages(pmId: string): void {
 
     if (!cutoff) return;
 
-    // Delete everything older than the cutoff
-    const deleted = db.prepare(`
-      DELETE FROM messages WHERE agent_id = ? AND rowid < (SELECT rowid FROM messages WHERE id = ?)
-    `).run(pmId, cutoff.id);
+    // Cascade delete in a transaction. summary_messages.message_id has a
+    // foreign-key reference to messages(id) without ON DELETE CASCADE, so a
+    // raw DELETE on a compacted PM message throws and the prune fails
+    // forever (pm-agent log spam observed in production: "Failed to prune PM
+    // messages" every 10 min for hours). The PM doesn't need its archived
+    // summaries anyway — the tracker is its memory — so wipe the link rows
+    // first, then the messages themselves.
+    const txn = db.transaction(() => {
+      db.prepare(`
+        DELETE FROM summary_messages
+        WHERE message_id IN (
+          SELECT id FROM messages
+          WHERE agent_id = ? AND rowid < (SELECT rowid FROM messages WHERE id = ?)
+        )
+      `).run(pmId, cutoff.id);
+      return db.prepare(`
+        DELETE FROM messages WHERE agent_id = ? AND rowid < (SELECT rowid FROM messages WHERE id = ?)
+      `).run(pmId, cutoff.id);
+    });
+    const deleted = txn();
 
     if (deleted.changes > 0) {
       logger.debug('Pruned old PM messages', { pmId, deleted: deleted.changes, kept: PM_MAX_MESSAGES });

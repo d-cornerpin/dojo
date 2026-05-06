@@ -1517,6 +1517,25 @@ export async function runV2Turn(agentId: string): Promise<void> {
       setAgentStatus(agentId, 'idle');
     }
 
+    // Reset the persisted recovery_attempts counter on a successful turn.
+    // Pre-2026-05-06 the counter only reset inside reset_session, so 3
+    // transient errors spread over weeks would silently accumulate and
+    // permanently suppress the Healer for the agent until the user
+    // manually intervened. Only fire onAgentRecovered when attempts > 0
+    // (there was actually something to recover from) to avoid spamming
+    // the "recovered" toast on every healthy turn.
+    if (currentAgent && currentAgent.status !== 'terminated') {
+      try {
+        const attemptsRow = db
+          .prepare('SELECT recovery_attempts FROM agents WHERE id = ?')
+          .get(agentId) as { recovery_attempts: number | null } | undefined;
+        if ((attemptsRow?.recovery_attempts ?? 0) > 0) {
+          const { onAgentRecovered } = await import('../../healer/injury-recovery.js');
+          onAgentRecovered(agentId);
+        }
+      } catch { /* best effort */ }
+    }
+
     // Post-turn checks (preserved)
     try {
       checkTimeouts();
