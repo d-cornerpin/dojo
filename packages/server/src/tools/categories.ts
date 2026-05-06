@@ -24,6 +24,10 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     tools: ['vault_remember', 'vault_search', 'vault_forget', 'vault_describe', 'vault_expand'],
   },
   {
+    label: 'Conversation Recall',
+    tools: ['recall_recent_thread', 'memory_grep', 'memory_describe', 'memory_expand', 'memory_search'],
+  },
+  {
     // Squad-shared memory for multi-agent coordination (Phase 7 / Part X).
     // Members of the same group_id can write/read a shared namespace; faster
     // and lossless compared to A2A handoff messages.

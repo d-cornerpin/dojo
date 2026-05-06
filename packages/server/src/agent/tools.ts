@@ -450,6 +450,25 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'recall_recent_thread',
+    description: 'Read back the recent conversation as a clean transcript — last N user/assistant turns with tool calls reduced to one line each and tool results omitted. Use this when you have just been compacted, lost the thread, or otherwise feel disoriented about what was being worked on. Returns the raw conversation from your messages table for the current session, ignoring whatever the assembler chose to include in your active context. Cheap, read-only, safe to call anytime.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        turn_count: {
+          type: 'number',
+          description: 'How many of the most recent user→assistant exchanges to include. Default 8, max 30.',
+        },
+        include_tool_calls: {
+          type: 'boolean',
+          description: 'When true, include a one-line summary of each tool call ("[called: file_read path=…]"). Tool RESULTS are never included to keep the transcript tight. Default true.',
+        },
+      },
+      required: [],
+    },
+    maxResultTokens: 4000,
+  },
+  {
     name: 'memory_grep',
     description: 'Search through conversation history and memory summaries using full-text search or pattern matching. Returns matching messages and summaries with context. Example: memory_grep({ pattern: "budget meeting", limit: 10 }). Returns timestamped results from both raw messages and compressed summaries.',
     input_schema: {
@@ -2434,6 +2453,13 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         const filename = path.basename(sharePath);
         content = `Download link for ${filename}: ${downloadUrl}`;
         auditLog(agentId, 'share_file', sharePath, 'success', downloadUrl);
+        break;
+      }
+      case 'recall_recent_thread': {
+        const turnCount = Math.min(30, Math.max(1, Math.floor(coerceNumberArg(args.turn_count) ?? 8)));
+        const includeToolCalls = args.include_tool_calls === false ? false : true;
+        const { recallRecentThread } = await import('../memory/recall.js');
+        content = recallRecentThread(agentId, { turnCount, includeToolCalls });
         break;
       }
       case 'memory_grep': {

@@ -289,26 +289,18 @@ export async function checkAndCompact(
 
     // ── Pre-compaction continuity brief ──
     // BEFORE compaction destroys raw messages, generate a concise summary
-    // of the FULL current context. This is injected after compaction so
-    // the agent knows what it was working on. Without this, the agent
-    // wakes up post-compaction with only chunk summaries (which are
-    // fragmented) and loses the big picture of its current task.
+    // of the FULL current context so the agent knows what it was working
+    // on. The brief is the difference between "post-compaction the agent
+    // is reoriented" and "post-compaction the agent is dazed."
     //
-    // Continuity brief is generated only on EMERGENCY compactions (≥96%
-    // utilization OR force=true from the recovery cascade). Below that,
-    // compaction is unexpected and the brief would be a wound the engine
-    // inflicts on itself.
-    const emergencyRatio = totalTokens / contextWindow;
-    const isEmergency = force || emergencyRatio >= 0.96;
-    if (isEmergency) {
-      await generateContinuityBrief(agentId, modelId, contextWindow);
-    } else {
-      logger.info('Skipping continuity brief generation — non-emergency compaction', {
-        assembledTokens: totalTokens,
-        emergencyRatio,
-        force,
-      }, agentId);
-    }
+    // Pre-2026-05-06 this only ran on emergency compactions. The reasoning
+    // was that proactive compaction shouldn't happen in v2, so generating
+    // a brief was treated as a self-inflicted wound. In practice: when
+    // compaction DOES run for any reason (force, threshold, recovery
+    // cascade), the agent loses raw thread tail. The brief is cheap (one
+    // summarizer call) and the failure mode without it ("forgot what we
+    // were doing") is severe. Always run it.
+    await generateContinuityBrief(agentId, modelId, contextWindow);
 
     // Archive raw messages to vault BEFORE compaction destroys them.
     // If archival fails, ABORT compaction — better to have a bloated context than lost data.
