@@ -182,7 +182,24 @@ export function executeUpdateTechnique(agentId: string, agentName: string, class
 
   const instructions = args.instructions as string | undefined;
   const files = args.files as Array<{ path: string; content: string }> | undefined;
+  const displayName = args.display_name as string | undefined;
+  const description = args.description as string | undefined;
   const changeSummary = args.change_summary as string || 'Updated by agent';
+
+  // Metadata-only edits (rename, description) don't bump the version
+  // because there's no TECHNIQUE.md change to snapshot. Apply them first
+  // so a combined call (rename + new instructions) leaves the technique
+  // with the new name AND a fresh version snapshot.
+  if (displayName !== undefined || description !== undefined) {
+    try {
+      updateTechnique(resolved.id, {
+        ...(displayName !== undefined ? { name: displayName } : {}),
+        ...(description !== undefined ? { description } : {}),
+      });
+    } catch (err) {
+      return `Error updating metadata: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
 
   if (instructions) {
     updateTechniqueInstructions(resolved.id, instructions, changeSummary, agentId);

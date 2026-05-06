@@ -463,6 +463,13 @@ export const TechniqueBuilder = () => {
   const [saving, setSaving] = useState(false);
   const [createdTechniqueId, setCreatedTechniqueId] = useState<string | null>(editId ?? null);
   const [contextSent, setContextSent] = useState(false);
+  // Tracks when the technique was last touched on disk and when the trainer
+  // last saw it in this conversation. If the user manually edits between
+  // sessions, the trainer would be working from stale context — when these
+  // diverge, the next user message gets a "current state" refresh prepended
+  // so the trainer doesn't suggest changes that overwrite recent edits.
+  const [techniqueUpdatedAt, setTechniqueUpdatedAt] = useState<string | null>(null);
+  const [lastTrainerActivityAt, setLastTrainerActivityAt] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
@@ -493,6 +500,9 @@ export const TechniqueBuilder = () => {
         instructions: data.data.instructions ?? '',
         files: (data.data.files ?? []).filter((f: { isDirectory: boolean }) => !f.isDirectory).map((f: { path: string }) => ({ path: f.path })),
       });
+      if (typeof data.data.updatedAt === 'string') {
+        setTechniqueUpdatedAt(data.data.updatedAt);
+      }
     }
   }, []);
 
@@ -559,6 +569,11 @@ export const TechniqueBuilder = () => {
             attachments: m.attachments,
           })),
         );
+        // Most recent message becomes the "trainer last saw the technique
+        // at" timestamp. Used in handleSend to decide whether to prepend
+        // a state refresh on the next user message.
+        const latestMsg = result.data[result.data.length - 1] as Message | undefined;
+        if (latestMsg?.createdAt) setLastTrainerActivityAt(latestMsg.createdAt);
         setContextSent(true);
         setSessionCleared(true);
         setTimeout(() => scrollToBottom(), 200);
@@ -579,37 +594,17 @@ export const TechniqueBuilder = () => {
     loadExisting();
   }, [AGENT_ID, canvas.displayName, canvas.name]);
 
-  // Send builder context on mount — only if no existing conversation was loaded
+  // Pre-2026-05-06: this effect auto-sent the entire technique to the
+  // trainer the instant the edit screen opened, burning a full model
+  // turn even when the user only meant to skim or make a manual edit.
+  // Now we just mark the screen ready; the context message gets prepended
+  // to the user's FIRST chat message inside handleSend, so the trainer
+  // is only invoked when the user actually engages the chat.
   useEffect(() => {
-    if (contextSent || !AGENT_ID || !sessionCleared) return;
-    // In edit mode, wait until canvas is populated before sending context
+    if (!AGENT_ID || !sessionCleared || contextSent) return;
     if (isEditMode && !canvas.displayName) return;
-    setContextSent(true);
-
-    const contextMessage = isEditMode
-      ? getEditContext(canvas.displayName, canvas.description, canvas.instructions)
-      : BUILDER_CONTEXT;
-
-    const sendContext = async () => {
-      setLoading(true);
-      const userMsg: ChatMessage = {
-        id: `temp-${Date.now()}`,
-        role: 'user',
-        content: contextMessage,
-        createdAt: new Date().toISOString(),
-      };
-      setMessages([userMsg]);
-      setIsWorking(true);
-
-      const result = await api.sendMessage(AGENT_ID, contextMessage);
-      if (!result.ok) {
-        setError(result.error);
-        setIsWorking(false);
-      }
-      setLoading(false);
-    };
-    sendContext();
-  }, [AGENT_ID, contextSent, sessionCleared, canvas.displayName]);
+    setLoading(false);
+  }, [AGENT_ID, sessionCleared, contextSent, isEditMode, canvas.displayName]);
 
   // Watch for save_technique / update_technique tool calls so the canvas
   // mirrors what the trainer just wrote to disk. Without this, the canvas
@@ -748,7 +743,13 @@ export const TechniqueBuilder = () => {
       const e = event as { type: 'technique:updated'; data: { id: string } };
       const currentId = createdTechniqueId || editId;
       if (!currentId || e.data?.id !== currentId) return;
-      loadTechniqueFromDisk(currentId).catch(() => { /* best effort */ });
+      // The trainer just committed a change. Reload disk state, AND
+      // advance the trainer-saw-it marker to "now" so we don't trigger a
+      // stale-state refresh on the next user message — the trainer is
+      // the one that made this change, it doesn't need to be told.
+      loadTechniqueFromDisk(currentId)
+        .then(() => setLastTrainerActivityAt(new Date().toISOString()))
+        .catch(() => { /* best effort */ });
     });
 
     return () => {
@@ -764,24 +765,62 @@ export const TechniqueBuilder = () => {
   const handleSend = async (content: string, attachments?: AttachmentInfo[]) => {
     setError(null);
 
+    // First message of this edit/build session — prepend the technique
+    // (or build-mode) context so the trainer has the working set without
+    // us needing to fire a separate model turn just to deliver it.
+    let outgoing = content;
+    const isFirstMessage = !contextSent;
+    let staleRefreshFired = false;
+    if (isFirstMessage) {
+      const contextMessage = isEditMode
+        ? getEditContext(canvas.displayName, canvas.description, canvas.instructions)
+        : BUILDER_CONTEXT;
+      outgoing = `${contextMessage}\n\n---\n\n${content}`;
+      setContextSent(true);
+    } else if (
+      isEditMode &&
+      techniqueUpdatedAt &&
+      lastTrainerActivityAt &&
+      techniqueUpdatedAt > lastTrainerActivityAt
+    ) {
+      // Resumed conversation, but the technique has been edited (manually
+      // by the user, or by another agent) since the trainer's last
+      // activity in this thread. Prepend a current-state refresh so the
+      // trainer doesn't suggest changes that would overwrite the edits.
+      const refresh =
+        `[Technique state refresh — the technique has been edited since our last conversation. ` +
+        `Treat THIS as the source of truth, not earlier messages in this thread.]\n\n` +
+        getEditContext(canvas.displayName, canvas.description, canvas.instructions);
+      outgoing = `${refresh}\n\n---\n\n${content}`;
+      staleRefreshFired = true;
+    }
+
     const userMsg: ChatMessage = {
       id: `temp-${Date.now()}`,
       role: 'user',
-      content,
+      content: outgoing,
       createdAt: new Date().toISOString(),
       attachments,
     };
     setMessages((prev) => [...prev, userMsg]);
     setIsWorking(true);
 
-    const result = await api.sendMessage(AGENT_ID, content, attachments);
+    const result = await api.sendMessage(AGENT_ID, outgoing, attachments);
     if (!result.ok) {
+      // Roll the gate back so a retry resends the context with the next attempt.
+      if (isFirstMessage) setContextSent(false);
       if (result.error.includes('busy')) {
         setError('Agent is mid-mission — your message will be delivered when they finish.');
       } else {
         setError(result.error);
       }
       setIsWorking(false);
+    } else if (isFirstMessage || staleRefreshFired) {
+      // Advance the "trainer last saw it" marker so subsequent messages
+      // don't keep re-prepending context. We use the technique's current
+      // updatedAt rather than now() so a manual edit DURING an in-flight
+      // turn still triggers a refresh on the next user message.
+      if (techniqueUpdatedAt) setLastTrainerActivityAt(techniqueUpdatedAt);
     }
   };
 
@@ -818,16 +857,23 @@ export const TechniqueBuilder = () => {
             body: JSON.stringify({ content: canvas.instructions.trim(), changeSummary: 'Updated from Technique Trainer' }),
           });
         }
-        // Update metadata
-        await fetch(`/api/techniques/${existingId}`, {
+        // Update metadata. Pre-2026-05-06 we omitted displayName from this
+        // payload, so the user's renamed technique silently kept its
+        // original name. Now we include it so the rename actually persists.
+        const metaRes = await fetch(`/api/techniques/${existingId}`, {
           method: 'PUT',
           headers,
           body: JSON.stringify({
+            displayName: canvas.displayName.trim(),
             description: canvas.description.trim(),
             tags: canvas.tags,
             ...(publish ? { state: 'published' } : {}),
           }),
         });
+        const metaData = await metaRes.json().catch(() => null);
+        if (!metaRes.ok || metaData?.ok === false) {
+          throw new Error(metaData?.error || 'Failed to update technique metadata');
+        }
         // Publish if requested
         if (publish) {
           await fetch(`/api/techniques/${existingId}/publish`, { method: 'POST', headers });
@@ -884,10 +930,14 @@ export const TechniqueBuilder = () => {
         <div ref={messagesContainerRef} className="flex-1 overflow-y-auto min-h-0 px-4 py-4 space-y-3">
           {messages.length === 0 && !loading && (
             <div className="flex-1 flex items-center justify-center h-full">
-              <div className="text-center animate-fade-up">
+              <div className="text-center animate-fade-up max-w-sm px-4">
                 <div className="text-3xl mb-3">{'\u{1F3AF}'}</div>
                 <h2 className="text-lg font-semibold text-white/80 mb-1">Technique Trainer</h2>
-                <p className="text-xs text-secondary">Initializing builder session...</p>
+                <p className="text-xs text-secondary">
+                  {isEditMode
+                    ? `Edit the mat directly — or message ${agentName || 'the trainer'} for help. The current technique will be sent along with your first message.`
+                    : `Tell ${agentName || 'the trainer'} what you want to build. The build prompt is sent with your first message.`}
+                </p>
               </div>
             </div>
           )}

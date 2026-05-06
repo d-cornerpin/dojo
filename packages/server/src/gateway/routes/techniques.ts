@@ -77,16 +77,24 @@ techniquesRouter.put('/:id', async (c) => {
   const technique = getTechnique(id);
   if (!technique) return c.json({ ok: false, error: 'Technique not found' }, 404);
 
-  const updated = updateTechnique(id, {
-    description: body.description,
-    tags: body.tags,
-    enabled: body.enabled,
-    state: body.state,
-    buildProjectId: body.buildProjectId,
-    buildSquadId: body.buildSquadId,
-  });
+  // Accept both `name` and `displayName` for the human-readable name —
+  // the dashboard sends `displayName`, agent tools send `name`.
+  const renameTo = (body.displayName ?? body.name) as string | undefined;
 
-  return c.json({ ok: true, data: updated });
+  try {
+    const updated = updateTechnique(id, {
+      ...(renameTo !== undefined ? { name: renameTo } : {}),
+      description: body.description,
+      tags: body.tags,
+      enabled: body.enabled,
+      state: body.state,
+      buildProjectId: body.buildProjectId,
+      buildSquadId: body.buildSquadId,
+    });
+    return c.json({ ok: true, data: updated });
+  } catch (err) {
+    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 400);
+  }
 });
 
 // PUT /:id/instructions — update TECHNIQUE.md

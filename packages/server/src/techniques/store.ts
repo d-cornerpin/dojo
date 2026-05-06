@@ -246,6 +246,7 @@ export function listTechniques(filters?: {
 }
 
 export function updateTechnique(id: string, updates: Partial<{
+  name: string; // human-readable display name (DB column `name`)
   description: string;
   tags: string[];
   enabled: boolean;
@@ -257,6 +258,14 @@ export function updateTechnique(id: string, updates: Partial<{
   const setClauses: string[] = ["updated_at = datetime('now')"];
   const params: unknown[] = [];
 
+  if (updates.name !== undefined) {
+    const trimmed = updates.name.trim();
+    if (trimmed.length === 0) {
+      throw new Error('Technique name cannot be empty');
+    }
+    setClauses.push('name = ?');
+    params.push(trimmed);
+  }
   if (updates.description !== undefined) { setClauses.push('description = ?'); params.push(updates.description); }
   if (updates.tags !== undefined) { setClauses.push('tags = ?'); params.push(JSON.stringify(updates.tags)); }
   if (updates.enabled !== undefined) { setClauses.push('enabled = ?'); params.push(updates.enabled ? 1 : 0); }
@@ -273,10 +282,39 @@ export function updateTechnique(id: string, updates: Partial<{
   params.push(id);
   db.prepare(`UPDATE techniques SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
 
+  // Mirror name/description changes into metadata.json on disk so the
+  // file-system view stays consistent with the DB. Versions snapshot only
+  // TECHNIQUE.md content, so metadata edits don't bump the version number.
+  if (updates.name !== undefined || updates.description !== undefined) {
+    try {
+      const technique = getTechnique(id);
+      if (technique) {
+        const metaPath = path.join(technique.directoryPath, 'metadata.json');
+        if (fs.existsSync(metaPath)) {
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+          if (updates.name !== undefined) meta.name = technique.name;
+          if (updates.description !== undefined) meta.description = technique.description;
+          meta.updated_at = new Date().toISOString();
+          fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), 'utf-8');
+        }
+      }
+    } catch (err) {
+      logger.warn('Failed to mirror metadata edit to metadata.json', {
+        id, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   if (updates.state) {
     const technique = getTechnique(id);
     if (technique) {
       broadcast({ type: 'technique:state_changed', data: { id, name: technique.name, oldState: undefined, newState: updates.state } } as never);
+    }
+  }
+  if (updates.name !== undefined || updates.description !== undefined) {
+    const technique = getTechnique(id);
+    if (technique) {
+      broadcast({ type: 'technique:updated', data: { id, name: technique.name, version: technique.version } } as never);
     }
   }
 

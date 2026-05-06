@@ -1533,14 +1533,16 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'update_technique',
-    description: 'Update a technique\'s instructions or files. Creates a version snapshot. Sensei only.',
+    description: 'Update a technique\'s display name, description, instructions, or files. Instruction changes create a version snapshot; metadata-only changes (display_name / description) do not. Sensei only.',
     input_schema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Technique ID to update' },
-        instructions: { type: 'string', description: 'Updated TECHNIQUE.md content' },
-        files: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } } }, description: 'Files to add or update' },
-        change_summary: { type: 'string', description: 'Brief description of what changed' },
+        name: { type: 'string', description: 'Technique ID (slug) to update — NOT the new display name. Use display_name to rename.' },
+        display_name: { type: 'string', description: 'New human-readable name shown in the UI. Slug/ID does not change.' },
+        description: { type: 'string', description: 'New description text.' },
+        instructions: { type: 'string', description: 'Updated TECHNIQUE.md content. Bumps the version.' },
+        files: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } } }, description: 'Files to add or update.' },
+        change_summary: { type: 'string', description: 'Brief description of what changed.' },
       },
       required: ['name', 'change_summary'],
     },
