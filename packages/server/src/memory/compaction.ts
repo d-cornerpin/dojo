@@ -55,7 +55,7 @@ export function estimateAssembledTokens(agentId: string, contextWindow: number):
   summaryCount: number;
 } {
   const summaries = getContextSummaries(agentId);
-  const summaryTokens = summaries.reduce((sum, s) => sum + (s.tokenCount ?? 0), 0);
+  const rawSummaryTokens = summaries.reduce((sum, s) => sum + (s.tokenCount ?? 0), 0);
 
   const freshTail = getRecentMessages(agentId, getCompactionTailCount(contextWindow));
   const freshTailTokens = freshTail.reduce(
@@ -76,6 +76,19 @@ export function estimateAssembledTokens(agentId: string, contextWindow: number):
       if (brief) briefTokens = estimateTokens(brief);
     }
   } catch { /* best effort */ }
+
+  // Cap summary tokens at the same budget the assembler applies (assembler.ts:
+  // budgetSummaries reserves 70% of remaining-after-scaffolding for summaries,
+  // dropping oldest first to fit). Without this cap, a long-lived agent — or
+  // anyone upgrading from v1 with a deep summary DAG — sees the gate trip at
+  // >100% on its first turn, force-compaction can't reduce already-condensed
+  // depth-N summaries any further, and the loop wedges firing the same
+  // "memory is too full" message forever. The assembler will trim summaries
+  // to fit; the gate must reflect that, not the unbounded raw total.
+  const TOOL_AND_OUTPUT_RESERVE = 15000;
+  const maxAssemblerTokens = Math.max(0, Math.floor(DEFAULTS.contextThreshold * contextWindow) - TOOL_AND_OUTPUT_RESERVE);
+  const summaryBudget = Math.max(0, Math.floor((maxAssemblerTokens - briefTokens - freshTailTokens) * 0.7));
+  const summaryTokens = Math.min(rawSummaryTokens, summaryBudget);
 
   return {
     total: summaryTokens + freshTailTokens + briefTokens,
