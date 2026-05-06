@@ -11,8 +11,22 @@ export const Markdown = ({ content }: { content: string }) => {
   return <div className="text-sm leading-relaxed break-words">{elements}</div>;
 };
 
-// URL regex — matches http/https URLs
-const URL_REGEX = /https?:\/\/[^\s<>"')\]]+/g;
+// URL detection — split into two parts so we can decide what's clickable vs
+// what's also previewable.
+//
+// Clickable: http(s), ftp(s), sftp, smb, ssh, file (scheme://...) AND
+//            mailto:, tel:, sms: (scheme:no-slashes).
+// Previewable: only http and https — other schemes don't have OG metadata
+//              the og-preview endpoint can fetch.
+const SCHEME_WITH_AUTHORITY = '(?:https?|ftps?|sftp|smb|ssh|file):\\/\\/[^\\s<>"\')\\]]+';
+const SCHEME_NO_AUTHORITY = '(?:mailto|tel|sms):[^\\s<>"\')\\]]+';
+const ANY_URL_RE = new RegExp(`${SCHEME_WITH_AUTHORITY}|${SCHEME_NO_AUTHORITY}`, 'g');
+function isPreviewableUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+// Cap previews per message — 5 cards is the soft ceiling before the chat
+// becomes more cards than text. Dedupes so the same URL doesn't render twice.
+const MAX_PREVIEWS_PER_MESSAGE = 5;
 
 // ── Parser ──
 
@@ -22,8 +36,10 @@ function parseMarkdown(text: string): React.ReactNode[] {
   let i = 0;
   let key = 0;
 
-  // Collect all standalone URLs for preview cards (rendered after text)
-  const previewUrls: string[] = [];
+  // Track which lines are inside fenced code blocks. URLs inside ``` shouldn't
+  // get preview cards even though the fenced block itself isn't being parsed
+  // for URLs (the CodeBlock just renders raw text).
+  const nonCodeText: string[] = [];
 
   while (i < lines.length) {
     // Fenced code block: ```lang\n...\n```
@@ -47,14 +63,7 @@ function parseMarkdown(text: string): React.ReactNode[] {
         paraLines.push(lines[i]);
         i++;
       }
-
-      // Find URLs that are on their own line (standalone) for preview cards
-      for (const line of paraLines) {
-        const trimmed = line.trim();
-        if (trimmed.match(/^https?:\/\/[^\s]+$/) && !trimmed.includes(' ')) {
-          previewUrls.push(trimmed);
-        }
-      }
+      nonCodeText.push(paraLines.join('\n'));
 
       result.push(
         <span key={key++}>
@@ -69,7 +78,23 @@ function parseMarkdown(text: string): React.ReactNode[] {
     }
   }
 
-  // Render link preview cards for standalone URLs
+  // Engine-driven preview: every previewable URL anywhere in the message
+  // (inline or standalone) gets a card, deduped, capped. URLs inside fenced
+  // code blocks are intentionally excluded — those are usually example
+  // snippets, not real links the user is meant to follow.
+  const seen = new Set<string>();
+  const previewUrls: string[] = [];
+  const haystack = nonCodeText.join('\n');
+  for (const match of haystack.matchAll(ANY_URL_RE)) {
+    const raw = match[0];
+    // Trim trailing punctuation that isn't part of the URL (sentence enders).
+    const cleaned = raw.replace(/[.,;:!?]+$/, '');
+    if (!isPreviewableUrl(cleaned)) continue;
+    if (seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    previewUrls.push(cleaned);
+    if (previewUrls.length >= MAX_PREVIEWS_PER_MESSAGE) break;
+  }
   for (const url of previewUrls) {
     result.push(<LinkPreview key={`preview-${key++}`} url={url} />);
   }
@@ -139,20 +164,79 @@ function InlineMarkdown({ text }: { text: string }): React.ReactNode {
   return <>{parts}</>;
 }
 
-// Process emphasis (bold, italic) and URLs within text
+// Render a clickable URL anchor. Trailing sentence punctuation is split
+// off so "see https://x.com." links to https://x.com and renders the
+// period as plain text after.
+function renderUrl(url: string, key: number): React.ReactNode[] {
+  let href = url;
+  let trailing = '';
+  const trailMatch = href.match(/[.,;:!?]+$/);
+  if (trailMatch) {
+    trailing = trailMatch[0];
+    href = href.slice(0, href.length - trailing.length);
+  }
+  const out: React.ReactNode[] = [
+    <a key={key} href={href} target="_blank" rel="noopener noreferrer"
+      className="text-blue-400 hover:underline break-all">
+      {href}
+    </a>,
+  ];
+  if (trailing) out.push(trailing);
+  return out;
+}
+
+// Render an explicit markdown link [text](url) where the visible text and
+// the href can differ. Same trailing-punct rule applied to the href.
+function renderMarkdownLink(text: string, url: string, key: number): React.ReactNode {
+  let href = url.trim();
+  const trailMatch = href.match(/[.,;:!?]+$/);
+  if (trailMatch) href = href.slice(0, href.length - trailMatch[0].length);
+  return (
+    <a key={key} href={href} target="_blank" rel="noopener noreferrer"
+      className="text-blue-400 hover:underline break-all">
+      {text}
+    </a>
+  );
+}
+
+// Process emphasis (bold, italic), markdown links, angle-bracket links, and
+// bare URLs within text. URLs win over bold/italic when they overlap, so
+// `**https://x.com**` renders as bold containing a clickable link instead
+// of bold containing plain text. The bold/italic content is recursively
+// processed for URLs to make this work.
 function processInline(text: string, baseKey: number): React.ReactNode {
   const parts: React.ReactNode[] = [];
   let remaining = text;
   let key = baseKey * 1000;
 
+  // Pre-built regex for bare URLs (any scheme).
+  const URL_RE = new RegExp(`^(.*?)(${SCHEME_WITH_AUTHORITY}|${SCHEME_NO_AUTHORITY})`);
+
   while (remaining.length > 0) {
-    // Find the next URL, bold, or italic — whichever comes first
-    const urlMatch = remaining.match(/^(.*?)(https?:\/\/[^\s<>"')\]]+)/);
+    // Find the next match of each token type. Order in `candidates`
+    // determines precedence on ties (stable sort preserves push order).
+    // URL goes first so a URL at the same index as bold/italic wins —
+    // but we ALSO recursively process bold/italic content for URLs, so
+    // `**https://x.com**` still renders the bold tag *with* a clickable
+    // link inside.
+    const mdLinkMatch = remaining.match(
+      // [text](url) — text is anything but ], url is anything but ).
+      /^(.*?)\[([^\]]+)\]\((https?:\/\/[^\s)]+|(?:ftps?|sftp|smb|ssh|file):\/\/[^\s)]+|(?:mailto|tel|sms):[^\s)]+)\)/,
+    );
+    const angleMatch = remaining.match(
+      // <url> — bare URL wrapped in angle brackets, often emitted by LLMs
+      // when they want to "protect" a link from formatting.
+      new RegExp(`^(.*?)<(${SCHEME_WITH_AUTHORITY}|${SCHEME_NO_AUTHORITY})>`),
+    );
+    const urlMatch = remaining.match(URL_RE);
     const boldMatch = remaining.match(/^(.*?)\*\*(.+?)\*\*/);
     const italicMatch = remaining.match(/^(.*?)\*(.+?)\*/);
 
-    // Find which match starts earliest
     const candidates: Array<{ type: string; index: number; match: RegExpMatchArray }> = [];
+    // Order matters for ties: explicit link forms first, then bare URL,
+    // then formatting wrappers.
+    if (mdLinkMatch) candidates.push({ type: 'mdlink', index: mdLinkMatch[1].length, match: mdLinkMatch });
+    if (angleMatch) candidates.push({ type: 'angle', index: angleMatch[1].length, match: angleMatch });
     if (urlMatch) candidates.push({ type: 'url', index: urlMatch[1].length, match: urlMatch });
     if (boldMatch) candidates.push({ type: 'bold', index: boldMatch[1].length, match: boldMatch });
     if (italicMatch) candidates.push({ type: 'italic', index: italicMatch[1].length, match: italicMatch });
@@ -162,27 +246,30 @@ function processInline(text: string, baseKey: number): React.ReactNode {
       break;
     }
 
-    // Pick the earliest match
     candidates.sort((a, b) => a.index - b.index);
     const winner = candidates[0];
 
-    if (winner.type === 'url') {
+    if (winner.type === 'mdlink') {
       const m = winner.match;
       if (m[1]) parts.push(m[1]);
-      const url = m[2];
-      parts.push(
-        <a key={key++} href={url} target="_blank" rel="noopener noreferrer"
-          className="text-blue-400 hover:underline break-all">
-          {url}
-        </a>,
-      );
+      parts.push(renderMarkdownLink(m[2], m[3], key++));
+      remaining = remaining.slice(m[0].length);
+    } else if (winner.type === 'angle') {
+      const m = winner.match;
+      if (m[1]) parts.push(m[1]);
+      parts.push(...renderUrl(m[2], key++));
+      remaining = remaining.slice(m[0].length);
+    } else if (winner.type === 'url') {
+      const m = winner.match;
+      if (m[1]) parts.push(m[1]);
+      parts.push(...renderUrl(m[2], key++));
       remaining = remaining.slice(m[0].length);
     } else if (winner.type === 'bold') {
       const m = winner.match;
       if (m[1]) parts.push(m[1]);
       parts.push(
         <strong key={key++} className="font-semibold text-white">
-          {m[2]}
+          {processInline(m[2], baseKey * 100 + key)}
         </strong>,
       );
       remaining = remaining.slice(m[0].length);
@@ -191,7 +278,7 @@ function processInline(text: string, baseKey: number): React.ReactNode {
       if (m[1]) parts.push(m[1]);
       parts.push(
         <em key={key++} className="italic">
-          {m[2]}
+          {processInline(m[2], baseKey * 100 + key)}
         </em>,
       );
       remaining = remaining.slice(m[0].length);
