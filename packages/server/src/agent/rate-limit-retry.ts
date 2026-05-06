@@ -181,7 +181,7 @@ function scheduleNextAttempt(
             broadcast({
               type: 'chat:error',
               agentId,
-              error: `Model rate-limited after ${formatDuration(Math.round(elapsedMs / 1000))}. The auto-router will try alternative models on the next attempt.`,
+              error: `Still rate-limited after ${formatDuration(Math.round(elapsedMs / 1000))}. The auto-router will try a different model on the next attempt.`,
               code: 'RATE_LIMITED',
               severity: 'warning',
               retryable: true,

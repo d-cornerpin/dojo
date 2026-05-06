@@ -49,7 +49,14 @@ export interface ChatErrorEvent {
     // Healer visibility codes (added 2026-04-29) — surface every silent
     // return path so the user always knows whether auto-recovery is running.
     | 'HEALER_DISPATCHED' | 'HEALER_SUPPRESSED_MAX_ATTEMPTS' | 'HEALER_MISSING'
-    | 'HEALER_SELF_INJURED' | 'HEALER_DELIVERY_FAILED';
+    | 'HEALER_SELF_INJURED' | 'HEALER_DELIVERY_FAILED'
+    // v2 — surfaces 90% context utilization WARN events so users see them as
+    // toasts in real time. Each is an architecture bug to investigate.
+    | 'CONTEXT_HIGH'
+    // Phase 8 F1 toast audit — emitted by onAgentRecovered so the dashboard
+    // can auto-dismiss the lingering injury error toast once the agent
+    // self-resolves (most provider 4xx errors are transient).
+    | 'AGENT_RECOVERED';
   severity?: 'info' | 'warning' | 'error';
   retryable?: boolean;
 }

@@ -5,11 +5,17 @@ const execAsync = promisify(exec);
 import fs from 'node:fs';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
+// (getRuntimeVersion import removed in Phase 9 Stage 2 — single-track v2)
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { memoryGrep, memoryDescribe, memoryExpand, memorySearch } from '../memory/retrieval.js';
-import { shouldIntercept, interceptLargeFile } from '../memory/large-files.js';
+import { checkRequired, friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer, type FieldSpec } from './tool-helpers.js';
+// Phase 3.5 (2026-05-04) — `shouldIntercept` / `interceptLargeFile` removed
+// from the executeTool path. See agent/tools.ts:executeTool for the explanation.
+// The functions still exist in `memory/large-files.ts` for backward compatibility
+// with `large_files` table records created before Phase 3.5; new tool calls
+// don't intercept.
 import { checkPermission, getAgentPermissions } from './permissions.js';
 import { isPrimaryAgent, isPMAgent, isImaginerAgent, getPrimaryAgentId } from '../config/platform.js';
 import { spawnAgent, terminateAgent, completeAgent } from './spawner.js';
@@ -31,7 +37,7 @@ import { webSearch, webFetch } from './web-tools.js';
 import { mouseClick, mouseMove, keyboardType, screenRead, applescriptRun } from './system-control.js';
 import { executeWebBrowse } from './browser.js';
 import { createGroup, assignAgentToGroup } from './groups.js';
-import { executeVaultRemember, executeVaultSearch, executeVaultForget } from '../vault/tools.js';
+import { executeVaultRemember, executeVaultSearch, executeVaultForget, executeVaultExpand } from '../vault/tools.js';
 import { googleReadToolDefinitions, executeGoogleReadTool } from '../google/tools-read.js';
 import { googleWriteToolDefinitions, executeGoogleWriteTool } from '../google/tools-write.js';
 import { slidesToolDefinitions, slidesToolNames, executeGoogleSlidesTool } from '../google/tools-slides.js';
@@ -99,7 +105,7 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
 
   // Get tools policy from DB
   const db = getDb();
-  const agentRow = db.prepare('SELECT tools_policy FROM agents WHERE id = ?').get(agentId) as { tools_policy: string } | undefined;
+  const agentRow = db.prepare('SELECT tools_policy, group_id FROM agents WHERE id = ?').get(agentId) as { tools_policy: string; group_id: string | null } | undefined;
   let toolsPolicy: { allow: string[]; deny: string[] } = { allow: [], deny: [] };
   if (agentRow?.tools_policy) {
     try {
@@ -119,6 +125,22 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   // 2. Tools policy allow list — if non-empty, only include allowed tools
   if (toolsPolicy.allow.length > 0) {
     filtered = filtered.filter(t => toolsPolicy.allow.includes(t.name));
+  }
+
+  // 2b. Phase 7 (Part X) — squad coordination primitives auto-available to
+  // any agent with a group_id, even when tools_policy.allow is set. This
+  // prevents the "two agents in a squad can share/retrieve" acceptance
+  // criterion from silently regressing whenever an agent has a curated
+  // allow list that predates Phase 7. Explicit `tools_policy.deny` still
+  // wins (filter step 1 above) — the user can opt out per-agent.
+  if (agentRow?.group_id) {
+    const present = new Set(filtered.map(t => t.name));
+    const explicitDeny = new Set(toolsPolicy.deny);
+    for (const name of ['squad_share', 'squad_recall']) {
+      if (present.has(name) || explicitDeny.has(name)) continue;
+      const def = toolDefinitions.find(t => t.name === name);
+      if (def) filtered.push(def);
+    }
   }
 
   // 3. Permission-based filtering
@@ -297,6 +319,28 @@ export interface ToolDefinition {
     properties: Record<string, unknown>;
     required: string[];
   };
+  /**
+   * Concurrency category. Phase 3 (2026-05-04) made this the canonical
+   * source for the v2 partitioner — `partitionTools` checks this first,
+   * then falls back to `TOOL_CATEGORY` in concurrency.ts. Annotate new
+   * tools here; the fallback map covers existing tools that haven't
+   * been migrated yet.
+   *
+   *   safe    — pure read, no side effects, parallelizable
+   *   serial  — has side effects, must run in order
+   *   agent   — coordinates with other agents, sequential
+   *   special — one-of-a-kind semantics, sequential
+   */
+  concurrency?: 'safe' | 'serial' | 'agent' | 'special';
+  /**
+   * Per-tool result cap in tokens. When the tool's content output exceeds
+   * this, the tool itself truncates and appends a "[First N tokens of …]"
+   * trailer with re-call guidance. Phase 3 added this so context stays
+   * small structurally — `file_read` of a 50K file spends 8K tokens
+   * instead of 50K. Roughly 1 token ≈ 4 characters; tools may apply
+   * approximate enforcement on character count.
+   */
+  maxResultTokens?: number;
 }
 
 export const toolDefinitions: ToolDefinition[] = [
@@ -332,10 +376,12 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['command'],
     },
+    concurrency: 'serial',
+    maxResultTokens: 4000,
   },
   {
     name: 'file_read',
-    description: 'Read the contents of a file at the given absolute path. For text files, returns the text content (large files truncated at 50K chars). For images (PNG, JPEG, GIF, WEBP), returns the image so you can see it using your vision capabilities — use this to view screenshots, renders, diagrams, or any visual content. For PDFs, returns the document so you can read it. Example: file_read({ path: "/Users/me/output/render.png" }).',
+    description: 'Read the contents of a file at the given absolute path. For text files, returns line-numbered content. Use optional offset (line number, 0-indexed) and limit (line count, default 2000) to paginate through large files. For images (PNG, JPEG, GIF, WEBP) and PDFs, returns content for vision (paging not applicable). Example: file_read({ path: "/Users/me/foo.html", offset: 0, limit: 500 }).',
     input_schema: {
       type: 'object',
       properties: {
@@ -343,9 +389,19 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'string',
           description: 'Absolute path to the file to read',
         },
+        offset: {
+          type: 'number',
+          description: 'Line number to start reading from (0-indexed). Default 0. Used for paginating large files.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of lines to return. Default 2000. Combined with a per-call cap (~8K tokens) — large lines may produce fewer.',
+        },
       },
       required: ['path'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 8000,
   },
   {
     name: 'file_write',
@@ -428,6 +484,8 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['pattern'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 4000,
   },
   {
     name: 'memory_describe',
@@ -483,6 +541,8 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['query'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 4000,
   },
   // ── Web Tools ──
   {
@@ -502,10 +562,13 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['query'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
   },
   {
     name: 'web_fetch',
-    description: 'Fetch the content of a web page and return its text. HTML is stripped to plain text. Content is truncated to maxTokens. Requires network_domains permission.',
+    description:
+      'Fetch a URL and extract focused content matching your prompt. The tool fetches the page and uses a fast model to return ONLY what you asked for (~1-2K tokens), not the raw page (which can be 50K+). The `prompt` is REQUIRED — be specific. Requires network_domains permission.\n\nExamples:\n  web_fetch({ url: "https://...", prompt: "the main argument and 3 supporting points" })\n  web_fetch({ url: "https://...", prompt: "all pricing tiers and their dollar amounts" })\n  web_fetch({ url: "https://...", prompt: "the API endpoint table" })',
     input_schema: {
       type: 'object',
       properties: {
@@ -513,18 +576,21 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'string',
           description: 'The URL to fetch',
         },
-        maxTokens: {
-          type: 'number',
-          description: 'Maximum tokens of content to return (default: 8000)',
+        prompt: {
+          type: 'string',
+          description:
+            'What to extract from the page. REQUIRED — be specific. The more focused the prompt, the more useful the extract.',
         },
       },
-      required: ['url'],
+      required: ['url', 'prompt'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
   },
   // ── Multi-Agent Tools ──
   {
     name: 'spawn_agent',
-    description: 'Create a new sub-agent to work on a task. This is THE tool for spawning sub-agents — do NOT try to create agents by writing files or inserting into the database. BEFORE spawning, call list_agents to check whether an agent with that name already exists and is still running; if so, use send_to_agent instead of spawning a duplicate. Returns the new agent ID for tracking.',
+    description: 'Create a new sub-agent to work on a task. This is THE tool for spawning sub-agents — do NOT try to create agents by writing files or inserting into the database. BEFORE spawning, call list_agents to check whether an agent with that name already exists and is still running; if so, use send_to_agent instead of spawning a duplicate. Returns the new agent ID for tracking.\n\nTASK LINKAGE — IMPORTANT: if the apprentice is meant to do work tracked in the tracker, you MUST link the task to the agent OR the agent\'s work won\'t update the task on completion. Two valid patterns:\n  1. Pass `task_id` here at spawn time → the agent.task_id is set, complete_task auto-marks the task complete.\n  2. After spawning, call tracker_create_task (or tracker_reassign_task) with `assigned_to=<this agent_id>` → completeAgent\'s fallback finds the task by assignment.\nIf you create tasks before spawning the apprentices, those tasks default to assigned_to=YOU (the parent), and the apprentices\' work will silently fail to update them. Always one of: assign the task to the apprentice, or pass task_id at spawn.',
     input_schema: {
       type: 'object',
       properties: {
@@ -603,6 +669,10 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'array',
           items: { type: 'string' },
           description: 'Optional custom always-loaded tool list for this sub-agent. Saves round-trips when you know exactly which tools the agent will need. Example: for a web research agent: ["web_search", "web_fetch", "vault_remember"]. Omit to use sensible role-based defaults.',
+        },
+        auto_start: {
+          type: 'boolean',
+          description: 'If false, the agent is created but does NOT start working — it stays idle until something else wakes it (a task assignment, send_to_agent, etc.). Use this when you need to set up state across several apprentices before any of them runs (e.g. building a squad, customising prompts). Default: true.',
         },
       },
       required: ['name', 'system_prompt'],
@@ -707,7 +777,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Tracker Tools ──
   {
     name: 'tracker_create_project',
-    description: 'Create a new project in the tracker, optionally with initial tasks. Use for multi-step work that needs tracking and accountability.',
+    description: 'Create a new project in the tracker, optionally with initial tasks. Use for multi-step work that needs tracking and accountability.\n\nASSIGNMENT MATTERS: nested tasks default `assigned_to=YOU` (the calling agent) when not specified. If apprentices will do the work, you have two valid orderings:\n  1. Spawn apprentices FIRST, then call this with each task carrying the apprentice\'s agent_id in `assigned_to`.\n  2. Spawn apprentices with `task_id` pointing at tasks already created here.\nIf neither happens, apprentice work won\'t close out the tasks and the project will look unfinished. The completion_summary fallback only fires when assigned_to matches the completing agent.',
     input_schema: {
       type: 'object',
       properties: {
@@ -746,7 +816,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'tracker_create_task',
-    description: 'Create a task, optionally with scheduling. Can run immediately, at a scheduled time, or on a repeating schedule. To schedule: set scheduled_start to an ISO8601 datetime (e.g., "2026-03-20T22:35:00Z"). To repeat: also set repeat_interval and repeat_unit (e.g., repeat_interval=2, repeat_unit="hours" for every 2 hours). Use repeat_end_type="after_count" with repeat_end_value="3" to stop after 3 runs. Use get_current_time to find the current time, then add minutes/hours for the start time. Tasks without scheduled_start run immediately when assigned.',
+    description: 'Create a task, optionally with scheduling. Can run immediately, at a scheduled time, or on a repeating schedule. To schedule: set scheduled_start to an ISO8601 datetime (e.g., "2026-03-20T22:35:00Z"). To repeat: also set repeat_interval and repeat_unit (e.g., repeat_interval=2, repeat_unit="hours" for every 2 hours). Use repeat_end_type="after_count" with repeat_end_value="3" to stop after 3 runs. Use get_current_time to find the current time, then add minutes/hours for the start time. Tasks without scheduled_start run immediately when assigned.\n\nASSIGNMENT MATTERS: `assigned_to` defaults to YOU (the calling agent) if omitted. If you want an apprentice to handle this task, pass their agent_id (or name) explicitly — otherwise the apprentice\'s complete_task call will not update this row, and the project will look unfinished even after the work is done.',
     input_schema: {
       type: 'object',
       properties: {
@@ -865,22 +935,27 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'tracker_edit_task',
-    description: 'Edit a task\'s title and/or description (the main instructions field). Use this when the scope of a task has changed, or when clarifying/rewriting what needs to be done. Does NOT change status, assignee, priority, or append to notes — use tracker_update_status or tracker_add_notes for those. Pass an empty string for description to clear it.',
+    description: 'Edit any structural field on a task — title, description, dependencies, step ordering, schedule, priority, notes. Pass any subset of fields. Use tracker_update_status for status changes, tracker_reassign_task for assignee changes, and tracker_pause_schedule for pause/resume — those have side-effects this tool intentionally skips.',
     input_schema: {
       type: 'object',
       properties: {
-        task_id: {
-          type: 'string',
-          description: 'The task ID to edit',
+        task_id: { type: 'string', description: 'The task ID to edit' },
+        title: { type: 'string', description: 'New title (optional)' },
+        description: { type: 'string', description: 'New description/instructions. Pass an empty string to clear.' },
+        depends_on: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Replace the dependency list with these task IDs. Pass [] to clear all dependencies.',
         },
-        title: {
-          type: 'string',
-          description: 'New title for the task (optional)',
-        },
-        description: {
-          type: 'string',
-          description: 'New description/instructions for the task (optional). Pass an empty string to clear.',
-        },
+        step_number: { type: 'number', description: 'New step number within the project (1-indexed)' },
+        phase: { type: 'number', description: 'New phase number within the project' },
+        scheduled_start: { type: 'string', description: 'New scheduled start time (ISO 8601 UTC, e.g. 2026-05-10T14:00:00Z). Pass null or empty string to clear and run immediately.' },
+        repeat_interval: { type: 'number', description: 'Repeat interval value (e.g. 1, 2). Pair with repeat_unit.' },
+        repeat_unit: { type: 'string', description: 'Repeat unit: "minutes" | "hours" | "days" | "weeks" | "months"' },
+        repeat_end_type: { type: 'string', description: 'How the recurrence ends: "never" | "after_n" | "on_date"' },
+        repeat_end_value: { type: 'string', description: 'Value for repeat_end_type ("after_n" → count, "on_date" → ISO date)' },
+        priority: { type: 'string', description: 'Priority: "high" | "normal" | "low"' },
+        notes: { type: 'string', description: 'Replace the notes field. To append rather than replace, use tracker_add_notes.' },
       },
       required: ['task_id'],
     },
@@ -898,10 +973,12 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['id'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
   },
   {
     name: 'tracker_list_active',
-    description: 'List active projects and tasks with their status, assignee, and priority. Shows truncated descriptions. For full task details including complete instructions and notes, call tracker_get_status with the task ID.',
+    description: 'List active projects and tasks with their status, assignee, and priority. Default returns compact rows (no descriptions). For descriptions on every result, pass verbose=true; for the full instructions + notes + depends_on of ONE task, use tracker_get_status(id).',
     input_schema: {
       type: 'object',
       properties: {
@@ -910,9 +987,12 @@ export const toolDefinitions: ToolDefinition[] = [
           enum: ['all', 'mine', 'blocked', 'overdue'],
           description: 'Filter to apply (default: all)',
         },
+        verbose: { type: 'boolean', description: 'If true, include each task\'s description (truncated to 200 chars). Default false (compact rows).' },
       },
       required: [],
     },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
   },
   {
     name: 'tracker_complete_step',
@@ -1087,6 +1167,8 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['agent_id'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 4000,
   },
   // ── Group Tools (Phase 6) ──
   {
@@ -1129,14 +1211,17 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Agent & Group Visibility Tools ──
   {
     name: 'list_agents',
-    description: 'List every active sub-agent with their name, ID, status, group, and classification. This is THE tool for seeing what sub-agents exist right now — call this first to find an agent\'s ID before editing, messaging, or killing it.',
+    description: 'List every active sub-agent — name, ID, status, classification, group. Default returns compact rows. For full detail (activity timestamps, dormant flags, last error snippets) on every result, pass verbose=true; for full detail on ONE agent, use get_agent_profile(agent_id).',
     input_schema: {
       type: 'object',
       properties: {
         include_terminated: { type: 'boolean', description: 'Include terminated agents (default: false)' },
+        verbose: { type: 'boolean', description: 'If true, include activity timestamps, dormant detection, and last-error snippets per agent. Default false (compact rows).' },
       },
       required: [],
     },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
   },
   {
     name: 'list_models',
@@ -1146,6 +1231,8 @@ export const toolDefinitions: ToolDefinition[] = [
       properties: {},
       required: [],
     },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
   },
   {
     name: 'delete_group',
@@ -1161,12 +1248,29 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'list_groups',
-    description: 'List every agent group with its name, ID, description, and member count. This is THE tool for seeing what groups exist — call this before assigning agents to groups, editing a group, or deleting one.',
+    description: 'List every agent group with its name, ID, and member count. Default returns compact rows. For full detail (description per group) on every result, pass verbose=true; for full detail on ONE group (members, settings, timestamps), use get_group_detail(group_id).',
     input_schema: {
       type: 'object',
-      properties: {},
+      properties: {
+        verbose: { type: 'boolean', description: 'If true, include each group\'s description. Default false (compact rows).' },
+      },
       required: [],
     },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
+  },
+  {
+    name: 'get_group_detail',
+    description: 'Get full details on one agent group — name, description, member roster (with each member\'s id, name, classification, status), creation metadata. Use this to drill in after list_groups.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        group_id: { type: 'string', description: 'Group ID or name (case-insensitive)' },
+      },
+      required: ['group_id'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
   },
   {
     name: 'tracker_reassign_task',
@@ -1299,7 +1403,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'screen_read',
-    description: 'Take a screenshot and describe what is visible using a vision model. Returns a text description with approximate coordinates for interactive elements. Use before mouse_click to find targets.',
+    description: 'Take a screenshot and describe what is visible using a vision model. Returns a text description with approximate coordinates for interactive elements. Use before mouse_click to find targets. Pass `query` to focus the description on what you\'re looking for (recommended).',
     input_schema: {
       type: 'object',
       properties: {
@@ -1313,10 +1417,12 @@ export const toolDefinitions: ToolDefinition[] = [
             height: { type: 'number' },
           },
         },
-        query: { type: 'string', description: 'Specific question about the screen, e.g., "where is the Submit button?"' },
+        query: { type: 'string', description: 'Specific question about the screen, e.g., "where is the Submit button?". Strongly recommended — without it the description is generic and longer.' },
       },
       required: [],
     },
+    concurrency: 'special',
+    maxResultTokens: 2000,
   },
   {
     name: 'applescript_run',
@@ -1328,11 +1434,14 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['script'],
     },
+    concurrency: 'serial',
+    maxResultTokens: 4000,
   },
   // ── Headless Browser Tool (Phase 5B) ──
   {
     name: 'web_browse',
-    description: 'Open a headless browser to interact with web pages. Can navigate, take screenshots, click elements, fill forms, and extract content. Use for pages that require JavaScript rendering or interaction. The browser session persists across calls — navigate first, then interact.',
+    description:
+      'Open a headless browser to interact with web pages. Can navigate, take screenshots, click elements, fill forms, and extract content. Use for pages that require JavaScript rendering or interaction. The browser session persists across calls — navigate first, then interact.\n\nFor the `extract` action, ALWAYS pass a `goal` describing what you\'re looking for — the tool returns a focused extract (~1-2K tokens) instead of the raw page (often 30K+).',
     input_schema: {
       type: 'object',
       properties: {
@@ -1346,14 +1455,21 @@ export const toolDefinitions: ToolDefinition[] = [
         text: { type: 'string', description: 'Text to type (for "type" action)' },
         scroll_direction: { type: 'string', enum: ['up', 'down'], description: 'Scroll direction' },
         scroll_amount: { type: 'number', description: 'Pixels to scroll (default: 500)' },
+        goal: {
+          type: 'string',
+          description:
+            'For the `extract` action: what to extract from the page. Be specific. The tool will return a focused summary, not the raw page. Example: "the article headline and first paragraph", "all link URLs in the navigation menu", "the form fields and their current values".',
+        },
       },
       required: ['action'],
     },
+    concurrency: 'special',
+    maxResultTokens: 3000,
   },
   // ── Technique Tools ──
   {
     name: 'save_technique',
-    description: 'Save what you learned as a reusable technique for the dojo. Creates a new technique with instructions and optional supporting files. Only Sensei agents can create techniques.',
+    description: 'Save what you learned as a reusable technique for the dojo. Creates a new technique with instructions and optional supporting files. Only Sensei agents can create techniques.\n\nIMPORTANT: techniques are saved as DRAFT by default — drafts cannot be loaded by use_technique. If the user just said "save this technique and use it" or otherwise expects it to be usable right away, you MUST pass publish=true. Pass publish=false (or omit) only when the user explicitly wants to review/iterate before sharing.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1373,7 +1489,7 @@ export const toolDefinitions: ToolDefinition[] = [
           },
           description: 'Supporting files to include',
         },
-        publish: { type: 'boolean', description: 'If true, publish immediately. If false, save as draft.' },
+        publish: { type: 'boolean', description: 'TRUE = save and publish immediately so other agents can use_technique it. FALSE (default) = save as draft, only usable after a separate publish_technique call. Pass TRUE whenever the user expects the technique to be usable now.' },
       },
       required: ['name', 'display_name', 'description', 'instructions'],
     },
@@ -1391,15 +1507,18 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'list_techniques',
-    description: 'List all available techniques in the dojo.',
+    description: 'List available techniques. Default returns compact rows (name + id + tags + state). For descriptions and usage counts on every result, pass verbose=true; for the full instructions of ONE technique, use use_technique(name).',
     input_schema: {
       type: 'object',
       properties: {
         tag: { type: 'string', description: 'Filter by tag' },
         include_drafts: { type: 'boolean', description: 'Include draft techniques (Sensei only)' },
+        verbose: { type: 'boolean', description: 'If true, include description and usage count per technique. Default false (compact rows).' },
       },
       required: [],
     },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
   },
   {
     name: 'publish_technique',
@@ -1458,13 +1577,15 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['name'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
   },
 
   // ── Vault (Long-Term Memory) ──
 
   {
     name: 'vault_remember',
-    description: 'Save an important piece of knowledge to the dojo\'s long-term memory vault. Saved immediately and visible to all agents.\n\nWHEN THE USER EXPLICITLY ASKS YOU TO REMEMBER SOMETHING — phrases like "remember that…", "I want you to remember…", "always do X", "never do Y", "from now on, …", "make sure you always…" — call this tool with `verbatim: true` and `pin: true`. Pass the user\'s instruction word-for-word in `content`. Do NOT paraphrase or compress; the user\'s exact wording is the point.\n\nFor everything else (facts you observed, decisions made, preferences inferred), write a tight summary and let the engine handle filler-stripping.\n\nExample (user-explicit): vault_remember({ content: "Always confirm with David before pushing to main.", type: "preference", verbatim: true, pin: true }).\nExample (observed): vault_remember({ content: "Tunnel: Cloudflare named.", type: "fact" }).',
+    description: 'Save an important piece of knowledge to the dojo\'s long-term memory vault. Saved immediately and visible to all agents.\n\nWHEN THE USER EXPLICITLY ASKS YOU TO REMEMBER SOMETHING — phrases like "remember that…", "I want you to remember…", "always do X", "never do Y", "from now on, …", "make sure you always…" — call this tool with `verbatim: true` and `pin: true`. Pass the user\'s instruction word-for-word in `content`. Do NOT paraphrase or compress; the user\'s exact wording is the point.\n\nFor everything else (facts you observed, decisions made, preferences inferred), write a tight summary and let the DOJO handle filler-stripping.\n\nExample (user-explicit): vault_remember({ content: "Always confirm with David before pushing to main.", type: "preference", verbatim: true, pin: true }).\nExample (observed): vault_remember({ content: "Tunnel: Cloudflare named.", type: "fact" }).',
     input_schema: {
       type: 'object',
       properties: {
@@ -1473,23 +1594,50 @@ export const toolDefinitions: ToolDefinition[] = [
         tags: { type: 'array', items: { type: 'string' }, description: 'Tags for categorization' },
         pin: { type: 'boolean', description: 'If true, this memory is always included in context regardless of relevance. Set true when the user explicitly tells you to remember something.' },
         permanent: { type: 'boolean', description: 'If true, this fact never decays over time (use for definitionally stable truths like names, relationships, birth dates).' },
-        verbatim: { type: 'boolean', description: 'If true, the engine preserves your content exactly — no bloat-phrase stripping, no date prefix, no compression. Use when capturing the user\'s explicit memory instruction word-for-word ("remember that…", "always X", "never Y", "from now on…").' },
+        verbatim: { type: 'boolean', description: 'If true, the DOJO preserves your content exactly — no bloat-phrase stripping, no date prefix, no compression. Use when capturing the user\'s explicit memory instruction word-for-word ("remember that…", "always X", "never Y", "from now on…").' },
       },
       required: ['content', 'type'],
     },
   },
   {
     name: 'vault_search',
-    description: 'Search the dojo\'s long-term memory vault for relevant knowledge. Returns memories matching your query, ranked by relevance. Use this when you need to recall something that isn\'t in your current context window. Example: vault_search({ query: "user preferences" }).',
+    description: 'Search the dojo\'s long-term memory vault for relevant knowledge. Returns the top matching memories with short snippets. Use vault_expand(entry_id) to get the full content of a specific entry when the snippet is not enough. Example: vault_search({ query: "user preferences" }).',
     input_schema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'What to search for' },
         type: { type: 'string', enum: ['fact', 'preference', 'decision', 'procedure', 'relationship', 'event', 'note'], description: 'Filter by memory type (optional)' },
-        limit: { type: 'number', description: 'Max results (default 10)' },
+        limit: { type: 'number', description: 'Max results (default 5; was 10 in v1)' },
       },
       required: ['query'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
+  },
+  {
+    name: 'vault_expand',
+    description: 'Get the full content of a specific vault entry by ID. Pairs with vault_search — search returns short snippets; expand returns the full entry when you need details.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        entry_id: { type: 'string', description: 'Vault entry ID (from vault_search results)' },
+      },
+      required: ['entry_id'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 4000,
+  },
+  {
+    name: 'vault_refresh',
+    description:
+      'Re-load the session-start vault snapshot mid-conversation: pinned entries + entries tagged `session_context`. Use when the long-term memory has changed (you or the user just added/edited an important entry) and you want it reflected immediately without waiting for the next session reset. Returns the freshly-loaded entries as a snapshot.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 4000,
   },
   {
     name: 'vault_forget',
@@ -1522,7 +1670,67 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['archive_ids', 'reason'],
     },
   },
+
+  // ── Squad Coordination (Phase 7 / Part X) ──
+  // Shared memory for agents in the same group_id. Faster than A2A messages
+  // for handing structured context between squad members.
+  {
+    name: 'squad_share',
+    description: 'Write a piece of knowledge into your squad\'s shared memory so other members can recall it. Squad-scoped (only visible to agents in the same group_id). Use for handoffs, coordination notes, shared findings — things teammates need that don\'t belong in your personal vault. Example: squad_share({ content: "Customer prefers phone calls before 5pm PT.", tags: ["customer", "comms"] }).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'The shared knowledge.' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags for filtering on recall.' },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'squad_recall',
+    description: 'Search your squad\'s shared memory for relevant entries written by you or other members. Returns short snippets — call vault_expand(entry_id) for full content if needed. Example: squad_recall({ query: "customer comms" }).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Keywords to search for. Pass an empty string to list recent entries regardless of content.' },
+        tag: { type: 'string', description: 'Filter to entries with this tag (optional).' },
+        limit: { type: 'number', description: 'Max results (default 5).' },
+      },
+      required: [],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
+  },
+  {
+    name: 'dreamer_run_now',
+    description: 'THE tool for running a dream cycle on demand. Do NOT send_to_agent the Dreamer to ask it to dream — the Dreamer agent is reactive, not self-starting; only this tool kicks the actual extraction pipeline (process unprocessed conversation archives → extract memories into the vault → write a dream_reports row). Use whenever the user says "run the dreamer", "process my recent conversations", "consolidate memories", "wind things down", or anything similar. The cycle runs in the background and takes 30s–3min. Returns whether the cycle started + the Dreamer agent ID. Primary agent only.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+    concurrency: 'serial',
+    maxResultTokens: 1000,
+  },
+  {
+    name: 'cost_summary',
+    description: 'Get a quick spend report: today\'s total cost across all agents and the top 3 spenders by agent and by model. Use this when the user asks "what has the DOJO cost today" or similar. Primary agent only.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+    concurrency: 'safe',
+    maxResultTokens: 1500,
+  },
 ];
+
+// Phase 3 (2026-05-04) — register definition-level concurrency overrides
+// with the v2 partitioner. Tools that omit `concurrency` fall through to
+// the hardcoded TOOL_CATEGORY map in concurrency.ts (no behavior change
+// for tools that haven't been migrated).
+//
+// Phase 3.5 (2026-05-04) — also register `maxResultTokens` so the cross-file
+// registry covers tools beyond agent/tools.ts (Google, MS, Slides, Office).
+// `applyMaxResultTokensCap` consults the registry first, then this file's
+// `toolDefinitions` array as a backup.
+import { registerConcurrency, registerMaxResultTokens, getRegisteredMaxResultTokens } from './v2/classifiers/concurrency.js';
+for (const def of toolDefinitions) {
+  if (def.concurrency) registerConcurrency(def.name, def.concurrency);
+  if (def.maxResultTokens) registerMaxResultTokens(def.name, def.maxResultTokens);
+}
 
 // ── Path Resolution ──
 
@@ -1534,6 +1742,90 @@ function resolvePath(inputPath: string): string {
   if (inputPath.startsWith('~/')) return path.join(os.homedir(), inputPath.slice(2));
   if (inputPath.startsWith('~')) return path.join(os.homedir(), '..', inputPath.slice(1));
   return inputPath;
+}
+
+// Files that must NEVER appear in tool output. CLAUDE.md is explicit:
+// "Secrets never enter the database or memory DAG. API keys and tokens live
+// in ~/.dojo/secrets.yaml ... They never appear in message content, tool
+// results, or summaries." Any file_read / file_list / exec output that would
+// echo one of these gets refused at the tool boundary, before the model sees
+// it (and before the audit_log writes the result into the conversation).
+//
+// Match by basename (cheap, robust against absolute vs. relative paths) plus
+// a few directory containment checks.
+const SENSITIVE_BASENAMES = new Set<string>([
+  'secrets.yaml',
+  'secrets.yml',
+  'secrets.json',
+  '.env',
+  '.env.local',
+  '.env.production',
+  '.env.development',
+  'id_rsa',
+  'id_ed25519',
+  'id_ecdsa',
+  'id_dsa',
+  'authorized_keys',
+  'known_hosts',
+  '.npmrc',
+  '.pypirc',
+  '.netrc',
+  'credentials',
+]);
+
+function isSensitivePath(absPath: string): boolean {
+  const base = path.basename(absPath);
+  if (SENSITIVE_BASENAMES.has(base)) return true;
+  // Anything under ~/.ssh/ except the public key whitelist is sensitive.
+  const sshDir = path.join(os.homedir(), '.ssh');
+  if (absPath.startsWith(sshDir + path.sep) && !base.endsWith('.pub')) return true;
+  // ~/.aws/credentials, ~/.config/gcloud/, ~/.kube/config — common cred locations.
+  if (absPath === path.join(os.homedir(), '.aws', 'credentials')) return true;
+  if (absPath.startsWith(path.join(os.homedir(), '.config', 'gcloud') + path.sep)) return true;
+  if (absPath === path.join(os.homedir(), '.kube', 'config')) return true;
+  // Anything matching the secrets.yaml extension pattern in ~/.dojo/.
+  if (absPath.startsWith(path.join(os.homedir(), '.dojo') + path.sep) && base.startsWith('secret')) return true;
+  return false;
+}
+
+// Guard for exec commands. Block any command that would print a sensitive
+// file (`cat ~/.dojo/secrets.yaml`, `less id_rsa`, etc.) before the shell
+// runs it. We can't catch every redirection trick, but blocking the obvious
+// readers (cat/less/more/head/tail/bat/nl/sed/awk/grep/strings) at the
+// tokenized argument level catches the common case without requiring a
+// real shell parser.
+const SENSITIVE_FILE_READING_COMMANDS = new Set<string>([
+  'cat', 'less', 'more', 'head', 'tail', 'bat', 'nl', 'strings',
+  'cp', 'mv', 'rsync', 'scp', // exfiltration shapes
+  'sed', 'awk', 'grep', 'rg', 'ag', 'fgrep', 'egrep',
+  'xxd', 'od', 'hexdump',
+]);
+
+function commandReadsSensitiveFile(command: string): { blocked: true; reason: string } | { blocked: false } {
+  // Tokenize crudely. This isn't a full shell parser — sufficiently
+  // motivated bypass attempts (heredocs, variable expansion, base64-decoded
+  // paths) will get through. The point isn't perfect security; it's keeping
+  // accidental `cat ~/.dojo/secrets.yaml` from leaking into the conversation.
+  const tokens = command.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return { blocked: false };
+  // Find the program name(s). Could be at start, after `&&`, after `|`, etc.
+  // Just check every token: if it's a sensitive-reading command followed by
+  // a sensitive path, block.
+  for (let i = 0; i < tokens.length; i++) {
+    const cmd = path.basename(tokens[i]);
+    if (!SENSITIVE_FILE_READING_COMMANDS.has(cmd)) continue;
+    // Look at the rest of the tokens up to the next pipe/&&/;/| for paths.
+    for (let j = i + 1; j < tokens.length; j++) {
+      const arg = tokens[j];
+      if (arg === '|' || arg === '||' || arg === '&&' || arg === ';' || arg === '>') break;
+      if (arg.startsWith('-')) continue; // flags
+      const expanded = resolvePath(arg);
+      if (isSensitivePath(path.isAbsolute(expanded) ? expanded : path.resolve(expanded))) {
+        return { blocked: true, reason: `path "${arg}" is on the sensitive-files block list` };
+      }
+    }
+  }
+  return { blocked: false };
 }
 
 // ── Tool Execution ──
@@ -1565,8 +1857,23 @@ function auditLog(agentId: string, actionType: string, target: string | null, re
 
 async function executeExec(agentId: string, args: Record<string, unknown>): Promise<string> {
   const command = args.command as string;
+
+  // Refuse commands that would echo a sensitive file (secrets.yaml, .env,
+  // SSH keys, etc.) BEFORE the shell runs. CLAUDE.md is explicit that
+  // secrets must never enter messages or summaries. See isSensitivePath /
+  // commandReadsSensitiveFile up top.
+  const sensitiveCheck = commandReadsSensitiveFile(command);
+  if (sensitiveCheck.blocked) {
+    auditLog(agentId, 'exec', command.slice(0, 200), 'denied', sensitiveCheck.reason);
+    return `[BLOCKED] exec refused: ${sensitiveCheck.reason}. The DOJO never echoes secret files into the conversation. If you need a value from secrets.yaml (API key, OAuth token, etc.), ask the user — those values live in process memory only, not in agent context.`;
+  }
+
+  // Phase 3.5 fix — defensive coerce. DeepSeek emits numeric args as strings
+  // despite the schema; without coerce a string timeout silently falls back to
+  // the default instead of being honored.
+  const timeoutCoerced = coerceNumberArg(args.timeout);
   const timeout = Math.min(
-    typeof args.timeout === 'number' ? args.timeout : EXEC_TIMEOUT_MS,
+    timeoutCoerced !== null ? timeoutCoerced : EXEC_TIMEOUT_MS,
     120000,
   );
 
@@ -1580,13 +1887,38 @@ async function executeExec(agentId: string, args: Record<string, unknown>): Prom
       shell: '/bin/zsh',
     });
 
-    const result = (stdout ?? '').trim();
-    if (stderr && stderr.trim()) {
-      auditLog(agentId, 'exec', command, 'success', `stdout: ${result.slice(0, 250)} | stderr: ${stderr.trim().slice(0, 250)}`);
-    } else {
-      auditLog(agentId, 'exec', command, 'success', result.slice(0, 500));
+    // Phase 3.5 (2026-05-04) — per-stream caps. Each of stdout/stderr gets
+    // its own ~4K-token cap (16K chars), tagged with `stdout_truncated:true`
+    // / `stderr_truncated:true` flags so the agent sees structurally that
+    // output was cut. Combined exec output also hits the engine-level
+    // applyMaxResultTokensCap (4K total) as a final safety net.
+    const STREAM_CHAR_CAP = 16_000; // ~4K tokens per stream
+    const stdoutRaw = stdout ?? '';
+    const stderrRaw = stderr ?? '';
+    const stdoutTruncated = stdoutRaw.length > STREAM_CHAR_CAP;
+    const stderrTruncated = stderrRaw.length > STREAM_CHAR_CAP;
+    const stdoutFinal = stdoutTruncated ? stdoutRaw.slice(0, STREAM_CHAR_CAP) : stdoutRaw;
+    const stderrFinal = stderrTruncated ? stderrRaw.slice(0, STREAM_CHAR_CAP) : stderrRaw;
+
+    auditLog(agentId, 'exec', command, 'success',
+      stderrFinal.trim()
+        ? `stdout: ${stdoutFinal.trim().slice(0, 250)} | stderr: ${stderrFinal.trim().slice(0, 250)}`
+        : stdoutFinal.trim().slice(0, 500),
+    );
+
+    // Format: structured-ish per-stream output with explicit truncation flags
+    // so the agent can react (e.g. re-run with a narrower scope, grep, etc.).
+    const parts: string[] = [];
+    if (stdoutFinal.trim() || stdoutTruncated) {
+      parts.push(`stdout${stdoutTruncated ? ' (truncated, stdout_truncated: true)' : ''}:\n${stdoutFinal.trim() || '(empty)'}`);
     }
-    return result || '(command completed with no output)';
+    if (stderrFinal.trim() || stderrTruncated) {
+      parts.push(`stderr${stderrTruncated ? ' (truncated, stderr_truncated: true)' : ''}:\n${stderrFinal.trim() || '(empty)'}`);
+    }
+    if (parts.length === 0) {
+      return '(command completed with no output)';
+    }
+    return parts.join('\n\n');
   } catch (err: unknown) {
     const error = err as { stderr?: string; stdout?: string; message?: string; code?: number };
     const stderr = error.stderr ?? error.message ?? 'Unknown error';
@@ -1613,6 +1945,14 @@ async function executeFileRead(
   if (!path.isAbsolute(filePath)) {
     auditLog(agentId, 'file_read', filePath, 'error', 'Path must be absolute (use ~ for home directory)');
     return 'Error: Path must be absolute. Use ~ for home directory or provide a full path.';
+  }
+
+  // Block reads of secrets / SSH keys / cloud credentials. See isSensitivePath
+  // up top for the full list. The result must never enter messages — the
+  // CLAUDE.md secrets-out-of-memory rule applies at every entry point.
+  if (isSensitivePath(filePath)) {
+    auditLog(agentId, 'file_read', filePath, 'denied', 'sensitive path block list');
+    return `[BLOCKED] file_read refused: ${filePath} is on the sensitive-files block list (secrets.yaml, .env files, SSH keys, cloud credentials). The DOJO never echoes secret files into the conversation. If you need a value from this file, ask the user — those values live in process memory only.`;
   }
 
   try {
@@ -1672,12 +2012,69 @@ async function executeFileRead(
       };
     }
 
-    // ── Text files: return as text (existing behavior) ──
+    // ── Text files: return as text ──
     const content = await fs.promises.readFile(filePath, 'utf-8');
+    const allLines = content.split('\n');
+    const totalLines = allLines.length;
 
-    auditLog(agentId, 'file_read', filePath, 'success', `${stat.size} bytes`);
+    // Phase 3.5 offset/limit support — when an agent explicitly paginates,
+    // we return exactly the requested range with line numbers and a stub
+    // telling them how to read more. This is also the path that bypasses
+    // the v1 large-files interception (so an agent can ALWAYS get raw
+    // content of a large file by paginating, even on v1).
+    // Phase 3.5 fix — defensive coerce. DeepSeek emits these as strings even
+    // when schema says number; without coerce pagination silently no-ops.
+    const offsetNum = coerceNumberArg(args.offset);
+    const limitNum = coerceNumberArg(args.limit);
+    const offset = offsetNum !== null ? Math.max(0, Math.floor(offsetNum)) : null;
+    const limit = limitNum !== null ? Math.max(1, Math.floor(limitNum)) : null;
 
-    return content;
+    // Pagination path with line numbers + clear stub on truncation. The v1
+    // raw-string fallback (with large-files.ts interception) was removed in
+    // Phase 9 Stage 2 — paginated read is now the only path.
+    {
+      const startLine = offset ?? 0;
+      const requestedCount = limit ?? 2000;
+      const endLine = Math.min(startLine + requestedCount, totalLines);
+
+      // Cap at ~7.5K tokens via character estimate (rough heuristic). Leaves
+      // ~500 token margin so the friendly pagination trailer doesn't trip
+      // the generic applyMaxResultTokensCap (8000 tokens) and get re-truncated.
+      const MAX_CHARS = 30_000; // ~7.5K tokens, room for trailer
+      const slice: string[] = [];
+      let chars = 0;
+      let actualEnd = startLine;
+      for (let i = startLine; i < endLine; i++) {
+        const line = allLines[i] ?? '';
+        if (chars + line.length + 1 > MAX_CHARS && slice.length > 0) break;
+        slice.push(`${i + 1}\t${line}`);
+        chars += line.length + 1;
+        actualEnd = i + 1;
+      }
+
+      const linesShown = actualEnd - startLine;
+      const lineWidth = String(actualEnd).length;
+      // Re-format with right-aligned line numbers like Read tool does
+      const formatted = slice
+        .map((s) => {
+          const [num, ...rest] = s.split('\t');
+          return `${num.padStart(lineWidth)}\t${rest.join('\t')}`;
+        })
+        .join('\n');
+
+      let result = formatted;
+      if (actualEnd < totalLines) {
+        const remaining = totalLines - actualEnd;
+        result += `\n\n[Read lines ${startLine}-${actualEnd - 1} of ${totalLines} total. ${remaining} more lines remain.\n` +
+          ` To continue: file_read(path="${filePath}", offset=${actualEnd}, limit=${Math.min(remaining, 2000)}).\n` +
+          ` To search for specific content: use grep instead.]`;
+      } else if (startLine > 0) {
+        result += `\n\n[End of file. Read lines ${startLine}-${actualEnd - 1} of ${totalLines} total.]`;
+      }
+
+      auditLog(agentId, 'file_read', filePath, 'success', `${stat.size} bytes (lines ${startLine}-${actualEnd}/${totalLines})`);
+      return result;
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     auditLog(agentId, 'file_read', filePath, 'error', msg);
@@ -1855,6 +2252,13 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
     }
   }
 
+  if (name === 'dreamer_run_now' || name === 'cost_summary') {
+    if (!isPrimaryAgent(agentId)) {
+      auditLog(agentId, name, null, 'denied', `${name} is restricted to the primary agent only`);
+      return { toolCallId: id, name, content: `Permission denied: only the primary agent can call ${name}.`, isError: true };
+    }
+  }
+
   // web_browse: primary agent only by default, sub-agents need explicit permission
   if (name === 'web_browse') {
     const manifest = (await import('./permissions.js')).getAgentPermissions(agentId);
@@ -1931,10 +2335,16 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         break;
       }
       case 'exec':
-        content = await executeExec(agentId, args);
-        isError = content.startsWith('Error');
+        {
+          const execErr = checkRequired([{ name: 'command', value: args.command, type: 'string' }]);
+          if (execErr) { content = execErr; isError = true; break; }
+          content = await executeExec(agentId, args);
+          isError = content.startsWith('Error');
+        }
         break;
       case 'file_read': {
+        const readErr = checkRequired([{ name: 'path', value: args.path, type: 'string' }]);
+        if (readErr) { content = readErr; isError = true; break; }
         const fileResult = await executeFileRead(agentId, args);
         if (typeof fileResult === 'string') {
           content = fileResult;
@@ -1948,14 +2358,23 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         }
         break;
       }
-      case 'file_write':
+      case 'file_write': {
+        const writeErr = checkRequired([
+          { name: 'path', value: args.path, type: 'string' },
+          { name: 'content', value: args.content, type: 'string', allowEmpty: true },
+        ]);
+        if (writeErr) { content = writeErr; isError = true; break; }
         content = await executeFileWrite(agentId, args);
         isError = content.startsWith('Error');
         break;
-      case 'file_list':
+      }
+      case 'file_list': {
+        const listErr = checkRequired([{ name: 'path', value: args.path, type: 'string' }]);
+        if (listErr) { content = listErr; isError = true; break; }
         content = await executeFileList(agentId, args);
         isError = content.startsWith('Error');
         break;
+      }
       case 'share_file': {
         const sharePath = resolvePath(args.path as string);
         if (!path.isAbsolute(sharePath)) {
@@ -1985,9 +2404,20 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         auditLog(agentId, 'share_file', sharePath, 'success', downloadUrl);
         break;
       }
-      case 'memory_grep':
+      case 'memory_grep': {
+        // Accept `query` as an alias for `pattern` — the schema names the
+        // param `pattern`, but agents who learned the tool from natural
+        // descriptions ("search for the QUARK marker") often pass `query`.
+        // Without this fallback, undefined was silently passed to the FTS5
+        // engine and returned irrelevant rows. Validate explicitly.
+        const grepPattern = (args.pattern ?? args.query) as string | undefined;
+        if (!grepPattern || typeof grepPattern !== 'string' || !grepPattern.trim()) {
+          content = 'Error: memory_grep needs a non-empty `pattern` (the search string). Example: memory_grep({ pattern: "budget meeting" }).';
+          isError = true;
+          break;
+        }
         content = memoryGrep(agentId, {
-          pattern: args.pattern as string,
+          pattern: grepPattern,
           mode: args.mode as 'full_text' | 'regex' | undefined,
           scope: args.scope as 'messages' | 'summaries' | 'both' | undefined,
           since: args.since as string | undefined,
@@ -1995,38 +2425,64 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           limit: args.limit as number | undefined,
         });
         break;
-      case 'memory_describe':
+      }
+      case 'memory_describe': {
+        const mdErr = checkRequired([{ name: 'id', value: args.id, type: 'string' }]);
+        if (mdErr) { content = mdErr; isError = true; break; }
         content = memoryDescribe(agentId, { id: args.id as string });
         break;
-      case 'memory_expand':
+      }
+      case 'memory_expand': {
+        const meErr = checkRequired([{ name: 'prompt', value: args.prompt, type: 'string' }]);
+        if (meErr) { content = meErr; isError = true; break; }
         content = await memoryExpand(agentId, {
           query: args.query as string | undefined,
           summary_ids: args.summary_ids as string[] | undefined,
           prompt: args.prompt as string,
         });
         break;
-      case 'memory_search':
+      }
+      case 'memory_search': {
+        const msErr = checkRequired([{ name: 'query', value: args.query, type: 'string' }]);
+        if (msErr) { content = msErr; isError = true; break; }
         content = await memorySearch(agentId, {
           query: args.query as string,
           limit: args.limit as number | undefined,
         });
         break;
+      }
 
       // ── Web Tools ──
-      case 'web_search':
+      case 'web_search': {
+        const wsErr = checkRequired([{ name: 'query', value: args.query, type: 'string' }]);
+        if (wsErr) { content = wsErr; isError = true; break; }
         content = await webSearch(agentId, {
           query: args.query as string,
           count: args.count as number | undefined,
         });
         isError = content.startsWith('Permission denied') || content.startsWith('Web search failed');
         break;
-      case 'web_fetch':
+      }
+      case 'web_fetch': {
+        const wfErr = checkRequired([
+          { name: 'url', value: args.url, type: 'string' },
+        ]);
+        if (wfErr) { content = wfErr; isError = true; break; }
+        if (typeof args.prompt !== 'string' || args.prompt.trim().length === 0) {
+          content =
+            'Error: web_fetch requires a `prompt` parameter describing what to extract. ' +
+            'Example: web_fetch({ url: "...", prompt: "the main argument and 3 supporting points" }). ' +
+            'A required prompt keeps the result small (~1-2K tokens) instead of dumping the raw page (often 50K+).';
+          isError = true;
+          break;
+        }
         content = await webFetch(agentId, {
           url: args.url as string,
-          maxTokens: args.maxTokens as number | undefined,
+          prompt: args.prompt as string,
         });
         isError = content.startsWith('Permission denied') || content.startsWith('Fetch failed');
         break;
+      }
 
       // ── Multi-Agent Tools ──
       case 'spawn_agent': {
@@ -2057,15 +2513,21 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           initialMessage: args.initial_message as string | undefined,
           equippedTechniques: args.techniques as string[] | undefined,
           alwaysLoadedTools: args.always_loaded_tools as string[] | undefined,
+          autoStart: args.auto_start as boolean | undefined,
         });
         content = `Agent spawned successfully.\nAgent ID: ${result.agentId}\nName: ${result.name}\nStatus: ${result.status}\nPersistent: ${result.persist ? 'yes' : 'no'}`;
         break;
       }
       case 'kill_agent': {
-        const targetId = args.agent_id as string;
+        const killErr = checkRequired([{ name: 'agent_id', value: args.agent_id, type: 'string' }]);
+        if (killErr) { content = killErr; isError = true; break; }
+        // Resolve via the standard helper so names + sensei ids work too.
+        const killResolved = resolveAgentRef(args.agent_id as string, 'kill_agent');
+        if (!killResolved.ok) { content = killResolved.error; isError = true; break; }
+        const targetId = killResolved.id;
         // Check classification before terminating
         const killDb = getDb();
-        const targetAgent = killDb.prepare('SELECT classification FROM agents WHERE id = ?').get(targetId) as { classification: string } | undefined;
+        const targetAgent = killDb.prepare('SELECT classification, status FROM agents WHERE id = ?').get(targetId) as { classification: string; status: string } | undefined;
         if (targetAgent?.classification === 'sensei') {
           content = 'Cannot terminate sensei agent.';
           isError = true;
@@ -2074,6 +2536,11 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         if (targetAgent?.classification === 'ronin') {
           content = 'Cannot terminate ronin agent. Only the owner can manage ronin agents from the dashboard.';
           isError = true;
+          break;
+        }
+        // Idempotency: killing an already-terminated agent is a no-op.
+        if (targetAgent?.status === 'terminated') {
+          content = `Agent ${targetId} is already terminated. No action taken.`;
           break;
         }
         terminateAgent(targetId, `Killed by agent ${agentId}`);
@@ -2085,9 +2552,18 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         // All agent-to-agent communication goes through the A2A transport
         // which enforces thread tracking, hop limits, semantic dedup, and
         // requires_response routing.
+        const sendErr = checkRequired([
+          { name: 'agent', value: args.agent, type: 'string' },
+        ]);
+        if (sendErr) { content = sendErr; isError = true; break; }
         const agentRef = args.agent as string;
         const intent = args.intent as string | undefined;
         const payload = (args.payload as string) ?? (args.message as string) ?? '';
+        if (!payload || !payload.trim()) {
+          content = 'Error: send_to_agent needs a non-empty `payload` (or `message`) — what you want to say to the other agent.';
+          isError = true;
+          break;
+        }
 
         // Intent is REQUIRED — no silent default. Previously this fell back
         // to 'FYI', which is a no-wake intent. Agents that didn't specify
@@ -2208,10 +2684,16 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
         break;
       }
       case 'broadcast_to_group': {
-        const groupId = args.group_id as string;
+        const bcReqErr = checkRequired([
+          { name: 'group_id', value: args.group_id, type: 'string' },
+        ]);
+        if (bcReqErr) { content = bcReqErr; isError = true; break; }
+        const bcResolved = resolveGroupRef(args.group_id as string, 'broadcast_to_group');
+        if (!bcResolved.ok) { content = bcResolved.error; isError = true; break; }
+        const groupId = bcResolved.id;
         const broadcastPayload = (args.payload as string) ?? (args.message as string) ?? '';
         const bcIntent = args.intent as string | undefined;
-        if (!groupId || !broadcastPayload) { content = 'Error: group_id and payload are required'; isError = true; break; }
+        if (!broadcastPayload || !broadcastPayload.trim()) { content = 'Error: `payload` (or `message`) is required — what to send to the group.'; isError = true; break; }
 
         // Intent is REQUIRED — same rationale as send_to_agent.
         const BC_VALID_INTENTS = ['QUESTION', 'ASSIGN', 'BLOCK', 'ANSWER', 'DELIVERABLE', 'FYI', 'STATUS', 'COMPLETE', 'FAIL'];
@@ -2257,18 +2739,48 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
         break;
       }
       case 'complete_task': {
-        await completeAgent(
-          agentId,
-          args.status as 'complete' | 'fallen' | 'blocked',
-          args.summary as string,
-          args.results as string | undefined,
-        );
-        content = `Task completion reported: ${args.status}. Agent will be terminated.`;
+        const completeStatus = args.status as string | undefined;
+        const completeSummary = args.summary as string | undefined;
+        const validationError = checkRequired([
+          { name: 'status', value: completeStatus, type: 'string' },
+          { name: 'summary', value: completeSummary, type: 'string' },
+        ]);
+        if (validationError) { content = validationError; isError = true; break; }
+        if (!['complete', 'fallen', 'blocked'].includes(completeStatus!)) {
+          content = `Error: \`status\` must be one of "complete", "fallen", "blocked" (got "${completeStatus}").`;
+          isError = true;
+          break;
+        }
+        // Idempotency: if the agent is already terminated, don't re-run the
+        // termination path. Return a clean no-op message instead of mutating
+        // state again or sending a duplicate parent notification.
+        const agentDb = getDb();
+        const completeAgentRow = agentDb.prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status: string } | undefined;
+        if (completeAgentRow?.status === 'terminated') {
+          content = `Task completion was already recorded — you are terminated. No action taken.`;
+          break;
+        }
+        try {
+          await completeAgent(
+            agentId,
+            completeStatus as 'complete' | 'fallen' | 'blocked',
+            completeSummary!,
+            args.results as string | undefined,
+          );
+          content = `Task completion reported: ${completeStatus}. Agent will be terminated.`;
+        } catch (err) {
+          content = friendlyDbError(err, 'complete_task');
+          isError = true;
+        }
         break;
       }
 
       // ── Tracker Tools ──
       case 'tracker_create_project': {
+        const projErr = checkRequired([
+          { name: 'title', value: args.title, type: 'string' },
+        ]);
+        if (projErr) { content = projErr; isError = true; break; }
         const taskInputs = (args.tasks as Array<Record<string, unknown>> | undefined)?.map(t => ({
           title: t.title as string,
           description: t.description as string | undefined,
@@ -2278,37 +2790,55 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
           dependsOn: (t.depends_on ?? t.dependsOn) as string[] | undefined,
           phase: t.phase as number | undefined,
         }));
-        content = trackerCreateProject(agentId, {
-          title: args.title as string,
-          description: args.description as string | undefined,
-          level: args.level as number,
-          tasks: taskInputs,
-        });
+        try {
+          content = trackerCreateProject(agentId, {
+            title: args.title as string,
+            description: args.description as string | undefined,
+            level: args.level as number,
+            tasks: taskInputs,
+          });
+        } catch (err) {
+          content = friendlyDbError(err, 'tracker_create_project');
+        }
         isError = content.startsWith('Error');
         break;
       }
-      case 'tracker_create_task':
-        content = trackerCreateTask(agentId, {
-          projectId: args.project_id as string | undefined,
-          title: args.title as string,
-          description: args.description as string | undefined,
-          assignedTo: args.assigned_to as string | undefined,
-          priority: args.priority as string | undefined,
-          stepNumber: args.step_number as number | undefined,
-          dependsOn: args.depends_on as string[] | undefined,
-          phase: args.phase as number | undefined,
-          // Schedule parameters
-          scheduled_start: args.scheduled_start as string | undefined,
-          repeat_interval: args.repeat_interval as number | undefined,
-          repeat_unit: args.repeat_unit as string | undefined,
-          repeat_end_type: args.repeat_end_type as string | undefined,
-          repeat_end_value: args.repeat_end_value as string | undefined,
-          // Group assignment
-          assigned_to_group: args.assigned_to_group as string | undefined,
-        });
+      case 'tracker_create_task': {
+        const taskErr = checkRequired([
+          { name: 'title', value: args.title, type: 'string' },
+        ]);
+        if (taskErr) { content = taskErr; isError = true; break; }
+        try {
+          content = trackerCreateTask(agentId, {
+            projectId: args.project_id as string | undefined,
+            title: args.title as string,
+            description: args.description as string | undefined,
+            assignedTo: args.assigned_to as string | undefined,
+            priority: args.priority as string | undefined,
+            stepNumber: args.step_number as number | undefined,
+            dependsOn: args.depends_on as string[] | undefined,
+            phase: args.phase as number | undefined,
+            // Schedule parameters
+            scheduled_start: args.scheduled_start as string | undefined,
+            repeat_interval: args.repeat_interval as number | undefined,
+            repeat_unit: args.repeat_unit as string | undefined,
+            repeat_end_type: args.repeat_end_type as string | undefined,
+            repeat_end_value: args.repeat_end_value as string | undefined,
+            // Group assignment
+            assigned_to_group: args.assigned_to_group as string | undefined,
+          });
+        } catch (err) {
+          content = friendlyDbError(err, 'tracker_create_task');
+        }
         isError = content.startsWith('Error');
         break;
+      }
       case 'tracker_update_status': {
+        const updErr = checkRequired([
+          { name: 'task_id', value: args.task_id, type: 'string' },
+          { name: 'status', value: args.status, type: 'string' },
+        ]);
+        if (updErr) { content = updErr; isError = true; break; }
         const updateArgs: Record<string, unknown> = {
           taskId: args.task_id as string,
           status: args.status as string,
@@ -2316,28 +2846,53 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
         if (args.notes) updateArgs.notes = args.notes;
         if (args.resume_at) updateArgs.resume_at = args.resume_at;
         if (args.complete_all_runs) updateArgs.complete_all_runs = args.complete_all_runs;
+        // assigned_to / priority forwards (these were missing before, even
+        // though trackerUpdateStatus accepts them)
+        if (args.assigned_to !== undefined) updateArgs.assignedTo = args.assigned_to;
+        if (args.priority !== undefined) updateArgs.priority = args.priority;
         content = trackerUpdateStatus(agentId, updateArgs);
         isError = content.startsWith('Error');
         break;
       }
-      case 'tracker_add_notes':
+      case 'tracker_add_notes': {
+        const notesErr = checkRequired([
+          { name: 'task_id', value: args.task_id, type: 'string' },
+          { name: 'notes', value: args.notes, type: 'string' },
+        ]);
+        if (notesErr) { content = notesErr; isError = true; break; }
         content = trackerAddNotes(agentId, {
           taskId: args.task_id as string,
           notes: args.notes as string,
         });
         isError = content.startsWith('Error');
         break;
+      }
       case 'tracker_edit_task': {
+        const editErr = checkRequired([
+          { name: 'task_id', value: args.task_id, type: 'string' },
+        ]);
+        if (editErr) { content = editErr; isError = true; break; }
+        // Forward every field the schema lists. trackerEditTask reads either
+        // snake_case or camelCase, so passing snake_case through works.
         const editArgs: Record<string, unknown> = {
           taskId: args.task_id as string,
         };
-        if (args.title !== undefined) editArgs.title = args.title;
-        if (args.description !== undefined) editArgs.description = args.description;
+        for (const k of [
+          'title', 'description', 'depends_on', 'step_number', 'phase',
+          'scheduled_start', 'repeat_interval', 'repeat_unit',
+          'repeat_end_type', 'repeat_end_value', 'priority', 'notes',
+        ]) {
+          if (args[k] !== undefined) editArgs[k] = args[k];
+        }
         content = trackerEditTask(agentId, editArgs);
         isError = content.startsWith('Error');
         break;
       }
       case 'tracker_get_status': {
+        const getErr = checkRequired([
+          { name: 'id', value: args.id, type: 'string' },
+        ]);
+        if (getErr) { content = getErr; isError = true; break; }
         // The tool takes a single 'id' param — try as task first, then project
         const lookupId = args.id as string;
         content = trackerGetStatus(agentId, { taskId: lookupId, projectId: lookupId });
@@ -2346,62 +2901,97 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
       }
       case 'tracker_list_active': {
         const listFilter = args.filter as string | undefined;
+        const verbose = args.verbose as boolean | undefined;
         if (listFilter === 'mine') {
-          content = trackerListActive(agentId, { scope: 'tasks', assignedTo: agentId });
+          content = trackerListActive(agentId, { scope: 'tasks', assignedTo: agentId, verbose });
         } else if (listFilter === 'blocked') {
-          content = trackerListActive(agentId, { scope: 'tasks', status: 'blocked' });
+          content = trackerListActive(agentId, { scope: 'tasks', status: 'blocked', verbose });
         } else {
-          content = trackerListActive(agentId, { scope: 'all' });
+          content = trackerListActive(agentId, { scope: 'all', verbose });
         }
         isError = content.startsWith('Error');
         break;
       }
-      case 'tracker_complete_step':
+      case 'tracker_complete_step': {
+        const tcsErr = checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
+        if (tcsErr) { content = tcsErr; isError = true; break; }
         content = trackerCompleteStep(agentId, {
           taskId: args.task_id as string,
           notes: args.notes as string | undefined,
         });
         isError = content.startsWith('Error');
         break;
+      }
 
       // ── Schedule Tools (Phase 6) ──
-      case 'tracker_pause_schedule':
+      case 'tracker_pause_schedule': {
+        const tpsErr = checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
+        if (tpsErr) { content = tpsErr; isError = true; break; }
         content = trackerPauseSchedule(agentId, { taskId: args.task_id as string, mark_complete: args.mark_complete as boolean | undefined });
         isError = content.startsWith('Error');
         break;
-      case 'tracker_resume_schedule':
+      }
+      case 'tracker_resume_schedule': {
+        const trsErr = checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
+        if (trsErr) { content = trsErr; isError = true; break; }
         content = trackerResumeSchedule(agentId, { taskId: args.task_id as string });
         isError = content.startsWith('Error');
         break;
+      }
       // ── Healer Tools ──
       case 'healer_log_action': {
+        const hlaErr = checkRequired([
+          { name: 'category', value: args.category, type: 'string' },
+          { name: 'description', value: args.description, type: 'string' },
+          { name: 'result', value: args.result, type: 'string' },
+        ]);
+        if (hlaErr) { content = hlaErr; isError = true; break; }
         const healerDb = getDb();
         const actionId = uuidv4();
-        healerDb.prepare(`
-          INSERT INTO healer_actions (id, diagnostic_id, category, description, agent_id, action_taken, result, created_at)
-          VALUES (?, NULL, ?, ?, ?, ?, ?, datetime('now'))
-        `).run(actionId, args.category as string, args.description as string, (args.agent_id as string) ?? null, args.category as string, args.result as string);
-        content = `[OK] action_id=${actionId}\n\nAction logged: ${args.description}`;
+        try {
+          healerDb.prepare(`
+            INSERT INTO healer_actions (id, diagnostic_id, category, description, agent_id, action_taken, result, created_at)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, datetime('now'))
+          `).run(actionId, args.category as string, args.description as string, (args.agent_id as string) ?? null, args.category as string, args.result as string);
+          content = `[OK] action_id=${actionId}\n\nAction logged: ${args.description}`;
+        } catch (err) {
+          content = friendlyDbError(err, 'healer_log_action');
+          isError = true;
+        }
         break;
       }
       case 'healer_propose': {
+        const hpErr = checkRequired([
+          { name: 'category', value: args.category, type: 'string' },
+          { name: 'severity', value: args.severity, type: 'string' },
+          { name: 'title', value: args.title, type: 'string' },
+          { name: 'description', value: args.description, type: 'string' },
+          { name: 'proposed_fix', value: args.proposed_fix, type: 'string' },
+          { name: 'confidence', value: args.confidence, type: 'number' },
+        ]);
+        if (hpErr) { content = hpErr; isError = true; break; }
         const propDb = getDb();
         const propId = uuidv4();
-        propDb.prepare(`
-          INSERT INTO healer_proposals (id, diagnostic_id, category, severity, title, description, proposed_fix, confidence, status, agent_id, created_at)
-          VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'))
-        `).run(
-          propId,
-          args.category as string,
-          args.severity as string,
-          args.title as string,
-          args.description as string,
-          args.proposed_fix as string,
-          args.confidence as number,
-          (args.agent_id as string) ?? null,
-        );
-        broadcast({ type: 'healer:proposal', data: { id: propId, title: args.title, severity: args.severity } } as never);
-        content = `[OK] proposal_id=${propId}\n\nProposal created: "${args.title}". The user will see this in the dashboard vitals panel and can approve or deny it.`;
+        try {
+          propDb.prepare(`
+            INSERT INTO healer_proposals (id, diagnostic_id, category, severity, title, description, proposed_fix, confidence, status, agent_id, created_at)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'))
+          `).run(
+            propId,
+            args.category as string,
+            args.severity as string,
+            args.title as string,
+            args.description as string,
+            args.proposed_fix as string,
+            args.confidence as number,
+            (args.agent_id as string) ?? null,
+          );
+          broadcast({ type: 'healer:proposal', data: { id: propId, title: args.title, severity: args.severity } } as never);
+          content = `[OK] proposal_id=${propId}\n\nProposal created: "${args.title}". The user will see this in the dashboard vitals panel and can approve or deny it.`;
+        } catch (err) {
+          content = friendlyDbError(err, 'healer_propose');
+          isError = true;
+        }
         break;
       }
       case 'get_current_time': {
@@ -2524,6 +3114,8 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
 
       case 'set_user_presence': {
         try {
+          const supErr = checkRequired([{ name: 'status', value: args.status, type: 'string' }]);
+          if (supErr) { content = supErr; isError = true; break; }
           const status = args.status as string;
           if (status !== 'in_dojo' && status !== 'away') {
             content = 'Error: status must be "in_dojo" or "away"';
@@ -2559,23 +3151,27 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
             break;
           }
 
-          const targetId = rawTarget;
-          let agent = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(targetId) as { id: string; name: string; status: string } | undefined;
-          if (!agent) {
-            // Try by name
-            agent = db.prepare("SELECT id, name, status FROM agents WHERE name = ? AND status != 'terminated'").get(targetId) as { id: string; name: string; status: string } | undefined;
-            if (!agent) {
-              content = `Error: Agent "${targetId}" not found`;
-              isError = true;
-              break;
-            }
+          // Resolve agent reference (UUID, sensei id, or name — case-insensitive)
+          const resolveResult = resolveAgentRef(rawTarget, 'reset_session');
+          if (!resolveResult.ok) { content = resolveResult.error; isError = true; break; }
+          const resolvedId = resolveResult.id;
+          const agent = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(resolvedId) as { id: string; name: string; status: string };
+
+          // Idempotency: if the target is already terminated, refuse cleanly
+          // instead of archiving an empty conversation and confusing the
+          // caller. Resetting a terminated agent is almost always a mistake
+          // — they have no live state to reset.
+          if (agent.status === 'terminated') {
+            content = `Agent "${agent.name}" is already terminated — there is no live session to reset. Spawn a new agent if you need a fresh start.`;
+            isError = true;
+            break;
           }
 
-          const resolvedId = agent.id;
-
-          // Archive current conversation to vault
+          // Archive current conversation to vault. force=true so we always create
+          // a new archive — without it, an existing unprocessed archive blocks the
+          // re-archive and the post-reset conversation is silently lost.
           const { archiveAgentConversation } = await import('../vault/archive.js');
-          const archiveId = archiveAgentConversation(resolvedId);
+          const archiveId = archiveAgentConversation(resolvedId, true);
 
           // NOTE: we intentionally do NOT clear context items (summaries).
           // Summaries from before the reset are still valid compressed history
@@ -2631,20 +3227,16 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
 
       case 'update_agent_model': {
         try {
+          const uamErr = checkRequired([
+            { name: 'agent_id', value: args.agent_id, type: 'string' },
+            { name: 'model_id', value: args.model_id, type: 'string' },
+          ]);
+          if (uamErr) { content = uamErr; isError = true; break; }
           const db = getDb();
-          const targetId = args.agent_id as string;
           const newModelId = args.model_id as string;
-
-          // Resolve agent by ID or name
-          let agent = db.prepare('SELECT id, name, model_id FROM agents WHERE id = ?').get(targetId) as { id: string; name: string; model_id: string | null } | undefined;
-          if (!agent) {
-            agent = db.prepare("SELECT id, name, model_id FROM agents WHERE name = ? AND status != 'terminated'").get(targetId) as { id: string; name: string; model_id: string | null } | undefined;
-          }
-          if (!agent) {
-            content = `Error: Agent "${targetId}" not found`;
-            isError = true;
-            break;
-          }
+          const uamResolved = resolveAgentRef(args.agent_id as string, 'update_agent_model');
+          if (!uamResolved.ok) { content = uamResolved.error; isError = true; break; }
+          const agent = db.prepare('SELECT id, name, model_id FROM agents WHERE id = ?').get(uamResolved.id) as { id: string; name: string; model_id: string | null };
 
           if (newModelId === 'auto') {
             db.prepare("UPDATE agents SET model_id = 'auto', updated_at = datetime('now') WHERE id = ?").run(agent.id);
@@ -2682,32 +3274,19 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
 
       case 'update_agent_profile': {
         try {
+          const uapErr = checkRequired([{ name: 'agent_id', value: args.agent_id, type: 'string' }]);
+          if (uapErr) { content = uapErr; isError = true; break; }
           const db = getDb();
-          const targetRef = args.agent_id as string;
           const newName = args.name as string | undefined;
           const newPrompt = args.system_prompt as string | undefined;
-
-          if (!targetRef) {
-            content = 'Error: agent_id is required';
-            isError = true;
-            break;
-          }
           if (newName === undefined && newPrompt === undefined) {
-            content = 'Error: provide at least one of name or system_prompt';
+            content = 'Error: provide at least one of `name` or `system_prompt` to update.';
             isError = true;
             break;
           }
-
-          // Resolve by ID first, then by name
-          let target = db.prepare('SELECT id, name FROM agents WHERE id = ?').get(targetRef) as { id: string; name: string } | undefined;
-          if (!target) {
-            target = db.prepare("SELECT id, name FROM agents WHERE name = ? AND status != 'terminated'").get(targetRef) as { id: string; name: string } | undefined;
-          }
-          if (!target) {
-            content = `Error: Agent "${targetRef}" not found`;
-            isError = true;
-            break;
-          }
+          const uapResolved = resolveAgentRef(args.agent_id as string, 'update_agent_profile');
+          if (!uapResolved.ok) { content = uapResolved.error; isError = true; break; }
+          const target = db.prepare('SELECT id, name FROM agents WHERE id = ?').get(uapResolved.id) as { id: string; name: string };
 
           // Primary agent's identity lives in SOUL.md on disk, not in the messages table.
           // Changing it via this tool would get out-of-sync with the assembler's prompt loader.
@@ -2754,16 +3333,11 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
       }
       case 'get_agent_profile': {
         try {
+          const gapErr = checkRequired([{ name: 'agent_id', value: args.agent_id, type: 'string' }]);
+          if (gapErr) { content = gapErr; isError = true; break; }
           const db = getDb();
-          const targetRef = args.agent_id as string;
-
-          if (!targetRef) {
-            content = 'Error: agent_id is required';
-            isError = true;
-            break;
-          }
-
-          // Resolve by ID first, then by name (matches update_agent_profile semantics)
+          const gapResolved = resolveAgentRef(args.agent_id as string, 'get_agent_profile');
+          if (!gapResolved.ok) { content = gapResolved.error; isError = true; break; }
           interface AgentProfileRow {
             id: string;
             name: string;
@@ -2779,24 +3353,11 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
             created_at: string;
             updated_at: string;
           }
-          let target = db.prepare(`
+          const target = db.prepare(`
             SELECT id, name, status, classification, model_id, tools_policy, permissions,
                    parent_agent, group_id, agent_type, spawn_depth, created_at, updated_at
             FROM agents WHERE id = ?
-          `).get(targetRef) as AgentProfileRow | undefined;
-          if (!target) {
-            target = db.prepare(`
-              SELECT id, name, status, classification, model_id, tools_policy, permissions,
-                     parent_agent, group_id, agent_type, spawn_depth, created_at, updated_at
-              FROM agents WHERE name = ? AND status != 'terminated'
-              ORDER BY created_at DESC LIMIT 1
-            `).get(targetRef) as AgentProfileRow | undefined;
-          }
-          if (!target) {
-            content = `Error: Agent "${targetRef}" not found`;
-            isError = true;
-            break;
-          }
+          `).get(gapResolved.id) as AgentProfileRow;
 
           // System prompt = first system-role message (mirrors update_agent_profile)
           const promptRow = db.prepare(
@@ -2860,26 +3421,34 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
 
       // ── Group Tools (Phase 6) ──
       case 'create_agent_group': {
-        const group = createGroup(
-          args.name as string,
-          args.description as string,
-          agentId,
-        );
-        content = `Group created: "${group.name}" (ID: ${group.id})`;
+        const cgErr = checkRequired([
+          { name: 'name', value: args.name, type: 'string' },
+          { name: 'description', value: args.description, type: 'string' },
+        ]);
+        if (cgErr) { content = cgErr; isError = true; break; }
+        try {
+          const group = createGroup(
+            args.name as string,
+            args.description as string,
+            agentId,
+          );
+          content = `Group created: "${group.name}" (ID: ${group.id})`;
+        } catch (err) {
+          content = friendlyDbError(err, 'create_agent_group');
+          isError = true;
+        }
         break;
       }
       case 'update_group': {
-        const gid = args.group_id as string;
+        const ugErr = checkRequired([{ name: 'group_id', value: args.group_id, type: 'string' }]);
+        if (ugErr) { content = ugErr; isError = true; break; }
+        const ugResolved = resolveGroupRef(args.group_id as string, 'update_group');
+        if (!ugResolved.ok) { content = ugResolved.error; isError = true; break; }
+        const gid = ugResolved.id;
         const newName = args.name as string | undefined;
         const newDescription = args.description as string | undefined;
-
-        if (!gid) {
-          content = 'Error: group_id is required';
-          isError = true;
-          break;
-        }
         if (newName === undefined && newDescription === undefined) {
-          content = 'Error: provide at least one of name or description';
+          content = 'Error: provide at least one of `name` or `description` to update.';
           isError = true;
           break;
         }
@@ -2926,18 +3495,28 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
         break;
       }
       case 'assign_to_group': {
-        const assignResult = assignAgentToGroup(args.agent_id as string, args.group_id as string);
+        const atgErr = checkRequired([
+          { name: 'agent_id', value: args.agent_id, type: 'string' },
+          { name: 'group_id', value: args.group_id, type: 'string' },
+        ]);
+        if (atgErr) { content = atgErr; isError = true; break; }
+        const atgAgent = resolveAgentRef(args.agent_id as string, 'assign_to_group');
+        if (!atgAgent.ok) { content = atgAgent.error; isError = true; break; }
+        const atgGroup = resolveGroupRef(args.group_id as string, 'assign_to_group');
+        if (!atgGroup.ok) { content = atgGroup.error; isError = true; break; }
+        const assignResult = assignAgentToGroup(atgAgent.id, atgGroup.id);
         if (!assignResult.ok) {
           content = `Error: ${assignResult.error}`;
           isError = true;
         } else {
-          content = `Agent ${args.agent_id} assigned to group ${args.group_id}`;
+          content = `Agent ${atgAgent.id} assigned to group ${atgGroup.id}`;
         }
         break;
       }
       case 'list_agents': {
         const listDb = getDb();
         const includeTerminated = args.include_terminated as boolean | undefined;
+        const verbose = args.verbose as boolean | undefined;
         const statusFilter = includeTerminated ? '' : "AND status != 'terminated'";
         const agentRows = listDb.prepare(`
           SELECT a.id, a.name, a.status, a.classification, a.group_id,
@@ -2948,71 +3527,90 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
           WHERE 1=1 ${statusFilter}
           ORDER BY a.name ASC
         `).all() as Array<Record<string, unknown>>;
-        // Map raw status values to workflow-meaningful labels. INJURED and
-        // PAUSED are flagged in ALL-CAPS so the calling agent can't miss them
-        // when scanning the list.
-        const labelForStatus = (s: string): string => {
+
+        // Status labels — INJURED / PAUSED stay ALL-CAPS in both modes because
+        // a calling agent that misses these will keep waiting on a dead peer.
+        // This is operational signal, not decoration.
+        const labelForStatus = (s: string, brief: boolean): string => {
           switch (s) {
-            case 'idle': return 'ready';
+            case 'idle': return brief ? 'ready' : 'ready';
             case 'working': return 'working';
-            case 'paused': return 'PAUSED (hit error loop — needs reset_session to recover)';
-            case 'error': return 'INJURED (runtime error — needs reset_session to recover, or will retry on next message but may re-fail)';
+            case 'paused': return brief ? 'PAUSED' : 'PAUSED (hit error loop — needs reset_session to recover)';
+            case 'error': return brief ? 'INJURED' : 'INJURED (runtime error — needs reset_session to recover, or will retry on next message but may re-fail)';
             case 'terminated': return 'terminated';
             default: return s;
           }
         };
-        const nowMs = Date.now();
-        const DORMANT_DAYS = 7;
-        const lines = agentRows.map(a => {
-          // Query last message activity for this agent
-          const lastMsg = listDb.prepare(
-            'SELECT created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
-          ).get(a.id as string) as { created_at: string } | undefined;
 
-          // Check if agent was created recently — newly spawned agents are NOT dormant
-          const createdTs = a.created_at ? ((a.created_at as string).includes('Z') ? a.created_at as string : (a.created_at as string) + 'Z') : null;
-          const createdMs = createdTs ? new Date(createdTs).getTime() : 0;
-          const isNewlyCreated = (nowMs - createdMs) < DORMANT_DAYS * 86400000;
-
-          let activityStr = '';
-          let dormant = false;
-          if (lastMsg) {
-            const lastTs = lastMsg.created_at.includes('Z') ? lastMsg.created_at : lastMsg.created_at + 'Z';
-            const lastMs = new Date(lastTs).getTime();
-            const ageDays = Math.floor((nowMs - lastMs) / 86400000);
-            if (ageDays >= DORMANT_DAYS && !isNewlyCreated) {
-              dormant = true;
-              activityStr = `, DORMANT (last active ${ageDays} days ago)`;
-            } else if (ageDays >= 1) {
-              activityStr = `, last active ${ageDays}d ago`;
+        let lines: string[];
+        if (verbose) {
+          // Verbose: full v1 behavior — activity timestamps, dormant detection,
+          // group names, last_error snippets.
+          const nowMs = Date.now();
+          const DORMANT_DAYS = 7;
+          lines = agentRows.map(a => {
+            const lastMsg = listDb.prepare(
+              'SELECT created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
+            ).get(a.id as string) as { created_at: string } | undefined;
+            const createdTs = a.created_at ? ((a.created_at as string).includes('Z') ? a.created_at as string : (a.created_at as string) + 'Z') : null;
+            const createdMs = createdTs ? new Date(createdTs).getTime() : 0;
+            const isNewlyCreated = (nowMs - createdMs) < DORMANT_DAYS * 86400000;
+            let activityStr = '';
+            let dormant = false;
+            if (lastMsg) {
+              const lastTs = lastMsg.created_at.includes('Z') ? lastMsg.created_at : lastMsg.created_at + 'Z';
+              const lastMs = new Date(lastTs).getTime();
+              const ageDays = Math.floor((nowMs - lastMs) / 86400000);
+              if (ageDays >= DORMANT_DAYS && !isNewlyCreated) {
+                dormant = true;
+                activityStr = `, DORMANT (last active ${ageDays} days ago)`;
+              } else if (ageDays >= 1) {
+                activityStr = `, last active ${ageDays}d ago`;
+              } else {
+                const ageHours = Math.floor((nowMs - lastMs) / 3600000);
+                activityStr = ageHours > 0 ? `, last active ${ageHours}h ago` : ', active recently';
+              }
+            } else if (isNewlyCreated) {
+              activityStr = ', newly created';
             } else {
-              const ageHours = Math.floor((nowMs - lastMs) / 3600000);
-              activityStr = ageHours > 0 ? `, last active ${ageHours}h ago` : ', active recently';
+              activityStr = ', no activity';
+              dormant = true;
             }
-          } else if (isNewlyCreated) {
-            activityStr = ', newly created';
-          } else {
-            activityStr = ', no activity';
-            dormant = true;
-          }
+            let line = `- ${a.name} (ID: ${a.id}) — ${labelForStatus(a.status as string, false)}, ${a.classification}${a.group_name ? `, group: ${a.group_name}` : ''}${activityStr}`;
+            if ((a.status === 'error' || a.status === 'paused') && a.last_error) {
+              const errorSnippet = (a.last_error as string).slice(0, 150);
+              line += `\n    Last error: ${errorSnippet}`;
+            }
+            if (dormant && a.status !== 'error' && a.status !== 'paused') {
+              line += '\n    ^ Dormant — no recent activity, safe to ignore unless explicitly needed';
+            }
+            return line;
+          });
+        } else {
+          // Compact: name, id, status, classification, optional group. No
+          // activity timestamps; no dormant detection; injured/paused agents
+          // still flagged loudly because that's load-bearing operational info.
+          lines = agentRows.map(a => {
+            const groupSuffix = a.group_name ? `, group: ${a.group_name}` : '';
+            return `- ${a.name} (${a.id}) — ${labelForStatus(a.status as string, true)}, ${a.classification}${groupSuffix}`;
+          });
+        }
 
-          let line = `- ${a.name} (ID: ${a.id}) — ${labelForStatus(a.status as string)}, ${a.classification}${a.group_name ? `, group: ${a.group_name}` : ''}${activityStr}`;
-          // Show last error for injured/paused agents so the healer can diagnose
-          if ((a.status === 'error' || a.status === 'paused') && a.last_error) {
-            const errorSnippet = (a.last_error as string).slice(0, 150);
-            line += `\n    Last error: ${errorSnippet}`;
-          }
-          if (dormant && a.status !== 'error' && a.status !== 'paused') {
-            line += '\n    ^ Dormant — no recent activity, safe to ignore unless explicitly needed';
-          }
-          return line;
-        });
+        // Injured/paused warning fires in BOTH modes — it's a safety signal,
+        // not a decoration.
         const injuredCount = agentRows.filter(a => a.status === 'error' || a.status === 'paused').length;
         if (injuredCount > 0) {
           lines.push('');
-          lines.push(`⚠️ ${injuredCount} agent(s) are currently injured/paused and cannot reliably respond. Use reset_session(agent_id=...) to heal them, or reassign their work. Do NOT wait indefinitely on an injured agent.`);
+          lines.push(`⚠️ ${injuredCount} agent(s) injured/paused. Use reset_session(agent_id=...) to heal, or reassign work. Don't wait on an injured agent.`);
         }
-        content = lines.join('\n') || 'No agents found.';
+        const baseOutput = lines.join('\n') || 'No agents found.';
+        content = baseOutput + compactListTrailer({
+          count: agentRows.length,
+          expandTool: 'get_agent_profile',
+          expandArg: 'agent_id',
+          listTool: 'list_agents',
+          verbose: !!verbose,
+        });
         break;
       }
       case 'list_models': {
@@ -3050,14 +3648,51 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
       case 'list_groups': {
         const { getGroups: listAllGroups } = await import('./groups.js');
         const allGroups = listAllGroups();
-        content = allGroups.map(g =>
-          `- ${g.name} (ID: ${g.id}) — ${g.memberCount} member(s)${g.description ? `: ${g.description}` : ''}`
-        ).join('\n') || 'No groups found.';
+        const verbose = args.verbose as boolean | undefined;
+        const lines = verbose
+          ? allGroups.map(g => `- ${g.name} (ID: ${g.id}) — ${g.memberCount} member(s)${g.description ? `: ${g.description}` : ''}`)
+          : allGroups.map(g => `- ${g.name} (${g.id}) — ${g.memberCount} member(s)`);
+        const baseOutput = lines.join('\n') || 'No groups found.';
+        content = baseOutput + compactListTrailer({
+          count: allGroups.length,
+          expandTool: 'get_group_detail',
+          expandArg: 'group_id',
+          listTool: 'list_groups',
+          verbose: !!verbose,
+        });
+        break;
+      }
+      case 'get_group_detail': {
+        const ggdErr = checkRequired([{ name: 'group_id', value: args.group_id, type: 'string' }]);
+        if (ggdErr) { content = ggdErr; isError = true; break; }
+        const ggdResolved = resolveGroupRef(args.group_id as string, 'get_group_detail');
+        if (!ggdResolved.ok) { content = ggdResolved.error; isError = true; break; }
+        const { getGroupDetail } = await import('./groups.js');
+        const detail = getGroupDetail(ggdResolved.id);
+        if (!detail) {
+          content = `Error: Group ${ggdResolved.id} no longer exists.`;
+          isError = true;
+          break;
+        }
+        const memberLines = detail.members.length > 0
+          ? detail.members.map(m => `  - ${m.name} (${m.id}) — ${m.classification}, ${m.status}`).join('\n')
+          : '  (no members)';
+        content = [
+          `Group: ${detail.name} (${detail.id})`,
+          detail.description ? `Description: ${detail.description}` : 'Description: (none)',
+          `Members: ${detail.memberCount}`,
+          memberLines,
+          `Created: ${detail.createdAt} by ${detail.createdBy}`,
+          detail.dreamerIgnore ? 'Dreamer-ignore: yes' : '',
+        ].filter(Boolean).join('\n');
         break;
       }
       case 'delete_group': {
-        const groupId = args.group_id as string;
-        if (!groupId) { content = 'Error: group_id is required'; isError = true; break; }
+        const dgErr = checkRequired([{ name: 'group_id', value: args.group_id, type: 'string' }]);
+        if (dgErr) { content = dgErr; isError = true; break; }
+        const dgResolved = resolveGroupRef(args.group_id as string, 'delete_group');
+        if (!dgResolved.ok) { content = dgResolved.error; isError = true; break; }
+        const groupId = dgResolved.id;
 
         const { deleteGroup: doDeleteGroup, SYSTEM_GROUP_ID: SYS_GROUP } = await import('./groups.js');
         if (groupId === SYS_GROUP) {
@@ -3145,9 +3780,26 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
         const reassignDb = getDb();
         const reassignTask = reassignDb.prepare('SELECT id, title FROM tasks WHERE id = ?').get(reassignTaskId) as { id: string; title: string } | undefined;
         if (!reassignTask) { content = `Error: Task ${reassignTaskId} was deleted before reassignment could be applied.`; isError = true; break; }
-        const newAgent = args.assigned_to as string | undefined;
+        let newAgent = args.assigned_to as string | undefined;
         const newGroup = args.assigned_to_group as string | undefined;
         if (newAgent) {
+          // Resolve name → UUID. Match by id OR name (case-insensitive) so
+          // sensei ids like "kevin" and capitalised names both work. Friendlier
+          // error than the bare FK violation.
+          if (!newAgent.match(/^[0-9a-f]{8}-[0-9a-f]{4}-/)) {
+            const lookup = reassignDb.prepare(
+              `SELECT id FROM agents
+                 WHERE (id = ? OR name = ? COLLATE NOCASE)
+                   AND status != 'terminated'
+                 ORDER BY created_at DESC LIMIT 1`
+            ).get(newAgent, newAgent) as { id: string } | undefined;
+            if (!lookup) {
+              content = `Agent "${newAgent}" doesn't exist yet. Spawn them first with spawn_agent, then reassign. Or pass an existing agent's UUID directly.`;
+              isError = true;
+              break;
+            }
+            newAgent = lookup.id;
+          }
           reassignDb.prepare("UPDATE tasks SET assigned_to = ?, assigned_to_group = NULL, updated_at = datetime('now') WHERE id = ?").run(newAgent, reassignTaskId);
           // Resolve name for response
           const agentName = (reassignDb.prepare('SELECT name FROM agents WHERE id = ?').get(newAgent) as { name: string } | undefined)?.name ?? newAgent;
@@ -3171,21 +3823,17 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
           isError = true;
           break;
         }
-        const targetAgentId = args.agent_id as string;
+        const upErr = checkRequired([
+          { name: 'agent_id', value: args.agent_id, type: 'string' },
+          { name: 'permissions', value: args.permissions, type: 'object' },
+        ]);
+        if (upErr) { content = upErr; isError = true; break; }
+        const upResolved = resolveAgentRef(args.agent_id as string, 'update_agent_permissions');
+        if (!upResolved.ok) { content = upResolved.error; isError = true; break; }
+        const targetAgentId = upResolved.id;
         const newPerms = args.permissions as Record<string, unknown>;
-        if (!targetAgentId || !newPerms) {
-          content = 'Error: agent_id and permissions are required';
-          isError = true;
-          break;
-        }
         const permDb = getDb();
-        // Merge with existing permissions
-        const existingPermsRow = permDb.prepare('SELECT permissions FROM agents WHERE id = ?').get(targetAgentId) as { permissions: string } | undefined;
-        if (!existingPermsRow) {
-          content = `Error: Agent not found: ${targetAgentId}`;
-          isError = true;
-          break;
-        }
+        const existingPermsRow = permDb.prepare('SELECT permissions FROM agents WHERE id = ?').get(targetAgentId) as { permissions: string };
         const existingPerms = JSON.parse(existingPermsRow.permissions || '{}');
         const merged = { ...existingPerms, ...newPerms };
         permDb.prepare("UPDATE agents SET permissions = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(merged), targetAgentId);
@@ -3195,7 +3843,12 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
       }
 
       // ── System Control Tools (Phase 5A) ──
-      case 'mouse_click':
+      case 'mouse_click': {
+        const mcErr = checkRequired([
+          { name: 'x', value: args.x, type: 'number' },
+          { name: 'y', value: args.y, type: 'number' },
+        ]);
+        if (mcErr) { content = mcErr; isError = true; break; }
         content = mouseClick(agentId, {
           x: args.x as number,
           y: args.y as number,
@@ -3203,20 +3856,33 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
         });
         isError = content.startsWith('Error');
         break;
-      case 'mouse_move':
+      }
+      case 'mouse_move': {
+        const mmErr = checkRequired([
+          { name: 'x', value: args.x, type: 'number' },
+          { name: 'y', value: args.y, type: 'number' },
+        ]);
+        if (mmErr) { content = mmErr; isError = true; break; }
         content = mouseMove(agentId, {
           x: args.x as number,
           y: args.y as number,
         });
         isError = content.startsWith('Error');
         break;
-      case 'keyboard_type':
+      }
+      case 'keyboard_type': {
+        if (args.text === undefined && args.key_combo === undefined) {
+          content = 'Error: provide either `text` (a string to type) or `key_combo` (a key chord like "cmd+c").';
+          isError = true;
+          break;
+        }
         content = keyboardType(agentId, {
           text: args.text as string | undefined,
           key_combo: args.key_combo as string | undefined,
         });
         isError = content.startsWith('Error');
         break;
+      }
       case 'screen_read':
         content = await screenRead(agentId, {
           region: args.region as { x: number; y: number; width: number; height: number } | undefined,
@@ -3224,13 +3890,18 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
         });
         isError = content.startsWith('Error');
         break;
-      case 'applescript_run':
+      case 'applescript_run': {
+        const arErr = checkRequired([{ name: 'script', value: args.script, type: 'string' }]);
+        if (arErr) { content = arErr; isError = true; break; }
         content = applescriptRun(agentId, { script: args.script as string });
         isError = content.startsWith('AppleScript error');
         break;
+      }
 
       // ── Headless Browser (Phase 5B) ──
-      case 'web_browse':
+      case 'web_browse': {
+        const wbErr = checkRequired([{ name: 'action', value: args.action, type: 'string' }]);
+        if (wbErr) { content = wbErr; isError = true; break; }
         content = await executeWebBrowse(agentId, {
           action: args.action as string,
           url: args.url as string | undefined,
@@ -3238,9 +3909,11 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
           text: args.text as string | undefined,
           scroll_direction: args.scroll_direction as string | undefined,
           scroll_amount: args.scroll_amount as number | undefined,
+          goal: args.goal as string | undefined,
         });
         isError = content.startsWith('Error');
         break;
+      }
 
       // ── Show files to user ──
       case 'show_to_user': {
@@ -3347,19 +4020,21 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
         queuePendingAttachments(agentId, attachments);
 
         const fileList = attachments.map(a => `${a.filename} (${a.category})`).join(', ');
-        content = `Queued ${attachments.length} file(s) for your next reply: ${fileList}. Now write your reply text in your next assistant message — the engine will attach these files to whatever you say next so the user sees one chat bubble with your text + thumbnails. Do NOT call show_to_user again for these same files.`;
+        content = `Queued ${attachments.length} file(s) for your next reply: ${fileList}. Now write your reply text in your next assistant message — the DOJO will attach these files to whatever you say next so the user sees one chat bubble with your text + thumbnails. Do NOT call show_to_user again for these same files.`;
         break;
       }
 
       // ── iMessage Tool ──
       case 'imessage_send': {
+        const imErr = checkRequired([{ name: 'message', value: args.message, type: 'string' }]);
+        if (imErr) { content = imErr; isError = true; break; }
         let recipient = args.recipient as string | undefined;
         const message = args.message as string;
 
         if (!recipient) {
           const defaultSender = getDefaultSender();
           if (!defaultSender) {
-            content = 'Error: No default sender configured and no recipient specified';
+            content = 'Error: No default sender configured and no recipient specified.';
             isError = true;
             break;
           }
@@ -3769,6 +4444,12 @@ Present the image to the user with whatever short commentary fits. Do NOT reply 
 
       // ── Technique Tools ──
       case 'save_technique': {
+        const stErr = checkRequired([
+          { name: 'name', value: args.name, type: 'string' },
+          { name: 'description', value: args.description, type: 'string' },
+          { name: 'instructions', value: args.instructions, type: 'string' },
+        ]);
+        if (stErr) { content = stErr; isError = true; break; }
         const { executeSaveTechnique } = await import('../techniques/tools.js');
         const agentRow = getDb().prepare('SELECT name, classification FROM agents WHERE id = ?').get(agentId) as { name: string; classification: string } | undefined;
         content = executeSaveTechnique(agentId, agentRow?.name ?? agentId, agentRow?.classification ?? 'apprentice', args);
@@ -3776,6 +4457,8 @@ Present the image to the user with whatever short commentary fits. Do NOT reply 
         break;
       }
       case 'use_technique': {
+        const utErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
+        if (utErr) { content = utErr; isError = true; break; }
         const { executeUseTechnique } = await import('../techniques/tools.js');
         const agentRow2 = getDb().prepare('SELECT name, group_id FROM agents WHERE id = ?').get(agentId) as { name: string; group_id: string | null } | undefined;
         content = executeUseTechnique(agentId, agentRow2?.name ?? agentId, agentRow2?.group_id ?? null, args);
@@ -3789,6 +4472,8 @@ Present the image to the user with whatever short commentary fits. Do NOT reply 
         break;
       }
       case 'publish_technique': {
+        const ptErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
+        if (ptErr) { content = ptErr; isError = true; break; }
         const { executePublishTechnique } = await import('../techniques/tools.js');
         const agentRow4 = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
         content = executePublishTechnique(agentId, agentRow4?.classification ?? 'apprentice', args);
@@ -3796,6 +4481,8 @@ Present the image to the user with whatever short commentary fits. Do NOT reply 
         break;
       }
       case 'update_technique': {
+        const uptErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
+        if (uptErr) { content = uptErr; isError = true; break; }
         const { executeUpdateTechnique } = await import('../techniques/tools.js');
         const agentRow5 = getDb().prepare('SELECT name, classification FROM agents WHERE id = ?').get(agentId) as { name: string; classification: string } | undefined;
         content = executeUpdateTechnique(agentId, agentRow5?.name ?? agentId, agentRow5?.classification ?? 'apprentice', args);
@@ -3803,6 +4490,8 @@ Present the image to the user with whatever short commentary fits. Do NOT reply 
         break;
       }
       case 'submit_technique_for_review': {
+        const sfrErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
+        if (sfrErr) { content = sfrErr; isError = true; break; }
         const { executeSubmitForReview } = await import('../techniques/tools.js');
         content = executeSubmitForReview(agentId, args);
         isError = content.startsWith('Error');
@@ -3810,26 +4499,33 @@ Present the image to the user with whatever short commentary fits. Do NOT reply 
       }
 
       case 'delete_technique': {
-        const techName = args.name as string;
-        if (!techName) { content = 'Error: technique name is required'; isError = true; break; }
-        const { deleteTechnique } = await import('../techniques/store.js');
-        const deleted = deleteTechnique(techName);
+        const dtErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
+        if (dtErr) { content = dtErr; isError = true; break; }
+        const techRef = args.name as string;
+        const { deleteTechnique, resolveTechniqueRef: dtResolve } = await import('../techniques/store.js');
+        const dtResolved = dtResolve(techRef);
+        if (!dtResolved.ok) { content = dtResolved.error; isError = true; break; }
+        const deleted = deleteTechnique(dtResolved.id);
         if (deleted) {
-          content = `Technique "${techName}" has been permanently deleted.`;
-          logger.info('Technique deleted via tool', { techniqueId: techName }, agentId);
+          content = `Technique "${techRef}" has been permanently deleted.`;
+          logger.info('Technique deleted via tool', { techniqueId: dtResolved.id }, agentId);
         } else {
-          content = `Error: technique "${techName}" not found.`;
+          content = `Error: technique "${techRef}" could not be deleted.`;
           isError = true;
         }
         break;
       }
 
       case 'technique_list_versions': {
-        const techName = args.name as string;
-        if (!techName) { content = 'Error: technique name is required'; isError = true; break; }
-        const { getTechnique } = await import('../techniques/store.js');
+        const tlvErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
+        if (tlvErr) { content = tlvErr; isError = true; break; }
+        const techRef = args.name as string;
+        const { getTechnique, resolveTechniqueRef: tlvResolve } = await import('../techniques/store.js');
+        const tlvResolved = tlvResolve(techRef);
+        if (!tlvResolved.ok) { content = tlvResolved.error; isError = true; break; }
+        const techName = tlvResolved.id;
         const tech = getTechnique(techName);
-        if (!tech) { content = `Error: technique "${techName}" not found.`; isError = true; break; }
+        if (!tech) { content = `Error: technique "${techRef}" not found.`; isError = true; break; }
         const { listDiskVersions, backfillDiskVersionsFromDb } = await import('../techniques/versioning.js');
         let versions = listDiskVersions(tech.directoryPath);
         if (versions.length === 0) {
@@ -3855,16 +4551,66 @@ Present the image to the user with whatever short commentary fits. Do NOT reply 
       // ── Vault (Long-Term Memory) ──
 
       case 'vault_remember': {
+        const remErr = checkRequired([
+          { name: 'content', value: args.content, type: 'string' },
+        ]);
+        if (remErr) { content = remErr; isError = true; break; }
         content = await executeVaultRemember(agentId, args);
         isError = content.startsWith('Error');
         break;
       }
       case 'vault_search': {
+        const srchErr = checkRequired([
+          { name: 'query', value: args.query, type: 'string' },
+        ]);
+        if (srchErr) { content = srchErr; isError = true; break; }
         content = await executeVaultSearch(agentId, args);
         isError = content.startsWith('Error');
         break;
       }
+      case 'vault_expand': {
+        const veErr = checkRequired([{ name: 'entry_id', value: args.entry_id, type: 'string' }]);
+        if (veErr) { content = veErr; isError = true; break; }
+        content = executeVaultExpand(agentId, args);
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'vault_refresh': {
+        // Phase 4 §C — return the snapshot the assembler would have injected
+        // at session start (pinned + session_context-tagged entries).
+        try {
+          const { getPinnedEntries, getSessionContextEntries } = await import('../vault/store.js');
+          const pinned = getPinnedEntries();
+          const sessionCtx = getSessionContextEntries();
+          // Dedupe (a pinned entry might also be tagged session_context).
+          const seen = new Set<string>();
+          const merged: typeof pinned = [];
+          for (const e of [...pinned, ...sessionCtx]) {
+            if (!seen.has(e.id)) { seen.add(e.id); merged.push(e); }
+          }
+          if (merged.length === 0) {
+            content = 'Vault refresh: no pinned or session_context-tagged entries found. Use vault_remember(content, pin=true) or vault_remember(content, tags=["session_context"]) to add some.';
+          } else {
+            const lines = merged.map((e) => {
+              const flags: string[] = [];
+              if (e.isPinned) flags.push('pinned');
+              if (e.isPermanent) flags.push('permanent');
+              if (e.tags?.includes('session_context')) flags.push('session_context');
+              const flagStr = flags.length > 0 ? ` {${flags.join(',')}}` : '';
+              return `[${e.type}]${flagStr} ${e.content}\n  ID: ${e.id}`;
+            });
+            content = `Vault snapshot (${merged.length} entries):\n\n${lines.join('\n\n')}`;
+          }
+          isError = false;
+        } catch (err) {
+          content = `Error refreshing vault: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
+        break;
+      }
       case 'vault_forget': {
+        const vfErr = checkRequired([{ name: 'entry_id', value: args.entry_id, type: 'string' }]);
+        if (vfErr) { content = vfErr; isError = true; break; }
         content = executeVaultForget(agentId, args);
         isError = content.startsWith('Error');
         break;
@@ -3910,10 +4656,124 @@ Present the image to the user with whatever short commentary fits. Do NOT reply 
         break;
       }
 
+      // ── Squad Coordination (Phase 7 / Part X) ──
+
+      case 'squad_share': {
+        const { vaultRememberInNamespace, resolveAgentNamespace } = await import('../vault/namespaces.js');
+        const namespace = resolveAgentNamespace(agentId);
+        if (!namespace) {
+          content = 'Error: You are not a member of any squad (no group_id). squad_share / squad_recall are only available to agents in a group. Use vault_remember instead, or ask your owner to assign you to a group.';
+          isError = true;
+          break;
+        }
+        const shareContent = (args.content as string | undefined)?.trim();
+        if (!shareContent) {
+          content = 'Error: content is required.';
+          isError = true;
+          break;
+        }
+        const tags = (args.tags as unknown[] | undefined)?.filter((t): t is string => typeof t === 'string') ?? [];
+        const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+        const entry = await vaultRememberInNamespace({
+          agentId,
+          agentName: agentRow?.name,
+          namespace,
+          content: shareContent,
+          tags,
+        });
+        content = `Shared to ${namespace}. Entry id: ${entry.id}.`;
+        isError = false;
+        break;
+      }
+      case 'squad_recall': {
+        const { vaultSearchInNamespace, resolveAgentNamespace } = await import('../vault/namespaces.js');
+        const namespace = resolveAgentNamespace(agentId);
+        if (!namespace) {
+          content = 'Error: You are not a member of any squad (no group_id). squad_recall is only available to agents in a group.';
+          isError = true;
+          break;
+        }
+        const query = (args.query as string | undefined) ?? '';
+        const tag = args.tag as string | undefined;
+        const limit = typeof args.limit === 'number' ? args.limit : 5;
+        const matches = vaultSearchInNamespace({ namespace, query, tag, limit });
+        if (matches.length === 0) {
+          content = `No squad memory entries match in ${namespace}.`;
+          isError = false;
+          break;
+        }
+        const lines = matches.map((m) => {
+          const author = m.agentName ?? m.agentId;
+          const tagStr = m.tags.length > 0 ? ` [${m.tags.join(', ')}]` : '';
+          return `- ${author} (${m.createdAt}): ${m.snippet}${tagStr}\n  ID: ${m.id} | Length: ${m.fullLength} chars (use vault_expand to read full).`;
+        });
+        content = `Squad memory (${matches.length} match${matches.length === 1 ? '' : 'es'} in ${namespace}):\n\n${lines.join('\n\n')}`;
+        isError = false;
+        break;
+      }
+
+      case 'dreamer_run_now': {
+        // Primary-only gate is enforced earlier in the dispatch pipeline.
+        // Kick off the cycle in the background — runDreamingCycle spawns the
+        // Dreamer agent and returns once that agent is started, but the
+        // actual extraction is async on that agent's loop.
+        const { runDreamingCycle } = await import('../vault/maintenance.js');
+        const { getUnprocessedConversations } = await import('../vault/store.js');
+        const unprocessed = getUnprocessedConversations();
+        if (unprocessed.length === 0) {
+          content = 'No unprocessed conversation archives — nothing for the Dreamer to do right now. The next archive will trigger a cycle on the normal schedule.';
+          isError = false;
+          break;
+        }
+        try {
+          const { dreamerId } = await runDreamingCycle();
+          if (dreamerId) {
+            content = `Dream cycle started in the background. Dreamer agent: ${dreamerId}. Processing ${unprocessed.length} unprocessed archive(s). The Dreamer will write a dream_reports row when done — typically 30s-3m.`;
+            isError = false;
+          } else {
+            content = 'Dream cycle did NOT start — dreaming is disabled, no model is configured, or the primary agent is missing. Check ~/.dojo/config.yaml.';
+            isError = true;
+          }
+        } catch (err) {
+          content = `Failed to start dream cycle: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
+        break;
+      }
+
+      case 'cost_summary': {
+        const { getCostSummary, getDailySpend } = await import('../costs/tracker.js');
+        const today = getDailySpend();
+        const summary = getCostSummary('24h');
+        const topAgents = (summary.byAgent ?? []).slice(0, 3);
+        const topModels = (summary.byModel ?? []).slice(0, 3);
+        const fmt = (n: number) => `$${n.toFixed(4)}`;
+        const lines: string[] = [];
+        lines.push(`Total spend (last 24h): ${fmt(today)}`);
+        if (topAgents.length > 0) {
+          lines.push('');
+          lines.push('Top agents:');
+          for (const a of topAgents) {
+            lines.push(`  - ${a.agentName ?? a.agentId}: ${fmt(a.totalCost)}`);
+          }
+        }
+        if (topModels.length > 0) {
+          lines.push('');
+          lines.push('Top models:');
+          for (const m of topModels) {
+            lines.push(`  - ${m.modelId}: ${fmt(m.totalCost)}`);
+          }
+        }
+        content = lines.join('\n');
+        isError = false;
+        break;
+      }
+
       // ── Google Workspace Tools ──
 
       case 'gmail_search':
       case 'gmail_read':
+      case 'gmail_list_attachments':
       case 'gmail_inbox':
       case 'calendar_agenda':
       case 'calendar_search':
@@ -3921,6 +4781,22 @@ Present the image to the user with whatever short commentary fits. Do NOT reply 
       case 'drive_read':
       case 'docs_read':
       case 'sheets_read': {
+        // Per-tool required-field validation for Google read tools.
+        const readReqs: Record<string, FieldSpec[]> = {
+          gmail_search: [{ name: 'query', value: args.query, type: 'string' }],
+          gmail_read: [{ name: 'message_id', value: args.message_id, type: 'string' }],
+          gmail_list_attachments: [{ name: 'message_id', value: args.message_id, type: 'string' }],
+          // gmail_inbox, calendar_agenda, drive_list — no required fields
+          gmail_inbox: [],
+          calendar_agenda: [],
+          drive_list: [],
+          calendar_search: [{ name: 'query', value: args.query, type: 'string' }],
+          drive_read: [{ name: 'file_id', value: args.file_id, type: 'string' }],
+          docs_read: [{ name: 'document_id', value: args.document_id, type: 'string' }],
+          sheets_read: [{ name: 'spreadsheet_id', value: args.spreadsheet_id, type: 'string' }],
+        };
+        const readErr = checkRequired(readReqs[name] ?? []);
+        if (readErr) { content = readErr; isError = true; break; }
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         content = await executeGoogleReadTool(name, args, agentId, agentRow?.name ?? agentId);
         isError = content.startsWith('Error');
@@ -3931,6 +4807,7 @@ Present the image to the user with whatever short commentary fits. Do NOT reply 
       case 'gmail_reply':
       case 'gmail_forward':
       case 'gmail_label':
+      case 'gmail_read_attachment':
       case 'calendar_create':
       case 'calendar_update':
       case 'calendar_delete':
@@ -3948,6 +4825,53 @@ Present the image to the user with whatever short commentary fits. Do NOT reply 
           auditLog(agentId, name, null, 'denied', 'Google write tool restricted to primary agent');
           break;
         }
+        // Per-tool required-field validation. Catches missing recipient /
+        // subject / body before the tool hits Google's API and returns an
+        // opaque 4xx that the agent can't act on.
+        const writeReqs: Record<string, FieldSpec[]> = {
+          gmail_send: [
+            { name: 'to', value: args.to, type: 'string' },
+            { name: 'subject', value: args.subject, type: 'string' },
+            { name: 'body', value: args.body, type: 'string' },
+          ],
+          gmail_reply: [
+            { name: 'message_id', value: args.message_id, type: 'string' },
+            { name: 'body', value: args.body, type: 'string' },
+          ],
+          gmail_forward: [
+            { name: 'message_id', value: args.message_id, type: 'string' },
+            { name: 'to', value: args.to, type: 'string' },
+          ],
+          gmail_label: [{ name: 'message_id', value: args.message_id, type: 'string' }],
+          gmail_read_attachment: [
+            { name: 'message_id', value: args.message_id, type: 'string' },
+            { name: 'attachment_id', value: args.attachment_id, type: 'string' },
+          ],
+          calendar_create: [
+            { name: 'summary', value: args.summary, type: 'string' },
+            { name: 'start', value: args.start, type: 'string' },
+          ],
+          calendar_update: [{ name: 'event_id', value: args.event_id, type: 'string' }],
+          calendar_delete: [{ name: 'event_id', value: args.event_id, type: 'string' }],
+          drive_upload: [
+            { name: 'name', value: args.name, type: 'string' },
+            { name: 'content', value: args.content, type: 'string', allowEmpty: true },
+          ],
+          drive_share: [{ name: 'file_id', value: args.file_id, type: 'string' }],
+          docs_create: [{ name: 'title', value: args.title, type: 'string' }],
+          docs_edit: [{ name: 'document_id', value: args.document_id, type: 'string' }],
+          sheets_create: [{ name: 'title', value: args.title, type: 'string' }],
+          sheets_append: [
+            { name: 'spreadsheet_id', value: args.spreadsheet_id, type: 'string' },
+            { name: 'values', value: args.values, type: 'array' },
+          ],
+          sheets_write: [
+            { name: 'spreadsheet_id', value: args.spreadsheet_id, type: 'string' },
+            { name: 'values', value: args.values, type: 'array' },
+          ],
+        };
+        const writeErr = checkRequired(writeReqs[name] ?? []);
+        if (writeErr) { content = writeErr; isError = true; break; }
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         content = await executeGoogleWriteTool(name, args, agentId, agentRow?.name ?? agentId);
         isError = content.startsWith('Error');
@@ -4034,11 +4958,23 @@ Present the image to the user with whatever short commentary fits. Do NOT reply 
     auditLog(agentId, 'tool_call', name, 'error', content);
   }
 
-  // Large file interception: replace oversized tool output with exploration summary
-  if (!isError && shouldIntercept(content)) {
-    const originalPath = name === 'file_read' ? (args.path as string) : undefined;
-    const { replacement } = interceptLargeFile(agentId, content, originalPath);
-    content = replacement;
+  // Phase 3.5 (2026-05-04) — large-files interception path REMOVED.
+  // The v1 pattern (`shouldIntercept` + `interceptLargeFile`) replaced
+  // oversized content with an "exploration summary" stub that had no path
+  // back to the actual content — agents trying to read a 35K-token HTML
+  // file got stuck because the recovery tools (memory_describe / memory_expand)
+  // returned metadata, not the real content. The new model is per-tool
+  // `maxResultTokens` (Phase 3) + offset/limit pagination on `file_read`
+  // (Phase 3.5). The `large_files` table stays for backfill of pre-existing
+  // intercepted files in production agent histories.
+
+  // Phase 3 (2026-05-04) — per-tool result cap enforcement. If the tool's
+  // definition declares maxResultTokens and the content exceeds it, truncate
+  // here and append a trailer telling the agent how to paginate. Approximate
+  // 1 token ≈ 4 chars (conservative; real ratios are 3-4 for English text).
+  // Successful results only — error messages stay intact regardless of size.
+  if (!isError) {
+    content = applyMaxResultTokensCap(name, content);
   }
 
   return {
@@ -4047,4 +4983,152 @@ Present the image to the user with whatever short commentary fits. Do NOT reply 
     content,
     isError,
   };
+}
+
+/**
+ * Truncate `content` to the tool's `maxResultTokens` cap if exceeded.
+ * Adds a generic trailer so the agent knows it was truncated and can
+ * paginate via the tool's own offset/limit/filter parameters.
+ *
+ * Phase 3 (2026-05-04). Used by `executeTool` for every tool whose
+ * definition declares `maxResultTokens`. Char/token conversion is
+ * approximate (4 chars ≈ 1 token, conservative); the goal is to keep
+ * single tool results from blowing context, not exact metering.
+ */
+/**
+ * Defensive type coercion for numeric tool arguments.
+ *
+ * Some providers (DeepSeek via OpenRouter, weak Ollama models) emit numeric
+ * tool args as JSON STRINGS even when the schema says `type: 'number'`. A
+ * naive `typeof v === 'number'` check rejects them and the tool falls back
+ * to defaults — silently breaking pagination, timeouts, and other numeric
+ * params. This helper accepts either type and returns the parsed number,
+ * or null if the value is missing / unparseable.
+ *
+ * Phase 3.5 (2026-05-04). Apply to every numeric tool arg that needs strict
+ * handling (offset/limit, timeout, etc.). Args that flow into JS arithmetic
+ * (Math.min, slice ranges) often survive without this because JS coerces;
+ * args used in strict-equality or typeof checks need it.
+ */
+export function coerceNumberArg(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/**
+ * Slice a fetched text body by (offset, limit) chars and append a friendly
+ * pagination trailer when more remains. Used by *_read tools (gmail_read,
+ * drive_read, docs_read, sheets_read, outlook_read, onedrive_read) so an
+ * agent can read large content end-to-end without losing data to the cap.
+ *
+ * Phase 3.5 (2026-05-04). Char-based (not line-based) because email/doc
+ * content has variable line lengths; chars give the agent a predictable
+ * stride. Default limit = 20K chars (~5K tokens) — well under the engine
+ * maxResultTokens cap and leaves room for the trailer.
+ *
+ * The trailer format ("[Read chars X-Y of Z…]") is recognized by
+ * applyMaxResultTokensCap's carve-out so the engine cap doesn't strip
+ * the friendly per-tool guidance.
+ */
+export function applyTextPagination(
+  content: string,
+  toolName: string,
+  args: { offset?: number | string; limit?: number | string },
+  callExampleArgs: Record<string, unknown>,
+  defaultLimit: number = 20_000,
+): string {
+  const total = content.length;
+  const offsetNum = coerceNumberArg(args.offset);
+  const limitNum = coerceNumberArg(args.limit);
+  const offset = offsetNum !== null ? Math.max(0, Math.floor(offsetNum)) : 0;
+  const limit = limitNum !== null ? Math.max(1, Math.floor(limitNum)) : defaultLimit;
+
+  if (total === 0) return content;
+
+  if (offset >= total) {
+    return `[End of content. Total: ${total} chars. Requested offset (${offset}) is past the end. To read from the start: ${toolName}(${stringifyArgs({ ...callExampleArgs })}).]`;
+  }
+
+  const end = Math.min(offset + limit, total);
+  const slice = content.slice(offset, end);
+
+  // No truncation — entire content fits in this slice.
+  if (offset === 0 && end >= total) return slice;
+
+  if (end >= total) {
+    return slice + `\n\n[End of content. Read chars ${offset}-${end} of ${total} total.]`;
+  }
+
+  // More content remains — give exact next-call guidance.
+  const remaining = total - end;
+  const nextArgs = { ...callExampleArgs, offset: end, limit };
+  return (
+    slice +
+    `\n\n[Read chars ${offset}-${end} of ${total} total. ${remaining} more chars remain.\n` +
+    ` To continue: ${toolName}(${stringifyArgs(nextArgs)}).]`
+  );
+}
+
+function stringifyArgs(args: Record<string, unknown>): string {
+  // Compact key=value rendering for the trailer, e.g. message_id="abc", offset=5000, limit=20000.
+  return Object.entries(args)
+    .map(([k, v]) => {
+      if (typeof v === 'string') return `${k}="${v}"`;
+      return `${k}=${JSON.stringify(v)}`;
+    })
+    .join(', ');
+}
+
+export function applyMaxResultTokensCap(toolName: string, content: string): string {
+  // Phase 3.5 (2026-05-04) — check the cross-file registry first so tools
+  // defined outside agent/tools.ts (Google, Microsoft, Slides, Office) can
+  // declare caps too. Falls back to the local toolDefinitions array.
+  const registered = getRegisteredMaxResultTokens(toolName);
+  const local = toolDefinitions.find((t) => t.name === toolName)?.maxResultTokens;
+  const cap = registered ?? local;
+  if (!cap) return content;
+
+  const charBudget = cap * 4;
+  if (content.length <= charBudget) return content;
+
+  // If the tool already appended its own friendly trailer (file_read's
+  // pagination stub, end-of-file marker, etc.), don't re-truncate — that
+  // would eat the more-helpful per-tool guidance. The tool already capped
+  // itself; the engine just slightly overshot the char budget. Generic
+  // truncation only fires for tools that didn't paginate themselves.
+  const TOOL_TRAILER_PATTERNS = [
+    /\[Read lines \d+-\d+ of \d+ total\./,
+    /\[End of file\. Read lines \d+-\d+ of \d+ total\.\]$/,
+    /\[Read chars \d+-\d+ of \d+ total\./,
+    /\[End of content\. Read chars \d+-\d+ of \d+ total\.\]$/,
+    /\[End of content\. Total: \d+ chars\. Requested offset/,
+  ];
+  const tail = content.slice(-400);
+  if (TOOL_TRAILER_PATTERNS.some((re) => re.test(tail))) {
+    return content;
+  }
+
+  const approxOriginalTokens = Math.round(content.length / 4);
+  // Phase 3.5 fix — tool-aware trailer guidance. Tools that have offset/limit
+  // pagination get guided toward it; tools that don't get guided toward
+  // narrowing their query/scope. Avoids the "use pagination" advice on tools
+  // like web_search / vault_search that don't actually support it.
+  const TOOLS_WITH_PAGINATION = new Set([
+    'file_read',
+    'gmail_read', 'outlook_read',
+    'drive_read', 'docs_read', 'sheets_read', 'onedrive_read',
+  ]);
+  const guidance = TOOLS_WITH_PAGINATION.has(toolName)
+    ? "Re-call with offset/limit to read more, or use a more specific query."
+    : "Narrow your query, ask for less, or use a more specific tool to fit under the cap.";
+  const trailer =
+    `\n\n[Truncated by engine: returned ~${cap} tokens of ` +
+    `~${approxOriginalTokens} total. ${guidance}]`;
+  // Reserve room for the trailer so the final string fits the budget.
+  const truncatedBody = content.slice(0, Math.max(0, charBudget - trailer.length));
+  return truncatedBody + trailer;
 }

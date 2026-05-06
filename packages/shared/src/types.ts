@@ -98,6 +98,18 @@ export interface Message {
   cost: number | null;
   latencyMs: number | null;
   createdAt: string;
+  /**
+   * Per-agent monotonic outer-turn counter. Increments once per outer turn
+   * (one user message → agent's complete response, possibly with many tool
+   * calls). Stored on every message v2 persists. NULL for v1-era messages
+   * and for user messages persisted by the chat route — for stub-and-store
+   * (Part XVIII §E), NULL is treated as "very old, stub it."
+   *
+   * Phase 4 (2026-05-04). The schema column was added in migration 037; the
+   * DB row mapper started exposing it on the Message type as part of the
+   * stub-and-store implementation.
+   */
+  turnNumber?: number | null;
   attachments?: Array<{
     fileId: string;
     filename: string;

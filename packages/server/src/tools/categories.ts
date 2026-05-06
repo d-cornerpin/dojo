@@ -24,6 +24,13 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     tools: ['vault_remember', 'vault_search', 'vault_forget', 'vault_describe', 'vault_expand'],
   },
   {
+    // Squad-shared memory for multi-agent coordination (Phase 7 / Part X).
+    // Members of the same group_id can write/read a shared namespace; faster
+    // and lossless compared to A2A handoff messages.
+    label: 'Squad Coordination',
+    tools: ['squad_share', 'squad_recall'],
+  },
+  {
     label: 'Project Tracker',
     tools: ['tracker_create_project', 'tracker_create_task', 'tracker_update_status', 'tracker_edit_task', 'tracker_complete_step', 'tracker_add_notes', 'tracker_list_active', 'tracker_pause_schedule', 'tracker_resume_schedule', 'tracker_get_status'],
   },
@@ -129,10 +136,10 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
  * Truncate a tool description to a short one-liner for the index.
  * Takes the first sentence, caps at 120 chars.
  */
-function shortDescription(desc: string): string {
+function shortDescription(desc: string, maxLen: number = 120): string {
   const firstSentence = desc.split(/\.\s|\n/)[0].trim();
-  if (firstSentence.length <= 120) return firstSentence;
-  return firstSentence.slice(0, 117) + '...';
+  if (firstSentence.length <= maxLen) return firstSentence;
+  return firstSentence.slice(0, maxLen - 3) + '...';
 }
 
 /**
@@ -140,17 +147,42 @@ function shortDescription(desc: string): string {
  * Only includes tools the agent actually has access to.
  */
 export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: string[]): string {
+  return generateToolIndexInternal(agentTools, alwaysLoaded, /*compact*/ false);
+}
+
+/**
+ * Phase 5 (Part IV) — compact tool index for v2. Same content shape but
+ * shorter descriptions (60 char vs 120) and no per-tool always-loaded
+ * markers (the always-loaded list is enumerated once at the top, not
+ * repeated on every entry). For Kevin (~165 tools) this drops the index
+ * from ~2.8K tokens to ~1.4K, getting Phase 5's <2K total prompt target
+ * within reach.
+ */
+export function generateToolIndexCompact(agentTools: ToolDefinition[], alwaysLoaded: string[]): string {
+  return generateToolIndexInternal(agentTools, alwaysLoaded, /*compact*/ true);
+}
+
+function generateToolIndexInternal(
+  agentTools: ToolDefinition[],
+  alwaysLoaded: string[],
+  compact: boolean,
+): string {
   const toolMap = new Map(agentTools.map(t => [t.name, t]));
   const alwaysLoadedSet = new Set(alwaysLoaded);
+  const descLen = compact ? 60 : 120;
 
   const lines: string[] = [];
   lines.push('## Available Tools');
   lines.push('');
-  lines.push('You have access to the following tools. Tool names and short descriptions are listed below. To use any tool:');
-  lines.push('1. If the tool is in your **Always-Loaded** set, you can call it directly without any preparation.');
-  lines.push('2. Otherwise, call `load_tool_docs` first with the tool names you need. The full parameter schemas will be loaded and the tools will be callable from that turn forward.');
+  if (compact) {
+    lines.push('Tools listed below by category. Always-loaded tools are callable immediately; for any other tool, call `load_tool_docs` first to get the full schema.');
+  } else {
+    lines.push('You have access to the following tools. Tool names and short descriptions are listed below. To use any tool:');
+    lines.push('1. If the tool is in your **Always-Loaded** set, you can call it directly without any preparation.');
+    lines.push('2. Otherwise, call `load_tool_docs` first with the tool names you need. The full parameter schemas will be loaded and the tools will be callable from that turn forward.');
+  }
   lines.push('');
-  lines.push(`**Always-loaded tools** (callable immediately, no lookup needed): ${alwaysLoaded.join(', ')}`);
+  lines.push(`**Always-loaded tools**: ${alwaysLoaded.join(', ')}`);
   lines.push('');
 
   // Track which tools we've listed so we can report any uncategorized at the end
@@ -163,8 +195,8 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
     lines.push(`**${category.label}:**`);
     for (const name of available) {
       const tool = toolMap.get(name)!;
-      const marker = alwaysLoadedSet.has(name) ? ' _(always loaded)_' : '';
-      lines.push(`- \`${name}\`${marker}: ${shortDescription(tool.description)}`);
+      const marker = compact ? '' : (alwaysLoadedSet.has(name) ? ' _(always loaded)_' : '');
+      lines.push(`- \`${name}\`${marker}: ${shortDescription(tool.description, descLen)}`);
       listed.add(name);
     }
     lines.push('');
@@ -175,8 +207,8 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
   if (uncategorized.length > 0) {
     lines.push('**Other:**');
     for (const tool of uncategorized) {
-      const marker = alwaysLoadedSet.has(tool.name) ? ' _(always loaded)_' : '';
-      lines.push(`- \`${tool.name}\`${marker}: ${shortDescription(tool.description)}`);
+      const marker = compact ? '' : (alwaysLoadedSet.has(tool.name) ? ' _(always loaded)_' : '');
+      lines.push(`- \`${tool.name}\`${marker}: ${shortDescription(tool.description, descLen)}`);
     }
     lines.push('');
   }

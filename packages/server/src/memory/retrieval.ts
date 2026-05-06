@@ -103,8 +103,16 @@ function searchMessages(
         snippet: string;
       }>;
 
+      // Phase 3.5 (2026-05-04) — hard cap per-match snippet at 300 chars
+      // (Part XVIII §A). FTS5's snippet() defaults to ~64 tokens which can
+      // exceed 300 chars on long-token text; we trim defensively.
+      const SNIPPET_CHARS = 300;
       for (const row of rows) {
-        results.push(`[${row.created_at}] (${row.role}) ${row.snippet}`);
+        const snippet =
+          row.snippet.length > SNIPPET_CHARS
+            ? row.snippet.slice(0, SNIPPET_CHARS) + '…'
+            : row.snippet;
+        results.push(`[${row.created_at}] (${row.role}) ${snippet}`);
       }
     } catch (err) {
       // FTS5 MATCH can fail with invalid syntax

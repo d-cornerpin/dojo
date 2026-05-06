@@ -192,14 +192,19 @@ export function createProject(params: {
       const isFirstStep = stepNum === firstStepNumber || (stepNum === null && tasks.indexOf(task) === 0);
       const status = (isFirstStep && assignee === createdBy) ? 'in_progress' : 'on_deck';
 
+      // Phase 7: original_description is an immutable copy of the user's
+      // original ask. Mirrors the standalone createTask path. tracker_create_project
+      // creates tasks via this code path; without this column being set the
+      // onTaskComplete hook surfaces "(none recorded)" to the parent.
       db.prepare(`
-        INSERT INTO tasks (id, project_id, title, description, status, assigned_to, created_by, priority,
+        INSERT INTO tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, priority,
                            step_number, total_steps, phase, depends_on, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
       `).run(
         taskId,
         projectId,
         task.title,
+        task.description ?? null,
         task.description ?? null,
         status,
         assignee,
@@ -341,14 +346,18 @@ export function createTask(params: {
   // If the creator is also the assignee, start as in_progress (they're about to work on it)
   const initialStatus = (assignedTo && assignedTo === createdBy) ? 'in_progress' : 'on_deck';
 
+  // original_description is an immutable copy of the user's original ask.
+  // Phase 7 onTaskComplete uses it to surface the original intent to the
+  // parent agent at completion time even if the description was edited.
   db.prepare(`
-    INSERT INTO tasks (id, project_id, title, description, status, assigned_to, created_by, priority,
+    INSERT INTO tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, priority,
                        step_number, total_steps, phase, depends_on, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, datetime('now'), datetime('now'))
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, datetime('now'), datetime('now'))
   `).run(
     taskId,
     projectId ?? null,
     title,
+    description ?? null,
     description ?? null,
     initialStatus,
     assignedTo ?? null,
@@ -505,6 +514,18 @@ export function updateTask(id: string, updates: Partial<{
   title: string;
   description: string | null;
   pausedUntil: string | null;
+  // Editable structural fields — added so tracker_edit_task can change them
+  // without forcing a delete+recreate. None of these have notification or
+  // scheduler side-effects that the simpler tools (update_status, pause)
+  // already cover, so it's safe to update them in the generic edit path.
+  dependsOn: string[];
+  stepNumber: number | null;
+  phase: number | null;
+  scheduledStart: string | null;
+  repeatInterval: number | null;
+  repeatUnit: string | null;
+  repeatEndType: string | null;
+  repeatEndValue: string | null;
 }>): Task | null {
   const db = getDb();
 
@@ -573,6 +594,46 @@ export function updateTask(id: string, updates: Partial<{
   if (updates.description !== undefined) {
     setClauses.push('description = ?');
     params.push(updates.description);
+  }
+
+  if (updates.dependsOn !== undefined) {
+    setClauses.push('depends_on = ?');
+    params.push(JSON.stringify(updates.dependsOn));
+  }
+
+  if (updates.stepNumber !== undefined) {
+    setClauses.push('step_number = ?');
+    params.push(updates.stepNumber);
+  }
+
+  if (updates.phase !== undefined) {
+    setClauses.push('phase = ?');
+    params.push(updates.phase);
+  }
+
+  if (updates.scheduledStart !== undefined) {
+    setClauses.push('scheduled_start = ?');
+    params.push(updates.scheduledStart);
+  }
+
+  if (updates.repeatInterval !== undefined) {
+    setClauses.push('repeat_interval = ?');
+    params.push(updates.repeatInterval);
+  }
+
+  if (updates.repeatUnit !== undefined) {
+    setClauses.push('repeat_unit = ?');
+    params.push(updates.repeatUnit);
+  }
+
+  if (updates.repeatEndType !== undefined) {
+    setClauses.push('repeat_end_type = ?');
+    params.push(updates.repeatEndType);
+  }
+
+  if (updates.repeatEndValue !== undefined) {
+    setClauses.push('repeat_end_value = ?');
+    params.push(updates.repeatEndValue);
   }
 
   params.push(id);

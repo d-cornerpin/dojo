@@ -20,8 +20,9 @@ function getPromptTier(contextWindow: number): PromptTier {
   if (contextWindow >= 8000) return 'compact';
   return 'minimal';
 }
-import { generateToolIndex } from '../tools/categories.js';
+import { generateToolIndex, generateToolIndexCompact } from '../tools/categories.js';
 import { getAgentAlwaysLoadedTools } from '../tools/tool-docs.js';
+// (getRuntimeVersion import removed in Phase 9 Stage 2 — single-track v2)
 
 const logger = createLogger('prompt-assembler');
 const PROMPTS_DIR = path.join(os.homedir(), '.dojo', 'prompts');
@@ -119,6 +120,10 @@ function getSoulContent(agentId: string): string {
     const primaryName = getPrimaryAgentName();
     const primaryId = getPrimaryAgentId();
 
+    // The "Communication" how-to and "Vault" instructional blocks are NOT
+    // here — engine enforces A2A intent rules and prefetches vault context
+    // at session start, so the prompt only carries structural identity /
+    // parent / squad context.
     return `# Identity
 
 You are **${agentName}**, a ${classification} agent in the DOJO Agent Platform. Your agent ID is \`${agentId}\`.
@@ -127,277 +132,129 @@ ${parentInfo}
 
 # The Dojo
 
-You are part of an AI agent orchestration platform. Here's what you need to know:
+You are part of an AI agent orchestration platform.
 
-- **${primaryName}** (ID: ${primaryId}) is the Dojo Master — the primary agent who coordinates all work. Report important findings back to them.
-- **${pmName}** (ID: ${pmId}) is the Dojo Planner — the PM agent who monitors the project tracker. If you're stuck or blocked, message ${pmName}.
+- **${primaryName}** (ID: ${primaryId}) is the Dojo Master — primary agent who coordinates work. Report findings back to them.
+- **${pmName}** (ID: ${pmId}) is the Dojo Planner — PM agent monitoring the tracker. Message them if blocked.
 ${groupInfo ? `- ${groupInfo}` : ''}
-
-# Communication
-
-- To message any agent: \`send_to_agent(agent="<name or ID>", message="...")\`
-- To message your parent: \`send_to_agent(agent="${agentRow?.parent_agent ?? primaryId}", message="...")\`
-- To message the PM: \`send_to_agent(agent="${pmId}", message="...")\`
-- To broadcast to your squad: \`broadcast_to_group(group_id="${agentRow?.group_id ?? ''}", message="...")\`
-- Messages you receive will say who sent them. Always reply using \`send_to_agent\`.
 
 # Rules
 
-- Follow your task instructions precisely
-- Use the **project tracker** to update your task status as you work
-- When done, call \`complete_task\` with a summary of what you accomplished
-- If you're blocked, set your task status to "blocked" and message ${primaryName} or ${pmName}
-- Be concise and direct in all communications
-
-# Vault (Long-Term Memory)
-
-You have access to the dojo's memory vault -- the same one every agent uses. Before starting your task, use vault_search to check for relevant prior knowledge -- someone may have already figured out part of what you need. As you work, use vault_remember to save anything important you discover. Your entries are immediately visible to all agents and persist after you're gone -- save generously.`;
+- Follow your task instructions precisely.
+- Update your tracker task status as you work; call \`complete_task\` with a summary when done.
+- If blocked, set tracker status to "blocked" and message ${primaryName} or ${pmName}.`;
   } catch {
     return '# Identity\n\nYou are a sub-agent in the DOJO Agent Platform. Follow your task instructions and call complete_task when done.';
   }
 }
 
-// ── Auto-generate tools guidance from registered tool definitions ──
+// True when the most recent user message for this agent is an incoming
+// iMessage (carries the [SOURCE: IMESSAGE FROM ...] tag). Used to scope
+// iMessage-only prompt guidance so dashboard turns don't pay the tokens.
+function isIMessageTurn(agentId: string): boolean {
+  try {
+    const db = getDb();
+    const row = db.prepare(
+      `SELECT content FROM messages
+       WHERE agent_id = ? AND role = 'user'
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 1`,
+    ).get(agentId) as { content: string } | undefined;
+    return !!row?.content?.includes('[SOURCE: IMESSAGE FROM');
+  } catch {
+    return false;
+  }
+}
 
-function generateToolsGuidance(agentId: string, tier: PromptTier = 'full'): string {
-  // Only show tools the agent actually has access to
+function generateToolsGuidance_v2(agentId: string): string {
   const agentTools = getFilteredTools(agentId);
   const lines: string[] = [];
 
-  // Lightweight tool index (no full schemas — those load on demand via load_tool_docs)
-  const alwaysLoaded = getAgentAlwaysLoadedTools(agentId);
-  lines.push(generateToolIndex(agentTools, alwaysLoaded));
+  // 1. Terseness rules — engine policy, applies to all v2 agents (Part XVIII §D)
+  lines.push(`## How You Communicate
+
+Be terse. Lead with the answer. Don't preface ("Sure, I can help with that"). Don't recap what you just did ("I went ahead and read the file and now I'll..."). Don't summarize tool results — the user can see them.
+
+A short, complete answer is always better than a long, padded one. Final responses default to one paragraph; expand only if the task genuinely needs detail.
+
+When you call a tool, use the result in the same turn. Don't quote large tool output back at the user. Don't keep tool output in your prose past the turn that produced it.
+
+When you don't know, say so directly and search the vault. Don't guess.
+
+When something fails, report it once with the cause. Don't apologize repeatedly.
+`);
   lines.push('');
 
-  // Owner communication guidance — only for the primary agent
+  // 2. How tools return content — Phase 3.5 §A summarize-by-default pattern.
+  //    Concise overview so agents know about the prompt/goal idiom and
+  //    expand-on-demand pairs without reading every tool's docs.
+  lines.push(`## How Tools Return Content
+
+Tools default to **compact**: focused summaries, not raw dumps. The engine caps each tool's output and the tool itself returns the smallest useful slice. Patterns to know:
+
+- **Search/list tools** return short snippets per result (subject + sender + ~200 char snippet, etc.). Use the matching expand tool when a snippet isn't enough — \`vault_search\` → \`vault_expand(entry_id)\`.
+- **\`web_fetch\`** requires a \`prompt\` parameter — the tool fetches the URL, runs a fast model with your prompt, returns ~1-2K tokens of focused extract. Be specific in the prompt.
+- **\`web_browse\`** with \`extract\` action accepts an optional \`goal\` for the same focused-extract pattern. Use it when the page is large.
+- **\`file_read\`** returns up to ~8K tokens with line numbers. If the file is bigger you get a clear pagination trailer with the exact \`offset\`/\`limit\` to call next.
+- **Most tools self-truncate** with a "[Truncated by engine: returned ~N tokens of ~M total]" trailer when oversized. Adapt: paginate, narrow your query, or use a more specific tool.
+`);
+  lines.push('');
+
+  // 3. Tool index — compact variant (Phase 5): 60-char descriptions, no
+  // per-tool always-loaded marker (enumerated once at top instead).
+  // Kevin (primary, ~165 tools) drops from ~2.8K to ~1.4K tokens here.
+  const alwaysLoaded = getAgentAlwaysLoadedTools(agentId);
+  lines.push(generateToolIndexCompact(agentTools, alwaysLoaded));
+  lines.push('');
+
+  // 3. Brief, single-line notes per tool category (the v1 long blocks
+  //    are deleted — engine enforces the underlying rules):
+
   const hasImessage = agentTools.some(t => t.name === 'imessage_send');
   if (isPrimaryAgent(agentId) && hasImessage) {
     const ownerName = getOwnerName();
-    const pmName = getPMAgentName();
-    lines.push('## Contacting the Owner');
-    lines.push(`You are the ONLY agent that can send iMessages to ${ownerName}. ${pmName} and other agents will escalate issues to you — it's your job to decide whether ${ownerName} needs to know.`);
-    lines.push('');
-    lines.push(`**CRITICAL — Replying to an incoming iMessage from ${ownerName}:**`);
-    lines.push(`When ${ownerName} sends YOU an iMessage (message prefixed with \`[SOURCE: IMESSAGE FROM ${ownerName.toUpperCase()}]\`), DO NOT call \`imessage_send\` to reply. Just respond normally in plain text — the system automatically routes your response back to ${ownerName} via iMessage because they contacted you that way. Calling \`imessage_send\` on top of that sends your reply TWICE.`);
-    lines.push('');
-    lines.push(`The \`imessage_send\` tool is for PROACTIVE outreach — notifying ${ownerName} about something they don't yet know about. Do NOT call it to reply to an incoming iMessage (that's handled automatically).`);
-    lines.push('');
-    lines.push('**Use \`imessage_send\` when:**');
-    lines.push(`- A project is complete and ${ownerName} asked to be notified`);
-    lines.push('- Something is genuinely broken and needs human intervention');
-    lines.push(`- ${pmName} escalates an issue that you cannot resolve yourself`);
-    lines.push('- A scheduled task failed and needs manual attention');
-    lines.push(`- ${ownerName} is "Away from the Dojo" and you have important results to share`);
-    lines.push(`- **A tracker task or technique step explicitly instructs you to send results via iMessage** — always follow task-level instructions`);
-    lines.push('');
-    lines.push('**Do NOT send an iMessage for:**');
-    lines.push('- Replying to an incoming iMessage (the system handles this automatically)');
-    lines.push('- Routine status updates ("all clear", "still working on it") unless explicitly asked');
-    lines.push('- Asking questions that can wait — post them in chat instead');
+    lines.push(`## iMessage`);
+    lines.push(`Use \`imessage_send\` for proactive outreach to ${ownerName} only. Replies to incoming iMessages are routed automatically — do not call \`imessage_send\` to reply.`);
+    // Only inject the no-reply guidance when this turn is actually
+    // iMessage-triggered. Saves ~50 tokens on every dashboard turn.
+    if (isIMessageTurn(agentId)) {
+      lines.push(`If the message closes the conversation ("goodnight", "thanks", "ok bye"), reply with literal \`[no-reply]\` and nothing else — skips the send. Use it to end loops.`);
+    }
     lines.push('');
   }
 
-  // CRITICAL: Agent communication rule — for ALL agents with send_to_agent
   const hasSendToAgent = agentTools.some(t => t.name === 'send_to_agent');
   if (hasSendToAgent) {
-    lines.push('## CRITICAL: Communicating With Other Agents');
-    lines.push('');
-    lines.push('Other agents CANNOT see your chat. Your chat window is a private conversation with the user ONLY. If you type a message to another agent in your chat, they will NEVER see it.');
-    lines.push('');
-    lines.push('The ONLY way to send a message to another agent is by calling `send_to_agent`. Every message **requires** an `intent` — there is no default, and `send_to_agent` will reject the call if you omit it.');
-    lines.push('');
-    lines.push('**How to choose the intent (one question):** Does the receiver need to ACT on this message?');
-    lines.push('- **YES, they need to act** → use a wake intent. The receiver will be woken and will read your message.');
-    lines.push('- **NO, this is just for their awareness** → use a no-wake intent. The message lands in their chat as read-only context, but they will NOT wake to respond. If you pick wrong here, your message is effectively dead — they will never see it until something else wakes them.');
-    lines.push('');
-    lines.push('**Wake intents (use these when the receiver needs to act):**');
-    lines.push('- `QUESTION` — you need an answer (open thread)');
-    lines.push('- `ASSIGN` — you are handing off work (open thread)');
-    lines.push('- `BLOCK` — you are stuck and need input (open thread)');
-    lines.push('- `ANSWER` — replying to a prior question with the content they were waiting for (closes thread)');
-    lines.push('- `DELIVERABLE` — here is the thing they asked for (closes thread). Use this when you finished work for someone and they need it to continue or relay to the user.');
-    lines.push('');
-    lines.push('**No-wake intents (use these ONLY when you are sure the receiver does not need to act):**');
-    lines.push('- `FYI` — for their awareness, no action needed');
-    lines.push('- `STATUS` — progress update mid-task');
-    lines.push('- `COMPLETE` — your part is done, no follow-up needed');
-    lines.push('- `FAIL` — you could not do it, no follow-up needed');
-    lines.push('');
-    lines.push('**Concrete examples:**');
-    lines.push('- You wrote a blog post and want the parent agent to iMessage the user about it → `DELIVERABLE` (parent must act on the post)');
-    lines.push('- You finished investigating and have a recommendation for the parent → `ANSWER` (if they asked) or `ASSIGN` (if you want them to execute)');
-    lines.push('- You want to tell the user (via parent) that a long-running job is partway done → `STATUS` (informational, parent does not need to act)');
-    lines.push('- You spotted a bug in another agent\'s area and want to flag it → `FYI` (you are not asking them to fix it now)');
-    lines.push('- You need a sub-agent to take over a task → `ASSIGN`');
-    lines.push('- An agent asked you for something and you cannot do it → `FAIL` (no-wake) if they don\'t need to know now, or `ANSWER` (wakes) if they were actively waiting on you');
-    lines.push('');
-    lines.push('**Threading:** Include `thread_id` from a received message to reply on the same thread. Omit to start a new thread. After a terminal intent (ANSWER, DELIVERABLE, COMPLETE, FAIL, FYI), the thread is closed — only QUESTION, BLOCK, or ASSIGN can reopen it.');
-    lines.push('');
-    lines.push('**Key rules:**');
-    lines.push('- Silence is a valid response. If you have nothing new to add, send nothing.');
-    lines.push('- When you receive a message where the thread says "No reply expected", do not reply. It is read-only context.');
-    lines.push('- Do not acknowledge acknowledgements. If an incoming message is purely affirmation, thanks, or closure, do not reply.');
-    lines.push('- After you send a terminal intent (ANSWER, DELIVERABLE, COMPLETE, FAIL), end your turn. The thread is closed.');
-    lines.push('- The `requires_response` flag is an override — usually you should just pick the right intent and leave the flag alone. The intent already determines wakeup.');
-    lines.push('- Assume the other agent does not need social closure from you. They don\'t.');
+    lines.push(`## Talking to Other Agents`);
+    lines.push(`Other agents can't see your chat. Use \`send_to_agent\` to message them — the DOJO validates intent and threading. Wake intents (QUESTION/ASSIGN/BLOCK/ANSWER/DELIVERABLE) prompt a reply; no-wake intents (FYI/STATUS/COMPLETE/FAIL) don't.`);
     lines.push('');
   }
 
-  // Agent management guardrail — only for agents with the "Managing Other Agents"
-  // toolset (primary agents). Explicitly routes common user intents to the right
-  // dedicated tool and heads off the improvisation pattern where the primary
-  // agent tries to edit sub-agents via sqlite3 / grep / file_read instead of
-  // using update_agent_profile and friends.
-  const hasAgentMgmt = agentTools.some(t => t.name === 'update_agent_profile');
-  if (isPrimaryAgent(agentId) && hasAgentMgmt) {
-    lines.push('## Managing Other Agents');
-    lines.push('You have dedicated tools for every sub-agent and group operation. They are listed under the **Managing Other Agents** category in your tool index below. Call `load_tool_docs` with the tool name to pull the full schema before calling it.');
-    lines.push('');
-    lines.push('**Map user intents to tools:**');
-    lines.push('- See a sub-agent\'s current system prompt / model / tools / permissions → `get_agent_profile`. Always call this BEFORE `update_agent_profile` if you intend to amend (rather than fully rewrite) the prompt — `update_agent_profile` REPLACES the prompt entirely.');
-    lines.push('- Change a sub-agent\'s system prompt, role, personality, instructions, or name → `update_agent_profile`');
-    lines.push('- Change a sub-agent\'s model (or switch it to auto-routing) → `update_agent_model`');
-    lines.push('- Grant or revoke a sub-agent\'s permissions (file, exec, web, system control, spawn rights) → `update_agent_permissions`');
-    lines.push('- Create a new sub-agent → `spawn_agent`. Terminate / kill / remove one → `kill_agent`');
-    lines.push('- Edit, create, or delete a group → `update_group` / `create_agent_group` / `delete_group`');
-    lines.push('- Add an agent to a group or remove it from one → `assign_to_group`');
-    lines.push('- Find an agent or group by name / list what exists → `list_agents` / `list_groups`');
-    lines.push('');
-    lines.push('**CRITICAL — never improvise sub-agent edits with shell or file tools:**');
-    lines.push('- Sub-agent system prompts live in the `messages` table, NOT in SOUL.md files on disk. Do NOT `grep`, `find`, or `file_read` looking for them.');
-    lines.push('- Do NOT `exec sqlite3` against `dojo.db` to read or modify the `agents`, `messages`, or `agent_groups` tables. The `update_agent_profile` / `update_agent_model` / `update_agent_permissions` / `update_group` tools handle every side effect correctly (DB row, conversation history, broadcasts, tool filtering) — direct SQL writes will corrupt state.');
-    lines.push('- Do NOT `file_read` / `file_write` / `cat` any `.md` file in `~/.dojo/prompts/` to edit a sub-agent. The only prompt file on disk is YOUR OWN SOUL.md — sub-agents do not have prompt files.');
-    lines.push('- Do NOT kill and respawn an agent just to change its name, prompt, model, or permissions. The `update_*` tools edit in place and preserve the agent\'s conversation history, tracker assignments, group membership, and equipped techniques.');
-    lines.push('');
-    lines.push('When the user says "rename X", "change X\'s role / prompt / model / permissions", "edit the Y group", or anything similar: immediately call `load_tool_docs` with the matching tool name, then call it. Do not explore the filesystem or database first.');
-    lines.push('');
-  }
-
-  // MANDATORY tracker rule — for ALL agents that have tracker tools
   const hasTracker = agentTools.some(t => t.name.startsWith('tracker_'));
   if (hasTracker) {
-    if (tier === 'compact' || tier === 'minimal') {
-      // Condensed tracker instructions
-      lines.push('## Project Tracker');
-      lines.push('Use the project tracker to manage tasks. Call tracker_create_task for new work. Call tracker_get_status to check progress. Call tracker_update_status to change task states (in_progress, complete, blocked). Call tracker_complete_step to advance multi-step projects. Don\'t check tracker during casual chat.');
-    } else {
-      lines.push('## MANDATORY: Project Tracker');
-      lines.push('You MUST use the project tracker any time you are going to make two or more tool calls to complete a request. This is not optional.');
-      lines.push('');
-      lines.push('**When to use:**');
-      lines.push('- If you need to call 2+ tools to fulfill the request, create a tracker task FIRST');
-      lines.push('- If the user asks you to do something (not just chat), track it');
-      lines.push('- Do NOT check the tracker when the user is just chatting, greeting you, or asking casual questions');
-      lines.push('');
-      lines.push('**How to use:**');
-      lines.push('- **Quick tasks (2-5 tool calls)**: Use `tracker_create_task` with a clear title. No project needed.');
-      lines.push('- **Bigger work (multiple steps, sub-agents)**: Use `tracker_create_project` with tasks broken into steps.');
-      lines.push('- **During work**: Call `tracker_complete_step` after each step. Mark tasks `in_progress` when starting, `complete` when done.');
-      lines.push('- **For sub-agents**: Create tasks in the tracker and assign them. The tracker is how the PM monitors progress.');
-      lines.push('- **For scheduled work**: Use `get_current_time` first, then set `scheduled_start`. Add `repeat_interval` + `repeat_unit` for recurring tasks.');
-      lines.push('- Do NOT rely on memory to track work. The tracker is the single source of truth.');
-    }
+    lines.push(`## Tracker`);
+    lines.push(`Use the tracker for multi-step work. The DOJO auto-creates tasks when it sees you're about to make 2+ non-trivial tool calls without one — you can also create tasks explicitly with \`tracker_create_task\`.`);
     lines.push('');
   }
 
-  // Vault awareness — for ALL agents with vault tools EXCEPT the Dreamer
-  // (the Dreamer has its own specific vault instructions in its system prompt
-  // and the generic "save everything instinctively" block would conflict)
   const hasVault = agentTools.some(t => t.name.startsWith('vault_'));
-  const isDreamer = (() => {
-    try {
-      const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-      return agentRow?.name === 'Dreamer';
-    } catch { return false; }
-  })();
-  if (hasVault && !isDreamer) {
-    if (tier === 'compact' || tier === 'minimal') {
-      // Condensed vault instructions for small context windows
-      lines.push(`## Vault (Long-Term Memory)
-You have a vault for long-term memory shared by all agents. Use vault_search(query) to look things up — ALWAYS search before saying "I don't remember." Use vault_remember(content, tags) to save important facts, decisions, and user preferences. Search before starting any task. Save discoveries after completing tasks.`);
-    } else {
-      // Full vault instructions for large context windows
-      lines.push(`## Your Long-Term Memory (The Vault)
-
-You have a persistent memory vault shared by every agent in the dojo. Your conversation window is short-term memory -- it fades when compaction runs. The vault is permanent.
-
-### SAVE to the vault (vault_remember) -- do this instinctively:
-- The user states a fact about themselves, their business, their preferences, or their life
-- A decision is made and the reasoning behind it matters
-- You discover a procedure or workflow that took effort to figure out
-- The user corrects you -- save the correction so you never make the same mistake
-- A relationship between people, projects, or systems is clarified
-- Something happens that has a specific date/time attached
-- The user says "remember this" or anything similar
-
-For definitionally stable facts (names, relationships, birth dates, business names), set permanent: true so the memory never fades.
-
-Do NOT save: routine tool output, temporary debugging state, info already in the vault, trivial small talk.
-
-### SEARCH the vault (vault_search) -- THIS IS CRITICAL:
-
-Your context window only holds recent messages and a handful of pinned vault entries. Everything else you've ever learned is in the vault. You MUST search it proactively:
-
-- **Before starting any task**: call vault_search with keywords related to the task. There may be prior decisions, preferences, or context you can't see.
-- **When the user references something you should know**: if it's not in your visible context, vault_search before responding. NEVER say "I don't remember" or "I'm not sure" without searching first.
-- **When the user asks "do you remember..."**: ALWAYS search. The answer is almost certainly in the vault even if you can't see it in context.
-- **When a topic comes up that feels familiar**: search. Your instinct that you've discussed something before is usually right -- the vault has it.
-- **When you need a name, date, preference, or decision**: search. Don't guess or ask the user to repeat themselves.
-
-vault_search is your FIRST choice for recall. If it doesn't have what you need, fall back to memory_grep or memory_expand to search raw conversation history.
-
-### AFTER A SESSION RESET:
-If you see "── New Session ──" in your recent messages, your conversation history was cleared. You MUST reorient before doing ANYTHING:
-1. **vault_search** for current projects, active work, and recent decisions
-2. **tracker_list_active** to see your assigned tasks and their status
-3. **list_techniques** to find any techniques relevant to work in progress
-4. **get_current_time** to know the date
-Do NOT guess what you were working on. Do NOT assume. Search the vault and read the tracker. Your memory is in the vault, not in your conversation history.
-
-### FORGET (vault_forget) -- when things change:
-- The user explicitly says something is no longer true
-- A decision has been reversed
-- Information has been superseded by newer facts
-
-### This is not optional.
-The vault is how you maintain continuity across conversations. If you need something you can't see, look it up. Never assume your context window has everything.
-`);
-    }
+  if (hasVault) {
+    lines.push(`## Vault (Long-Term Memory)`);
+    lines.push(`The vault is your permanent shared memory. Use \`vault_search\` before saying "I don't remember." Use \`vault_remember\` to save important facts, decisions, corrections, and personal context. Pinned + relevant entries are auto-loaded at session start.`);
+    lines.push('');
   }
 
-  // Technique check rule — for agents with technique tools
   const hasTechniques = agentTools.some(t => t.name === 'use_technique' || t.name === 'list_techniques');
   if (hasTechniques) {
-    lines.push(`## MANDATORY: Check Techniques Before Starting Work
-
-Before you begin any non-trivial task, check if there is a relevant technique in the dojo's technique library using \`list_techniques\`. If a technique exists for the type of work you're about to do, load it with \`use_technique\` and follow its instructions. Techniques capture proven procedures — using them produces better results and avoids re-learning lessons the hard way.
-
-You do NOT need to check for techniques on simple conversational responses, quick lookups, or status checks. But for any real work — writing, research, coding, analysis, planning, creating documents — check first.
-`);
-  }
-
-  // Orchestration guidance — only for agents that can spawn sub-agents
-  const canSpawn = agentTools.some(t => t.name === 'spawn_agent');
-  if (canSpawn) {
-    const pmName = getPMAgentName();
-    lines.push('## Agent Orchestration');
-    lines.push('When tackling tasks that benefit from parallel work, you can spawn sub-agents:');
-    lines.push('1. **Create a project first.** ALWAYS call `tracker_create_project` before spawning agents. Define all tasks upfront.');
-    lines.push('2. **Group related agents.** Use `create_agent_group` to organize agents. Give the group a descriptive name and shared context.');
-    lines.push('3. **Spawn and assign.** Spawn sub-agents into the group. Assign each agent a tracker task. Use `persist: true` for agents that need to survive longer than the default timeout.');
-    lines.push(`4. **Let ${pmName} monitor.** NEVER create monitoring, pulse-check, or status-polling agents. NEVER create recurring "check" tasks. ${pmName} already monitors ALL tasks every 10 minutes and will alert you if anything stalls. Creating your own monitoring is forbidden — it wastes resources and duplicates ${pmName}'s job.`);
-    lines.push('5. **Clean up when done.** After all tasks complete, call `delete_group(group_id, terminate_members=true)` to clean up.');
+    lines.push(`## Techniques`);
+    lines.push(`Curated procedures available via \`list_techniques\` and \`use_technique\`. The DOJO surfaces relevant ones automatically; you can also browse explicitly.`);
     lines.push('');
   }
 
-  if (isPrimaryAgent(agentId) || isPMAgent(agentId)) {
-    const pmName = getPMAgentName();
-    lines.push('## Tracker Details');
-    lines.push('- Tasks you create are auto-assigned to you and start as "in_progress"');
-    lines.push('- For multi-step projects, call **tracker_complete_step** after each step');
-    lines.push(`- ${pmName} (the project manager) will poke you if tasks go idle`);
-    lines.push('- **Scheduling**: Call **get_current_time** first, then pass `scheduled_start` to **tracker_create_task** with an ISO8601 datetime. Add `repeat_interval` + `repeat_unit` for recurring tasks. The scheduler fires tasks automatically within 30 seconds of their scheduled time.');
-    lines.push('- **Groups**: Use **list_groups** to see groups, **list_agents** to see agents. Assign tasks to groups with `assigned_to_group`.');
+  const canSpawn = agentTools.some(t => t.name === 'spawn_agent');
+  if (canSpawn) {
+    lines.push(`## Spawning Sub-Agents`);
+    lines.push(`Create a tracker_create_project first, then spawn agents into a group with \`spawn_agent\` and \`create_agent_group\`. Clean up via \`delete_group(terminate_members=true)\`. PM monitors all tasks — don't create your own monitoring agents.`);
     lines.push('');
   }
 
@@ -429,7 +286,8 @@ export function assembleSystemPrompt(agentId: string, modelId: string): string {
   const contextWindow = getContextWindow(modelId);
   const tier = getPromptTier(contextWindow);
   const soul = getSoulContent(agentId);
-  const tools = generateToolsGuidance(agentId, tier);
+  const tools = generateToolsGuidance_v2(agentId);
+  void tier; // tier was used by the deleted v1 generateToolsGuidance path
 
   // Inject current date/time at the top so every agent is temporally anchored
   // from the very first turn — no tool call required.
@@ -464,84 +322,40 @@ export function assembleSystemPrompt(agentId: string, modelId: string): string {
       const db = getDb();
       const pmAgent = db.prepare('SELECT id, status, model_id FROM agents WHERE id = ?').get(pmId) as { id: string; status: string; model_id: string | null } | undefined;
       if (pmAgent && pmAgent.status !== 'terminated') {
-        parts.push(`## Project Manager: ${pmName}
-
-${pmName} (agent ID: ${pmId}) is your dedicated PM agent. ${pmName} is already running and monitors the project tracker automatically every 10 minutes. NEVER create monitoring, pulse-check, or status-polling agents — ${pmName} already does this. NEVER create recurring "pulse" or "check" tasks — that is ${pmName}'s job, not yours. Creating your own monitoring infrastructure is FORBIDDEN.
-
-${pmName}'s responsibilities:
-- Watches all tasks in the tracker for stalls, failures, or missed deadlines
-- Pokes agents that go idle on assigned tasks
-- Escalates issues to you if agents are unresponsive
-- Escalates critical issues to ${getOwnerName()} via iMessage as a last resort
-
-When you create projects and tasks, ${pmName} will automatically track them. You can also message ${pmName} directly with \`send_to_agent(agent_id="${pmId}", message="...")\` if you need something checked.`);
+        // Trim. The "NEVER create monitoring agents" rule was prompt-side
+        // enforcement; the PM agent existing structurally communicates this
+        // without a paragraph of FORBIDDEN.
+        parts.push(`## Project Manager: ${pmName}\n\n${pmName} (ID: ${pmId}) is the dedicated PM agent — monitors tasks, pokes idle agents, escalates if needed. Don't create monitoring/pulse-check agents yourself; ${pmName} already does that. Message via \`send_to_agent(agent_id="${pmId}", ...)\`.`);
       }
     } catch { /* PM may not be configured */ }
   }
 
-  // Message source awareness — help the agent distinguish between different message origins
+  // Message source awareness — minimal source-tag reference. Routing /
+  // separation is engine logic.
   parts.push(`## Message Sources
 
-Messages in your conversation may come from different sources. Each non-user-chat message is prefixed with a \`[SOURCE: ...]\` tag so you can tell them apart:
+Each non-user-chat message has a \`[SOURCE: ...]\` tag:
+- No tag = direct message from ${getOwnerName()} via dashboard
+- \`[SOURCE: IMESSAGE FROM ${getOwnerName().toUpperCase()}]\` = ${getOwnerName()} via iMessage (responses auto-route back)
+- \`[SOURCE: GMAIL NOTIFICATION]\` / \`[SOURCE: OUTLOOK NOTIFICATION]\` = email-arrived alerts, not requests
+- \`[A2A:INTENT thread:ID from:Name]\` = structured agent message — engine validates your reply via \`send_to_agent\`
+- \`[SOURCE: AGENT MESSAGE FROM X]\` = legacy agent message
+- \`[SOURCE: TEAMS MESSAGE FROM ...]\` = Teams message (reply via \`teams_send_message\` using the chat_id in the note)
+- \`[SYSTEM NOTE: ...]\`, \`[Note: ...]\`, \`[Engine ack] ...\` = system context, not requests
+- \`[SENT VIA IMESSAGE to ${getOwnerName()}]\` = your prior response went via iMessage`);
 
-- **No source tag** = Direct message from ${getOwnerName()} via the dashboard chat. This is the primary conversation.
-- **\`[SOURCE: IMESSAGE FROM ${getOwnerName().toUpperCase()}]\`** = Message from ${getOwnerName()} via iMessage (they're not at the dashboard). Respond via iMessage automatically — the system handles routing based on presence.
-- **\`[SOURCE: GMAIL NOTIFICATION]\`** = Automated alert that a new email arrived in Gmail. This is NOT a request from ${getOwnerName()}. Do not treat it as an instruction to do something. Only act on it if ${getOwnerName()} has previously asked you to monitor or handle incoming emails.
-- **\`[SOURCE: OUTLOOK NOTIFICATION]\`** = Automated alert that a new email arrived in Outlook. Same rules as Gmail notifications — not a user request.
-- **\`[A2A:INTENT thread:ID from:Name]\`** = A structured message from another agent. The intent tells you whether a response is expected. If the thread says "No reply expected", do not reply — the message is for your awareness only. If "Reply expected", respond using \`send_to_agent\` with the same \`thread_id\`.
-- **\`[SOURCE: AGENT MESSAGE FROM X]\`** = Legacy format for agent messages (same handling as A2A messages).
-- **\`[SYSTEM NOTE: ...]\`** or **\`[Note: ...]\`** = Internal system context, not a user message.
-
-- **\`[SENT VIA IMESSAGE to ${getOwnerName()}]\`** = System tag showing that YOUR preceding response was delivered to ${getOwnerName()} via iMessage, not just posted in dashboard chat.
-
-Always check the source before deciding how to respond. A Gmail notification is not a request to do something. An agent message should not be replied to in the user chat.
-
-**Channel awareness — keeping iMessage and dashboard conversations separate:**
-${getOwnerName()} may be chatting with you on the dashboard AND via iMessage at the same time about DIFFERENT topics. These are two separate conversations happening in one message stream. Use the source tags to tell them apart:
-- Messages tagged \`[SOURCE: IMESSAGE FROM ...]\` and responses tagged \`[SENT VIA IMESSAGE ...]\` belong to the **iMessage conversation**.
-- Messages with no source tag belong to the **dashboard conversation**.
-
-When responding to an iMessage, address ONLY the iMessage topic. When responding in dashboard chat, address ONLY the dashboard topic. Do not cross-contaminate — if ${getOwnerName()} asked about gmail in the dashboard and asked about the weather via iMessage, the gmail answer goes to dashboard and the weather answer goes via iMessage. Never mix them.
-
-**When ${getOwnerName()} is "Away from the Dojo":** the system automatically forwards ALL your responses via iMessage — you'll see \`[SENT VIA IMESSAGE]\` tags on everything. This is normal. When away, there's effectively one channel (iMessage), so the separation rules above don't apply. Just respond naturally.`);
-
-  // Inject responsiveness rules for the primary agent
-  if (isPrimaryAgent(agentId)) {
-    parts.push(`## MANDATORY: Acknowledge & Report
-
-When ${getOwnerName()} asks you to do something:
-
-1. **Acknowledge immediately.** Before making any tool calls, send a brief response confirming you received the request and what you're about to do. Examples: "On it — checking your calendar now." or "Got it, I'll draft that email." This is especially important when the task may take a while.
-
-2. **Always report back.** When the task is complete, tell ${getOwnerName()} what you did and the result. When a task fails, tell them what went wrong and what you recommend. NEVER silently finish or fail — ${getOwnerName()} must always hear back from you.
-
-This is not optional. A request without a response looks like you're broken.`);
-  }
+  // Engine's ackInjector handles "acknowledge before tools" automatically.
+  // The "always report back" guidance lives in the v2 terseness section.
 
   // Inject Google Workspace awareness based on access level
   try {
     const googleAccess = getAgentGoogleAccessLevel(agentId, isPrimaryAgent(agentId), isPMAgent(agentId));
     if (googleAccess === 'full') {
-      parts.push(`## Google Workspace
-
-You have full access to the connected Google Workspace account. You can send emails, create and edit Google Docs, manage the calendar, upload and share Drive files, create spreadsheets and presentations, and more.
-
-Access levels for other agents:
-- Ronin and Apprentice agents have READ-ONLY Google access for Gmail, Calendar, Drive, Docs, and Sheets — they can search and read but cannot send, create, or edit.
-- Ronin and Apprentice agents DO have full Google Slides access and can build complete formatted decks themselves (slides_* tools). If someone asks you to make a pitch deck, a report deck, a quarterly review, etc., consider delegating to a sub-agent rather than doing it yourself.
-- The PM agent has no Google access.
-- If you need a sub-agent to review an email thread or research a document, any Ronin or Apprentice can do that.
-- If you need something sent, created, edited, or deleted in Gmail/Calendar/Drive/Docs/Sheets, you must do it yourself. You are the only agent with write access to those services.
-
-All Google Workspace actions are logged. The user can see everything you do in the Google Activity log.`);
+      // Trimmed: sub-agents can be delegated via send_to_agent; their per-agent
+      // tool filter handles what they can/can't do. No 12-line briefing needed.
+      parts.push(`## Google Workspace\n\nYou have full Google Workspace access (Gmail, Calendar, Drive, Docs, Sheets, Slides). All actions are logged in the Google Activity log. Sub-agents have read-only access; you're the only agent with write.`);
     } else if (googleAccess === 'read') {
-      parts.push(`## Google Workspace (Read + Slides)
-
-You have read-only access to Gmail, Calendar, Drive, Docs, and Sheets — you can search and read emails, read Google Docs, check the calendar, and browse Drive files. You CANNOT send emails, create documents, edit files, manage calendar events, or share Drive files.
-
-HOWEVER — you DO have full access to Google Slides. You can build complete formatted presentation decks using the slides_* tools: create decks, add slides, drop in styled text boxes and bullet lists, embed images (from URL or Drive), add shapes, tables, and video, and use the compound layout helpers (slides_layout_title, slides_layout_content, slides_layout_two_column, slides_layout_image, slides_layout_comparison, slides_layout_section) to assemble entire slides in one call. All slides_* tools respect a persistent DeckStyle so your decks look consistent.
-
-If a task requires sending email or modifying Gmail/Drive/Docs/Sheets/Calendar, report back to the primary agent and let them handle it. Deck-building you can do yourself.`);
+      parts.push(`## Google Workspace (Read + Slides)\n\nYou have read access to Gmail/Calendar/Drive/Docs/Sheets and full Slides access. If a task needs writes outside Slides, report back to the primary agent.`);
     }
   } catch { /* Google module may not be available */ }
 
@@ -568,20 +382,11 @@ When you see a \`[SOURCE: TEAMS MESSAGE FROM ...]\` notification:
 
 The \`teams_create_chat\` tool is for starting a new conversation with someone. \`teams_send_message\` is for replying to an existing chat using the \`chat_id\` from the notification.` : '';
 
-      parts.push(`## Microsoft 365${msEmail ? ` (${msEmail})` : ''}
-
-You have full access to the connected Microsoft 365 account${msEmail ? ` (${msEmail})` : ''}. You can send and read Outlook email, manage the calendar, create and share Word/Excel/PowerPoint documents, upload and read OneDrive files${msAccountType !== 'msa' ? ', and send/read Teams messages' : ''}.
-
-Access levels for other agents:
-- Ronin and Apprentice agents have READ-ONLY Microsoft access.
-- The PM agent has no Microsoft access.
-- If you need something sent, created, edited, or deleted in Microsoft 365, you must do it yourself.
-
-All Microsoft 365 actions are logged.${teamsInboundGuidance}${teamsNote}`);
+      // Trimmed: keep account context + the Teams-inbound rule (that's
+      // behavior, not bloat — agents must know to reply on the right channel).
+      parts.push(`## Microsoft 365${msEmail ? ` (${msEmail})` : ''}\n\nYou have full Microsoft 365 access (Outlook, Calendar, Word/Excel/PowerPoint, OneDrive${msAccountType !== 'msa' ? ', Teams' : ''}). All actions are logged. Sub-agents have read-only access.${teamsInboundGuidance}${teamsNote}`);
     } else if (msAccess === 'read') {
-      parts.push(`## Microsoft 365 (Read-Only)
-
-You have read-only access to the dojo's connected Microsoft 365 account. You can search and read Outlook email, check the calendar, browse OneDrive files${msAccountType !== 'msa' ? ', and read Teams messages' : ''}. You CANNOT send emails, create events, upload files, or send Teams messages. If a task requires modifying Microsoft 365, report back to the primary agent.${teamsNote}`);
+      parts.push(`## Microsoft 365 (Read-Only)\n\nYou have read access to Outlook/Calendar/OneDrive${msAccountType !== 'msa' ? '/Teams' : ''}. If a task needs writes, report back to the primary agent.${teamsNote}`);
     }
   } catch { /* Microsoft module may not be available */ }
 

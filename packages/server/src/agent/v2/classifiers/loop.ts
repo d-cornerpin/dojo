@@ -1,0 +1,122 @@
+// ════════════════════════════════════════
+// Phase 1A — loop detector classifier
+//
+// Ports v1's canonicalToolSignature + repeat-count check from
+// runtime.ts:261-293 + 1440-1463 into a v2 classifier. Behavior is
+// identical: a tool call signature normalized to ignore agent prose,
+// timestamp/UUID variation, and JSON key order. After 3 calls of
+// the same signature in the recent window, the call is blocked.
+//
+// Window size and threshold match v1 exactly (RECENT_TOOL_WINDOW = 8,
+// MAX_REPEATS_BEFORE_BREAK = 3) so v2 behavior matches v1 verbatim.
+// ════════════════════════════════════════
+
+import type { ToolCall } from '@dojo/shared';
+
+export const RECENT_TOOL_WINDOW = 8;       // matches v1 runtime.ts:785
+export const MAX_REPEATS_BEFORE_BREAK = 3; // matches v1 runtime.ts:786
+
+export type LoopDecision = 'ok' | 'block';
+
+export interface LoopCheckResult {
+  decision: LoopDecision;
+  signature: string;        // canonical sig of this call (caller appends to window)
+  repeatCount: number;      // how many times this sig appeared in the window (incl. current)
+  refusalMessage?: string;  // populated when decision === 'block'
+}
+
+/**
+ * Fields that carry agent prose rather than operation identity.
+ * Removed from the canonical signature so two calls that say
+ * different things in their `caption` but do the same operation
+ * compare equal.
+ *
+ * Verbatim from v1 runtime.ts:255-259.
+ */
+const PROSE_FIELDS = new Set([
+  'caption', 'message', 'content', 'text', 'payload',
+  'summary', 'description', 'query', 'reason', 'note', 'notes',
+  'change_summary', 'instructions',
+]);
+
+/**
+ * Build a canonical signature for a tool call, used to detect loops.
+ *
+ * The sig captures the operation, not the agent's prose around it.
+ * Two calls to show_to_user with the same file but different captions
+ * are the same operation. Two file_reads on
+ * slides_..._<timestamp>_000.png are the same operation.
+ *
+ * Behavior is verbatim from v1 runtime.ts:261-293:
+ *   1. Drop fields that are agent prose (PROSE_FIELDS).
+ *   2. Replace 6+ digit numeric runs in remaining strings with "*"
+ *      (catches timestamps, large UUIDs).
+ *   3. Truncate long string values to a short prefix.
+ *   4. Sort keys so JSON ordering doesn't matter.
+ */
+export function canonicalToolSignature(
+  name: string,
+  args: Record<string, unknown> | undefined,
+): string {
+  if (!args) return `${name}:{}`;
+  const normalized: Record<string, unknown> = {};
+  for (const k of Object.keys(args).sort()) {
+    if (PROSE_FIELDS.has(k)) continue;
+    const v = args[k];
+    if (typeof v === 'string') {
+      let s = v.replace(/\d{6,}/g, '*');
+      if (s.length > 80) s = '<prose>';
+      normalized[k] = s;
+    } else if (typeof v === 'number' || typeof v === 'boolean' || v === null) {
+      normalized[k] = v;
+    } else if (Array.isArray(v)) {
+      normalized[k] = v.slice(0, 5).map((item) => {
+        if (typeof item === 'string') {
+          const s = item.replace(/\d{6,}/g, '*');
+          return s.length > 80 ? '<prose>' : s;
+        }
+        return item;
+      });
+    } else {
+      try {
+        const s = JSON.stringify(v);
+        normalized[k] = s.length > 80 ? '<obj>' : s;
+      } catch {
+        normalized[k] = '<obj>';
+      }
+    }
+  }
+  return `${name}:${JSON.stringify(normalized)}`;
+}
+
+/**
+ * Check whether this tool call is a duplicate that should be blocked.
+ *
+ * Caller passes the recent tool signatures window (managed in state).
+ * If the new call's signature appears MAX_REPEATS_BEFORE_BREAK times
+ * already in the window, the decision is 'block' with a refusal
+ * message that tells the agent to stop and respond with text.
+ *
+ * Behavior verbatim from v1 runtime.ts:1440-1463 — same threshold,
+ * same refusal message, same windowing.
+ */
+export function loopDetector(
+  call: ToolCall,
+  recentSignatures: string[],
+): LoopCheckResult {
+  const signature = canonicalToolSignature(call.name, call.arguments);
+  const repeatCount = recentSignatures.filter((s) => s === signature).length;
+  if (repeatCount >= MAX_REPEATS_BEFORE_BREAK) {
+    return {
+      decision: 'block',
+      signature,
+      repeatCount: repeatCount + 1,
+      refusalMessage:
+        `STOP — you have called \`${call.name}\` ${repeatCount + 1} times with substantially-similar arguments in the last few turns. ` +
+        `The user does not need more verification. The previous result is the answer; trust it. ` +
+        `Respond to the user with TEXT now — do NOT call this tool again, and do NOT call related verification tools (file_read, exec, ls, etc.) on the same artifact. ` +
+        `If you genuinely need different information, ask the user a direct question instead.`,
+    };
+  }
+  return { decision: 'ok', signature, repeatCount: repeatCount + 1 };
+}

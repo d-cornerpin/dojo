@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
+// (getRuntimeVersion import removed in Phase 9 Stage 2 — single-track v2)
 import { estimateTokens, getMessagesOutsideFreshTail, getRecentMessages } from './store.js';
 import {
   createLeafSummary,
@@ -45,7 +46,7 @@ import type { Message } from '@dojo/shared';
 // not "did somebody dump a 30K file into a single tool result".
 const MAX_GATE_MESSAGE_TOKENS = 4000;
 
-function estimateAssembledTokens(agentId: string, contextWindow: number): {
+export function estimateAssembledTokens(agentId: string, contextWindow: number): {
   total: number;
   summaryTokens: number;
   freshTailTokens: number;
@@ -89,15 +90,32 @@ function estimateAssembledTokens(agentId: string, contextWindow: number): {
 const logger = createLogger('memory-compaction');
 
 // ── Defaults ──
+//
+// v1: contextThreshold 0.75 — fires at 75% utilization (the "compaction is
+// load-bearing" architecture). v2 raises this to 0.96 emergency-only with
+// a 0.90 WARN line per Part V — compaction becomes a debug signal, not a
+// routine event. Threshold lookup is runtime-version-aware so v1 agents
+// keep their original behavior while v2 agents see the new architecture.
 
 const DEFAULTS = {
-  contextThreshold: 0.75,
-  leafChunkTokens: 20000,    // Raised from 10k — less aggressive proactive compaction
+  // v2 thresholds — emergency-only compaction (Part V).
+  // The old v1 values (contextThreshold:0.75, leafChunkTokens:20000) were
+  // removed in Phase 9 Stage 2 along with the runtime version flag.
+  contextThreshold: 0.96,
+  leafChunkTokens: 30000,
   leafTargetTokens: 5000,
   condensedTargetTokens: 6000,
   condensedMinFanout: 4,
   incrementalMaxDepth: 1,
 };
+
+function getContextThreshold(): number {
+  return DEFAULTS.contextThreshold;
+}
+
+function getLeafChunkTokens(): number {
+  return DEFAULTS.leafChunkTokens;
+}
 
 // Model-aware tail count for compaction boundary
 function getCompactionTailCount(contextWindow: number): number {
@@ -185,11 +203,12 @@ export async function checkAndCompact(
 
   const assembled = estimateAssembledTokens(agentId, contextWindow);
   const totalTokens = assembled.total;
-  const threshold = DEFAULTS.contextThreshold * contextWindow;
+  const activeThreshold = getContextThreshold();
+  const threshold = activeThreshold * contextWindow;
 
   const force = options?.force ?? false;
 
-  logger.info(`Compaction check: assembled=${totalTokens} (summaries=${assembled.summaryTokens}, freshTail=${assembled.freshTailTokens}, brief=${assembled.briefTokens}), threshold=${Math.round(threshold)} (${Math.round(DEFAULTS.contextThreshold * 100)}% of ${contextWindow})${force ? ' [FORCED]' : ''}`, {
+  logger.info(`Compaction check: assembled=${totalTokens} (summaries=${assembled.summaryTokens}, freshTail=${assembled.freshTailTokens}, brief=${assembled.briefTokens}), threshold=${Math.round(threshold)} (${Math.round(activeThreshold * 100)}% of ${contextWindow})${force ? ' [FORCED]' : ''}`, {
     assembledTokens: totalTokens,
     summaryTokens: assembled.summaryTokens,
     freshTailTokens: assembled.freshTailTokens,
@@ -201,6 +220,31 @@ export async function checkAndCompact(
     needsCompaction: totalTokens > threshold,
     force,
   }, agentId);
+
+  // 90% WARN line (Part V) — if under threshold but past 90%, log loudly +
+  // broadcast a chat:error severity=warning. Each WARN is an architecture
+  // bug to fix in tools/scaffolding/prompts. Fires once per checkAndCompact
+  // invocation, not per loop iteration.
+  if (!force) {
+    const warnRatio = totalTokens / contextWindow;
+    if (warnRatio >= 0.90 && warnRatio < 0.96) {
+      const reason = `Context utilization at ${(warnRatio * 100).toFixed(1)}% (${totalTokens}/${contextWindow}). This should not happen in normal v2 operation — investigate tool result sizes, scaffolding injection, system prompt cost.`;
+      logger.warn(reason, { agentId, ratio: warnRatio }, agentId);
+      // User-facing toast: plain language, no internal jargon. The technical
+      // detail goes to the log where developers can see it.
+      const userMsg = `Agent's memory is getting full (${(warnRatio * 100).toFixed(0)}%). Working normally for now.`;
+      try {
+        broadcast({
+          type: 'chat:error',
+          agentId,
+          error: userMsg,
+          code: 'CONTEXT_HIGH',
+          severity: 'warning',
+          retryable: false,
+        });
+      } catch { /* best effort */ }
+    }
+  }
 
   if (force || totalTokens > threshold) {
     // No-op guard: if the gate metric is over threshold but there's
@@ -236,7 +280,22 @@ export async function checkAndCompact(
     // the agent knows what it was working on. Without this, the agent
     // wakes up post-compaction with only chunk summaries (which are
     // fragmented) and loses the big picture of its current task.
-    await generateContinuityBrief(agentId, modelId, contextWindow);
+    //
+    // Continuity brief is generated only on EMERGENCY compactions (≥96%
+    // utilization OR force=true from the recovery cascade). Below that,
+    // compaction is unexpected and the brief would be a wound the engine
+    // inflicts on itself.
+    const emergencyRatio = totalTokens / contextWindow;
+    const isEmergency = force || emergencyRatio >= 0.96;
+    if (isEmergency) {
+      await generateContinuityBrief(agentId, modelId, contextWindow);
+    } else {
+      logger.info('Skipping continuity brief generation — non-emergency compaction', {
+        assembledTokens: totalTokens,
+        emergencyRatio,
+        force,
+      }, agentId);
+    }
 
     // Archive raw messages to vault BEFORE compaction destroys them.
     // If archival fails, ABORT compaction — better to have a bloated context than lost data.
@@ -294,10 +353,11 @@ export async function checkAndCompact(
     0,
   );
 
-  if (uncompactedTokens > DEFAULTS.leafChunkTokens) {
+  const proactiveLeafTokens = getLeafChunkTokens();
+  if (uncompactedTokens > proactiveLeafTokens) {
     logger.info('Running proactive leaf compaction', {
       uncompactedTokens,
-      threshold: DEFAULTS.leafChunkTokens,
+      threshold: proactiveLeafTokens,
     }, agentId);
 
     // Archive raw messages to vault BEFORE proactive compaction.
@@ -353,7 +413,7 @@ export async function runLeafCompaction(agentId: string, modelId: string, contex
   }
 
   // Group into chunks of ~leafChunkTokens
-  const chunks = chunkMessages(uncompacted, DEFAULTS.leafChunkTokens);
+  const chunks = chunkMessages(uncompacted, getLeafChunkTokens());
 
   logger.info('Leaf compaction: processing chunks', {
     totalMessages: uncompacted.length,
@@ -651,10 +711,31 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
     });
     const briefContent = `[CONTINUITY BRIEF — ${briefTimestamp}, generated before memory compaction]\n${result.text}\n\nYour older conversation history has been archived to the vault. If you need details beyond what's in this brief, use vault_search or memory_grep to find specific facts, file paths, decisions, or instructions from your earlier conversation.`;
 
+    // Phase 4 §C (2026-05-04) — set continuityBriefValidUntilTurn so the
+    // assembler stops injecting the brief after 3 turns post-emergency
+    // (Part XVIII §C: "the fresh tail is authoritative once the agent has
+    // had a few turns to re-orient").
+    //
+    // currentTurn is computed from MAX(turn_number) on this agent's
+    // messages — same logic v2/loop.ts uses. v1 messages have NULL
+    // turn_number so MAX returns the highest v2 turn or null. v1 path
+    // doesn't read this field, so a NULL/0 default is harmless.
+    const turnRow = db
+      .prepare('SELECT MAX(turn_number) AS max_turn FROM messages WHERE agent_id = ?')
+      .get(agentId) as { max_turn: number | null } | undefined;
+    const currentTurn = (turnRow?.max_turn ?? 0) + 1;
+    const validUntilTurn = currentTurn + 3;
+
     db.prepare(`
-      UPDATE agents SET config = json_set(json_set(COALESCE(config, '{}'), '$.continuityBrief', ?), '$.continuityBriefAt', ?)
+      UPDATE agents SET config = json_set(
+        json_set(
+          json_set(COALESCE(config, '{}'), '$.continuityBrief', ?),
+          '$.continuityBriefAt', ?
+        ),
+        '$.continuityBriefValidUntilTurn', ?
+      )
       WHERE id = ?
-    `).run(briefContent, nowIso, agentId);
+    `).run(briefContent, nowIso, validUntilTurn, agentId);
 
     logger.info('Continuity brief stored in agent config', {
       briefTokens: result.tokenCount,

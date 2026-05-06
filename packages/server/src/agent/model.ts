@@ -27,6 +27,11 @@ export interface ModelCallParams {
   tools?: boolean;
   onChunk?: (chunk: string) => void;
   routerTier?: string; // populated by auto-router
+  // External abort signal — when fired, the underlying SDK call aborts
+  // and callModel throws. Used by the runtime's stop button to actually
+  // cancel in-flight calls (vs. v1's pre-fix behavior where stop only
+  // affected the runtime loop, not the underlying fetch).
+  abortSignal?: AbortSignal;
 }
 
 export interface ModelCallResult {
@@ -383,7 +388,9 @@ async function buildNativeOllamaMessages(
               broadcast({
                 type: 'chat:error',
                 agentId,
-                error: `"${title}" was too large to fit in context and was truncated after ${extracted.pagesExtracted} of ${extracted.pageCount} pages. The agent will only see the first part of the document.`,
+                error: `"${title}" was too large — only the first ${extracted.pagesExtracted} of ${extracted.pageCount} pages reached the agent.`,
+                severity: 'warning',
+                retryable: false,
               });
             }
           } catch (err) {
@@ -397,7 +404,9 @@ async function buildNativeOllamaMessages(
             broadcast({
               type: 'chat:error',
               agentId,
-              error: `Couldn't extract text from "${title}" (${reason}). The agent will respond to your message without the PDF's contents.`,
+              error: `Couldn't read "${title}" — the agent will respond without it.`,
+              severity: 'warning',
+              retryable: false,
             });
           }
         }
@@ -540,11 +549,18 @@ async function callOllamaModel(
   }
 
   try {
+    // Combine external abort (from stop button) with internal 5-min timeout.
+    // Node 22+ AbortSignal.any returns a signal that aborts when EITHER
+    // input signal aborts.
+    const timeoutSignal = AbortSignal.timeout(300000);
+    const signal = params.abortSignal
+      ? AbortSignal.any([timeoutSignal, params.abortSignal])
+      : timeoutSignal;
     const response = await fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(300000),
+      signal,
     });
 
     if (!response.ok) {
@@ -896,7 +912,9 @@ async function buildOpenAIMessages(
               broadcast({
                 type: 'chat:error',
                 agentId,
-                error: `"${title}" was too large to fit in context and was truncated after ${extracted.pagesExtracted} of ${extracted.pageCount} pages. The agent will only see the first part of the document.`,
+                error: `"${title}" was too large — only the first ${extracted.pagesExtracted} of ${extracted.pageCount} pages reached the agent.`,
+                severity: 'warning',
+                retryable: false,
               });
             }
           } catch (err) {
@@ -910,7 +928,9 @@ async function buildOpenAIMessages(
             broadcast({
               type: 'chat:error',
               agentId,
-              error: `Couldn't extract text from "${title}" (${reason}). The agent will respond to your message without the PDF's contents.`,
+              error: `Couldn't read "${title}" — the agent will respond without it.`,
+              severity: 'warning',
+              retryable: false,
             });
           }
         }
@@ -1147,7 +1167,10 @@ async function callOpenAIModel(
   }, agentId);
 
   try {
-    const stream = await client.chat.completions.create(requestParams);
+    // Pass the external abort signal so stop-button aborts cancel the
+    // in-flight fetch (instead of letting it complete in the background).
+    const requestOptions = params.abortSignal ? { signal: params.abortSignal } : undefined;
+    const stream = await client.chat.completions.create(requestParams, requestOptions);
 
     let fullText = '';
     const toolCalls: ToolCall[] = [];
@@ -1720,7 +1743,10 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
   const startTime = Date.now();
 
   try {
-    const stream = client.messages.stream(requestParams);
+    // Pass the external abort signal so stop-button aborts cancel the
+    // in-flight Anthropic streaming request immediately.
+    const requestOptions = params.abortSignal ? { signal: params.abortSignal } : undefined;
+    const stream = client.messages.stream(requestParams, requestOptions);
 
     let fullText = '';
     const toolCalls: ToolCall[] = [];

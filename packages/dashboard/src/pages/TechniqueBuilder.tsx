@@ -707,6 +707,13 @@ export const TechniqueBuilder = () => {
     const unsubError = subscribe('chat:error', (event: WsEvent) => {
       const e = event as ChatErrorEvent;
       if (e.agentId !== agentIdRef.current) return;
+      // Phase 8 F1 fix: don't show info-severity events (AGENT_RECOVERED,
+      // HEALER_DISPATCHED, dedup) as errors in the technique builder UI.
+      // Recovered → clear isWorking but don't pin a red error banner.
+      if (e.severity === 'info') {
+        if (e.code === 'AGENT_RECOVERED') setIsWorking(false);
+        return;
+      }
       setError(e.error);
       setIsWorking(false);
     });

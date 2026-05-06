@@ -378,6 +378,21 @@ export const getHealth = async (): Promise<ApiResponse<HealthResponse>> => {
   return request<HealthResponse>('/health');
 };
 
+// V2CutoverNotice (Part XI) — bulk-reset every idle agent's session.
+// Returns count breakdown { reset, busy, errors, total }.
+export interface ResetIdleSessionsResponse {
+  reset: number;
+  busy: number;
+  errors: number;
+  total: number;
+  errorDetails?: Array<{ agentId: string; error: string }>;
+}
+export const resetIdleSessions = async (): Promise<ApiResponse<ResetIdleSessionsResponse>> => {
+  return request<ResetIdleSessionsResponse>('/system/reset-idle-sessions', {
+    method: 'POST',
+  });
+};
+
 // Email/Teams watchers — visible health surface for the integrations'
 // background polling. Returned shape mirrors WatcherStatus on the server.
 export interface WatcherStatusDto {

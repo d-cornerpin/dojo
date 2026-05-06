@@ -324,6 +324,120 @@ function getTrackerHealth(): DiagnosticItem[] {
   return items;
 }
 
+// ── Bulletproof tool diagnostics ─────────────────────────────────────────
+//
+// These checks watch for failure modes the v2 tool audit hardened against.
+// The hardening fixes the underlying causes; these diagnostics catch any
+// stragglers (legacy data, new code paths that bypassed the helpers, edge
+// cases not yet covered) and surface them as healer proposals so production
+// hits become user-visible instead of silent breaks.
+
+function getBulletproofToolHealth(): DiagnosticItem[] {
+  const db = getDb();
+  const items: DiagnosticItem[] = [];
+
+  // 1. Apprentice split-brain: agent is idle/working but their assigned
+  //    task is already complete. The completeAgent fallback in spawner.ts
+  //    auto-fixes new occurrences, so this catches legacy or post-restart
+  //    stragglers — and any future regression where a non-apprentice path
+  //    completes a task without terminating the agent.
+  const splitBrain = db.prepare(`
+    SELECT a.id, a.name, t.id as task_id, t.title as task_title
+    FROM agents a
+    JOIN tasks t ON t.assigned_to = a.id
+    WHERE a.status IN ('idle', 'working')
+      AND a.classification = 'apprentice'
+      AND t.status = 'complete'
+      AND t.completed_at > datetime('now', '-7 days')
+  `).all() as Array<{ id: string; name: string; task_id: string; task_title: string }>;
+
+  for (const row of splitBrain) {
+    items.push({
+      severity: 'warning',
+      code: 'APPRENTICE_DANGLING',
+      title: `"${row.name}" finished their task but wasn't terminated`,
+      detail: `The task "${row.task_title}" is marked complete but ${row.name} is still alive (${row.id}). They should have called complete_task to finalize. Safe to terminate.`,
+      agentId: row.id,
+      agentName: row.name,
+    });
+  }
+
+  // 2. Cryptic tool errors leaking through to the model. If the audit log
+  //    shows raw SQLite or JS exceptions in the last 24h, a tool somewhere
+  //    is missing input validation or DB error wrapping. The model can't
+  //    act on these — they're noise that wastes turns.
+  const crypticErrors = db.prepare(`
+    SELECT COUNT(*) as cnt, MAX(target) as sample
+    FROM audit_log
+    WHERE action_type = 'tool_call'
+      AND result = 'error'
+      AND created_at > datetime('now', '-24 hours')
+      AND (
+        target LIKE '%FOREIGN KEY constraint%'
+        OR target LIKE '%NOT NULL constraint%'
+        OR target LIKE '%Cannot read properties%'
+        OR target LIKE '%toLowerCase%'
+        OR target LIKE '%is not a function%'
+        OR target LIKE '%undefined%'
+      )
+  `).get() as { cnt: number; sample: string | null };
+
+  if (crypticErrors.cnt > 0) {
+    items.push({
+      severity: crypticErrors.cnt >= 5 ? 'critical' : 'warning',
+      code: 'TOOL_ERROR_LEAK',
+      title: `${crypticErrors.cnt} cryptic tool error(s) leaked to agents in the last 24h`,
+      detail: `Tools should never surface raw SQLite/JS errors to the model — wrap them via friendlyDbError / checkRequired in tool-helpers.ts. Sample: ${(crypticErrors.sample ?? '').slice(0, 200)}.`,
+    });
+  }
+
+  // 3. Idle apprentices with assigned tasks that have never been poked.
+  //    Could indicate a caller spawned with auto_start: false but forgot
+  //    to wake the agent. Worth flagging at 30+ min so quick test runs
+  //    don't trigger it.
+  const neverPoked = db.prepare(`
+    SELECT a.id, a.name, t.title as task_title, t.id as task_id, a.created_at
+    FROM agents a
+    JOIN tasks t ON t.assigned_to = a.id
+    WHERE a.status = 'idle'
+      AND a.classification = 'apprentice'
+      AND t.status IN ('on_deck', 'in_progress')
+      AND a.created_at < datetime('now', '-30 minutes')
+      AND NOT EXISTS (
+        SELECT 1 FROM messages m
+        WHERE m.agent_id = a.id AND m.role = 'assistant'
+      )
+  `).all() as Array<{ id: string; name: string; task_title: string; task_id: string; created_at: string }>;
+
+  for (const row of neverPoked) {
+    items.push({
+      severity: 'info',
+      code: 'APPRENTICE_NEVER_POKED',
+      title: `"${row.name}" was spawned 30+ min ago and never started their task`,
+      detail: `${row.name} (${row.id}) has been idle since spawn — their assigned task "${row.task_title}" hasn't been worked on. If you spawned them with auto_start: false, send_to_agent or assign a task to wake them. Otherwise, terminate them.`,
+      agentId: row.id,
+      agentName: row.name,
+    });
+  }
+
+  // 4. Vault dreaming backlog. If unprocessed conversations pile up >25
+  //    the Dreamer isn't running. Kevin can now trigger it on demand via
+  //    dreamer_run_now — surface this as an info-level item.
+  const backlog = db.prepare(`
+    SELECT COUNT(*) as cnt FROM vault_conversations WHERE is_processed = 0
+  `).get() as { cnt: number };
+  if (backlog.cnt >= 25) {
+    items.push({
+      severity: 'info',
+      code: 'DREAM_BACKLOG',
+      title: `${backlog.cnt} conversations are waiting to be dreamed`,
+      detail: `The Dreamer hasn't processed these archives yet. Memories from these conversations aren't searchable until it runs. Trigger a cycle now with dreamer_run_now, or wait for the next scheduled run.`,
+    });
+  }
+
+  return items;
+}
+
 function getNudgeStats(): DiagnosticItem[] {
   const db = getDb();
   const items: DiagnosticItem[] = [];
@@ -411,6 +525,7 @@ export function compileDiagnosticReport(): DiagnosticReport {
     ...getModelPerformance(),
     ...getContextHealth(),
     ...getTrackerHealth(),
+    ...getBulletproofToolHealth(),
     ...getNudgeStats(),
     ...getBudgetStatus(),
   ];

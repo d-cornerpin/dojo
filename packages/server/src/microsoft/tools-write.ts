@@ -276,12 +276,19 @@ function parseRecipients(str: string): Array<{ emailAddress: { address: string }
 
 // ── Tool Execution ──
 
+const microsoftWriteToolDefByName = new Map(microsoftWriteToolDefinitions.map(t => [t.name, t]));
+
 export async function executeMicrosoftWriteTool(
   name: string,
   args: Record<string, unknown>,
   agentId: string,
   agentName: string,
 ): Promise<string> {
+  const { validateAgainstSchema } = await import('../agent/tool-helpers.js');
+  const def = microsoftWriteToolDefByName.get(name);
+  const schemaErr = validateAgainstSchema(name, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
+  if (schemaErr) return schemaErr;
+
   switch (name) {
     case 'outlook_send': {
       const toRecipients = parseRecipients(args.to as string);

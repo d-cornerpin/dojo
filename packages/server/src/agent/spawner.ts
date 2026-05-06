@@ -87,6 +87,17 @@ export interface SpawnParams {
   equippedTechniques?: string[];
   /** Custom always-loaded tools for this agent (overrides role defaults) */
   alwaysLoadedTools?: string[];
+  /**
+   * If false, skip the initial wakeup. The agent is spawned but stays idle
+   * until it gets a real message (a task assignment, an A2A poke, etc.). Use
+   * this when the parent wants to set up state before the apprentice runs —
+   * for example, building a squad and customising each member before any of
+   * them start working.
+   *
+   * Default: true (preserves the existing auto-start behaviour, including the
+   * initial task message that injects complete_task instructions).
+   */
+  autoStart?: boolean;
 }
 
 export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string; name: string; status: string; persist: boolean }> {
@@ -106,7 +117,21 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     groupId,
     equippedTechniques = [],
     alwaysLoadedTools,
+    autoStart = true,
   } = params;
+
+  // Validate the contract early so the failure message tells the caller what
+  // they actually got wrong. The tool schema marks both fields as required
+  // but the dispatcher doesn't enforce that, so a missing systemPrompt used
+  // to crash deep inside the prompt-assembly path (line ~318:
+  // `systemPrompt.toLowerCase()`) with the cryptic "Cannot read properties
+  // of undefined (reading 'toLowerCase')".
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    throw new Error('spawn_agent: `name` is required (a non-empty string).');
+  }
+  if (!systemPrompt || typeof systemPrompt !== 'string' || !systemPrompt.trim()) {
+    throw new Error('spawn_agent: `system_prompt` is required (a non-empty string describing the agent\'s role and instructions).');
+  }
 
   const db = getDb();
 
@@ -324,6 +349,14 @@ IMPORTANT INSTRUCTIONS:
     taskMessage += `\n\nYour tracker task ID is: ${taskId} — update its status when you finish.`;
   }
 
+  if (autoStart === false) {
+    // Caller wants the agent spawned but not poked. Skip both the initial
+    // message and the runtime trigger. The agent will run when something
+    // else wakes it (an A2A message, a task assignment, send_to_agent, etc.).
+    logger.info('Spawned with auto_start=false — agent stays idle until externally poked', { agentId, name });
+    return { agentId, name, status: 'idle', persist };
+  }
+
   // Insert initial user message to kick off the agent loop
   const initMsgId = uuidv4();
   db.prepare(`
@@ -535,15 +568,84 @@ export async function completeAgent(
     broadcastMessage(agent.parent_agent as string, { id: completionMsgId, role: 'system', content: completionContent });
   }
 
+  // Resolve the task this agent owns. Prefer the explicit agent.task_id link
+  // (set at spawn time when task_id is passed). Fall back to "any open task
+  // assigned to this agent" — covers the case where a task was created or
+  // reassigned to the agent after spawn (assigned_to does NOT auto-sync to
+  // agents.task_id, so without this fallback completeAgent would silently
+  // leave the task in_progress and break dependency chains).
+  let resolvedTaskId: string | null = agent.task_id;
+  if (!resolvedTaskId) {
+    // Match either an in-flight assigned task OR a just-completed assigned task
+    // with no summary yet (covers the case where the apprentice called
+    // tracker_update_status first and complete_task second — we still want to
+    // write the summary onto the already-completed task).
+    const fallbackTask = db.prepare(`
+      SELECT id FROM tasks
+       WHERE assigned_to = ?
+         AND (status IN ('on_deck','in_progress')
+              OR (status = 'complete'
+                  AND (completion_summary IS NULL OR completion_summary = '')))
+       ORDER BY created_at DESC LIMIT 1
+    `).get(agentId) as { id: string } | undefined;
+    if (fallbackTask) resolvedTaskId = fallbackTask.id;
+  }
+
   // If task_id: update task status
-  if (agent.task_id) {
+  if (resolvedTaskId) {
     const taskStatus = status === 'complete' ? 'complete' : status === 'fallen' ? 'fallen' : 'blocked';
     db.prepare(`
       UPDATE tasks SET status = ?, updated_at = datetime('now'),
         completed_at = CASE WHEN ? = 'complete' THEN datetime('now') ELSE completed_at END,
-        notes = COALESCE(notes, '') || ? || char(10)
+        notes = COALESCE(notes, '') || ? || char(10),
+        completion_summary = ?
       WHERE id = ?
-    `).run(taskStatus, taskStatus, `[${new Date().toISOString()}] Agent completed: ${summary}`, agent.task_id);
+    `).run(taskStatus, taskStatus, `[${new Date().toISOString()}] Agent completed: ${summary}`, summary, resolvedTaskId);
+
+    // Phase 7 (Part X) — fire onTaskComplete hook so the parent agent gets
+    // a structured note containing the original ask + completion summary.
+    // The existing parent notification at line ~506-536 stays for v1
+    // continuity; this hook adds the original-ask context that the v1 note
+    // doesn't carry.
+    try {
+      const { onTaskComplete } = await import('./v2/hooks/task-complete.js');
+      await onTaskComplete(resolvedTaskId, agentId);
+    } catch (err) {
+      logger.warn('onTaskComplete hook threw — non-fatal, parent will only see the legacy notification', {
+        agentId,
+        taskId: resolvedTaskId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  } else if (agent.parent_agent && status === 'complete') {
+    // Apprentice completed but no task was linked. Common pattern: parent
+    // spawned the apprentice and created tasks separately, but defaulted
+    // assigned_to to themselves. The work happened, but no tracker row got
+    // updated. Surface this loudly to the parent so they notice and fix the
+    // setup next time, instead of staring at a "stuck" task that's actually
+    // done.
+    //
+    // Only fires for clean completions (status='complete'); failures and
+    // blocks have their own signal already.
+    try {
+      const orphanWarning = `[SOURCE: ORPHANED COMPLETION — automated notification, not a message from the user] Sub-agent "${agent.name}" finished but had no tracker task linked. Their work is in their completion summary above, but no task row was updated. This usually means you spawned ${agent.name} without passing task_id, AND the matching tracker task is still assigned to you (the parent) instead of ${agent.name}. To track this kind of work next time: either pass task_id at spawn, or call tracker_create_task with assigned_to="${agent.name}" before assigning the work. If a tracker task should reflect what ${agent.name} just did, mark it complete yourself with tracker_update_status.`;
+      const orphanMsgId = uuidv4();
+      db.prepare(`
+        INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+        VALUES (?, ?, 'system', ?, datetime('now'))
+      `).run(orphanMsgId, agent.parent_agent, orphanWarning);
+      broadcastMessage(agent.parent_agent as string, { id: orphanMsgId, role: 'system', content: orphanWarning });
+      logger.info('Orphaned completion notice sent to parent', {
+        agentId,
+        parentId: agent.parent_agent,
+        agentName: agent.name,
+      });
+    } catch (err) {
+      logger.warn('Failed to send orphaned-completion notice to parent', {
+        agentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   // If this is the Dreamer completing, mark its archives as processed.

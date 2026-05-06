@@ -30,6 +30,7 @@ interface MessageRow {
   cost: number | null;
   latency_ms: number | null;
   created_at: string;
+  turn_number: number | null;
 }
 
 function rowToMessage(row: MessageRow): Message {
@@ -43,6 +44,9 @@ function rowToMessage(row: MessageRow): Message {
     cost: row.cost,
     latencyMs: row.latency_ms,
     createdAt: row.created_at,
+    // Phase 4 §E (2026-05-04) — surface turn_number so the assembler's
+    // stub-and-store pass can age out tool results from old turns.
+    turnNumber: row.turn_number,
   };
 }
 

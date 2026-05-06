@@ -97,8 +97,12 @@ export function isDreamerIgnored(agentId: string): boolean {
 /**
  * Archive ALL messages for a terminated/completed agent.
  * Called on agent termination to ensure conversations are preserved for the Dreamer.
+ *
+ * `force` bypasses the duplicate-archive guard. Used by reset_session: each reset
+ * is a distinct conversation boundary, so we always want a new archive even if
+ * a previous one is still unprocessed.
  */
-export function archiveAgentConversation(agentId: string): string | null {
+export function archiveAgentConversation(agentId: string, force = false): string | null {
   const db = getDb();
 
   // Skip entirely if this agent (or its group) is on the Dreamer ignore list.
@@ -115,12 +119,15 @@ export function archiveAgentConversation(agentId: string): string | null {
   if (shouldSkipServiceAgent(agentId)) return null;
 
   // Check if this agent already has an unprocessed archive — avoid duplicates
-  const existing = db.prepare(
-    'SELECT id FROM vault_conversations WHERE agent_id = ? AND is_processed = 0'
-  ).get(agentId) as { id: string } | undefined;
-  if (existing) {
-    logger.debug('Agent already has unprocessed archive, skipping', { agentId }, agentId);
-    return existing.id;
+  // (unless force=true, e.g. reset_session)
+  if (!force) {
+    const existing = db.prepare(
+      'SELECT id FROM vault_conversations WHERE agent_id = ? AND is_processed = 0'
+    ).get(agentId) as { id: string } | undefined;
+    if (existing) {
+      logger.debug('Agent already has unprocessed archive, skipping', { agentId }, agentId);
+      return existing.id;
+    }
   }
 
   const rows = db.prepare(

@@ -8,6 +8,7 @@ import { getContextSummaries } from './dag.js';
 import { getLatestBriefing } from './briefing.js';
 import { retrieveForContext } from '../vault/retrieval.js';
 import { isPMAgent } from '../config/platform.js';
+// (getRuntimeVersion import removed in Phase 9 Stage 2 — single-track v2)
 import { turnBoundary } from '../agent/turn-state.js';
 import type { Summary } from './dag.js';
 import type { Message } from '@dojo/shared';
@@ -17,6 +18,18 @@ const logger = createLogger('memory-assembler');
 const DEFAULTS = {
   contextThreshold: 0.75,
 };
+
+// ── Per-tool-result cap (Part V + Part XVIII §A) ──
+// Raw tool results stay capped at 3K tokens at assembly time so a single
+// file_read or web_fetch can't dominate context. Always enforced — the
+// runtime version flag was removed in Phase 9 Stage 2.
+const V2_MAX_TOOL_RESULT_TOKENS = 3000;
+
+// ── v2 stub-and-store age (Part XVIII §E) ──
+// After this many turns, a tool_result message in the assembled context
+// gets replaced by a stub. Combined with the vault as long-term memory
+// (§C), the agent doesn't need the raw result kept around.
+const V2_STUB_AFTER_TURNS = 5;
 
 // Model-aware tail sizing: use more of the context window for fresh messages
 // instead of a fixed count. Larger models keep more raw conversation.
@@ -80,48 +93,85 @@ export async function assembleContext(
   // single combined ack at the end (instead of one ack per section).
   let injectedAnyScaffolding = false;
 
-  // 2. Morning briefing
-  const briefing = getLatestBriefing(agentId);
-  if (briefing) {
-    const briefingText = `<briefing generated="${new Date().toISOString().split('T')[0]}">\n${briefing.content}\n</briefing>`;
-    const briefingTokens = estimateTokens(briefingText);
+  // ── v2 scaffolding gating (Part V + Part XVIII §C) ──
+  // In v1, scaffolding (briefing/vault/tracker/continuity) injects every
+  // turn — costing 5–10K tokens per turn even when nothing is new. In v2,
+  // scaffolding injects ONLY on session-start turns (first turn after a
+  // session reset, or first turn ever for an agent). Mid-session turns
+  // skip scaffolding entirely. The agent retrieves anything they need
+  // on demand via vault_search / tracker_get_status / etc.
+  const isSessionStartTurn = isV2SessionStart(agentId);
 
-    if (usedTokens + briefingTokens < maxTokens) {
-      messages.push({ role: 'user', content: briefingText });
-      usedTokens += briefingTokens;
-      injectedAnyScaffolding = true;
-    }
-  }
+  // 2. Morning briefing — session-start only
+  if (isSessionStartTurn) {
+    const briefing = getLatestBriefing(agentId);
+    if (briefing) {
+      const briefingText = `<briefing generated="${new Date().toISOString().split('T')[0]}">\n${briefing.content}\n</briefing>`;
+      const briefingTokens = estimateTokens(briefingText);
 
-  // 2.5. Vault entries (pinned + semantically relevant)
-  try {
-    // Use the last few fresh tail messages as the query for relevance.
-    // If no recent messages exist (e.g., after a session reset), use a
-    // fallback query so pinned entries and recent vault content are still
-    // loaded. Without this, a session reset causes complete amnesia —
-    // the agent starts with zero vault context.
-    const recentForQuery = getRecentMessages(agentId, 3);
-    let queryText = recentForQuery.map(m => m.content).join(' ').slice(0, 500);
-    if (queryText.length <= 10) {
-      // Fallback query: generic enough to surface pinned entries, recent
-      // project state, and important memories. This ensures the vault is
-      // always loaded, even on a fresh session.
-      queryText = 'current projects active tasks recent work status updates decisions';
-    }
-    const vaultResult = await retrieveForContext(queryText, contextWindow, agentId);
-    if (vaultResult.section) {
-      const vaultTokens = estimateTokens(vaultResult.section);
-      if (usedTokens + vaultTokens < maxTokens) {
-        messages.push({ role: 'user', content: vaultResult.section });
-        usedTokens += vaultTokens;
+      if (usedTokens + briefingTokens < maxTokens) {
+        messages.push({ role: 'user', content: briefingText });
+        usedTokens += briefingTokens;
         injectedAnyScaffolding = true;
       }
     }
-  } catch (err) {
-    // Vault injection is best-effort — don't block context assembly
-    logger.warn('Vault context injection failed', {
-      error: err instanceof Error ? err.message : String(err),
-    }, agentId);
+  }
+
+  // 2.5. Vault entries — v1: always; v2: session start only (Part XVIII §C)
+  // In v2 the vault is treated as long-term memory injected once at session
+  // start, like Claude Code's CLAUDE.md. Per-turn vault retrieval moves to
+  // the agent's explicit vault_search calls.
+  //
+  // Session-start vault content is the union of:
+  //   1. Pinned entries (always-load — handled by retrieveForContext)
+  //   2. `session_context`-tagged entries (Phase 4 §C — explicit session load)
+  //   3. Relevance-ranked entries for the current conversation topic (legacy)
+  //
+  // This is additive: existing users get their pinned + relevance behavior;
+  // new users can opt into the Claude Code pattern by tagging entries
+  // `session_context` and pinning the truly always-load ones.
+  if (isSessionStartTurn) {
+    try {
+      const recentForQuery = getRecentMessages(agentId, 3);
+      let queryText = recentForQuery.map(m => m.content).join(' ').slice(0, 500);
+      if (queryText.length <= 10) {
+        queryText = 'current projects active tasks recent work status updates decisions';
+      }
+      const vaultResult = await retrieveForContext(queryText, contextWindow, agentId);
+      const sections: string[] = [];
+      if (vaultResult.section) sections.push(vaultResult.section);
+
+      // Phase 4 §C — also inject session_context-tagged entries that aren't
+      // already in the relevance result. Dedupe by entry ID.
+      try {
+        const { getSessionContextEntries } = await import('../vault/store.js');
+        const sessionCtx = getSessionContextEntries();
+        const alreadyIncluded = new Set(vaultResult.entryIds);
+        const fresh = sessionCtx.filter((e) => !alreadyIncluded.has(e.id));
+        if (fresh.length > 0) {
+          const lines = fresh.map((e) => `[${e.type}] ${e.content}`);
+          const sessionCtxSection =
+            `═══ SESSION CONTEXT (vault entries tagged session_context) ═══\n${lines.join('\n\n')}\n═══ END SESSION CONTEXT ═══`;
+          sections.push(sessionCtxSection);
+        }
+      } catch {
+        /* best effort */
+      }
+
+      if (sections.length > 0) {
+        const combined = sections.join('\n\n');
+        const vaultTokens = estimateTokens(combined);
+        if (usedTokens + vaultTokens < maxTokens) {
+          messages.push({ role: 'user', content: combined });
+          usedTokens += vaultTokens;
+          injectedAnyScaffolding = true;
+        }
+      }
+    } catch (err) {
+      logger.warn('Vault context injection failed', {
+        error: err instanceof Error ? err.message : String(err),
+      }, agentId);
+    }
   }
 
   // 3. Summaries from context_items
@@ -143,52 +193,76 @@ export async function assembleContext(
     }
   }
 
-  // 3.5. Active task injection — always remind the agent what it's working on.
-  // This survives compaction, context trimming, auto-continuation, and session
-  // resets. The tracker is the ground truth for project state — if the agent
-  // has in_progress tasks, they're injected here so the agent NEVER forgets
-  // what it was doing, even if the conversation history was summarized away.
-  try {
+  // 3.5. Active task injection — v1: always; v2: session start only AND
+  // skip if the last 3 turns already mention any of those task IDs (Part V
+  // table). The skip avoids re-injecting the same task block when the agent
+  // is already actively discussing those tasks — common right after a
+  // session reset where they immediately picked up the work.
+  if (isSessionStartTurn) try {
     const { listTasks } = await import('../tracker/schema.js');
     const activeTasks = listTasks({ status: 'in_progress', assignedTo: agentId });
     if (activeTasks.length > 0) {
-      const taskLines = activeTasks.slice(0, 5).map(t => {
-        let line = `• ${t.title} (ID: ${t.id.slice(0, 8)}, priority: ${t.priority})`;
-        if (t.description) line += `\n  Instructions: ${t.description.slice(0, 300)}${t.description.length > 300 ? '...' : ''}`;
-        if (t.notes) {
-          const lastNote = t.notes.split('\n').filter(Boolean).pop();
-          if (lastNote) line += `\n  Last note: ${lastNote.slice(0, 200)}`;
+      // Skip task scaffolding injection if the last 3 turns already mention
+      // these task IDs — no point repeating them in the prompt.
+      let allMentionedRecently = false;
+      {
+        const recent = getRecentMessages(agentId, 6); // ~3 outer turns of msgs
+        const recentText = recent.map(m => m.content).join(' ');
+        allMentionedRecently = activeTasks.every(t =>
+          recentText.includes(t.id) || recentText.includes(t.id.slice(0, 8)),
+        );
+      }
+      if (!allMentionedRecently) {
+        const taskLines = activeTasks.slice(0, 5).map(t => {
+          let line = `• ${t.title} (ID: ${t.id.slice(0, 8)}, priority: ${t.priority})`;
+          if (t.description) line += `\n  Instructions: ${t.description.slice(0, 300)}${t.description.length > 300 ? '...' : ''}`;
+          if (t.notes) {
+            const lastNote = t.notes.split('\n').filter(Boolean).pop();
+            if (lastNote) line += `\n  Last note: ${lastNote.slice(0, 200)}`;
+          }
+          return line;
+        });
+        const taskContext = `═══ YOUR ACTIVE TASKS (from tracker — ground truth) ═══\nYou are currently assigned to these in_progress tasks. This is what you should be working on:\n\n${taskLines.join('\n\n')}\n\n═══ END ACTIVE TASKS ═══`;
+        const taskTokens = estimateTokens(taskContext);
+        if (usedTokens + taskTokens < maxTokens) {
+          messages.push({ role: 'user', content: taskContext });
+          usedTokens += taskTokens;
+          injectedAnyScaffolding = true;
         }
-        return line;
-      });
-      const taskContext = `═══ YOUR ACTIVE TASKS (from tracker — ground truth) ═══\nYou are currently assigned to these in_progress tasks. This is what you should be working on:\n\n${taskLines.join('\n\n')}\n\n═══ END ACTIVE TASKS ═══`;
-      const taskTokens = estimateTokens(taskContext);
-      if (usedTokens + taskTokens < maxTokens) {
-        messages.push({ role: 'user', content: taskContext });
-        usedTokens += taskTokens;
-        injectedAnyScaffolding = true;
       }
     }
   } catch { /* tracker may not be available */ }
 
-  // 3.7. Continuity brief — injected from agent config (written by compaction.ts).
-  // Unlike summaries, this is a concise snapshot of what the agent was doing RIGHT
-  // BEFORE compaction ran. It bridges the gap between compressed history and the
-  // fresh tail. Stored in config, not as a message, so it doesn't waste a turn or
-  // clutter the chat feed.
+  // 3.7. Continuity brief.
+  // v1: inject on every assembly when present.
+  // v2 (Phase 4 §C, Part XVIII §C): inject ONLY for the 3 turns after an
+  // emergency compaction set continuityBriefValidUntilTurn. After that
+  // window the fresh tail is authoritative and the brief falls away.
+  // Below, currentTurn = MAX(turn_number)+1 — the same number v2/loop.ts
+  // uses to label the in-progress turn.
   try {
     const db = getDb();
     const configRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
     if (configRow?.config) {
       const agentConfig = JSON.parse(configRow.config) as Record<string, unknown>;
       const continuityBrief = agentConfig.continuityBrief as string | undefined;
-      if (continuityBrief && continuityBrief.length > 50) {
+
+      let shouldInjectBrief = false;
+      // Inject only if we're inside the validUntilTurn window (set when the
+      // brief was generated). Outside that window, the brief is stale and the
+      // fresh tail is more authoritative anyway.
+      const validUntil = agentConfig.continuityBriefValidUntilTurn as number | undefined;
+      if (typeof validUntil === 'number' && validUntil > 0) {
+        const turnRow = db
+          .prepare('SELECT MAX(turn_number) AS max_turn FROM messages WHERE agent_id = ?')
+          .get(agentId) as { max_turn: number | null } | undefined;
+        const currentTurn = (turnRow?.max_turn ?? 0) + 1;
+        shouldInjectBrief = currentTurn < validUntil;
+      }
+
+      if (shouldInjectBrief && continuityBrief && continuityBrief.length > 50) {
         // Wrap with explicit framing so the agent doesn't treat the brief
-        // as authoritative when it conflicts with the fresh tail. The brief
-        // is a snapshot from BEFORE the last compaction; the live conversation
-        // below is more recent. Pre-2026-05-01 the brief was injected raw,
-        // and agents often anchored on its (stale) state when fresh-tail
-        // showed something newer — leading to verification spirals.
+        // as authoritative when it conflicts with the fresh tail.
         const wrappedBrief = `═══ CONTINUITY BRIEF (snapshot from before the last compaction — the live conversation below is more recent and authoritative when in conflict) ═══\n\n${continuityBrief}\n\n═══ END CONTINUITY BRIEF ═══`;
         const briefTokens = estimateTokens(wrappedBrief);
         if (usedTokens + briefTokens < maxTokens) {
@@ -225,7 +299,21 @@ export async function assembleContext(
 
   // Sanitize fresh tail: drop orphaned tool_result messages whose tool_use
   // was trimmed by budget constraints, and ensure valid pairing
-  const sanitized = sanitizeToolPairs(tailMessages);
+  let sanitized = sanitizeToolPairs(tailMessages);
+
+  // ── v2 stub-and-store (Part XVIII §E) ──
+  // After STUB_AFTER_TURNS turns, raw tool_result content gets replaced with
+  // a stub. Combined with vault as long-term memory (§C), the agent doesn't
+  // need raw results kept around. Without this, even with per-tool result
+  // caps and lazy loading, context grows linearly with turn count over a
+  // long session. With it, context stays roughly flat — old tool results
+  // become stubs and the model uses the vault for findings that matter.
+  //
+  // NULL turn_number → treated as "very old" (pre-v2 messages) — they get
+  // stubbed too. v2-persisted messages have turn_number set; the rare gap
+  // is user messages (persisted by chat route) which are NULL but never
+  // tool_result anyway, so stubOldToolResults skips them.
+  sanitized = stubOldToolResults(sanitized, agentId);
 
   // Auto-load tools that appear in recent assistant tool_use blocks.
   // This handles the case where an agent previously loaded a tool but the
@@ -275,6 +363,14 @@ export async function assembleContext(
   // ones can be replaced with a text stub. The agent can re-call
   // file_read on the path if it genuinely needs to re-examine.
   pruneOldImageBlocksInPlace(messages, /* maxKeepImages */ 1);
+
+  // ── v2 only: per-tool-result text cap (Part V) ──
+  // A 30K-token file_read becomes a ~3K stub. This is the per-call cap,
+  // applied to fresh tail tool results. Older results (≥STUB_AFTER_TURNS
+  // turns) were already replaced with much shorter stubs above by
+  // stubOldToolResults — capLargeToolResultsInPlace mostly affects the
+  // recent tail.
+  capLargeToolResultsInPlace(messages);
 
   // Ensure messages start with user role (Anthropic API requirement).
   // Drop leading assistant messages and pure tool_result messages that
@@ -353,19 +449,64 @@ export async function assembleContext(
 
   // Guard: if we have zero messages after all filtering, pull the last user message
   // directly from DB so the agent at least sees what it's supposed to respond to.
+  //
+  // CRITICAL: respect session_started_at. After a reset_session call, the
+  // assembler is asked to build context for the post-reset turn. If we
+  // recover a user message from BEFORE the reset boundary, the model
+  // re-processes "Reset your session" (or any natural phrasing of it) and
+  // calls reset_session again → loop. The earlier `NOT LIKE '%reset_session%'`
+  // filter only caught the snake_case tool name; real users say "reset" or
+  // "fresh start" or "wipe your context" — none of which match.
+  //
+  // Post-reset behavior: when session_started_at is set and no user message
+  // exists after that boundary, return an empty messages array. The v2 loop's
+  // empty-messages guard (loop.ts:459) will exit cleanly to idle. A generic
+  // "Continue with your current task" fallback would conflict with FRESH_START's
+  // "wait for the user's next message" instruction and trigger the agent to
+  // spam-poll the tracker looking for work.
   if (merged.length === 0) {
-    logger.error('Context assembly produced 0 messages after filtering — recovering last user message', {
-      preSanitizeCount,
-      agentId,
-    }, agentId);
     try {
       const db = getDb();
-      const lastUserMsg = db.prepare(
-        "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' AND content NOT LIKE '[System:%' ORDER BY created_at DESC, rowid DESC LIMIT 1"
-      ).get(agentId) as { content: string } | undefined;
+      const sessionRow = db.prepare(
+        'SELECT session_started_at FROM agents WHERE id = ?'
+      ).get(agentId) as { session_started_at: string | null } | undefined;
+      const sessionBoundary = sessionRow?.session_started_at ?? null;
+
+      const baseConditions = [
+        "agent_id = ?",
+        "role = 'user'",
+        "content NOT LIKE '[System:%'",
+        // Belt + suspenders: still skip messages that literally name the tool.
+        "content NOT LIKE '%reset_session%'",
+      ];
+      const params: unknown[] = [agentId];
+      if (sessionBoundary) {
+        baseConditions.push('created_at >= ?');
+        params.push(sessionBoundary);
+      }
+      const sql = `SELECT content FROM messages WHERE ${baseConditions.join(' AND ')} ORDER BY created_at DESC, rowid DESC LIMIT 1`;
+      const lastUserMsg = db.prepare(sql).get(...params) as { content: string } | undefined;
+
       if (lastUserMsg) {
+        logger.error('Context assembly produced 0 messages after filtering — recovering last user message', {
+          preSanitizeCount,
+          agentId,
+        }, agentId);
         merged.push({ role: 'user', content: lastUserMsg.content });
+      } else if (sessionBoundary) {
+        // Fresh post-reset session with nothing to process — let the loop's
+        // empty-messages guard idle the agent. No fallback message.
+        logger.info('Context assembly: post-reset with no user message after boundary — returning empty for clean idle', {
+          sessionBoundary,
+          agentId,
+        }, agentId);
       } else {
+        // No session boundary set and no recoverable message — preserve
+        // legacy fallback so the agent has something to respond to.
+        logger.error('Context assembly produced 0 messages after filtering and no recoverable user message', {
+          preSanitizeCount,
+          agentId,
+        }, agentId);
         merged.push({ role: 'user', content: 'Continue with your current task.' });
       }
     } catch {
@@ -497,6 +638,167 @@ function budgetSummaries(summaries: Summary[], availableTokens: number): Summary
  *   - All text blocks
  *   - All tool_use blocks (those are tiny)
  */
+/**
+ * v2 — Detect "session start" turns: turns where scaffolding (briefing,
+ * vault, active tasks, continuity brief) should be re-injected.
+ *
+ * Definition: an agent is at session-start if either:
+ *   1. session_started_at is set AND no assistant message exists since then
+ *      (true first turn after a session reset / new session), OR
+ *   2. there are zero assistant messages for the agent at all (brand new agent).
+ *
+ * This matches the existing "── New Session ──" detection at the bottom
+ * of assembleContext for v1, just lifted into a reusable helper.
+ *
+ * Mid-session turns return false → no scaffolding cost.
+ */
+/**
+ * Stub-and-store (Part XVIII §E). Replace tool_result content older than
+ * V2_STUB_AFTER_TURNS turns with a short stub so context stays roughly
+ * flat as the agent works.
+ *
+ * Operates on Message[] (the DB-shaped objects), not on the
+ * Anthropic-format ContentBlockParam arrays — turn_number is only available
+ * on the DB row.
+ *
+ * NULL turn_number (v1-era messages, user messages from chat route) is
+ * treated as "very old" and stubbed if it's a tool_result. In practice
+ * user messages are never tool_result, so this only affects pre-v2 tool
+ * results — the intended behavior per spec.
+ */
+export function stubOldToolResults(messages: Message[], agentId: string): Message[] {
+  const db = getDb();
+  // currentTurn = highest turn_number ever persisted for this agent + 1.
+  // Same logic v2/loop.ts uses to compute its own turn number.
+  const row = db
+    .prepare('SELECT MAX(turn_number) AS max_turn FROM messages WHERE agent_id = ?')
+    .get(agentId) as { max_turn: number | null } | undefined;
+  const currentTurn = (row?.max_turn ?? 0) + 1;
+
+  let stubbedCount = 0;
+
+  const stubbed = messages.map((msg) => {
+    if (msg.role !== 'tool') return msg;
+    // turn_number can be NULL for very old / non-v2-written messages.
+    // Treat NULL as -infinity so it's always older than the threshold.
+    const msgTurn = msg.turnNumber ?? -Infinity;
+    const turnAge = currentTurn - msgTurn;
+    if (turnAge < V2_STUB_AFTER_TURNS) return msg;
+
+    try {
+      const blocks = JSON.parse(msg.content);
+      if (!Array.isArray(blocks)) return msg;
+
+      const newBlocks = blocks.map((b: { type?: string; content?: unknown; tool_use_id?: string }) => {
+        if (b.type !== 'tool_result') return b;
+        const len = typeof b.content === 'string' ? b.content.length : 0;
+        const turnLabel = msg.turnNumber !== null && msg.turnNumber !== undefined ? `turn ${msg.turnNumber}` : 'pre-v2 history';
+        return {
+          ...b,
+          content: `[Tool result from ${turnLabel}, ${len} chars, cleared from context. Re-call the tool or check vault for findings.]`,
+        };
+      });
+      stubbedCount++;
+      return { ...msg, content: JSON.stringify(newBlocks) };
+    } catch {
+      return msg;
+    }
+  });
+
+  if (stubbedCount > 0) {
+    logger.debug('v2 stubOldToolResults: stubbed old tool results', {
+      agentId,
+      stubbedCount,
+      currentTurn,
+      stubAfterTurns: V2_STUB_AFTER_TURNS,
+    }, agentId);
+  }
+
+  return stubbed;
+}
+
+function isV2SessionStart(agentId: string): boolean {
+  try {
+    const db = getDb();
+    const sessionRow = db.prepare(
+      'SELECT session_started_at FROM agents WHERE id = ?',
+    ).get(agentId) as { session_started_at: string | null } | undefined;
+    const sessionStarted = sessionRow?.session_started_at ?? null;
+    let cnt: number;
+    if (sessionStarted) {
+      cnt = (db.prepare(
+        "SELECT COUNT(*) as cnt FROM messages WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?",
+      ).get(agentId, sessionStarted) as { cnt: number }).cnt;
+    } else {
+      cnt = (db.prepare(
+        "SELECT COUNT(*) as cnt FROM messages WHERE agent_id = ? AND role = 'assistant'",
+      ).get(agentId) as { cnt: number }).cnt;
+    }
+    return cnt === 0;
+  } catch {
+    // If detection fails, default to NOT-session-start so we don't burn
+    // tokens on scaffolding mid-conversation. Better to undershoot scaffolding
+    // than overshoot.
+    return false;
+  }
+}
+
+/**
+ * v2 — Cap the text content of tool_result blocks at V2_MAX_TOOL_RESULT_TOKENS.
+ * Mutates messages in place. Each oversized result is truncated with a stub
+ * that tells the agent how to retrieve more.
+ *
+ * Per Part V — without this, a single file_read of a 50K-token file dominates
+ * the context budget and triggers the 90% WARN within a few turns.
+ */
+function capLargeToolResultsInPlace(
+  messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
+): void {
+  let cappedCount = 0;
+  let tokensSaved = 0;
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (typeof msg.content === 'string') continue;
+    if (!Array.isArray(msg.content)) continue;
+
+    const newContent = msg.content.map((block) => {
+      const blk = block as unknown as Record<string, unknown>;
+      if (blk.type !== 'tool_result') return block;
+
+      // tool_result.content can be either a string or an array of content blocks
+      // (e.g., text + image when file_read returns an image). We only cap the
+      // string variant — image/document blocks are handled by pruneOldImageBlocksInPlace.
+      const content = blk.content;
+      if (typeof content !== 'string') return block;
+
+      const tokens = estimateTokens(content);
+      if (tokens <= V2_MAX_TOOL_RESULT_TOKENS) return block;
+
+      const keepChars = Math.max(
+        500,
+        Math.floor(content.length * (V2_MAX_TOOL_RESULT_TOKENS / tokens)),
+      );
+      const truncated =
+        content.slice(0, keepChars) +
+        `\n\n[... ${tokens - V2_MAX_TOOL_RESULT_TOKENS} tokens truncated. Call the same tool again with narrower arguments (e.g. file_read with offset/limit, or grep with a more specific pattern) to see more.]`;
+
+      cappedCount++;
+      tokensSaved += tokens - estimateTokens(truncated);
+      return { ...blk, content: truncated } as unknown as Anthropic.ContentBlockParam;
+    });
+
+    messages[i] = { ...msg, content: newContent };
+  }
+
+  if (cappedCount > 0) {
+    logger.debug('v2 capLargeToolResultsInPlace: capped tool results', {
+      cappedCount,
+      tokensSaved,
+    });
+  }
+}
+
 function pruneOldImageBlocksInPlace(
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
   maxKeepImages: number,

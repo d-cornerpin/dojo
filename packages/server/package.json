@@ -1,6 +1,6 @@
 {
   "name": "@dojo/server",
-  "version": "1.15.20",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {

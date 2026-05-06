@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback, type ReactNode } from 'react';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { WebSocketProvider, useWebSocket } from './hooks/useWebSocket';
 import { ToastProvider, ToastContainer, useToast } from './hooks/useToast';
+import { V2CutoverNotice } from './components/V2CutoverNotice';
 import type { WsEvent } from '@dojo/shared';
 import { Sidebar } from './components/Sidebar';
 import { Login } from './pages/Login';
@@ -99,6 +100,7 @@ const DashboardLayout = () => {
     <ToastProvider>
       <GradientBlobs />
       <ToastContainer />
+      <V2CutoverNotice />
       <div className="h-dvh flex overflow-hidden relative z-[1]">
         <Sidebar />
         <main className="flex-1 flex flex-col h-full overflow-hidden pt-[48px] md:pt-0">

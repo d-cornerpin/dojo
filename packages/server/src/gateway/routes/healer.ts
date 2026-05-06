@@ -42,11 +42,16 @@ healerRouter.post('/config', async (c) => {
   return c.json({ ok: true, data: getHealerConfig() });
 });
 
-// GET /proposals — list pending/recent proposals
+// GET /proposals — list pending proposals + recently-resolved (last 48h).
+// Pending entries always show (the user might need to act on them). Resolved
+// (approved/denied) entries fall off after 48 hours so the vitals view stays
+// uncluttered. Older history is still in the DB if you query it directly.
 healerRouter.get('/proposals', (c) => {
   const db = getDb();
   const proposals = db.prepare(`
     SELECT * FROM healer_proposals
+    WHERE status = 'pending'
+       OR datetime(COALESCE(resolved_at, created_at)) >= datetime('now', '-48 hours')
     ORDER BY
       CASE status WHEN 'pending' THEN 0 ELSE 1 END,
       created_at DESC
@@ -121,10 +126,18 @@ healerRouter.post('/proposals/:id', async (c) => {
   return c.json({ ok: false, error: 'action must be "approve" or "deny"' }, 400);
 });
 
-// GET /actions — list recent auto-fix actions
+// GET /actions — list auto-fix actions from the last 48 hours.
+// Auto-fixes are inherently resolved (no user action needed), so anything
+// older than 48 hours falls off the vitals view. Older history stays in the
+// DB if you need to query it directly.
 healerRouter.get('/actions', (c) => {
   const db = getDb();
-  const actions = db.prepare('SELECT * FROM healer_actions ORDER BY created_at DESC LIMIT 50').all();
+  const actions = db.prepare(`
+    SELECT * FROM healer_actions
+    WHERE datetime(created_at) >= datetime('now', '-48 hours')
+    ORDER BY created_at DESC
+    LIMIT 50
+  `).all();
   return c.json({ ok: true, data: actions });
 });
 

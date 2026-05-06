@@ -1234,6 +1234,33 @@ configRouter.put('/settings/:key', async (c) => {
     clearPlatformConfigCache();
   }
 
+  // iMessage bridge runs from in-memory state. Just writing imessage_enabled
+  // to the config table does nothing — the bridge keeps polling until the
+  // server restarts. Toggle the actual bridge in lockstep with the setting.
+  if (key === 'imessage_enabled') {
+    try {
+      if (body.value === 'true') {
+        const recipientRow = db
+          .prepare("SELECT value FROM config WHERE key = 'imessage_recipient'")
+          .get() as { value: string } | undefined;
+        if (recipientRow?.value) {
+          const { startIMBridge } = await import('../../services/imessage-bridge.js');
+          startIMBridge(recipientRow.value);
+        }
+      } else {
+        const { stopIMBridge } = await import('../../services/imessage-bridge.js');
+        stopIMBridge();
+      }
+    } catch (err) {
+      // Don't fail the setting write — log and continue. The user can retry.
+      const { createLogger } = await import('../../logger.js');
+      createLogger('config').error('Failed to toggle iMessage bridge in lockstep with setting', {
+        enabled: body.value,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // Keep agents.model_id in sync when sensei model config keys change from Settings
   if (key === 'healer_model_id') {
     const { getHealerAgentId } = await import('../../config/platform.js');

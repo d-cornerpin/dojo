@@ -145,7 +145,10 @@ export async function executeVaultSearch(
 ): Promise<string> {
   const query = args.query as string;
   const type = args.type as string | undefined;
-  const limit = (args.limit as number) ?? 10;
+  // Phase 3.5 (2026-05-04) — default limit lowered from 10 to 5 to keep
+  // search results compact. The agent can still pass a higher limit when
+  // they genuinely want more matches.
+  const limit = (args.limit as number) ?? 5;
 
   if (!query) return 'Error: query is required.';
 
@@ -156,21 +159,62 @@ export async function executeVaultSearch(
       return 'No matching memories found in the vault.';
     }
 
+    // Phase 3.5 — per-entry snippet cap at 200 chars. Full content is
+    // available on demand via vault_expand(entry_id). Keeps search results
+    // bounded so a 5-result query never blows past ~2K tokens.
+    const SNIPPET_CHARS = 200;
     const lines = results.map((r, i) => {
       const flags: string[] = [];
       if (r.isPinned) flags.push('pinned');
       if (r.isPermanent) flags.push('permanent');
       const flagStr = flags.length > 0 ? ` {${flags.join(',')}}` : '';
       const conf = r.confidence < 1.0 ? ` (confidence: ${r.confidence.toFixed(1)})` : '';
-      return `${i + 1}. [${r.type}]${flagStr}${conf} ${r.content}\n   ID: ${r.id} | Similarity: ${r.similarity.toFixed(2)} | Created: ${r.createdAt}`;
+      const snippet =
+        r.content.length > SNIPPET_CHARS
+          ? r.content.slice(0, SNIPPET_CHARS) + '…'
+          : r.content;
+      return `${i + 1}. [${r.type}]${flagStr}${conf} ${snippet}\n   ID: ${r.id} | Similarity: ${r.similarity.toFixed(2)} | Created: ${r.createdAt}`;
     });
 
-    return `Found ${results.length} vault memor${results.length === 1 ? 'y' : 'ies'}:\n\n${lines.join('\n\n')}`;
+    const truncatedCount = results.filter((r) => r.content.length > SNIPPET_CHARS).length;
+    const expandHint =
+      truncatedCount > 0
+        ? `\n\n${truncatedCount} entry${truncatedCount === 1 ? '' : 'ies'} truncated. Use vault_expand(entry_id="…") for the full content.`
+        : '';
+
+    return `Found ${results.length} vault memor${results.length === 1 ? 'y' : 'ies'}:\n\n${lines.join('\n\n')}${expandHint}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('vault_search failed', { error: msg }, agentId);
     return `Error searching vault: ${msg}`;
   }
+}
+
+// Phase 3.5 (2026-05-04) — vault_expand: return the full content of one
+// specific vault entry. Pairs with vault_search's compact-by-default
+// snippets — agents skim search results, then expand the few that matter.
+export function executeVaultExpand(
+  agentId: string,
+  args: Record<string, unknown>,
+): string {
+  const entryId = args.entry_id as string | undefined;
+  if (!entryId) return 'Error: entry_id is required.';
+  const entry = getEntry(entryId);
+  if (!entry) return `Error: Vault entry "${entryId}" not found.`;
+
+  const flags: string[] = [];
+  if (entry.isPinned) flags.push('pinned');
+  if (entry.isPermanent) flags.push('permanent');
+  if (entry.isObsolete) flags.push('obsolete');
+  const flagStr = flags.length > 0 ? ` {${flags.join(',')}}` : '';
+
+  return (
+    `[${entry.type}]${flagStr}\n` +
+    `ID: ${entry.id}\n` +
+    `Created: ${entry.createdAt}\n` +
+    (entry.tags && entry.tags.length > 0 ? `Tags: ${entry.tags.join(', ')}\n` : '') +
+    `\n${entry.content}`
+  );
 }
 
 // ── vault_forget ──

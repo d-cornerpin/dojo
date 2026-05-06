@@ -483,7 +483,9 @@
     border-left: 3px solid;
     animation: slideInRight 0.3s ease-out;
   }
-  .glass-toast-info    { border-left-color: var(--cp-blue); }
+  /* Three-tier toast classification (2026-05-05): info/success = green,
+     warning = orange, error = red. info and success are visual aliases. */
+  .glass-toast-info    { border-left-color: var(--cp-teal); }
   .glass-toast-success { border-left-color: var(--cp-teal); }
   .glass-toast-warning { border-left-color: var(--cp-amber); }
   .glass-toast-error   { border-left-color: var(--cp-coral); }

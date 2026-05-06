@@ -212,6 +212,11 @@ async function main(): Promise<void> {
     const db = getDb();
     const imEnabled = db.prepare("SELECT value FROM config WHERE key = 'imessage_enabled'").get() as { value: string } | undefined;
     const imRecipient = db.prepare("SELECT value FROM config WHERE key = 'imessage_recipient'").get() as { value: string } | undefined;
+    logger.info('iMessage bridge startup gate', {
+      imEnabled: imEnabled?.value ?? '<missing>',
+      imRecipient: imRecipient?.value ?? '<missing>',
+      willStart: imEnabled?.value === 'true' && !!imRecipient?.value,
+    });
     if (imEnabled?.value === 'true' && imRecipient?.value) {
       try {
         const { startIMBridge } = await import('./services/imessage-bridge.js');

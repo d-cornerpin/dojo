@@ -58,6 +58,23 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'gmail_read_attachment',
+    description:
+      'Download an attachment from a Gmail message to local disk. Use gmail_list_attachments (or gmail_read, which lists them) to find the attachment_id first. Saves to ~/.dojo/uploads/<your-agent-id>/ by default; override with save_path. Returns the absolute path so you can pass it to file_read, show_to_user, etc.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        message_id: { type: 'string', description: 'Gmail message ID' },
+        attachment_id: { type: 'string', description: 'Attachment ID (from gmail_list_attachments or gmail_read)' },
+        filename: { type: 'string', description: 'Filename to save as (defaults to "attachment-<id>.bin" if you don\'t know the original name)' },
+        save_path: { type: 'string', description: 'Absolute path to save the file (defaults to ~/.dojo/uploads/<agent-id>/<filename>)' },
+      },
+      required: ['message_id', 'attachment_id'],
+    },
+    concurrency: 'serial',
+    maxResultTokens: 500,
+  },
+  {
     name: 'gmail_label',
     description: 'Add or remove labels from an email (move to folders, archive, etc.)',
     input_schema: {
@@ -229,12 +246,19 @@ function buildRfc2822Email(to: string, subject: string, body: string, options?: 
 
 // ── Tool Execution ──
 
+const googleWriteToolDefByName = new Map(googleWriteToolDefinitions.map(t => [t.name, t]));
+
 export async function executeGoogleWriteTool(
   name: string,
   args: Record<string, unknown>,
   agentId: string,
   agentName: string,
 ): Promise<string> {
+  const { validateAgainstSchema } = await import('../agent/tool-helpers.js');
+  const def = googleWriteToolDefByName.get(name);
+  const schemaErr = validateAgainstSchema(name, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
+  if (schemaErr) return schemaErr;
+
   switch (name) {
     case 'gmail_send': {
       const to = args.to as string;
@@ -312,6 +336,32 @@ export async function executeGoogleWriteTool(
       const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw }, agentId, agentName, 'gmail_forward', { messageId, to });
       if (!result.ok) return `Error forwarding email: ${result.error}`;
       return `Email forwarded to ${to}`;
+    }
+
+    case 'gmail_read_attachment': {
+      const messageId = args.message_id as string;
+      const attachmentId = args.attachment_id as string;
+      const url = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`;
+      // googleWrite is fine here for the read — it just makes an authenticated GET.
+      // Using googleRead module to avoid quirky write-side audit semantics.
+      const { googleRead } = await import('./client.js');
+      const result = await googleRead(url, agentId, agentName, 'gmail_read_attachment', { messageId, attachmentId });
+      if (!result.ok) return `Error fetching attachment: ${result.error}`;
+      const att = result.data as { size?: number; data?: string };
+      if (!att?.data) return 'Error: attachment has no downloadable data (may be inline or removed).';
+
+      const fs = await import('node:fs');
+      const os = await import('node:os');
+      const nodePath = await import('node:path');
+
+      const filenameArg = (args.filename as string | undefined) ?? `attachment-${attachmentId.slice(0, 12)}.bin`;
+      const defaultDir = nodePath.join(os.homedir(), '.dojo', 'uploads', agentId);
+      fs.mkdirSync(defaultDir, { recursive: true });
+      const outPath = (args.save_path as string | undefined) ?? nodePath.join(defaultDir, filenameArg);
+
+      const content = Buffer.from(att.data, 'base64url');
+      fs.writeFileSync(outPath, content);
+      return `Attachment saved to ${outPath} (${Math.round(content.length / 1024)}KB). Use file_read or show_to_user with this path.`;
     }
 
     case 'gmail_label': {

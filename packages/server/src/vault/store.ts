@@ -33,6 +33,11 @@ export interface VaultEntry {
   sourceConversationId: string | null;
   source: string;
   embedding: Buffer | null;
+  /**
+   * Namespace scope. NULL = personal vault (legacy semantics). 'squad:<group_id>' =
+   * shared between members of that squad. Phase 7 / Part X.
+   */
+  namespace: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -90,6 +95,7 @@ interface VaultEntryRow {
   source_conversation_id: string | null;
   source: string;
   embedding: Buffer | null;
+  namespace: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -148,6 +154,7 @@ function rowToEntry(row: VaultEntryRow): VaultEntry {
     sourceConversationId: row.source_conversation_id,
     source: row.source,
     embedding: row.embedding,
+    namespace: row.namespace ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -218,6 +225,11 @@ export async function createEntry(params: {
   isPinned?: boolean;
   sourceConversationId?: string;
   source?: string;
+  /**
+   * Optional namespace. NULL/undefined = personal vault. 'squad:<group_id>' =
+   * shared with squad members (Phase 7).
+   */
+  namespace?: string | null;
 }): Promise<VaultEntry> {
   const db = getDb();
   const id = uuidv4();
@@ -259,8 +271,8 @@ export async function createEntry(params: {
   }
 
   db.prepare(`
-    INSERT INTO vault_entries (id, agent_id, agent_name, type, content, context, confidence, is_permanent, tags, is_pinned, source_conversation_id, source, embedding, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    INSERT INTO vault_entries (id, agent_id, agent_name, type, content, context, confidence, is_permanent, tags, is_pinned, source_conversation_id, source, embedding, namespace, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
   `).run(
     id,
     params.agentId,
@@ -275,6 +287,7 @@ export async function createEntry(params: {
     params.sourceConversationId ?? null,
     params.source ?? 'agent',
     embeddingBuf,
+    params.namespace ?? null,
   );
 
   logger.info('Vault entry created', { id, type: params.type, source: params.source ?? 'agent' });
@@ -352,6 +365,13 @@ export function listEntries(options?: {
   search?: string;
   limit?: number;
   includeObsolete?: boolean;
+  /**
+   * Phase 7: filter by namespace. Pass `null` (or omit) to default to
+   * personal vault (`namespace IS NULL`). Pass a string like
+   * `'squad:<group_id>'` to scope to that namespace. The two scopes never
+   * overlap — personal-vault searches never see squad entries and vice versa.
+   */
+  namespace?: string | null;
 }): VaultEntry[] {
   const db = getDb();
   const conditions: string[] = [];
@@ -381,6 +401,19 @@ export function listEntries(options?: {
   if (options?.search) {
     conditions.push('content LIKE ?');
     params.push(`%${options.search}%`);
+  }
+  // Namespace scoping (Phase 7): default to personal vault, opt into squad
+  // namespaces explicitly. Calling listEntries without `namespace` keeps the
+  // existing behavior for legacy callers (vault_search, retrieval, etc.).
+  if (options && Object.prototype.hasOwnProperty.call(options, 'namespace')) {
+    if (options.namespace === null || options.namespace === undefined) {
+      conditions.push('namespace IS NULL');
+    } else {
+      conditions.push('namespace = ?');
+      params.push(options.namespace);
+    }
+  } else {
+    conditions.push('namespace IS NULL');
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -497,6 +530,28 @@ export function getPinnedEntries(): VaultEntry[] {
   const db = getDb();
   const rows = db.prepare(
     'SELECT * FROM vault_entries WHERE is_pinned = 1 AND is_obsolete = 0 ORDER BY created_at DESC'
+  ).all() as VaultEntryRow[];
+  return rows.map(rowToEntry);
+}
+
+/**
+ * Phase 4 §C — Vault entries tagged 'session_context' get auto-injected at
+ * session start (in addition to pinned entries). Mirrors Claude Code's
+ * CLAUDE.md: stable, small, always-loaded context the agent expects to see
+ * at the top of every fresh session.
+ *
+ * The tag lives in the existing `tags` JSON array on each entry — no schema
+ * change. Users can write `vault_remember(content, tags=['session_context'])`
+ * to mark something as session-load-on-start.
+ */
+export function getSessionContextEntries(): VaultEntry[] {
+  const db = getDb();
+  const rows = db.prepare(
+    `SELECT * FROM vault_entries
+     WHERE is_obsolete = 0
+       AND tags IS NOT NULL
+       AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'session_context')
+     ORDER BY created_at DESC`
   ).all() as VaultEntryRow[];
   return rows.map(rowToEntry);
 }

@@ -15,6 +15,7 @@ import {
   updateTechniqueInstructions,
   publishTechnique,
   recordTechniqueUsage,
+  resolveTechniqueRef,
 } from './store.js';
 
 const logger = createLogger('technique-tools');
@@ -66,8 +67,10 @@ export function executeUseTechnique(agentId: string, agentName: string, agentGro
   const name = args.name as string;
   if (!name) return 'Error: name is required.';
 
+  const resolved = resolveTechniqueRef(name);
+  if (!resolved.ok) return resolved.error;
   const db = getDb();
-  const technique = getTechniqueDetail(name);
+  const technique = getTechniqueDetail(resolved.id);
   if (!technique) return `Error: Technique "${name}" not found.`;
 
   // Check access
@@ -111,6 +114,7 @@ export function executeUseTechnique(agentId: string, agentName: string, agentGro
 export function executeListTechniques(agentId: string, classification: string, args: Record<string, unknown>): string {
   const tag = args.tag as string | undefined;
   const includeDrafts = (args.include_drafts as boolean) && classification === 'sensei';
+  const verbose = args.verbose as boolean | undefined;
 
   const techniques = listTechniques({
     tag,
@@ -125,10 +129,18 @@ export function executeListTechniques(agentId: string, classification: string, a
   const lines = techniques.map(t => {
     const tags = t.tags.length > 0 ? ` [${t.tags.join(', ')}]` : '';
     const state = t.state !== 'published' ? ` (${t.state})` : '';
-    return `- ${t.name} (${t.id}): ${t.description ?? 'No description'}${tags}${state} — used ${t.usageCount} time(s)`;
+    if (verbose) {
+      return `- ${t.name} (${t.id}): ${t.description ?? 'No description'}${tags}${state} — used ${t.usageCount} time(s)`;
+    }
+    // Compact: name + id + tags + non-default state. Drop description and
+    // usage count — they're only useful when picking between options, and
+    // the caller can verbose=true or use_technique to get the full thing.
+    return `- ${t.name} (${t.id})${tags}${state}`;
   });
 
-  return `Available techniques (${techniques.length}):\n${lines.join('\n')}`;
+  const header = `Available techniques (${techniques.length}):\n${lines.join('\n')}`;
+  if (verbose) return header;
+  return `${header}\n\n${techniques.length} result${techniques.length === 1 ? '' : 's'} shown (compact). For full detail on one: use_technique(name=<id>). For all details on every result: re-call list_techniques with verbose=true.`;
 }
 
 // ── publish_technique ──
@@ -141,11 +153,13 @@ export function executePublishTechnique(agentId: string, classification: string,
   const name = args.name as string;
   if (!name) return 'Error: name is required.';
 
-  const technique = getTechnique(name);
+  const resolved = resolveTechniqueRef(name);
+  if (!resolved.ok) return resolved.error;
+  const technique = getTechnique(resolved.id);
   if (!technique) return `Error: Technique "${name}" not found.`;
   if (technique.state === 'published') return `Technique "${technique.name}" is already published.`;
 
-  const published = publishTechnique(name);
+  const published = publishTechnique(resolved.id);
   if (!published) return `Error: Failed to publish technique "${name}".`;
 
   return `Technique "${published.name}" is now published and available to all agents in the dojo.`;
@@ -161,7 +175,9 @@ export function executeUpdateTechnique(agentId: string, agentName: string, class
   const name = args.name as string;
   if (!name) return 'Error: name is required.';
 
-  const technique = getTechnique(name);
+  const resolved = resolveTechniqueRef(name);
+  if (!resolved.ok) return resolved.error;
+  const technique = getTechnique(resolved.id);
   if (!technique) return `Error: Technique "${name}" not found.`;
 
   const instructions = args.instructions as string | undefined;
@@ -169,7 +185,7 @@ export function executeUpdateTechnique(agentId: string, agentName: string, class
   const changeSummary = args.change_summary as string || 'Updated by agent';
 
   if (instructions) {
-    updateTechniqueInstructions(name, instructions, changeSummary, agentId);
+    updateTechniqueInstructions(resolved.id, instructions, changeSummary, agentId);
   }
 
   if (files) {
@@ -180,7 +196,7 @@ export function executeUpdateTechnique(agentId: string, agentName: string, class
     }
   }
 
-  const updated = getTechnique(name);
+  const updated = getTechnique(resolved.id);
   return `Technique "${updated?.name}" updated (version ${updated?.version}). ${changeSummary}`;
 }
 
@@ -190,10 +206,12 @@ export function executeSubmitForReview(agentId: string, args: Record<string, unk
   const name = args.name as string;
   if (!name) return 'Error: name is required.';
 
-  const technique = getTechnique(name);
+  const resolved = resolveTechniqueRef(name);
+  if (!resolved.ok) return resolved.error;
+  const technique = getTechnique(resolved.id);
   if (!technique) return `Error: Technique "${name}" not found.`;
   if (technique.state !== 'draft') return `Technique "${technique.name}" is not in draft state (current: ${technique.state}).`;
 
-  updateTechnique(name, { state: 'review' });
+  updateTechnique(resolved.id, { state: 'review' });
   return `Technique "${technique.name}" submitted for Sensei review.`;
 }

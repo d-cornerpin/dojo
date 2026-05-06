@@ -23,6 +23,11 @@ import { getAgentRuntime } from '../agent/runtime.js';
 
 const logger = createLogger('tracker-tools');
 
+// Re-exported from the shared helpers so the trackerCreateTask /
+// trackerUpdateStatus call sites keep working with their existing usage.
+// The canonical implementation lives in agent/tool-helpers.ts.
+import { resolveAgentRef as resolveAgentName } from '../agent/tool-helpers.js';
+
 // ── Notify primary agent of task/project completion ──
 
 function notifyPrimaryAgent(message: string, callingAgentId: string, forceNotify = false): void {
@@ -170,11 +175,10 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     // Default assigned_to to the calling agent if not specified
     // Resolve agent name to ID if a name was passed instead of a UUID
     let assignedTo = (args.assignedTo as string | undefined) ?? agentId;
-    if (assignedTo && !assignedTo.match(/^[0-9a-f]{8}-[0-9a-f]{4}-/)) {
-      // Looks like a name, not a UUID -- resolve it
-      const resolveDb = getDb();
-      const resolved = resolveDb.prepare("SELECT id FROM agents WHERE name = ? AND status != 'terminated' ORDER BY created_at DESC LIMIT 1").get(assignedTo) as { id: string } | undefined;
-      if (resolved) assignedTo = resolved.id;
+    if (assignedTo) {
+      const r = resolveAgentName(assignedTo);
+      if (!r.ok) return r.error;
+      assignedTo = r.id;
     }
     const priority = args.priority as 'high' | 'normal' | 'low' | undefined;
     const stepNumber = args.stepNumber as number | undefined;
@@ -346,7 +350,12 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     const taskId = resolved.id;
 
     const status = args.status as string | undefined;
-    const assignedTo = args.assignedTo as string | undefined;
+    let assignedTo = args.assignedTo as string | undefined;
+    if (assignedTo) {
+      const r = resolveAgentName(assignedTo);
+      if (!r.ok) return r.error;
+      assignedTo = r.id;
+    }
     const priority = args.priority as string | undefined;
 
     if (!status && !assignedTo && !priority) {
@@ -449,6 +458,19 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       parts.push('Paused indefinitely — must be resumed manually.');
     }
 
+    // Apprentice safety net: if an apprentice just marked their OWN primary task
+    // 'complete' via tracker_update_status, they almost certainly meant to finalize
+    // their work. tracker_update_status alone leaves them idle — their parent will
+    // never get the structured completion notification. Nudge them to call
+    // complete_task on the next turn.
+    if (status === 'complete') {
+      const agentRow = db.prepare('SELECT classification, task_id FROM agents WHERE id = ?').get(agentId) as { classification: string; task_id: string | null } | undefined;
+      if (agentRow && agentRow.classification === 'apprentice' && agentRow.task_id === taskId) {
+        parts.push('');
+        parts.push('[REMINDER] You just marked your own assigned task complete, but you have NOT finalized your work. tracker_update_status alone does not terminate you or notify your parent. Call complete_task(status="complete", summary="<your result>") on your next turn to wrap up properly.');
+      }
+    }
+
     return parts.join('\n');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -482,10 +504,16 @@ export function trackerAddNotes(agentId: string, args: Record<string, unknown>):
 }
 
 // ── trackerEditTask ──
-// Edit a task's title and/or description. Separate from trackerUpdateStatus
-// because status/priority/assignee changes have side effects (notifications,
-// scheduler callbacks, project completion checks) that should not fire when
-// the agent is simply rewriting the task's text.
+// Edit any structural field on a task — title, description, dependencies,
+// step ordering, schedule. This is the catch-all editor; status changes still
+// go through trackerUpdateStatus (because completing a task has notification
+// + project-rollup side-effects), and the schedule pause/resume pair stays on
+// trackerPauseSchedule / trackerResumeSchedule (because those write a reason
+// and notify the PM differently).
+//
+// Everything else lives here. If a future field is added to the tasks table,
+// the rule of thumb is: "does setting it have a side-effect beyond the row
+// update?" If no, add it to this tool. If yes, give it its own tool.
 
 export function trackerEditTask(agentId: string, args: Record<string, unknown>): string {
   try {
@@ -498,37 +526,75 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
 
     const title = args.title as string | undefined;
     const description = args.description as string | undefined;
+    const dependsOn = args.dependsOn ?? args.depends_on;
+    const stepNumber = (args.stepNumber ?? args.step_number) as number | null | undefined;
+    const phase = args.phase as number | null | undefined;
+    const scheduledStart = (args.scheduledStart ?? args.scheduled_start) as string | null | undefined;
+    const repeatInterval = (args.repeatInterval ?? args.repeat_interval) as number | null | undefined;
+    const repeatUnit = (args.repeatUnit ?? args.repeat_unit) as string | null | undefined;
+    const repeatEndType = (args.repeatEndType ?? args.repeat_end_type) as string | null | undefined;
+    const repeatEndValue = (args.repeatEndValue ?? args.repeat_end_value) as string | null | undefined;
+    const priority = args.priority as string | undefined;
+    const notes = args.notes as string | undefined;
 
-    if (title === undefined && description === undefined) {
-      return 'Error: at least one of title or description must be provided';
+    const editableKeys = [
+      title, description, dependsOn, stepNumber, phase,
+      scheduledStart, repeatInterval, repeatUnit, repeatEndType, repeatEndValue,
+      priority, notes,
+    ];
+    if (editableKeys.every(v => v === undefined)) {
+      return 'Error: at least one editable field must be provided. Editable: title, description, depends_on, step_number, phase, scheduled_start, repeat_interval, repeat_unit, repeat_end_type, repeat_end_value, priority, notes. (For status changes use tracker_update_status; for assignee changes use tracker_reassign_task; for pause/resume use tracker_pause_schedule.)';
     }
 
-    const updates: { title?: string; description?: string | null } = {};
+    const updates: Parameters<typeof updateTask>[1] = {};
     if (title !== undefined) {
       if (!title.trim()) return 'Error: title cannot be empty';
       updates.title = title.trim();
     }
     if (description !== undefined) {
-      // Allow empty string to clear the description
       updates.description = description === '' ? null : description;
     }
+    if (dependsOn !== undefined) {
+      if (!Array.isArray(dependsOn)) return 'Error: depends_on must be an array of task IDs (or [] to clear)';
+      updates.dependsOn = dependsOn as string[];
+    }
+    if (stepNumber !== undefined) updates.stepNumber = stepNumber;
+    if (phase !== undefined) updates.phase = phase;
+    if (scheduledStart !== undefined) {
+      // Normalize to UTC ISO so downstream scheduling code doesn't trip on
+      // a local-time string — same handling as trackerCreateTask.
+      if (scheduledStart === null || scheduledStart === '') {
+        updates.scheduledStart = null;
+      } else {
+        try {
+          const parsed = new Date(scheduledStart);
+          updates.scheduledStart = isNaN(parsed.getTime()) ? scheduledStart : parsed.toISOString();
+        } catch {
+          updates.scheduledStart = scheduledStart;
+        }
+      }
+    }
+    if (repeatInterval !== undefined) updates.repeatInterval = repeatInterval;
+    if (repeatUnit !== undefined) updates.repeatUnit = repeatUnit;
+    if (repeatEndType !== undefined) updates.repeatEndType = repeatEndType;
+    if (repeatEndValue !== undefined) updates.repeatEndValue = repeatEndValue;
+    if (priority !== undefined) updates.priority = priority;
+    if (notes !== undefined) updates.notes = notes;
 
     const task = updateTask(taskId, updates);
     if (!task) {
       return `Error: Task ${taskId} was deleted before the update completed. It no longer exists.`;
     }
 
-    const parts = [
+    const changed: string[] = [];
+    for (const k of Object.keys(updates)) changed.push(k);
+
+    return [
       `[OK] task_id=${task.id}`,
       ``,
       `Task updated: ${task.title}`,
-    ];
-    if (title !== undefined) parts.push(`Title changed.`);
-    if (description !== undefined) {
-      parts.push(task.description ? `Description updated (${task.description.length} chars).` : `Description cleared.`);
-    }
-
-    return parts.join('\n');
+      `Fields changed: ${changed.join(', ')}`,
+    ].join('\n');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('trackerEditTask failed', { error: msg }, agentId);
@@ -638,7 +704,21 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
     const scope = args.scope as 'tasks' | 'projects' | 'all' | undefined ?? 'all';
     const filterAssignedTo = args.assignedTo as string | undefined;
     const filterStatus = args.status as string | undefined;
+    const verbose = args.verbose as boolean | undefined;
     const parts: string[] = [];
+    let totalShown = 0;
+
+    // Helper: format one task row. In verbose mode, append the description
+    // line. In compact mode, just title + assignee + priority.
+    const taskRow = (t: { id: string; title: string; assignedTo: string | null; assignedToName: string | null; priority: string; description: string | null }) => {
+      const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
+      const head = `  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`;
+      if (verbose && t.description) {
+        const desc = t.description.length > 200 ? t.description.slice(0, 200) + '...' : t.description;
+        return `${head}\n    → ${desc}`;
+      }
+      return head;
+    };
 
     if (scope === 'projects' || scope === 'all') {
       const projects = listProjects({ status: 'active' });
@@ -647,30 +727,23 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
         for (const p of projects) {
           parts.push(`  [${p.id.slice(0, 8)}] ${p.title} (phase ${p.currentPhase}/${p.phaseCount})`);
         }
+        totalShown += projects.length;
       } else {
         parts.push('No active projects.');
       }
     }
 
     if (scope === 'tasks' || scope === 'all') {
-      // If a specific status filter is requested, only show those tasks
       if (filterStatus) {
         const filtered = listTasks({ status: filterStatus, assignedTo: filterAssignedTo });
         if (filtered.length > 0) {
           parts.push(`${filterStatus.replace('_', ' ')} Tasks (${filtered.length}):`);
-          for (const t of filtered) {
-            const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
-            parts.push(`  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`);
-            if (t.description) {
-              const desc = t.description.length > 120 ? t.description.slice(0, 120) + '...' : t.description;
-              parts.push(`    → ${desc}`);
-            }
-          }
+          for (const t of filtered) parts.push(taskRow(t as Parameters<typeof taskRow>[0]));
+          totalShown += filtered.length;
         } else {
           parts.push(`No ${filterStatus} tasks.`);
         }
       } else {
-        // Default: show all active categories
         const taskFilter = filterAssignedTo ? { assignedTo: filterAssignedTo } : undefined;
         const inProgress = listTasks({ status: 'in_progress', ...taskFilter });
         const pending = listTasks({ status: 'on_deck', ...taskFilter });
@@ -679,53 +752,29 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
         if (inProgress.length > 0) {
           parts.push('');
           parts.push(`In Progress Tasks (${inProgress.length}):`);
-          for (const t of inProgress) {
-            const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
-            parts.push(`  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`);
-            if (t.description) {
-              const desc = t.description.length > 120 ? t.description.slice(0, 120) + '...' : t.description;
-              parts.push(`    → ${desc}`);
-            }
-          }
+          for (const t of inProgress) parts.push(taskRow(t as Parameters<typeof taskRow>[0]));
+          totalShown += inProgress.length;
         }
-
         if (pending.length > 0) {
           parts.push('');
           parts.push(`On Deck Tasks (${pending.length}):`);
-          for (const t of pending.slice(0, 10)) {
-            const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
-            parts.push(`  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`);
-            if (t.description) {
-              const desc = t.description.length > 120 ? t.description.slice(0, 120) + '...' : t.description;
-              parts.push(`    → ${desc}`);
-            }
-          }
-          if (pending.length > 10) {
-            parts.push(`  ... and ${pending.length - 10} more`);
-          }
+          for (const t of pending.slice(0, 10)) parts.push(taskRow(t as Parameters<typeof taskRow>[0]));
+          if (pending.length > 10) parts.push(`  ... and ${pending.length - 10} more`);
+          totalShown += Math.min(pending.length, 10);
         }
-
         if (blocked.length > 0) {
           parts.push('');
           parts.push(`Blocked Tasks (${blocked.length}):`);
-          for (const t of blocked) {
-            const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
-            parts.push(`  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`);
-            if (t.description) {
-              const desc = t.description.length > 120 ? t.description.slice(0, 120) + '...' : t.description;
-              parts.push(`    → ${desc}`);
-            }
-          }
+          for (const t of blocked) parts.push(taskRow(t as Parameters<typeof taskRow>[0]));
+          totalShown += blocked.length;
         }
 
         const paused = listTasks({ status: 'paused', ...taskFilter });
         if (paused.length > 0) {
           parts.push('');
           parts.push(`Paused Tasks (${paused.length}):`);
-          for (const t of paused) {
-            const assignee = t.assignedTo ? ` [${t.assignedToName ?? t.assignedTo}]` : ' [unassigned]';
-            parts.push(`  [${t.id.slice(0, 8)}] ${t.title}${assignee} (${t.priority})`);
-          }
+          for (const t of paused) parts.push(taskRow(t as Parameters<typeof taskRow>[0]));
+          totalShown += paused.length;
         }
 
         if (inProgress.length === 0 && pending.length === 0 && blocked.length === 0) {
@@ -735,9 +784,15 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
       }
     }
 
-    if (parts.length > 0) {
+    // Trailer: always tell the agent how to drill in. In compact mode also
+    // mention verbose=true.
+    if (totalShown > 0) {
       parts.push('');
-      parts.push('Tip: Call tracker_get_status(id="<task_id>") for full details including complete instructions and notes.');
+      if (verbose) {
+        parts.push('Tip: tracker_get_status(id="<task_id>") for notes, depends_on, schedule, and full description.');
+      } else {
+        parts.push(`${totalShown} task/project row${totalShown === 1 ? '' : 's'} shown (compact). For full detail on one: tracker_get_status(id=<task_or_project_id>). For descriptions on every result: re-call tracker_list_active with verbose=true.`);
+      }
     }
 
     return parts.join('\n');

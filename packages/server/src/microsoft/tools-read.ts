@@ -12,26 +12,34 @@ import { msGraphRead } from './client.js';
 export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_search',
-    description: 'Search Outlook email. Uses Microsoft search syntax.',
+    description: 'Search Outlook email. Default returns one compact line per email (date | sender — subject + ID + unread flag). For previews on every result, pass verbose=true; for the full body of ONE email, use outlook_read(message_id).',
     input_schema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: "Search query (e.g., 'from:john@example.com', 'subject:invoice')" },
         max_results: { type: 'number', description: 'Maximum number of results (default: 10)' },
+        verbose: { type: 'boolean', description: 'If true, include the body preview per email. Default false (one line per result).' },
       },
       required: ['query'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
   },
   {
     name: 'outlook_read',
-    description: 'Read a specific Outlook email by message ID. Returns sender, recipients, subject, date, and body.',
+    description:
+      'Read a specific Outlook email by message ID. Returns sender, recipients, subject, date, and plain-text body (HTML stripped). Body is paginated: defaults to first ~12K chars (~3K tokens). For long emails, use `offset` + `limit` (in characters) — the pagination trailer tells you the exact next call.',
     input_schema: {
       type: 'object',
       properties: {
         message_id: { type: 'string', description: 'Outlook message ID (from outlook_search or outlook_inbox results)' },
+        offset: { type: 'number', description: 'Body character offset to start from (default 0). Use the value from the previous call\'s pagination trailer.' },
+        limit: { type: 'number', description: 'Body characters to return (default 12000 ≈ 3K tokens). Don\'t exceed 16000.' },
       },
       required: ['message_id'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 4000,
   },
   {
     name: 'outlook_inbox',
@@ -44,6 +52,8 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
       },
       required: [],
     },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
   },
   {
     name: 'calendar_agenda_ms',
@@ -55,6 +65,8 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
       },
       required: [],
     },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
   },
   {
     name: 'calendar_search_ms',
@@ -67,29 +79,38 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
       },
       required: ['query'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
   },
   {
     name: 'onedrive_list',
-    description: 'List files in OneDrive. Can list root or a specific folder.',
+    description: 'List files in OneDrive. Default returns one compact line per item (name + size + short type + id + date). For full mime types and webUrls on every result, pass verbose=true; for the content of ONE file, use onedrive_read(file_id).',
     input_schema: {
       type: 'object',
       properties: {
         folder_id: { type: 'string', description: 'Folder ID to list (omit for root)' },
         max_results: { type: 'number', description: 'Maximum results (default: 20)' },
+        verbose: { type: 'boolean', description: 'If true, include full mime type and webUrl per item. Default false (compact rows).' },
       },
       required: [],
     },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
   },
   {
     name: 'onedrive_read',
-    description: 'Read the content or metadata of a OneDrive file.',
+    description: 'Read the content or metadata of a OneDrive file. Text content is paginated by character — defaults to first ~16K chars (~4K tokens). For long files, use `offset` + `limit` per the pagination trailer.',
     input_schema: {
       type: 'object',
       properties: {
         file_id: { type: 'string', description: 'OneDrive file ID (from onedrive_list results)' },
+        offset: { type: 'number', description: 'Character offset to start from (default 0).' },
+        limit: { type: 'number', description: 'Characters to return (default 16000 ≈ 4K tokens). Don\'t exceed 20000.' },
       },
       required: ['file_id'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 5000,
   },
   {
     name: 'teams_read_messages',
@@ -102,6 +123,8 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
       },
       required: [],
     },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
   },
   {
     name: 'outlook_list_attachments',
@@ -113,10 +136,12 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
       },
       required: ['message_id'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 1500,
   },
   {
     name: 'onedrive_search',
-    description: 'Search for files and folders in OneDrive by name or content.',
+    description: 'Search for files and folders in OneDrive by name or content. Returns name + path + size + last-modified per result.',
     input_schema: {
       type: 'object',
       properties: {
@@ -125,6 +150,8 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
       },
       required: ['query'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
   },
   {
     name: 'teams_list_teams',
@@ -134,6 +161,8 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
       properties: {},
       required: [],
     },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
   },
   {
     name: 'teams_list_channels',
@@ -145,6 +174,8 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
       },
       required: ['team_id'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
   },
   {
     name: 'teams_read_channel_messages',
@@ -158,10 +189,23 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
       },
       required: ['team_id', 'channel_id'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
   },
 ];
 
+// Phase 3.5 (2026-05-04) — register concurrency + maxResultTokens overrides
+// with the v2 partitioner / cap registry. tools.ts imports this module
+// statically, so registration happens at app startup.
+import { registerConcurrency, registerMaxResultTokens } from '../agent/v2/classifiers/concurrency.js';
+for (const def of microsoftReadToolDefinitions) {
+  if (def.concurrency) registerConcurrency(def.name, def.concurrency);
+  if (def.maxResultTokens) registerMaxResultTokens(def.name, def.maxResultTokens);
+}
+
 // ── Tool Execution ──
+
+const microsoftReadToolDefByName = new Map(microsoftReadToolDefinitions.map(t => [t.name, t]));
 
 export async function executeMicrosoftReadTool(
   name: string,
@@ -169,10 +213,18 @@ export async function executeMicrosoftReadTool(
   agentId: string,
   agentName: string,
 ): Promise<string> {
+  // Schema-driven required-field validation. Same approach as Slides — keeps
+  // validation co-located with the tool definitions.
+  const { validateAgainstSchema } = await import('../agent/tool-helpers.js');
+  const def = microsoftReadToolDefByName.get(name);
+  const schemaErr = validateAgainstSchema(name, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
+  if (schemaErr) return schemaErr;
+
   switch (name) {
     case 'outlook_search': {
       const query = args.query as string;
       const maxResults = (args.max_results as number) ?? 10;
+      const verbose = args.verbose as boolean | undefined;
       const result = await msGraphRead(
         `me/messages?$search="${encodeURIComponent(query)}"&$top=${maxResults}&$select=id,from,subject,receivedDateTime,bodyPreview,isRead`,
         agentId, agentName, 'outlook_search', { query, maxResults },
@@ -183,11 +235,19 @@ export async function executeMicrosoftReadTool(
       if (!data?.value || data.value.length === 0) return 'No emails found matching that query.';
 
       const emails = data.value.map(m => {
-        const unread = m.isRead ? '' : ' [UNREAD]';
-        return `${unread}ID: ${m.id}\nFrom: ${m.from?.emailAddress?.name} <${m.from?.emailAddress?.address}>\nSubject: ${m.subject}\nDate: ${m.receivedDateTime}\nPreview: ${m.bodyPreview}`;
+        const unread = m.isRead ? ' [UNREAD]' : '';
+        const fromName = m.from?.emailAddress?.name ?? '';
+        const fromAddr = m.from?.emailAddress?.address ?? '';
+        if (verbose) {
+          return `${unread.trim()}ID: ${m.id}\nFrom: ${fromName} <${fromAddr}>\nSubject: ${m.subject}\nDate: ${m.receivedDateTime}\nPreview: ${m.bodyPreview}`;
+        }
+        // Compact: one line per email — drop preview body, keep date+sender+subject+unread.
+        return `-${unread} ${m.receivedDateTime} | ${fromName} <${fromAddr}> — ${m.subject}\n  ID: ${m.id}`;
       });
 
-      return `Found ${data.value.length} email(s):\n\n${emails.join('\n\n---\n\n')}`;
+      const header = `Found ${data.value.length} email(s):\n\n${emails.join(verbose ? '\n\n---\n\n' : '\n')}`;
+      if (verbose) return header;
+      return `${header}\n\n${emails.length} compact result${emails.length === 1 ? '' : 's'} shown. For full body of one: outlook_read(message_id=<id>). For previews on every result: re-call outlook_search with verbose=true.`;
     }
 
     case 'outlook_read': {
@@ -217,7 +277,18 @@ export async function executeMicrosoftReadTool(
         body = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
       }
 
-      let output = `From: ${m.from?.emailAddress?.name} <${m.from?.emailAddress?.address}>\nTo: ${to}${cc ? `\nCc: ${cc}` : ''}\nSubject: ${m.subject}\nDate: ${m.receivedDateTime}\n\n${body}`;
+      // Phase 3.5 (2026-05-04) — paginated body. Headers always included; the
+      // body slices to ~12K chars by default with offset/limit pagination.
+      const { applyTextPagination } = await import('../agent/tools.js');
+      const pagedBody = applyTextPagination(
+        body,
+        'outlook_read',
+        { offset: args.offset as number | undefined, limit: args.limit as number | undefined },
+        { message_id: args.message_id },
+        12_000,
+      );
+
+      let output = `From: ${m.from?.emailAddress?.name} <${m.from?.emailAddress?.address}>\nTo: ${to}${cc ? `\nCc: ${cc}` : ''}\nSubject: ${m.subject}\nDate: ${m.receivedDateTime}\n\n${pagedBody}`;
       if (m.hasAttachments) output += '\n\nAttachments: yes';
       return output;
     }
@@ -288,6 +359,7 @@ export async function executeMicrosoftReadTool(
     case 'onedrive_list': {
       const folderId = args.folder_id as string | undefined;
       const maxResults = (args.max_results as number) ?? 20;
+      const verbose = args.verbose as boolean | undefined;
       const endpoint = folderId
         ? `me/drive/items/${encodeURIComponent(folderId)}/children?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl`
         : `me/drive/root/children?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl`;
@@ -299,14 +371,27 @@ export async function executeMicrosoftReadTool(
       if (!data?.value || data.value.length === 0) return 'No files found.';
 
       const files = data.value.map(f => {
-        const type = f.folder ? `Folder (${f.folder.childCount} items)` : (f.file?.mimeType ?? 'File');
         const size = f.size ? ` (${Math.round(f.size / 1024)}KB)` : '';
-        let line = `- ${f.name}${size}\n  ID: ${f.id}\n  Type: ${type}\n  Modified: ${f.lastModifiedDateTime}`;
-        if (f.webUrl) line += `\n  URL: ${f.webUrl}`;
-        return line;
+        if (verbose) {
+          const type = f.folder ? `Folder (${f.folder.childCount} items)` : (f.file?.mimeType ?? 'File');
+          let line = `- ${f.name}${size}\n  ID: ${f.id}\n  Type: ${type}\n  Modified: ${f.lastModifiedDateTime}`;
+          if (f.webUrl) line += `\n  URL: ${f.webUrl}`;
+          return line;
+        }
+        // Compact: one line per item.
+        const shortType = f.folder ? `folder (${f.folder.childCount})`
+          : (f.file?.mimeType?.includes('word') ? 'doc'
+          : f.file?.mimeType?.includes('sheet') ? 'sheet'
+          : f.file?.mimeType?.includes('presentation') ? 'slides'
+          : f.file?.mimeType?.includes('pdf') ? 'pdf'
+          : f.file?.mimeType?.startsWith('image/') ? 'image'
+          : 'file');
+        return `- ${f.name}${size} [${shortType}] (${f.id}) — ${f.lastModifiedDateTime.slice(0, 10)}`;
       });
 
-      return `Found ${data.value.length} item(s):\n\n${files.join('\n\n')}`;
+      const header = `Found ${data.value.length} item(s):\n\n${files.join(verbose ? '\n\n' : '\n')}`;
+      if (verbose) return header;
+      return `${header}\n\n${files.length} compact result${files.length === 1 ? '' : 's'} shown. For file content: onedrive_read(file_id=<id>). For full mime types + URLs on every result: re-call onedrive_list with verbose=true.`;
     }
 
     case 'onedrive_read': {
@@ -331,7 +416,15 @@ export async function executeMicrosoftReadTool(
           });
           if (resp.ok) {
             const text = await resp.text();
-            return `File: ${metaData.name}\n\n${text}`;
+            const { applyTextPagination } = await import('../agent/tools.js');
+            const paged = applyTextPagination(
+              text,
+              'onedrive_read',
+              { offset: args.offset as number | undefined, limit: args.limit as number | undefined },
+              { file_id: args.file_id },
+              16_000,
+            );
+            return `File: ${metaData.name}\n\n${paged}`;
           }
         } catch { /* fall through to metadata */ }
       }

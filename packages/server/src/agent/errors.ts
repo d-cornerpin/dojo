@@ -61,8 +61,9 @@ export function recordError(agentId: string): boolean {
     pauseAgent(agentId);
     agentErrors.delete(agentId); // Reset after pausing
 
-    // Broadcast structured error to dashboard so the chat shows why the agent was paused
-    const errorMsg = `Agent paused: ${ERROR_LOOP_THRESHOLD} errors in ${ERROR_LOOP_WINDOW_MS / 1000} seconds. Check the Health page for details.`;
+    // Broadcast structured error to dashboard so the chat shows why the agent was paused.
+    // Plain language; user must dismiss this and decide whether to resume the agent.
+    const errorMsg = `Agent paused after repeated errors (${ERROR_LOOP_THRESHOLD} in ${ERROR_LOOP_WINDOW_MS / 1000}s). Open the Health page to investigate, or resume the agent from its detail page.`;
     broadcast({
       type: 'chat:error',
       agentId,

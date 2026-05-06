@@ -5,17 +5,25 @@ import { createContext, useContext, useState, useCallback, type ReactNode } from
 // ════════════════════════════════════════
 //
 // Usage: const toast = useToast();
-//   toast.info('Settings saved');          // 4s auto-dismiss
-//   toast.success('Image generated');      // 3s auto-dismiss
-//   toast.warning('Low memory');           // 8s auto-dismiss
-//   toast.error('Connection failed');      // stays until dismissed
+//   toast.info('Settings saved');          // 10s auto-dismiss, green
+//   toast.success('Image generated');      // 10s auto-dismiss, green (alias of info)
+//   toast.warning('Low memory');           // 15s auto-dismiss, orange
+//   toast.error('Connection failed');      // permanent — must be dismissed, red
 //
-// Visual: glass-morphism toasts slide in from the top-right. Each
-// level has a distinct left-border color matching the cp-* palette:
-//   info    → cp-blue (#5B8DEF)
-//   success → cp-teal (#00D4AA)
-//   warning → cp-amber (#F5A623)
-//   error   → cp-coral (#FF6B8A)
+// Three-tier classification (per user spec, 2026-05-05):
+//   INFO  — green  — successful events / harmless notifications  — 10s
+//   WARN  — orange — non-blocking errors or alerts              — 15s
+//   ERROR — red    — blocking errors requiring user interaction — permanent
+//
+// `info` and `success` both render as INFO (green / 10s). Kept as separate
+// methods for caller ergonomics (toast.success reads naturally) but identical
+// in behavior. Choose by what reads best at the call site.
+//
+// Visual: glass-morphism toasts slide in from the top-right with a
+// left-border color matching the level:
+//   info / success → cp-teal  (green)
+//   warning        → cp-amber (orange)
+//   error          → cp-coral (red)
 
 export type ToastLevel = 'info' | 'success' | 'warning' | 'error';
 
@@ -27,11 +35,12 @@ export interface Toast {
 }
 
 // Auto-dismiss timing per level (ms). Errors stay until dismissed.
+// Per user spec (2026-05-05): INFO 10s, WARN 15s, ERROR permanent.
 const AUTO_DISMISS_MS: Record<ToastLevel, number | null> = {
-  info: 4000,
-  success: 3000,
-  warning: 8000,
-  error: null, // manual dismiss only
+  info: 10000,
+  success: 10000,
+  warning: 15000,
+  error: null, // manual dismiss only — blocking, requires user interaction
 };
 
 interface ToastContextValue {
@@ -100,7 +109,9 @@ const LEVEL_STYLES: Record<ToastLevel, { cssClass: string; icon: string }> = {
   info:    { cssClass: 'glass-toast-info',    icon: 'ℹ️'  },
   success: { cssClass: 'glass-toast-success', icon: '✓'  },
   warning: { cssClass: 'glass-toast-warning', icon: '⚠'  },
-  error:   { cssClass: 'glass-toast-error',   icon: '✕'  },
+  // Stop sign instead of ✕ — the ✕ glyph collided visually with the
+  // dismiss-button × in the same toast. (Reported by user, 2026-05-05.)
+  error:   { cssClass: 'glass-toast-error',   icon: '🛑' },
 };
 
 export const ToastContainer = () => {

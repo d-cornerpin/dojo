@@ -71,6 +71,31 @@ chatRouter.post('/:agentId/messages', async (c) => {
 
   logger.info('User message persisted', { agentId, messageId, attachmentCount: attachments?.length ?? 0 }, agentId);
 
+  // Broadcast so connected dashboards render the message in real time.
+  // Without this, the user message only appears after a page reload pulls
+  // it from GET /messages — fine for users typing in the dashboard (the
+  // optimistic UI handles it locally), but invisible for messages sent via
+  // any other client (dev-test-tools, mobile, scripts).
+  const createdAtRow = db
+    .prepare('SELECT created_at FROM messages WHERE id = ?')
+    .get(messageId) as { created_at: string } | undefined;
+  broadcast({
+    type: 'chat:message',
+    agentId,
+    message: {
+      id: messageId,
+      agentId,
+      role: 'user',
+      content: modelContent,
+      attachments: attachments ?? undefined,
+      tokenCount: null,
+      modelId: null,
+      cost: null,
+      latencyMs: null,
+      createdAt: createdAtRow?.created_at ?? new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, ''),
+    },
+  });
+
   queueEmbedding('message', messageId, agentId, content);
 
   // Urgent preempt — direct user messages count as urgent. If the agent

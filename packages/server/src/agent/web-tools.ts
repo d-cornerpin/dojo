@@ -117,8 +117,16 @@ export async function webSearch(
       return `No results found for: "${query}"`;
     }
 
+    // Phase 3.5 (2026-05-04) — per-result snippet cap at 200 chars per
+    // Part XVIII §A. Brave's `description` is the snippet; truncating it
+    // here keeps even a 20-result query well under the 3K token cap.
+    const SNIPPET_CHARS = 200;
     const formatted = results.map((r, i) => {
-      return `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.description}`;
+      const snippet =
+        r.description.length > SNIPPET_CHARS
+          ? r.description.slice(0, SNIPPET_CHARS) + '…'
+          : r.description;
+      return `${i + 1}. ${r.title}\n   ${r.url}\n   ${snippet}`;
     }).join('\n\n');
 
     return `Search results for "${query}":\n\n${formatted}`;
@@ -165,9 +173,15 @@ function extractDomain(url: string): string {
 
 export async function webFetch(
   agentId: string,
-  params: { url: string; maxTokens?: number },
+  params: { url: string; prompt?: string; maxTokens?: number },
 ): Promise<string> {
-  const { url, maxTokens = 8000 } = params;
+  // Phase 3.5 (2026-05-04) — `prompt` is now required at the dispatcher
+  // level. Keeping the optional signature here so legacy callers still
+  // compile, but the documented contract is `{ url, prompt }`. When prompt
+  // is absent we fall back to raw fetch (cap'd at maxTokens) only as a
+  // safety net for legacy in-process callers; the agent-facing tool
+  // schema enforces required.
+  const { url, prompt, maxTokens = 8000 } = params;
 
   // Permission check
   const domain = extractDomain(url);
@@ -176,8 +190,9 @@ export async function webFetch(
     return `Permission denied: ${perm.reason}`;
   }
 
-  logger.info('Web fetch', { url, domain }, agentId);
+  logger.info('Web fetch', { url, domain, hasPrompt: !!prompt }, agentId);
 
+  let text: string;
   try {
     const response = await fetch(url, {
       headers: {
@@ -195,23 +210,71 @@ export async function webFetch(
     const contentType = response.headers.get('content-type') ?? '';
     const body = await response.text();
 
-    let text: string;
     if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
       text = stripHtmlTags(body);
     } else {
       text = body;
     }
-
-    // Truncate to maxTokens (rough: 1 token ~ 4 chars)
-    const maxChars = maxTokens * 4;
-    if (text.length > maxChars) {
-      text = text.slice(0, maxChars) + `\n\n... [TRUNCATED: content is ${text.length} characters, showing first ${maxChars}]`;
-    }
-
-    return `Fetched from ${url}:\n\n${text}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Web fetch failed', { error: msg, url }, agentId);
     return `Web fetch failed: ${msg}`;
   }
+
+  // Phase 3.5 (2026-05-04) — when a `prompt` is provided, call a cheap
+  // model to extract the focused content matching the prompt instead of
+  // returning the raw page. This is the structural fix for context bloat
+  // on web_fetch — a 50K-token page becomes a ~1-2K targeted extract.
+  // Falls back to raw fetch if the extractor model isn't available or
+  // the call fails (callers always get *something* useful back).
+  if (prompt && prompt.trim().length > 0) {
+    try {
+      const { selectModel } = await import('../router/selector.js');
+      const { callModel } = await import('./model.js');
+      // Use the agent's own model unless we can find a cheaper 'light'
+      // tier model. Light tier is the right home for compress-the-page
+      // calls — they're short prompts with bounded outputs.
+      const lightModel = selectModel('light', agentId);
+      const fetchModelId = lightModel?.modelId ?? null;
+      if (fetchModelId) {
+        // Cap input to prevent runaway costs on huge pages. ~50K chars
+        // (~12K tokens) is plenty for a focused-extraction prompt; longer
+        // pages are heuristically the wrong tool anyway (use search).
+        const pageSnippet = text.length > 50_000 ? text.slice(0, 50_000) : text;
+        const result = await callModel({
+          agentId,
+          modelId: fetchModelId,
+          systemPrompt:
+            'You are a focused web content extractor. Given a page and an extraction prompt, ' +
+            'return ONLY the information requested. Be terse, direct, no preamble, no recap of ' +
+            'the prompt. If the page does not contain the requested information, say so in one sentence.',
+          messages: [
+            {
+              role: 'user',
+              content: `Extraction prompt: ${prompt}\n\nPage URL: ${url}\n\nPage content:\n${pageSnippet}`,
+            },
+          ],
+          tools: false,
+        });
+        const extract = result.content?.trim();
+        if (extract && extract.length > 0) {
+          return `Fetched from ${url} (extracted via prompt):\n\n${extract}`;
+        }
+        logger.warn('web_fetch extractor returned empty content — falling back to raw', { url }, agentId);
+      } else {
+        logger.warn('web_fetch: no light-tier model available — falling back to raw fetch', { url }, agentId);
+      }
+    } catch (err) {
+      logger.warn('web_fetch prompt extraction failed — falling back to raw', {
+        url, error: err instanceof Error ? err.message : String(err),
+      }, agentId);
+    }
+  }
+
+  // Raw fetch fallback (when no prompt, no light model, or extraction failed).
+  const maxChars = maxTokens * 4;
+  if (text.length > maxChars) {
+    text = text.slice(0, maxChars) + `\n\n... [TRUNCATED: content is ${text.length} characters, showing first ${maxChars}]`;
+  }
+  return `Fetched from ${url}:\n\n${text}`;
 }

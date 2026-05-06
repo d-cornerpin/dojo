@@ -313,9 +313,10 @@ export async function executeWebBrowse(
     text?: string;
     scroll_direction?: string;
     scroll_amount?: number;
+    goal?: string;
   },
 ): Promise<string> {
-  const { action, url, selector, text, scroll_direction, scroll_amount = 500 } = args;
+  const { action, url, selector, text, scroll_direction, scroll_amount = 500, goal } = args;
 
   // Rate limit check
   if (!checkRateLimit(agentId)) {
@@ -348,8 +349,53 @@ export async function executeWebBrowse(
           scroll_amount,
         );
 
-      case 'extract':
-        return await session.extract();
+      case 'extract': {
+        // Phase 3.5 (2026-05-04) — `goal` is required for the extract
+        // action. Without it the page would dump raw HTML/text into context.
+        // Other actions (navigate, click, type, scroll, screenshot, close)
+        // don't return page content so they don't need goal.
+        if (!goal || goal.trim().length === 0) {
+          return (
+            'Error: web_browse(action="extract") requires a `goal` parameter ' +
+            'describing what to extract from the page. Example: ' +
+            'web_browse({ action: "extract", goal: "the article headline and first paragraph" }). ' +
+            'A required goal keeps the result small (~1-2K tokens) instead of dumping the raw page.'
+          );
+        }
+        const raw = await session.extract();
+        if (goal && goal.trim().length > 0) {
+          try {
+            const { selectModel } = await import('../router/selector.js');
+            const { callModel } = await import('./model.js');
+            const lightModel = selectModel('light', agentId);
+            if (lightModel?.modelId) {
+              const snippet = raw.length > 50_000 ? raw.slice(0, 50_000) : raw;
+              const result = await callModel({
+                agentId,
+                modelId: lightModel.modelId,
+                systemPrompt:
+                  'You are a focused web page extractor. Return ONLY the information described by the goal, ' +
+                  'in a compact, structured form. No preamble, no recap of the goal. If the page does not ' +
+                  'contain the requested information, say so in one sentence.',
+                messages: [
+                  { role: 'user', content: `Goal: ${goal}\n\nPage content:\n${snippet}` },
+                ],
+                tools: false,
+              });
+              const extract = result.content?.trim();
+              if (extract && extract.length > 0) {
+                return `Extracted (goal: ${goal}):\n\n${extract}`;
+              }
+              logger.warn('web_browse extract: extractor returned empty content — falling back to raw', { agentId });
+            }
+          } catch (err) {
+            logger.warn('web_browse extract: goal extraction failed — falling back to raw', {
+              error: err instanceof Error ? err.message : String(err),
+            }, agentId);
+          }
+        }
+        return raw;
+      }
 
       case 'close':
         const result = await session.close();

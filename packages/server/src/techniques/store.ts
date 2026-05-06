@@ -155,6 +155,41 @@ export function getTechnique(id: string): TechniqueMetadata | null {
   return rowToTechnique(row);
 }
 
+// Resolve a user/agent-supplied technique reference to the canonical slug id.
+// Accepts: exact id ("v-e-brew"), the original name agents passed at save time
+// ("V-E-Brew" or "V E Brew"), or any case variant. Mirrors the slugification
+// in createTechnique so a name → slug → row lookup works without callers
+// having to know the slug rules.
+//
+// Without this, agents who saved a technique as "V-E-Brew" got "Technique not
+// found" when they tried to use_technique({name:"V-E-Brew"}) — they had to
+// remember to pass the slug "v-e-brew" instead. Friendly error suggests the
+// list_techniques tool when nothing matches.
+function slugifyTechniqueName(input: string): string {
+  return input.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
+}
+
+export function resolveTechniqueRef(value: string): { ok: true; id: string } | { ok: false; error: string } {
+  if (!value) return { ok: false, error: 'Error: technique name is required.' };
+  const db = getDb();
+  // 1. Exact id (the slug)
+  let row = db.prepare('SELECT id FROM techniques WHERE id = ?').get(value) as { id: string } | undefined;
+  if (row) return { ok: true, id: row.id };
+  // 2. Slugified input (covers "V-E-Brew" → "v-e-brew" and similar)
+  const slug = slugifyTechniqueName(value);
+  if (slug !== value) {
+    row = db.prepare('SELECT id FROM techniques WHERE id = ?').get(slug) as { id: string } | undefined;
+    if (row) return { ok: true, id: row.id };
+  }
+  // 3. Display name, case-insensitive
+  row = db.prepare('SELECT id FROM techniques WHERE name = ? COLLATE NOCASE LIMIT 1').get(value) as { id: string } | undefined;
+  if (row) return { ok: true, id: row.id };
+  return {
+    ok: false,
+    error: `Technique "${value}" not found. Use list_techniques to see what's available, or save_technique to create one.`,
+  };
+}
+
 export function getTechniqueDetail(id: string): TechniqueDetail | null {
   const technique = getTechnique(id);
   if (!technique) return null;

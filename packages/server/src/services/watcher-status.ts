@@ -91,9 +91,10 @@ export function maybeAlertOnFailure(params: {
   if (elapsedMs < minDurationMs) return false;
 
   const label = watcherLabel(params.name);
-  const errText = normalizeError(params.lastError).slice(0, 240);
   const elapsedMin = Math.round(elapsedMs / 60000);
-  const message = `${label} has been failing for ${elapsedMin} minute${elapsedMin === 1 ? '' : 's'} (${params.consecutiveFailures} consecutive polls). New ${params.name === 'teams' ? 'messages' : 'emails'} are not being delivered to your agents. Last error: ${errText}. Check Settings → ${params.name === 'gmail' ? 'Google' : 'Microsoft'} for connection status, or the Health page for poll history.`;
+  const settingsPage = params.name === 'gmail' ? 'Google' : 'Microsoft';
+  const itemType = params.name === 'teams' ? 'messages' : 'emails';
+  const message = `${label} has been failing for ${elapsedMin} minute${elapsedMin === 1 ? '' : 's'}. New ${itemType} aren't reaching your agents. Open Settings → ${settingsPage} to reconnect.`;
   try {
     broadcast({
       type: 'chat:error',

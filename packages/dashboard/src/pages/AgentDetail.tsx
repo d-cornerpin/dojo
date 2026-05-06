@@ -366,8 +366,14 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
     const unsubError = subscribe('chat:error', (event: WsEvent) => {
       const e = event as ChatErrorEvent;
       if (e.agentId !== agentId) return;
+      // Phase 8 F1 fix: honor the severity field — see Chat.tsx for the
+      // same fix and rationale.
       const isRateLimit = (e as { code?: string }).code === 'RATE_LIMITED' || e.error.includes('429') || e.error.toLowerCase().includes('rate_limit');
-      if (isRateLimit) {
+      const sev: 'info' | 'warning' | 'error' = e.severity ?? (isRateLimit ? 'warning' : 'error');
+      if (sev === 'info') {
+        toast.success(e.error);
+        if (e.code === 'AGENT_RECOVERED') setIsWorking(false);
+      } else if (sev === 'warning') {
         toast.warning(e.error);
       } else {
         toast.error(e.error);
@@ -391,6 +397,13 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
       setMessages((prev) => {
         const idx = prev.findIndex((m) => m.id === e.message.id);
         if (idx >= 0) {
+          // No-reply path: empty assistant broadcast = drop the bubble.
+          if (
+            e.message.role === 'assistant' &&
+            (!e.message.content || e.message.content.length === 0)
+          ) {
+            return prev.filter((_, i) => i !== idx);
+          }
           const existing = prev[idx];
           const updated = [...prev];
           updated[idx] = {
@@ -399,6 +412,22 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             attachments: e.message.attachments ?? existing.attachments,
           };
           return updated;
+        }
+        // Reconcile optimistic temp- user bubble (see Chat.tsx for context).
+        if (e.message.role === 'user') {
+          const tempIdx = prev.findIndex(
+            (m) => m.role === 'user' && m.id.startsWith('temp-') && m.content === e.message.content,
+          );
+          if (tempIdx >= 0) {
+            const updated = [...prev];
+            updated[tempIdx] = {
+              ...updated[tempIdx],
+              id: e.message.id,
+              createdAt: e.message.createdAt,
+              attachments: e.message.attachments ?? updated[tempIdx].attachments,
+            };
+            return updated;
+          }
         }
         return [
           ...prev,

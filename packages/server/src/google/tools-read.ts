@@ -18,26 +18,48 @@ const SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 export const googleReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'gmail_search',
-    description: 'Search Gmail for emails matching a query. Uses Gmail search syntax (from:, to:, subject:, has:attachment, after:, before:, label:, etc.)',
+    description: 'Search Gmail. Default returns one compact line per email (date | sender — subject + 200-char snippet + ID). For To/CC + full snippet on every result, pass verbose=true; for the full body of ONE email, use gmail_read(message_id).',
     input_schema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: "Gmail search query (e.g., 'from:john@example.com after:2026/03/01')" },
         max_results: { type: 'number', description: 'Maximum number of results (default: 10)' },
+        verbose: { type: 'boolean', description: 'If true, include To/CC and the full snippet per result. Default false (one line per result).' },
       },
       required: ['query'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
   },
   {
     name: 'gmail_read',
-    description: 'Read a specific email by message ID. Returns sender, recipients, subject, date, body text, and attachment info.',
+    description:
+      'Read a specific email by message ID. Returns sender, recipients, subject, date, plain-text body, and attachment list (name + ID). The body is paginated: defaults to first ~12K chars (~3K tokens). For long emails, use `offset` + `limit`. To download an attachment, use gmail_read_attachment with the attachment ID.',
     input_schema: {
       type: 'object',
       properties: {
         message_id: { type: 'string', description: 'Gmail message ID (from gmail_search results)' },
+        offset: { type: 'number', description: 'Body character offset to start from (default 0). Use the value from the previous call\'s pagination trailer.' },
+        limit: { type: 'number', description: 'Body characters to return (default 12000 ≈ 3K tokens). Don\'t exceed 16000 — engine cap will truncate.' },
       },
       required: ['message_id'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 4000,
+  },
+  {
+    name: 'gmail_list_attachments',
+    description:
+      'List attachments on a Gmail message — name, MIME type, size, and attachment ID for each. Use gmail_read_attachment with one of these IDs to download to local disk.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        message_id: { type: 'string', description: 'Gmail message ID (from gmail_search or gmail_inbox results)' },
+      },
+      required: ['message_id'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 1500,
   },
   {
     name: 'gmail_inbox',
@@ -50,6 +72,8 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
       },
       required: [],
     },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
   },
   {
     name: 'calendar_agenda',
@@ -62,6 +86,8 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
       },
       required: [],
     },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
   },
   {
     name: 'calendar_search',
@@ -74,57 +100,85 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
       },
       required: ['query'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
   },
   {
     name: 'drive_list',
-    description: 'List files in Google Drive. Can filter by folder, file type, or search query.',
+    description: 'List files in Google Drive. Default returns one compact line per file (name + size + short type + id + date). For full mime types and timestamps on every result, pass verbose=true; for the content of ONE file, use drive_read(file_id).',
     input_schema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: "Drive search query (e.g., 'name contains report', 'mimeType = application/pdf')" },
         folder_id: { type: 'string', description: 'List files in a specific folder' },
         max_results: { type: 'number', description: 'Maximum results (default: 20)' },
+        verbose: { type: 'boolean', description: 'If true, include full mime type and full timestamps per file. Default false (compact rows).' },
       },
       required: [],
     },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
   },
   {
     name: 'drive_read',
-    description: 'Read the content of a Google Drive file (Docs, Sheets, or text files). Returns the text content.',
+    description: 'Read the content of a Google Drive file (Docs, Sheets, or text files). Returns text content paginated by character — defaults to first ~16K chars (~4K tokens). For long files, use `offset` + `limit` per the pagination trailer.',
     input_schema: {
       type: 'object',
       properties: {
         file_id: { type: 'string', description: 'Google Drive file ID (from drive_list results)' },
+        offset: { type: 'number', description: 'Character offset to start from (default 0). Use the value from the previous call\'s pagination trailer.' },
+        limit: { type: 'number', description: 'Characters to return (default 16000 ≈ 4K tokens). Don\'t exceed 20000.' },
       },
       required: ['file_id'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 5000,
   },
   {
     name: 'docs_read',
-    description: 'Read the full content of a Google Doc.',
+    description: 'Read the content of a Google Doc. Defaults to first ~16K chars (~4K tokens). For long docs, use `offset` + `limit` per the pagination trailer to read the rest.',
     input_schema: {
       type: 'object',
       properties: {
         document_id: { type: 'string', description: 'Google Doc ID' },
+        offset: { type: 'number', description: 'Character offset to start from (default 0).' },
+        limit: { type: 'number', description: 'Characters to return (default 16000 ≈ 4K tokens). Don\'t exceed 20000.' },
       },
       required: ['document_id'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 5000,
   },
   {
     name: 'sheets_read',
-    description: 'Read data from a Google Sheets spreadsheet.',
+    description: 'Read data from a Google Sheets spreadsheet. Defaults to first ~16K chars (~4K tokens) of the rendered rows. For large sheets prefer narrowing via `range`; for very wide rendered output also use `offset` + `limit` per the pagination trailer.',
     input_schema: {
       type: 'object',
       properties: {
         spreadsheet_id: { type: 'string', description: 'Spreadsheet ID' },
-        range: { type: 'string', description: "Cell range to read (e.g., 'Sheet1!A1:D10', default: 'Sheet1')" },
+        range: { type: 'string', description: "Cell range to read (e.g., 'Sheet1!A1:D10', default: 'Sheet1'). Native pagination — narrow this first before falling back to offset/limit." },
+        offset: { type: 'number', description: 'Character offset within the rendered rows (default 0). Useful for big rendered outputs.' },
+        limit: { type: 'number', description: 'Characters to return (default 16000 ≈ 4K tokens).' },
       },
       required: ['spreadsheet_id'],
     },
+    concurrency: 'safe',
+    maxResultTokens: 5000,
   },
 ];
 
+// Phase 3.5 (2026-05-04) — register concurrency + maxResultTokens overrides
+// with the v2 partitioner / cap registry. Defs without these fields fall
+// through to the hardcoded TOOL_CATEGORY map (concurrency) or get no cap.
+import { registerConcurrency, registerMaxResultTokens } from '../agent/v2/classifiers/concurrency.js';
+for (const def of googleReadToolDefinitions) {
+  if (def.concurrency) registerConcurrency(def.name, def.concurrency);
+  if (def.maxResultTokens) registerMaxResultTokens(def.name, def.maxResultTokens);
+}
+
 // ── Tool Execution ──
+
+const googleReadToolDefByName = new Map(googleReadToolDefinitions.map(t => [t.name, t]));
 
 export async function executeGoogleReadTool(
   name: string,
@@ -132,10 +186,16 @@ export async function executeGoogleReadTool(
   agentId: string,
   agentName: string,
 ): Promise<string> {
+  const { validateAgainstSchema } = await import('../agent/tool-helpers.js');
+  const def = googleReadToolDefByName.get(name);
+  const schemaErr = validateAgainstSchema(name, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
+  if (schemaErr) return schemaErr;
+
   switch (name) {
     case 'gmail_search': {
       const query = args.query as string;
       const maxResults = (args.max_results as number) ?? 10;
+      const verbose = args.verbose as boolean | undefined;
 
       const listUrl = `${GMAIL_BASE}/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
       const result = await googleRead(listUrl, agentId, agentName, 'gmail_search', { query, maxResults });
@@ -155,13 +215,21 @@ export async function executeGoogleReadTool(
           const to = headers.find(h => h.name === 'To')?.value ?? '';
           const subject = headers.find(h => h.name === 'Subject')?.value ?? '(no subject)';
           const date = headers.find(h => h.name === 'Date')?.value ?? '';
-          details.push(`ID: ${msg.id}\nFrom: ${from}\nTo: ${to}\nSubject: ${subject}\nDate: ${date}\nSnippet: ${msgData?.snippet ?? ''}\n`);
+          const snippet = msgData?.snippet ?? '';
+          if (verbose) {
+            details.push(`ID: ${msg.id}\nFrom: ${from}\nTo: ${to}\nSubject: ${subject}\nDate: ${date}\nSnippet: ${snippet}\n`);
+          } else {
+            // Compact: one line per email — drop To, keep snippet capped to 200ch.
+            const shortSnippet = snippet.length > 200 ? snippet.slice(0, 200) + '…' : snippet;
+            details.push(`- ${date} | ${from} — ${subject}\n  ID: ${msg.id} | ${shortSnippet}`);
+          }
         }
       }
 
-      return details.length > 0
-        ? `Found ${data.messages.length} email(s):\n\n${details.join('\n---\n')}`
-        : `Found ${data.messages.length} email(s) but could not fetch details.`;
+      if (details.length === 0) return `Found ${data.messages.length} email(s) but could not fetch details.`;
+      const header = `Found ${data.messages.length} email(s):\n\n${details.join(verbose ? '\n---\n' : '\n')}`;
+      if (verbose) return header;
+      return `${header}\n\n${details.length} compact result${details.length === 1 ? '' : 's'} shown. For full body of one: gmail_read(message_id=<id>). For To/CC + full snippet on every result: re-call gmail_search with verbose=true.`;
     }
 
     case 'gmail_read': {
@@ -176,7 +244,11 @@ export async function executeGoogleReadTool(
         payload?: {
           headers?: Array<{ name: string; value: string }>;
           body?: { data?: string };
-          parts?: Array<{ mimeType: string; body?: { data?: string } }>;
+          parts?: Array<{
+            mimeType: string;
+            filename?: string;
+            body?: { data?: string; attachmentId?: string; size?: number };
+          }>;
         };
       };
 
@@ -197,13 +269,58 @@ export async function executeGoogleReadTool(
         }
       }
 
-      const attachments = data?.payload?.parts?.filter(p => p.mimeType !== 'text/plain' && p.mimeType !== 'text/html') ?? [];
+      // Phase 3.5 fix — surface attachment IDs so the agent can pass them to
+      // gmail_read_attachment. Without this, gmail_read's "Attachments: 3 files"
+      // text was a dead-end — no path back to actual files.
+      const attachments = (data?.payload?.parts ?? []).filter(p =>
+        p.mimeType !== 'text/plain' && p.mimeType !== 'text/html' && p.body?.attachmentId,
+      );
 
-      let output = `From: ${from}\nTo: ${to}${cc ? `\nCc: ${cc}` : ''}\nSubject: ${subject}\nDate: ${date}\n\n${body || data?.snippet || '(empty body)'}`;
+      // Headers are always included in full; pagination only affects the body.
+      const { applyTextPagination } = await import('../agent/tools.js');
+      const pagedBody = applyTextPagination(
+        body || data?.snippet || '(empty body)',
+        'gmail_read',
+        { offset: args.offset as number | undefined, limit: args.limit as number | undefined },
+        { message_id: messageId },
+        12_000,
+      );
+
+      let output = `From: ${from}\nTo: ${to}${cc ? `\nCc: ${cc}` : ''}\nSubject: ${subject}\nDate: ${date}\n\n${pagedBody}`;
       if (attachments.length > 0) {
-        output += `\n\nAttachments: ${attachments.length} file(s)`;
+        const lines = attachments.map(a => {
+          const name = a.filename || '(unnamed)';
+          const size = a.body?.size ? ` ${Math.round(a.body.size / 1024)}KB` : '';
+          return `- ${name} (${a.mimeType}${size})\n  attachment_id: ${a.body?.attachmentId}`;
+        });
+        output += `\n\nAttachments (${attachments.length}):\n${lines.join('\n')}\n\nUse gmail_read_attachment(message_id, attachment_id) to download.`;
       }
       return output;
+    }
+
+    case 'gmail_list_attachments': {
+      const messageId = args.message_id as string;
+      const url = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}?format=full`;
+      const result = await googleRead(url, agentId, agentName, 'gmail_list_attachments', { messageId });
+      if (!result.ok) return `Error fetching message: ${result.error}`;
+      const data = result.data as {
+        payload?: {
+          parts?: Array<{
+            mimeType: string;
+            filename?: string;
+            body?: { attachmentId?: string; size?: number };
+          }>;
+        };
+      };
+      const items = (data?.payload?.parts ?? [])
+        .filter(p => p.body?.attachmentId)
+        .map(a => {
+          const name = a.filename || '(unnamed)';
+          const size = a.body?.size ? `${Math.round(a.body.size / 1024)}KB` : 'unknown size';
+          return `- ${name} (${a.mimeType}, ${size})\n  attachment_id: ${a.body?.attachmentId}`;
+        });
+      if (items.length === 0) return 'No attachments on this email.';
+      return `Attachments (${items.length}):\n\n${items.join('\n\n')}\n\nUse gmail_read_attachment(message_id, attachment_id) to download to local disk.`;
     }
 
     case 'gmail_inbox': {
@@ -297,6 +414,7 @@ export async function executeGoogleReadTool(
       const driveQuery = args.query as string | undefined;
       const folderId = args.folder_id as string | undefined;
       const maxResults = (args.max_results as number) ?? 20;
+      const verbose = args.verbose as boolean | undefined;
 
       let q = '';
       if (driveQuery) q = driveQuery;
@@ -320,9 +438,24 @@ export async function executeGoogleReadTool(
 
       const files = data.files.map(f => {
         const size = f.size ? ` (${Math.round(parseInt(f.size) / 1024)}KB)` : '';
-        return `- ${f.name}${size}\n  ID: ${f.id}\n  Type: ${f.mimeType}\n  Modified: ${f.modifiedTime}`;
+        if (verbose) {
+          return `- ${f.name}${size}\n  ID: ${f.id}\n  Type: ${f.mimeType}\n  Modified: ${f.modifiedTime}`;
+        }
+        // Compact: one line per file — name + id + short type + modified date.
+        // Drop the full mime type for known types; just say "doc" / "sheet" / etc.
+        const shortType = f.mimeType.includes('document') ? 'doc'
+          : f.mimeType.includes('spreadsheet') ? 'sheet'
+          : f.mimeType.includes('presentation') ? 'slides'
+          : f.mimeType.includes('folder') ? 'folder'
+          : f.mimeType.includes('pdf') ? 'pdf'
+          : f.mimeType.startsWith('image/') ? 'image'
+          : 'file';
+        return `- ${f.name}${size} [${shortType}] (${f.id}) — ${f.modifiedTime.slice(0, 10)}`;
       });
-      return `Found ${data.files.length} file(s):\n\n${files.join('\n\n')}`;
+
+      const header = `Found ${data.files.length} file(s):\n\n${files.join(verbose ? '\n\n' : '\n')}`;
+      if (verbose) return header;
+      return `${header}\n\n${files.length} compact result${files.length === 1 ? '' : 's'} shown. For file content: drive_read(file_id=<id>). For full mime types + timestamps on every result: re-call drive_list with verbose=true.`;
     }
 
     case 'drive_read': {
@@ -336,30 +469,38 @@ export async function executeGoogleReadTool(
       const metaData = meta.data as { mimeType: string; name: string };
       const mimeType = metaData?.mimeType ?? '';
 
-      // Google Docs: use Docs API
+      // Google Docs: use Docs API (forwards offset/limit through)
       if (mimeType === 'application/vnd.google-apps.document') {
-        return executeGoogleReadTool('docs_read', { document_id: fileId }, agentId, agentName);
+        return executeGoogleReadTool('docs_read', { document_id: fileId, offset: args.offset, limit: args.limit }, agentId, agentName);
       }
 
-      // Google Sheets: use Sheets API
+      // Google Sheets: use Sheets API (range is sheet-native pagination; offset/limit also forwarded)
       if (mimeType === 'application/vnd.google-apps.spreadsheet') {
-        return executeGoogleReadTool('sheets_read', { spreadsheet_id: fileId, range: 'Sheet1' }, agentId, agentName);
+        return executeGoogleReadTool('sheets_read', { spreadsheet_id: fileId, range: 'Sheet1', offset: args.offset, limit: args.limit }, agentId, agentName);
       }
 
-      // Other files: export as text
+      // Other files: export as text and paginate.
+      let body = '';
       const exportUrl = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}/export?mimeType=text/plain`;
       const result = await googleRead(exportUrl, agentId, agentName, 'drive_read', { fileId, name: metaData?.name });
       if (!result.ok) {
-        // Try downloading raw content instead (for non-Google files)
         const downloadUrl = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}?alt=media`;
         const dlResult = await googleRead(downloadUrl, agentId, agentName, 'drive_read', { fileId, name: metaData?.name });
         if (!dlResult.ok) return `Error reading file content: ${dlResult.error}`;
-        const content = typeof dlResult.data === 'string' ? dlResult.data : JSON.stringify(dlResult.data, null, 2);
-        return `File: ${metaData?.name ?? fileId}\n\n${content.slice(0, 50000)}`;
+        body = typeof dlResult.data === 'string' ? dlResult.data : JSON.stringify(dlResult.data, null, 2);
+      } else {
+        body = typeof result.data === 'string' ? result.data : JSON.stringify(result.data, null, 2);
       }
 
-      const content = typeof result.data === 'string' ? result.data : JSON.stringify(result.data, null, 2);
-      return `File: ${metaData?.name ?? fileId}\n\n${content.slice(0, 50000)}`;
+      const { applyTextPagination } = await import('../agent/tools.js');
+      const paged = applyTextPagination(
+        body,
+        'drive_read',
+        { offset: args.offset as number | undefined, limit: args.limit as number | undefined },
+        { file_id: fileId },
+        16_000,
+      );
+      return `File: ${metaData?.name ?? fileId}\n\n${paged}`;
     }
 
     case 'docs_read': {
@@ -383,7 +524,15 @@ export async function executeGoogleReadTool(
           }
         }
       }
-      return `Document: ${title}\n\n${text || '(empty document)'}`;
+      const { applyTextPagination } = await import('../agent/tools.js');
+      const paged = applyTextPagination(
+        text || '(empty document)',
+        'docs_read',
+        { offset: args.offset as number | undefined, limit: args.limit as number | undefined },
+        { document_id: docId },
+        16_000,
+      );
+      return `Document: ${title}\n\n${paged}`;
     }
 
     case 'sheets_read': {
@@ -400,7 +549,16 @@ export async function executeGoogleReadTool(
         const cells = row.map(cell => String(cell ?? '')).join(' | ');
         return `Row ${i + 1}: ${cells}`;
       });
-      return `Spreadsheet data (${data.range ?? range}):\n\n${rows.join('\n')}`;
+      const fullText = rows.join('\n');
+      const { applyTextPagination } = await import('../agent/tools.js');
+      const paged = applyTextPagination(
+        fullText,
+        'sheets_read',
+        { offset: args.offset as number | undefined, limit: args.limit as number | undefined },
+        { spreadsheet_id: spreadsheetId, range },
+        16_000,
+      );
+      return `Spreadsheet data (${data.range ?? range}):\n\n${paged}`;
     }
 
     default:

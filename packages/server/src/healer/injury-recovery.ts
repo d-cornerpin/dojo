@@ -111,6 +111,10 @@ function classifyError(error: string | null): string {
   if (lower.includes('no model') || lower.includes('agent not found')) return 'config';
   if (lower.includes('401') || lower.includes('403') || lower.includes('unauthorized') ||
       lower.includes('invalid_api_key') || lower.includes('api key')) return 'auth';
+  // Phase 8 F1 fix: bucket generic 4xx provider errors instead of falling
+  // through to 'unknown'. The user-facing toast went "(error: unknown)" for
+  // anything not matched above, even when the message was clearly a 400.
+  if (lower.includes('400') || lower.includes('404') || lower.includes('422')) return 'provider_error';
 
   return 'unknown';
 }
@@ -130,9 +134,12 @@ export function onAgentInjured(agentId: string, errorMessage: string): void {
     if (healerRow && agentId === healerRow.value) {
       logger.warn('Healer agent is injured — alerting user directly (cannot self-heal)', { agentId });
       const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-      const msg = `The Healer agent${agent ? ` (${agent.name})` : ''} is injured and cannot self-heal. Error: ${errorMessage.slice(0, 200)}. Manual intervention needed.`;
-      sendAlert(msg, 'critical');
-      broadcastInjuryEvent(agentId, 'error', msg, 'HEALER_SELF_INJURED');
+      // sendAlert (iMessage to owner) keeps the technical detail; the toast
+      // shows a concise version with a clear instruction.
+      const techMsg = `The Healer agent${agent ? ` (${agent.name})` : ''} is injured and cannot self-heal. Error: ${errorMessage.slice(0, 200)}. Manual intervention needed.`;
+      const userMsg = `The Healer agent is broken and can't auto-fix itself. Open the Healer's detail page to investigate, or restart it from Settings.`;
+      sendAlert(techMsg, 'critical');
+      broadcastInjuryEvent(agentId, 'error', userMsg, 'HEALER_SELF_INJURED');
       return;
     }
   } catch { /* config not available */ }
@@ -149,9 +156,10 @@ export function onAgentInjured(agentId: string, errorMessage: string): void {
     try {
       const db = getDb();
       const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-      const msg = `${agent?.name ?? agentId} has been injured ${attempts} times and auto-recovery has not worked. Healer is suppressed for this agent until it recovers. To unstick: send a message, call reset_session, or use update_agent_profile. Last error: ${errorMessage.slice(0, 200)}`;
-      sendAlert(msg, 'warning');
-      broadcastInjuryEvent(agentId, 'warning', msg, 'HEALER_SUPPRESSED_MAX_ATTEMPTS');
+      const techMsg = `${agent?.name ?? agentId} has been injured ${attempts} times and auto-recovery has not worked. Healer is suppressed for this agent until it recovers. To unstick: send a message, call reset_session, or use update_agent_profile. Last error: ${errorMessage.slice(0, 200)}`;
+      const userMsg = `${agent?.name ?? agentId} is stuck and auto-recovery isn't working. Send a message or reset the session from the agent's detail page to unstick it.`;
+      sendAlert(techMsg, 'warning');
+      broadcastInjuryEvent(agentId, 'warning', userMsg, 'HEALER_SUPPRESSED_MAX_ATTEMPTS');
     } catch { /* best effort */ }
     return;
   }
@@ -246,6 +254,25 @@ export function onAgentRecovered(agentId: string): void {
     autoWakeTimers.delete(agentId);
   }
 
+  // Phase 8 F1 fix: emit an info-severity AGENT_RECOVERED broadcast so the
+  // dashboard can auto-dismiss the lingering injury error toast. Most
+  // provider 4xx errors are transient (auto-recovered within 5s) — without
+  // this signal the user sees a red banner from a problem that already
+  // resolved.
+  try {
+    const db = getDb();
+    const agentRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+    const name = agentRow?.name ?? agentId;
+    broadcast({
+      type: 'chat:error',
+      agentId,
+      error: `${name} recovered and is back to work.`,
+      code: 'AGENT_RECOVERED',
+      severity: 'info',
+      retryable: false,
+    });
+  } catch { /* best effort */ }
+
   const timer = pendingTimers.get(agentId);
   if (timer) {
     clearTimeout(timer);
@@ -300,9 +327,10 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
       .get(healerId) as { id: string; status: string } | undefined;
     if (!healer) {
       logger.warn('Healer agent not available — cannot auto-recover injured agent', { agentId, healerId });
-      const msg = `${agent.name} is injured but the Healer agent is missing or terminated, so auto-recovery cannot run. Restore the Healer in Settings → Sensei, or manually unstick this agent. Last error: ${errorMessage.slice(0, 200)}`;
-      try { sendAlert(msg, 'warning'); } catch { /* best effort */ }
-      broadcastInjuryEvent(agentId, 'error', msg, 'HEALER_MISSING');
+      const techMsg = `${agent.name} is injured but the Healer agent is missing or terminated, so auto-recovery cannot run. Restore the Healer in Settings → Sensei, or manually unstick this agent. Last error: ${errorMessage.slice(0, 200)}`;
+      const userMsg = `${agent.name} is stuck and the Healer agent is missing. Restore the Healer in Settings → Sensei, or send a message to unstick the agent manually.`;
+      try { sendAlert(techMsg, 'warning'); } catch { /* best effort */ }
+      broadcastInjuryEvent(agentId, 'error', userMsg, 'HEALER_MISSING');
       return;
     }
 
@@ -365,7 +393,10 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
       broadcastInjuryEvent(
         agentId,
         'info',
-        `Healer dispatched to investigate ${agent.name} (error: ${errorClass}). The Healer agent is now working on recovery.`,
+        // User-facing: brief and reassuring. Tech detail (errorClass +
+        // errorSnippet) was previously surfaced here but it's clutter for
+        // users — it's already in logs and on the agent's detail page.
+        `${agent.name} hit an error. Auto-healer is investigating — give it a moment.`,
         'HEALER_DISPATCHED',
       );
     } else {
@@ -374,10 +405,18 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
       logger.warn('Healer notification delivery failed', {
         healerId, injuredAgentId: agentId, reason: result.reason,
       });
+      // Phase 8 F1 fix: SEMANTIC_DUPLICATE means the Healer was already informed
+      // about this exact issue. That's the dedup working as designed, not a
+      // failure. Show as info ("already aware"), not error. Other reasons
+      // (hop limit, healer down, etc.) stay as warning since the user may
+      // need to intervene.
+      const isDedup = result.reason === 'SEMANTIC_DUPLICATE';
       broadcastInjuryEvent(
         agentId,
-        'error',
-        `${agent.name} is injured but the Healer notification could not be delivered (${result.reason}). To unstick: send a message, call reset_session, or restore the Healer agent. Last error: ${errorSnippet.slice(0, 200)}`,
+        isDedup ? 'info' : 'warning',
+        isDedup
+          ? `${agent.name} hit the same error again — auto-healer was already notified. Skipping a duplicate message.`
+          : `${agent.name} is stuck and auto-healer couldn't be reached. Send a message or reset the session from the agent's detail page to unstick it.`,
         'HEALER_DELIVERY_FAILED',
       );
     }

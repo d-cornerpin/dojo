@@ -1,0 +1,196 @@
+// Phase 3 (2026-05-04) — per-tool result cap enforcement tests.
+//
+// `applyMaxResultTokensCap` is the post-processing step that runs at the
+// end of executeTool for any tool whose definition declares
+// `maxResultTokens`. When the content exceeds the cap (using a 4 char/token
+// approximation), the result is truncated and a trailer appended telling
+// the agent how to paginate.
+//
+// These tests cover the cap behavior in isolation. Live verification of
+// the integration with executeTool happens via dev-test-tools.
+
+import { describe, it, expect } from 'vitest';
+import { applyMaxResultTokensCap, applyTextPagination } from '../tools.js';
+
+describe('applyMaxResultTokensCap', () => {
+  it('returns content unchanged when under the cap', () => {
+    const small = 'just a small result';
+    expect(applyMaxResultTokensCap('file_read', small)).toBe(small);
+  });
+
+  it('returns content unchanged for tools without maxResultTokens set', () => {
+    // file_write has no maxResultTokens — should never truncate.
+    const huge = 'x'.repeat(100_000);
+    expect(applyMaxResultTokensCap('file_write', huge)).toBe(huge);
+  });
+
+  it('truncates file_read output above 8000 tokens (~32000 chars)', () => {
+    const huge = 'x'.repeat(50_000);
+    const out = applyMaxResultTokensCap('file_read', huge);
+    expect(out.length).toBeLessThanOrEqual(8000 * 4);
+    expect(out).toMatch(/\[Truncated by engine: returned ~8000 tokens of/);
+    // file_read has pagination, so the trailer suggests offset/limit (not the
+    // generic "narrow your query" message).
+    expect(out).toMatch(/Re-call with offset\/limit/);
+  });
+
+  it('uses narrow-your-query guidance for tools without pagination', () => {
+    // web_search has a cap but no offset/limit — trailer should NOT suggest it.
+    const huge = 'w'.repeat(20_000);
+    const out = applyMaxResultTokensCap('web_search', huge);
+    expect(out).toMatch(/Narrow your query/);
+    expect(out).not.toMatch(/offset\/limit/);
+  });
+
+  it('truncates exec output above 4000 tokens', () => {
+    const huge = 'a'.repeat(20_000);
+    const out = applyMaxResultTokensCap('exec', huge);
+    expect(out.length).toBeLessThanOrEqual(4000 * 4);
+    expect(out).toMatch(/\[Truncated by engine: returned ~4000 tokens/);
+  });
+
+  it('truncates web_fetch output above 2000 tokens (Phase 3.5: tightened from 6K → 2K when prompt extraction returns)', () => {
+    const huge = 'b'.repeat(30_000);
+    const out = applyMaxResultTokensCap('web_fetch', huge);
+    expect(out.length).toBeLessThanOrEqual(2000 * 4);
+    expect(out).toMatch(/\[Truncated by engine: returned ~2000 tokens/);
+  });
+
+  it('truncates web_search output above 3000 tokens', () => {
+    const huge = 'c'.repeat(15_000);
+    const out = applyMaxResultTokensCap('web_search', huge);
+    expect(out.length).toBeLessThanOrEqual(3000 * 4);
+  });
+
+  it('truncates memory_grep output above 4000 tokens', () => {
+    const huge = 'd'.repeat(20_000);
+    const out = applyMaxResultTokensCap('memory_grep', huge);
+    expect(out.length).toBeLessThanOrEqual(4000 * 4);
+  });
+
+  it('does not touch unknown tools', () => {
+    const huge = 'e'.repeat(50_000);
+    expect(applyMaxResultTokensCap('made_up_tool', huge)).toBe(huge);
+  });
+
+  it('reports an approximate original token count in the trailer', () => {
+    const huge = 'x'.repeat(40_000); // ~10K tokens
+    const out = applyMaxResultTokensCap('file_read', huge);
+    expect(out).toMatch(/of ~10000 total/);
+  });
+
+  it('Phase 3.5 — does not re-truncate content that already has a friendly file_read trailer', () => {
+    // The v2 file_read path appends its own pagination trailer
+    // ("[Read lines 0-2000 of 4280 total. To continue: file_read(...)]")
+    // when it returns less than the full file. The generic engine cap
+    // must NOT re-truncate that output and replace the friendly trailer
+    // with a generic one — the per-tool guidance is more useful.
+    const body = 'x'.repeat(40_000); // exceeds file_read's 8K cap on its own
+    const friendly =
+      body +
+      '\n\n[Read lines 0-2000 of 4280 total. 2280 more lines remain.\n' +
+      ' To continue: file_read(path="/x", offset=2000, limit=2000).\n' +
+      ' To search for specific content: use grep instead.]';
+    const out = applyMaxResultTokensCap('file_read', friendly);
+    // Output unchanged — the friendly trailer was preserved.
+    expect(out).toBe(friendly);
+    expect(out).not.toMatch(/\[Truncated by engine/);
+  });
+
+  it('Phase 3.5 — does not re-truncate content with end-of-file trailer', () => {
+    const body = 'y'.repeat(40_000);
+    const friendly = body + '\n\n[End of file. Read lines 100-180 of 180 total.]';
+    const out = applyMaxResultTokensCap('file_read', friendly);
+    expect(out).toBe(friendly);
+  });
+
+  it('Phase 3.5 — registered cross-file caps work (Google/MS tools)', async () => {
+    // Importing google/tools-read.ts triggers its registerMaxResultTokens
+    // calls. After import, gmail_read should have a registered cap (4K)
+    // even though it's not in agent/tools.ts toolDefinitions.
+    await import('../../google/tools-read.js');
+    const huge = 'g'.repeat(20_000); // ~5K tokens, exceeds 4K cap
+    const out = applyMaxResultTokensCap('gmail_read', huge);
+    expect(out.length).toBeLessThanOrEqual(4000 * 4);
+    expect(out).toMatch(/\[Truncated by engine: returned ~4000 tokens/);
+  });
+});
+
+describe('applyTextPagination (Phase 3.5)', () => {
+  it('returns content unchanged when whole content fits', () => {
+    const small = 'short content';
+    expect(applyTextPagination(small, 'gmail_read', {}, { message_id: 'abc' })).toBe(small);
+  });
+
+  it('returns first slice + pagination trailer when more remains', () => {
+    const huge = 'a'.repeat(50_000);
+    const out = applyTextPagination(
+      huge,
+      'gmail_read',
+      { offset: 0, limit: 16_000 },
+      { message_id: 'abc' },
+    );
+    // Slice is 16K, plus trailer
+    expect(out).toContain('a'.repeat(100));
+    expect(out).toMatch(/\[Read chars 0-16000 of 50000 total\. 34000 more chars remain/);
+    expect(out).toMatch(/To continue: gmail_read\(message_id="abc", offset=16000, limit=16000\)/);
+  });
+
+  it('honors caller-provided offset', () => {
+    const body = 'x'.repeat(30_000);
+    const out = applyTextPagination(
+      body,
+      'docs_read',
+      { offset: 16_000, limit: 16_000 },
+      { document_id: 'doc1' },
+    );
+    expect(out).toMatch(/\[End of content\. Read chars 16000-30000 of 30000 total\.\]$/);
+  });
+
+  it('reports end-of-content cleanly on the final page', () => {
+    const body = 'y'.repeat(30_000);
+    // First page: chars 0-16000 → more remains
+    const page1 = applyTextPagination(body, 'docs_read', { offset: 0, limit: 16_000 }, { document_id: 'd' });
+    expect(page1).toMatch(/14000 more chars remain/);
+    // Second page: chars 16000-30000 → end of content
+    const page2 = applyTextPagination(body, 'docs_read', { offset: 16_000, limit: 16_000 }, { document_id: 'd' });
+    expect(page2).toMatch(/End of content/);
+  });
+
+  it('returns past-end notice when offset is past content length', () => {
+    const body = 'short';
+    const out = applyTextPagination(body, 'gmail_read', { offset: 1000 }, { message_id: 'abc' });
+    expect(out).toMatch(/Requested offset \(1000\) is past the end/);
+    expect(out).toMatch(/To read from the start: gmail_read\(message_id="abc"\)/);
+  });
+
+  it('default limit slices at ~20K chars when no limit given', () => {
+    const body = 'z'.repeat(50_000);
+    const out = applyTextPagination(body, 'drive_read', {}, { file_id: 'f1' });
+    // Default limit 20000 → slice 20000 + trailer
+    expect(out).toMatch(/Read chars 0-20000 of 50000 total/);
+  });
+
+  it('coerces string offset/limit to numbers (DeepSeek / weak models emit them as strings)', () => {
+    const body = 'q'.repeat(50_000);
+    const out = applyTextPagination(
+      body,
+      'gmail_read',
+      // String values — what DeepSeek actually sends despite schema saying number
+      { offset: '0' as unknown as number, limit: '200' as unknown as number },
+      { message_id: 'abc' },
+    );
+    expect(out).toMatch(/Read chars 0-200 of 50000 total/);
+    // Confirm only 200 chars of body returned (plus trailer).
+    expect(out.length).toBeLessThan(500);
+  });
+
+  it('engine cap carve-out preserves the pagination trailer', () => {
+    // applyMaxResultTokensCap should NOT re-truncate content with the new
+    // pagination trailer pattern.
+    const body = 'q'.repeat(40_000) + '\n\n[Read chars 0-40000 of 100000 total. 60000 more chars remain.\n To continue: gmail_read(message_id="x", offset=40000, limit=40000).]';
+    const out = applyMaxResultTokensCap('gmail_read', body);
+    expect(out).toBe(body);
+    expect(out).not.toMatch(/Truncated by engine/);
+  });
+});

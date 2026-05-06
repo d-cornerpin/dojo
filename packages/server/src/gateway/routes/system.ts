@@ -1,7 +1,9 @@
 import { Hono } from 'hono';
 import os from 'node:os';
+import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { readLogEntries } from '../../logger.js';
+import { broadcast } from '../ws.js';
 import type { HealthData, LogEntry } from '@dojo/shared';
 
 const systemRouter = new Hono();
@@ -147,6 +149,88 @@ systemRouter.get('/og-preview', async (c) => {
   } catch {
     return c.json({ ok: true, data: { url, title: null, description: null, image: null } });
   }
+});
+
+// POST /system/reset-idle-sessions — resets every agent whose status is
+// 'idle'. Used by the V2CutoverNotice's "Reset all idle sessions" button
+// (Part XI / Phase 9). Returns a count breakdown.
+//
+// Mirrors the per-agent reset_session tool's archive-and-mark-boundary
+// logic but in bulk. Skips agents that are working/paused/terminated.
+systemRouter.post('/system/reset-idle-sessions', async (c) => {
+  const db = getDb();
+  const idle = db.prepare("SELECT id, name FROM agents WHERE status = 'idle'").all() as Array<{ id: string; name: string }>;
+  const total = (db.prepare("SELECT COUNT(*) as c FROM agents WHERE status NOT IN ('terminated')").get() as { c: number }).c;
+
+  let reset = 0;
+  const errors: Array<{ agentId: string; error: string }> = [];
+
+  // Archive + boundary marker per idle agent. Inline the same logic as
+  // reset_session in agent/tools.ts:2817 so we don't have to refactor that
+  // big switch block to extract a shared helper.
+  const { archiveAgentConversation } = await import('../../vault/archive.js');
+
+  for (const agent of idle) {
+    try {
+      try { archiveAgentConversation(agent.id); } catch { /* archive is best-effort */ }
+      const now = new Date();
+      const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+      db.prepare(
+        "UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief') WHERE id = ?",
+      ).run(boundary, boundary, agent.id);
+
+      const markerId = uuidv4();
+      db.prepare(
+        "INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', '── New Session ──', ?)",
+      ).run(markerId, agent.id, boundary);
+      try {
+        broadcast({
+          type: 'chat:message',
+          agentId: agent.id,
+          message: {
+            id: markerId,
+            agentId: agent.id,
+            role: 'system',
+            content: '── New Session ──',
+            tokenCount: null,
+            modelId: null,
+            cost: null,
+            latencyMs: null,
+            createdAt: boundary,
+          },
+        });
+      } catch { /* best effort */ }
+      reset++;
+    } catch (err) {
+      errors.push({ agentId: agent.id, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  const busy = total - reset - errors.length;
+  return c.json({
+    ok: true,
+    data: { reset, busy, errors: errors.length, total, errorDetails: errors },
+  });
+});
+
+// POST /system/debug-toast — fire a chat:error broadcast for testing the
+// dashboard's 3-tier toast system (INFO green / WARN orange / ERROR red).
+// Body: { agentId: string, severity: 'info'|'warning'|'error', message: string }
+// Auth-protected via the gateway's middleware (same as the rest of /system/*).
+systemRouter.post('/debug-toast', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const agentId = (body.agentId as string | undefined) ?? 'kevin';
+  const severity = (body.severity as 'info' | 'warning' | 'error' | undefined) ?? 'info';
+  const message = (body.message as string | undefined) ?? `Test ${severity.toUpperCase()} toast — ${new Date().toLocaleTimeString()}`;
+  broadcast({
+    type: 'chat:error',
+    agentId,
+    error: message,
+    code: severity === 'info' ? 'AGENT_RECOVERED' : severity === 'warning' ? 'CONTEXT_HIGH' : 'MODEL_FAILED',
+    severity,
+    retryable: false,
+  });
+  return c.json({ ok: true, data: { agentId, severity, message } });
 });
 
 export { systemRouter };
