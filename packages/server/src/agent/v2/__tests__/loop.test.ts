@@ -145,43 +145,44 @@ describe('loopDetector', () => {
     expect(result.decision).toBe('ok');
   });
 
-  // Regression for the user-reported "Kevin called memory_grep 7 times with
-  // 7 different patterns trying to find a brief that was being truncated."
-  // Each call's signature was distinct (different patterns → different
-  // 60-char prefixes after the v2.0.5 cap fix), so the per-signature 3-strike
-  // check never fired. The MAX_SAME_TOOL_CALLS check catches this.
-  it('blocks when the same tool is called MAX_SAME_TOOL_CALLS times even with all-distinct args', () => {
+  // Regression: legitimate batch operations (e.g. update_agent_profile run
+  // against N sub-agents in a row) must NOT be blocked. Each call has
+  // distinct args so the per-signature 3-strike check doesn't fire. The
+  // blanket same-tool threshold I added in v2.2.2 was too coarse and
+  // killed real work — removed in 2026-05-06.
+  it('does not block legitimate batch operations across many sub-agents', () => {
     const sigs = [
-      canonicalToolSignature('memory_grep', { pattern: 'Deck Brief — Pulse Analytics', scope: 'messages' }),
-      canonicalToolSignature('memory_grep', { pattern: 'Deck Brief.*Pulse Analytics', scope: 'messages' }),
+      canonicalToolSignature('update_agent_profile', { agent_id: 'a1', name: 'Alpha' }),
+      canonicalToolSignature('update_agent_profile', { agent_id: 'a2', name: 'Beta' }),
+      canonicalToolSignature('update_agent_profile', { agent_id: 'a3', name: 'Gamma' }),
+      canonicalToolSignature('update_agent_profile', { agent_id: 'a4', name: 'Delta' }),
+      canonicalToolSignature('update_agent_profile', { agent_id: 'a5', name: 'Epsilon' }),
+    ];
+    // 6th distinct call to update_agent_profile — must NOT be blocked.
+    const result = loopDetector(
+      tc('update_agent_profile', { agent_id: 'a6', name: 'Zeta' }),
+      sigs,
+    );
+    expect(result.decision).toBe('ok');
+  });
+
+  it('does not block exploratory tool calls with distinct args', () => {
+    // Memory grep with 5 different patterns — was previously blocked by the
+    // same-tool threshold. After removing that, this is allowed. The proper
+    // remedy for memory_grep thrashing is the v2.2.2 fix that gives results
+    // their IDs + a copy-pasteable memory_describe(id="…") hint, so the
+    // agent has a clean recovery path instead of needing to thrash.
+    const sigs = [
+      canonicalToolSignature('memory_grep', { pattern: 'Deck Brief — Pulse Analytics' }),
+      canonicalToolSignature('memory_grep', { pattern: 'Deck Brief.*Pulse Analytics' }),
       canonicalToolSignature('memory_grep', { pattern: 'DECK BRIEF.*Pulse Analytics' }),
       canonicalToolSignature('memory_grep', { pattern: 'PITCH_KEY_LINE' }),
       canonicalToolSignature('memory_grep', { pattern: 'Pulse Analytics.*COVER' }),
     ];
-    // All five sigs are distinct (different prefixes), so the 3-strike check
-    // would NOT block. But this is the 6th memory_grep call in the window,
-    // sameToolCount=5 >= MAX_SAME_TOOL_CALLS=5 → block.
     const result = loopDetector(
       tc('memory_grep', { pattern: 'Brand launch campaign.*Pulse' }),
       sigs,
     );
-    expect(result.decision).toBe('block');
-    expect(result.refusalMessage).toContain('STOP');
-    expect(result.refusalMessage).toContain('memory_grep');
-    expect(result.refusalMessage).toMatch(/different arguments/);
-  });
-
-  it('does not fire same-tool block when calls to different tools are interleaved', () => {
-    // Mixed-tool exploration is fine — only same-tool repetition trips it.
-    const sigs = [
-      canonicalToolSignature('memory_grep', { pattern: 'a' }),
-      canonicalToolSignature('vault_search', { query: 'b' }),
-      canonicalToolSignature('memory_grep', { pattern: 'c' }),
-      canonicalToolSignature('web_search', { query: 'd' }),
-      canonicalToolSignature('memory_grep', { pattern: 'e' }),
-    ];
-    // memory_grep appears 3 times — under threshold of 5.
-    const result = loopDetector(tc('memory_grep', { pattern: 'f' }), sigs);
     expect(result.decision).toBe('ok');
   });
 
