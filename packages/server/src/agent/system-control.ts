@@ -202,9 +202,66 @@ export function keyboardType(
 
 // ── Screenshot / Screen Read ──
 
-function findVisionModel(): { modelId: string; providerId: string; apiModelId: string } | null {
+interface VisionModelChoice {
+  modelId: string;
+  providerId: string;
+  apiModelId: string;
+  source: 'agent_own' | 'fallback';
+}
+
+/**
+ * Pick the model that will read the screenshot.
+ *
+ * Pre-2026-05-06 this always picked the cheapest enabled model with
+ * vision-ish naming, ignoring whoever called the tool. Result: Kevin
+ * running Sonnet 4.6 would call screen_read and the engine would route
+ * to a slow, cheap, possibly-broken model instead of just letting Kevin
+ * use his own model. The user-reported symptom was "screen_read times
+ * out, but the agent itself can read images attached to chat just fine"
+ * — because user-attached images go through the agent's own model, but
+ * screen_read was using a different (slower) one.
+ *
+ * New behavior: prefer the calling agent's configured model if it has
+ * vision capability. Fall back to the cheapest vision-ish model only
+ * when the agent's own model can't handle images (e.g., a non-vision
+ * Ollama model). This keeps screen_read fast and predictable.
+ */
+function findVisionModel(agentId: string | null): VisionModelChoice | null {
   const db = getDb();
-  // Look for enabled models with vision capability
+
+  // Prefer the calling agent's own model if it's vision-capable.
+  if (agentId) {
+    const agentRow = db.prepare(`
+      SELECT m.id, m.provider_id, m.api_model_id, m.capabilities
+      FROM agents a
+      JOIN models m ON m.id = a.model_id
+      WHERE a.id = ? AND m.is_enabled = 1
+      LIMIT 1
+    `).get(agentId) as { id: string; provider_id: string; api_model_id: string; capabilities: string | null } | undefined;
+    if (agentRow) {
+      const caps = (agentRow.capabilities ?? '').toLowerCase();
+      const apiId = (agentRow.api_model_id ?? '').toLowerCase();
+      const looksVision =
+        caps.includes('vision') ||
+        apiId.includes('sonnet') ||
+        apiId.includes('opus') ||
+        apiId.includes('haiku') ||
+        apiId.includes('gpt-4') ||
+        apiId.includes('gpt-5') ||
+        apiId.includes('llava') ||
+        apiId.includes('vision');
+      if (looksVision) {
+        return {
+          modelId: agentRow.id,
+          providerId: agentRow.provider_id,
+          apiModelId: agentRow.api_model_id,
+          source: 'agent_own',
+        };
+      }
+    }
+  }
+
+  // Fallback: cheapest enabled vision-ish model.
   const row = db.prepare(`
     SELECT m.id, m.provider_id, m.api_model_id, m.capabilities
     FROM models m
@@ -223,7 +280,7 @@ function findVisionModel(): { modelId: string; providerId: string; apiModelId: s
   `).get() as { id: string; provider_id: string; api_model_id: string; capabilities: string } | undefined;
 
   if (!row) return null;
-  return { modelId: row.id, providerId: row.provider_id, apiModelId: row.api_model_id };
+  return { modelId: row.id, providerId: row.provider_id, apiModelId: row.api_model_id, source: 'fallback' };
 }
 
 export async function screenRead(
@@ -260,20 +317,30 @@ export async function screenRead(
     const imageData = fs.readFileSync(screenshotPath);
     const base64Image = imageData.toString('base64');
 
-    // Find a vision-capable model
-    const visionModel = findVisionModel();
+    // Pick a model. Prefer the calling agent's own model — if Kevin (Sonnet
+    // 4.6) calls screen_read, use Sonnet 4.6 itself. Falls back to the
+    // cheapest vision-ish model only if the agent's own model can't do
+    // images.
+    const visionModel = findVisionModel(agentId);
     if (!visionModel) {
-      // Return just the screenshot path without description
       return `Screenshot saved to: ${screenshotPath}\nNo vision-capable model available to describe the screen. Enable a model with vision support in Settings > Models.`;
     }
+    logger.info('screen_read: model selected', {
+      modelId: visionModel.modelId,
+      apiModelId: visionModel.apiModelId,
+      source: visionModel.source,
+    }, agentId);
 
     // Build the vision prompt
     const visionPrompt = query
       ? `You are a screen reader assistant. Look at this screenshot and answer: ${query}\nFor interactive elements (buttons, links, text fields, menus), provide approximate pixel coordinates as [x,y]. Be precise about positions.`
       : 'You are a screen reader assistant. Describe what you see on the screen. For interactive elements (buttons, links, text fields, menus), provide approximate pixel coordinates as [x,y]. Be precise about positions. List all visible text and UI elements.';
 
-    // Call the vision model
-    const result = await callModel({
+    // 60s timeout on the model call. screencapture has its own 10s timeout
+    // above; this caps the inner vision call so a hung provider returns a
+    // clean error instead of bleeding into the agent's turn budget.
+    const SCREEN_READ_MODEL_TIMEOUT_MS = 60_000;
+    const modelCall = callModel({
       agentId,
       modelId: visionModel.modelId,
       messages: [{
@@ -296,6 +363,13 @@ export async function screenRead(
       systemPrompt: 'You are a screen reader assistant for a macOS automation platform. Be precise and thorough in describing screen contents.',
       tools: false,
     });
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`screen_read timed out after ${SCREEN_READ_MODEL_TIMEOUT_MS / 1000}s waiting for ${visionModel.apiModelId} (provider ${visionModel.providerId}). The screenshot was captured fine; the model call hung. Try again, or pick a different vision model in Settings > Models.`)),
+        SCREEN_READ_MODEL_TIMEOUT_MS,
+      ),
+    );
+    const result = await Promise.race([modelCall, timeoutPromise]);
 
     // Clean up screenshot
     try { fs.unlinkSync(screenshotPath); } catch { /* best-effort */ }

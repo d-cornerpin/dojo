@@ -285,6 +285,8 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
         {isPrimary ? (
           isWorking && onStop ? (
             <button
+              type="button"
+              onPointerDown={(e) => e.preventDefault()}
               onClick={onStop}
               className="btn-circle btn-circle-stop"
               title="Stop agent"
@@ -293,6 +295,8 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
             </button>
           ) : (
             <button
+              type="button"
+              onPointerDown={(e) => e.preventDefault()}
               onClick={handleSend}
               disabled={disabled || uploading || (!input.trim() && pendingFiles.length === 0)}
               className="btn-circle btn-circle-send"
@@ -302,6 +306,8 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
           )
         ) : (
           <button
+            type="button"
+            onPointerDown={(e) => e.preventDefault()}
             onClick={handleSend}
             disabled={disabled || uploading || (!input.trim() && pendingFiles.length === 0)}
             className="px-4 py-2.5 glass-btn-primary font-medium rounded-xl transition-colors shrink-0"
@@ -313,6 +319,8 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
         {/* Wordy Mode toggle */}
         {onToggleWordyMode && (
           <button
+            type="button"
+            onPointerDown={(e) => e.preventDefault()}
             onClick={onToggleWordyMode}
             title={wordyMode ? 'Wordy Mode: ON (showing tool calls)' : 'Wordy Mode: OFF (chat only)'}
             className={`shrink-0 flex items-center justify-center w-9 h-9 rounded-full transition-all ${
@@ -333,6 +341,8 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
         {/* New Session button */}
         {onNewSession && (
           <button
+            type="button"
+            onPointerDown={(e) => e.preventDefault()}
             onClick={onNewSession}
             disabled={disabled}
             title="Start a new session (archives current conversation to vault)"
