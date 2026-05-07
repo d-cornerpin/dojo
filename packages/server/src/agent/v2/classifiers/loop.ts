@@ -15,6 +15,15 @@ import type { ToolCall } from '@dojo/shared';
 
 export const RECENT_TOOL_WINDOW = 8;       // matches v1 runtime.ts:785
 export const MAX_REPEATS_BEFORE_BREAK = 3; // matches v1 runtime.ts:786
+// Same-tool-name threshold (regardless of args). Catches "thrashing" where
+// an agent calls the same exploration tool over and over with different
+// arguments looking for content that isn't there, or that's truncated. The
+// per-signature 3-strike check above doesn't fire for this case because the
+// signatures are technically distinct — different patterns / queries / paths.
+// The user-reported failure that motivated this: Kevin called memory_grep 7
+// times in 60 seconds with 7 different patterns trying to find a brief that
+// was being truncated in search results.
+export const MAX_SAME_TOOL_CALLS = 5;
 
 export type LoopDecision = 'ok' | 'block';
 
@@ -125,6 +134,25 @@ export function loopDetector(
         `The user does not need more verification. The previous result is the answer; trust it. ` +
         `Respond to the user with TEXT now — do NOT call this tool again, and do NOT call related verification tools (file_read, exec, ls, etc.) on the same artifact. ` +
         `If you genuinely need different information, ask the user a direct question instead.`,
+    };
+  }
+
+  // Same-tool-name check (independent of args). Catches the
+  // "thrashing on a missing answer" pattern where each call has distinct
+  // args so the per-signature check above never fires.
+  const sameToolPrefix = `${call.name}:`;
+  const sameToolCount = recentSignatures.filter((s) => s.startsWith(sameToolPrefix)).length;
+  if (sameToolCount >= MAX_SAME_TOOL_CALLS) {
+    return {
+      decision: 'block',
+      signature,
+      repeatCount: sameToolCount + 1,
+      refusalMessage:
+        `STOP — you have called \`${call.name}\` ${sameToolCount + 1} times in the recent window with different arguments and the answer hasn't appeared. ` +
+        `Either the data isn't accessible to this tool, the result is being truncated, or you have enough information already. ` +
+        `Common next steps: (a) if results are getting truncated, try a tool that returns full content (memory_expand for full message bodies, recall_recent_thread for the recent conversation, file_read on a specific path); ` +
+        `(b) if you can't find what you're looking for, the artifact may not exist — ask the user directly; ` +
+        `(c) respond with what you do know rather than searching further. Do NOT keep calling this tool.`,
     };
   }
   return { decision: 'ok', signature, repeatCount: repeatCount + 1 };

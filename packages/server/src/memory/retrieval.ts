@@ -108,11 +108,20 @@ function searchMessages(
       // exceed 300 chars on long-token text; we trim defensively.
       const SNIPPET_CHARS = 300;
       for (const row of rows) {
-        const snippet =
-          row.snippet.length > SNIPPET_CHARS
-            ? row.snippet.slice(0, SNIPPET_CHARS) + '…'
-            : row.snippet;
-        results.push(`[${row.created_at}] (${row.role}) ${snippet}`);
+        const isTruncated = row.snippet.length > SNIPPET_CHARS || row.content.length > row.snippet.length;
+        const snippet = row.snippet.length > SNIPPET_CHARS
+          ? row.snippet.slice(0, SNIPPET_CHARS) + '…'
+          : row.snippet;
+        // Include the message ID so the agent can call memory_describe(id)
+        // for the full body when the snippet isn't enough. Without this,
+        // agents loop endlessly with different patterns trying to find
+        // content that's right there but truncated. The fullChars suffix
+        // tells the agent at a glance how much more there is to read.
+        const idShort = row.id.slice(0, 8);
+        const expandHint = isTruncated
+          ? ` [snippet only — call memory_describe(id="${row.id}") for full ${row.content.length}-char message]`
+          : '';
+        results.push(`[id=${idShort} ${row.created_at}] (${row.role}) ${snippet}${expandHint}`);
       }
     } catch (err) {
       // FTS5 MATCH can fail with invalid syntax
@@ -163,8 +172,13 @@ function searchMessagesLike(
   }>;
 
   return rows.map(row => {
-    const preview = row.content.length > 200 ? row.content.slice(0, 200) + '...' : row.content;
-    return `[${row.created_at}] (${row.role}) ${preview}`;
+    const isTruncated = row.content.length > 200;
+    const preview = isTruncated ? row.content.slice(0, 200) + '...' : row.content;
+    const idShort = row.id.slice(0, 8);
+    const expandHint = isTruncated
+      ? ` [snippet only — call memory_describe(id="${row.id}") for full ${row.content.length}-char message]`
+      : '';
+    return `[id=${idShort} ${row.created_at}] (${row.role}) ${preview}${expandHint}`;
   });
 }
 
@@ -301,7 +315,34 @@ export function memoryDescribe(agentId: string, params: { id: string }): string 
     return parts.join('\n');
   }
 
-  return `Unknown ID format: ${id}. Expected sum_* or file_* prefix.`;
+  // Otherwise treat it as a message ID (UUID). Look up the row and return
+  // the full body. memory_grep emits message IDs in its output (along with
+  // a "snippet only — call memory_describe(...)" hint when truncated), so
+  // this is the canonical path for getting full content of a search hit.
+  try {
+    const db = getDb();
+    const row = db.prepare(
+      'SELECT id, agent_id, role, content, created_at, attachments FROM messages WHERE id = ?',
+    ).get(id) as
+      | { id: string; agent_id: string; role: string; content: string; created_at: string; attachments: string | null }
+      | undefined;
+    if (row) {
+      if (row.agent_id !== agentId) {
+        return `Message ${id} does not belong to this agent.`;
+      }
+      const parts = [
+        `Message: ${row.id}`,
+        `Role: ${row.role}`,
+        `Created: ${row.created_at}`,
+        `Length: ${row.content.length} chars`,
+      ];
+      if (row.attachments) parts.push(`Attachments: ${row.attachments}`);
+      parts.push('', 'Content:', row.content);
+      return parts.join('\n');
+    }
+  } catch { /* fall through to unknown-ID error */ }
+
+  return `Unknown ID format: ${id}. Expected sum_* (summary), file_* (large file), or a message UUID from memory_grep output.`;
 }
 
 // ── memory_expand: deep recall with DAG walking and LLM ──

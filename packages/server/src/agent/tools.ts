@@ -511,7 +511,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'memory_grep',
-    description: 'Search through conversation history and memory summaries using full-text search or pattern matching. Returns matching messages and summaries with context. Example: memory_grep({ pattern: "budget meeting", limit: 10 }). Returns timestamped results from both raw messages and compressed summaries.',
+    description: 'Search through conversation history and memory summaries using full-text search or pattern matching. Returns matching messages and summaries with context. Example: memory_grep({ pattern: "budget meeting", limit: 10 }).\n\nResult format: each line starts with `[id=<short> <timestamp>] (role) <snippet>`. When a snippet is truncated, the line ends with `[snippet only — call memory_describe(id="…") for full N-char message]` — DO this rather than retrying memory_grep with a different pattern. Repeating memory_grep with variations of the same query when the snippet is already present will be loop-blocked. Use memory_describe to get the FULL message body once you have a hit.',
     input_schema: {
       type: 'object',
       properties: {
@@ -549,13 +549,13 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'memory_describe',
-    description: 'Look up details of a summary or large file by its ID. Returns full content, metadata, and navigation hints for summaries (sum_*) and intercepted large files (file_*).',
+    description: 'Look up the full content of a stored item by its ID. Accepts THREE id types:\n  - Summary IDs (sum_*) — returns full summary text + metadata\n  - Large file IDs (file_*) — returns the exploration summary + metadata\n  - Raw message UUIDs — returns the full message body\n\nUse this AFTER memory_grep when a snippet is truncated and you need the full message. memory_grep emits a ready-to-copy hint at the end of each truncated result line: `[snippet only — call memory_describe(id="…") for full N-char message]`. Copy the full UUID from inside those quotes — the short `id=<8chars>` shown at the start of the result line is for visual scanning only and is NOT enough.',
     input_schema: {
       type: 'object',
       properties: {
         id: {
           type: 'string',
-          description: 'The summary ID (sum_*) or large file ID (file_*) to describe',
+          description: 'A summary ID (sum_*), large file ID (file_*), or full message UUID (from the parens in memory_grep\'s expand hint).',
         },
       },
       required: ['id'],

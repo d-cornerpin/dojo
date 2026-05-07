@@ -135,13 +135,53 @@ describe('loopDetector', () => {
     expect(result.refusalMessage).toContain('file_read');
   });
 
-  it('does not block when sigs are different despite many calls', () => {
+  it('does not block when sigs are different and tool count is under MAX_SAME_TOOL_CALLS', () => {
     const sigs = [
       canonicalToolSignature('file_read', { path: '/a' }),
       canonicalToolSignature('file_read', { path: '/b' }),
       canonicalToolSignature('file_read', { path: '/c' }),
     ];
     const result = loopDetector(tc('file_read', { path: '/d' }), sigs);
+    expect(result.decision).toBe('ok');
+  });
+
+  // Regression for the user-reported "Kevin called memory_grep 7 times with
+  // 7 different patterns trying to find a brief that was being truncated."
+  // Each call's signature was distinct (different patterns → different
+  // 60-char prefixes after the v2.0.5 cap fix), so the per-signature 3-strike
+  // check never fired. The MAX_SAME_TOOL_CALLS check catches this.
+  it('blocks when the same tool is called MAX_SAME_TOOL_CALLS times even with all-distinct args', () => {
+    const sigs = [
+      canonicalToolSignature('memory_grep', { pattern: 'Deck Brief — Pulse Analytics', scope: 'messages' }),
+      canonicalToolSignature('memory_grep', { pattern: 'Deck Brief.*Pulse Analytics', scope: 'messages' }),
+      canonicalToolSignature('memory_grep', { pattern: 'DECK BRIEF.*Pulse Analytics' }),
+      canonicalToolSignature('memory_grep', { pattern: 'PITCH_KEY_LINE' }),
+      canonicalToolSignature('memory_grep', { pattern: 'Pulse Analytics.*COVER' }),
+    ];
+    // All five sigs are distinct (different prefixes), so the 3-strike check
+    // would NOT block. But this is the 6th memory_grep call in the window,
+    // sameToolCount=5 >= MAX_SAME_TOOL_CALLS=5 → block.
+    const result = loopDetector(
+      tc('memory_grep', { pattern: 'Brand launch campaign.*Pulse' }),
+      sigs,
+    );
+    expect(result.decision).toBe('block');
+    expect(result.refusalMessage).toContain('STOP');
+    expect(result.refusalMessage).toContain('memory_grep');
+    expect(result.refusalMessage).toMatch(/different arguments/);
+  });
+
+  it('does not fire same-tool block when calls to different tools are interleaved', () => {
+    // Mixed-tool exploration is fine — only same-tool repetition trips it.
+    const sigs = [
+      canonicalToolSignature('memory_grep', { pattern: 'a' }),
+      canonicalToolSignature('vault_search', { query: 'b' }),
+      canonicalToolSignature('memory_grep', { pattern: 'c' }),
+      canonicalToolSignature('web_search', { query: 'd' }),
+      canonicalToolSignature('memory_grep', { pattern: 'e' }),
+    ];
+    // memory_grep appears 3 times — under threshold of 5.
+    const result = loopDetector(tc('memory_grep', { pattern: 'f' }), sigs);
     expect(result.decision).toBe('ok');
   });
 
