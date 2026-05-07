@@ -145,17 +145,57 @@ describe('share_publicly — HTML asset inlining', () => {
     expect(fs.existsSync(path.join(OUT_DIR, result.slug, 'secret.txt'))).toBe(false);
   });
 
-  it('does not warn when a ref points at a missing file (just leaves it alone)', () => {
+  it('counts missing-file refs in notFound and surfaces them in warnings', () => {
     const htmlPath = path.join(workDir, 'page.html');
     fs.writeFileSync(htmlPath, `<img src="not-here.png">`);
 
     const result = createPublicShare({ sourcePath: htmlPath });
     expect(result.inlinedAssets?.copied).toBe(0);
     expect(result.inlinedAssets?.skipped).toBe(0);
-    expect(result.inlinedAssets?.warnings).toEqual([]);
-    // HTML preserved as-is — browser will 404 the asset, agent's choice.
+    expect(result.inlinedAssets?.notFound).toBe(1);
+    expect(result.inlinedAssets?.warnings.some((w) => w.includes('not found'))).toBe(true);
+    // HTML preserved as-is — browser will 404 the asset.
     const html = fs.readFileSync(path.join(OUT_DIR, result.slug, 'page.html'), 'utf-8');
     expect(html).toContain('<img src="not-here.png">');
+  });
+
+  it('inlines file:// URLs (Maddy keyframe pattern, the v2.2.3 regression)', () => {
+    const photoPath = path.join(workDir, 'keyframe.png');
+    fs.writeFileSync(photoPath, 'png-bytes');
+    const htmlPath = path.join(workDir, 'deck.html');
+    fs.writeFileSync(htmlPath, `<html><body><img src="file://${photoPath}"></body></html>`);
+
+    const result = createPublicShare({ sourcePath: htmlPath });
+    expect(result.inlinedAssets?.copied).toBe(1);
+    expect(result.inlinedAssets?.notFound).toBe(0);
+    expect(fs.existsSync(path.join(OUT_DIR, result.slug, 'keyframe.png'))).toBe(true);
+    const html = fs.readFileSync(path.join(OUT_DIR, result.slug, 'deck.html'), 'utf-8');
+    expect(html).toContain('src="keyframe.png"');
+    expect(html).not.toContain('file://');
+  });
+
+  it('handles file://localhost/path variant', () => {
+    const photoPath = path.join(workDir, 'logo.png');
+    fs.writeFileSync(photoPath, 'png-bytes');
+    const htmlPath = path.join(workDir, 'page.html');
+    fs.writeFileSync(htmlPath, `<img src="file://localhost${photoPath}">`);
+
+    const result = createPublicShare({ sourcePath: htmlPath });
+    expect(result.inlinedAssets?.copied).toBe(1);
+    expect(fs.existsSync(path.join(OUT_DIR, result.slug, 'logo.png'))).toBe(true);
+  });
+
+  it('decodes URL-encoded characters in file:// paths', () => {
+    const photoPath = path.join(workDir, 'my photo.png');
+    fs.writeFileSync(photoPath, 'png-bytes');
+    const htmlPath = path.join(workDir, 'page.html');
+    // file:// URLs encode spaces as %20
+    const encodedPath = `file://${path.dirname(photoPath)}/my%20photo.png`;
+    fs.writeFileSync(htmlPath, `<img src="${encodedPath}">`);
+
+    const result = createPublicShare({ sourcePath: htmlPath });
+    expect(result.inlinedAssets?.copied).toBe(1);
+    expect(result.inlinedAssets?.notFound).toBe(0);
   });
 
   it('dedupes when the same asset is referenced multiple times', () => {

@@ -85,12 +85,29 @@ interface AssetInlineResult {
   rewritten: string;
   copiedCount: number;
   skippedCount: number;
+  notFoundCount: number;
   warnings: string[];
 }
 
 function isExternalRef(ref: string): boolean {
   if (ref.length === 0) return true;
+  // Note: `file:` is intentionally NOT in this list. file:// URLs ARE local
+  // filesystem refs that browsers render — Maddy embeds keyframes as
+  // `<img src="file:///Users/.../foo.png">`, and we want to inline those
+  // exactly like absolute filesystem paths. tryCopyAsset strips the scheme.
   return /^(?:https?:|data:|mailto:|tel:|sms:|#|\/\/|javascript:)/i.test(ref);
+}
+
+/** Strip a `file://` (or `file://localhost`) scheme prefix to get the raw
+ *  filesystem path. URL-decoded. Returns null when the input isn't a file:// URL. */
+function stripFileScheme(ref: string): string | null {
+  const m = ref.match(/^file:\/\/(?:localhost)?(\/.*)$/i);
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return m[1]; // malformed encoding — best effort
+  }
 }
 
 function rewriteHtmlWithInlinedAssets(htmlPath: string, shareDir: string): AssetInlineResult {
@@ -99,10 +116,12 @@ function rewriteHtmlWithInlinedAssets(htmlPath: string, shareDir: string): Asset
   const warnings: string[] = [];
   let copiedCount = 0;
   let skippedCount = 0;
+  let notFoundCount = 0;
   let totalBytes = 0;
   // Cache: source path → dest relative path. Same source referenced multiple
   // times is copied once and rewritten consistently.
   const copied = new Map<string, string>();
+  const reportedMissing = new Set<string>();
 
   const tryCopyAsset = (ref: string): string | null => {
     if (isExternalRef(ref)) return null;
@@ -116,11 +135,17 @@ function rewriteHtmlWithInlinedAssets(htmlPath: string, shareDir: string): Asset
     const refPathOnly = queryIdx === Infinity ? ref : ref.slice(0, queryIdx);
     const refSuffix = queryIdx === Infinity ? '' : ref.slice(queryIdx);
 
+    // file:// URLs are filesystem refs in URL form (Maddy's keyframe pattern).
+    // Treat the stripped path as absolute.
+    const fileSchemePath = stripFileScheme(refPathOnly);
+    const treatAsAbsolute = fileSchemePath !== null || path.isAbsolute(refPathOnly);
+    const absoluteRefPath = fileSchemePath ?? refPathOnly;
+
     let absSource: string;
     let destRel: string;
-    if (path.isAbsolute(refPathOnly)) {
-      absSource = refPathOnly;
-      destRel = path.basename(refPathOnly).replace(/[^a-zA-Z0-9._-]/g, '_');
+    if (treatAsAbsolute) {
+      absSource = absoluteRefPath;
+      destRel = path.basename(absoluteRefPath).replace(/[^a-zA-Z0-9._-]/g, '_');
     } else {
       absSource = path.resolve(htmlDir, refPathOnly);
       destRel = refPathOnly.replace(/^\.\//, '');
@@ -146,9 +171,19 @@ function rewriteHtmlWithInlinedAssets(htmlPath: string, shareDir: string): Asset
     try {
       stat = fs.statSync(absSource);
     } catch {
-      // Asset doesn't exist on disk — leave the ref alone, browser will 404.
-      // Don't flag as a warning; many HTMLs reference assets that haven't
-      // been generated yet (templates, dev placeholders).
+      // Asset doesn't exist on disk. Could be intentional (template
+      // placeholder) OR a real bug (HTML references a file that should
+      // have been there but isn't). Track and surface in the result so
+      // the user sees "8 missing" instead of silent zero feedback —
+      // pre-2026-05-06 behavior was to skip silently which made it look
+      // like the inliner didn't run at all.
+      if (!reportedMissing.has(absSource)) {
+        reportedMissing.add(absSource);
+        notFoundCount++;
+        if (warnings.length < 20) {
+          warnings.push(`Asset not found on disk: ${ref}`);
+        }
+      }
       return null;
     }
     if (!stat.isFile()) return null;
@@ -210,7 +245,7 @@ function rewriteHtmlWithInlinedAssets(htmlPath: string, shareDir: string): Asset
     return newRef === null ? match : `url(${newRef})`;
   });
 
-  return { rewritten, copiedCount, skippedCount, warnings };
+  return { rewritten, copiedCount, skippedCount, notFoundCount, warnings };
 }
 
 export interface PublicShareResult {
@@ -219,9 +254,15 @@ export interface PublicShareResult {
   publicPath: string;       // absolute path to the entry file under OUT_DIR
   baseSource: 'tunnel' | 'localhost';
   /** When sharing a single HTML file, the count of linked local assets
-   *  (img/script/link/url(…)) that were detected, copied into the share
-   *  directory, or skipped. Undefined for non-HTML or directory shares. */
-  inlinedAssets?: { copied: number; skipped: number; warnings: string[] };
+   *  (img/script/link/url(…)) that were detected, copied, missing on disk,
+   *  or skipped for safety reasons. Undefined for non-HTML or directory
+   *  shares. */
+  inlinedAssets?: {
+    copied: number;
+    skipped: number;
+    notFound: number;
+    warnings: string[];
+  };
 }
 
 export interface CreatePublicShareInput {
@@ -261,6 +302,7 @@ export function createPublicShare(input: CreatePublicShareInput): PublicShareRes
       inlinedAssets = {
         copied: result.copiedCount,
         skipped: result.skippedCount,
+        notFound: result.notFoundCount,
         warnings: result.warnings,
       };
     } else {

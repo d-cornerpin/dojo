@@ -4359,13 +4359,19 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
             : 'No tunnel is running, so this URL only works from the same machine. To share off-device, start the Cloudflare tunnel from the dashboard and run share_publicly again.';
           let assetLine = '';
           if (result.inlinedAssets) {
-            const { copied, skipped, warnings } = result.inlinedAssets;
-            if (copied > 0 || skipped > 0) {
-              assetLine = `\n\nLinked assets: ${copied} copied into the share` +
-                (skipped > 0 ? `, ${skipped} skipped` : '') + '.';
+            const { copied, skipped, notFound, warnings } = result.inlinedAssets;
+            const total = copied + skipped + notFound;
+            if (total > 0) {
+              const parts: string[] = [`${copied} copied`];
+              if (skipped > 0) parts.push(`${skipped} skipped`);
+              if (notFound > 0) parts.push(`${notFound} missing on disk`);
+              assetLine = `\n\nLinked assets: ${parts.join(', ')}.`;
+              if (notFound > 0) {
+                assetLine += ` Pages with missing images will render with broken thumbnails — re-check that the source HTML's references point at files that actually exist before re-sharing.`;
+              }
               if (warnings.length > 0) {
                 const shown = warnings.slice(0, 5);
-                assetLine += ` Warnings:\n  - ${shown.join('\n  - ')}`;
+                assetLine += `\nWarnings:\n  - ${shown.join('\n  - ')}`;
                 if (warnings.length > shown.length) {
                   assetLine += `\n  - …and ${warnings.length - shown.length} more`;
                 }
