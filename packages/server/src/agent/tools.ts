@@ -1363,7 +1363,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Public file sharing ──
   {
     name: 'share_publicly',
-    description: 'Publish a file (or a small directory of files, e.g. an HTML page with linked CSS/images) to a publicly-accessible URL and return that URL. Use this when the user wants to view or share something outside the DOJO — e.g. an HTML page another agent built, a PDF report, an image, a static website. The DOJO copies the source into ~/.dojo/out/<slug>/ and exposes it at /share/<slug>/<filename> (no auth). If the DOJO has a Cloudflare tunnel running, the URL works from anywhere on the internet; otherwise it falls back to localhost (only viewable on the same machine). Use the returned URL directly — do NOT try to construct one yourself.\n\nExamples:\n  • Share a single HTML page Maddy built: share_publicly({ source_path: "/Users/.../uploads/kevin/report.html" })\n  • Share an HTML site with assets: share_publicly({ source_path: "/Users/.../uploads/kevin/site/", entry_filename: "index.html" })\n  • Share an image: share_publicly({ source_path: "/Users/.../uploads/kevin/chart.png" })',
+    description: 'Publish a file (or a small directory of files) to a publicly-accessible URL and return that URL. Use this when the user wants to view or share something outside the DOJO — e.g. an HTML page another agent built, a PDF report, an image, a static website. The DOJO copies the source into ~/.dojo/out/<slug>/ and exposes it at /share/<slug>/<filename> (no auth). If the DOJO has a Cloudflare tunnel running, the URL works from anywhere on the internet; otherwise it falls back to localhost (only viewable on the same machine). Use the returned URL directly — do NOT try to construct one yourself.\n\nHTML asset handling: when sharing a single .html file, the engine automatically scans it for linked local assets (`<img src>`, `<link href>`, `<script src>`, `url(…)` in inline CSS) and copies each one into the share directory so the page renders correctly at the public URL. Refs starting with http(s)://, data:, etc. are left alone. The tool result reports how many assets were copied. For multi-file sites or when you need precise control, point source_path at the directory and pass entry_filename.\n\nExamples:\n  • Share a single HTML page (linked assets auto-copied): share_publicly({ source_path: "/Users/.../uploads/kevin/report.html" })\n  • Share a directory site: share_publicly({ source_path: "/Users/.../uploads/kevin/site/", entry_filename: "index.html" })\n  • Share an image: share_publicly({ source_path: "/Users/.../uploads/kevin/chart.png" })',
     input_schema: {
       type: 'object',
       properties: {
@@ -4354,11 +4354,25 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
           const { createPublicShare } = await import('../services/public-share.js');
           const result = createPublicShare({ sourcePath, entryFilename });
           auditLog(agentId, 'share_publicly', sourcePath, 'success', `Slug ${result.slug}, base ${result.baseSource}`);
-          content =
-            `Public URL: ${result.url}\n\n` +
-            (result.baseSource === 'tunnel'
-              ? 'Cloudflare tunnel is active — this URL is reachable from anywhere on the internet.'
-              : 'No tunnel is running, so this URL only works from the same machine. To share off-device, start the Cloudflare tunnel from the dashboard and run share_publicly again.');
+          const tunnelLine = result.baseSource === 'tunnel'
+            ? 'Cloudflare tunnel is active — this URL is reachable from anywhere on the internet.'
+            : 'No tunnel is running, so this URL only works from the same machine. To share off-device, start the Cloudflare tunnel from the dashboard and run share_publicly again.';
+          let assetLine = '';
+          if (result.inlinedAssets) {
+            const { copied, skipped, warnings } = result.inlinedAssets;
+            if (copied > 0 || skipped > 0) {
+              assetLine = `\n\nLinked assets: ${copied} copied into the share` +
+                (skipped > 0 ? `, ${skipped} skipped` : '') + '.';
+              if (warnings.length > 0) {
+                const shown = warnings.slice(0, 5);
+                assetLine += ` Warnings:\n  - ${shown.join('\n  - ')}`;
+                if (warnings.length > shown.length) {
+                  assetLine += `\n  - …and ${warnings.length - shown.length} more`;
+                }
+              }
+            }
+          }
+          content = `Public URL: ${result.url}\n\n${tunnelLine}${assetLine}`;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           auditLog(agentId, 'share_publicly', sourcePath, 'error', msg);

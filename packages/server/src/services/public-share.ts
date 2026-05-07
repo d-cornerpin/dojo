@@ -56,11 +56,172 @@ function copyDirRecursive(src: string, dest: string): void {
   }
 }
 
+// ── HTML asset inlining ──
+//
+// When sharing a single .html file, scan it for linked local assets
+// (<img src=…>, <link href=…>, <script src=…>, url(…) in inline CSS) and
+// copy each one into the share directory so the rendered page actually
+// works at the public URL. Without this, every relative <img>/<link>
+// 404s when fetched through /share/<slug>/<file>.
+//
+// Rules:
+//   - URLs starting with http(s)://, data:, mailto:, tel:, sms:, #, //,
+//     or javascript: are external — left untouched.
+//   - Relative refs ("hero.png", "assets/style.css") preserve their
+//     subdirectory structure under shareDir; HTML keeps its existing href.
+//   - Absolute filesystem refs ("/Users/…/photo.png") get flattened to
+//     a sanitized basename in shareDir, and the HTML is rewritten to use
+//     that name as a relative path.
+//   - Path traversal attempts ("../../../etc/passwd") and refs that
+//     resolve outside shareDir are skipped with a warning.
+//   - Bounded: at most 200 assets, 50MB total. Anything past the cap is
+//     skipped with a warning.
+
+const MAX_INLINED_ASSETS = 200;
+const MAX_INLINED_TOTAL_BYTES = 50 * 1024 * 1024;
+const MAX_PER_ASSET_BYTES = 25 * 1024 * 1024;
+
+interface AssetInlineResult {
+  rewritten: string;
+  copiedCount: number;
+  skippedCount: number;
+  warnings: string[];
+}
+
+function isExternalRef(ref: string): boolean {
+  if (ref.length === 0) return true;
+  return /^(?:https?:|data:|mailto:|tel:|sms:|#|\/\/|javascript:)/i.test(ref);
+}
+
+function rewriteHtmlWithInlinedAssets(htmlPath: string, shareDir: string): AssetInlineResult {
+  const html = fs.readFileSync(htmlPath, 'utf-8');
+  const htmlDir = path.dirname(htmlPath);
+  const warnings: string[] = [];
+  let copiedCount = 0;
+  let skippedCount = 0;
+  let totalBytes = 0;
+  // Cache: source path → dest relative path. Same source referenced multiple
+  // times is copied once and rewritten consistently.
+  const copied = new Map<string, string>();
+
+  const tryCopyAsset = (ref: string): string | null => {
+    if (isExternalRef(ref)) return null;
+
+    // Strip URL query/fragment ("style.css?v=2" → "style.css") for the
+    // filesystem lookup; preserve the original suffix in the rewritten ref.
+    const queryIdx = Math.min(
+      ref.indexOf('?') === -1 ? Infinity : ref.indexOf('?'),
+      ref.indexOf('#') === -1 ? Infinity : ref.indexOf('#'),
+    );
+    const refPathOnly = queryIdx === Infinity ? ref : ref.slice(0, queryIdx);
+    const refSuffix = queryIdx === Infinity ? '' : ref.slice(queryIdx);
+
+    let absSource: string;
+    let destRel: string;
+    if (path.isAbsolute(refPathOnly)) {
+      absSource = refPathOnly;
+      destRel = path.basename(refPathOnly).replace(/[^a-zA-Z0-9._-]/g, '_');
+    } else {
+      absSource = path.resolve(htmlDir, refPathOnly);
+      destRel = refPathOnly.replace(/^\.\//, '');
+      // Block traversal that escapes the HTML's directory at the source side.
+      const relFromHtmlDir = path.relative(htmlDir, absSource);
+      if (relFromHtmlDir.startsWith('..') || path.isAbsolute(relFromHtmlDir)) {
+        warnings.push(`Skipped asset escaping HTML directory: ${ref}`);
+        skippedCount++;
+        return null;
+      }
+    }
+
+    if (copied.has(absSource)) {
+      return copied.get(absSource)! + refSuffix;
+    }
+    if (copiedCount >= MAX_INLINED_ASSETS) {
+      warnings.push(`Skipped: hit max ${MAX_INLINED_ASSETS} inlined assets`);
+      skippedCount++;
+      return null;
+    }
+
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(absSource);
+    } catch {
+      // Asset doesn't exist on disk — leave the ref alone, browser will 404.
+      // Don't flag as a warning; many HTMLs reference assets that haven't
+      // been generated yet (templates, dev placeholders).
+      return null;
+    }
+    if (!stat.isFile()) return null;
+    if (stat.size > MAX_PER_ASSET_BYTES) {
+      warnings.push(`Skipped oversized asset (${(stat.size / 1024 / 1024).toFixed(1)}MB): ${ref}`);
+      skippedCount++;
+      return null;
+    }
+    if (totalBytes + stat.size > MAX_INLINED_TOTAL_BYTES) {
+      warnings.push(`Skipped: hit ${MAX_INLINED_TOTAL_BYTES / 1024 / 1024}MB total cap at ${ref}`);
+      skippedCount++;
+      return null;
+    }
+
+    const destAbs = path.join(shareDir, destRel);
+    const resolved = path.resolve(destAbs);
+    if (!resolved.startsWith(path.resolve(shareDir) + path.sep)) {
+      warnings.push(`Skipped asset with dest outside shareDir: ${ref}`);
+      skippedCount++;
+      return null;
+    }
+
+    try {
+      fs.mkdirSync(path.dirname(destAbs), { recursive: true });
+      fs.copyFileSync(absSource, destAbs);
+      copied.set(absSource, destRel);
+      copiedCount++;
+      totalBytes += stat.size;
+      return destRel + refSuffix;
+    } catch (err) {
+      warnings.push(`Failed to copy ${ref}: ${err instanceof Error ? err.message : String(err)}`);
+      skippedCount++;
+      return null;
+    }
+  };
+
+  // Apply patterns one by one. html attribute refs (src/href) capture both
+  // the attribute name and the URL; CSS url(...) captures only the URL.
+  let rewritten = html;
+
+  rewritten = rewritten.replace(/\b(src|href)\s*=\s*"([^"]*)"/gi, (match, _attr, ref: string) => {
+    const newRef = tryCopyAsset(ref);
+    return newRef === null ? match : match.replace(`"${ref}"`, `"${newRef}"`);
+  });
+  rewritten = rewritten.replace(/\b(src|href)\s*=\s*'([^']*)'/gi, (match, _attr, ref: string) => {
+    const newRef = tryCopyAsset(ref);
+    return newRef === null ? match : match.replace(`'${ref}'`, `'${newRef}'`);
+  });
+  rewritten = rewritten.replace(/url\(\s*"([^"]*)"\s*\)/gi, (match, ref: string) => {
+    const newRef = tryCopyAsset(ref);
+    return newRef === null ? match : `url("${newRef}")`;
+  });
+  rewritten = rewritten.replace(/url\(\s*'([^']*)'\s*\)/gi, (match, ref: string) => {
+    const newRef = tryCopyAsset(ref);
+    return newRef === null ? match : `url('${newRef}')`;
+  });
+  rewritten = rewritten.replace(/url\(\s*([^"'\s)][^\s)]*)\s*\)/gi, (match, ref: string) => {
+    const newRef = tryCopyAsset(ref);
+    return newRef === null ? match : `url(${newRef})`;
+  });
+
+  return { rewritten, copiedCount, skippedCount, warnings };
+}
+
 export interface PublicShareResult {
   url: string;
   slug: string;
   publicPath: string;       // absolute path to the entry file under OUT_DIR
   baseSource: 'tunnel' | 'localhost';
+  /** When sharing a single HTML file, the count of linked local assets
+   *  (img/script/link/url(…)) that were detected, copied into the share
+   *  directory, or skipped. Undefined for non-HTML or directory shares. */
+  inlinedAssets?: { copied: number; skipped: number; warnings: string[] };
 }
 
 export interface CreatePublicShareInput {
@@ -86,10 +247,25 @@ export function createPublicShare(input: CreatePublicShareInput): PublicShareRes
 
   const stat = fs.statSync(src);
   let entry: string;
+  let inlinedAssets: PublicShareResult['inlinedAssets'];
 
   if (stat.isFile()) {
     entry = sanitizeFilename(path.basename(src));
-    fs.copyFileSync(src, path.join(shareDir, entry));
+    const ext = path.extname(src).toLowerCase();
+    if (ext === '.html' || ext === '.htm') {
+      // For HTML, walk the file's linked assets and copy them in too. Without
+      // this, every relative <img>/<link>/<script>/url() in the page 404s when
+      // fetched through the share URL because only the .html is in shareDir.
+      const result = rewriteHtmlWithInlinedAssets(src, shareDir);
+      fs.writeFileSync(path.join(shareDir, entry), result.rewritten, 'utf-8');
+      inlinedAssets = {
+        copied: result.copiedCount,
+        skipped: result.skippedCount,
+        warnings: result.warnings,
+      };
+    } else {
+      fs.copyFileSync(src, path.join(shareDir, entry));
+    }
   } else if (stat.isDirectory()) {
     copyDirRecursive(src, shareDir);
     if (input.entryFilename) {
@@ -122,7 +298,9 @@ export function createPublicShare(input: CreatePublicShareInput): PublicShareRes
 
   logger.info('Public share created', {
     slug, baseSource, sourceType: stat.isFile() ? 'file' : 'directory', entry,
+    inlinedAssetsCopied: inlinedAssets?.copied,
+    inlinedAssetsSkipped: inlinedAssets?.skipped,
   });
 
-  return { url, slug, publicPath, baseSource };
+  return { url, slug, publicPath, baseSource, inlinedAssets };
 }
