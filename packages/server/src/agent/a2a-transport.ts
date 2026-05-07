@@ -187,6 +187,19 @@ export interface A2ADeliveryResult {
   reason?: A2ADropReason;
   threadId: string;
   messageId?: string;
+  /**
+   * For ASSIGN-intent deliveries, the engine auto-creates a tracker task
+   * for the receiver. The ID is returned here so the sender's tool result
+   * can surface it ("Task tracker_xyz created and assigned to Maddy").
+   * Undefined for non-ASSIGN intents and for ASSIGN messages that reused
+   * an existing thread's task.
+   */
+  autoCreatedTaskId?: string;
+  /**
+   * True when the auto-task was just created by THIS delivery; false when
+   * we reused a task from an earlier ASSIGN on the same thread.
+   */
+  autoTaskIsNew?: boolean;
 }
 
 /**
@@ -280,6 +293,34 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   const senderRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(envelope.fromAgent) as { name: string } | undefined;
   const senderName = senderRow?.name ?? envelope.fromAgent;
 
+  // ── 8.5. Engine-driven auto-task on ASSIGN ──
+  // Cross-agent task discipline: when an agent uses intent=ASSIGN, the
+  // engine auto-creates a tracker task on their behalf so the assignment
+  // is structurally tracked from the moment of the handoff. Both sides
+  // see the task ID in their respective views (sender via tool result,
+  // receiver via the threadInfo footer below). PM's existing poke loop
+  // then picks up stalled ASSIGN tasks for free.
+  //
+  // Reuses an existing task if one already exists for this thread, so
+  // multiple ASSIGN messages on the same thread are clarifications, not
+  // duplicate assignments.
+  let autoTask: { taskId: string; isNew: boolean } | null = null;
+  if (envelope.intent === 'ASSIGN') {
+    try {
+      const { autoCreateAssignTask } = await import('../tracker/schema.js');
+      autoTask = autoCreateAssignTask({
+        senderId: envelope.fromAgent,
+        receiverId: target.id,
+        payload: envelope.payload,
+        threadId,
+      });
+    } catch (err) {
+      logger.warn('A2A ASSIGN: auto-task creation failed — delivering message anyway', {
+        threadId, error: err instanceof Error ? err.message : String(err),
+      }, envelope.fromAgent);
+    }
+  }
+
   // ── 9. Build the message content with structured tag ──
   // The footer must accurately reflect the intent's reply rules. Pre-2026-04-30
   // it branched on `requiresResponse`, which collapsed terminal-wake intents
@@ -293,6 +334,16 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   if (envelope.intent === 'QUESTION' || envelope.intent === 'ASSIGN' || envelope.intent === 'BLOCK') {
     // Open-thread reply intents — receiver should reply on the same thread.
     threadInfo = `\n\n[Thread ${threadShort} | Reply on this thread — use send_to_agent with thread_id="${threadId}" and an appropriate intent]`;
+    if (envelope.intent === 'ASSIGN' && autoTask) {
+      // Receiver-visible tracker line. The DOJO created the task for them,
+      // so they don't need to call tracker_create_task — they just need
+      // to call tracker_update_status when done so the sender gets the
+      // completion notification automatically.
+      const taskShort = autoTask.taskId.slice(0, 8);
+      threadInfo += autoTask.isNew
+        ? `\n[Tracker: task ${taskShort} was auto-created when ${senderName} assigned this work to you. Call tracker_update_status(task_id="${autoTask.taskId}", status="completed", notes="…") when you finish so ${senderName} gets the completion notice.]`
+        : `\n[Tracker: continuing work on task ${taskShort} (assigned earlier on this thread by ${senderName}). Update status with tracker_update_status when state changes.]`;
+    }
   } else if (envelope.intent === 'ANSWER' || envelope.intent === 'DELIVERABLE') {
     // Terminal but wake — receiver should USE the content (relay to user,
     // act on it) but the thread is closed; replying on it will fail with
@@ -490,7 +541,13 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
     payloadLength: envelope.payload.length,
   }, envelope.fromAgent);
 
-  return { delivered: true, threadId, messageId: msgId };
+  return {
+    delivered: true,
+    threadId,
+    messageId: msgId,
+    autoCreatedTaskId: autoTask?.taskId,
+    autoTaskIsNew: autoTask?.isNew,
+  };
 }
 
 /**

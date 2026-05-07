@@ -381,6 +381,81 @@ export function createTask(params: {
   return taskId;
 }
 
+/**
+ * Engine-driven task creation for A2A ASSIGN intent.
+ *
+ * Called from deliverA2AMessage when an agent's send_to_agent uses
+ * intent=ASSIGN. Auto-creates a tracker task on behalf of the sender so
+ * the assignment is structurally tracked from the moment of the handoff
+ * — no LLM cooperation required.
+ *
+ * If a task already exists for this thread (later ASSIGNs on the same
+ * thread are treated as clarifications, not new assignments), returns
+ * the existing task ID instead of creating a duplicate.
+ *
+ * Returns null only on hard DB error so callers can fall back gracefully
+ * — the message itself still gets delivered even if the auto-task fails.
+ */
+export function autoCreateAssignTask(params: {
+  senderId: string;
+  receiverId: string;
+  payload: string;
+  threadId: string;
+}): { taskId: string; isNew: boolean } | null {
+  const db = getDb();
+  try {
+    // Reuse if a task already exists for this thread.
+    const existing = db
+      .prepare('SELECT id FROM tasks WHERE a2a_thread_id = ? LIMIT 1')
+      .get(params.threadId) as { id: string } | undefined;
+    if (existing?.id) {
+      return { taskId: existing.id, isNew: false };
+    }
+
+    // Title: first sentence (or first 80 chars) of the payload, cleaned up.
+    const cleaned = params.payload.trim();
+    const sentenceEnd = cleaned.search(/[.!?\n]/);
+    const rawTitle = sentenceEnd > 0 && sentenceEnd <= 100
+      ? cleaned.slice(0, sentenceEnd).trim()
+      : cleaned.slice(0, 80).trim();
+    const title = rawTitle.length > 0 ? rawTitle : 'Assigned task (untitled)';
+
+    const taskId = uuidv4();
+    // Receiver-assigned tasks always start on_deck so the receiver picks
+    // them up explicitly via tracker_update_status. createTask's
+    // self-assigned path uses in_progress, but here sender ≠ receiver.
+    db.prepare(`
+      INSERT INTO tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, priority,
+                         step_number, total_steps, phase, depends_on, a2a_thread_id, created_at, updated_at)
+      VALUES (?, NULL, ?, ?, ?, 'on_deck', ?, ?, 'normal', NULL, NULL, 1, '[]', ?, datetime('now'), datetime('now'))
+    `).run(
+      taskId,
+      title,
+      params.payload,
+      params.payload,
+      params.receiverId,
+      params.senderId,
+      params.threadId,
+    );
+
+    logger.info('Auto-created task for A2A ASSIGN', {
+      taskId, threadId: params.threadId, senderId: params.senderId, receiverId: params.receiverId, title,
+    }, params.senderId);
+
+    const task = getTask(taskId);
+    if (task) {
+      broadcast({ type: 'tracker:task_updated', data: task });
+    }
+
+    return { taskId, isNew: true };
+  } catch (err) {
+    logger.warn('autoCreateAssignTask failed — proceeding without auto-task', {
+      threadId: params.threadId, error: err instanceof Error ? err.message : String(err),
+    }, params.senderId);
+    return null;
+  }
+}
+
 export function getTask(id: string): Task | null {
   const db = getDb();
   const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as TaskRow | undefined;

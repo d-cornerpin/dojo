@@ -754,7 +754,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'send_to_agent',
-    description: 'Send a structured message to another agent. Every message MUST specify an intent — there is no default. The intent controls whether the receiver wakes to act. Wake intents: QUESTION, ASSIGN, BLOCK (open thread, response expected) and ANSWER, DELIVERABLE (close thread, but receiver still wakes because they were waiting for the content). No-wake intents: FYI, STATUS, COMPLETE, FAIL (read-only context, receiver is NOT woken). Messages are grouped by thread_id — omit to start a new thread, or include an existing thread_id to continue a conversation. Silence is a valid response. Do not acknowledge acknowledgements.',
+    description: 'Send a structured message to another agent. Every message MUST specify an intent — there is no default. The intent controls whether the receiver wakes to act. Wake intents: QUESTION, ASSIGN, BLOCK (open thread, response expected) and ANSWER, DELIVERABLE (close thread, but receiver still wakes because they were waiting for the content). No-wake intents: FYI, STATUS, COMPLETE, FAIL (read-only context, receiver is NOT woken). Messages are grouped by thread_id — omit to start a new thread, or include an existing thread_id to continue a conversation. Silence is a valid response. Do not acknowledge acknowledgements.\n\nTracker integration: when you use intent="ASSIGN", the DOJO automatically creates a tracker task assigned to the receiver. You do NOT need to call tracker_create_task — the task is structurally created at delivery time. The tool result returns the task ID so you can track progress with tracker_get_status. The receiver gets the task ID in their incoming message and is told to call tracker_update_status when done. This means PM can spot stalled assignments automatically. Use ASSIGN whenever the work is multi-step; use QUESTION or BLOCK for one-shot exchanges that don\'t need tracking.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2906,10 +2906,20 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
 
           if (result.delivered) {
             auditLog(agentId, 'tool_call', 'send_to_agent', 'success',
-              `to:${agentRef} intent:${intent} thread:${result.threadId.slice(0, 8)} requires_response:${requiresResponse}`,
+              `to:${agentRef} intent:${intent} thread:${result.threadId.slice(0, 8)} requires_response:${requiresResponse}${result.autoCreatedTaskId ? ` task:${result.autoCreatedTaskId.slice(0, 8)}` : ''}`,
             );
             content = `[A2A:${intent}] Message delivered to "${agentRef}" on thread ${result.threadId.slice(0, 8)}.` +
               (requiresResponse ? ' Response expected.' : ' No response expected (read-only context).');
+            // Engine-driven task discipline (Phase 7+): ASSIGN intent
+            // auto-creates a tracker task. Surface the ID so the sender
+            // knows where to track progress without having to call
+            // tracker_create_task themselves.
+            if (result.autoCreatedTaskId) {
+              const taskShort = result.autoCreatedTaskId.slice(0, 8);
+              content += result.autoTaskIsNew
+                ? `\nTask ${taskShort} auto-created and assigned to "${agentRef}" — track progress with tracker_get_status(task_id="${result.autoCreatedTaskId}"). You will be notified automatically when they mark it complete.`
+                : `\nContinuing on existing task ${taskShort} (created by an earlier ASSIGN on this thread).`;
+            }
           } else {
             // Message was dropped by the protocol — log the reason but don't error
             // (the protocol is doing its job, this is expected behavior)
