@@ -409,19 +409,93 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }));
           const matches = techniqueMatcher({ query: lastUserMessageContent, techniques });
           if (matches.length > 0) {
-            const lines = matches.map((m) => {
-              const reason = m.score >= 0.6 ? 'strong match' : 'possible match';
-              const desc = m.technique.description ? ` — ${m.technique.description}` : '';
-              return `- \`${m.technique.name}\` (${reason})${desc}\n  Load with \`use_technique('${m.technique.id}')\` if applicable.`;
-            });
-            const hint =
-              `\n\n## Possibly Relevant Techniques\n\n` +
-              `Based on the user's message, the DOJO matched these techniques. Load any that fit the task; ignore otherwise.\n\n` +
-              lines.join('\n');
-            systemPrompt = systemPrompt + hint;
+            // Two modes:
+            //   - STRONG MATCH (score >= 0.5): the engine loads TECHNIQUE.md
+            //     and INJECTS the full content into the system prompt as
+            //     authoritative guidance. The agent does not get to decide.
+            //     This is the engine-deterministic fix for the user-reported
+            //     "agent ignores the technique" failure mode — the previous
+            //     hint-and-trust-the-LLM approach didn't reliably get
+            //     frontier models to load techniques on their own.
+            //   - WEAK MATCH (score < 0.5): keep the existing hint behavior;
+            //     agent decides whether to load.
+            //
+            // Cap at one auto-injected technique per turn to keep token cost
+            // bounded. If the technique itself is too large to inline (>25K
+            // chars ≈ 6K tokens), fall back to a strong-hint with the first
+            // 1K chars as preview so the agent can decide informed.
+            const STRONG_MATCH_THRESHOLD = 0.5;
+            const MAX_INLINE_CHARS = 25_000;
+            const strongMatch = matches[0].score >= STRONG_MATCH_THRESHOLD ? matches[0] : null;
+            const weakMatches = strongMatch
+              ? matches.slice(1).filter((m) => m.score < STRONG_MATCH_THRESHOLD)
+              : matches;
+
+            let injectedTechniqueId: string | null = null;
+            if (strongMatch) {
+              try {
+                const { getTechniqueDetail, recordTechniqueUsage } = await import('../../techniques/store.js');
+                const detail = getTechniqueDetail(strongMatch.technique.id);
+                if (detail?.instructions && detail.instructions.length > 0) {
+                  const md = detail.instructions;
+                  const tooLarge = md.length > MAX_INLINE_CHARS;
+                  const desc = strongMatch.technique.description
+                    ? `\n_Description:_ ${strongMatch.technique.description}\n`
+                    : '';
+                  if (tooLarge) {
+                    // Strong-hint fallback: preview + emphatic instruction to load.
+                    const preview = md.slice(0, 1_000);
+                    systemPrompt += `\n\n## REQUIRED TECHNIQUE FOR THIS TASK\n\n` +
+                      `Based on the user's request, the **${strongMatch.technique.name}** technique applies (DOJO confidence ${(strongMatch.score * 100).toFixed(0)}%). The full instructions are too long to inline (${md.length} chars). You MUST load it before doing the work:\n\n` +
+                      `\`use_technique('${strongMatch.technique.id}')\`\n${desc}\n` +
+                      `_Preview:_\n${preview}\n…[truncated — call use_technique to read the rest]`;
+                  } else {
+                    systemPrompt += `\n\n## REQUIRED TECHNIQUE FOR THIS TASK\n\n` +
+                      `Based on the user's request, the **${strongMatch.technique.name}** technique applies (DOJO confidence ${(strongMatch.score * 100).toFixed(0)}%). The full instructions are inlined below — these are AUTHORITATIVE for this task. Do not skip steps. Do not improvise an alternative approach. Follow the framework as written.${desc}\n` +
+                      `\`\`\`\n${md}\n\`\`\``;
+                  }
+                  injectedTechniqueId = strongMatch.technique.id;
+                  try { recordTechniqueUsage(strongMatch.technique.id, agentId); } catch { /* best effort */ }
+                  logger.info('v2 techniqueMatcher: auto-injected strong-match technique', {
+                    agentId,
+                    techniqueId: strongMatch.technique.id,
+                    techniqueName: strongMatch.technique.name,
+                    score: strongMatch.score,
+                    contentChars: md.length,
+                    inlinedFully: !tooLarge,
+                  }, agentId);
+                }
+              } catch (loadErr) {
+                logger.warn('v2 techniqueMatcher: strong-match load failed — falling back to hint', {
+                  agentId,
+                  techniqueId: strongMatch.technique.id,
+                  error: loadErr instanceof Error ? loadErr.message : String(loadErr),
+                }, agentId);
+              }
+            }
+
+            // Weak matches (and the strong match if its load failed) get the
+            // legacy "consider these" hint.
+            const hintMatches = injectedTechniqueId === null
+              ? matches
+              : weakMatches;
+            if (hintMatches.length > 0) {
+              const lines = hintMatches.map((m) => {
+                const reason = m.score >= 0.6 ? 'strong match' : 'possible match';
+                const desc = m.technique.description ? ` — ${m.technique.description}` : '';
+                return `- \`${m.technique.name}\` (${reason})${desc}\n  Load with \`use_technique('${m.technique.id}')\` if applicable.`;
+              });
+              const hintHeader = injectedTechniqueId
+                ? `\n\n## Other Techniques That Might Also Apply\n\n`
+                : `\n\n## Possibly Relevant Techniques\n\n`;
+              systemPrompt += hintHeader +
+                `Based on the user's message, the DOJO matched these techniques. Load any that fit the task; ignore otherwise.\n\n` +
+                lines.join('\n');
+            }
             logger.debug('v2 techniqueMatcher: surfaced matches', {
               agentId,
               matchCount: matches.length,
+              autoInjected: injectedTechniqueId,
               names: matches.map((m) => m.technique.name),
             }, agentId);
           }
