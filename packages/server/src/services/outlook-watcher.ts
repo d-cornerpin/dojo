@@ -166,13 +166,15 @@ async function pollForNewEmails(): Promise<void> {
       notifiedIds = new Set();
     }
 
-    // Get own email to filter out self-sent messages
-    const ownEmail = (() => {
-      try {
-        const row = db.prepare("SELECT value FROM config WHERE key = 'ms_account_email'").get() as { value: string } | undefined;
-        return row?.value ?? null;
-      } catch { return null; }
-    })();
+    // Pre-2026-05-06 we matched on `fromAddress === ownEmail` to skip
+    // self-sent emails. That was wrong on two counts: (1) the Graph query
+    // above already targets `mailFolders/inbox/messages`, and Outlook
+    // folders are exclusive — sent emails live in Sent Items, NOT Inbox —
+    // so anything in the inbox isn't a self-sent original; (2) the filter
+    // wrongly skipped Microsoft Forms responses, mailing-list confirmations,
+    // calendar invite replies to events the user organized, and self-CC'd
+    // delivery copies — all legitimate inbound emails whose From header
+    // happens to show the user's own address. Removed.
 
     let newCount = 0;
 
@@ -185,11 +187,6 @@ async function pollForNewEmails(): Promise<void> {
       const subject = msg.subject ?? '(no subject)';
       const date = msg.receivedDateTime ?? '';
       const snippet = msg.bodyPreview ?? '';
-
-      if (ownEmail && fromAddress.toLowerCase() === ownEmail.toLowerCase()) {
-        notifiedIds.add(msg.id);
-        continue;
-      }
 
       const content = `[SOURCE: OUTLOOK NOTIFICATION — not a message from the user, this is an automated alert about a new email that arrived in the Outlook inbox]\n\nFrom: ${from}\nSubject: ${subject}\nDate: ${date}\nPreview: ${snippet}\nMessage ID: ${msg.id}`;
 

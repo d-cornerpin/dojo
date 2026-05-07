@@ -221,6 +221,7 @@ async function pollForNewEmails(): Promise<void> {
       const msgData = detail.data as {
         id: string;
         snippet: string;
+        labelIds?: string[];
         payload?: { headers?: Array<{ name: string; value: string }> };
       };
 
@@ -229,14 +230,21 @@ async function pollForNewEmails(): Promise<void> {
       const subject = headers.find(h => h.name === 'Subject')?.value ?? '(no subject)';
       const date = headers.find(h => h.name === 'Date')?.value ?? '';
       const snippet = msgData?.snippet ?? '';
+      const labelIds = msgData?.labelIds ?? [];
 
-      if (ownEmail && from.includes(ownEmail)) {
-        // Skip self-sent. Mark as notified so we don't keep re-fetching the
-        // same message every poll — pre-2026-04-30 this was a continue with
-        // no notifiedIds.add, so self-sent emails got refetched forever.
+      // Self-sent filter via Gmail's SENT label (set server-side when the
+      // user actually composed and sent the email). Pre-2026-05-06 we
+      // matched on `from.includes(ownEmail)` which wrongly skipped Google
+      // Form responses, self-CC'd inbox copies, mailing-list confirmations,
+      // and any other inbound email whose From header happened to show the
+      // owner's own address. The SENT label is the authoritative "did this
+      // user actually send this" signal — ownEmail header matching is a
+      // header any sender can spoof; SENT is set by Gmail itself.
+      if (labelIds.includes('SENT')) {
         notifiedIds.add(msg.id);
         continue;
       }
+      void ownEmail; // retained for future header-based heuristics if needed
 
       // Inject notification into primary agent's conversation
       // IMPORTANT: This is NOT a message from the user. It's an automated notification.
