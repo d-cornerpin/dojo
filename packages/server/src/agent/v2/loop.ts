@@ -581,11 +581,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 const taskTitle = decision.name ?? fallbackName ?? 'Initial task';
 
                 try {
+                  // createdBy == agentId so createProject's auto-start
+                  // condition fires (assignee === createdBy on the first
+                  // step → status='in_progress'). Otherwise the task lands
+                  // in on_deck and waits for someone to pull it forward.
+                  // Matches the pattern when an agent calls
+                  // tracker_create_project on itself.
                   const created = createProject({
                     title: projectTitle,
                     description: lastUserMessageContent.slice(0, 2000),
                     level: 1,
-                    createdBy: 'dojo-system',
+                    createdBy: agentId,
                     tasks: [{
                       title: taskTitle,
                       description: lastUserMessageContent.slice(0, 2000),
