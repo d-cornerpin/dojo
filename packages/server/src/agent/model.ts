@@ -817,6 +817,7 @@ async function buildOpenAIMessages(
   systemPrompt: string,
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string }>,
   agentId: string,
+  isDeepSeek = false,
 ): Promise<OpenAI.ChatCompletionMessageParam[]> {
   const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
@@ -1014,15 +1015,15 @@ async function buildOpenAIMessages(
       if (typeof m.content === 'string') {
         const msg: OpenAI.ChatCompletionAssistantMessageParam = { role: 'assistant', content: m.content };
         if (m.reasoningContent) {
-          // DeepSeek requires reasoning_content be echoed back when the
-          // assistant message has tool_calls (or it 400s). String-content
-          // assistants don't have tool_calls, so echo is optional here —
-          // but harmless for providers that ignore the field.
           (msg as unknown as Record<string, unknown>).reasoning_content = m.reasoningContent;
+        } else if (isDeepSeek) {
+          // DeepSeek requires reasoning_content on every assistant turn in
+          // thinking mode. Use empty string as a safe fallback when we don't
+          // have stored reasoning (legacy rows, or empty thinking response).
+          (msg as unknown as Record<string, unknown>).reasoning_content = '';
         }
         openaiMessages.push(msg);
       } else if (Array.isArray(m.content)) {
-        // Handle tool_use blocks from Anthropic format
         const blocks = m.content as unknown as Array<Record<string, unknown>>;
         const textBlocks = blocks.filter(b => b.type === 'text');
         const toolUseBlocks = blocks.filter(b => b.type === 'tool_use');
@@ -1043,11 +1044,13 @@ async function buildOpenAIMessages(
           }));
         }
 
-        // Round-trip reasoning_content for thinking-mode providers. DeepSeek
-        // explicitly requires this on tool-call follow-up turns; other
-        // providers ignore the unknown field.
+        // DeepSeek 400s if reasoning_content is missing on tool-call
+        // follow-ups. Always include it — empty string when we don't have
+        // stored reasoning. Other providers ignore the unknown field.
         if (m.reasoningContent) {
           (assistantMsg as unknown as Record<string, unknown>).reasoning_content = m.reasoningContent;
+        } else if (isDeepSeek) {
+          (assistantMsg as unknown as Record<string, unknown>).reasoning_content = '';
         }
 
         openaiMessages.push(assistantMsg);
@@ -1067,7 +1070,8 @@ async function callOpenAIModel(
 
   const client = getOpenAIClient(modelInfo.providerId, modelInfo.providerBaseUrl);
 
-  const openaiMessages = await buildOpenAIMessages(systemPrompt, messages, agentId);
+  const isDeepSeek = (modelInfo.providerBaseUrl ?? '').toLowerCase().includes('deepseek.com');
+  const openaiMessages = await buildOpenAIMessages(systemPrompt, messages, agentId, isDeepSeek);
 
   // Build tools in OpenAI format (two-phase loading: only always-loaded + session-loaded)
   let openaiTools: OpenAI.ChatCompletionTool[] | undefined = undefined;
@@ -1217,7 +1221,6 @@ async function callOpenAIModel(
   // the message build path. Per DeepSeek docs we also avoid sending
   // temperature / top_p when thinking is enabled (they're rejected) — the
   // current dispatch doesn't send those anyway, so no extra guard needed.
-  const isDeepSeek = (modelInfo.providerBaseUrl ?? '').toLowerCase().includes('deepseek.com');
   if (isDeepSeek) {
     (requestParams as unknown as { thinking?: { type: string } }).thinking = {
       type: modelInfo.thinkingEnabled && supportsThinking ? 'enabled' : 'disabled',
@@ -1233,6 +1236,27 @@ async function callOpenAIModel(
     thinkingEnabled: modelInfo.thinkingEnabled,
     reasoningToggleApplied: isOpenRouter && supportsThinking,
   }, agentId);
+
+  // DeepSeek-only diagnostic: log per-assistant-message reasoning_content
+  // presence so future "must be passed back" 400s can be diagnosed from logs.
+  if (isDeepSeek) {
+    const assistantSummary = openaiMessages
+      .map((m, i) => ({ m, i }))
+      .filter(({ m }) => m.role === 'assistant')
+      .map(({ m, i }) => {
+        const rc = (m as unknown as Record<string, unknown>).reasoning_content;
+        const tc = (m as { tool_calls?: unknown[] }).tool_calls;
+        return {
+          idx: i,
+          hasToolCalls: Array.isArray(tc) && tc.length > 0,
+          hasReasoningField: rc !== undefined,
+          reasoningChars: typeof rc === 'string' ? rc.length : 0,
+        };
+      });
+    logger.info('DeepSeek request — assistant message reasoning round-trip', {
+      assistantMessages: assistantSummary,
+    }, agentId);
+  }
 
   try {
     // Pass the external abort signal so stop-button aborts cancel the
