@@ -411,19 +411,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
           if (matches.length > 0) {
             // Two modes:
             //   - STRONG MATCH (score >= 0.5): the engine loads TECHNIQUE.md
-            //     and INJECTS the full content into the system prompt as
-            //     authoritative guidance. The agent does not get to decide.
-            //     This is the engine-deterministic fix for the user-reported
-            //     "agent ignores the technique" failure mode — the previous
-            //     hint-and-trust-the-LLM approach didn't reliably get
-            //     frontier models to load techniques on their own.
-            //   - WEAK MATCH (score < 0.5): keep the existing hint behavior;
-            //     agent decides whether to load.
+            //     and WRAPS the user's most recent message with the technique
+            //     body, framed as authoritative guidance from the user. The
+            //     wrap is in-message (user-role, adjacent to the ask) rather
+            //     than appended to the system prompt — frontier models weight
+            //     user-role instructions and recent tokens far more than
+            //     buried system-prompt rules. v2.2.8 inlined into the system
+            //     prompt and the model still ignored it; v2.3.2 puts the
+            //     technique where the model actually pays attention.
+            //   - WEAK MATCH (score < 0.5): keep the existing hint behavior
+            //     in the system prompt; agent decides whether to load.
             //
             // Cap at one auto-injected technique per turn to keep token cost
-            // bounded. If the technique itself is too large to inline (>25K
-            // chars ≈ 6K tokens), fall back to a strong-hint with the first
-            // 1K chars as preview so the agent can decide informed.
+            // bounded. If the technique is too large to inline (>25K chars ≈
+            // 6K tokens), still wrap the user message but with a load-it
+            // instruction instead of the full body.
             const STRONG_MATCH_THRESHOLD = 0.5;
             const MAX_INLINE_CHARS = 25_000;
             const strongMatch = matches[0].score >= STRONG_MATCH_THRESHOLD ? matches[0] : null;
@@ -432,6 +434,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               : matches;
 
             let injectedTechniqueId: string | null = null;
+            let userMessageWrap: string | null = null;
             if (strongMatch) {
               try {
                 const { getTechniqueDetail, recordTechniqueUsage } = await import('../../techniques/store.js');
@@ -439,24 +442,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 if (detail?.instructions && detail.instructions.length > 0) {
                   const md = detail.instructions;
                   const tooLarge = md.length > MAX_INLINE_CHARS;
-                  const desc = strongMatch.technique.description
-                    ? `\n_Description:_ ${strongMatch.technique.description}\n`
-                    : '';
                   if (tooLarge) {
-                    // Strong-hint fallback: preview + emphatic instruction to load.
-                    const preview = md.slice(0, 1_000);
-                    systemPrompt += `\n\n## REQUIRED TECHNIQUE FOR THIS TASK\n\n` +
-                      `Based on the user's request, the **${strongMatch.technique.name}** technique applies (DOJO confidence ${(strongMatch.score * 100).toFixed(0)}%). The full instructions are too long to inline (${md.length} chars). You MUST load it before doing the work:\n\n` +
-                      `\`use_technique('${strongMatch.technique.id}')\`\n${desc}\n` +
-                      `_Preview:_\n${preview}\n…[truncated — call use_technique to read the rest]`;
+                    userMessageWrap =
+                      `[DOJO: This task is covered by the "${strongMatch.technique.name}" technique. The full instructions are too long to inline (${md.length} chars) — load it via use_technique('${strongMatch.technique.id}') before doing the work. Do not improvise an alternative approach.]\n\n`;
                   } else {
-                    systemPrompt += `\n\n## REQUIRED TECHNIQUE FOR THIS TASK\n\n` +
-                      `Based on the user's request, the **${strongMatch.technique.name}** technique applies (DOJO confidence ${(strongMatch.score * 100).toFixed(0)}%). The full instructions are inlined below — these are AUTHORITATIVE for this task. Do not skip steps. Do not improvise an alternative approach. Follow the framework as written.${desc}\n` +
-                      `\`\`\`\n${md}\n\`\`\``;
+                    userMessageWrap =
+                      `[DOJO: This task is covered by the "${strongMatch.technique.name}" technique. Follow the procedure below as written — do not improvise an alternative approach.]\n\n` +
+                      `--- TECHNIQUE: ${strongMatch.technique.name} ---\n${md}\n--- END TECHNIQUE ---\n\n`;
                   }
                   injectedTechniqueId = strongMatch.technique.id;
                   try { recordTechniqueUsage(strongMatch.technique.id, agentId); } catch { /* best effort */ }
-                  logger.info('v2 techniqueMatcher: auto-injected strong-match technique', {
+                  logger.info('v2 techniqueMatcher: wrapping user message with strong-match technique', {
                     agentId,
                     techniqueId: strongMatch.technique.id,
                     techniqueName: strongMatch.technique.name,
@@ -471,6 +467,31 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   techniqueId: strongMatch.technique.id,
                   error: loadErr instanceof Error ? loadErr.message : String(loadErr),
                 }, agentId);
+              }
+            }
+
+            // Apply the wrap to the most recent user message in `messages`.
+            // The DB-stored row is untouched — only this in-flight model call
+            // sees the wrap. Handles both string and content-block forms.
+            if (userMessageWrap) {
+              for (let i = messages.length - 1; i >= 0; i--) {
+                const m = messages[i];
+                if (m.role !== 'user') continue;
+                if (typeof m.content === 'string') {
+                  m.content = userMessageWrap + m.content;
+                } else if (Array.isArray(m.content)) {
+                  const blocks = m.content as unknown as Array<Record<string, unknown>>;
+                  const firstTextIdx = blocks.findIndex((b) => b.type === 'text');
+                  if (firstTextIdx >= 0) {
+                    blocks[firstTextIdx] = {
+                      ...blocks[firstTextIdx],
+                      text: userMessageWrap + ((blocks[firstTextIdx].text as string) ?? ''),
+                    };
+                  } else {
+                    blocks.unshift({ type: 'text', text: userMessageWrap });
+                  }
+                }
+                break;
               }
             }
 
