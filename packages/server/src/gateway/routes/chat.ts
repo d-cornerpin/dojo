@@ -186,6 +186,7 @@ function rowToMessage(row: Record<string, unknown>): Message {
     cost: row.cost as number | null,
     latencyMs: row.latency_ms as number | null,
     createdAt: row.created_at as string,
+    reasoningContent: (row.reasoning_content as string | null) ?? null,
     attachments: row.attachments ? JSON.parse(row.attachments as string) : undefined,
   };
 }

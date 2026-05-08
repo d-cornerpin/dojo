@@ -1164,16 +1164,43 @@ const ProvidersTab = () => {
 
 const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel: () => void }) => {
   const [name, setName] = useState('');
-  const [type, setType] = useState('anthropic');
+  // The dropdown 'preset' is a UI-only label. Several presets (deepseek,
+  // openrouter) all map to the same backend type 'openai-compatible' but
+  // with different default base URLs and seeded model catalogs. The
+  // mapping happens at submit time below.
+  const [preset, setPreset] = useState('anthropic');
   const [authType, setAuthType] = useState<'api_key' | 'oauth' | 'agent-sdk'>('api_key');
   const [credential, setCredential] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'saving' | 'validating' | 'valid' | 'invalid'>('idle');
 
+  // Translate UI preset → backend (type, default baseUrl, suggested name).
+  const presetConfig = (() => {
+    switch (preset) {
+      case 'anthropic':   return { backendType: 'anthropic',          defaultBaseUrl: undefined,                     suggestedName: 'Anthropic' };
+      case 'openai':      return { backendType: 'openai',             defaultBaseUrl: 'https://api.openai.com',      suggestedName: 'OpenAI' };
+      case 'openrouter':  return { backendType: 'openai-compatible',  defaultBaseUrl: 'https://openrouter.ai/api',   suggestedName: 'OpenRouter' };
+      case 'deepseek':    return { backendType: 'openai-compatible',  defaultBaseUrl: 'https://api.deepseek.com',    suggestedName: 'DeepSeek' };
+      case 'ollama':      return { backendType: 'ollama',             defaultBaseUrl: 'http://localhost:11434',      suggestedName: 'Ollama' };
+      default:            return { backendType: 'anthropic',          defaultBaseUrl: undefined,                     suggestedName: 'Anthropic' };
+    }
+  })();
+
+  // When the preset changes, autofill the name field if the user hasn't
+  // typed anything custom yet (or if it still matches a previous preset's
+  // suggestion). Saves a click for the common case.
+  useEffect(() => {
+    setName((current) => {
+      const isAutoFilled = current === '' ||
+        ['Anthropic', 'OpenAI', 'OpenRouter', 'DeepSeek', 'Ollama'].includes(current);
+      return isAutoFilled ? presetConfig.suggestedName : current;
+    });
+  }, [preset, presetConfig.suggestedName]);
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || (type !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())) return;
+    if (!name.trim() || (preset !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())) return;
     setStatus('saving');
     setError(null);
 
@@ -1181,13 +1208,10 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
     const result = await api.createProvider({
       id,
       name,
-      type,
-      baseUrl: type === 'ollama' ? (baseUrl || 'http://localhost:11434')
-        : type === 'openai-compatible' ? (baseUrl || 'https://openrouter.ai/api')
-        : type === 'openai' ? (baseUrl || 'https://api.openai.com')
-        : undefined,
-      authType: type === 'ollama' ? 'none' : authType,
-      credential: type === 'ollama' || authType === 'agent-sdk' ? undefined : credential,
+      type: presetConfig.backendType,
+      baseUrl: baseUrl.trim() || presetConfig.defaultBaseUrl,
+      authType: preset === 'ollama' ? 'none' : authType,
+      credential: preset === 'ollama' || authType === 'agent-sdk' ? undefined : credential,
     });
 
     if (!result.ok) {
@@ -1225,19 +1249,20 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
         <div>
           <label className="form-label">Type</label>
           <select
-            value={type}
-            onChange={(e) => setType(e.target.value)}
+            value={preset}
+            onChange={(e) => setPreset(e.target.value)}
             className="glass-select w-full"
           >
             <option value="anthropic">Anthropic</option>
             <option value="openai">OpenAI</option>
-            <option value="openai-compatible">OpenRouter</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="deepseek">DeepSeek</option>
             <option value="ollama">Ollama</option>
           </select>
         </div>
       </div>
 
-      {type === 'ollama' && (
+      {preset === 'ollama' && (
         <div>
           <label className="form-label">Base URL</label>
           <input
@@ -1250,9 +1275,9 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
         </div>
       )}
 
-      {type !== 'ollama' && (
+      {preset !== 'ollama' && (
         <>
-          {type === 'anthropic' && (
+          {preset === 'anthropic' && (
             <div>
               <label className="form-label">Auth Type</label>
               <select
@@ -1267,18 +1292,22 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
             </div>
           )}
 
-          {authType === 'agent-sdk' && type === 'anthropic' ? (
+          {authType === 'agent-sdk' && preset === 'anthropic' ? (
             <AgentSdkSetup />
           ) : (
             <div>
               <label className="form-label">
-                {authType === 'oauth' && type === 'anthropic' ? 'OAuth Token' : 'API Key'}
+                {authType === 'oauth' && preset === 'anthropic' ? 'OAuth Token' : 'API Key'}
               </label>
               <input
                 type="password"
                 value={credential}
                 onChange={(e) => setCredential(e.target.value)}
-                placeholder={type === 'openai' ? 'sk-...' : authType === 'oauth' ? 'Bearer token...' : 'sk-...'}
+                placeholder={
+                  preset === 'deepseek' ? 'sk-... (DeepSeek API key from platform.deepseek.com)' :
+                  preset === 'openai' ? 'sk-...' :
+                  authType === 'oauth' ? 'Bearer token...' : 'sk-...'
+                }
                 className="glass-input w-full"
               />
             </div>
@@ -1301,7 +1330,7 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
       <div className="flex gap-2">
         <button
           type="submit"
-          disabled={status === 'saving' || status === 'validating' || status === 'valid' || !name.trim() || (type !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())}
+          disabled={status === 'saving' || status === 'validating' || status === 'valid' || !name.trim() || (preset !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())}
           className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
         >
           {status === 'saving' ? 'Adding...' : status === 'validating' ? 'Validating...' : 'Add & Validate'}

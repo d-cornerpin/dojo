@@ -397,7 +397,10 @@ const PasswordStep = ({ onComplete }: { onComplete: () => void }) => {
 
 const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: boolean) => void; onCloudProviderChange?: (has: boolean) => void }) => {
   const [name, setName] = useState('');
-  const [type, setType] = useState('anthropic');
+  // Same preset → backend mapping as Settings.tsx's AddProviderForm.
+  // 'openrouter' and 'deepseek' both map to backend type 'openai-compatible'
+  // with their respective default base URLs.
+  const [preset, setPreset] = useState('anthropic');
   const [authType, setAuthType] = useState('api_key');
   const [credential, setCredential] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
@@ -407,6 +410,26 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
   const [hasOllama, setHasOllama] = useState(false);
   const [hasCloudProvider, setHasCloudProvider] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+
+  const presetConfig = (() => {
+    switch (preset) {
+      case 'anthropic':   return { backendType: 'anthropic',          defaultBaseUrl: undefined,                     suggestedName: 'Anthropic' };
+      case 'openai':      return { backendType: 'openai',             defaultBaseUrl: 'https://api.openai.com',      suggestedName: 'OpenAI' };
+      case 'openrouter':  return { backendType: 'openai-compatible',  defaultBaseUrl: 'https://openrouter.ai/api',   suggestedName: 'OpenRouter' };
+      case 'deepseek':    return { backendType: 'openai-compatible',  defaultBaseUrl: 'https://api.deepseek.com',    suggestedName: 'DeepSeek' };
+      case 'ollama':      return { backendType: 'ollama',             defaultBaseUrl: 'http://localhost:11434',      suggestedName: 'Ollama' };
+      default:            return { backendType: 'anthropic',          defaultBaseUrl: undefined,                     suggestedName: 'Anthropic' };
+    }
+  })();
+
+  // Autofill name when preset changes (only if user hasn't typed something custom).
+  useEffect(() => {
+    setName((current) => {
+      const isAutoFilled = current === '' ||
+        ['Anthropic', 'OpenAI', 'OpenRouter', 'DeepSeek', 'Ollama'].includes(current);
+      return isAutoFilled ? presetConfig.suggestedName : current;
+    });
+  }, [preset, presetConfig.suggestedName]);
 
   // Always allow Next (we handle the "are you sure" in the parent via onReady)
   useEffect(() => { onReady?.(true); }, [onReady]);
@@ -426,20 +449,18 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
 
   const handleAdd = async (e: FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || (type !== 'ollama' && !credential.trim())) return;
+    if (!name.trim() || (preset !== 'ollama' && !credential.trim())) return;
 
     setStatus('validating');
     setError(null);
 
     const id = name.toLowerCase().replace(/[^a-z0-9]/g, '-');
     const result = await api.createProvider({
-      id, name, type,
-      baseUrl: type === 'ollama' ? (baseUrl || 'http://localhost:11434')
-        : type === 'openai-compatible' ? (baseUrl || 'https://openrouter.ai/api')
-        : type === 'openai' ? (baseUrl || 'https://api.openai.com')
-        : undefined,
-      authType: type === 'ollama' ? 'none' : authType,
-      credential: type === 'ollama' ? undefined : credential,
+      id, name,
+      type: presetConfig.backendType,
+      baseUrl: baseUrl.trim() || presetConfig.defaultBaseUrl,
+      authType: preset === 'ollama' ? 'none' : authType,
+      credential: preset === 'ollama' ? undefined : credential,
     });
 
     if (!result.ok) {
@@ -452,7 +473,7 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
     const valResult = await api.validateProvider(id);
     if (valResult.ok && valResult.data.valid) {
       setStatus('valid');
-      if (type === 'ollama') {
+      if (preset === 'ollama') {
         setHasOllama(true);
       } else {
         setHasCloudProvider(true);
@@ -498,16 +519,17 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
 
         <div>
           <label className="block text-sm font-medium white/70 mb-1">Type</label>
-          <select value={type} onChange={(e) => setType(e.target.value)}
+          <select value={preset} onChange={(e) => setPreset(e.target.value)}
             className="glass-select w-full">
             <option value="anthropic">Anthropic</option>
             <option value="openai">OpenAI</option>
-            <option value="openai-compatible">OpenRouter</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="deepseek">DeepSeek</option>
             <option value="ollama">Ollama</option>
           </select>
         </div>
 
-        {type === 'ollama' && (
+        {preset === 'ollama' && (
           <div>
             <label className="block text-sm font-medium white/70 mb-1">Base URL</label>
             <input type="text" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://localhost:11434"
@@ -515,9 +537,9 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
           </div>
         )}
 
-        {type !== 'ollama' && (
+        {preset !== 'ollama' && (
           <>
-            {type === 'anthropic' && (
+            {preset === 'anthropic' && (
               <div>
                 <label className="block text-sm font-medium white/70 mb-1">Auth Type</label>
                 <select value={authType} onChange={(e) => setAuthType(e.target.value)}
@@ -529,7 +551,7 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
               </div>
             )}
 
-            {authType === 'agent-sdk' && type === 'anthropic' ? (
+            {authType === 'agent-sdk' && preset === 'anthropic' ? (
               <div className="space-y-3">
                 <p className="text-xs text-white/40">
                   Use your Claude Pro or Max subscription. Two steps needed before adding this provider:
@@ -558,14 +580,18 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
             ) : (
               <>
                 <div>
-                  <label className="block text-sm font-medium white/70 mb-1">{authType === 'oauth' && type === 'anthropic' ? 'OAuth Token' : 'API Key'}</label>
+                  <label className="block text-sm font-medium white/70 mb-1">{authType === 'oauth' && preset === 'anthropic' ? 'OAuth Token' : 'API Key'}</label>
                   <input type="password" value={credential} onChange={(e) => setCredential(e.target.value)}
-                    placeholder={type === 'openai' ? 'sk-...' : authType === 'oauth' ? 'sk-ant-oat...' : 'sk-...'}
+                    placeholder={
+                      preset === 'deepseek' ? 'sk-... (DeepSeek API key from platform.deepseek.com)' :
+                      preset === 'openai' ? 'sk-...' :
+                      authType === 'oauth' ? 'sk-ant-oat...' : 'sk-...'
+                    }
                     className="glass-input" />
                 </div>
 
                 {/* OAuth hint for Anthropic */}
-                {type === 'anthropic' && authType === 'oauth' && (
+                {preset === 'anthropic' && authType === 'oauth' && (
                   <div className="px-3 py-2.5 rounded-lg bg-blue-500/5 border border-blue-500/10 text-[11px] text-blue-300/70 leading-relaxed space-y-1.5">
                     <p className="font-medium text-blue-300/90">How to get your OAuth token:</p>
                     <p>1. Install Claude Code (if you haven't already):</p>
@@ -582,7 +608,7 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
 
         {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
 
-        <button type="submit" disabled={status === 'validating' || !name.trim() || (type !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())}
+        <button type="submit" disabled={status === 'validating' || !name.trim() || (preset !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())}
           className="px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors glass-btn glass-btn-primary">
           {status === 'validating' ? 'Validating...' : 'Add & Validate Provider'}
         </button>

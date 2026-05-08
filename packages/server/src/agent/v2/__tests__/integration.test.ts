@@ -222,6 +222,7 @@ function setupTestDb(): Database.Database {
       cost REAL,
       latency_ms INTEGER,
       turn_number INTEGER,
+      reasoning_content TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE models (

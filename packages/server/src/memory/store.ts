@@ -31,6 +31,7 @@ interface MessageRow {
   latency_ms: number | null;
   created_at: string;
   turn_number: number | null;
+  reasoning_content: string | null;
 }
 
 function rowToMessage(row: MessageRow): Message {
@@ -47,6 +48,9 @@ function rowToMessage(row: MessageRow): Message {
     // Phase 4 §E (2026-05-04) — surface turn_number so the assembler's
     // stub-and-store pass can age out tool results from old turns.
     turnNumber: row.turn_number,
+    // Reasoning content from thinking-mode providers (DeepSeek native,
+    // OpenRouter unified reasoning, etc.). Migration 040.
+    reasoningContent: row.reasoning_content,
   };
 }
 

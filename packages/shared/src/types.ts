@@ -110,6 +110,17 @@ export interface Message {
    * stub-and-store implementation.
    */
   turnNumber?: number | null;
+  /**
+   * Captured chain of thought from thinking-mode providers (DeepSeek
+   * v4-pro/flash, OpenRouter unified reasoning, etc.). Stored alongside
+   * `content` because some providers (DeepSeek explicitly) require it
+   * to be echoed back on subsequent tool-call follow-up turns or the
+   * request fails with a 400. The dashboard renders this as a
+   * collapsible "Thinking…" section above the assistant bubble.
+   * Anthropic's thinking blocks live inside `content` (as
+   * type:"thinking" content blocks) and DON'T populate this field.
+   */
+  reasoningContent?: string | null;
   attachments?: Array<{
     fileId: string;
     filename: string;

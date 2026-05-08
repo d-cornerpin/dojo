@@ -41,6 +41,11 @@ interface ChatMessage {
   modelId?: string | null;
   toolCalls?: ToolCallData[];
   isStreaming?: boolean;
+  /** Streamed thinking from providers like DeepSeek v4-pro. Rendered as
+   *  a collapsible panel above the assistant text — auto-expanded while
+   *  streaming, auto-collapsed once the final answer starts arriving. */
+  reasoningContent?: string | null;
+  isReasoningStreaming?: boolean;
   attachments?: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: string }>;
 }
 
@@ -110,10 +115,54 @@ const AssistantBubble = ({ msg, wordyMode = true, modelNames = {} }: { msg: Chat
   const { text: rawText, blocks } = parseMessageContent(msg.content);
   const text = rawText?.trim() || '';
   const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
+  const hasReasoning = !!(msg.reasoningContent && msg.reasoningContent.length > 0);
+  // Auto-expand while reasoning is actively streaming OR while no answer
+  // text has arrived yet. Auto-collapse once the final answer is showing.
+  const reasoningOpenDefault = hasReasoning && (msg.isReasoningStreaming || text.length === 0);
+  const [reasoningOpen, setReasoningOpen] = useState(reasoningOpenDefault);
+  // Re-sync when streaming flips off so the panel collapses once answer
+  // content takes over the bubble.
+  useEffect(() => {
+    if (!msg.isReasoningStreaming && text.length > 0) {
+      setReasoningOpen(false);
+    }
+  }, [msg.isReasoningStreaming, text.length]);
 
   return (
     <div className="flex justify-start">
       <div className="max-w-[92%] sm:max-w-[75%]">
+        {/* Reasoning / "Thinking…" panel — appears above the answer text.
+            Live-streams while the model is thinking, collapses when the
+            final answer starts arriving. Click header to toggle later.
+            Wordy-mode only: in regular chat we just see the standard
+            three bouncing dots from the streaming bubble below. */}
+        {hasReasoning && wordyMode && (
+          <div className="mb-1.5 rounded-lg border border-white/[0.06] bg-white/[0.02] overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setReasoningOpen((v) => !v)}
+              className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-[10px] sm:text-[11px] text-white/45 hover:text-white/70 transition-colors"
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <span>{msg.isReasoningStreaming ? 'Thinking…' : 'Thought'}</span>
+                {msg.isReasoningStreaming && (
+                  <span className="inline-flex gap-0.5">
+                    <span className="w-1 h-1 rounded-full bg-white/30 animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1 h-1 rounded-full bg-white/30 animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-1 h-1 rounded-full bg-white/30 animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </span>
+                )}
+              </span>
+              <span className="text-white/30">{reasoningOpen ? '▾' : '▸'}</span>
+            </button>
+            {reasoningOpen && (
+              <div className="px-3 pb-2.5 pt-0.5 text-[11px] sm:text-xs text-white/55 whitespace-pre-wrap font-mono leading-relaxed border-t border-white/[0.04]">
+                {msg.reasoningContent}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Text content */}
         {text && (
           <div className="bubble-assistant px-3 py-2 sm:px-4 sm:py-3 whitespace-pre-wrap text-xs sm:text-sm">
@@ -436,10 +485,18 @@ export const Chat = () => {
       if (e.agentId !== agentIdRef.current) return;
 
       setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        if (last && last.isStreaming && last.id === e.messageId) {
-          // Append chunk to existing streaming message
-          const updated = { ...last, content: last.content + e.content };
+        // Look up by messageId rather than just the tail — when a reasoning
+        // bubble was created first, the answer chunks need to update THAT
+        // bubble (not append a new one at the end).
+        const idx = prev.findIndex((m) => m.id === e.messageId && m.isStreaming);
+        if (idx >= 0) {
+          const existing = prev[idx];
+          const updated = {
+            ...existing,
+            content: existing.content + e.content,
+            // Once answer text starts arriving, reasoning is done streaming.
+            isReasoningStreaming: false,
+          };
           if (e.done) {
             updated.isStreaming = false;
             updated.modelId = (e as any).modelId ?? null;
@@ -447,14 +504,11 @@ export const Chat = () => {
               ? [...currentToolCallsRef.current]
               : undefined;
             currentToolCallsRef.current = [];
-            // NOTE: Do NOT setIsWorking(false) here. chat:chunk done:true
-            // fires on EVERY loop iteration, including mid-tool-loop when
-            // the agent is about to execute tools and call the model again.
-            // Let agent:status idle/error be the sole authority for clearing
-            // isWorking — that only fires when the agent's entire turn ends.
             requestAnimationFrame(() => scrollToBottom());
           }
-          return [...prev.slice(0, -1), updated];
+          const out = [...prev];
+          out[idx] = updated;
+          return out;
         } else if (prev.some((m) => m.id === e.messageId)) {
           // Already have this message (finalized) -- skip duplicate from reconnect
           return prev;
@@ -475,6 +529,43 @@ export const Chat = () => {
             },
           ];
         }
+      });
+    });
+
+    // Reasoning / thinking deltas (DeepSeek native, OpenRouter unified).
+    // Either updates the existing streaming bubble (if one already exists
+    // for this messageId) or creates a fresh one with reasoning but no
+    // answer text yet — the eventual chat:chunk for the same messageId
+    // will then start filling in the answer.
+    const unsubReasoning = subscribe('chat:reasoning_chunk', (event: WsEvent) => {
+      const e = event as { type: 'chat:reasoning_chunk'; agentId: string; messageId: string; content: string; done: boolean };
+      if (e.agentId !== agentIdRef.current) return;
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === e.messageId);
+        if (idx >= 0) {
+          const existing = prev[idx];
+          const out = [...prev];
+          out[idx] = {
+            ...existing,
+            reasoningContent: (existing.reasoningContent ?? '') + e.content,
+            isReasoningStreaming: !e.done,
+          };
+          return out;
+        }
+        // Reasoning arrived before any chat:chunk — create the bubble shell
+        // with empty content, the answer chunks will populate it later.
+        return [
+          ...prev,
+          {
+            id: e.messageId,
+            role: 'assistant' as const,
+            content: '',
+            createdAt: new Date().toISOString(),
+            isStreaming: true,
+            reasoningContent: e.content,
+            isReasoningStreaming: !e.done,
+          },
+        ];
       });
     });
 
@@ -616,6 +707,7 @@ export const Chat = () => {
 
     return () => {
       unsubChunk();
+      unsubReasoning();
       unsubToolCall();
       unsubToolResult();
       unsubError();

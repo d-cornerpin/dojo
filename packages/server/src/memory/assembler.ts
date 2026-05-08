@@ -356,7 +356,19 @@ export async function assembleContext(
       // Tool results go as user role with content blocks
       messages.push({ role: 'user', content: parsed as Anthropic.ContentBlockParam[] });
     } else if (msg.role === 'user' || msg.role === 'assistant') {
-      messages.push({ role: msg.role, content: parsed });
+      // For assistant messages with thinking-mode reasoning_content, carry
+      // it through as a sibling field so the model.ts dispatch can echo it
+      // back to the provider on the next request. DeepSeek explicitly
+      // requires this on tool-call follow-up turns; other providers
+      // ignore the field harmlessly.
+      const out: { role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string } = {
+        role: msg.role,
+        content: parsed,
+      };
+      if (msg.role === 'assistant' && msg.reasoningContent) {
+        out.reasoningContent = msg.reasoningContent;
+      }
+      messages.push(out as { role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] });
     }
     // Skip system messages in history
   }

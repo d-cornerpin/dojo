@@ -636,6 +636,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 done: false,
               });
             },
+            // Reasoning / thinking chunks (DeepSeek native, OpenRouter
+            // unified). The dashboard renders these in a collapsible
+            // "Thinking…" panel above the assistant bubble — separate
+            // from the final-answer text stream.
+            onReasoningChunk: (chunk) => {
+              if (abortController.signal.aborted) return;
+              broadcast({
+                type: 'chat:reasoning_chunk',
+                agentId,
+                messageId,
+                content: chunk,
+                done: false,
+              });
+            },
           });
           activeAbortControllers.delete(agentId);
           callSucceeded = true;
@@ -933,8 +947,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
           });
         }
         db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, token_count, model_id, cost, latency_ms, turn_number, created_at)
-          VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, NULL, ?, datetime('now'))
+          INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, token_count, model_id, cost, latency_ms, turn_number, reasoning_content, created_at)
+          VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, NULL, ?, ?, datetime('now'))
         `).run(
           messageId,
           agentId,
@@ -944,6 +958,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           effectiveModelIdForPersist,
           null,
           turnNumber,
+          result.reasoningContent ?? null,
         );
         broadcast({
           type: 'chat:message',
@@ -959,12 +974,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
             latencyMs: null,
             createdAt: new Date().toISOString(),
             attachments: queuedAttachments.length > 0 ? queuedAttachments : undefined,
+            reasoningContent: result.reasoningContent ?? undefined,
           },
         });
       } else if (persistedContent) {
         db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, token_count, model_id, cost, latency_ms, turn_number, created_at)
-          VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, NULL, ?, datetime('now'))
+          INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, token_count, model_id, cost, latency_ms, turn_number, reasoning_content, created_at)
+          VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, NULL, ?, ?, datetime('now'))
         `).run(
           messageId,
           agentId,
@@ -974,6 +990,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           effectiveModelIdForPersist,
           null,
           turnNumber,
+          result.reasoningContent ?? null,
         );
         if (persistedContent.trim().length > 0) {
           state = advance(state, { lastAssistantTextForIM: persistedContent.trim() });

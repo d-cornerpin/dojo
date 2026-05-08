@@ -22,10 +22,18 @@ const logger = createLogger('model');
 export interface ModelCallParams {
   agentId: string;
   modelId: string;
-  messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>;
+  messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string }>;
   systemPrompt: string;
   tools?: boolean;
   onChunk?: (chunk: string) => void;
+  /**
+   * Streamed thinking / reasoning chunks from providers that expose them
+   * as a sibling field of `content` (e.g. DeepSeek v4-pro). Called once
+   * per delta. Live UI uses this to render a collapsible "Thinking…"
+   * section above the eventual answer. Anthropic's thinking blocks
+   * arrive inside content and don't use this callback.
+   */
+  onReasoningChunk?: (chunk: string) => void;
   routerTier?: string; // populated by auto-router
   // External abort signal — when fired, the underlying SDK call aborts
   // and callModel throws. Used by the runtime's stop button to actually
@@ -40,6 +48,14 @@ export interface ModelCallResult {
   inputTokens: number;
   outputTokens: number;
   stopReason: string | null;
+  /**
+   * Aggregated reasoning text returned by the model when thinking is
+   * enabled (DeepSeek v4-pro etc.). Empty string when thinking didn't
+   * fire. The runtime persists this on the assistant message so the
+   * next request can round-trip it (DeepSeek requires reasoning_content
+   * be echoed on tool-call follow-up turns).
+   */
+  reasoningContent?: string;
 }
 
 // OAuth tokens require specific beta headers per Anthropic's API
@@ -741,6 +757,22 @@ async function callOllamaModel(
 
 const openaiClientCache = new Map<string, OpenAI>();
 
+// Hosts whose API is rooted at the bare domain (no `/v1` segment). The
+// OpenAI SDK calls paths like `/chat/completions` directly off the
+// configured baseURL, so for these hosts we DON'T append `/v1`. DeepSeek
+// is the canonical example: their docs put the chat endpoint at
+// https://api.deepseek.com/chat/completions, not /v1/chat/completions.
+const NO_V1_HOSTS = ['api.deepseek.com', 'deepseek.com'];
+
+function hostNeedsNoV1(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return NO_V1_HOSTS.some((h) => host === h || host.endsWith('.' + h));
+  } catch {
+    return false;
+  }
+}
+
 function getOpenAIClient(providerId: string, baseUrl?: string | null): OpenAI {
   const cacheKey = `${providerId}:${baseUrl ?? 'default'}`;
   const cached = openaiClientCache.get(cacheKey);
@@ -755,9 +787,11 @@ function getOpenAIClient(providerId: string, baseUrl?: string | null): OpenAI {
   }
 
   const resolvedBaseUrl = baseUrl
-    ? (baseUrl.replace(/\/+$/, '').endsWith('/v1')
-        ? baseUrl.replace(/\/+$/, '')
-        : baseUrl.replace(/\/+$/, '') + '/v1')
+    ? (() => {
+        const cleaned = baseUrl.replace(/\/+$/, '');
+        if (hostNeedsNoV1(cleaned)) return cleaned;
+        return cleaned.endsWith('/v1') ? cleaned : cleaned + '/v1';
+      })()
     : undefined;
 
   logger.info('Creating OpenAI-compatible client', { providerId, baseUrl, resolvedBaseUrl: resolvedBaseUrl ?? 'https://api.openai.com/v1 (default)' });
@@ -781,7 +815,7 @@ function getOpenAIClient(providerId: string, baseUrl?: string | null): OpenAI {
 // function runs — this helper just translates whatever's left.
 async function buildOpenAIMessages(
   systemPrompt: string,
-  messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
+  messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string }>,
   agentId: string,
 ): Promise<OpenAI.ChatCompletionMessageParam[]> {
   const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [
@@ -978,7 +1012,15 @@ async function buildOpenAIMessages(
       }
     } else if (m.role === 'assistant') {
       if (typeof m.content === 'string') {
-        openaiMessages.push({ role: 'assistant', content: m.content });
+        const msg: OpenAI.ChatCompletionAssistantMessageParam = { role: 'assistant', content: m.content };
+        if (m.reasoningContent) {
+          // DeepSeek requires reasoning_content be echoed back when the
+          // assistant message has tool_calls (or it 400s). String-content
+          // assistants don't have tool_calls, so echo is optional here —
+          // but harmless for providers that ignore the field.
+          (msg as unknown as Record<string, unknown>).reasoning_content = m.reasoningContent;
+        }
+        openaiMessages.push(msg);
       } else if (Array.isArray(m.content)) {
         // Handle tool_use blocks from Anthropic format
         const blocks = m.content as unknown as Array<Record<string, unknown>>;
@@ -999,6 +1041,13 @@ async function buildOpenAIMessages(
               arguments: JSON.stringify(tc.input ?? {}),
             },
           }));
+        }
+
+        // Round-trip reasoning_content for thinking-mode providers. DeepSeek
+        // explicitly requires this on tool-call follow-up turns; other
+        // providers ignore the unknown field.
+        if (m.reasoningContent) {
+          (assistantMsg as unknown as Record<string, unknown>).reasoning_content = m.reasoningContent;
         }
 
         openaiMessages.push(assistantMsg);
@@ -1156,6 +1205,25 @@ async function callOpenAIModel(
     };
   }
 
+  // ── DeepSeek native thinking ──
+  // DeepSeek v4-flash/v4-pro return reasoning as a sibling `reasoning_content`
+  // field in stream deltas and on assistant messages — distinct from
+  // Anthropic's thinking-block-inside-content pattern. Toggle is sent via
+  // top-level `thinking: { type: 'enabled' | 'disabled' }`. v4-pro defaults
+  // to thinking-on; we honor model.thinking_enabled here so the user has
+  // explicit control via the Models page. Round-trip is handled by
+  // (a) capturing delta.reasoning_content in the stream loop below and
+  // (b) passing assistantMsg.reasoning_content on subsequent requests via
+  // the message build path. Per DeepSeek docs we also avoid sending
+  // temperature / top_p when thinking is enabled (they're rejected) — the
+  // current dispatch doesn't send those anyway, so no extra guard needed.
+  const isDeepSeek = (modelInfo.providerBaseUrl ?? '').toLowerCase().includes('deepseek.com');
+  if (isDeepSeek) {
+    (requestParams as unknown as { thinking?: { type: string } }).thinking = {
+      type: modelInfo.thinkingEnabled && supportsThinking ? 'enabled' : 'disabled',
+    };
+  }
+
   logger.info('Calling OpenAI model', {
     model: modelInfo.apiModelId,
     provider: modelInfo.providerId,
@@ -1173,12 +1241,27 @@ async function callOpenAIModel(
     const stream = await client.chat.completions.create(requestParams, requestOptions);
 
     let fullText = '';
+    let fullReasoning = '';
     const toolCalls: ToolCall[] = [];
     const toolCallAccumulator = new Map<number, { id: string; name: string; args: string }>();
 
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta;
       if (!delta) continue;
+
+      // Reasoning content (DeepSeek-style sibling field). Stream it through
+      // a separate callback so the dashboard renders it in a collapsible
+      // "Thinking…" section that's distinct from the final answer text.
+      // OpenRouter also surfaces this when reasoning is enabled on its
+      // unified path. Anthropic's thinking blocks come via content-array,
+      // not here, and are handled in the Anthropic dispatch path.
+      const reasoningChunk = (delta as unknown as { reasoning_content?: string }).reasoning_content
+        ?? (delta as unknown as { reasoning?: string }).reasoning
+        ?? null;
+      if (reasoningChunk) {
+        fullReasoning += reasoningChunk;
+        if (params.onReasoningChunk) params.onReasoningChunk(reasoningChunk);
+      }
 
       // Text content
       if (delta.content) {
@@ -1392,6 +1475,7 @@ async function callOpenAIModel(
       inputTokens, outputTokens, latencyMs,
       cost: totalCost.toFixed(6),
       toolCallCount: toolCalls.length,
+      reasoningChars: fullReasoning.length,
     }, agentId);
 
     return {
@@ -1400,6 +1484,7 @@ async function callOpenAIModel(
       inputTokens,
       outputTokens,
       stopReason: toolCalls.length > 0 ? 'tool_use' : 'end_turn',
+      reasoningContent: fullReasoning.length > 0 ? fullReasoning : undefined,
     };
   } catch (err) {
     const latencyMs = Date.now() - startTime;

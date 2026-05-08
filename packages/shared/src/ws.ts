@@ -19,6 +19,21 @@ export interface ChatChunkEvent {
   modelId?: string | null;
 }
 
+/**
+ * Streamed reasoning / thinking deltas from providers that expose them
+ * (DeepSeek native, OpenRouter unified). Distinct from chat:chunk so the
+ * dashboard can render them in a collapsible "Thinking…" panel above the
+ * eventual assistant bubble. Each event is one delta; final state is
+ * implied when chat:chunk done:true arrives or chat:message lands.
+ */
+export interface ChatReasoningChunkEvent {
+  type: 'chat:reasoning_chunk';
+  agentId: string;
+  messageId: string;
+  content: string;
+  done: boolean;
+}
+
 export interface ChatToolCallEvent {
   type: 'chat:tool_call';
   agentId: string;
@@ -181,6 +196,7 @@ export interface IMessageSentEvent {
 export type WsEvent =
   | AgentStatusEvent
   | ChatChunkEvent
+  | ChatReasoningChunkEvent
   | ChatMessageEvent
   | ChatToolCallEvent
   | ChatToolResultEvent

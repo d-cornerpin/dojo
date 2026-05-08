@@ -168,6 +168,158 @@ function getAnthropicCost(modelId: string): { input: number; output: number } {
   return { input: 3.0, output: 15.0 }; // default to sonnet pricing
 }
 
+// DeepSeek models — OpenAI-compatible provider at https://api.deepseek.com.
+//
+// Per the live DeepSeek API docs (verified 2026-05-08):
+//   - Base host is https://api.deepseek.com (no /v1 segment); the model
+//     dispatch in agent/model.ts has a NO_V1_HOSTS list that handles this.
+//   - The legacy `deepseek-chat` and `deepseek-reasoner` IDs are
+//     DEPRECATED with a sunset of 2026-07-24; both transparently map to
+//     the v4-flash family today.
+//   - Current models are `deepseek-v4-flash` and `deepseek-v4-pro`.
+//     Both support a 1M-token context, 384K max output, OpenAI-style
+//     function/tool calling, and a thinking-mode toggle. Neither
+//     supports vision content blocks.
+//   - Thinking is a per-call toggle (not a separate model). v4-pro
+//     defaults to thinking-on; we explicitly send `thinking:{type:disabled}`
+//     in the dispatcher today (until the reasoning_content echo path
+//     lands), so both models behave as plain chat/tools models.
+//   - Pricing as of 2026-05-08 (per the docs' /quick_start/pricing page):
+//     v4-flash: $0.14 in / $0.28 out per 1M tokens (cache miss).
+//     v4-pro:   $0.435 in / $0.87 out per 1M tokens (currently
+//               75%-off promotional rate, listed as effective through
+//               2026-05-31). Cache-hit input is much cheaper but the
+//               cost tracker doesn't model that yet — using cache-miss
+//               as the recorded rate slightly over-records cost, which
+//               is the safe direction.
+const DEEPSEEK_MODELS = [
+  {
+    name: 'DeepSeek V4 Flash',
+    apiModelId: 'deepseek-v4-flash',
+    capabilities: ['chat', 'code', 'tools', 'thinking'],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 384_000,
+    inputCostPerM: 0.14,
+    outputCostPerM: 0.28,
+  },
+  {
+    name: 'DeepSeek V4 Pro',
+    apiModelId: 'deepseek-v4-pro',
+    capabilities: ['chat', 'code', 'tools', 'thinking'],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 384_000,
+    inputCostPerM: 0.435,
+    outputCostPerM: 0.87,
+  },
+];
+
+const DEEPSEEK_HOSTS = ['api.deepseek.com', 'deepseek.com'];
+
+// IDs DeepSeek's /models endpoint still lists for backwards compatibility
+// but that we don't want to seed — they're deprecated (sunset 2026-07-24)
+// and map internally to v4-flash anyway. Keeping them out of the catalog
+// avoids confusing duplicate entries on the Models page.
+const DEEPSEEK_DEPRECATED_IDS = new Set(['deepseek-chat', 'deepseek-reasoner']);
+
+function isDeepSeekProvider(baseUrl: string | null | undefined): boolean {
+  if (!baseUrl) return false;
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return DEEPSEEK_HOSTS.some((h) => host === h || host.endsWith('.' + h));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Idempotent DeepSeek model seed. Inserts the reference catalog AND
+ * any non-deprecated model IDs DeepSeek's live /models endpoint reports
+ * — but only those that aren't already in the database for this provider.
+ * Safe to call multiple times (create and validate both call this).
+ *
+ * Pre-2026-05-08 we used INSERT OR IGNORE keyed on the row UUID, which
+ * was useless: the UUID is generated fresh per call so OR IGNORE never
+ * triggered, and every call double-seeded the catalog. We now check
+ * `(provider_id, api_model_id)` explicitly before inserting.
+ */
+async function seedDeepSeekModels(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  providerId: string,
+  baseUrl: string | null | undefined,
+  credential: string | undefined,
+): Promise<void> {
+  const cleanedBase = (baseUrl ?? 'https://api.deepseek.com').replace(/\/+$/, '');
+
+  const existsStmt = db.prepare('SELECT id FROM models WHERE provider_id = ? AND api_model_id = ?');
+  const insertStmt = db.prepare(`
+    INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, is_enabled, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+  `);
+
+  let referenceInserted = 0;
+  let referenceSkipped = 0;
+  for (const model of DEEPSEEK_MODELS) {
+    const existing = existsStmt.get(providerId, model.apiModelId);
+    if (existing) {
+      referenceSkipped++;
+      continue;
+    }
+    insertStmt.run(
+      uuidv4(), providerId, model.name, model.apiModelId,
+      JSON.stringify(model.capabilities),
+      model.contextWindow, model.maxOutputTokens,
+      model.inputCostPerM, model.outputCostPerM,
+    );
+    referenceInserted++;
+  }
+
+  let liveInserted = 0;
+  let liveSkipped = 0;
+  if (credential) {
+    try {
+      const liveResp = await fetch(`${cleanedBase}/models`, {
+        headers: { 'Authorization': `Bearer ${credential}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (liveResp.ok) {
+        const liveData = (await liveResp.json()) as { data?: Array<{ id: string }> };
+        const referenceIds = new Set(DEEPSEEK_MODELS.map((m) => m.apiModelId));
+        for (const m of liveData.data ?? []) {
+          if (referenceIds.has(m.id) || DEEPSEEK_DEPRECATED_IDS.has(m.id)) {
+            liveSkipped++;
+            continue;
+          }
+          if (existsStmt.get(providerId, m.id)) {
+            liveSkipped++;
+            continue;
+          }
+          insertStmt.run(
+            uuidv4(), providerId, m.id, m.id,
+            JSON.stringify(['chat', 'code', 'tools']),
+            64_000, 8_192, 0.27, 1.10,
+          );
+          liveInserted++;
+        }
+      } else {
+        logger.warn('DeepSeek /models live fetch returned non-OK', { providerId, status: liveResp.status });
+      }
+    } catch (err) {
+      logger.warn('DeepSeek /models live fetch failed (reference catalog still applied)', {
+        providerId, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  logger.info('DeepSeek model seed complete', {
+    providerId,
+    referenceInserted,
+    referenceSkipped,
+    liveInserted,
+    liveSkipped,
+  });
+}
+
 // Known OpenAI models — API doesn't return token limits, so we maintain a reference table
 const OPENAI_MODELS = [
   { name: 'GPT-5', apiModelId: 'gpt-5', contextWindow: 400000, maxOutputTokens: 128000, inputCostPerM: 10.0, outputCostPerM: 40.0 },
@@ -418,6 +570,16 @@ configRouter.post('/providers', async (c) => {
     logger.info('Auto-inserted OpenAI models', { providerId: id, count: OPENAI_MODELS.length });
   }
 
+  // Auto-insert DeepSeek models when the provider is openai-compatible AND
+  // the baseUrl points at api.deepseek.com. Hybrid: hardcoded reference
+  // catalog (gives correct metadata DeepSeek's /models doesn't return —
+  // context window, max output, capabilities, costs) PLUS a live /models
+  // fetch to catch any new IDs DeepSeek has shipped that we don't yet know
+  // about. Same pattern the OpenAI auto-seed uses.
+  if (type === 'openai-compatible' && isDeepSeekProvider(baseUrl)) {
+    await seedDeepSeekModels(db, id, baseUrl, credential);
+  }
+
   const row = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as Record<string, unknown>;
   logger.info('Provider created', { providerId: id, type });
 
@@ -658,11 +820,23 @@ configRouter.post('/providers/:id/validate', async (c) => {
       }
     } else if (provider.type === 'openai-compatible') {
       // OpenRouter and other OpenAI-compatible providers — validate credential only.
-      // Models are NOT bulk-inserted; users browse and add individual models via the UI.
+      // Models are NOT bulk-inserted by default; users browse and add
+      // individual models via the UI. Exception: DeepSeek (and other
+      // first-class openai-compatible presets) get their default model
+      // catalog auto-inserted on validation as a backfill, in case the
+      // creation-time seed missed (e.g., user added the provider manually
+      // before this preset existed).
       const baseUrl = (provider.baseUrl || 'https://openrouter.ai/api').replace(/\/+$/, '');
+      const isDeepSeek = isDeepSeekProvider(baseUrl);
+      // DeepSeek's models endpoint is at /models (not /v1/models like
+      // OpenRouter and most other openai-compatible providers).
+      const modelsListPath = isDeepSeek ? '/models' : '/v1/models';
+      if (isDeepSeek) {
+        await seedDeepSeekModels(db, id, baseUrl, credential ?? undefined);
+      }
       logger.info('Provider validation: checking OpenAI-compatible API', { providerId: id, baseUrl });
 
-      const modelsResponse = await fetch(`${baseUrl}/v1/models`, {
+      const modelsResponse = await fetch(`${baseUrl}${modelsListPath}`, {
         headers: {
           'Authorization': `Bearer ${credential}`,
           'HTTP-Referer': 'https://dojo.dev',
