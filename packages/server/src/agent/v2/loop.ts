@@ -535,6 +535,118 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }
       }
 
+      // ── Multi-step detection (v2.3.3) ──
+      // Engine-side detection of prompts that need a tracker project.
+      // When confident (heuristic high, or local-LLM classifier confirms),
+      // create the project + initial task directly so the agent can't
+      // forget to do it. Same lesson as the technique matcher above:
+      // system-prompt instructions don't reliably get followed.
+      //
+      // Same fire conditions as technique matcher: loopCount === 1 with
+      // a real user message (not auto-continuation / A2A / PM poke).
+      if (state.loopCount === 1 && lastUserMessageContent) {
+        try {
+          const { detectMultistep, getMultistepConfig } = await import('./classifiers/multistep.js');
+          const cfg = getMultistepConfig();
+          if (cfg.enabled) {
+            // Skip if there's already an active tracker task assigned to
+            // this agent — assume it's still being worked. This avoids
+            // creating a sibling project on a follow-up message.
+            const db = getDb();
+            const existingTask = db.prepare(`
+              SELECT id FROM tasks
+              WHERE assigned_to = ? AND status IN ('on_deck', 'in_progress', 'paused')
+              LIMIT 1
+            `).get(agentId) as { id: string } | undefined;
+
+            if (!existingTask) {
+              const decision = await detectMultistep(lastUserMessageContent, cfg);
+              logger.info('v2 multistep classifier ran', {
+                agentId,
+                source: decision.source,
+                multistep: decision.multistep,
+                name: decision.name,
+                signals: decision.heuristic.signals,
+              }, agentId);
+
+              if (decision.multistep) {
+                const { createProject } = await import('../../tracker/schema.js');
+
+                const fallbackName = lastUserMessageContent
+                  .split('\n')[0]
+                  .slice(0, 50)
+                  .trim()
+                  .replace(/[.!?]+$/, '');
+                const projectTitle = decision.name ?? fallbackName ?? 'Multi-step task';
+                const taskTitle = decision.name ?? fallbackName ?? 'Initial task';
+
+                try {
+                  const created = createProject({
+                    title: projectTitle,
+                    description: lastUserMessageContent.slice(0, 2000),
+                    level: 1,
+                    createdBy: 'dojo-system',
+                    tasks: [{
+                      title: taskTitle,
+                      description: lastUserMessageContent.slice(0, 2000),
+                      assignedTo: agentId,
+                      priority: 'normal',
+                    }],
+                  });
+                  logger.info('v2 multistep: auto-created tracker project', {
+                    agentId,
+                    projectId: created.projectId,
+                    taskIds: created.taskIds,
+                    title: projectTitle,
+                    source: decision.source,
+                  }, agentId);
+
+                  // Append a tracker note to the user-message wrap so the
+                  // agent knows the project exists. Same in-flight wrap
+                  // mechanism the technique matcher uses — the DB row is
+                  // untouched. Goes immediately before the user's prompt
+                  // (after any technique block).
+                  const trackerNote = `[DOJO: Created tracker project "${projectTitle}" for this multi-step task — update its status as you progress via tracker_update_status.]\n\n`;
+
+                  for (let i = messages.length - 1; i >= 0; i--) {
+                    const m = messages[i];
+                    if (m.role !== 'user') continue;
+                    if (typeof m.content === 'string') {
+                      m.content = trackerNote + m.content;
+                    } else if (Array.isArray(m.content)) {
+                      const blocks = m.content as unknown as Array<Record<string, unknown>>;
+                      const firstTextIdx = blocks.findIndex((b) => b.type === 'text');
+                      if (firstTextIdx >= 0) {
+                        blocks[firstTextIdx] = {
+                          ...blocks[firstTextIdx],
+                          text: trackerNote + ((blocks[firstTextIdx].text as string) ?? ''),
+                        };
+                      } else {
+                        blocks.unshift({ type: 'text', text: trackerNote });
+                      }
+                    }
+                    break;
+                  }
+                } catch (createErr) {
+                  logger.warn('v2 multistep: createProject failed (non-fatal)', {
+                    agentId,
+                    error: createErr instanceof Error ? createErr.message : String(createErr),
+                  }, agentId);
+                }
+              }
+            }
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const isMissingTable = /no such table/i.test(msg);
+          if (isMissingTable) {
+            logger.debug('v2 multistep: tracker tables not present (expected in tests/fresh DBs)', { agentId }, agentId);
+          } else {
+            logger.warn('v2 multistep classifier failed (non-fatal)', { agentId, error: msg }, agentId);
+          }
+        }
+      }
+
       // Inject user-uploaded attachments (images, PDFs) as content blocks.
       // Without this, the agent never sees images/PDFs the user attached —
       // it only sees the text content of those messages and hallucinates.
