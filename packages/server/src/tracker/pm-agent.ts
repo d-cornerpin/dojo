@@ -381,7 +381,12 @@ async function runPMReview(): Promise<void> {
     }
   }
 
-  const issues: string[] = [];
+  // Issues collected as { stableId, text }. The stableId — keyed on task
+  // id + issue type — is what feeds the dedup hash. The free-form text
+  // (with "X minutes" counters) is what the LLM sees. Without this split,
+  // every minute of elapsed time changed the hash and the dedup at line
+  // 510 never fired (v2.3.7).
+  const issues: Array<{ stableId: string; text: string }> = [];
   const nowDate = new Date();
 
   for (const task of activeTasks) {
@@ -395,8 +400,10 @@ async function runPMReview(): Promise<void> {
     if (task.assignedTo) {
       const agent = agents.find(a => a.id === task.assignedTo);
       if (!agent) {
-        // Agent is terminated or doesn't exist
-        issues.push(`ORPHANED: "${task.title}" is assigned to a terminated agent. Notify ${primaryName}.`);
+        issues.push({
+          stableId: `${task.id}|ORPHANED`,
+          text: `ORPHANED: "${task.title}" is assigned to a terminated agent. Notify ${primaryName}.`,
+        });
       }
     }
 
@@ -405,8 +412,11 @@ async function runPMReview(): Promise<void> {
       const nextRunTime = new Date(task.nextRunAt.includes('Z') ? task.nextRunAt : task.nextRunAt + 'Z');
       if (nextRunTime < nowDate && task.scheduleStatus === 'waiting') {
         const overdueMin = Math.floor((nowDate.getTime() - nextRunTime.getTime()) / 60000);
-        if (overdueMin > 5) { // Give 5 min grace period
-          issues.push(`OVERDUE: "${task.title}" was due ${overdueMin} minutes ago but hasn't fired.`);
+        if (overdueMin > 5) {
+          issues.push({
+            stableId: `${task.id}|OVERDUE`,
+            text: `OVERDUE: "${task.title}" was due ${overdueMin} minutes ago but hasn't fired.`,
+          });
         }
       }
     }
@@ -416,44 +426,59 @@ async function runPMReview(): Promise<void> {
       const updatedTime = new Date(task.updatedAt.includes('Z') ? task.updatedAt : task.updatedAt + 'Z');
       const blockedMin = Math.floor((nowDate.getTime() - updatedTime.getTime()) / 60000);
       if (blockedMin > 30) {
-        issues.push(`BLOCKED: "${task.title}" has been blocked for ${blockedMin} minutes. May need ${primaryName}'s attention.`);
+        issues.push({
+          stableId: `${task.id}|BLOCKED`,
+          text: `BLOCKED: "${task.title}" has been blocked for ${blockedMin} minutes. May need ${primaryName}'s attention.`,
+        });
       }
     }
 
-    // Grace period: don't flag tasks that recently changed status (created,
-    // unpaused, resumed, reassigned). Uses updatedAt, not createdAt, so
-    // auto-resumed tasks and status changes also get the grace period.
     const GRACE_PERIOD_MINUTES = 30;
     const taskUpdatedTime = new Date(task.updatedAt.includes('Z') ? task.updatedAt : task.updatedAt + 'Z');
     const timeSinceUpdateMin = Math.floor((nowDate.getTime() - taskUpdatedTime.getTime()) / 60000);
 
     // 4. Non-scheduled tasks stuck in on_deck with no activity.
-    // Skip scheduled tasks waiting for their next run (schedule_status='waiting') —
-    // they sit in on_deck between runs and that's normal, not stale.
     if (task.status === 'on_deck' && !task.scheduledStart && task.assignedTo && task.scheduleStatus !== 'waiting') {
       const updatedTime = new Date(task.updatedAt.includes('Z') ? task.updatedAt : task.updatedAt + 'Z');
       const staleMin = Math.floor((nowDate.getTime() - updatedTime.getTime()) / 60000);
       if (staleMin > GRACE_PERIOD_MINUTES && timeSinceUpdateMin > GRACE_PERIOD_MINUTES) {
         const agentName = task.assignedToName ?? task.assignedTo;
-        issues.push(`STALE: "${task.title}" has been on_deck for ${staleMin} minutes, assigned to ${agentName} but not started.`);
+        issues.push({
+          stableId: `${task.id}|STALE`,
+          text: `STALE: "${task.title}" has been on_deck for ${staleMin} minutes, assigned to ${agentName} but not started.`,
+        });
       }
     }
 
     // 5. In-progress tasks where the assigned agent has gone silent.
-    // Grace period: don't flag tasks less than GRACE_PERIOD_MINUTES old.
+    // Exempts recurring tasks with a future nextRunAt — those are stuck-
+    // between-runs from a previous fire that didn't close cleanly. The
+    // scheduler's cleanupStaleRuns is responsible for those (v2.3.7);
+    // PM nagging only adds noise on top.
     if (task.status === 'in_progress' && task.assignedTo && timeSinceUpdateMin > GRACE_PERIOD_MINUTES) {
-      const agent = agents.find(a => a.id === task.assignedTo);
-      if (agent && agent.status !== 'terminated') {
-        // Check agent's last message activity
-        const lastMsg = db.prepare(`
-          SELECT created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1
-        `).get(task.assignedTo) as { created_at: string } | undefined;
-        if (lastMsg) {
-          const lastMsgTs = lastMsg.created_at.includes('Z') ? lastMsg.created_at : lastMsg.created_at + 'Z';
-          const idleMin = Math.floor((nowDate.getTime() - new Date(lastMsgTs).getTime()) / 60000);
-          if (idleMin >= 30) {
-            const agentName = task.assignedToName ?? task.assignedTo;
-            issues.push(`IDLE: "${task.title}" is in_progress but ${agentName} has had no activity for ${idleMin} minutes. Move to on_deck with tracker_update_status if the agent is not responsive.`);
+      let waitingForFutureFire = false;
+      if (task.nextRunAt) {
+        const nextRunMs = new Date(task.nextRunAt.includes('Z') ? task.nextRunAt : task.nextRunAt + 'Z').getTime();
+        if (nextRunMs - nowDate.getTime() > GRACE_PERIOD_MINUTES * 60_000) {
+          waitingForFutureFire = true;
+        }
+      }
+      if (!waitingForFutureFire) {
+        const agent = agents.find(a => a.id === task.assignedTo);
+        if (agent && agent.status !== 'terminated') {
+          const lastMsg = db.prepare(`
+            SELECT created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1
+          `).get(task.assignedTo) as { created_at: string } | undefined;
+          if (lastMsg) {
+            const lastMsgTs = lastMsg.created_at.includes('Z') ? lastMsg.created_at : lastMsg.created_at + 'Z';
+            const idleMin = Math.floor((nowDate.getTime() - new Date(lastMsgTs).getTime()) / 60000);
+            if (idleMin >= 30) {
+              const agentName = task.assignedToName ?? task.assignedTo;
+              issues.push({
+                stableId: `${task.id}|IDLE`,
+                text: `IDLE: "${task.title}" is in_progress but ${agentName} has had no activity for ${idleMin} minutes. Move to on_deck with tracker_update_status if the agent is not responsive.`,
+              });
+            }
           }
         }
       }
@@ -482,7 +507,7 @@ async function runPMReview(): Promise<void> {
 
   // Pre-digested issues the engine already detected
   const engineIssues = issues.length > 0
-    ? `\nENGINE-DETECTED ISSUES (act on these):\n${issues.map((issue, i) => `${i + 1}. ${issue}`).join('\n')}`
+    ? `\nENGINE-DETECTED ISSUES (act on these):\n${issues.map((issue, i) => `${i + 1}. ${issue.text}`).join('\n')}`
     : '';
 
   const situationReport = `Tracker review -- ${activeTasks.length} active tasks:
@@ -494,8 +519,13 @@ IMPORTANT: Always deliver your findings to ${primaryName} using send_to_agent. D
 
 If you spot issues, call send_to_agent to tell ${primaryName}. You can also message agents directly to ask about stalled tasks.
 For engine-detected issues, act on them: call send_to_agent to notify ${primaryName} or poke the relevant agent.
-If everything looks fine, DO NOT call send_to_agent. Just end your turn silently — ${primaryName} does not need to hear "all clear" every check cycle. Only contact ${primaryName} when there is something actionable.
-Keep it brief.`;
+
+DO NOT contact ${primaryName} when:
+- Everything looks fine ("all clear" is noise — end silently).
+- You investigated an engine flag and concluded it's a false positive (e.g., recurring task waiting for its next fire). End silently; ${primaryName} does not need to hear what you ruled out.
+- You have nothing actionable to add beyond what the engine already detected.
+
+Only contact ${primaryName} when there is something they need to do. Keep it brief.`;
 
   // No engine-detected issues and nothing looks unusual — don't burn tokens
   // for the PM to say "all clear."
@@ -504,9 +534,12 @@ Keep it brief.`;
     return;
   }
 
-  // Skip if the situation hasn't changed since the last review — prevents the PM
-  // from generating identical tool calls and getting stopped for repetition.
-  const reportHash = taskSummary + engineIssues;
+  // Stable dedup hash — keyed on (taskId, issueType) per issue plus the
+  // task summary. Earlier versions hashed the human-readable issue text,
+  // which embedded "X minutes ago" counters that drifted every minute and
+  // defeated the skip. (v2.3.7)
+  const stableIssuesKey = issues.map(i => i.stableId).sort().join(',');
+  const reportHash = taskSummary + '|' + stableIssuesKey;
   if (reportHash === lastSituationReportHash) {
     logger.debug('PM review: situation unchanged since last review, skipping LLM call');
     return;

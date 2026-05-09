@@ -285,17 +285,25 @@ function cleanupStaleRuns(): void {
   const db = getDb();
   const AGENT_IDLE_THRESHOLD_MINUTES = 30;
 
-  // Find running scheduled tasks where the assigned agent has had no message
-  // activity for longer than the threshold. We check the agent's most recent
-  // message, not the task's updated_at (which gets bumped by PM pokes/notes).
+  // Find running scheduled tasks that have been stale for the threshold.
+  // Use the OLDER of (per-task updated_at, agent last message) — same per-
+  // task pattern as PM's poke loop in v2.3.6. This catches the case where
+  // the agent stays busy on other work after a recurring run completes
+  // but never called tracker_update_status, leaving the task stuck in
+  // schedule_status='running' indefinitely. Pokes log to poke_log (not the
+  // task row) so task.updated_at is reliable as "last assignee-driven change."
   const staleTasks = db.prepare(`
     SELECT t.id, t.title, t.assigned_to
     FROM tasks t
     WHERE t.schedule_status = 'running'
       AND t.status != 'paused'
       AND t.assigned_to IS NOT NULL
-      AND (
-        SELECT MAX(m.created_at) FROM messages m WHERE m.agent_id = t.assigned_to
+      AND MIN(
+        COALESCE(
+          (SELECT MAX(m.created_at) FROM messages m WHERE m.agent_id = t.assigned_to),
+          t.updated_at
+        ),
+        t.updated_at
       ) < datetime('now', '-' || ? || ' minutes')
   `).all(AGENT_IDLE_THRESHOLD_MINUTES) as Array<{ id: string; title: string; assigned_to: string }>;
 
