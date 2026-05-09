@@ -924,8 +924,8 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         repeat_unit: {
           type: 'string',
-          enum: ['minutes', 'hours', 'days', 'weeks', 'months', 'years'],
-          description: 'Unit for repeat interval',
+          enum: ['minutes', 'hours', 'days', 'weekdays', 'weeks', 'months', 'years'],
+          description: 'Unit for repeat interval. Use "weekdays" for Mon–Fri only (skips Saturday/Sunday — useful for daily work tasks that should not run on weekends).',
         },
         repeat_end_type: {
           type: 'string',
@@ -1011,7 +1011,7 @@ export const toolDefinitions: ToolDefinition[] = [
         phase: { type: 'number', description: 'New phase number within the project' },
         scheduled_start: { type: 'string', description: 'New scheduled start time (ISO 8601 UTC, e.g. 2026-05-10T14:00:00Z). Pass null or empty string to clear and run immediately.' },
         repeat_interval: { type: 'number', description: 'Repeat interval value (e.g. 1, 2). Pair with repeat_unit.' },
-        repeat_unit: { type: 'string', description: 'Repeat unit: "minutes" | "hours" | "days" | "weeks" | "months"' },
+        repeat_unit: { type: 'string', description: 'Repeat unit: "minutes" | "hours" | "days" | "weekdays" (Mon–Fri only, skips weekends) | "weeks" | "months" | "years"' },
         repeat_end_type: { type: 'string', description: 'How the recurrence ends: "never" | "after_n" | "on_date"' },
         repeat_end_value: { type: 'string', description: 'Value for repeat_end_type ("after_n" → count, "on_date" → ISO date)' },
         priority: { type: 'string', description: 'Priority: "high" | "normal" | "low"' },

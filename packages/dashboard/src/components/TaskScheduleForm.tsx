@@ -125,6 +125,7 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
                   <option value="minutes">Minutes</option>
                   <option value="hours">Hours</option>
                   <option value="days">Days</option>
+                  <option value="weekdays">Weekdays (Mon–Fri)</option>
                   <option value="weeks">Weeks</option>
                   <option value="months">Months</option>
                 </select>

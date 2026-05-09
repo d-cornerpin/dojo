@@ -50,47 +50,63 @@ export function calculateNextRun(task: ScheduledTask): string | null {
 
   const next = new Date(baseTime);
 
-  switch (task.repeat_unit) {
-    case 'minutes':
-      next.setMinutes(next.getMinutes() + task.repeat_interval);
-      break;
-    case 'hours':
-      next.setHours(next.getHours() + task.repeat_interval);
-      break;
-    case 'days':
-      next.setDate(next.getDate() + task.repeat_interval);
-      break;
-    case 'weeks':
-      next.setDate(next.getDate() + task.repeat_interval * 7);
-      break;
-    case 'months':
-      next.setMonth(next.getMonth() + task.repeat_interval);
-      break;
-    case 'years':
-      next.setFullYear(next.getFullYear() + task.repeat_interval);
-      break;
-    default:
-      return null;
+  advanceByUnit(next, task.repeat_interval, task.repeat_unit);
+  if (task.repeat_unit !== 'minutes' && task.repeat_unit !== 'hours' &&
+      task.repeat_unit !== 'days' && task.repeat_unit !== 'weeks' &&
+      task.repeat_unit !== 'months' && task.repeat_unit !== 'years' &&
+      task.repeat_unit !== 'weekdays') {
+    return null;
   }
 
   // If the computed next run is in the past (e.g., server was down), advance until future
   const now = new Date();
   while (next <= now && task.repeat_interval && task.repeat_unit) {
-    switch (task.repeat_unit) {
-      case 'minutes': next.setMinutes(next.getMinutes() + task.repeat_interval); break;
-      case 'hours': next.setHours(next.getHours() + task.repeat_interval); break;
-      case 'days': next.setDate(next.getDate() + task.repeat_interval); break;
-      case 'weeks': next.setDate(next.getDate() + task.repeat_interval * 7); break;
-      case 'months': next.setMonth(next.getMonth() + task.repeat_interval); break;
-      case 'years': next.setFullYear(next.getFullYear() + task.repeat_interval); break;
-    }
+    advanceByUnit(next, task.repeat_interval, task.repeat_unit);
   }
 
   return next.toISOString();
 }
 
+/**
+ * Advance `d` in place by `interval` of `unit`. For 'weekdays', advance
+ * `interval` calendar days and then skip past Saturday/Sunday to Monday —
+ * so an interval of 1 means "every business day."
+ */
+function advanceByUnit(d: Date, interval: number, unit: string): void {
+  switch (unit) {
+    case 'minutes':
+      d.setMinutes(d.getMinutes() + interval);
+      break;
+    case 'hours':
+      d.setHours(d.getHours() + interval);
+      break;
+    case 'days':
+      d.setDate(d.getDate() + interval);
+      break;
+    case 'weeks':
+      d.setDate(d.getDate() + interval * 7);
+      break;
+    case 'months':
+      d.setMonth(d.getMonth() + interval);
+      break;
+    case 'years':
+      d.setFullYear(d.getFullYear() + interval);
+      break;
+    case 'weekdays': {
+      d.setDate(d.getDate() + interval);
+      const dow = d.getDay(); // 0=Sun, 6=Sat
+      if (dow === 6) d.setDate(d.getDate() + 2);
+      else if (dow === 0) d.setDate(d.getDate() + 1);
+      break;
+    }
+  }
+}
+
 export function formatRepeatPattern(interval: number | null, unit: string | null): string {
   if (!interval || !unit) return '';
+  if (unit === 'weekdays') {
+    return interval === 1 ? 'Every weekday' : `Every ${interval} weekdays`;
+  }
   if (interval === 1) return `Every ${unit.replace(/s$/, '')}`;
   return `Every ${interval} ${unit}`;
 }
