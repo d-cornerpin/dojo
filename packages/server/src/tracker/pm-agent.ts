@@ -571,20 +571,38 @@ function runPokeCheck(): void {
 
     const thresholds = POKE_THRESHOLDS[task.priority] ?? POKE_THRESHOLDS.normal;
 
-    // Check the assigned agent's LAST ACTIVITY (most recent message), not the task's updatedAt.
-    // This avoids false pokes when the primary agent is actively working but hasn't updated the task status yet.
+    // ── Idle detection (v2.3.6) ──
+    // Use the OLDER of two signals so a busy-but-stalled task can still
+    // be detected:
+    //   1. Per-task idle (task.updated_at) — captures finished-but-not-
+    //      closed tasks. The bug we're fixing in v2.3.6: if the agent is
+    //      busy on Task B, per-agent idle never triggers and Task A sits
+    //      open forever. task.updated_at is reliable as "last assignee-
+    //      driven change" because pokes log to poke_log, not the task row.
+    //   2. Per-agent idle (last message anywhere) — preserves the
+    //      original "agent crashed entirely / went silent" coverage.
+    //
+    // Whichever signal is older drives the idleSeconds. If the agent is
+    // active globally but the task hasn't moved, per-task wins → poke.
+    // If both are old, both agree → poke.
     const pokeDb = getDb();
-    const lastActivity = pokeDb.prepare(`
+    const lastAgentMsg = pokeDb.prepare(`
       SELECT created_at FROM messages
       WHERE agent_id = ?
       ORDER BY created_at DESC, rowid DESC
       LIMIT 1
     `).get(task.assignedTo) as { created_at: string } | undefined;
 
-    const lastActivityStr = lastActivity?.created_at ?? task.updatedAt;
-    const normalizedTs = lastActivityStr.includes('Z') ? lastActivityStr : lastActivityStr + 'Z';
-    const lastActivityMs = new Date(normalizedTs).getTime();
-    const idleSeconds = Math.max(0, Math.floor((now - lastActivityMs) / 1000));
+    const taskUpdatedMs = taskUpdated;
+    const agentLastMsgStr = lastAgentMsg?.created_at;
+    const agentLastMsgMs = agentLastMsgStr
+      ? new Date(agentLastMsgStr.includes('Z') ? agentLastMsgStr : agentLastMsgStr + 'Z').getTime()
+      : taskUpdatedMs;
+
+    const idleSeconds = Math.max(
+      0,
+      Math.floor((now - Math.min(taskUpdatedMs, agentLastMsgMs)) / 1000),
+    );
 
     // Get the last poke for this task
     const lastPoke = getLastPoke(task.id);

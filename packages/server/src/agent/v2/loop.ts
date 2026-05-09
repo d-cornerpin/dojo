@@ -607,31 +607,33 @@ export async function runV2Turn(agentId: string): Promise<void> {
                     source: decision.source,
                   }, agentId);
 
-                  // Append a tracker note to the user-message wrap so the
-                  // agent knows the project exists. Same in-flight wrap
-                  // mechanism the technique matcher uses — the DB row is
-                  // untouched. Goes immediately before the user's prompt
-                  // (after any technique block).
-                  const trackerNote = `[DOJO: Created tracker project "${projectTitle}" for this multi-step task — update its status as you progress via tracker_update_status.]\n\n`;
+                  // Inject the standard task-assignment notification —
+                  // same payload tracker_create_task uses, including the
+                  // explicit "When finished, call tracker_update_status"
+                  // instruction. Persists to DB (survives compaction)
+                  // and broadcasts WS for the dashboard. skipWake=true
+                  // because we ARE the running turn — handleMessage
+                  // would just queue a redundant follow-up.
+                  const { injectTaskAssignmentNotification } = await import('../../tracker/notify.js');
+                  const taskId = created.taskIds[0];
+                  const notif = injectTaskAssignmentNotification({
+                    assignedAgentId: agentId,
+                    creatorAgentId: 'dojo-system',
+                    taskId,
+                    title: taskTitle,
+                    description: lastUserMessageContent.slice(0, 2000),
+                    projectId: created.projectId,
+                    priority: 'normal',
+                    skipWake: true,
+                  });
 
-                  for (let i = messages.length - 1; i >= 0; i--) {
-                    const m = messages[i];
-                    if (m.role !== 'user') continue;
-                    if (typeof m.content === 'string') {
-                      m.content = trackerNote + m.content;
-                    } else if (Array.isArray(m.content)) {
-                      const blocks = m.content as unknown as Array<Record<string, unknown>>;
-                      const firstTextIdx = blocks.findIndex((b) => b.type === 'text');
-                      if (firstTextIdx >= 0) {
-                        blocks[firstTextIdx] = {
-                          ...blocks[firstTextIdx],
-                          text: trackerNote + ((blocks[firstTextIdx].text as string) ?? ''),
-                        };
-                      } else {
-                        blocks.unshift({ type: 'text', text: trackerNote });
-                      }
-                    }
-                    break;
+                  // Push the same content into the in-flight messages
+                  // array so the agent sees it THIS turn (not just on
+                  // the next assemble). Goes after the user's prompt
+                  // chronologically — agent reads "user said X" then
+                  // "the engine assigned you a task for it."
+                  if (notif.ok && notif.content) {
+                    messages.push({ role: 'user', content: notif.content });
                   }
                 } catch (createErr) {
                   logger.warn('v2 multistep: createProject failed (non-fatal)', {

@@ -14,6 +14,7 @@ import {
   formatResolveError,
 } from './schema.js';
 import { ensurePMAgentRunning } from './pm-agent.js';
+import { injectTaskAssignmentNotification } from './notify.js';
 import { calculateNextRun } from '../scheduler/engine.js';
 import { onTaskRunComplete } from '../scheduler/runner.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -155,6 +156,28 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       taskSummary = `\nTasks (${result.taskIds.length}):\n${taskLines.join('\n')}`;
     }
 
+    // Notify assignees of nested tasks (skips the creator's own tasks).
+    // Mirrors trackerCreateTask's notification path so tasks created via
+    // create_project don't silently sit waiting for someone to notice.
+    for (const taskId of result.taskIds) {
+      const t = getTask(taskId);
+      if (!t || !t.assignedTo) continue;
+      // Skip tasks with a future scheduled_start — scheduler handles those
+      if (t.scheduledStart) {
+        const scheduledMs = new Date(t.scheduledStart.includes('Z') ? t.scheduledStart : t.scheduledStart + 'Z').getTime();
+        if (scheduledMs > Date.now()) continue;
+      }
+      injectTaskAssignmentNotification({
+        assignedAgentId: t.assignedTo,
+        creatorAgentId: agentId,
+        taskId,
+        title: t.title,
+        description: t.description ?? null,
+        projectId: result.projectId,
+        priority: t.priority ?? null,
+      });
+    }
+
     return `[OK] project_id=${result.projectId} | title=${title}\n\nProject created successfully.${taskSummary}\n\nUse tracker_complete_step(task_id="<full task ID>") to mark steps complete.`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -278,56 +301,17 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     if (scheduledStart) parts.push(`Scheduled: ${scheduledStart}`);
 
     // Notify assigned agent about the new task (unless they created it themselves,
-    // or it's a scheduled task — the scheduler handles those)
-    if (assignedTo && assignedTo !== agentId && !hasSchedule) {
-      try {
-        const creatorName = (() => {
-          const row = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-          return row?.name ?? agentId;
-        })();
-        const taskNotification = [
-          `[SOURCE: TRACKER TASK ASSIGNMENT — you have been assigned a new task]`,
-          ``,
-          `Task: ${title}`,
-          `ID: ${taskId}`,
-          `Priority: ${priority ?? 'normal'}`,
-          description ? `\nInstructions:\n${description}` : '',
-          projectId ? `Project: ${projectId}` : '',
-          `Assigned by: ${creatorName}`,
-          ``,
-          `Begin working on this task. When finished, call tracker_update_status(task_id="${taskId}", status="complete", notes="what you did").`,
-          `If you get stuck, call tracker_update_status(task_id="${taskId}", status="blocked", notes="why you're blocked").`,
-        ].filter(Boolean).join('\n');
-
-        const notifyMsgId = uuidv4();
-        const db = getDb();
-        db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, created_at) VALUES (?, ?, 'user', ?, ?, datetime('now'))`).run(notifyMsgId, assignedTo, taskNotification, agentId);
-
-        broadcast({
-          type: 'chat:message',
-          agentId: assignedTo,
-          message: {
-            id: notifyMsgId, agentId: assignedTo, role: 'user' as const,
-            content: taskNotification,
-            tokenCount: null, modelId: null, cost: null, latencyMs: null,
-            createdAt: new Date().toISOString(),
-          },
-        });
-
-        // Trigger the agent so they process the task immediately
-        const runtime = getAgentRuntime();
-        runtime.handleMessage(assignedTo, taskNotification).catch(err => {
-          logger.error('Task assignment notification failed', {
-            taskId, assignedTo,
-            error: err instanceof Error ? err.message : String(err),
-          }, agentId);
-        });
-      } catch (err) {
-        logger.warn('Failed to notify assigned agent of new task', {
-          taskId, assignedTo,
-          error: err instanceof Error ? err.message : String(err),
-        }, agentId);
-      }
+    // or it's a scheduled task — the scheduler handles those).
+    if (assignedTo && !hasSchedule) {
+      injectTaskAssignmentNotification({
+        assignedAgentId: assignedTo,
+        creatorAgentId: agentId,
+        taskId,
+        title,
+        description: description ?? null,
+        projectId: projectId ?? null,
+        priority: priority ?? null,
+      });
     }
 
     return parts.join('\n');
