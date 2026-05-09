@@ -284,14 +284,15 @@ function cleanupOrphanedRuns(): void {
 function cleanupStaleRuns(): void {
   const db = getDb();
   const AGENT_IDLE_THRESHOLD_MINUTES = 30;
+  // Hard threshold for force-recovery: any recurring task in_progress longer
+  // than this without activity is structurally stuck regardless of which
+  // schedule_status combination got it there. v2.3.8.
+  const HARD_STUCK_THRESHOLD_MINUTES = 120;
 
-  // Find running scheduled tasks that have been stale for the threshold.
-  // Use the OLDER of (per-task updated_at, agent last message) — same per-
-  // task pattern as PM's poke loop in v2.3.6. This catches the case where
-  // the agent stays busy on other work after a recurring run completes
-  // but never called tracker_update_status, leaving the task stuck in
-  // schedule_status='running' indefinitely. Pokes log to poke_log (not the
-  // task row) so task.updated_at is reliable as "last assignee-driven change."
+  // 1. Standard stale-running detection. Use the OLDER of (per-task
+  // updated_at, agent last message) — same per-task pattern as PM's poke
+  // loop in v2.3.6. Catches a recurring run that the agent finished but
+  // never called tracker_update_status on.
   const staleTasks = db.prepare(`
     SELECT t.id, t.title, t.assigned_to
     FROM tasks t
@@ -307,7 +308,7 @@ function cleanupStaleRuns(): void {
       ) < datetime('now', '-' || ? || ' minutes')
   `).all(AGENT_IDLE_THRESHOLD_MINUTES) as Array<{ id: string; title: string; assigned_to: string }>;
 
-  // Also catch running tasks with no assigned agent at all
+  // 2. Also catch running tasks with no assigned agent at all
   const unassigned = db.prepare(`
     SELECT t.id, t.title
     FROM tasks t
@@ -317,24 +318,126 @@ function cleanupStaleRuns(): void {
       AND t.last_run_at < datetime('now', '-5 minutes')
   `).all() as Array<{ id: string; title: string }>;
 
+  // 3. Force-recovery for recurring tasks that are status='in_progress'
+  // but schedule_status is NOT 'running' (out-of-sync state from a previous
+  // run that left the row inconsistent). cleanupStaleRuns above misses
+  // these because of the schedule_status='running' filter, and
+  // onTaskRunComplete bails when there's no active task_runs row — so
+  // they sit stuck forever. v2.3.8: catch them here and force-reset
+  // directly via the helper below, bypassing onTaskRunComplete.
+  const stuckOutOfSync = db.prepare(`
+    SELECT t.id, t.title
+    FROM tasks t
+    WHERE t.status = 'in_progress'
+      AND t.repeat_interval IS NOT NULL
+      AND (t.schedule_status IS NULL OR t.schedule_status != 'running')
+      AND t.is_paused = 0
+      AND t.updated_at < datetime('now', '-' || ? || ' minutes')
+  `).all(HARD_STUCK_THRESHOLD_MINUTES) as Array<{ id: string; title: string }>;
+
   const allStale = [
-    ...staleTasks.map(t => ({ id: t.id, title: t.title, reason: `assigned agent idle for ${AGENT_IDLE_THRESHOLD_MINUTES}+ minutes` })),
-    ...unassigned.map(t => ({ id: t.id, title: t.title, reason: 'no agent assigned' })),
+    ...staleTasks.map(t => ({ id: t.id, title: t.title, reason: `assigned agent idle for ${AGENT_IDLE_THRESHOLD_MINUTES}+ minutes`, kind: 'stale_running' as const })),
+    ...unassigned.map(t => ({ id: t.id, title: t.title, reason: 'no agent assigned', kind: 'stale_running' as const })),
+    ...stuckOutOfSync.map(t => ({ id: t.id, title: t.title, reason: `recurring task stuck in_progress with out-of-sync schedule_status for ${HARD_STUCK_THRESHOLD_MINUTES}+ minutes`, kind: 'stuck_out_of_sync' as const })),
   ];
 
   if (allStale.length === 0) return;
 
-  logger.warn(`Scheduler: ${allStale.length} stale running task(s) detected, marking failed`);
+  logger.warn(`Scheduler: ${allStale.length} stale/stuck task(s) detected`, {
+    staleRunning: staleTasks.length,
+    unassigned: unassigned.length,
+    stuckOutOfSync: stuckOutOfSync.length,
+  });
 
   for (const task of allStale) {
-    logger.warn('Scheduler: auto-resetting stale task', { taskId: task.id, title: task.title, reason: task.reason });
-    onTaskRunComplete(task.id, 'failed', `Auto-failed: ${task.reason}`).catch(err => {
-      logger.error('Scheduler: stale cleanup failed', {
-        taskId: task.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    });
+    logger.warn('Scheduler: auto-recovering task', { taskId: task.id, title: task.title, reason: task.reason, kind: task.kind });
+
+    if (task.kind === 'stale_running') {
+      // onTaskRunComplete handles the normal case — fails the active run,
+      // advances run_count, computes nextRun, resets status. If the active
+      // run record is missing (already terminal), it bails — the
+      // forceResetStuckRecurringTask call after handles the row directly.
+      onTaskRunComplete(task.id, 'failed', `Auto-failed: ${task.reason}`)
+        .then(() => forceResetStuckRecurringTask(task.id))
+        .catch(err => {
+          logger.error('Scheduler: stale cleanup failed', {
+            taskId: task.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          // Still try the direct force-reset as a fallback.
+          try { forceResetStuckRecurringTask(task.id); } catch { /* swallow */ }
+        });
+    } else {
+      // stuck_out_of_sync: bypass onTaskRunComplete entirely.
+      try {
+        forceResetStuckRecurringTask(task.id);
+      } catch (err) {
+        logger.error('Scheduler: force-reset failed', {
+          taskId: task.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   }
+}
+
+/**
+ * Force-reset a recurring task whose row is structurally stuck —
+ * status='in_progress' with no productive way out via the normal
+ * onTaskRunComplete path (because the active task_runs row is already
+ * terminal or the schedule_status got out of sync).
+ *
+ * Recomputes the next run from the current schedule and writes the
+ * appropriate status/schedule_status directly. Idempotent: skips if the
+ * task is no longer in_progress (something else recovered it first).
+ */
+function forceResetStuckRecurringTask(taskId: string): void {
+  const db = getDb();
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as Record<string, unknown> | undefined;
+  if (!task) return;
+  if (task.status !== 'in_progress') return;
+  if (!task.repeat_interval) return;
+
+  const scheduledTask: ScheduledTask = {
+    id: task.id as string,
+    scheduled_start: task.scheduled_start as string | null,
+    repeat_interval: task.repeat_interval as number | null,
+    repeat_unit: task.repeat_unit as string | null,
+    repeat_end_type: task.repeat_end_type as string | null,
+    repeat_end_value: task.repeat_end_value as string | null,
+    run_count: (task.run_count as number) ?? 0,
+    is_paused: (task.is_paused as number) ?? 0,
+    last_run_at: task.last_run_at as string | null,
+    next_run_at: task.next_run_at as string | null,
+    schedule_status: task.schedule_status as string,
+  };
+
+  const nextRun = calculateNextRun(scheduledTask);
+  if (nextRun) {
+    db.prepare(`
+      UPDATE tasks
+      SET status = 'on_deck',
+          schedule_status = 'waiting',
+          next_run_at = ?,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(nextRun, taskId);
+    logger.warn('Scheduler: force-reset stuck recurring task to on_deck/waiting', { taskId, title: task.title, nextRun });
+  } else {
+    db.prepare(`
+      UPDATE tasks
+      SET status = 'complete',
+          schedule_status = 'completed',
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(taskId);
+    logger.warn('Scheduler: force-reset stuck recurring task — no future runs, marked complete', { taskId, title: task.title });
+  }
+
+  broadcast({
+    type: 'tracker:task_updated',
+    task: { id: taskId, status: nextRun ? 'on_deck' : 'complete' },
+  } as never);
 }
 
 // ── Prune terminal tasks ──
