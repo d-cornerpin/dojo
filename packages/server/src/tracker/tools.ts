@@ -220,9 +220,15 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       phase,
     });
 
-    // Auto-set to in_progress ONLY if assigned to an agent AND there is NO scheduled start
-    // If a scheduled_start is provided, the task stays on_deck until the scheduler fires it
-    // Normalize scheduled_start to UTC ISO format to prevent timezone mismatches
+    // Status reconciliation against the schema default (createTask sets a
+    // self-assigned task to 'in_progress' automatically). v2.3.13:
+    //   - hasSchedule → force back to 'on_deck' so the scheduler owns the
+    //     transition to in_progress at fire time. Without this override
+    //     scheduled self-assigned tasks were landing in_progress
+    //     immediately, silently bypassing the scheduler.
+    //   - no schedule + assigned to someone else → bump to in_progress
+    //     (schema default for that case is on_deck).
+    //   - no schedule + self-assigned → leave the schema default alone.
     let scheduledStart = args.scheduled_start as string | undefined;
     if (scheduledStart) {
       try {
@@ -233,7 +239,11 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       } catch { /* keep original if parse fails */ }
     }
     const hasSchedule = !!(scheduledStart || args.repeat_interval);
-    if (assignedTo && !hasSchedule) {
+    if (hasSchedule) {
+      try {
+        updateTask(taskId, { status: 'on_deck' });
+      } catch { /* ignore */ }
+    } else if (assignedTo && assignedTo !== agentId) {
       try {
         updateTask(taskId, { status: 'in_progress' });
       } catch { /* ignore */ }
