@@ -167,6 +167,40 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   return denom === 0 ? 0 : dotProduct / denom;
 }
 
+// ── Deliverable-shape detection (v2.3.17) ──
+//
+// A sub-agent that says "draft #21 is ready, https://…" is almost always
+// announcing a deliverable, not just chatting — but pre-2026-05-10 they
+// often picked intent=FYI, leaving the primary agent idle and the user
+// in the dark. We promote those to DELIVERABLE so the primary wakes.
+//
+// Signal model: a URL on its own is enough (someone shipped a thing). If
+// no URL, require a completion keyword AND an artefact reference (an ID,
+// a draft #, a title in quotes, "Post ID:", "PR #", etc.). Both halves
+// matter — "I'm working on it" alone shouldn't promote.
+const COMPLETION_KEYWORDS = [
+  'ready', 'done', 'finished', 'complete', 'completed', 'shipped',
+  'published', 'live', 'merged', 'drafted', 'wrapped', 'delivered',
+];
+const ARTEFACT_PATTERNS = [
+  /\bdraft\s*#?\d+/i,
+  /\b(?:post|task|pr|ticket|issue|order|invoice|file|doc(?:ument)?)\s*(?:id\s*[:#]?\s*)?\d+/i,
+  /\bPR\s*#\d+/i,
+  /"[^"]{4,}"/,                // a quoted title with at least 4 chars
+  /\b\d{3,}\b/,                // bare longish numeric ID (e.g. Post ID: 4253)
+];
+const URL_RE = /\bhttps?:\/\/\S+/i;
+
+export function payloadLooksDeliverable(payload: string): boolean {
+  if (!payload || payload.length < 5) return false;
+  if (URL_RE.test(payload)) return true;
+  const lower = payload.toLowerCase();
+  const hasCompletion = COMPLETION_KEYWORDS.some((kw) => lower.includes(kw));
+  if (!hasCompletion) return false;
+  const hasArtefact = ARTEFACT_PATTERNS.some((re) => re.test(payload));
+  return hasArtefact;
+}
+
 // ── Logging ──
 
 function logDrop(envelope: A2AEnvelope, reason: A2ADropReason): void {
@@ -200,6 +234,14 @@ export interface A2ADeliveryResult {
    * we reused a task from an earlier ASSIGN on the same thread.
    */
   autoTaskIsNew?: boolean;
+  /**
+   * v2.3.17 — true when the engine reclassified the sender's FYI to
+   * DELIVERABLE because the payload looked deliverable-shaped (sub-agent
+   * → primary, URL or completion-keyword + artefact reference). Surfaced
+   * to send_to_agent's tool result so the sender knows their receiver
+   * was actually woken.
+   */
+  autoPromotedFromFyi?: boolean;
 }
 
 /**
@@ -243,9 +285,44 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   // receiver — the receiver asked for this content and needs it to
   // continue working. FYI, STATUS, COMPLETE, FAIL are both terminal
   // AND no-wake — nobody is waiting for them.
+  //
+  // v2.3.17 auto-promote: a sub-agent sending FYI to the primary agent
+  // about a deliverable (URL or ID/title + completion keyword) is almost
+  // always a wrong-intent pick — they meant DELIVERABLE. Without promotion,
+  // the primary sits idle until the user pings, then re-asks the sub-agent
+  // for content the engine already delivered. We override intent here so
+  // downstream thread state, footer, and wake routing all stay consistent.
+  let effectiveIntent: A2AIntent = envelope.intent;
+  let autoPromotedFromFyi = false;
+  try {
+    const { isPrimaryAgent } = await import('../config/platform.js');
+    const targetIsPrimary = isPrimaryAgent(target.id);
+    const senderIsPM = (await import('../config/platform.js')).isPMAgent(envelope.fromAgent);
+    const senderIsHealer = (await import('../config/platform.js')).isHealerAgent(envelope.fromAgent);
+    const senderIsPrimary = isPrimaryAgent(envelope.fromAgent);
+    const senderIsSubAgent = !senderIsPrimary && !senderIsPM && !senderIsHealer && envelope.fromAgent !== 'system';
+    if (
+      envelope.intent === 'FYI' &&
+      targetIsPrimary &&
+      senderIsSubAgent &&
+      payloadLooksDeliverable(envelope.payload)
+    ) {
+      effectiveIntent = 'DELIVERABLE';
+      autoPromotedFromFyi = true;
+      logger.info('A2A FYI auto-promoted to DELIVERABLE (sub-agent → primary, deliverable-shaped payload)', {
+        from: envelope.fromAgent,
+        to: target.id,
+        threadId: envelope.threadId,
+        payloadPreview: envelope.payload.slice(0, 120),
+      });
+    }
+  } catch { /* best effort — fall back to raw intent */ }
+
   let requiresResponse = envelope.requiresResponse;
-  if (isNoWakeIntent(envelope.intent)) {
+  if (isNoWakeIntent(effectiveIntent)) {
     requiresResponse = false; // Force — these intents never wake the receiver
+  } else if (autoPromotedFromFyi) {
+    requiresResponse = true; // Promoted DELIVERABLE wakes the receiver
   }
 
   // ── 4. Thread state checks ──
@@ -253,13 +330,13 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   ensureThread(threadId, envelope.fromAgent);
 
   // Check if thread is terminated and this intent can't reopen it
-  if (isThreadTerminal(threadId) && !isReopeningIntent(envelope.intent)) {
+  if (isThreadTerminal(threadId) && !isReopeningIntent(effectiveIntent)) {
     logDrop(envelope, 'TERMINAL_THREAD_CLOSED');
     return { delivered: false, reason: 'TERMINAL_THREAD_CLOSED', threadId };
   }
 
   // If a reopening intent arrives on a terminal thread, reset the terminal flag
-  if (isThreadTerminal(threadId) && isReopeningIntent(envelope.intent)) {
+  if (isThreadTerminal(threadId) && isReopeningIntent(effectiveIntent)) {
     db.prepare('UPDATE a2a_threads SET is_terminal = 0, updated_at = datetime(\'now\') WHERE thread_id = ?').run(threadId);
   }
 
@@ -278,7 +355,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   // completion notices. FYI keeps dedup because it's the prime culprit
   // for back-and-forth ack loops between agents.
   const COMPLETION_INTENTS_SKIP_DEDUP = new Set<A2AIntent>(['ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL']);
-  if (!COMPLETION_INTENTS_SKIP_DEDUP.has(envelope.intent)) {
+  if (!COMPLETION_INTENTS_SKIP_DEDUP.has(effectiveIntent)) {
     const isDuplicate = await checkSemanticDedup(envelope.payload, threadId, envelope.fromAgent);
     if (isDuplicate) {
       logDrop(envelope, 'SEMANTIC_DUPLICATE');
@@ -287,7 +364,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   }
 
   // ── 7. Record delivery in thread state ──
-  recordDelivery(threadId, envelope.intent, envelope.fromAgent);
+  recordDelivery(threadId, effectiveIntent, envelope.fromAgent);
 
   // ── 8. Resolve sender name ──
   const senderRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(envelope.fromAgent) as { name: string } | undefined;
@@ -305,7 +382,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   // multiple ASSIGN messages on the same thread are clarifications, not
   // duplicate assignments.
   let autoTask: { taskId: string; isNew: boolean } | null = null;
-  if (envelope.intent === 'ASSIGN') {
+  if (effectiveIntent === 'ASSIGN') {
     try {
       const { autoCreateAssignTask } = await import('../tracker/schema.js');
       autoTask = autoCreateAssignTask({
@@ -331,10 +408,10 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   // got confused. Now there are three honest states, one per intent group.
   const threadShort = threadId.slice(0, 8);
   let threadInfo: string;
-  if (envelope.intent === 'QUESTION' || envelope.intent === 'ASSIGN' || envelope.intent === 'BLOCK') {
+  if (effectiveIntent === 'QUESTION' || effectiveIntent === 'ASSIGN' || effectiveIntent === 'BLOCK') {
     // Open-thread reply intents — receiver should reply on the same thread.
     threadInfo = `\n\n[Thread ${threadShort} | Reply on this thread — use send_to_agent with thread_id="${threadId}" and an appropriate intent]`;
-    if (envelope.intent === 'ASSIGN' && autoTask) {
+    if (effectiveIntent === 'ASSIGN' && autoTask) {
       // Receiver-visible tracker line. The DOJO created the task for them,
       // so they don't need to call tracker_create_task — they just need
       // to call tracker_update_status when done so the sender gets the
@@ -344,18 +421,48 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
         ? `\n[Tracker: task ${taskShort} was auto-created when ${senderName} assigned this work to you. Call tracker_update_status(task_id="${autoTask.taskId}", status="completed", notes="…") when you finish so ${senderName} gets the completion notice.]`
         : `\n[Tracker: continuing work on task ${taskShort} (assigned earlier on this thread by ${senderName}). Update status with tracker_update_status when state changes.]`;
     }
-  } else if (envelope.intent === 'ANSWER' || envelope.intent === 'DELIVERABLE') {
+  } else if (effectiveIntent === 'ANSWER' || effectiveIntent === 'DELIVERABLE') {
     // Terminal but wake — receiver should USE the content (relay to user,
     // act on it) but the thread is closed; replying on it will fail with
     // TERMINAL_THREAD_CLOSED. To continue with the sender, start a NEW
     // thread (omit thread_id) with a reopening intent.
     threadInfo = `\n\n[Thread ${threadShort} | Closed — use the content above (do NOT reply on this thread). To start a new conversation with the sender, omit thread_id and pick QUESTION/ASSIGN/BLOCK.]`;
   } else {
-    // No-wake intents (FYI/STATUS/COMPLETE/FAIL) — informational only.
-    threadInfo = `\n\n[Thread ${threadShort} | No reply expected — this is read-only context]`;
+    // No-wake intents (FYI/STATUS/COMPLETE/FAIL) — informational, but if the
+    // content is something the user/owner cares about (a finished draft, a
+    // shipped artifact), the receiver should still act on it (e.g. iMessage
+    // the owner). v2.3.17: pre-existing footer said "read-only context",
+    // which the model read as "ignore this." Now we make the action surface
+    // explicit so a sub-agent's heads-up actually reaches the owner.
+    threadInfo = `\n\n[Thread ${threadShort} | No reply expected on this thread. If the content is something the user should know about, take action (e.g. iMessage them).]`;
   }
 
-  const contextMessage = `[A2A:${envelope.intent} thread:${threadShort} from:${senderName}] ${envelope.payload}${threadInfo}`;
+  // Engine-injected hint for the primary agent when a sub-agent ships a
+  // deliverable: explicitly tell the primary to surface this to the owner.
+  // Fires for DELIVERABLE/ANSWER from sub-agents, and for any FYI we just
+  // auto-promoted. Does NOT fire for PM/Healer/system messages — those are
+  // operational, not user-facing artefacts.
+  let primaryDeliverableHint = '';
+  try {
+    const { isPrimaryAgent, isPMAgent, isHealerAgent, getOwnerName } = await import('../config/platform.js');
+    const targetIsPrimary = isPrimaryAgent(target.id);
+    const senderIsOps = isPMAgent(envelope.fromAgent) || isHealerAgent(envelope.fromAgent) || envelope.fromAgent === 'system';
+    const isDeliverableShape =
+      autoPromotedFromFyi ||
+      (effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'ANSWER');
+    if (targetIsPrimary && !senderIsOps && isDeliverableShape) {
+      const ownerName = getOwnerName();
+      primaryDeliverableHint =
+        `\n\n[Engine: ${senderName} just shipped a deliverable for ${ownerName}. ` +
+        `Send ${ownerName} an iMessage with the gist (title + link if present), ` +
+        `unless they're already actively in this conversation in the dashboard.]`;
+    }
+  } catch { /* best effort */ }
+
+  const promotionTag = autoPromotedFromFyi
+    ? ` (auto-promoted from FYI by the engine — payload looked deliverable-shaped)`
+    : '';
+  const contextMessage = `[A2A:${effectiveIntent} thread:${threadShort} from:${senderName}${promotionTag}] ${envelope.payload}${threadInfo}${primaryDeliverableHint}`;
 
   // ── 10. Process attachments BEFORE persist+broadcast ──
   // Pre-2026-04-30: attachments were processed AFTER the message was inserted
@@ -439,7 +546,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   db.prepare(`
     INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, attachments, created_at)
     VALUES (?, ?, 'user', ?, ?, ?, ?, ?, ?, datetime('now'))
-  `).run(msgId, target.id, contextMessage, envelope.fromAgent, threadId, envelope.intent, requiresResponse ? 1 : 0, attachmentsJson);
+  `).run(msgId, target.id, contextMessage, envelope.fromAgent, threadId, effectiveIntent, requiresResponse ? 1 : 0, attachmentsJson);
 
   // ── 12. Broadcast to dashboard (with attachments so the live UI shows the
   // image immediately, not just on page refresh) ──
@@ -535,7 +642,9 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
     fromName: senderName,
     to: target.id,
     toName: target.name,
-    intent: envelope.intent,
+    intent: effectiveIntent,
+    originalIntent: envelope.intent,
+    autoPromotedFromFyi,
     requiresResponse,
     hopCount: currentHops + 1,
     payloadLength: envelope.payload.length,
@@ -547,6 +656,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
     messageId: msgId,
     autoCreatedTaskId: autoTask?.taskId,
     autoTaskIsNew: autoTask?.isNew,
+    autoPromotedFromFyi,
   };
 }
 

@@ -2905,11 +2905,16 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
           });
 
           if (result.delivered) {
+            const effectiveIntent = result.autoPromotedFromFyi ? 'DELIVERABLE' : intent;
             auditLog(agentId, 'tool_call', 'send_to_agent', 'success',
-              `to:${agentRef} intent:${intent} thread:${result.threadId.slice(0, 8)} requires_response:${requiresResponse}${result.autoCreatedTaskId ? ` task:${result.autoCreatedTaskId.slice(0, 8)}` : ''}`,
+              `to:${agentRef} intent:${effectiveIntent}${result.autoPromotedFromFyi ? '(promoted from FYI)' : ''} thread:${result.threadId.slice(0, 8)} requires_response:${requiresResponse}${result.autoCreatedTaskId ? ` task:${result.autoCreatedTaskId.slice(0, 8)}` : ''}`,
             );
-            content = `[A2A:${intent}] Message delivered to "${agentRef}" on thread ${result.threadId.slice(0, 8)}.` +
-              (requiresResponse ? ' Response expected.' : ' No response expected (read-only context).');
+            content = `[A2A:${effectiveIntent}] Message delivered to "${agentRef}" on thread ${result.threadId.slice(0, 8)}.` +
+              (requiresResponse || result.autoPromotedFromFyi ? ' Response expected.' : ' No response expected (read-only context).');
+            if (result.autoPromotedFromFyi) {
+              content +=
+                `\nNote: the engine auto-promoted your FYI to DELIVERABLE because the payload looked deliverable-shaped (URL or completion+artefact reference). Your receiver was woken. Use intent="DELIVERABLE" explicitly next time so the routing is unambiguous.`;
+            }
             // Engine-driven task discipline (Phase 7+): ASSIGN intent
             // auto-creates a tracker task. Surface the ID so the sender
             // knows where to track progress without having to call
