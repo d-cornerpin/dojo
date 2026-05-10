@@ -26,6 +26,7 @@ const SCOPES = [
   'Mail.ReadWrite',
   'Mail.Send',
   'Calendars.ReadWrite',
+  'Calendars.ReadWrite.Shared',
   'Files.ReadWrite',
   'Chat.ReadWrite',
   'Notes.ReadWrite',

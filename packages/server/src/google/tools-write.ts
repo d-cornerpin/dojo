@@ -89,7 +89,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'calendar_create',
-    description: 'Create a new calendar event.',
+    description: 'Create a new calendar event. Defaults to your primary calendar; pass calendar_id to add to a shared calendar where you have write access (use calendar_list to find IDs and check accessRole).',
     input_schema: {
       type: 'object',
       properties: {
@@ -99,13 +99,14 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
         description: { type: 'string', description: 'Event description' },
         attendees: { type: 'array', items: { type: 'string' }, description: 'Attendee email addresses' },
         location: { type: 'string', description: 'Event location' },
+        calendar_id: { type: 'string', description: 'Calendar ID. Defaults to "primary" (your own).' },
       },
       required: ['title', 'start', 'end'],
     },
   },
   {
     name: 'calendar_update',
-    description: 'Update an existing calendar event.',
+    description: 'Update an existing calendar event. Pass calendar_id if the event lives on a shared calendar.',
     input_schema: {
       type: 'object',
       properties: {
@@ -114,19 +115,58 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
         start: { type: 'string', description: 'New start datetime' },
         end: { type: 'string', description: 'New end datetime' },
         description: { type: 'string', description: 'New event description' },
+        calendar_id: { type: 'string', description: 'Calendar ID. Defaults to "primary".' },
       },
       required: ['event_id'],
     },
   },
   {
     name: 'calendar_delete',
-    description: 'Delete a calendar event.',
+    description: 'Delete a calendar event. Pass calendar_id if the event lives on a shared calendar.',
     input_schema: {
       type: 'object',
       properties: {
         event_id: { type: 'string', description: 'Calendar event ID to delete' },
+        calendar_id: { type: 'string', description: 'Calendar ID. Defaults to "primary".' },
       },
       required: ['event_id'],
+    },
+  },
+  {
+    name: 'calendar_respond_invite',
+    description: 'Accept, decline, or tentatively accept a Google Calendar meeting invite (RSVP to an event you were invited to). For accepting access to someone else\'s SHARED CALENDAR, use calendar_subscribe instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string', description: 'Calendar event ID (from calendar_agenda or calendar_search)' },
+        response: { type: 'string', enum: ['accepted', 'declined', 'tentative'], description: 'Your response to the invite' },
+        attendee_email: { type: 'string', description: 'The email address you are RSVPing as. Required so we can find your row in the attendees array.' },
+        comment: { type: 'string', description: 'Optional comment to set on your response (Google adds this to your attendee record).' },
+        calendar_id: { type: 'string', description: 'Calendar ID where the event lives. Defaults to "primary".' },
+      },
+      required: ['event_id', 'response', 'attendee_email'],
+    },
+  },
+  {
+    name: 'calendar_subscribe',
+    description: "Subscribe to a Google calendar that's been shared with you (adds it to your calendar list so calendar_list shows it and read/write tools can target it). The owner must have already shared the calendar with this account; this tool just accepts/registers that share. To find the calendar_id, look in the share-invitation email — it's typically the owner's email address or a specific calendar ID. For RSVPing to meeting invites use calendar_respond_invite instead.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        calendar_id: { type: 'string', description: "ID of the calendar to subscribe to (often the owner's email address, e.g., 'someone@example.com', or a calendar ID like 'group.calendar.google.com')" },
+      },
+      required: ['calendar_id'],
+    },
+  },
+  {
+    name: 'calendar_unsubscribe',
+    description: 'Remove a calendar from your calendar list (you stop seeing/syncing it). Does NOT delete the calendar — only removes the subscription. Re-subscribe later with calendar_subscribe.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        calendar_id: { type: 'string', description: 'Calendar ID to unsubscribe from (from calendar_list).' },
+      },
+      required: ['calendar_id'],
     },
   },
   {
@@ -376,6 +416,7 @@ export async function executeGoogleWriteTool(
     }
 
     case 'calendar_create': {
+      const calendarId = (args.calendar_id as string | undefined) ?? 'primary';
       const event: Record<string, unknown> = {
         summary: args.title,
         start: { dateTime: args.start },
@@ -387,8 +428,8 @@ export async function executeGoogleWriteTool(
         event.attendees = (args.attendees as string[]).map(email => ({ email }));
       }
 
-      const url = `${CALENDAR_BASE}/calendars/primary/events`;
-      const result = await googleWrite('POST', url, event, agentId, agentName, 'calendar_create', { title: args.title, start: args.start, end: args.end });
+      const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events`;
+      const result = await googleWrite('POST', url, event, agentId, agentName, 'calendar_create', { title: args.title, start: args.start, end: args.end, calendarId });
       if (!result.ok) return `Error creating event: ${result.error}`;
 
       const data = result.data as { id?: string; htmlLink?: string };
@@ -397,24 +438,76 @@ export async function executeGoogleWriteTool(
 
     case 'calendar_update': {
       const eventId = args.event_id as string;
+      const calendarId = (args.calendar_id as string | undefined) ?? 'primary';
       const patch: Record<string, unknown> = {};
       if (args.title) patch.summary = args.title;
       if (args.start) patch.start = { dateTime: args.start };
       if (args.end) patch.end = { dateTime: args.end };
       if (args.description) patch.description = args.description;
 
-      const url = `${CALENDAR_BASE}/calendars/primary/events/${encodeURIComponent(eventId)}`;
-      const result = await googleWrite('PATCH', url, patch, agentId, agentName, 'calendar_update', { eventId, ...patch });
+      const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
+      const result = await googleWrite('PATCH', url, patch, agentId, agentName, 'calendar_update', { eventId, calendarId, ...patch });
       if (!result.ok) return `Error updating event: ${result.error}`;
       return `Calendar event ${eventId} updated`;
     }
 
     case 'calendar_delete': {
       const eventId = args.event_id as string;
-      const url = `${CALENDAR_BASE}/calendars/primary/events/${encodeURIComponent(eventId)}`;
-      const result = await googleWrite('DELETE', url, undefined, agentId, agentName, 'calendar_delete', { eventId });
+      const calendarId = (args.calendar_id as string | undefined) ?? 'primary';
+      const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
+      const result = await googleWrite('DELETE', url, undefined, agentId, agentName, 'calendar_delete', { eventId, calendarId });
       if (!result.ok) return `Error deleting event: ${result.error}`;
       return `Calendar event ${eventId} deleted`;
+    }
+
+    case 'calendar_respond_invite': {
+      const eventId = args.event_id as string;
+      const response = args.response as 'accepted' | 'declined' | 'tentative';
+      const attendeeEmail = (args.attendee_email as string).toLowerCase();
+      const comment = args.comment as string | undefined;
+      const calendarId = (args.calendar_id as string | undefined) ?? 'primary';
+
+      // Read the event so we can find the attendee row to update.
+      // Google's PATCH replaces the whole attendees array, so we need to
+      // round-trip the existing list with our row modified.
+      const readUrl = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
+      const { googleRead } = await import('./client.js');
+      const readResult = await googleRead(readUrl, agentId, agentName, 'calendar_respond_invite:read', { eventId, calendarId });
+      if (!readResult.ok) return `Error fetching event: ${readResult.error}`;
+
+      const event = readResult.data as { attendees?: Array<{ email?: string; responseStatus?: string; comment?: string }> };
+      const attendees = event.attendees ?? [];
+      const idx = attendees.findIndex(a => (a.email ?? '').toLowerCase() === attendeeEmail);
+      if (idx < 0) {
+        return `Error: ${args.attendee_email} is not on this event's attendee list. Confirm the email or check whether the invite is for a different account.`;
+      }
+      attendees[idx] = {
+        ...attendees[idx],
+        responseStatus: response,
+        ...(comment ? { comment } : {}),
+      };
+
+      const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}?sendUpdates=all`;
+      const result = await googleWrite('PATCH', url, { attendees }, agentId, agentName, 'calendar_respond_invite', { eventId, response, attendeeEmail, calendarId });
+      if (!result.ok) return `Error responding to invite: ${result.error}`;
+      return `Responded "${response}" to event ${eventId} as ${args.attendee_email}.`;
+    }
+
+    case 'calendar_subscribe': {
+      const calendarId = args.calendar_id as string;
+      const url = `${CALENDAR_BASE}/users/me/calendarList`;
+      const result = await googleWrite('POST', url, { id: calendarId }, agentId, agentName, 'calendar_subscribe', { calendarId });
+      if (!result.ok) return `Error subscribing to calendar: ${result.error}`;
+      const data = result.data as { id?: string; summary?: string; accessRole?: string };
+      return `Subscribed to "${data?.summary ?? calendarId}" (access: ${data?.accessRole ?? 'unknown'}). It now appears in calendar_list.`;
+    }
+
+    case 'calendar_unsubscribe': {
+      const calendarId = args.calendar_id as string;
+      const url = `${CALENDAR_BASE}/users/me/calendarList/${encodeURIComponent(calendarId)}`;
+      const result = await googleWrite('DELETE', url, undefined, agentId, agentName, 'calendar_unsubscribe', { calendarId });
+      if (!result.ok) return `Error unsubscribing: ${result.error}`;
+      return `Unsubscribed from calendar ${calendarId}. The calendar itself was not deleted.`;
     }
 
     case 'drive_upload': {

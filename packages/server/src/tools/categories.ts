@@ -89,7 +89,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'Google Calendar',
-    tools: ['calendar_agenda', 'calendar_search', 'calendar_create', 'calendar_update', 'calendar_delete'],
+    tools: ['calendar_agenda', 'calendar_search', 'calendar_list', 'calendar_create', 'calendar_update', 'calendar_delete', 'calendar_respond_invite', 'calendar_subscribe', 'calendar_unsubscribe'],
   },
   {
     label: 'Google Drive / Docs / Sheets',
@@ -120,7 +120,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'Microsoft Calendar',
-    tools: ['calendar_agenda_ms', 'calendar_search_ms', 'calendar_create_ms', 'calendar_update_ms', 'calendar_delete_ms'],
+    tools: ['calendar_agenda_ms', 'calendar_search_ms', 'calendar_list_ms', 'calendar_create_ms', 'calendar_update_ms', 'calendar_delete_ms', 'calendar_respond_invite', 'calendar_share_invites_ms', 'calendar_accept_share_ms'],
   },
   {
     label: 'OneDrive',

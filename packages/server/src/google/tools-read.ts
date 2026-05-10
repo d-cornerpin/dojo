@@ -77,12 +77,13 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'calendar_agenda',
-    description: "Show upcoming calendar events. Defaults to today's agenda.",
+    description: "Show upcoming calendar events. Defaults to today's agenda on your primary calendar. Pass calendar_id to read from a shared calendar (use calendar_list to find IDs).",
     input_schema: {
       type: 'object',
       properties: {
         days: { type: 'number', description: 'How many days ahead to show (1 = today only, 7 = this week, default: 1)' },
         timezone: { type: 'string', description: 'Timezone (defaults to system timezone)' },
+        calendar_id: { type: 'string', description: 'Calendar ID. Defaults to "primary" (your own). Use calendar_list to discover shared calendar IDs.' },
       },
       required: [],
     },
@@ -91,14 +92,26 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'calendar_search',
-    description: 'Search calendar events by text query.',
+    description: 'Search calendar events by text query. Defaults to your primary calendar; pass calendar_id to search a shared one.',
     input_schema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search text to find in event titles and descriptions' },
         days_ahead: { type: 'number', description: 'How far ahead to search in days (default: 30)' },
+        calendar_id: { type: 'string', description: 'Calendar ID. Defaults to "primary".' },
       },
       required: ['query'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
+  },
+  {
+    name: 'calendar_list',
+    description: 'List all Google calendars you have access to, including shared calendars. Returns each calendar with its ID, name, and your access level (owner / writer / reader / freeBusyReader). Use the returned IDs with calendar_agenda, calendar_search, calendar_create, etc., to operate on a specific calendar.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
     },
     concurrency: 'safe',
     maxResultTokens: 2000,
@@ -357,6 +370,7 @@ export async function executeGoogleReadTool(
       const now = new Date();
       const end = new Date(now.getTime() + days * 86400000);
       const tz = (args.timezone as string) ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const calendarId = (args.calendar_id as string | undefined) ?? 'primary';
 
       const params = new URLSearchParams({
         timeMin: now.toISOString(),
@@ -365,8 +379,8 @@ export async function executeGoogleReadTool(
         orderBy: 'startTime',
         timeZone: tz,
       });
-      const url = `${CALENDAR_BASE}/calendars/primary/events?${params.toString()}`;
-      const result = await googleRead(url, agentId, agentName, 'calendar_agenda', { days, timezone: tz });
+      const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`;
+      const result = await googleRead(url, agentId, agentName, 'calendar_agenda', { days, timezone: tz, calendarId });
       if (!result.ok) return `Error fetching calendar: ${result.error}`;
 
       const data = result.data as { items?: Array<{ summary: string; start: { dateTime?: string; date?: string }; end: { dateTime?: string; date?: string }; location?: string; description?: string }> };
@@ -388,6 +402,7 @@ export async function executeGoogleReadTool(
       const daysAhead = (args.days_ahead as number) ?? 30;
       const now = new Date();
       const end = new Date(now.getTime() + daysAhead * 86400000);
+      const calendarId = (args.calendar_id as string | undefined) ?? 'primary';
 
       const params = new URLSearchParams({
         timeMin: now.toISOString(),
@@ -396,8 +411,8 @@ export async function executeGoogleReadTool(
         orderBy: 'startTime',
         q: searchQuery,
       });
-      const url = `${CALENDAR_BASE}/calendars/primary/events?${params.toString()}`;
-      const result = await googleRead(url, agentId, agentName, 'calendar_search', { query: searchQuery, daysAhead });
+      const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`;
+      const result = await googleRead(url, agentId, agentName, 'calendar_search', { query: searchQuery, daysAhead, calendarId });
       if (!result.ok) return `Error searching calendar: ${result.error}`;
 
       const data = result.data as { items?: Array<{ summary: string; start: { dateTime?: string; date?: string }; id: string }> };
@@ -408,6 +423,21 @@ export async function executeGoogleReadTool(
         return `- ${e.summary} (${start}) [ID: ${e.id}]`;
       });
       return `Found ${data.items.length} event(s) matching "${searchQuery}":\n\n${events.join('\n')}`;
+    }
+
+    case 'calendar_list': {
+      const url = `${CALENDAR_BASE}/users/me/calendarList`;
+      const result = await googleRead(url, agentId, agentName, 'calendar_list', {});
+      if (!result.ok) return `Error listing calendars: ${result.error}`;
+      const data = result.data as { items?: Array<{ id: string; summary: string; summaryOverride?: string; accessRole: string; primary?: boolean; selected?: boolean; description?: string }> };
+      if (!data?.items || data.items.length === 0) return 'No calendars accessible.';
+      const lines = data.items.map(c => {
+        const name = c.summaryOverride ?? c.summary ?? '(unnamed)';
+        const tags = [c.primary ? 'primary' : null, c.accessRole].filter(Boolean).join(', ');
+        const desc = c.description ? `\n  ${c.description.slice(0, 120)}` : '';
+        return `- ${name} [${tags}]\n  ID: ${c.id}${desc}`;
+      });
+      return `${data.items.length} calendar(s):\n\n${lines.join('\n')}`;
     }
 
     case 'drive_list': {

@@ -4,7 +4,7 @@
 // ════════════════════════════════════════
 
 import type { ToolDefinition } from '../agent/tools.js';
-import { msGraphRead, msGraphWrite } from './client.js';
+import { msGraphRead, msGraphWrite, calendarPrefix } from './client.js';
 import { getPrimaryAgentName } from '../config/platform.js';
 
 // ── Tool Definitions ──
@@ -52,7 +52,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'calendar_create_ms',
-    description: 'Create a new Microsoft Calendar event.',
+    description: 'Create a new Microsoft Calendar event. Defaults to your default calendar; pass calendar_id to add to a shared calendar where you have write access (use calendar_list_ms to find IDs and check canEdit).',
     input_schema: {
       type: 'object',
       properties: {
@@ -62,13 +62,14 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         description: { type: 'string', description: 'Event description' },
         attendees: { type: 'array', items: { type: 'string' }, description: 'Attendee email addresses' },
         location: { type: 'string', description: 'Event location' },
+        calendar_id: { type: 'string', description: 'Calendar to target. Two forms: (1) a calendar UUID from calendar_list_ms; (2) an email address for direct delegate access to a shared calendar (e.g., "owner@example.com"). Defaults to your default calendar.' },
       },
       required: ['title', 'start', 'end'],
     },
   },
   {
     name: 'calendar_update_ms',
-    description: 'Update an existing Microsoft Calendar event.',
+    description: 'Update an existing Microsoft Calendar event. Pass calendar_id if the event lives on a shared calendar.',
     input_schema: {
       type: 'object',
       properties: {
@@ -77,17 +78,19 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         start: { type: 'string', description: 'New start datetime' },
         end: { type: 'string', description: 'New end datetime' },
         description: { type: 'string', description: 'New description' },
+        calendar_id: { type: 'string', description: 'Calendar to target. Two forms: (1) a calendar UUID from calendar_list_ms; (2) an email address for direct delegate access to a shared calendar (e.g., "owner@example.com"). Defaults to your default calendar.' },
       },
       required: ['event_id'],
     },
   },
   {
     name: 'calendar_delete_ms',
-    description: 'Delete a Microsoft Calendar event.',
+    description: 'Delete a Microsoft Calendar event. Pass calendar_id if the event lives on a shared calendar.',
     input_schema: {
       type: 'object',
       properties: {
         event_id: { type: 'string', description: 'Calendar event ID to delete' },
+        calendar_id: { type: 'string', description: 'Calendar to target. Two forms: (1) a calendar UUID from calendar_list_ms; (2) an email address for direct delegate access to a shared calendar (e.g., "owner@example.com"). Defaults to your default calendar.' },
       },
       required: ['event_id'],
     },
@@ -200,7 +203,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'calendar_respond_invite',
-    description: 'Accept, decline, or tentatively accept a Microsoft Calendar meeting invite.',
+    description: 'Accept, decline, or tentatively accept a Microsoft Calendar meeting invite (RSVP to an event you were invited to). For accepting access to someone else\'s SHARED CALENDAR, use calendar_accept_share_ms instead.',
     input_schema: {
       type: 'object',
       properties: {
@@ -209,6 +212,17 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         comment: { type: 'string', description: 'Optional message to include with your response' },
       },
       required: ['event_id', 'response'],
+    },
+  },
+  {
+    name: 'calendar_accept_share_ms',
+    description: "Accept a pending calendar-sharing invitation email (someone shared their calendar with you). Use calendar_share_invites_ms first to find the message_id of the pending invite. After accepting, the shared calendar appears in calendar_list_ms and can be operated on via the calendar_id parameter on the other Microsoft calendar tools. Microsoft Graph's programmatic acceptance support is limited — if this tool returns an unsupported error, the user will need to accept via the Outlook web/desktop UI; once accepted there, the calendar is accessible via the same tools.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        message_id: { type: 'string', description: 'ID of the calendar-share invitation email (from calendar_share_invites_ms)' },
+      },
+      required: ['message_id'],
     },
   },
   {
@@ -342,6 +356,7 @@ export async function executeMicrosoftWriteTool(
 
     case 'calendar_create_ms': {
       const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const calendarId = args.calendar_id as string | undefined;
       const event: Record<string, unknown> = {
         subject: args.title,
         start: { dateTime: args.start, timeZone: tz },
@@ -356,8 +371,9 @@ export async function executeMicrosoftWriteTool(
         }));
       }
 
-      const result = await msGraphWrite('POST', 'me/events', event, agentId, agentName, 'calendar_create_ms', {
-        title: args.title, start: args.start, end: args.end,
+      const endpoint = `${calendarPrefix(calendarId)}events`;
+      const result = await msGraphWrite('POST', endpoint, event, agentId, agentName, 'calendar_create_ms', {
+        title: args.title, start: args.start, end: args.end, calendarId,
       });
       if (!result.ok) return `Error creating event: ${result.error}`;
 
@@ -368,14 +384,16 @@ export async function executeMicrosoftWriteTool(
     case 'calendar_update_ms': {
       const eventId = encodeURIComponent(args.event_id as string);
       const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const calendarId = args.calendar_id as string | undefined;
       const patch: Record<string, unknown> = {};
       if (args.title) patch.subject = args.title;
       if (args.start) patch.start = { dateTime: args.start, timeZone: tz };
       if (args.end) patch.end = { dateTime: args.end, timeZone: tz };
       if (args.description) patch.body = { contentType: 'Text', content: args.description };
 
-      const result = await msGraphWrite('PATCH', `me/events/${eventId}`, patch, agentId, agentName, 'calendar_update_ms', {
-        eventId: args.event_id,
+      const endpoint = calendarId ? `${calendarPrefix(calendarId)}events/${eventId}` : `me/events/${eventId}`;
+      const result = await msGraphWrite('PATCH', endpoint, patch, agentId, agentName, 'calendar_update_ms', {
+        eventId: args.event_id, calendarId,
       });
       if (!result.ok) return `Error updating event: ${result.error}`;
       return `Calendar event ${args.event_id} updated`;
@@ -383,8 +401,10 @@ export async function executeMicrosoftWriteTool(
 
     case 'calendar_delete_ms': {
       const eventId = encodeURIComponent(args.event_id as string);
-      const result = await msGraphWrite('DELETE', `me/events/${eventId}`, undefined, agentId, agentName, 'calendar_delete_ms', {
-        eventId: args.event_id,
+      const calendarId = args.calendar_id as string | undefined;
+      const endpoint = calendarId ? `${calendarPrefix(calendarId)}events/${eventId}` : `me/events/${eventId}`;
+      const result = await msGraphWrite('DELETE', endpoint, undefined, agentId, agentName, 'calendar_delete_ms', {
+        eventId: args.event_id, calendarId,
       });
       if (!result.ok) return `Error deleting event: ${result.error}`;
       return `Calendar event ${args.event_id} deleted`;
@@ -656,6 +676,64 @@ export async function executeMicrosoftWriteTool(
 
       if (!result.ok) return `Error responding to invite: ${result.error}`;
       return `Meeting invite ${response}ed${args.comment ? ` with comment: "${args.comment}"` : ''}`;
+    }
+
+    case 'calendar_accept_share_ms': {
+      const rawMessageId = args.message_id as string;
+      const messageId = encodeURIComponent(rawMessageId);
+
+      // Step 1: read the share-invitation message to extract the owner's
+      // email. Microsoft Graph doesn't expose a reliable "accept share"
+      // endpoint, but the share itself was already granted server-side
+      // when the owner sent it. With Calendars.ReadWrite.Shared scope we
+      // can directly access the owner's calendar via /users/{email}/...
+      // — no UI acceptance required. So "accepting" reduces to verifying
+      // delegate access works and handing the agent the owner's email
+      // to use as calendar_id on subsequent calls.
+      const msg = await msGraphRead(
+        `me/messages/${messageId}?$select=from,subject,itemClass`,
+        agentId, agentName, 'calendar_accept_share_ms:read', { messageId: rawMessageId },
+      );
+      if (!msg.ok) return `Error reading share-invitation message: ${msg.error}`;
+
+      const m = msg.data as { from?: { emailAddress?: { address?: string; name?: string } }; subject?: string; itemClass?: string };
+      const ownerEmail = m.from?.emailAddress?.address;
+      const ownerName = m.from?.emailAddress?.name;
+      if (!ownerEmail) {
+        return `Error: could not determine the calendar owner's email from message ${rawMessageId}. Subject: "${m.subject ?? '(none)'}". The message may not be a calendar share invitation.`;
+      }
+
+      // Step 2: verify direct delegate access works.
+      const verify = await msGraphRead(
+        `users/${encodeURIComponent(ownerEmail)}/calendar?$select=id,name,owner`,
+        agentId, agentName, 'calendar_accept_share_ms:verify', { ownerEmail },
+      );
+      if (!verify.ok) {
+        const errStr = String(verify.error ?? '');
+        if (/403|Forbidden|AccessDenied/i.test(errStr)) {
+          return `Could not access ${ownerName ?? ownerEmail}'s calendar (HTTP 403). The share permission may not be active yet, may have been revoked, or the Calendars.ReadWrite.Shared scope was not granted at OAuth time. Ask ${ownerName ?? ownerEmail} to re-share, or reconnect Microsoft to refresh scopes.`;
+        }
+        return `Could not access ${ownerName ?? ownerEmail}'s calendar: ${errStr}`;
+      }
+
+      // Step 3: try the experimental Graph endpoint to add it to the
+      // user's calendar list (so it shows up in calendar_list_ms too).
+      // Best-effort — failure here doesn't affect direct access.
+      const addResult = await msGraphWrite(
+        'POST',
+        `me/messages/${messageId}/microsoft.graph.calendarSharingMessage/accept`,
+        {},
+        agentId, agentName, 'calendar_accept_share_ms:add', { messageId: rawMessageId },
+      );
+      const addedToList = addResult.ok;
+
+      const cal = verify.data as { id?: string; name?: string };
+      return `Calendar share accepted for ${ownerName ?? ownerEmail}. ` +
+        `Calendar name: "${cal.name ?? 'Calendar'}". ` +
+        `Use calendar_id="${ownerEmail}" with calendar_agenda_ms / calendar_create_ms / etc. to operate on it. ` +
+        (addedToList
+          ? 'Also added to your personal calendar list — calendar_list_ms will show it.'
+          : 'Note: could not add to your personal calendar list (Microsoft Graph limitation). Direct access via the email above still works.');
     }
 
     case 'onedrive_delete': {

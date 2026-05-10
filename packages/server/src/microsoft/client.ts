@@ -13,6 +13,22 @@ const logger = createLogger('ms-client');
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 const TIMEOUT_MS = 30_000;
 
+/**
+ * Build the URL prefix for a calendar operation based on the calendar_id form.
+ *
+ *   undefined       → me/                          (default mailbox)
+ *   "<uuid>"        → me/calendars/{id}/           (own + accepted shares)
+ *   "user@x.com"    → users/{email}/calendar/      (delegate access via Calendars.ReadWrite.Shared)
+ *
+ * Returns the prefix WITHOUT a trailing path segment — caller appends
+ * 'events', 'calendarView?...', 'events/{id}', etc.
+ */
+export function calendarPrefix(calendarId: string | undefined): string {
+  if (!calendarId) return 'me/';
+  if (calendarId.includes('@')) return `users/${encodeURIComponent(calendarId)}/calendar/`;
+  return `me/calendars/${encodeURIComponent(calendarId)}/`;
+}
+
 export interface MsGraphResult {
   ok: boolean;
   data: unknown;

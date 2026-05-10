@@ -5,7 +5,7 @@
 // ════════════════════════════════════════
 
 import type { ToolDefinition } from '../agent/tools.js';
-import { msGraphRead } from './client.js';
+import { msGraphRead, calendarPrefix } from './client.js';
 
 // ── Tool Definitions ──
 
@@ -57,11 +57,12 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'calendar_agenda_ms',
-    description: "Show upcoming Microsoft Calendar events. Defaults to today's agenda.",
+    description: "Show upcoming Microsoft Calendar events. Defaults to today's agenda on your default calendar. Pass calendar_id to read from a shared calendar (use calendar_list_ms to find IDs).",
     input_schema: {
       type: 'object',
       properties: {
         days: { type: 'number', description: 'How many days ahead to show (1 = today, 7 = this week, default: 1)' },
+        calendar_id: { type: 'string', description: 'Calendar to read from. Two forms: (1) a calendar UUID from calendar_list_ms — for own + accepted shared calendars; (2) an email address like "owner@example.com" — for direct delegate access to someone else\'s calendar that has been shared with you (no Outlook UI acceptance required, just the share grant). Defaults to your default calendar.' },
       },
       required: [],
     },
@@ -70,14 +71,39 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'calendar_search_ms',
-    description: 'Search Microsoft Calendar events by text.',
+    description: 'Search Microsoft Calendar events by text. Pass calendar_id to search a shared calendar.',
     input_schema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search text to find in event subjects and descriptions' },
         days_ahead: { type: 'number', description: 'How far ahead to search in days (default: 30)' },
+        calendar_id: { type: 'string', description: 'Calendar to search. Calendar UUID OR an email for delegate access. Defaults to your default calendar.' },
       },
       required: ['query'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
+  },
+  {
+    name: 'calendar_list_ms',
+    description: 'List all Microsoft calendars you have access to, including shared calendars. Returns each calendar with its ID, name, owner, and your permissions (canEdit, canShare, canViewPrivateItems). Use the returned IDs with calendar_agenda_ms, calendar_create_ms, etc.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
+  },
+  {
+    name: 'calendar_share_invites_ms',
+    description: 'List pending calendar-sharing invitation emails in your inbox (someone shared their calendar with you and you haven\'t accepted yet). Returns each invite\'s message ID, sender, subject, and shared-calendar info. Use calendar_accept_share_ms with a returned message_id to accept programmatically.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        max: { type: 'number', description: 'Max invites to return (default 20)' },
+      },
+      required: [],
     },
     concurrency: 'safe',
     maxResultTokens: 2000,
@@ -318,9 +344,10 @@ export async function executeMicrosoftReadTool(
       const days = (args.days as number) ?? 1;
       const now = new Date();
       const end = new Date(now.getTime() + days * 86400000);
+      const calendarId = args.calendar_id as string | undefined;
       const result = await msGraphRead(
-        `me/calendarView?startDateTime=${now.toISOString()}&endDateTime=${end.toISOString()}&$orderby=start/dateTime&$select=id,subject,start,end,location,bodyPreview`,
-        agentId, agentName, 'calendar_agenda_ms', { days },
+        `${calendarPrefix(calendarId)}calendarView?startDateTime=${now.toISOString()}&endDateTime=${end.toISOString()}&$orderby=start/dateTime&$select=id,subject,start,end,location,bodyPreview`,
+        agentId, agentName, 'calendar_agenda_ms', { days, calendarId },
       );
       if (!result.ok) return `Error fetching calendar: ${result.error}`;
 
@@ -343,9 +370,10 @@ export async function executeMicrosoftReadTool(
       const daysAhead = (args.days_ahead as number) ?? 30;
       const now = new Date();
       const end = new Date(now.getTime() + daysAhead * 86400000);
+      const calendarId = args.calendar_id as string | undefined;
       const result = await msGraphRead(
-        `me/calendarView?startDateTime=${now.toISOString()}&endDateTime=${end.toISOString()}&$filter=contains(subject,'${encodeURIComponent(query)}')&$select=id,subject,start,end`,
-        agentId, agentName, 'calendar_search_ms', { query, daysAhead },
+        `${calendarPrefix(calendarId)}calendarView?startDateTime=${now.toISOString()}&endDateTime=${end.toISOString()}&$filter=contains(subject,'${encodeURIComponent(query)}')&$select=id,subject,start,end`,
+        agentId, agentName, 'calendar_search_ms', { query, daysAhead, calendarId },
       );
       if (!result.ok) return `Error searching calendar: ${result.error}`;
 
@@ -354,6 +382,45 @@ export async function executeMicrosoftReadTool(
 
       const events = data.value.map(e => `- ${e.subject} (${e.start.dateTime}) [ID: ${e.id}]`);
       return `Found ${data.value.length} event(s) matching "${query}":\n\n${events.join('\n')}`;
+    }
+
+    case 'calendar_list_ms': {
+      const result = await msGraphRead(
+        'me/calendars?$select=id,name,owner,canEdit,canShare,canViewPrivateItems,isDefaultCalendar,color',
+        agentId, agentName, 'calendar_list_ms', {},
+      );
+      if (!result.ok) return `Error listing calendars: ${result.error}`;
+      const data = result.data as { value?: Array<{ id: string; name: string; owner?: { name?: string; address?: string }; canEdit?: boolean; canShare?: boolean; canViewPrivateItems?: boolean; isDefaultCalendar?: boolean }> };
+      if (!data?.value || data.value.length === 0) return 'No calendars accessible.';
+      const lines = data.value.map(c => {
+        const perms: string[] = [];
+        if (c.isDefaultCalendar) perms.push('default');
+        if (c.canEdit) perms.push('canEdit');
+        if (c.canShare) perms.push('canShare');
+        if (c.canViewPrivateItems) perms.push('canViewPrivateItems');
+        const ownerStr = c.owner?.name || c.owner?.address ? ` (owner: ${c.owner.name ?? c.owner.address})` : '';
+        return `- ${c.name}${ownerStr} [${perms.join(', ') || 'read-only'}]\n  ID: ${c.id}`;
+      });
+      return `${data.value.length} calendar(s):\n\n${lines.join('\n')}`;
+    }
+
+    case 'calendar_share_invites_ms': {
+      const max = (args.max as number) ?? 20;
+      // Calendar-sharing invitations arrive as messages with itemClass
+      // 'IPM.Sharing'. Filter to surface them so the agent can list and
+      // accept them via calendar_accept_share_ms.
+      const result = await msGraphRead(
+        `me/messages?$top=${max}&$filter=startswith(itemClass,'IPM.Sharing')&$select=id,subject,from,receivedDateTime,bodyPreview,itemClass`,
+        agentId, agentName, 'calendar_share_invites_ms', { max },
+      );
+      if (!result.ok) return `Error listing share invites: ${result.error}`;
+      const data = result.data as { value?: Array<{ id: string; subject: string; from?: { emailAddress?: { name?: string; address?: string } }; receivedDateTime: string; bodyPreview?: string }> };
+      if (!data?.value || data.value.length === 0) return 'No pending calendar share invitations in inbox.';
+      const lines = data.value.map(m => {
+        const sender = m.from?.emailAddress?.name ?? m.from?.emailAddress?.address ?? 'unknown';
+        return `- ${m.subject}\n  From: ${sender} (${m.from?.emailAddress?.address ?? '?'})\n  Received: ${m.receivedDateTime}\n  Message ID: ${m.id}${m.bodyPreview ? `\n  Preview: ${m.bodyPreview.slice(0, 200)}` : ''}`;
+      });
+      return `${data.value.length} pending calendar share invitation(s):\n\n${lines.join('\n\n')}\n\nAccept one with calendar_accept_share_ms(message_id="<id from above>").`;
     }
 
     case 'onedrive_list': {
