@@ -205,7 +205,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     },
   },
   {
-    name: 'calendar_respond_invite',
+    name: 'calendar_respond_invite_ms',
     description: 'Accept, decline, or tentatively accept a Microsoft Calendar meeting invite (RSVP to an event you were invited to). For accepting access to someone else\'s SHARED CALENDAR, use calendar_accept_share_ms instead.',
     input_schema: {
       type: 'object',
@@ -707,7 +707,7 @@ export async function executeMicrosoftWriteTool(
       return `Attachment "${fileName}" saved to ${outPath} (${Math.round(content.length / 1024)}KB)`;
     }
 
-    case 'calendar_respond_invite': {
+    case 'calendar_respond_invite_ms': {
       const eventId = encodeURIComponent(args.event_id as string);
       const response = args.response as string;
 
@@ -722,7 +722,7 @@ export async function executeMicrosoftWriteTool(
       const result = await msGraphWrite('POST', `me/events/${eventId}/${action}`, {
         comment: (args.comment as string) ?? '',
         sendResponse: true,
-      }, agentId, agentName, 'calendar_respond_invite', { eventId: args.event_id, response });
+      }, agentId, agentName, 'calendar_respond_invite_ms', { eventId: args.event_id, response });
 
       if (!result.ok) return `Error responding to invite: ${result.error}`;
       return `Meeting invite ${response}ed${args.comment ? ` with comment: "${args.comment}"` : ''}`;

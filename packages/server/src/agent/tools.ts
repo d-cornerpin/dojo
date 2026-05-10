@@ -279,9 +279,9 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
 
   const msServiceToolPrefixes: Record<string, string[]> = {
     outlook: ['outlook_'],
-    calendar: ['calendar_agenda_ms', 'calendar_search_ms', 'calendar_create_ms', 'calendar_update_ms', 'calendar_delete_ms', 'calendar_respond_invite'],
-    onedrive: ['onedrive_'],
-    teams: ['teams_'],
+    calendar: ['calendar_agenda_ms', 'calendar_search_ms', 'calendar_list_ms', 'calendar_create_ms', 'calendar_update_ms', 'calendar_delete_ms', 'calendar_respond_invite_ms', 'calendar_share_invites_ms', 'calendar_accept_share_ms'],
+    onedrive: ['onedrive_', 'sharepoint_'],
+    teams: ['teams_', 'online_meeting_'],
   };
 
   function isMsToolEnabledByService(toolName: string): boolean {
@@ -5089,6 +5089,7 @@ Thread is closed — respond to the user, not Imaginer.`;
       case 'gmail_inbox':
       case 'calendar_agenda':
       case 'calendar_search':
+      case 'calendar_list':
       case 'drive_list':
       case 'drive_read':
       case 'docs_read':
@@ -5098,9 +5099,9 @@ Thread is closed — respond to the user, not Imaginer.`;
           gmail_search: [{ name: 'query', value: args.query, type: 'string' }],
           gmail_read: [{ name: 'message_id', value: args.message_id, type: 'string' }],
           gmail_list_attachments: [{ name: 'message_id', value: args.message_id, type: 'string' }],
-          // gmail_inbox, calendar_agenda, drive_list — no required fields
           gmail_inbox: [],
           calendar_agenda: [],
+          calendar_list: [],
           drive_list: [],
           calendar_search: [{ name: 'query', value: args.query, type: 'string' }],
           drive_read: [{ name: 'file_id', value: args.file_id, type: 'string' }],
@@ -5123,6 +5124,9 @@ Thread is closed — respond to the user, not Imaginer.`;
       case 'calendar_create':
       case 'calendar_update':
       case 'calendar_delete':
+      case 'calendar_respond_invite':
+      case 'calendar_subscribe':
+      case 'calendar_unsubscribe':
       case 'drive_upload':
       case 'drive_share':
       case 'docs_create':
@@ -5198,9 +5202,16 @@ Thread is closed — respond to the user, not Imaginer.`;
       case 'outlook_list_attachments':
       case 'calendar_agenda_ms':
       case 'calendar_search_ms':
+      case 'calendar_list_ms':
+      case 'calendar_share_invites_ms':
       case 'onedrive_list':
       case 'onedrive_read':
       case 'onedrive_search':
+      case 'onedrive_list_shared':
+      case 'onedrive_list_drives':
+      case 'sharepoint_list_sites':
+      case 'sharepoint_list_drives':
+      case 'online_meeting_get':
       case 'teams_read_messages':
       case 'teams_list_teams':
       case 'teams_list_channels':
@@ -5220,13 +5231,17 @@ Thread is closed — respond to the user, not Imaginer.`;
       case 'calendar_create_ms':
       case 'calendar_update_ms':
       case 'calendar_delete_ms':
-      case 'calendar_respond_invite':
+      case 'calendar_respond_invite_ms':
+      case 'calendar_accept_share_ms':
       case 'onedrive_create_folder':
       case 'onedrive_upload':
       case 'onedrive_upload_batch':
       case 'onedrive_share':
       case 'onedrive_delete':
       case 'onedrive_move':
+      case 'online_meeting_create':
+      case 'online_meeting_update':
+      case 'online_meeting_delete':
       case 'teams_create_chat':
       case 'teams_send_message':
       case 'teams_send_channel_message': {
