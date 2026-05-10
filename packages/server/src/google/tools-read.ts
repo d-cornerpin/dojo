@@ -77,12 +77,13 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'calendar_agenda',
-    description: "Show upcoming calendar events. Defaults to today's agenda on your primary calendar. Pass calendar_id to read from a shared calendar (use calendar_list to find IDs).",
+    description: "Show upcoming calendar events. Defaults to today's agenda on your primary calendar. Pass calendar_id to read from a shared calendar (use calendar_list to find IDs). When a user asks about a specific local day (e.g. \"events for Wednesday\"), pass start_date + timezone so the window aligns to local midnight rather than UTC — otherwise late-evening events that have already crossed into the next day in UTC will be missed.",
     input_schema: {
       type: 'object',
       properties: {
-        days: { type: 'number', description: 'How many days ahead to show (1 = today only, 7 = this week, default: 1)' },
-        timezone: { type: 'string', description: 'Timezone (defaults to system timezone)' },
+        days: { type: 'number', description: 'How many days to span (1 = a single day, 7 = a week, default 1).' },
+        timezone: { type: 'string', description: 'IANA timezone (e.g. "America/Los_Angeles"). Defaults to the system timezone. When set, the window snaps to local midnight in this timezone.' },
+        start_date: { type: 'string', description: 'Anchor the window to a specific local date in YYYY-MM-DD (interpreted in `timezone`). Use this when the user asks about a specific day like "Wednesday" or "tomorrow" — compute the date, then pass it here. Omit to default to "today" in the given timezone.' },
         calendar_id: { type: 'string', description: 'Calendar ID. Defaults to "primary" (your own). Use calendar_list to discover shared calendar IDs.' },
       },
       required: [],
@@ -92,12 +93,14 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'calendar_search',
-    description: 'Search calendar events by text query. Defaults to your primary calendar; pass calendar_id to search a shared one.',
+    description: 'Search calendar events by text query. Defaults to your primary calendar; pass calendar_id to search a shared one. Pass start_date + timezone when constraining to a specific local day.',
     input_schema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search text to find in event titles and descriptions' },
         days_ahead: { type: 'number', description: 'How far ahead to search in days (default: 30)' },
+        timezone: { type: 'string', description: 'IANA timezone for the search window (e.g. "America/Los_Angeles"). Defaults to system timezone.' },
+        start_date: { type: 'string', description: 'Anchor the window to a specific local date in YYYY-MM-DD. Defaults to "today" in the given timezone.' },
         calendar_id: { type: 'string', description: 'Calendar ID. Defaults to "primary".' },
       },
       required: ['query'],
@@ -367,20 +370,21 @@ export async function executeGoogleReadTool(
 
     case 'calendar_agenda': {
       const days = (args.days as number) ?? 1;
-      const now = new Date();
-      const end = new Date(now.getTime() + days * 86400000);
-      const tz = (args.timezone as string) ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const tz = (args.timezone as string | undefined) ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const startDate = args.start_date as string | undefined;
       const calendarId = (args.calendar_id as string | undefined) ?? 'primary';
+      const { computeCalendarWindow } = await import('../services/calendar-window.js');
+      const window = computeCalendarWindow({ days, timezone: args.timezone as string | undefined, start_date: startDate });
 
       const params = new URLSearchParams({
-        timeMin: now.toISOString(),
-        timeMax: end.toISOString(),
+        timeMin: window.startISO,
+        timeMax: window.endISO,
         singleEvents: 'true',
         orderBy: 'startTime',
         timeZone: tz,
       });
       const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`;
-      const result = await googleRead(url, agentId, agentName, 'calendar_agenda', { days, timezone: tz, calendarId });
+      const result = await googleRead(url, agentId, agentName, 'calendar_agenda', { days, timezone: tz, startDate, anchored: window.anchored, calendarId });
       if (!result.ok) return `Error fetching calendar: ${result.error}`;
 
       const data = result.data as { items?: Array<{ summary: string; start: { dateTime?: string; date?: string }; end: { dateTime?: string; date?: string }; location?: string; description?: string }> };
@@ -400,19 +404,20 @@ export async function executeGoogleReadTool(
     case 'calendar_search': {
       const searchQuery = args.query as string;
       const daysAhead = (args.days_ahead as number) ?? 30;
-      const now = new Date();
-      const end = new Date(now.getTime() + daysAhead * 86400000);
       const calendarId = (args.calendar_id as string | undefined) ?? 'primary';
+      const startDate = args.start_date as string | undefined;
+      const { computeCalendarWindow } = await import('../services/calendar-window.js');
+      const window = computeCalendarWindow({ days: daysAhead, timezone: args.timezone as string | undefined, start_date: startDate });
 
       const params = new URLSearchParams({
-        timeMin: now.toISOString(),
-        timeMax: end.toISOString(),
+        timeMin: window.startISO,
+        timeMax: window.endISO,
         singleEvents: 'true',
         orderBy: 'startTime',
         q: searchQuery,
       });
       const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`;
-      const result = await googleRead(url, agentId, agentName, 'calendar_search', { query: searchQuery, daysAhead, calendarId });
+      const result = await googleRead(url, agentId, agentName, 'calendar_search', { query: searchQuery, daysAhead, startDate, anchored: window.anchored, calendarId });
       if (!result.ok) return `Error searching calendar: ${result.error}`;
 
       const data = result.data as { items?: Array<{ summary: string; start: { dateTime?: string; date?: string }; id: string }> };

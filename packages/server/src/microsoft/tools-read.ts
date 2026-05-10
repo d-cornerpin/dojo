@@ -57,11 +57,13 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'calendar_agenda_ms',
-    description: "Show upcoming Microsoft Calendar events. Defaults to today's agenda on your default calendar. Pass calendar_id to read from a shared calendar (use calendar_list_ms to find IDs).",
+    description: "Show upcoming Microsoft Calendar events. Defaults to today's agenda on your default calendar. Pass calendar_id to read from a shared calendar (use calendar_list_ms to find IDs). When a user asks about a specific local day (e.g. \"events for Wednesday\"), pass start_date + timezone so the window aligns to local midnight rather than UTC — otherwise late-evening events that have already crossed into the next day in UTC will be missed.",
     input_schema: {
       type: 'object',
       properties: {
-        days: { type: 'number', description: 'How many days ahead to show (1 = today, 7 = this week, default: 1)' },
+        days: { type: 'number', description: 'How many days to span (1 = a single day, 7 = a week, default 1).' },
+        timezone: { type: 'string', description: 'IANA timezone (e.g. "America/Los_Angeles"). Defaults to the system timezone. When set, the window snaps to local midnight in this timezone.' },
+        start_date: { type: 'string', description: 'Anchor the window to a specific local date in YYYY-MM-DD (interpreted in `timezone`). Use this when the user asks about a specific day — compute the date, then pass it here. Omit to default to "today" in the given timezone.' },
         calendar_id: { type: 'string', description: 'Calendar to read from. Two forms: (1) a calendar UUID from calendar_list_ms — for own + accepted shared calendars; (2) an email address like "owner@example.com" — for direct delegate access to someone else\'s calendar that has been shared with you (no Outlook UI acceptance required, just the share grant). Defaults to your default calendar.' },
       },
       required: [],
@@ -71,12 +73,14 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'calendar_search_ms',
-    description: 'Search Microsoft Calendar events by text. Pass calendar_id to search a shared calendar.',
+    description: 'Search Microsoft Calendar events by text. Pass calendar_id to search a shared calendar. Pass start_date + timezone when constraining to a specific local day.',
     input_schema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search text to find in event subjects and descriptions' },
         days_ahead: { type: 'number', description: 'How far ahead to search in days (default: 30)' },
+        timezone: { type: 'string', description: 'IANA timezone for the search window (e.g. "America/Los_Angeles"). Defaults to system timezone.' },
+        start_date: { type: 'string', description: 'Anchor the window to a specific local date in YYYY-MM-DD. Defaults to "today" in the given timezone.' },
         calendar_id: { type: 'string', description: 'Calendar to search. Calendar UUID OR an email for delegate access. Defaults to your default calendar.' },
       },
       required: ['query'],
@@ -409,12 +413,13 @@ export async function executeMicrosoftReadTool(
 
     case 'calendar_agenda_ms': {
       const days = (args.days as number) ?? 1;
-      const now = new Date();
-      const end = new Date(now.getTime() + days * 86400000);
       const calendarId = args.calendar_id as string | undefined;
+      const startDate = args.start_date as string | undefined;
+      const { computeCalendarWindow } = await import('../services/calendar-window.js');
+      const window = computeCalendarWindow({ days, timezone: args.timezone as string | undefined, start_date: startDate });
       const result = await msGraphRead(
-        `${calendarPrefix(calendarId)}calendarView?startDateTime=${now.toISOString()}&endDateTime=${end.toISOString()}&$orderby=start/dateTime&$select=id,subject,start,end,location,bodyPreview`,
-        agentId, agentName, 'calendar_agenda_ms', { days, calendarId },
+        `${calendarPrefix(calendarId)}calendarView?startDateTime=${window.startISO}&endDateTime=${window.endISO}&$orderby=start/dateTime&$select=id,subject,start,end,location,bodyPreview`,
+        agentId, agentName, 'calendar_agenda_ms', { days, calendarId, startDate, anchored: window.anchored },
       );
       if (!result.ok) return `Error fetching calendar: ${result.error}`;
 
@@ -435,12 +440,13 @@ export async function executeMicrosoftReadTool(
     case 'calendar_search_ms': {
       const query = args.query as string;
       const daysAhead = (args.days_ahead as number) ?? 30;
-      const now = new Date();
-      const end = new Date(now.getTime() + daysAhead * 86400000);
       const calendarId = args.calendar_id as string | undefined;
+      const startDate = args.start_date as string | undefined;
+      const { computeCalendarWindow } = await import('../services/calendar-window.js');
+      const window = computeCalendarWindow({ days: daysAhead, timezone: args.timezone as string | undefined, start_date: startDate });
       const result = await msGraphRead(
-        `${calendarPrefix(calendarId)}calendarView?startDateTime=${now.toISOString()}&endDateTime=${end.toISOString()}&$filter=contains(subject,'${encodeURIComponent(query)}')&$select=id,subject,start,end`,
-        agentId, agentName, 'calendar_search_ms', { query, daysAhead, calendarId },
+        `${calendarPrefix(calendarId)}calendarView?startDateTime=${window.startISO}&endDateTime=${window.endISO}&$filter=contains(subject,'${encodeURIComponent(query)}')&$select=id,subject,start,end`,
+        agentId, agentName, 'calendar_search_ms', { query, daysAhead, calendarId, startDate, anchored: window.anchored },
       );
       if (!result.ok) return `Error searching calendar: ${result.error}`;
 
