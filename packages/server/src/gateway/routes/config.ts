@@ -257,12 +257,27 @@ async function seedDeepSeekModels(
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
   `);
 
+  // Heal zero-cost rows from earlier seed versions. Only updates pricing
+  // when the existing row has input_cost_per_m == 0 AND output_cost_per_m == 0
+  // — preserves any user-customized prices. v2.3.15.
+  const healZeroCostStmt = db.prepare(`
+    UPDATE models
+    SET input_cost_per_m = ?, output_cost_per_m = ?, updated_at = datetime('now')
+    WHERE provider_id = ?
+      AND api_model_id = ?
+      AND COALESCE(input_cost_per_m, 0) = 0
+      AND COALESCE(output_cost_per_m, 0) = 0
+  `);
+
   let referenceInserted = 0;
   let referenceSkipped = 0;
+  let referenceHealed = 0;
   for (const model of DEEPSEEK_MODELS) {
     const existing = existsStmt.get(providerId, model.apiModelId);
     if (existing) {
-      referenceSkipped++;
+      const result = healZeroCostStmt.run(model.inputCostPerM, model.outputCostPerM, providerId, model.apiModelId);
+      if (result.changes > 0) referenceHealed++;
+      else referenceSkipped++;
       continue;
     }
     insertStmt.run(
@@ -315,6 +330,7 @@ async function seedDeepSeekModels(
     providerId,
     referenceInserted,
     referenceSkipped,
+    referenceHealed,
     liveInserted,
     liveSkipped,
   });
