@@ -135,6 +135,86 @@ const OpenRouterBudget = () => {
   );
 };
 
+const DeepSeekBudget = () => {
+  const [credits, setCredits] = useState<{ currency: string; balance: number; granted_balance: number; topped_up_balance: number; is_available: boolean } | null>(null);
+  const [visible, setVisible] = useState(false);
+  const [threshold, setThreshold] = useState('');
+  const [savingThreshold, setSavingThreshold] = useState(false);
+  const [savedThreshold, setSavedThreshold] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    api.request<{ currency: string; balance: number; granted_balance: number; topped_up_balance: number; is_available: boolean }>('/config/deepseek/balance')
+      .then(res => {
+        if (mounted && res.ok && res.data) {
+          setCredits(res.data);
+          setVisible(true);
+        }
+      })
+      .catch(() => { /* silently hide if anything fails */ });
+    api.request<{ value: string }>('/config/deepseek/threshold')
+      .then(res => {
+        if (mounted) {
+          setThreshold(res.ok && res.data?.value ? res.data.value : '5');
+        }
+      })
+      .catch(() => { if (mounted) setThreshold('5'); });
+    return () => { mounted = false; };
+  }, []);
+
+  const handleSaveThreshold = async () => {
+    const val = parseFloat(threshold);
+    if (isNaN(val) || val < 0) return;
+    setSavingThreshold(true);
+    await api.request('/config/deepseek/threshold', {
+      method: 'POST',
+      body: JSON.stringify({ threshold: val }),
+    });
+    setSavingThreshold(false);
+    setSavedThreshold(true);
+    setTimeout(() => setSavedThreshold(false), 2000);
+  };
+
+  if (!visible || !credits) return null;
+
+  const balance = Math.round((credits.balance ?? 0) * 100) / 100;
+  const granted = Math.round((credits.granted_balance ?? 0) * 100) / 100;
+  const toppedUp = Math.round((credits.topped_up_balance ?? 0) * 100) / 100;
+  const balanceColor = balance >= 100 ? 'text-cp-teal' : balance >= 25 ? 'text-cp-amber' : 'text-cp-coral';
+
+  return (
+    <div className="glass-card p-4 mb-6">
+      <div className="flex items-center justify-between">
+        <h2 className="card-header">DeepSeek Balance</h2>
+        <p className={`text-lg font-semibold ${balanceColor}`}>${balance.toFixed(2)}</p>
+      </div>
+      <p className="text-xs white/30 mt-1">
+        Topped up: ${toppedUp.toFixed(2)}{granted > 0 ? ` · Granted credits: $${granted.toFixed(2)}` : ''}
+      </p>
+      <div className="flex items-center gap-2 mt-3 pt-3 border-t border-white/[0.06]">
+        <span className="text-xs white/40">Warning threshold: $</span>
+        <input
+          type="number"
+          step="1"
+          min="0"
+          value={threshold}
+          onChange={(e) => setThreshold(e.target.value)}
+          placeholder="e.g., 10"
+          className="glass-input w-20"
+        />
+        <button
+          onClick={handleSaveThreshold}
+          disabled={savingThreshold || !threshold}
+          className="px-2 py-1 glass-btn-primary text-xs font-medium rounded transition-colors"
+        >
+          {savingThreshold ? '...' : 'Save'}
+        </button>
+        {savedThreshold && <span className="text-xs text-cp-teal">Saved</span>}
+      </div>
+    </div>
+  );
+};
+
 export const Costs = () => {
   const [period, setPeriod] = useState<Period>('24h');
   const [summary, setSummary] = useState<CostSummary | null>(null);
@@ -386,6 +466,9 @@ export const Costs = () => {
 
       {/* OpenRouter Budget */}
       <OpenRouterBudget />
+
+      {/* DeepSeek Budget */}
+      <DeepSeekBudget />
 
       {/* Recent API calls table */}
       <div className="glass-card overflow-hidden">

@@ -1792,6 +1792,112 @@ configRouter.get('/openrouter/threshold', (c) => {
   return c.json({ ok: true, data: { value: row?.value ?? '' } });
 });
 
+// ── DeepSeek balance + warning threshold (v2.3.14) ──
+// Mirrors the OpenRouter pattern. DeepSeek exposes account balance at
+// https://api.deepseek.com/user/balance — returns balance_infos[] with
+// currency + total_balance + granted_balance + topped_up_balance.
+
+// GET /api/config/deepseek/balance — fetch DeepSeek account balance
+configRouter.get('/deepseek/balance', async (c) => {
+  const db = getDb();
+
+  // Find an openai-compatible provider with a DeepSeek base URL
+  const provider = db.prepare(
+    "SELECT id, base_url FROM providers WHERE type = 'openai-compatible' AND base_url LIKE '%deepseek.com%'"
+  ).get() as { id: string; base_url: string } | undefined;
+
+  if (!provider) {
+    return c.json({ ok: false, error: 'No DeepSeek provider configured' }, 404);
+  }
+
+  const credential = getProviderCredential(provider.id);
+  if (!credential) {
+    return c.json({ ok: false, error: 'No API key found for DeepSeek provider' }, 400);
+  }
+
+  try {
+    const resp = await fetch('https://api.deepseek.com/user/balance', {
+      headers: { Authorization: `Bearer ${credential}` },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!resp.ok) {
+      return c.json({ ok: false, error: `DeepSeek returned ${resp.status}` }, 502);
+    }
+
+    const raw = await resp.json() as {
+      is_available?: boolean;
+      balance_infos?: Array<{ currency: string; total_balance: string; granted_balance?: string; topped_up_balance?: string }>;
+    };
+    logger.info('DeepSeek balance raw response', { raw: JSON.stringify(raw) });
+
+    // Find USD entry (DeepSeek can return per-currency rows; USD is the
+    // common case for accounts billed via Stripe).
+    const usd = raw.balance_infos?.find(b => b.currency === 'USD') ?? raw.balance_infos?.[0];
+    if (!usd) {
+      return c.json({ ok: false, error: 'DeepSeek returned no balance info' }, 502);
+    }
+
+    const balance = parseFloat(usd.total_balance);
+    const granted = usd.granted_balance ? parseFloat(usd.granted_balance) : 0;
+    const toppedUp = usd.topped_up_balance ? parseFloat(usd.topped_up_balance) : 0;
+
+    // Check warning threshold and send iMessage alert if below
+    try {
+      const thresholdRow = (db.prepare("SELECT value FROM config WHERE key = 'deepseek_warning_threshold'").get() as { value: string } | undefined) ?? { value: '5' };
+      const alertedRow = db.prepare("SELECT value FROM config WHERE key = 'deepseek_threshold_alerted'").get() as { value: string } | undefined;
+      if (thresholdRow?.value) {
+        const thresholdVal = parseFloat(thresholdRow.value);
+        const alreadyAlerted = alertedRow?.value === 'true';
+        if (balance <= thresholdVal && !alreadyAlerted) {
+          const { sendAlert } = await import('../../services/imessage-bridge.js');
+          sendAlert(`DeepSeek balance is $${balance.toFixed(2)}, below your $${thresholdVal.toFixed(0)} warning threshold. Add credits at platform.deepseek.com`, 'warning');
+          db.prepare("INSERT INTO config (key, value, updated_at) VALUES ('deepseek_threshold_alerted', 'true', datetime('now')) ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = datetime('now')").run();
+          logger.info('DeepSeek low balance alert sent', { balance, threshold: thresholdVal });
+        } else if (balance > thresholdVal && alreadyAlerted) {
+          db.prepare("DELETE FROM config WHERE key = 'deepseek_threshold_alerted'").run();
+        }
+      }
+    } catch { /* alert is best-effort */ }
+
+    return c.json({
+      ok: true,
+      data: {
+        currency: usd.currency,
+        balance,
+        granted_balance: granted,
+        topped_up_balance: toppedUp,
+        is_available: raw.is_available ?? true,
+      },
+    });
+  } catch (err) {
+    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+// GET /api/config/deepseek/threshold — get saved warning threshold
+configRouter.get('/deepseek/threshold', (c) => {
+  const db = getDb();
+  const row = db.prepare("SELECT value FROM config WHERE key = 'deepseek_warning_threshold'").get() as { value: string } | undefined;
+  return c.json({ ok: true, data: { value: row?.value ?? '' } });
+});
+
+// POST /api/config/deepseek/threshold — save warning threshold
+configRouter.post('/deepseek/threshold', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body.threshold !== 'number') {
+    return c.json({ ok: false, error: 'threshold (number) is required' }, 400);
+  }
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO config (key, value, updated_at) VALUES ('deepseek_warning_threshold', ?, datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
+  `).run(String(body.threshold), String(body.threshold));
+  // Reset alert flag so the new threshold takes effect on the next check
+  db.prepare("DELETE FROM config WHERE key = 'deepseek_threshold_alerted'").run();
+  return c.json({ ok: true });
+});
+
 // POST /api/config/openrouter/threshold — save warning threshold
 configRouter.post('/openrouter/threshold', async (c) => {
   const body = await c.req.json().catch(() => null);
