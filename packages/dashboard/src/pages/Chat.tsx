@@ -86,14 +86,28 @@ function parseMessageContent(raw: string): { text: string; blocks?: ContentBlock
 
 // ── Message Bubble Renderers ──
 
+// Strip the engine-injected iMessage source framing so the dashboard shows
+// the user's actual message, not the routing wrapper. v2.3.16: previously
+// rendered verbatim and looked like noise. Treat iMessage as a channel —
+// the badge tells you where it came from, the bubble shows what was sent.
+const IMESSAGE_SOURCE_RE = /^\[SOURCE: IMESSAGE FROM [^\]]+\]\s*/;
+
 const UserBubble = ({ msg }: { msg: ChatMessage }) => {
+  const fromIMessage = IMESSAGE_SOURCE_RE.test(msg.content);
+  const stripped = fromIMessage ? msg.content.replace(IMESSAGE_SOURCE_RE, '') : msg.content;
   // Strip === File: === blocks from display text (they're shown as chips instead)
   const displayContent = msg.attachments?.length
-    ? msg.content.replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '').trim()
-    : msg.content;
+    ? stripped.replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '').trim()
+    : stripped;
 
   return (
-    <div className="flex justify-end">
+    <div className="flex flex-col items-end">
+      {fromIMessage && (
+        <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/[0.04] text-tertiary text-[10px] font-mono mb-1 mr-1">
+          <span className="text-white/40">{'\u{1F4AC}'}</span>
+          <span>via iMessage</span>
+        </div>
+      )}
       <div className="bubble-user max-w-[92%] sm:max-w-[75%] px-3 py-2 sm:px-4 sm:py-3 text-white">
         {displayContent && (
           <pre className="whitespace-pre-wrap font-sans text-xs sm:text-sm leading-relaxed break-words">
@@ -799,6 +813,22 @@ export const Chat = () => {
                   <div className="flex-1 h-px bg-white/10" />
                   <span className="text-xs text-white/30 shrink-0">{dividerMatch[1]}</span>
                   <div className="flex-1 h-px bg-white/10" />
+                </div>
+              );
+            }
+            // Always-show iMessage delivery marker: when the assistant's
+            // reply went out via iMessage, show a thin right-aligned tag so
+            // the user sees the channel without flipping wordy mode on.
+            // v2.3.16 — was hidden in regular mode and left users guessing
+            // whether the iMessage actually got sent.
+            const imSentMatch = msg.content.trim().match(/^\[SENT VIA IMESSAGE to (.+?)\]$/);
+            if (imSentMatch) {
+              return (
+                <div key={msg.id} className="flex justify-end my-1 px-1">
+                  <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/[0.04] text-tertiary text-[10px] font-mono">
+                    <span className="text-white/40">{'\u{1F4AC}'}</span>
+                    <span>sent via iMessage</span>
+                  </div>
                 </div>
               );
             }

@@ -114,13 +114,27 @@ const ToolOnlyPill = ({ msg }: { msg: ChatMessage }) => {
   );
 };
 
+// v2.3.16 — strip the iMessage source framing (engine-injected routing
+// wrapper) and surface a small "via iMessage" badge instead. Mirrors the
+// treatment in Chat.tsx so the channel-vs-conversation distinction is
+// consistent everywhere.
+const IMESSAGE_SOURCE_RE = /^\[SOURCE: IMESSAGE FROM [^\]]+\]\s*/;
+
 const UserBubble = ({ msg }: { msg: ChatMessage }) => {
+  const fromIMessage = IMESSAGE_SOURCE_RE.test(msg.content);
+  const stripped = fromIMessage ? msg.content.replace(IMESSAGE_SOURCE_RE, '') : msg.content;
   const displayContent = msg.attachments?.length
-    ? msg.content.replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '').trim()
-    : msg.content;
+    ? stripped.replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '').trim()
+    : stripped;
 
   return (
-    <div className="flex justify-end">
+    <div className="flex flex-col items-end">
+      {fromIMessage && (
+        <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/[0.04] text-tertiary text-[10px] font-mono mb-1 mr-1">
+          <span className="text-white/40">{'\u{1F4AC}'}</span>
+          <span>via iMessage</span>
+        </div>
+      )}
       <div className="bubble-user max-w-[75%] px-4 py-3 text-white">
         {displayContent && (
           <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed break-words">
@@ -547,9 +561,12 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
           </div>
         )}
         {messages.map((msg) => {
-          // Hide inter-agent and system messages unless wordy mode is on
+          // Hide inter-agent and system messages unless wordy mode is on.
+          // iMessage-sourced user messages stay visible (they're a real
+          // channel, not internal routing) — UserBubble strips the framing
+          // and surfaces a "via iMessage" badge.
           if (!wordyMode && msg.role === 'user' && (
-            msg.content.includes('[SOURCE:') ||
+            (msg.content.includes('[SOURCE:') && !msg.content.startsWith('[SOURCE: IMESSAGE FROM')) ||
             msg.content.startsWith('[System:') ||
             msg.content.startsWith('Tracker review --')
           )) return null;
@@ -565,6 +582,18 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
                   <div className="flex-1 h-px bg-white/10" />
                   <span className="text-xs text-white/30 shrink-0">{dividerMatch[1]}</span>
                   <div className="flex-1 h-px bg-white/10" />
+                </div>
+              );
+            }
+            // Always-show iMessage delivery marker (mirrors Chat.tsx).
+            const imSentMatch = msg.content.trim().match(/^\[SENT VIA IMESSAGE to (.+?)\]$/);
+            if (imSentMatch) {
+              return (
+                <div key={msg.id} className="flex justify-end my-1 px-1">
+                  <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/[0.04] text-tertiary text-[10px] font-mono">
+                    <span className="text-white/40">{'\u{1F4AC}'}</span>
+                    <span>sent via iMessage</span>
+                  </div>
                 </div>
               );
             }

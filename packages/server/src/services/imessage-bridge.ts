@@ -503,15 +503,11 @@ async function pollMessages(): Promise<void> {
           mentioned: attachmentResult.mentionedAttachments.length,
         });
 
-        broadcast({
-          type: 'imessage:received',
-          data: {
-            text: cleanedText,
-            from: sender,
-            timestamp: new Date().toISOString(),
-            attachmentCount: totalAttachmentCount,
-          },
-        } as never);
+        // (v2.3.16) The dedicated `imessage:received` WS event was removed —
+        // it duplicated the `chat:message` broadcast at line ~574 below
+        // (which the dashboard already renders) and the dashboard never
+        // subscribed to the dedicated event. iMessage is a channel on the
+        // primary agent's chat, not a separate stream.
 
         // Check for built-in commands against the text portion only (an
         // image-only message can't be a command). Reply goes to the sender.
@@ -782,15 +778,9 @@ export function sendIMessage(recipient: string, rawText: string): void {
     }
 
     logger.info('iMessage sent', { recipient, textLength: text.length, via: imsg ? 'imsg' : 'applescript' });
-
-    broadcast({
-      type: 'imessage:sent',
-      data: {
-        to: recipient,
-        text: text.slice(0, 200),
-        timestamp: new Date().toISOString(),
-      },
-    } as never);
+    // (v2.3.16) Dropped dedicated `imessage:sent` WS broadcast — the
+    // dashboard sees outbound delivery via the [SENT VIA IMESSAGE to <owner>]
+    // system marker that the loop persists in the chat stream.
   } catch (err) {
     logger.error('Failed to send iMessage', {
       error: err instanceof Error ? err.message : String(err),
@@ -826,15 +816,7 @@ export function sendIMessageWithAttachment(
     );
 
     logger.info('iMessage attachment sent', { recipient, filePath });
-
-    broadcast({
-      type: 'imessage:sent',
-      data: {
-        to: recipient,
-        text: `[attachment: ${filePath}]`,
-        timestamp: new Date().toISOString(),
-      },
-    } as never);
+    // (v2.3.16) See note in sendIMessage — dedicated WS broadcast removed.
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     logger.error('imsg attachment send failed — falling back to text', {

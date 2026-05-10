@@ -175,24 +175,6 @@ export interface WatchdogAlertEvent {
   };
 }
 
-export interface IMessageReceivedEvent {
-  type: 'imessage:received';
-  data: {
-    text: string;
-    from: string;
-    timestamp: string;
-  };
-}
-
-export interface IMessageSentEvent {
-  type: 'imessage:sent';
-  data: {
-    to: string;
-    text: string;
-    timestamp: string;
-  };
-}
-
 export type WsEvent =
   | AgentStatusEvent
   | ChatChunkEvent
@@ -216,8 +198,6 @@ export type WsEvent =
   | ProviderStatusEvent
   | ResourceWarningEvent
   | WatchdogAlertEvent
-  | IMessageReceivedEvent
-  | IMessageSentEvent
   | OllamaStatusEvent
   | TechniqueCreatedEvent
   | TechniquePublishedEvent

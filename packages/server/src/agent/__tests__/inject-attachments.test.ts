@@ -122,4 +122,60 @@ describe('injectAttachmentBlocks', () => {
     // Second user message stays a string (no second match for the same row)
     expect(typeof messages[1].content).toBe('string');
   });
+
+  it('keeps the image on iter 2+ when iter 1 emitted text + tool_use (v2.3.16 regression)', () => {
+    // The 2026-05-05 fix dropped images on every loop iteration after the
+    // first because it treated ANY assistant-after as a turn boundary. In a
+    // multi-iteration turn (model emits text + tool_use, then is called
+    // again after the tool_result), iter 2 saw the user message stripped of
+    // image blocks and hallucinated "no image came through" — which then
+    // leaked back via iMessage. Fix: walk the messages array and only treat
+    // a *plain text* assistant message (no tool_use) as a turn boundary;
+    // text+tool_use is mid-loop, so anything before it is still in-turn.
+    seedAttachmentMsg('m1', 'what is in this image?');
+    const messages: Array<{ role: 'user' | 'assistant'; content: string | unknown[] }> = [
+      { role: 'user', content: 'what is in this image?' },
+      // iter 1 model output: text + tool_use, persisted as a content-block array
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'I see a cat. Saving to memory.' },
+          { type: 'tool_use', id: 't1', name: 'memory_save', input: {} },
+        ],
+      },
+      // tool_result (Anthropic API form: user role with content blocks)
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }],
+      },
+    ];
+    injectAttachmentBlocks(messages as never, 'kevin');
+    // The user message still gets the image injected — even though iter 1's
+    // assistant is "after" it — because that assistant has tool_use blocks
+    // and is therefore mid-loop, not a turn boundary.
+    expect(Array.isArray(messages[0].content)).toBe(true);
+    const blocks = messages[0].content as Array<{ type: string }>;
+    expect(blocks.find((b) => b.type === 'image')).toBeDefined();
+  });
+
+  it('does NOT re-inject a prior turn\'s attachment in the next turn', () => {
+    // Two completed turns: the user sent an image, the agent answered with
+    // plain text (no tool_use), then the user sent a new image. On the new
+    // turn's assemble, the prior turn's image must NOT be re-injected — the
+    // 2026-05-05 PDF-resurrection bug. The new turn's image SHOULD inject.
+    seedAttachmentMsg('m1', 'first image');
+    seedAttachmentMsg('m2', 'second image');
+    const messages: Array<{ role: 'user' | 'assistant'; content: string | unknown[] }> = [
+      { role: 'user', content: 'first image' },
+      { role: 'assistant', content: 'I saw the first image.' }, // plain text → turn boundary
+      { role: 'user', content: 'second image' },
+    ];
+    injectAttachmentBlocks(messages as never, 'kevin');
+    // First user message stays a string (prior turn, attachment not re-injected)
+    expect(typeof messages[0].content).toBe('string');
+    // Second user message gets the image (current turn)
+    expect(Array.isArray(messages[2].content)).toBe(true);
+    const blocks = messages[2].content as Array<{ type: string }>;
+    expect(blocks.find((b) => b.type === 'image')).toBeDefined();
+  });
 });

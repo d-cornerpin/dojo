@@ -533,26 +533,44 @@ export function injectAttachmentBlocks(
   // with current assembly but cheap defense).
   const usedDbIds = new Set<string>();
 
+  // Determine the index of the earliest message that's still part of THIS
+  // turn. A turn boundary is an assistant message that ended cleanly (text
+  // only, no tool_use). An assistant message containing tool_use blocks is
+  // mid-loop — the conversation continues into a tool_result and another
+  // model call, so anything before it is still in-turn.
+  //
+  // Scoping by turn (rather than the prior 2026-05-05 heuristic of "any
+  // assistant after = stale") fixes v2.3.16: an iMessage user sending an
+  // image where the agent calls a tool on iter 1 lost the image on iter 2,
+  // because injectAttachmentBlocks treated iter 1's text+tool_use assistant
+  // message as a turn boundary. The model on iter 2 then hallucinated "no
+  // image came through" and that text leaked back via iMessage.
+  let turnStartIndex = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== 'assistant') continue;
+    const content = m.content;
+    const hasToolUse = Array.isArray(content)
+      && content.some((b) => (b as { type?: string }).type === 'tool_use');
+    if (!hasToolUse) {
+      // Plain assistant text → previous turn ended here. Anything after
+      // index i belongs to the current turn.
+      turnStartIndex = i + 1;
+      break;
+    }
+  }
+
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (msg.role !== 'user' || typeof msg.content !== 'string') continue;
 
-    // Skip user messages that already have an assistant response after
-    // them — those attachments shaped a prior model reply and re-injecting
-    // them on every subsequent turn floods context with stale image/PDF
-    // blocks. Bug fix 2026-05-05: an iMessage user sending a PDF then later
-    // an image had Kimi re-seeing the PDF on every image turn and
-    // hallucinating "test page" responses about the image. Only inject for
-    // the trigger message of THIS turn (the most recent user message that
-    // hasn't been responded to yet).
-    let hasAssistantAfter = false;
-    for (let j = i + 1; j < messages.length; j++) {
-      if (messages[j].role === 'assistant') {
-        hasAssistantAfter = true;
-        break;
-      }
-    }
-    if (hasAssistantAfter) continue;
+    // Only inject attachments for user messages in the current turn. Older
+    // user messages already shaped a prior model reply; re-injecting their
+    // images/PDFs floods context (the v2.3.5-era "Kimi keeps seeing the
+    // PDF" bug). Within the current turn, every user message — including
+    // the trigger message that's now followed by an in-turn tool loop —
+    // keeps its attachments visible to the model.
+    if (i < turnStartIndex) continue;
 
     // Find a DB row whose content is the suffix of (or equal to) the
     // assembled message content. Prefer exact-equality matches first,
