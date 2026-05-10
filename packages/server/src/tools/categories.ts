@@ -124,7 +124,15 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'OneDrive',
-    tools: ['onedrive_list', 'onedrive_read', 'onedrive_upload', 'onedrive_share'],
+    tools: ['onedrive_list', 'onedrive_read', 'onedrive_search', 'onedrive_upload', 'onedrive_upload_batch', 'onedrive_share', 'onedrive_create_folder', 'onedrive_delete', 'onedrive_move', 'onedrive_list_shared', 'onedrive_list_drives'],
+  },
+  {
+    label: 'SharePoint',
+    tools: ['sharepoint_list_sites', 'sharepoint_list_drives'],
+  },
+  {
+    label: 'Teams Online Meetings',
+    tools: ['online_meeting_create', 'online_meeting_get', 'online_meeting_update', 'online_meeting_delete'],
   },
   {
     label: 'Microsoft Teams',

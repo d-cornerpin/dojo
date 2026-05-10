@@ -5,7 +5,7 @@
 // ════════════════════════════════════════
 
 import type { ToolDefinition } from '../agent/tools.js';
-import { msGraphRead, calendarPrefix } from './client.js';
+import { msGraphRead, calendarPrefix, drivePrefix } from './client.js';
 
 // ── Tool Definitions ──
 
@@ -110,13 +110,14 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'onedrive_list',
-    description: 'List files in OneDrive. Default returns one compact line per item (name + size + short type + id + date). For full mime types and webUrls on every result, pass verbose=true; for the content of ONE file, use onedrive_read(file_id).',
+    description: 'List files in OneDrive (your personal drive by default). Pass drive_id to list a shared OneDrive item or a SharePoint document library — get drive_ids from onedrive_list_shared, sharepoint_list_drives, or onedrive_list_drives. Default returns one compact line per item.',
     input_schema: {
       type: 'object',
       properties: {
-        folder_id: { type: 'string', description: 'Folder ID to list (omit for root)' },
+        folder_id: { type: 'string', description: 'Folder ID to list (omit for the drive root)' },
         max_results: { type: 'number', description: 'Maximum results (default: 20)' },
         verbose: { type: 'boolean', description: 'If true, include full mime type and webUrl per item. Default false (compact rows).' },
+        drive_id: { type: 'string', description: 'Drive to list. Defaults to your personal OneDrive. Use a drive_id from onedrive_list_shared / sharepoint_list_drives to access a shared drive or SharePoint library.' },
       },
       required: [],
     },
@@ -125,18 +126,43 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'onedrive_read',
-    description: 'Read the content or metadata of a OneDrive file. Text content is paginated by character — defaults to first ~16K chars (~4K tokens). For long files, use `offset` + `limit` per the pagination trailer.',
+    description: 'Read the content or metadata of a file. Defaults to your personal OneDrive; pass drive_id to read from a shared drive or SharePoint library. Text content is paginated by character — defaults to first ~16K chars.',
     input_schema: {
       type: 'object',
       properties: {
-        file_id: { type: 'string', description: 'OneDrive file ID (from onedrive_list results)' },
+        file_id: { type: 'string', description: 'File ID (from onedrive_list / onedrive_search / onedrive_list_shared)' },
         offset: { type: 'number', description: 'Character offset to start from (default 0).' },
         limit: { type: 'number', description: 'Characters to return (default 16000 ≈ 4K tokens). Don\'t exceed 20000.' },
+        drive_id: { type: 'string', description: 'Drive the file lives on. Defaults to your personal OneDrive.' },
       },
       required: ['file_id'],
     },
     concurrency: 'safe',
     maxResultTokens: 5000,
+  },
+  {
+    name: 'onedrive_list_shared',
+    description: 'List files shared with you on OneDrive (other people gave you access). Returns each item with its drive_id and file_id — pass both to onedrive_read / onedrive_list / onedrive_upload / etc. to operate on the shared file.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        max_results: { type: 'number', description: 'Maximum results (default: 30)' },
+      },
+      required: [],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
+  },
+  {
+    name: 'onedrive_list_drives',
+    description: 'List all drives you can access — your personal OneDrive plus any shared drives surfaced by Microsoft Graph. Returns each drive with its drive_id, name, and owner. For SharePoint document libraries use sharepoint_list_drives instead.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
   },
   {
     name: 'teams_read_messages',
@@ -167,17 +193,58 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'onedrive_search',
-    description: 'Search for files and folders in OneDrive by name or content. Returns name + path + size + last-modified per result.',
+    description: 'Search for files and folders by name or content. Defaults to your personal OneDrive; pass drive_id to search a shared drive or SharePoint library.',
     input_schema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search query (filename, keyword, or phrase)' },
         max_results: { type: 'number', description: 'Maximum results (default: 20)' },
+        drive_id: { type: 'string', description: 'Drive to search. Defaults to your personal OneDrive.' },
       },
       required: ['query'],
     },
     concurrency: 'safe',
     maxResultTokens: 3000,
+  },
+  {
+    name: 'sharepoint_list_sites',
+    description: 'List or search SharePoint sites you have access to. Pass query to filter; omit for a list of recent/followed sites. Returns each site with its site_id and webUrl. Use sharepoint_list_drives(site_id) to find document libraries inside a site.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Optional search text to filter sites by name.' },
+        max_results: { type: 'number', description: 'Maximum results (default: 20)' },
+      },
+      required: [],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 2500,
+  },
+  {
+    name: 'sharepoint_list_drives',
+    description: 'List document libraries (drives) inside a SharePoint site. Returns each drive with its drive_id and name. Use the drive_id with onedrive_list / onedrive_read / onedrive_upload / etc. to operate on files in that library.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        site_id: { type: 'string', description: 'SharePoint site ID (from sharepoint_list_sites)' },
+      },
+      required: ['site_id'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
+  },
+  {
+    name: 'online_meeting_get',
+    description: 'Get the full details of a Teams online meeting (including the join URL). Use online_meeting_create first or pass an existing meeting_id.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        meeting_id: { type: 'string', description: 'Online meeting ID (from online_meeting_create or a stored reference)' },
+      },
+      required: ['meeting_id'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 1500,
   },
   {
     name: 'teams_list_teams',
@@ -427,11 +494,13 @@ export async function executeMicrosoftReadTool(
       const folderId = args.folder_id as string | undefined;
       const maxResults = (args.max_results as number) ?? 20;
       const verbose = args.verbose as boolean | undefined;
+      const driveId = args.drive_id as string | undefined;
+      const prefix = drivePrefix(driveId);
       const endpoint = folderId
-        ? `me/drive/items/${encodeURIComponent(folderId)}/children?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl`
-        : `me/drive/root/children?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl`;
+        ? `${prefix}items/${encodeURIComponent(folderId)}/children?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl`
+        : `${prefix}root/children?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl`;
 
-      const result = await msGraphRead(endpoint, agentId, agentName, 'onedrive_list', { folderId, maxResults });
+      const result = await msGraphRead(endpoint, agentId, agentName, 'onedrive_list', { folderId, maxResults, driveId });
       if (!result.ok) return `Error listing OneDrive: ${result.error}`;
 
       const data = result.data as { value?: Array<{ id: string; name: string; size?: number; lastModifiedDateTime: string; file?: { mimeType: string }; folder?: { childCount: number }; webUrl?: string }> };
@@ -463,10 +532,12 @@ export async function executeMicrosoftReadTool(
 
     case 'onedrive_read': {
       const fileId = encodeURIComponent(args.file_id as string);
+      const driveId = args.drive_id as string | undefined;
+      const prefix = drivePrefix(driveId);
       // First get metadata
       const meta = await msGraphRead(
-        `me/drive/items/${fileId}?$select=id,name,size,file,webUrl`,
-        agentId, agentName, 'onedrive_read', { fileId: args.file_id },
+        `${prefix}items/${fileId}?$select=id,name,size,file,webUrl`,
+        agentId, agentName, 'onedrive_read', { fileId: args.file_id, driveId },
       );
       if (!meta.ok) return `Error reading file: ${meta.error}`;
 
@@ -477,7 +548,7 @@ export async function executeMicrosoftReadTool(
       if (mimeType.startsWith('text/') || mimeType.includes('json') || mimeType.includes('xml') || mimeType.includes('csv')) {
         try {
           const token = (await import('./auth.js')).getAccessToken();
-          const resp = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${fileId}/content`, {
+          const resp = await fetch(`https://graph.microsoft.com/v1.0/${prefix}items/${fileId}/content`, {
             headers: { Authorization: `Bearer ${token}` },
             signal: AbortSignal.timeout(30000),
           });
@@ -561,10 +632,12 @@ export async function executeMicrosoftReadTool(
     case 'onedrive_search': {
       const query = args.query as string;
       const maxResults = (args.max_results as number) ?? 20;
+      const driveId = args.drive_id as string | undefined;
+      const prefix = drivePrefix(driveId);
 
       const result = await msGraphRead(
-        `me/drive/root/search(q='${encodeURIComponent(query)}')?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl`,
-        agentId, agentName, 'onedrive_search', { query, maxResults },
+        `${prefix}root/search(q='${encodeURIComponent(query)}')?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl`,
+        agentId, agentName, 'onedrive_search', { query, maxResults, driveId },
       );
       if (!result.ok) return `Error searching OneDrive: ${result.error}`;
 
@@ -580,6 +653,94 @@ export async function executeMicrosoftReadTool(
       });
 
       return `Found ${data.value.length} result(s) for "${query}":\n\n${files.join('\n\n')}`;
+    }
+
+    case 'onedrive_list_shared': {
+      const max = (args.max_results as number) ?? 30;
+      const result = await msGraphRead(
+        `me/drive/sharedWithMe?$top=${max}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl,remoteItem`,
+        agentId, agentName, 'onedrive_list_shared', { max },
+      );
+      if (!result.ok) return `Error listing shared files: ${result.error}`;
+      const data = result.data as { value?: Array<{ id: string; name: string; size?: number; lastModifiedDateTime: string; file?: { mimeType: string }; folder?: object; webUrl?: string; remoteItem?: { id: string; parentReference?: { driveId?: string; driveType?: string } } }> };
+      if (!data?.value || data.value.length === 0) return 'No files have been shared with you.';
+      const lines = data.value.map(f => {
+        const type = f.folder ? 'Folder' : (f.file?.mimeType ?? 'File');
+        const size = f.size ? ` (${Math.round(f.size / 1024)}KB)` : '';
+        const driveId = f.remoteItem?.parentReference?.driveId ?? '(unknown)';
+        const itemId = f.remoteItem?.id ?? f.id;
+        return `- ${f.name}${size} [${type}]\n  drive_id: ${driveId}\n  file_id: ${itemId}${f.webUrl ? `\n  URL: ${f.webUrl}` : ''}`;
+      });
+      return `${data.value.length} shared item(s):\n\n${lines.join('\n\n')}\n\nUse drive_id + file_id together with onedrive_read / onedrive_list / etc. to operate on a shared file.`;
+    }
+
+    case 'onedrive_list_drives': {
+      const result = await msGraphRead(
+        'me/drives?$select=id,name,driveType,owner',
+        agentId, agentName, 'onedrive_list_drives', {},
+      );
+      if (!result.ok) return `Error listing drives: ${result.error}`;
+      const data = result.data as { value?: Array<{ id: string; name: string; driveType: string; owner?: { user?: { displayName?: string; email?: string } } }> };
+      if (!data?.value || data.value.length === 0) return 'No drives found.';
+      const lines = data.value.map(d => {
+        const owner = d.owner?.user?.displayName ?? d.owner?.user?.email ?? 'unknown';
+        return `- ${d.name} [${d.driveType}] (owner: ${owner})\n  drive_id: ${d.id}`;
+      });
+      return `${data.value.length} drive(s):\n\n${lines.join('\n')}`;
+    }
+
+    case 'sharepoint_list_sites': {
+      const query = args.query as string | undefined;
+      const max = (args.max_results as number) ?? 20;
+      const endpoint = query
+        ? `sites?search=${encodeURIComponent(query)}&$top=${max}&$select=id,name,displayName,webUrl,description`
+        : `sites?$top=${max}&$select=id,name,displayName,webUrl,description`;
+      const result = await msGraphRead(endpoint, agentId, agentName, 'sharepoint_list_sites', { query, max });
+      if (!result.ok) return `Error listing SharePoint sites: ${result.error}`;
+      const data = result.data as { value?: Array<{ id: string; name: string; displayName?: string; webUrl: string; description?: string }> };
+      if (!data?.value || data.value.length === 0) return query ? `No SharePoint sites matching "${query}".` : 'No SharePoint sites found.';
+      const lines = data.value.map(s => {
+        const name = s.displayName ?? s.name ?? '(unnamed)';
+        const desc = s.description ? `\n  ${s.description.slice(0, 120)}` : '';
+        return `- ${name}\n  site_id: ${s.id}\n  URL: ${s.webUrl}${desc}`;
+      });
+      return `${data.value.length} site(s):\n\n${lines.join('\n\n')}\n\nUse sharepoint_list_drives(site_id) to find document libraries inside a site.`;
+    }
+
+    case 'sharepoint_list_drives': {
+      const siteId = args.site_id as string;
+      const result = await msGraphRead(
+        `sites/${encodeURIComponent(siteId)}/drives?$select=id,name,driveType,description`,
+        agentId, agentName, 'sharepoint_list_drives', { siteId },
+      );
+      if (!result.ok) return `Error listing site drives: ${result.error}`;
+      const data = result.data as { value?: Array<{ id: string; name: string; driveType: string; description?: string }> };
+      if (!data?.value || data.value.length === 0) return 'No document libraries in this site.';
+      const lines = data.value.map(d => {
+        const desc = d.description ? `\n  ${d.description.slice(0, 120)}` : '';
+        return `- ${d.name} [${d.driveType}]\n  drive_id: ${d.id}${desc}`;
+      });
+      return `${data.value.length} document librar${data.value.length === 1 ? 'y' : 'ies'}:\n\n${lines.join('\n')}\n\nUse drive_id with onedrive_list / onedrive_read / onedrive_upload / etc. to operate on files in a library.`;
+    }
+
+    case 'online_meeting_get': {
+      const meetingId = args.meeting_id as string;
+      const result = await msGraphRead(
+        `me/onlineMeetings/${encodeURIComponent(meetingId)}?$select=id,subject,joinUrl,joinWebUrl,startDateTime,endDateTime,videoTeleconferenceId`,
+        agentId, agentName, 'online_meeting_get', { meetingId },
+      );
+      if (!result.ok) return `Error getting online meeting: ${result.error}`;
+      const m = result.data as { id: string; subject?: string; joinUrl?: string; joinWebUrl?: string; startDateTime?: string; endDateTime?: string; videoTeleconferenceId?: string };
+      const lines = [
+        `Online meeting: ${m.subject ?? '(no subject)'}`,
+        `ID: ${m.id}`,
+      ];
+      if (m.startDateTime) lines.push(`Start: ${m.startDateTime}`);
+      if (m.endDateTime) lines.push(`End: ${m.endDateTime}`);
+      if (m.joinUrl) lines.push(`Join URL: ${m.joinUrl}`);
+      if (m.joinWebUrl && m.joinWebUrl !== m.joinUrl) lines.push(`Web URL: ${m.joinWebUrl}`);
+      if (m.videoTeleconferenceId) lines.push(`VTC dial-in ID: ${m.videoTeleconferenceId}`);
+      return lines.join('\n');
     }
 
     case 'teams_list_teams': {

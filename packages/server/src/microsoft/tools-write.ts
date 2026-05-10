@@ -4,7 +4,7 @@
 // ════════════════════════════════════════
 
 import type { ToolDefinition } from '../agent/tools.js';
-import { msGraphRead, msGraphWrite, calendarPrefix } from './client.js';
+import { msGraphRead, msGraphWrite, calendarPrefix, drivePrefix } from './client.js';
 import { getPrimaryAgentName } from '../config/platform.js';
 
 // ── Tool Definitions ──
@@ -97,25 +97,27 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'onedrive_create_folder',
-    description: 'Create a new folder in OneDrive.',
+    description: 'Create a new folder. Defaults to your personal OneDrive root; pass drive_id to create in a shared OneDrive item or SharePoint document library.',
     input_schema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Folder name to create' },
-        parent_folder_id: { type: 'string', description: 'ID of the parent folder to create inside (omit to create in root)' },
+        parent_folder_id: { type: 'string', description: 'ID of the parent folder to create inside (omit to create in the drive root)' },
+        drive_id: { type: 'string', description: 'Drive to create the folder in. Defaults to your personal OneDrive.' },
       },
       required: ['name'],
     },
   },
   {
     name: 'onedrive_upload',
-    description: 'Upload a file to OneDrive. Handles files of any size using resumable upload sessions for large files.',
+    description: 'Upload a file. Defaults to your personal OneDrive; pass drive_id to upload to a shared drive or SharePoint library. Handles files of any size using resumable upload sessions.',
     input_schema: {
       type: 'object',
       properties: {
         file_path: { type: 'string', description: 'Local file path to upload' },
         name: { type: 'string', description: 'Name for the file in OneDrive (defaults to local filename)' },
-        folder_id: { type: 'string', description: 'Upload to a specific OneDrive folder (omit for root)' },
+        folder_id: { type: 'string', description: 'Upload to a specific folder (omit for the drive root)' },
+        drive_id: { type: 'string', description: 'Drive to upload to. Defaults to your personal OneDrive.' },
       },
       required: ['file_path'],
     },
@@ -153,14 +155,15 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'onedrive_share',
-    description: 'Share a OneDrive file or folder with someone via a sharing link or direct permission.',
+    description: 'Share a file or folder with someone via a sharing link or direct permission. Defaults to your personal OneDrive; pass drive_id to share an item on a shared drive or SharePoint library (subject to your permissions there).',
     input_schema: {
       type: 'object',
       properties: {
-        file_id: { type: 'string', description: 'OneDrive file or folder ID to share' },
+        file_id: { type: 'string', description: 'File or folder ID to share' },
         email: { type: 'string', description: 'Email address to share with (omit for anonymous link)' },
         role: { type: 'string', enum: ['read', 'write'], description: "Permission level (default: 'read')" },
         type: { type: 'string', enum: ['link', 'invite'], description: "Share method: 'link' for sharing link, 'invite' for direct email invite (default: 'link')" },
+        drive_id: { type: 'string', description: 'Drive the item lives on. Defaults to your personal OneDrive.' },
       },
       required: ['file_id'],
     },
@@ -227,31 +230,33 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'onedrive_delete',
-    description: 'Delete a file or folder from OneDrive.',
+    description: 'Delete a file or folder. Defaults to your personal OneDrive; pass drive_id for a shared drive or SharePoint library.',
     input_schema: {
       type: 'object',
       properties: {
-        file_id: { type: 'string', description: 'OneDrive file or folder ID to delete' },
+        file_id: { type: 'string', description: 'File or folder ID to delete' },
+        drive_id: { type: 'string', description: 'Drive the item lives on. Defaults to your personal OneDrive.' },
       },
       required: ['file_id'],
     },
   },
   {
     name: 'onedrive_move',
-    description: 'Move or rename a file or folder in OneDrive. Provide new_name to rename, new_parent_id to move, or both.',
+    description: 'Move or rename a file or folder. Provide new_name to rename, new_parent_id to move, or both. Defaults to your personal OneDrive.',
     input_schema: {
       type: 'object',
       properties: {
-        file_id: { type: 'string', description: 'OneDrive file or folder ID' },
+        file_id: { type: 'string', description: 'File or folder ID' },
         new_name: { type: 'string', description: 'New name for the item (omit to keep current name)' },
         new_parent_id: { type: 'string', description: 'ID of the destination folder (omit to keep in current location)' },
+        drive_id: { type: 'string', description: 'Drive the item lives on. Defaults to your personal OneDrive.' },
       },
       required: ['file_id'],
     },
   },
   {
     name: 'onedrive_upload_batch',
-    description: 'Upload multiple files to OneDrive in a single tool call. Handles files of any size. Returns a summary of successes and failures.',
+    description: 'Upload multiple files in a single tool call. Defaults to your personal OneDrive; pass drive_id to upload to a shared drive or SharePoint library. Handles files of any size. Returns a summary of successes and failures.',
     input_schema: {
       type: 'object',
       properties: {
@@ -260,9 +265,48 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
           items: { type: 'string' },
           description: 'Array of local file paths to upload',
         },
-        folder_id: { type: 'string', description: 'Upload to a specific OneDrive folder ID (omit for root)' },
+        folder_id: { type: 'string', description: 'Upload to a specific folder ID (omit for the drive root)' },
+        drive_id: { type: 'string', description: 'Drive to upload to. Defaults to your personal OneDrive.' },
       },
       required: ['file_paths'],
+    },
+  },
+  {
+    name: 'online_meeting_create',
+    description: "Create a Teams online meeting and get a join URL. Use this when you need to give someone a Teams link — typically right before calendar_create_ms so the meeting URL can be added to the event description. Subject, start, and end are required.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        subject: { type: 'string', description: 'Meeting subject / title' },
+        start: { type: 'string', description: "Start datetime (ISO 8601, e.g., '2026-05-10T14:00:00Z')" },
+        end: { type: 'string', description: 'End datetime (ISO 8601)' },
+      },
+      required: ['subject', 'start', 'end'],
+    },
+  },
+  {
+    name: 'online_meeting_update',
+    description: 'Update a Teams online meeting (subject, start, end). The join URL stays the same.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        meeting_id: { type: 'string', description: 'Online meeting ID (from online_meeting_create or online_meeting_get)' },
+        subject: { type: 'string', description: 'New subject' },
+        start: { type: 'string', description: 'New start datetime (ISO 8601)' },
+        end: { type: 'string', description: 'New end datetime (ISO 8601)' },
+      },
+      required: ['meeting_id'],
+    },
+  },
+  {
+    name: 'online_meeting_delete',
+    description: 'Delete a Teams online meeting. The join URL becomes invalid. Use this when canceling a meeting you previously created with online_meeting_create.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        meeting_id: { type: 'string', description: 'Online meeting ID to delete' },
+      },
+      required: ['meeting_id'],
     },
   },
   {
@@ -413,16 +457,18 @@ export async function executeMicrosoftWriteTool(
     case 'onedrive_create_folder': {
       const folderName = args.name as string;
       const parentFolderId = args.parent_folder_id as string | undefined;
+      const driveId = args.drive_id as string | undefined;
+      const prefix = drivePrefix(driveId);
 
       const endpoint = parentFolderId
-        ? `me/drive/items/${encodeURIComponent(parentFolderId)}/children`
-        : 'me/drive/root/children';
+        ? `${prefix}items/${encodeURIComponent(parentFolderId)}/children`
+        : `${prefix}root/children`;
 
       const result = await msGraphWrite('POST', endpoint, {
         name: folderName,
         folder: {},
         '@microsoft.graph.conflictBehavior': 'rename',
-      }, agentId, agentName, 'onedrive_create_folder', { folderName, parentFolderId });
+      }, agentId, agentName, 'onedrive_create_folder', { folderName, parentFolderId, driveId });
 
       if (!result.ok) return `Error creating folder: ${result.error}`;
       const folder = result.data as { id?: string; name?: string; webUrl?: string };
@@ -433,6 +479,8 @@ export async function executeMicrosoftWriteTool(
       const filePath = args.file_path as string;
       const fileName = (args.name as string) ?? filePath.split('/').pop() ?? 'upload';
       const folderId = args.folder_id as string | undefined;
+      const driveId = args.drive_id as string | undefined;
+      const prefix = drivePrefix(driveId);
 
       const fs = await import('node:fs');
       if (!fs.existsSync(filePath)) return `Error: File not found at ${filePath}`;
@@ -443,8 +491,8 @@ export async function executeMicrosoftWriteTool(
       if (!token) return 'Error: Not authenticated with Microsoft';
 
       const itemPath = folderId
-        ? `me/drive/items/${encodeURIComponent(folderId)}:/${encodeURIComponent(fileName)}`
-        : `me/drive/root:/${encodeURIComponent(fileName)}`;
+        ? `${prefix}items/${encodeURIComponent(folderId)}:/${encodeURIComponent(fileName)}`
+        : `${prefix}root:/${encodeURIComponent(fileName)}`;
 
       try {
         // Small files (≤4MB): simple PUT upload
@@ -583,15 +631,17 @@ export async function executeMicrosoftWriteTool(
       const email = args.email as string | undefined;
       const role = (args.role as string) ?? 'read';
       const shareType = (args.type as string) ?? 'link';
+      const driveId = args.drive_id as string | undefined;
+      const prefix = drivePrefix(driveId);
 
       if (shareType === 'invite' && email) {
         // Direct invite
-        const result = await msGraphWrite('POST', `me/drive/items/${fileId}/invite`, {
+        const result = await msGraphWrite('POST', `${prefix}items/${fileId}/invite`, {
           recipients: [{ email }],
           roles: [role === 'write' ? 'write' : 'read'],
           requireSignIn: true,
           sendInvitation: true,
-        }, agentId, agentName, 'onedrive_share', { fileId: args.file_id, email, role });
+        }, agentId, agentName, 'onedrive_share', { fileId: args.file_id, email, role, driveId });
 
         if (!result.ok) return `Error sharing file: ${result.error}`;
         return `File shared with ${email} (${role} access). They'll receive an email invitation.`;
@@ -600,10 +650,10 @@ export async function executeMicrosoftWriteTool(
         const linkType = role === 'write' ? 'edit' : 'view';
         const scope = email ? 'users' : 'anonymous';
 
-        const result = await msGraphWrite('POST', `me/drive/items/${fileId}/createLink`, {
+        const result = await msGraphWrite('POST', `${prefix}items/${fileId}/createLink`, {
           type: linkType,
           scope,
-        }, agentId, agentName, 'onedrive_share', { fileId: args.file_id, role, scope });
+        }, agentId, agentName, 'onedrive_share', { fileId: args.file_id, role, scope, driveId });
 
         if (!result.ok) return `Error creating sharing link: ${result.error}`;
         const data = result.data as { link?: { webUrl?: string } };
@@ -738,9 +788,11 @@ export async function executeMicrosoftWriteTool(
 
     case 'onedrive_delete': {
       const fileId = encodeURIComponent(args.file_id as string);
+      const driveId = args.drive_id as string | undefined;
+      const prefix = drivePrefix(driveId);
 
-      const result = await msGraphWrite('DELETE', `me/drive/items/${fileId}`, undefined, agentId, agentName, 'onedrive_delete', {
-        fileId: args.file_id,
+      const result = await msGraphWrite('DELETE', `${prefix}items/${fileId}`, undefined, agentId, agentName, 'onedrive_delete', {
+        fileId: args.file_id, driveId,
       });
       if (!result.ok) return `Error deleting from OneDrive: ${result.error}`;
       return `Item deleted from OneDrive`;
@@ -748,14 +800,16 @@ export async function executeMicrosoftWriteTool(
 
     case 'onedrive_move': {
       const fileId = encodeURIComponent(args.file_id as string);
+      const driveId = args.drive_id as string | undefined;
+      const prefix = drivePrefix(driveId);
       const patch: Record<string, unknown> = {};
       if (args.new_name) patch.name = args.new_name as string;
       if (args.new_parent_id) patch.parentReference = { id: args.new_parent_id as string };
 
       if (Object.keys(patch).length === 0) return 'Error: provide new_name and/or new_parent_id';
 
-      const result = await msGraphWrite('PATCH', `me/drive/items/${fileId}`, patch, agentId, agentName, 'onedrive_move', {
-        fileId: args.file_id, newName: args.new_name, newParentId: args.new_parent_id,
+      const result = await msGraphWrite('PATCH', `${prefix}items/${fileId}`, patch, agentId, agentName, 'onedrive_move', {
+        fileId: args.file_id, newName: args.new_name, newParentId: args.new_parent_id, driveId,
       });
       if (!result.ok) return `Error moving/renaming OneDrive item: ${result.error}`;
       const data = result.data as { name?: string };
@@ -765,6 +819,8 @@ export async function executeMicrosoftWriteTool(
     case 'onedrive_upload_batch': {
       const filePaths = args.file_paths as string[];
       const folderId = args.folder_id as string | undefined;
+      const driveId = args.drive_id as string | undefined;
+      const prefix = drivePrefix(driveId);
 
       if (!filePaths || filePaths.length === 0) return 'Error: file_paths must be a non-empty array';
 
@@ -782,8 +838,8 @@ export async function executeMicrosoftWriteTool(
         const fileSize = stat.size;
 
         const itemPath = folderId
-          ? `me/drive/items/${encodeURIComponent(folderId)}:/${encodeURIComponent(fileName)}`
-          : `me/drive/root:/${encodeURIComponent(fileName)}`;
+          ? `${prefix}items/${encodeURIComponent(folderId)}:/${encodeURIComponent(fileName)}`
+          : `${prefix}root:/${encodeURIComponent(fileName)}`;
 
         try {
           if (fileSize <= 4 * 1024 * 1024) {
@@ -879,6 +935,47 @@ export async function executeMicrosoftWriteTool(
 
       if (!result.ok) return `Error sending channel message: ${result.error}`;
       return `Message posted to channel`;
+    }
+
+    case 'online_meeting_create': {
+      const subject = args.subject as string;
+      const start = args.start as string;
+      const end = args.end as string;
+      const result = await msGraphWrite('POST', 'me/onlineMeetings', {
+        subject,
+        startDateTime: start,
+        endDateTime: end,
+      }, agentId, agentName, 'online_meeting_create', { subject, start, end });
+      if (!result.ok) return `Error creating online meeting: ${result.error}`;
+      const m = result.data as { id?: string; joinUrl?: string; joinWebUrl?: string };
+      const lines = [
+        `Online meeting "${subject}" created.`,
+        m.id ? `ID: ${m.id}` : null,
+        m.joinUrl ? `Join URL: ${m.joinUrl}` : null,
+        m.joinWebUrl && m.joinWebUrl !== m.joinUrl ? `Web URL: ${m.joinWebUrl}` : null,
+        '',
+        'To attach this meeting to a calendar event, include the join URL in the description when calling calendar_create_ms.',
+      ].filter(Boolean);
+      return lines.join('\n');
+    }
+
+    case 'online_meeting_update': {
+      const meetingId = encodeURIComponent(args.meeting_id as string);
+      const patch: Record<string, unknown> = {};
+      if (args.subject) patch.subject = args.subject as string;
+      if (args.start) patch.startDateTime = args.start as string;
+      if (args.end) patch.endDateTime = args.end as string;
+      if (Object.keys(patch).length === 0) return 'Error: provide at least one of subject, start, end';
+      const result = await msGraphWrite('PATCH', `me/onlineMeetings/${meetingId}`, patch, agentId, agentName, 'online_meeting_update', { meetingId: args.meeting_id, ...patch });
+      if (!result.ok) return `Error updating online meeting: ${result.error}`;
+      return `Online meeting ${args.meeting_id} updated. Join URL is unchanged.`;
+    }
+
+    case 'online_meeting_delete': {
+      const meetingId = encodeURIComponent(args.meeting_id as string);
+      const result = await msGraphWrite('DELETE', `me/onlineMeetings/${meetingId}`, undefined, agentId, agentName, 'online_meeting_delete', { meetingId: args.meeting_id });
+      if (!result.ok) return `Error deleting online meeting: ${result.error}`;
+      return `Online meeting ${args.meeting_id} deleted. The join URL is now invalid.`;
     }
 
     default:

@@ -29,6 +29,19 @@ export function calendarPrefix(calendarId: string | undefined): string {
   return `me/calendars/${encodeURIComponent(calendarId)}/`;
 }
 
+/**
+ * Build the URL prefix for an OneDrive/SharePoint drive operation.
+ *
+ *   undefined       → me/drive/                   (personal OneDrive)
+ *   "<drive-id>"    → drives/{driveId}/           (shared OneDrive item, or a SharePoint document library by its drive ID)
+ *
+ * Caller appends 'items/{id}', 'root/children', 'root:/path', etc.
+ */
+export function drivePrefix(driveId: string | undefined): string {
+  if (!driveId) return 'me/drive/';
+  return `drives/${encodeURIComponent(driveId)}/`;
+}
+
 export interface MsGraphResult {
   ok: boolean;
   data: unknown;
