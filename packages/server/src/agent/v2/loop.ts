@@ -659,8 +659,42 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // Without this, the agent never sees images/PDFs the user attached —
       // it only sees the text content of those messages and hallucinates.
       // Same path v1 uses (runtime.ts:1929 in v1).
+      //
+      // v2.3.18: oversized images get downscaled to fit the 5MB model cap
+      // here. Persist a one-shot system note for any FRESH resize so the
+      // user knows what happened (later turns hit the on-disk cache and
+      // stay silent).
       const { injectAttachmentBlocks } = await import('../runtime.js');
-      injectAttachmentBlocks(messages, agentId);
+      // Defensive default — older mocks may return undefined.
+      const freshResizes = injectAttachmentBlocks(messages, agentId) ?? [];
+      if (freshResizes.length > 0) {
+        try {
+          const { formatBytes } = await import('../image-prep.js');
+          const lines = freshResizes.map((r) =>
+            `Image \`${r.filename}\` was downscaled from ${formatBytes(r.originalSize)} to ${formatBytes(r.finalSize)} to fit the model's 5 MB per-image limit.`,
+          );
+          const noteContent = `[Engine: image preparation]\n${lines.join('\n')}`;
+          const noteId = uuidv4();
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+            VALUES (?, ?, 'system', ?, ?, datetime('now'))
+          `).run(noteId, agentId, noteContent, turnNumber);
+          broadcast({
+            type: 'chat:message',
+            agentId,
+            message: {
+              id: noteId, agentId, role: 'system' as const,
+              content: noteContent,
+              tokenCount: null, modelId: null, cost: null, latencyMs: null,
+              createdAt: new Date().toISOString(),
+            },
+          });
+        } catch (err) {
+          logger.warn('v2: failed to persist image-resize system note (non-fatal)', {
+            agentId, error: err instanceof Error ? err.message : String(err),
+          }, agentId);
+        }
+      }
 
       // Inject pendingNudge if present (synthetic user message, not persisted).
       // Per v1 runtime.ts:940-947 — only inject if last message is assistant

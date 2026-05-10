@@ -9,6 +9,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getModelCapabilities } from '../services/capabilities.js';
+import { prepareImageForModel } from './image-prep.js';
 import { runV2Turn } from './v2/loop.js';
 
 // One-shot dedup so the "model does not support tools" banner only fires once
@@ -505,12 +506,25 @@ class AgentRuntime {
   }
 }
 
+/**
+ * One image that the engine downscaled at injection time to fit a model's
+ * per-image base64 cap (Anthropic 5MB). Returned to the caller so it can
+ * persist a one-shot system note for the user — only fires on the first
+ * compression pass; later turns hit the on-disk cache and stay silent.
+ */
+export interface AttachmentResizeEvent {
+  filename: string;
+  originalSize: number;
+  finalSize: number;
+}
+
 // Transform messages with image/PDF attachments into content block arrays for the model
 export function injectAttachmentBlocks(
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
   agentId: string,
-): void {
+): AttachmentResizeEvent[] {
   const db = getDb();
+  const freshResizes: AttachmentResizeEvent[] = [];
 
   // Pre-fetch recent user messages with attachments. We can't reliably
   // match by exact content because the assembler prepends framing
@@ -526,7 +540,7 @@ export function injectAttachmentBlocks(
     ORDER BY created_at DESC, rowid DESC LIMIT 10
   `).all(agentId) as Array<{ id: string; content: string; attachments: string }>;
 
-  if (recentDbMsgs.length === 0) return;
+  if (recentDbMsgs.length === 0) return freshResizes;
 
   // Track which DB rows we've already injected to avoid duplicating
   // the attachment if the same row matches twice (shouldn't happen
@@ -608,19 +622,30 @@ export function injectAttachmentBlocks(
       blocks.push({ type: 'text', text: msg.content });
     }
 
-    // Add image blocks
+    // Add image blocks. v2.3.18: route through prepareImageForModel so any
+    // image whose base64 would blow Anthropic's 5MB-per-image cap gets
+    // downscaled with sips. Resized variant is cached on disk (next to
+    // original) so the work fires once per upload, not per turn.
     for (const img of imageAttachments) {
       try {
         if (!fs.existsSync(img.path)) continue;
-        const data = fs.readFileSync(img.path).toString('base64');
+        const prepared = prepareImageForModel(img.path, img.mimeType);
+        if (!prepared) continue;
         blocks.push({
           type: 'image',
           source: {
             type: 'base64',
-            media_type: img.mimeType as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp',
-            data,
+            media_type: prepared.mediaType,
+            data: prepared.data.toString('base64'),
           },
         });
+        if (prepared.freshlyResized) {
+          freshResizes.push({
+            filename: img.filename,
+            originalSize: prepared.originalSize,
+            finalSize: prepared.finalSize,
+          });
+        }
       } catch {
         // Skip if file can't be read
       }
@@ -650,6 +675,8 @@ export function injectAttachmentBlocks(
 
     messages[i] = { role: 'user', content: blocks };
   }
+
+  return freshResizes;
 }
 
 // ── Stuck-Agent Recovery ──
