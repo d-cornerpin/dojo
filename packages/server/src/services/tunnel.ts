@@ -199,9 +199,12 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
         logger.info('Quick tunnel active', { url: tunnelUrl });
         broadcastStatus();
 
-        // Send the new URL via iMessage so the owner always has it
+        // Send the new URL via iMessage so the owner always has it.
+        // Marked critical so the v2.5 alert-severity gate routes it to
+        // the phone — the user explicitly needs the URL to access the
+        // dashboard from outside the local network.
         try {
-          sendAlert(`Dojo is online at ${tunnelUrl}`, 'info');
+          sendAlert(`Dojo is online at ${tunnelUrl}`, 'critical');
         } catch { /* iMessage bridge may not be running yet */ }
       }
     };
