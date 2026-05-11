@@ -603,6 +603,7 @@ export function updateTask(id: string, updates: Partial<{
   repeatUnit: string | null;
   repeatEndType: string | null;
   repeatEndValue: string | null;
+  repeatDaysOfWeek: string | null;
 }>): Task | null {
   const db = getDb();
 
@@ -711,6 +712,11 @@ export function updateTask(id: string, updates: Partial<{
   if (updates.repeatEndValue !== undefined) {
     setClauses.push('repeat_end_value = ?');
     params.push(updates.repeatEndValue);
+  }
+
+  if (updates.repeatDaysOfWeek !== undefined) {
+    setClauses.push('repeat_days_of_week = ?');
+    params.push(updates.repeatDaysOfWeek);
   }
 
   params.push(id);

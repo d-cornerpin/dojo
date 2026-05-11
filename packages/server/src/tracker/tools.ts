@@ -532,16 +532,18 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     const repeatUnit = (args.repeatUnit ?? args.repeat_unit) as string | null | undefined;
     const repeatEndType = (args.repeatEndType ?? args.repeat_end_type) as string | null | undefined;
     const repeatEndValue = (args.repeatEndValue ?? args.repeat_end_value) as string | null | undefined;
+    const repeatDaysOfWeek = (args.repeatDaysOfWeek ?? args.repeat_days_of_week) as string | null | undefined;
     const priority = args.priority as string | undefined;
     const notes = args.notes as string | undefined;
 
     const editableKeys = [
       title, description, dependsOn, stepNumber, phase,
       scheduledStart, repeatInterval, repeatUnit, repeatEndType, repeatEndValue,
+      repeatDaysOfWeek,
       priority, notes,
     ];
     if (editableKeys.every(v => v === undefined)) {
-      return 'Error: at least one editable field must be provided. Editable: title, description, depends_on, step_number, phase, scheduled_start, repeat_interval, repeat_unit, repeat_end_type, repeat_end_value, priority, notes. (For status changes use tracker_update_status; for assignee changes use tracker_reassign_task; for pause/resume use tracker_pause_schedule.)';
+      return 'Error: at least one editable field must be provided. Editable: title, description, depends_on, step_number, phase, scheduled_start, repeat_interval, repeat_unit, repeat_end_type, repeat_end_value, repeat_days_of_week, priority, notes. (For status changes use tracker_update_status; for assignee changes use tracker_reassign_task; for pause/resume use tracker_pause_schedule.)';
     }
 
     const updates: Parameters<typeof updateTask>[1] = {};
@@ -576,12 +578,78 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     if (repeatUnit !== undefined) updates.repeatUnit = repeatUnit;
     if (repeatEndType !== undefined) updates.repeatEndType = repeatEndType;
     if (repeatEndValue !== undefined) updates.repeatEndValue = repeatEndValue;
+    if (repeatDaysOfWeek !== undefined) updates.repeatDaysOfWeek = repeatDaysOfWeek;
     if (priority !== undefined) updates.priority = priority;
     if (notes !== undefined) updates.notes = notes;
 
     const task = updateTask(taskId, updates);
     if (!task) {
       return `Error: Task ${taskId} was deleted before the update completed. It no longer exists.`;
+    }
+
+    // v2.5.3 — if any schedule field changed, recompute next_run_at so the
+    // scheduler picks up the edit. Without this, agents could change the
+    // recurrence (interval, unit, day-of-week list, end conditions) but the
+    // task would still fire at the old cadence until the next natural run.
+    const scheduleChanged = (
+      scheduledStart !== undefined ||
+      repeatInterval !== undefined ||
+      repeatUnit !== undefined ||
+      repeatEndType !== undefined ||
+      repeatEndValue !== undefined ||
+      repeatDaysOfWeek !== undefined
+    );
+    if (scheduleChanged) {
+      try {
+        const db = getDb();
+        const row = db.prepare(`
+          SELECT id, scheduled_start, repeat_interval, repeat_unit,
+                 repeat_end_type, repeat_end_value, repeat_days_of_week,
+                 run_count, is_paused, last_run_at, next_run_at, schedule_status
+          FROM tasks WHERE id = ?
+        `).get(taskId) as {
+          id: string;
+          scheduled_start: string | null;
+          repeat_interval: number | null;
+          repeat_unit: string | null;
+          repeat_end_type: string | null;
+          repeat_end_value: string | null;
+          repeat_days_of_week: string | null;
+          run_count: number;
+          is_paused: number;
+          last_run_at: string | null;
+          next_run_at: string | null;
+          schedule_status: string;
+        } | undefined;
+        if (row) {
+          const nextRun = calculateNextRun(row);
+          // Only set schedule_status to 'waiting' if there is a future run.
+          // calculateNextRun returns null for completed/non-recurring tasks
+          // that have already fired — in that case leave whatever status was
+          // there (typically 'completed' or 'idle').
+          if (nextRun) {
+            db.prepare(`
+              UPDATE tasks
+              SET next_run_at = ?, schedule_status = 'waiting', updated_at = datetime('now')
+              WHERE id = ?
+            `).run(nextRun, taskId);
+          } else if (row.scheduled_start === null) {
+            // Schedule was cleared entirely — drop next_run_at too.
+            db.prepare(`
+              UPDATE tasks
+              SET next_run_at = NULL, schedule_status = 'idle', updated_at = datetime('now')
+              WHERE id = ?
+            `).run(taskId);
+          }
+        }
+      } catch (recalcErr) {
+        // Non-fatal: the row update succeeded; only the recompute failed.
+        // Log it so we notice, but don't fail the edit.
+        logger.warn('trackerEditTask: schedule recompute failed', {
+          taskId,
+          error: recalcErr instanceof Error ? recalcErr.message : String(recalcErr),
+        }, agentId);
+      }
     }
 
     const changed: string[] = [];

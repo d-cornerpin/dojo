@@ -1000,7 +1000,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'tracker_edit_task',
-    description: 'Edit any structural field on a task — title, description, dependencies, step ordering, schedule, priority, notes. Pass any subset of fields. Use tracker_update_status for status changes, tracker_reassign_task for assignee changes, and tracker_pause_schedule for pause/resume — those have side-effects this tool intentionally skips.',
+    description: 'Edit any structural field on a task — title, description, dependencies, step ordering, schedule (including the day-of-week list for "specific_days" recurrence), priority, notes. Pass any subset of fields. Editing any schedule field automatically recomputes next_run_at so the scheduler picks up the change. Use tracker_update_status for status changes, tracker_reassign_task for assignee changes, and tracker_pause_schedule for pause/resume — those have side-effects this tool intentionally skips.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1016,9 +1016,22 @@ export const toolDefinitions: ToolDefinition[] = [
         phase: { type: 'number', description: 'New phase number within the project' },
         scheduled_start: { type: 'string', description: 'New scheduled start time (ISO 8601 UTC, e.g. 2026-05-10T14:00:00Z). Pass null or empty string to clear and run immediately.' },
         repeat_interval: { type: 'number', description: 'Repeat interval value (e.g. 1, 2). Pair with repeat_unit.' },
-        repeat_unit: { type: 'string', description: 'Repeat unit: "minutes" | "hours" | "days" | "weekdays" (Mon–Fri only, skips weekends) | "weeks" | "months" | "years"' },
-        repeat_end_type: { type: 'string', description: 'How the recurrence ends: "never" | "after_n" | "on_date"' },
-        repeat_end_value: { type: 'string', description: 'Value for repeat_end_type ("after_n" → count, "on_date" → ISO date)' },
+        repeat_unit: {
+          type: 'string',
+          enum: ['minutes', 'hours', 'days', 'weekdays', 'specific_days', 'weeks', 'months', 'years'],
+          description: 'Repeat unit. "weekdays" = Mon–Fri only (skips weekends). "specific_days" = an explicit set of weekdays you provide via repeat_days_of_week (e.g. "every Monday and Wednesday"). For specific_days, repeat_interval is ignored — the task fires on each listed day every week.',
+        },
+        repeat_days_of_week: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Required when repeat_unit="specific_days". List of weekday names: ["mon","wed"] for Mondays and Wednesdays, ["mon","tue","wed","thu"] for weekdays except Friday. Accepted names: sun/mon/tue/wed/thu/fri/sat (case-insensitive). Integers 0-6 (0=Sun..6=Sat) also accepted. Pass [] to clear.',
+        },
+        repeat_end_type: {
+          type: 'string',
+          enum: ['never', 'after_count', 'on_date'],
+          description: 'How the recurrence ends: "never" | "after_count" | "on_date".',
+        },
+        repeat_end_value: { type: 'string', description: 'Value for repeat_end_type ("after_count" → count of runs as string, "on_date" → ISO date).' },
         priority: { type: 'string', description: 'Priority: "high" | "normal" | "low"' },
         notes: { type: 'string', description: 'Replace the notes field. To append rather than replace, use tracker_add_notes.' },
       },
@@ -2440,6 +2453,50 @@ function permissionDeniedMessage(reason: string | undefined): string {
   return `[BLOCKED] Permission denied: ${reason ?? 'not allowed'}\n\nThis operation is permanently blocked by your permission settings. Retrying will fail every time.\n\nInstead, you should:\n1. Try an alternative approach that doesn't require this permission\n2. Call complete_task(result="blocked", notes="Need permission for: ${reason ?? 'this action'}") to report you are blocked\n3. Or use send_to_agent to ask another agent that has the required permissions`;
 }
 
+// v2.5.3 — shared by tracker_create_task and tracker_edit_task. Accepts an
+// array of names ("mon", "wednesday"), an array of ints (0-6), or a CSV
+// string and returns the canonical CSV-of-ints stored in the DB ("1,3").
+// Returns null when the input is null (caller wants to clear), undefined
+// when the field wasn't supplied, or a string when normalization succeeded.
+// Returns the literal string '__INVALID__' if every entry was unparseable
+// — callers translate that to a user-facing error.
+const REPEAT_DAY_NAME_MAP: Record<string, number> = {
+  sun: 0, sunday: 0,
+  mon: 1, monday: 1,
+  tue: 2, tues: 2, tuesday: 2,
+  wed: 3, weds: 3, wednesday: 3,
+  thu: 4, thur: 4, thurs: 4, thursday: 4,
+  fri: 5, friday: 5,
+  sat: 6, saturday: 6,
+};
+function normalizeRepeatDaysOfWeek(rawDays: unknown): string | null | undefined {
+  if (rawDays === undefined) return undefined;
+  if (rawDays === null) return null;
+  const raw: unknown[] = Array.isArray(rawDays)
+    ? rawDays
+    : typeof rawDays === 'string'
+      ? rawDays.split(',')
+      : [];
+  if (Array.isArray(rawDays) && rawDays.length === 0) return null; // explicit clear
+  const nums = new Set<number>();
+  for (const item of raw) {
+    if (typeof item === 'number' && Number.isInteger(item) && item >= 0 && item <= 6) {
+      nums.add(item);
+    } else if (typeof item === 'string') {
+      const trimmed = item.trim().toLowerCase();
+      if (trimmed === '') continue;
+      const asNum = parseInt(trimmed, 10);
+      if (Number.isInteger(asNum) && asNum >= 0 && asNum <= 6) {
+        nums.add(asNum);
+      } else if (REPEAT_DAY_NAME_MAP[trimmed] !== undefined) {
+        nums.add(REPEAT_DAY_NAME_MAP[trimmed]);
+      }
+    }
+  }
+  if (nums.size === 0) return '__INVALID__';
+  return [...nums].sort((a, b) => a - b).join(',');
+}
+
 export async function executeTool(agentId: string, toolCall: ToolCall): Promise<ToolResult> {
   const { id, name, arguments: args } = toolCall;
 
@@ -3171,49 +3228,15 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
 
         // v2.5.2 — normalize repeat_days_of_week from agent-friendly
         // formats (array of names, array of ints, or CSV string) into
-        // the canonical CSV-of-ints stored in the DB. Day name table
-        // accepts the common 3-letter abbreviations.
-        let repeatDaysOfWeek: string | undefined = undefined;
-        const rawDays = args.repeat_days_of_week;
-        if (rawDays != null) {
-          const NAME_MAP: Record<string, number> = {
-            sun: 0, sunday: 0,
-            mon: 1, monday: 1,
-            tue: 2, tues: 2, tuesday: 2,
-            wed: 3, weds: 3, wednesday: 3,
-            thu: 4, thur: 4, thurs: 4, thursday: 4,
-            fri: 5, friday: 5,
-            sat: 6, saturday: 6,
-          };
-          const nums = new Set<number>();
-          const raw: unknown[] = Array.isArray(rawDays)
-            ? rawDays
-            : typeof rawDays === 'string'
-              ? rawDays.split(',')
-              : [];
-          for (const item of raw) {
-            if (typeof item === 'number' && Number.isInteger(item) && item >= 0 && item <= 6) {
-              nums.add(item);
-            } else if (typeof item === 'string') {
-              const trimmed = item.trim().toLowerCase();
-              if (trimmed === '') continue;
-              const asNum = parseInt(trimmed, 10);
-              if (Number.isInteger(asNum) && asNum >= 0 && asNum <= 6) {
-                nums.add(asNum);
-              } else if (NAME_MAP[trimmed] !== undefined) {
-                nums.add(NAME_MAP[trimmed]);
-              }
-            }
-          }
-          if (nums.size === 0 && args.repeat_unit === 'specific_days') {
-            content = 'Error: repeat_unit="specific_days" requires repeat_days_of_week with at least one valid day. Accepted: sun/mon/tue/wed/thu/fri/sat or 0-6.';
-            isError = true;
-            break;
-          }
-          if (nums.size > 0) {
-            repeatDaysOfWeek = [...nums].sort((a, b) => a - b).join(',');
-          }
+        // the canonical CSV-of-ints stored in the DB. v2.5.3 — shared
+        // with tracker_edit_task via normalizeRepeatDaysOfWeek().
+        const normalizedDays = normalizeRepeatDaysOfWeek(args.repeat_days_of_week);
+        if (normalizedDays === '__INVALID__') {
+          content = 'Error: repeat_days_of_week contained no valid days. Accepted: sun/mon/tue/wed/thu/fri/sat or 0-6.';
+          isError = true;
+          break;
         }
+        const repeatDaysOfWeek: string | undefined = normalizedDays ?? undefined;
         if (args.repeat_unit === 'specific_days' && !repeatDaysOfWeek) {
           content = 'Error: repeat_unit="specific_days" requires repeat_days_of_week (e.g. ["mon","wed"]).';
           isError = true;
@@ -3300,6 +3323,42 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
           'repeat_end_type', 'repeat_end_value', 'priority', 'notes',
         ]) {
           if (args[k] !== undefined) editArgs[k] = args[k];
+        }
+        // v2.5.3 — normalize and forward repeat_days_of_week so agents can
+        // change the day-of-week list on an existing recurring task without
+        // having to delete and recreate it. Mirrors the create-side
+        // validation: specific_days requires at least one valid day.
+        if (args.repeat_days_of_week !== undefined) {
+          const normalizedDays = normalizeRepeatDaysOfWeek(args.repeat_days_of_week);
+          if (normalizedDays === '__INVALID__') {
+            content = 'Error: repeat_days_of_week contained no valid days. Accepted: sun/mon/tue/wed/thu/fri/sat or 0-6, or [] to clear.';
+            isError = true;
+            break;
+          }
+          editArgs.repeat_days_of_week = normalizedDays; // string | null
+        }
+        // If the agent is switching to specific_days, make sure the list is
+        // present (either supplied this call, or already on the row).
+        if (args.repeat_unit === 'specific_days') {
+          if (editArgs.repeat_days_of_week === undefined || editArgs.repeat_days_of_week === null) {
+            // Permit it only if days were also supplied (already handled
+            // above) or if the row already carries days.
+            try {
+              const { getDb } = await import('../db/connection.js');
+              const row = getDb().prepare('SELECT repeat_days_of_week FROM tasks WHERE id = ?').get(args.task_id) as { repeat_days_of_week: string | null } | undefined;
+              const existingDays = row?.repeat_days_of_week ?? null;
+              if (!editArgs.repeat_days_of_week && !existingDays) {
+                content = 'Error: switching repeat_unit to "specific_days" requires repeat_days_of_week (e.g. ["mon","wed"]).';
+                isError = true;
+                break;
+              }
+            } catch { /* fall through; tracker layer will surface row issues */ }
+          }
+          // Mirror create: specific_days needs interval=1 so downstream
+          // formatters detect a recurring schedule.
+          if (editArgs.repeat_interval === undefined) {
+            editArgs.repeat_interval = 1;
+          }
         }
         content = trackerEditTask(agentId, editArgs);
         isError = content.startsWith('Error');
