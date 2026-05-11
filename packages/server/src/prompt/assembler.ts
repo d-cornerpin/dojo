@@ -360,7 +360,7 @@ Each non-user-chat message has a \`[SOURCE: ...]\` tag:
 - \`[SOURCE: AGENT MESSAGE FROM X]\` = legacy agent message
 - \`[SOURCE: TEAMS MESSAGE FROM ...]\` = Teams message (reply via \`teams_send_message\` using the chat_id in the note)
 - \`[SYSTEM NOTE: ...]\`, \`[Note: ...]\`, \`[Engine ack] ...\` = system context, not requests
-- \`[SENT VIA IMESSAGE to ${getOwnerName()}]\` = your prior response went via iMessage`);
+- \`[SENT VIA IMESSAGE to ${getOwnerName()}]\` = your prior response went via iMessage. **DO NOT EMIT THIS TAG YOURSELF.** It's a system-generated marker the engine writes automatically after iMessage delivery. Including it in your reply text would send the literal string "[SENT VIA IMESSAGE to ${getOwnerName()}]" to ${getOwnerName()}'s phone — they'd see the routing annotation in their iMessage, which looks broken.`);
 
   // Engine's ackInjector handles "acknowledge before tools" automatically.
   // The "always report back" guidance lives in the v2 terseness section.

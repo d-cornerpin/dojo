@@ -1015,6 +1015,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
       });
 
       let persistedContent: string | null = result.content;
+      // v2.5.7 — strip system routing tags the LLM may have copied from
+      // prior conversation history (e.g. "[SENT VIA IMESSAGE to David]")
+      // before persisting OR routing to iMessage. This cleans both the
+      // dashboard render path and the iMessage outbound path at the source,
+      // and keeps the next turn's LLM context free of the hallucinated tags
+      // (so we don't reinforce the pattern).
+      if (persistedContent) {
+        const { stripSystemTags } = await import('../../services/imessage-bridge.js');
+        const cleaned = stripSystemTags(persistedContent);
+        persistedContent = cleaned || null;
+      }
       if (persistenceDecision.decision === 'suppress' && result.toolCalls.length === 0) {
         logger.debug('v2: suppressed trailing text', {
           agentId,

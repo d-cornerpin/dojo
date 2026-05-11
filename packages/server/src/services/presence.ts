@@ -5,7 +5,7 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { sendIMessage, getDefaultSender, getIMBridgeStatus } from './imessage-bridge.js';
+import { sendIMessage, getDefaultSender, getIMBridgeStatus, stripSystemTags } from './imessage-bridge.js';
 import { isPrimaryAgent, getPrimaryAgentName } from '../config/platform.js';
 
 const logger = createLogger('presence');
@@ -42,7 +42,11 @@ export function isImessageConfigured(): boolean {
  * Strips markdown, tool calls, verbose content. Keeps only conversational text.
  */
 function distillForText(content: string, agentName: string): string {
-  let text = content;
+  // v2.5.7 — Strip "[SENT VIA IMESSAGE to ...]" routing tags first via the
+  // shared helper. By v2.5.7 the v2 loop already strips these from
+  // persisted assistant text, but distillForText is called with raw
+  // content from various sources — keep this layer too as defense.
+  let text = stripSystemTags(content);
 
   // Strip === File: === blocks
   text = text.replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '');

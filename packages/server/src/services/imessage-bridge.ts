@@ -365,12 +365,39 @@ export function clearIMResponseFlag(agentId: string): void {
   pendingIMResponseMap.delete(agentId);
 }
 
+/**
+ * v2.5.7 — strip system routing tags the LLM may have copied from prior
+ * conversation history into its own reply (most commonly the
+ * "[SENT VIA IMESSAGE to <owner>]" marker the engine writes after delivery).
+ * These tags are dashboard-only metadata; if they leak into the outgoing
+ * iMessage body the user sees the literal annotation on their phone, and
+ * if they appear in the persisted assistant message they break the
+ * dashboard's tag-detection regex (which expects the tag to be the entire
+ * message content) so the tag renders as raw text.
+ *
+ * Aggressive strip: removes the bracket PLUS any same-line content after
+ * it — Kevin sometimes emits the tag followed by a duplicated URL on the
+ * same line ("[SENT VIA IMESSAGE to David]https://..."). The whole
+ * trailing block is hallucinated noise, not legitimate content.
+ *
+ * Exported so the v2 loop can sanitize persistedContent at the source and
+ * presence.ts's distillForText can use the same regex.
+ */
+export function stripSystemTags(text: string): string {
+  return text
+    .replace(/\s*\[SENT VIA IMESSAGE to [^\]]+\][^\n]*\n?/gi, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export function sendResponseViaIMessage(text: string, agentId?: string): void {
   if (!agentId) agentId = getPrimaryAgentId();
   const entry = pendingIMResponseMap.get(agentId);
   const sender = entry?.sender ?? approvedSenders[0];
   if (sender) {
-    sendIMessage(sender, text); // sanitization happens inside sendIMessage
+    const cleaned = stripSystemTags(text);
+    if (cleaned) sendIMessage(sender, cleaned); // sanitization happens inside sendIMessage
   }
   pendingIMResponseMap.delete(agentId);
 }
@@ -885,7 +912,7 @@ export function getApprovedSenders(): string[] {
   return [];
 }
 
-export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical'): void {
+export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice'): void {
   try {
     // v2.3.19 (error-handling-spec Phase 5) — only CRITICAL alerts go
     // to iMessage. User feedback: "I only want true blockers or true
@@ -894,18 +921,23 @@ export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critic
     // separately via chat:error / Vitals), they just don't ping the
     // phone. If a caller is wrong-severity, fix it at the call site —
     // don't override here.
+    //
+    // v2.5.7 — added 'notice' for friendly status announcements that
+    // SHOULD go to iMessage but DON'T deserve the scary "[CRITICAL]"
+    // prefix (e.g. "Dojo is online at <url>"). Routes to iMessage same
+    // as critical, but with no urgency tag prepended.
     const scrubbed = scrubTechnicalDetail(message);
 
-    if (urgency !== 'critical') {
-      logger.info('Alert suppressed from iMessage (non-critical)', {
+    if (urgency !== 'critical' && urgency !== 'notice') {
+      logger.info('Alert suppressed from iMessage (non-critical/non-notice)', {
         urgency,
         message: scrubbed.slice(0, 200),
       });
       return;
     }
 
-    const fullMessage = `[CRITICAL] ${scrubbed}`;
-    logger.info('Sending critical alert to iMessage', {
+    const fullMessage = urgency === 'critical' ? `[CRITICAL] ${scrubbed}` : scrubbed;
+    logger.info(`Sending ${urgency} alert to iMessage`, {
       message: scrubbed.slice(0, 200),
     });
 

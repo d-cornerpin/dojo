@@ -229,11 +229,11 @@ function startQuickTunnel(port: number): { ok: boolean; error?: string } {
         broadcastStatus();
 
         // Send the new URL via iMessage so the owner always has it.
-        // Marked critical so the v2.5 alert-severity gate routes it to
-        // the phone — the user explicitly needs the URL to access the
-        // dashboard from outside the local network.
+        // 'notice' severity — routes to iMessage like critical does, but
+        // without the "[CRITICAL]" prefix. This is a friendly status
+        // announcement, not an incident, so it shouldn't shout.
         try {
-          sendAlert(`Dojo is online at ${tunnelUrl}`, 'critical');
+          sendAlert(`Dojo is online at ${tunnelUrl}`, 'notice');
         } catch { /* iMessage bridge may not be running yet */ }
       }
     };
