@@ -114,24 +114,24 @@ export const GoogleWorkspaceSetup = () => {
 
   return (
     <div className="space-y-5">
-      <p className="text-sm text-white/55">
+      <p className="text-sm text-ui/55">
         Give your agents access to Gmail, Calendar, Drive, Docs, Sheets, and more.
         This step is optional — you can connect Google Workspace later from Settings.
       </p>
 
       {/* Section 1: Install gws CLI */}
       <div className="space-y-2">
-        <h3 className="text-sm font-semibold text-white/80">1. Google Workspace CLI</h3>
+        <h3 className="text-sm font-semibold text-ui/70">1. Google Workspace CLI</h3>
         {installed === null ? (
-          <p className="text-sm text-white/40">Checking...</p>
+          <p className="text-sm text-ui/40">Checking...</p>
         ) : installed ? (
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-cp-teal" />
-            <span className="text-sm text-white/70">Installed{version ? ` (${version})` : ''}</span>
+            <span className="text-sm text-ui/70">Installed{version ? ` (${version})` : ''}</span>
           </div>
         ) : (
           <div className="space-y-2">
-            <p className="text-sm text-white/40">The gws CLI is required for Google Workspace integration.</p>
+            <p className="text-sm text-ui/40">The gws CLI is required for Google Workspace integration.</p>
             <button
               onClick={handleInstall}
               disabled={installing}
@@ -146,12 +146,12 @@ export const GoogleWorkspaceSetup = () => {
       {/* Section 2: Sign In */}
       {installed && (
         <div className="space-y-2">
-          <h3 className="text-sm font-semibold text-white/80">2. Sign in with Google</h3>
+          <h3 className="text-sm font-semibold text-ui/70">2. Sign in with Google</h3>
           {connected ? (
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-cp-teal animate-pulse" />
-                <span className="text-sm text-white/70">Connected as <strong className="text-white">{email}</strong></span>
+                <span className="text-sm text-ui/70">Connected as <strong className="text-ui">{email}</strong></span>
               </div>
               <button onClick={handleTestConnection} disabled={testing}
                 className="glass-btn glass-btn-ghost text-xs">
@@ -160,7 +160,7 @@ export const GoogleWorkspaceSetup = () => {
             </div>
           ) : (
             <div className="space-y-2">
-              <p className="text-sm text-white/40">
+              <p className="text-sm text-ui/40">
                 Sign in with your Google account to grant access. This opens a browser window for OAuth consent.
               </p>
               <button onClick={handleConnect} disabled={authStarted}
@@ -178,23 +178,23 @@ export const GoogleWorkspaceSetup = () => {
       {/* Section 3: Choose Services */}
       {connected && (
         <div className="space-y-2">
-          <h3 className="text-sm font-semibold text-white/80">3. Enabled Services</h3>
+          <h3 className="text-sm font-semibold text-ui/70">3. Enabled Services</h3>
           <div className="grid grid-cols-3 gap-2">
             {serviceList.map(svc => (
               <label key={svc.key}
                 className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
-                  services[svc.key as keyof typeof services] ? 'bg-cp-teal/10 border border-cp-teal/30' : 'bg-white/[0.04] border border-white/[0.06]'
+                  services[svc.key as keyof typeof services] ? 'bg-cp-teal/10 border border-cp-teal/30' : 'bg-ui/[0.05] border border-ui/[0.06]'
                 }`}>
                 <input type="checkbox"
                   checked={services[svc.key as keyof typeof services]}
                   onChange={(e) => handleServiceToggle(svc.key, e.target.checked)}
                   className="sr-only" />
                 <span className={`w-4 h-4 rounded flex items-center justify-center text-[10px] ${
-                  services[svc.key as keyof typeof services] ? 'bg-cp-teal text-[#0B0F1A]' : 'bg-white/10 text-white/30'
+                  services[svc.key as keyof typeof services] ? 'bg-cp-teal text-[var(--btn-success-text)]' : 'bg-ui/[0.12] text-ui/25'
                 }`}>
                   {services[svc.key as keyof typeof services] ? '\u2713' : ''}
                 </span>
-                <span className="text-sm text-white/70">{svc.label}</span>
+                <span className="text-sm text-ui/70">{svc.label}</span>
               </label>
             ))}
           </div>
@@ -203,7 +203,7 @@ export const GoogleWorkspaceSetup = () => {
 
       {/* Skip notice */}
       {!connected && (
-        <p className="text-xs text-white/30 text-center mt-4">
+        <p className="text-xs text-ui/25 text-center mt-4">
           Skip this step to continue without Google Workspace. You can connect later in Settings.
         </p>
       )}

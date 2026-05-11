@@ -46,13 +46,13 @@ export const TaskRunHistory = ({ taskId }: TaskRunHistoryProps) => {
     load();
   }, [taskId]);
 
-  if (loading) return <p className="text-sm text-white/40 py-4">Loading run history...</p>;
-  if (runs.length === 0) return <p className="text-sm text-white/30 py-4">No runs yet</p>;
+  if (loading) return <p className="text-sm text-ui/40 py-4">Loading run history...</p>;
+  if (runs.length === 0) return <p className="text-sm text-ui/25 py-4">No runs yet</p>;
 
   return (
     <div className="space-y-1">
       {/* Header */}
-      <div className="flex items-center gap-3 px-3 py-2 text-[10px] text-white/30 uppercase tracking-wide">
+      <div className="flex items-center gap-3 px-3 py-2 text-[10px] text-ui/25 uppercase tracking-wide">
         <span className="w-8">#</span>
         <span className="w-28">Scheduled</span>
         <span className="w-28">Started</span>
@@ -65,25 +65,25 @@ export const TaskRunHistory = ({ taskId }: TaskRunHistoryProps) => {
         <div key={run.id}>
           <div
             onClick={() => setExpandedRun(expandedRun === run.id ? null : run.id)}
-            className="flex items-center gap-3 px-3 py-2 glass-nested rounded-lg cursor-pointer hover:bg-white/[0.04] transition-colors"
+            className="flex items-center gap-3 px-3 py-2 glass-nested rounded-lg cursor-pointer hover:bg-ui/[0.05] transition-colors"
           >
-            <span className="w-8 text-xs text-white/50 font-mono">{run.runNumber}</span>
-            <span className="w-28 text-xs text-white/60">{formatTime(run.scheduledFor)}</span>
-            <span className="w-28 text-xs text-white/60">{formatTime(run.startedAt)}</span>
-            <span className="w-16 text-xs text-white/50 font-mono">{formatDuration(run.startedAt, run.completedAt)}</span>
+            <span className="w-8 text-xs text-ui/55 font-mono">{run.runNumber}</span>
+            <span className="w-28 text-xs text-ui/55">{formatTime(run.scheduledFor)}</span>
+            <span className="w-28 text-xs text-ui/55">{formatTime(run.startedAt)}</span>
+            <span className="w-16 text-xs text-ui/55 font-mono">{formatDuration(run.startedAt, run.completedAt)}</span>
             <span className="w-16">
               <span className={`glass-badge text-[10px] ${statusColors[run.status] ?? 'glass-badge-gray'} capitalize`}>
                 {run.status}
               </span>
             </span>
-            <span className="flex-1 text-xs text-white/60 truncate">{run.agentName ?? run.assignedTo ?? '--'}</span>
+            <span className="flex-1 text-xs text-ui/55 truncate">{run.agentName ?? run.assignedTo ?? '--'}</span>
           </div>
 
           {/* Expanded detail */}
           {expandedRun === run.id && (run.resultSummary || run.error) && (
             <div className="ml-8 mr-3 mb-1 px-3 py-2 glass-nested rounded-lg text-xs">
               {run.resultSummary && (
-                <div className="text-white/70 whitespace-pre-wrap">{run.resultSummary}</div>
+                <div className="text-ui/70 whitespace-pre-wrap">{run.resultSummary}</div>
               )}
               {run.error && (
                 <div className="text-cp-coral mt-1">{run.error}</div>

@@ -4,13 +4,13 @@ import * as api from '../lib/api';
 import { parseUtc } from '../lib/dates';
 
 const DEPTH_COLORS: Record<number, string> = {
-  0: 'text-blue-400',
-  1: 'text-green-400',
-  2: 'text-orange-400',
+  0: 'text-cp-blue',
+  1: 'text-cp-teal',
+  2: 'text-cp-amber',
 };
 
 const getDepthTextColor = (depth: number): string => {
-  return DEPTH_COLORS[depth] ?? 'text-purple-400';
+  return DEPTH_COLORS[depth] ?? 'text-cp-purple';
 };
 
 interface SummaryDetailProps {
@@ -84,7 +84,7 @@ export const SummaryDetail = ({
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full white/40 text-sm">
+      <div className="flex items-center justify-center h-full text-ui/40 text-sm">
         Loading summary...
       </div>
     );
@@ -92,7 +92,7 @@ export const SummaryDetail = ({
 
   if (error) {
     return (
-      <div className="flex items-center justify-center h-full text-red-400 text-sm">
+      <div className="flex items-center justify-center h-full text-cp-coral text-sm">
         {error}
       </div>
     );
@@ -115,12 +115,12 @@ export const SummaryDetail = ({
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b white/[0.06]">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-ui/[0.06]">
         <div className="flex items-center gap-2">
           <span className={`font-bold ${getDepthTextColor(detail.depth)}`}>
             Depth {detail.depth}
           </span>
-          <span className="text-xs px-2 py-0.5 rounded bg-white/[0.05] white/55">
+          <span className="text-xs px-2 py-0.5 rounded bg-ui/[0.05] text-ui/55">
             {detail.kind}
           </span>
         </div>
@@ -131,7 +131,7 @@ export const SummaryDetail = ({
                 setEditContent(detail.content);
                 setEditing(true);
               }}
-              className="px-3 py-1.5 text-xs rounded bg-white/[0.05] white/70 hover:bg-white/[0.08] transition-colors"
+              className="px-3 py-1.5 text-xs rounded bg-ui/[0.05] text-ui/70 hover:bg-ui/[0.08] transition-colors"
             >
               Edit
             </button>
@@ -139,23 +139,23 @@ export const SummaryDetail = ({
           {!showDeleteConfirm ? (
             <button
               onClick={() => setShowDeleteConfirm(true)}
-              className="px-3 py-1.5 text-xs rounded bg-red-900/30 text-red-400 hover:bg-red-900/50 transition-colors"
+              className="px-3 py-1.5 text-xs rounded bg-cp-coral/20 text-cp-coral hover:bg-cp-coral/30 transition-colors"
             >
               Delete
             </button>
           ) : (
             <div className="flex items-center gap-1">
-              <span className="text-xs text-red-400 mr-1">Confirm?</span>
+              <span className="text-xs text-cp-coral mr-1">Confirm?</span>
               <button
                 onClick={handleDelete}
                 disabled={deleting}
-                className="px-3 py-1.5 text-xs rounded bg-red-600 text-white hover:bg-red-500 transition-colors disabled:opacity-50"
+                className="px-3 py-1.5 text-xs rounded bg-cp-coral text-[var(--btn-primary-text)] hover:bg-cp-coral/80 transition-colors disabled:opacity-50"
               >
                 {deleting ? 'Deleting...' : 'Yes'}
               </button>
               <button
                 onClick={() => setShowDeleteConfirm(false)}
-                className="px-3 py-1.5 text-xs rounded bg-white/[0.05] white/70 hover:bg-white/[0.08] transition-colors"
+                className="px-3 py-1.5 text-xs rounded bg-ui/[0.05] text-ui/70 hover:bg-ui/[0.08] transition-colors"
               >
                 No
               </button>
@@ -183,57 +183,57 @@ export const SummaryDetail = ({
               </button>
               <button
                 onClick={() => setEditing(false)}
-                className="px-4 py-1.5 text-xs rounded bg-white/[0.05] white/70 hover:bg-white/[0.08] transition-colors"
+                className="px-4 py-1.5 text-xs rounded bg-ui/[0.05] text-ui/70 hover:bg-ui/[0.08] transition-colors"
               >
                 Cancel
               </button>
             </div>
           </div>
         ) : (
-          <div className="white/[0.03] rounded-lg p-4">
-            <pre className="text-sm white/90 whitespace-pre-wrap font-mono leading-relaxed">
+          <div className="text-ui/25 rounded-lg p-4">
+            <pre className="text-sm text-ui/90 whitespace-pre-wrap font-mono leading-relaxed">
               {detail.content}
             </pre>
           </div>
         )}
 
         {/* Metadata table */}
-        <div className="white/[0.03] rounded-lg overflow-hidden">
+        <div className="text-ui/25 rounded-lg overflow-hidden">
           <table className="w-full text-sm">
             <tbody>
-              <tr className="border-b white/[0.08]/50">
-                <td className="px-4 py-2 white/40 font-medium w-40">ID</td>
-                <td className="px-4 py-2 white/70 font-mono text-xs">{detail.id}</td>
+              <tr className="border-b border-ui/[0.10]/50">
+                <td className="px-4 py-2 text-ui/40 font-medium w-40">ID</td>
+                <td className="px-4 py-2 text-ui/70 font-mono text-xs">{detail.id}</td>
               </tr>
-              <tr className="border-b white/[0.08]/50">
-                <td className="px-4 py-2 white/40 font-medium">Depth</td>
+              <tr className="border-b border-ui/[0.10]/50">
+                <td className="px-4 py-2 text-ui/40 font-medium">Depth</td>
                 <td className={`px-4 py-2 font-medium ${getDepthTextColor(detail.depth)}`}>
                   {detail.depth}
                 </td>
               </tr>
-              <tr className="border-b white/[0.08]/50">
-                <td className="px-4 py-2 white/40 font-medium">Kind</td>
-                <td className="px-4 py-2 white/70">{detail.kind}</td>
+              <tr className="border-b border-ui/[0.10]/50">
+                <td className="px-4 py-2 text-ui/40 font-medium">Kind</td>
+                <td className="px-4 py-2 text-ui/70">{detail.kind}</td>
               </tr>
-              <tr className="border-b white/[0.08]/50">
-                <td className="px-4 py-2 white/40 font-medium">Tokens</td>
-                <td className="px-4 py-2 white/70">{detail.tokenCount.toLocaleString()}</td>
+              <tr className="border-b border-ui/[0.10]/50">
+                <td className="px-4 py-2 text-ui/40 font-medium">Tokens</td>
+                <td className="px-4 py-2 text-ui/70">{detail.tokenCount.toLocaleString()}</td>
               </tr>
-              <tr className="border-b white/[0.08]/50">
-                <td className="px-4 py-2 white/40 font-medium">Descendants</td>
-                <td className="px-4 py-2 white/70">{detail.descendantCount}</td>
+              <tr className="border-b border-ui/[0.10]/50">
+                <td className="px-4 py-2 text-ui/40 font-medium">Descendants</td>
+                <td className="px-4 py-2 text-ui/70">{detail.descendantCount}</td>
               </tr>
-              <tr className="border-b white/[0.08]/50">
-                <td className="px-4 py-2 white/40 font-medium">Earliest</td>
-                <td className="px-4 py-2 white/70">{fmtDate(detail.earliestAt)}</td>
+              <tr className="border-b border-ui/[0.10]/50">
+                <td className="px-4 py-2 text-ui/40 font-medium">Earliest</td>
+                <td className="px-4 py-2 text-ui/70">{fmtDate(detail.earliestAt)}</td>
               </tr>
-              <tr className="border-b white/[0.08]/50">
-                <td className="px-4 py-2 white/40 font-medium">Latest</td>
-                <td className="px-4 py-2 white/70">{fmtDate(detail.latestAt)}</td>
+              <tr className="border-b border-ui/[0.10]/50">
+                <td className="px-4 py-2 text-ui/40 font-medium">Latest</td>
+                <td className="px-4 py-2 text-ui/70">{fmtDate(detail.latestAt)}</td>
               </tr>
               <tr>
-                <td className="px-4 py-2 white/40 font-medium">Created</td>
-                <td className="px-4 py-2 white/70">{fmtDate(detail.createdAt)}</td>
+                <td className="px-4 py-2 text-ui/40 font-medium">Created</td>
+                <td className="px-4 py-2 text-ui/70">{fmtDate(detail.createdAt)}</td>
               </tr>
             </tbody>
           </table>
@@ -242,7 +242,7 @@ export const SummaryDetail = ({
         {/* Parent links */}
         {detail.parentIds.length > 0 && (
           <div>
-            <h4 className="text-xs font-medium white/40 uppercase tracking-wider mb-2">
+            <h4 className="text-xs font-medium text-ui/40 uppercase tracking-wider mb-2">
               Parents
             </h4>
             <div className="flex flex-wrap gap-1.5">
@@ -250,7 +250,7 @@ export const SummaryDetail = ({
                 <button
                   key={pid}
                   onClick={() => onSelect(pid)}
-                  className="px-2 py-1 text-xs rounded bg-white/[0.05] text-blue-400 hover:bg-white/[0.08] hover:text-blue-300 transition-colors font-mono"
+                  className="px-2 py-1 text-xs rounded bg-ui/[0.05] text-cp-blue hover:bg-ui/[0.08] hover:text-cp-blue-light transition-colors font-mono"
                 >
                   {pid.slice(0, 8)}...
                 </button>
@@ -262,7 +262,7 @@ export const SummaryDetail = ({
         {/* Child links */}
         {detail.childIds.length > 0 && (
           <div>
-            <h4 className="text-xs font-medium white/40 uppercase tracking-wider mb-2">
+            <h4 className="text-xs font-medium text-ui/40 uppercase tracking-wider mb-2">
               Children
             </h4>
             <div className="flex flex-wrap gap-1.5">
@@ -270,7 +270,7 @@ export const SummaryDetail = ({
                 <button
                   key={cid}
                   onClick={() => onSelect(cid)}
-                  className="px-2 py-1 text-xs rounded bg-white/[0.05] text-green-400 hover:bg-white/[0.08] hover:text-green-300 transition-colors font-mono"
+                  className="px-2 py-1 text-xs rounded bg-ui/[0.05] text-cp-teal hover:bg-ui/[0.08] hover:text-cp-teal-light transition-colors font-mono"
                 >
                   {cid.slice(0, 8)}...
                 </button>
@@ -284,7 +284,7 @@ export const SummaryDetail = ({
           <div>
             <button
               onClick={() => setShowSourceMessages(!showSourceMessages)}
-              className="text-xs font-medium white/40 uppercase tracking-wider mb-2 flex items-center gap-1 hover:white/55 transition-colors"
+              className="text-xs font-medium text-ui/40 uppercase tracking-wider mb-2 flex items-center gap-1 hover:text-ui/55 transition-colors"
             >
               <span>{showSourceMessages ? '\u25BC' : '\u25B6'}</span>
               <span>Source Messages ({detail.sourceMessageIds.length})</span>
@@ -294,7 +294,7 @@ export const SummaryDetail = ({
                 {detail.sourceMessageIds.map((mid) => (
                   <div
                     key={mid}
-                    className="px-2 py-1 text-xs rounded bg-white/[0.05] white/55 font-mono"
+                    className="px-2 py-1 text-xs rounded bg-ui/[0.05] text-ui/55 font-mono"
                   >
                     {mid}
                   </div>

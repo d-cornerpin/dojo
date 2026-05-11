@@ -14,13 +14,13 @@ interface DagTreeProps {
 }
 
 const DEPTH_COLORS: Record<number, string> = {
-  0: 'bg-blue-500',
-  1: 'bg-green-500',
-  2: 'bg-orange-500',
+  0: 'bg-cp-blue',
+  1: 'bg-cp-teal',
+  2: 'bg-cp-amber',
 };
 
 const getDepthColor = (depth: number): string => {
-  return DEPTH_COLORS[depth] ?? 'bg-purple-500';
+  return DEPTH_COLORS[depth] ?? 'bg-cp-purple';
 };
 
 const formatTimeRange = (earliest: string, latest: string): string => {
@@ -54,8 +54,8 @@ const TreeNode = ({ summary, childrenMap, selectedId, onSelect, level }: TreeNod
       <div
         className={`flex items-start gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
           isSelected
-            ? 'bg-white/[0.08] ring-1 ring-blue-500'
-            : 'hover:bg-white/[0.05]'
+            ? 'bg-ui/[0.08] ring-1 ring-cp-blue'
+            : 'hover:bg-ui/[0.05]'
         }`}
         style={{ paddingLeft: `${level * 16 + 8}px` }}
       >
@@ -65,8 +65,8 @@ const TreeNode = ({ summary, childrenMap, selectedId, onSelect, level }: TreeNod
             e.stopPropagation();
             if (hasChildren) setExpanded(!expanded);
           }}
-          className={`w-4 h-4 flex items-center justify-center white/40 flex-shrink-0 mt-0.5 ${
-            hasChildren ? 'hover:white/70' : 'invisible'
+          className={`w-4 h-4 flex items-center justify-center text-ui/40 flex-shrink-0 mt-0.5 ${
+            hasChildren ? 'hover:text-ui/70' : 'invisible'
           }`}
         >
           {hasChildren ? (expanded ? '\u25BC' : '\u25B6') : ''}
@@ -79,15 +79,15 @@ const TreeNode = ({ summary, childrenMap, selectedId, onSelect, level }: TreeNod
         >
           <div className="flex items-center gap-2">
             <span
-              className={`inline-flex items-center justify-center px-1.5 py-0.5 rounded text-[10px] font-bold text-white flex-shrink-0 ${getDepthColor(
+              className={`inline-flex items-center justify-center px-1.5 py-0.5 rounded text-[10px] font-bold text-ui flex-shrink-0 ${getDepthColor(
                 summary.depth,
               )}`}
             >
               d{summary.depth}
             </span>
-            <span className="text-xs white/70 truncate">{snippet}</span>
+            <span className="text-xs text-ui/70 truncate">{snippet}</span>
           </div>
-          <div className="flex items-center gap-3 mt-0.5 text-[10px] white/40">
+          <div className="flex items-center gap-3 mt-0.5 text-[10px] text-ui/40">
             <span>{summary.tokenCount} tokens</span>
             <span>{formatTimeRange(summary.earliestAt, summary.latestAt)}</span>
             {summary.depth === 0 && (
@@ -154,7 +154,7 @@ export const DagTree = ({ summaries, links, selectedId, onSelect }: DagTreeProps
 
   if (summaries.length === 0) {
     return (
-      <div className="p-4 text-center white/40 text-sm">
+      <div className="p-4 text-center text-ui/40 text-sm">
         No summaries yet. Memory will appear here after compaction runs.
       </div>
     );

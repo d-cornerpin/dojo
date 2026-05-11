@@ -46,18 +46,18 @@ export const Settings = () => {
 
   return (
     <div className="flex-1 p-3 sm:p-6 overflow-y-auto">
-      <h1 className="text-lg sm:text-xl font-bold text-white mb-4 sm:mb-6">Settings</h1>
+      <h1 className="text-lg sm:text-xl font-bold text-ui mb-4 sm:mb-6">Settings</h1>
 
       {/* Tabs — hidden on mobile (handled by hamburger sub-menu instead) */}
-      <div className="hidden md:flex gap-1 mb-6 bg-white/[0.04] rounded-lg p-1 w-fit">
+      <div className="hidden md:flex gap-1 mb-6 bg-ui/[0.05] rounded-lg p-1 w-fit">
         {tabs.map((tab) => (
           <button
             key={tab.key}
             onClick={() => handleTabChange(tab.key)}
             className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
               activeTab === tab.key
-                ? 'bg-white/[0.05] text-white'
-                : 'white/55 hover:white/90'
+                ? 'bg-ui/[0.05] text-ui'
+                : 'text-ui/55 hover:text-ui/90'
             }`}
           >
             {tab.label}
@@ -204,13 +204,13 @@ const IMBridgeSettings = () => {
   return (
     <div className="glass-card p-4 space-y-4">
       <h3 className="card-header">iMessage Bridge</h3>
-      <p className="text-xs white/40">
+      <p className="text-xs text-ui/40">
         Enable to send and receive messages with your agent via iMessage. Requires Full Disk Access for Terminal in System Settings &gt; Privacy &amp; Security &gt; Full Disk Access.
       </p>
 
       {/* Toggle */}
       <div className="flex items-center justify-between">
-        <label className="text-sm white/70">Enable iMessage Bridge</label>
+        <label className="text-sm text-ui/70">Enable iMessage Bridge</label>
         <button
           onClick={() => setEnabled(!enabled)}
           className={`toggle-switch ${enabled ? 'toggle-on' : ''}`}
@@ -225,7 +225,7 @@ const IMBridgeSettings = () => {
           <label className="form-label mb-2">
             Approved Senders
           </label>
-          <p className="text-xs white/30 mb-2">
+          <p className="text-xs text-ui/25 mb-2">
             Phone numbers or Apple IDs that your agent will accept iMessages from and reply to.
           </p>
 
@@ -244,16 +244,16 @@ const IMBridgeSettings = () => {
                       className={`text-lg leading-none transition-colors ${
                         sender === defaultSender
                           ? 'text-cp-amber'
-                          : 'white/30 hover:text-cp-amber'
+                          : 'text-ui/25 hover:text-cp-amber'
                       }`}
                     >
                       {sender === defaultSender ? '\u2605' : '\u2606'}
                     </button>
-                    <span className="text-sm white/90 font-mono">{sender}</span>
+                    <span className="text-sm text-ui/90 font-mono">{sender}</span>
                   </div>
                   <button
                     onClick={() => removeSender(i)}
-                    className="white/40 hover:text-cp-coral transition-colors ml-2"
+                    className="text-ui/40 hover:text-cp-coral transition-colors ml-2"
                   >
                     &times;
                   </button>
@@ -263,7 +263,7 @@ const IMBridgeSettings = () => {
           )}
 
           {senders.length === 0 && !showAddInput && (
-            <p className="text-xs white/30 italic mb-2">No approved senders configured.</p>
+            <p className="text-xs text-ui/25 italic mb-2">No approved senders configured.</p>
           )}
 
           {/* Add sender input */}
@@ -287,7 +287,7 @@ const IMBridgeSettings = () => {
               </button>
               <button
                 onClick={() => { setShowAddInput(false); setNewSender(''); }}
-                className="px-3 py-2 text-sm white/55 hover:white/90 transition-colors"
+                className="px-3 py-2 text-sm text-ui/55 hover:text-ui/90 transition-colors"
               >
                 Cancel
               </button>
@@ -355,7 +355,7 @@ const FengShuiSettings = () => {
   return (
     <div className="glass-card p-5 space-y-4">
       <h3 className="card-header">Feng Shui</h3>
-      <p className="text-xs text-white/40">
+      <p className="text-xs text-ui/40">
         Choose the visual theme for your Dojo.
       </p>
 
@@ -367,17 +367,17 @@ const FengShuiSettings = () => {
             className={`flex items-center gap-3 p-3 rounded-xl border transition-all text-left ${
               themeId === theme.id
                 ? 'border-cp-amber bg-cp-amber/10'
-                : 'border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.06]'
+                : 'border-ui/[0.10] bg-ui/[0.03] hover:bg-ui/[0.08]'
             }`}
           >
             <div className={`w-3 h-3 rounded-full shrink-0 border-2 ${
               themeId === theme.id
                 ? 'border-cp-amber bg-cp-amber'
-                : 'border-white/30 bg-transparent'
+                : 'border-ui/[0.15] bg-transparent'
             }`} />
             <div>
-              <div className="text-sm font-medium text-white">{theme.name}</div>
-              <div className="text-xs text-white/40">{theme.description}</div>
+              <div className="text-sm font-medium text-ui">{theme.name}</div>
+              <div className="text-xs text-ui/40">{theme.description}</div>
             </div>
           </button>
         ))}
@@ -394,7 +394,7 @@ const MigrationSettings = () => {
   return (
     <div className="glass-card p-5 space-y-4">
       <h3 className="card-header">Migration</h3>
-      <p className="text-xs text-white/40">
+      <p className="text-xs text-ui/40">
         Export your entire dojo to move it to another machine, or import from a previous export.
       </p>
 
@@ -402,7 +402,7 @@ const MigrationSettings = () => {
         <MigrationExport />
         <button
           onClick={() => setShowImport(!showImport)}
-          className="px-4 py-2 bg-white/5 hover:bg-white/10 text-white/70 text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 bg-ui/[0.05] hover:bg-ui/[0.12] text-ui/70 text-sm font-medium rounded-lg transition-colors"
         >
           {showImport ? 'Cancel Import' : 'Import Dojo'}
         </button>
@@ -520,7 +520,7 @@ const RemoteAccessSettings = () => {
   return (
     <div className="glass-card p-4 space-y-4">
       <h3 className="card-header">Remote Access</h3>
-      <p className="text-xs white/40">
+      <p className="text-xs text-ui/40">
         Access your dojo from anywhere via Cloudflare Tunnel.
       </p>
 
@@ -534,7 +534,7 @@ const RemoteAccessSettings = () => {
       {/* cloudflared not installed */}
       {!status?.cloudflaredInstalled && (
         <div className="glass-nested rounded-xl p-3 space-y-2">
-          <p className="text-xs white/50">cloudflared is not installed.</p>
+          <p className="text-xs text-ui/55">cloudflared is not installed.</p>
           <button
             onClick={handleInstall}
             disabled={installing}
@@ -554,17 +554,17 @@ const RemoteAccessSettings = () => {
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-cp-teal animate-pulse" />
                 <span className="text-xs text-cp-teal font-medium">Tunnel Active</span>
-                {status.mode === 'quick' && <span className="text-[10px] white/30">Quick Tunnel</span>}
-                {status.mode === 'named' && <span className="text-[10px] white/30">Named Tunnel</span>}
+                {status.mode === 'quick' && <span className="text-[10px] text-ui/25">Quick Tunnel</span>}
+                {status.mode === 'named' && <span className="text-[10px] text-ui/25">Named Tunnel</span>}
               </div>
               {status.url && (
                 <div className="flex items-center gap-2">
                   <code className="text-xs text-cp-teal font-mono flex-1 truncate">{status.url}</code>
-                  <button onClick={copyUrl} className="text-[10px] text-white/40 hover:text-white/70 shrink-0">Copy</button>
+                  <button onClick={copyUrl} className="text-[10px] text-ui/40 hover:text-ui/70 shrink-0">Copy</button>
                 </div>
               )}
               {status.mode === 'named' && !status.url && (
-                <p className="text-[10px] white/30">URL configured in your Cloudflare dashboard</p>
+                <p className="text-[10px] text-ui/25">URL configured in your Cloudflare dashboard</p>
               )}
               <button
                 onClick={handleDisable}
@@ -605,8 +605,8 @@ const RemoteAccessSettings = () => {
                     className="w-4 h-4"
                   />
                   <div>
-                    <span className="text-xs white/80 font-medium">Quick Tunnel</span>
-                    <span className="text-[10px] white/30 ml-1">(no account needed)</span>
+                    <span className="text-xs text-ui/70 font-medium">Quick Tunnel</span>
+                    <span className="text-[10px] text-ui/25 ml-1">(no account needed)</span>
                   </div>
                 </label>
 
@@ -619,27 +619,27 @@ const RemoteAccessSettings = () => {
                     className="w-4 h-4"
                   />
                   <div>
-                    <span className="text-xs white/80 font-medium">Named Tunnel</span>
-                    <span className="text-[10px] white/30 ml-1">(persistent URL)</span>
+                    <span className="text-xs text-ui/70 font-medium">Named Tunnel</span>
+                    <span className="text-[10px] text-ui/25 ml-1">(persistent URL)</span>
                   </div>
                 </label>
               </div>
 
               {mode === 'quick' && (
-                <p className="text-[10px] white/30">
+                <p className="text-[10px] text-ui/25">
                   Generates a random trycloudflare.com URL. No account needed. URL changes on restart.
                 </p>
               )}
 
               {mode === 'named' && (
                 <div className="space-y-2">
-                  <p className="text-[10px] white/40">
+                  <p className="text-[10px] text-ui/40">
                     Requires a free Cloudflare account.{' '}
                     <a href="https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-remote-tunnel/" target="_blank" rel="noopener noreferrer" className="text-cp-blue hover:underline">
                       Set up a Cloudflare Tunnel &rarr;
                     </a>
                   </p>
-                  <div className="text-[10px] white/30 space-y-0.5">
+                  <div className="text-[10px] text-ui/25 space-y-0.5">
                     <p>1. Create a free account at dash.cloudflare.com</p>
                     <p>2. Go to Networks &gt; Tunnels &gt; Create Tunnel</p>
                     <p>3. Name your tunnel and copy the token</p>
@@ -703,7 +703,7 @@ const OllamaSettings = () => {
   return (
     <div className="glass-card p-4 space-y-4">
       <h3 className="card-header">Ollama (Local Models)</h3>
-      <p className="text-xs white/40">
+      <p className="text-xs text-ui/40">
         Controls how many different Ollama models can be loaded in RAM simultaneously.
         Set to 1 for 16GB machines, 2+ if you have more RAM.
       </p>
@@ -717,7 +717,7 @@ const OllamaSettings = () => {
           onChange={(e) => setMaxConcurrent(e.target.value)}
           className="glass-input w-24"
         />
-        <p className="text-[10px] white/30 mt-0.5">
+        <p className="text-[10px] text-ui/25 mt-0.5">
           When agents use more local models than this limit, requests queue until the current model finishes.
           A 7B model uses ~4GB RAM, a 30B model uses ~16GB.
         </p>
@@ -783,7 +783,7 @@ const AgentLimitsSettings = () => {
   return (
     <div className="glass-card p-4 space-y-4">
       <h3 className="card-header">Dojo Capacity</h3>
-      <p className="text-xs white/40">
+      <p className="text-xs text-ui/40">
         Controls how many agents can run and how they are spawned. Changes take effect immediately.
       </p>
       <div className="grid grid-cols-2 gap-4">
@@ -798,7 +798,7 @@ const AgentLimitsSettings = () => {
               onChange={(e) => setValues(prev => ({ ...prev, [item.key]: e.target.value }))}
               className="glass-input w-full"
             />
-            <p className="text-[10px] white/30 mt-0.5">{item.description}</p>
+            <p className="text-[10px] text-ui/25 mt-0.5">{item.description}</p>
           </div>
         ))}
       </div>
@@ -891,7 +891,7 @@ const SearchSettings = () => {
   return (
     <div className="glass-card p-4 space-y-4">
       <h3 className="card-header">Web Search Provider</h3>
-      <p className="text-xs white/40">
+      <p className="text-xs text-ui/40">
         Configure web search for the web_search tool.
       </p>
 
@@ -942,7 +942,7 @@ const SearchSettings = () => {
         <button
           onClick={handleValidate}
           disabled={validating || (!apiKey.trim() && !hasKey)}
-          className="px-4 py-2 bg-white/[0.08] hover:bg-white/[0.12] disabled:bg-white/[0.05] disabled:white/30 white/90 text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 bg-ui/[0.08] hover:bg-ui/[0.12] disabled:bg-ui/[0.05] disabled:text-ui/25 text-ui/90 text-sm font-medium rounded-lg transition-colors"
         >
           {validating ? 'Validating...' : 'Validate'}
         </button>
@@ -953,7 +953,7 @@ const SearchSettings = () => {
         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
           hasKey
             ? 'bg-cp-teal/10 text-cp-teal border border-cp-teal/20'
-            : 'bg-white/[0.08] white/55 border white/[0.10]'
+            : 'bg-ui/[0.08] text-ui/55 border border-ui/[0.10]'
         }`}>
           {hasKey ? 'Configured' : 'Not configured'}
         </span>
@@ -985,7 +985,7 @@ const AgentSdkSetup = () => {
 
   return (
     <div className="space-y-3">
-      <p className="text-xs text-white/40">
+      <p className="text-xs text-ui/40">
         Use your Claude Pro or Max subscription through the Agent SDK. Requires two things: the Claude Code CLI installed, and a signed-in Claude account.
       </p>
 
@@ -995,32 +995,32 @@ const AgentSdkSetup = () => {
           <span className={status?.cliInstalled ? 'text-cp-teal' : 'text-cp-amber'}>
             {status?.cliInstalled ? '\u2713' : '1.'}
           </span>
-          <span className="text-white/60">
+          <span className="text-ui/55">
             {status?.cliInstalled
               ? `Claude Code CLI installed (${status.version})`
               : 'Install Claude Code CLI'}
           </span>
         </div>
         {!status?.cliInstalled && (
-          <div className="text-white/30 ml-5 space-y-1">
+          <div className="text-ui/25 ml-5 space-y-1">
             <p>Run this in your terminal:</p>
-            <code className="block bg-white/5 px-2 py-1 rounded text-[11px]">curl -fsSL https://claude.ai/install.sh | bash</code>
+            <code className="block bg-ui/[0.05] px-2 py-1 rounded text-[11px]">curl -fsSL https://claude.ai/install.sh | bash</code>
           </div>
         )}
 
         {/* Step 2: Signed in */}
         <div className="flex items-center gap-2">
-          <span className={authResult?.authenticated ? 'text-cp-teal' : status?.cliInstalled ? 'text-cp-amber' : 'text-white/20'}>
+          <span className={authResult?.authenticated ? 'text-cp-teal' : status?.cliInstalled ? 'text-cp-amber' : 'text-ui/25'}>
             {authResult?.authenticated ? '\u2713' : '2.'}
           </span>
-          <span className={status?.cliInstalled ? 'text-white/60' : 'text-white/20'}>
+          <span className={status?.cliInstalled ? 'text-ui/55' : 'text-ui/25'}>
             {authResult?.authenticated ? 'Signed in to Claude' : 'Sign in to your Claude account'}
           </span>
         </div>
         {status?.cliInstalled && !authResult?.authenticated && (
-          <div className="text-white/30 ml-5 space-y-1">
+          <div className="text-ui/25 ml-5 space-y-1">
             <p>Run this in your terminal and sign in with your Claude Pro/Max account:</p>
-            <code className="block bg-white/5 px-2 py-1 rounded text-[11px]">claude</code>
+            <code className="block bg-ui/[0.05] px-2 py-1 rounded text-[11px]">claude</code>
             <p>Then click Verify below.</p>
           </div>
         )}
@@ -1044,7 +1044,7 @@ const AgentSdkSetup = () => {
       )}
 
       <div className="alert-banner alert-warning">
-        <p className="text-[10px] text-amber-400/70">
+        <p className="text-[10px] text-cp-amber/70">
           Agent SDK subscription billing is subject to Anthropic's usage policies. If you experience issues, switch to API Key.
         </p>
       </div>
@@ -1107,7 +1107,7 @@ const ProvidersTab = () => {
     <div className="space-y-4 max-w-4xl">
       {/* Existing providers */}
       {providers.length === 0 ? (
-        <p className="white/40 text-sm">No providers configured.</p>
+        <p className="text-ui/40 text-sm">No providers configured.</p>
       ) : (
         <div className="space-y-3">
           {providers.map((provider) => (
@@ -1116,8 +1116,8 @@ const ProvidersTab = () => {
               className="glass-card p-4 flex items-center justify-between"
             >
               <div>
-                <h3 className="text-sm font-medium text-white">{provider.name}</h3>
-                <p className="text-xs white/40 mt-0.5">
+                <h3 className="text-sm font-medium text-ui">{provider.name}</h3>
+                <p className="text-xs text-ui/40 mt-0.5">
                   {provider.type} &middot; {provider.authType === 'agent-sdk' ? 'Agent SDK' : provider.authType === 'oauth' ? 'OAuth' : 'API Key'} {provider.isValidated ? '(validated)' : '(not validated)'}
                 </p>
               </div>
@@ -1125,7 +1125,7 @@ const ProvidersTab = () => {
                 <button
                   onClick={() => handleSyncModels(provider.id)}
                   disabled={syncing === provider.id}
-                  className="text-xs text-cp-teal hover:text-cp-teal/80 disabled:white/30 transition-colors"
+                  className="text-xs text-cp-teal hover:text-cp-teal/80 disabled:text-ui/25 transition-colors"
                 >
                   {syncing === provider.id ? 'Syncing...' : 'Sync Models'}
                 </button>
@@ -1339,7 +1339,7 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
           type="button"
           onClick={onCancel}
           disabled={status === 'saving' || status === 'validating'}
-          className="px-4 py-2 text-sm white/55 hover:white/90 disabled:text-gray-700 transition-colors"
+          className="px-4 py-2 text-sm text-ui/55 hover:text-ui/90 disabled:text-gray-700 transition-colors"
         >
           Cancel
         </button>
@@ -1372,13 +1372,13 @@ const ProviderModelGroup = ({
     <div className="glass-card overflow-hidden">
       <button
         onClick={() => setOpen(!open)}
-        className="w-full px-4 py-3 flex items-center justify-between text-sm font-medium white/70 hover:bg-white/[0.03] transition-colors"
+        className="w-full px-4 py-3 flex items-center justify-between text-sm font-medium text-ui/70 hover:bg-ui/[0.03] transition-colors"
       >
         <div className="flex items-center gap-2">
           <span>{provider.name}</span>
-          <span className="text-xs white/30">{enabledCount}/{models.length} enabled</span>
+          <span className="text-xs text-ui/25">{enabledCount}/{models.length} enabled</span>
         </div>
-        <span className="white/40">{open ? '[-]' : '[+]'}</span>
+        <span className="text-ui/40">{open ? '[-]' : '[+]'}</span>
       </button>
       {open && (
         <div className="px-4 pb-4 space-y-2">
@@ -1467,9 +1467,9 @@ const OllamaHostRamRow = ({ provider, onChange }: { provider: Provider; onChange
   if (isLocal) {
     return (
       <div className="glass-card p-3 flex items-center gap-3 text-xs">
-        <span className="white/40 w-20">Host RAM</span>
-        <span className="white/70 font-mono">auto-detected (this machine)</span>
-        <span className="text-[10px] text-white/25 italic">
+        <span className="text-ui/40 w-20">Host RAM</span>
+        <span className="text-ui/70 font-mono">auto-detected (this machine)</span>
+        <span className="text-[10px] text-ui/25 italic">
           num_ctx recommendations use os.totalmem()
         </span>
       </div>
@@ -1478,7 +1478,7 @@ const OllamaHostRamRow = ({ provider, onChange }: { provider: Provider; onChange
 
   return (
     <div className="glass-card p-3 flex items-center gap-3 text-xs">
-      <label className="white/40 w-20" title="Total RAM of the remote Ollama host in GB. The dojo uses this value to auto-size num_ctx recommendations for every model on this provider.">
+      <label className="text-ui/40 w-20" title="Total RAM of the remote Ollama host in GB. The dojo uses this value to auto-size num_ctx recommendations for every model on this provider.">
         Host RAM
       </label>
       <input
@@ -1493,11 +1493,11 @@ const OllamaHostRamRow = ({ provider, onChange }: { provider: Provider; onChange
         disabled={saving}
         className="glass-input w-20 font-mono text-right disabled:opacity-60"
       />
-      <span className="text-[10px] text-white/30">GB</span>
+      <span className="text-[10px] text-ui/25">GB</span>
       {saved && <span className="text-xs text-cp-teal">Saved — recomputing…</span>}
       {error && <span className="text-xs text-cp-coral">{error}</span>}
       {!saved && !error && (
-        <span className="text-[10px] text-white/25 italic">
+        <span className="text-[10px] text-ui/25 italic">
           {provider.hostRamGb === null
             ? 'set this to enable num_ctx recommendations for remote models'
             : `num_ctx auto-sized for ${provider.hostRamGb} GB`}
@@ -1510,22 +1510,22 @@ const OllamaHostRamRow = ({ provider, onChange }: { provider: Provider; onChange
 const CAPABILITY_LABELS: Record<string, { label: string; className: string; title: string }> = {
   tools: {
     label: 'Tools',
-    className: 'bg-blue-500/15 text-blue-300 border-blue-400/30',
+    className: 'bg-cp-blue/15 text-cp-blue-light border-cp-blue/30',
     title: 'Supports function/tool calling',
   },
   vision: {
     label: 'Vision',
-    className: 'bg-purple-500/15 text-purple-300 border-purple-400/30',
+    className: 'bg-cp-purple/15 text-cp-purple border-cp-purple/30',
     title: 'Can accept image inputs',
   },
   thinking: {
     label: 'Thinking',
-    className: 'bg-amber-500/15 text-amber-300 border-amber-400/30',
+    className: 'bg-cp-amber/15 text-cp-amber-light border-cp-amber/30',
     title: 'Supports extended reasoning / thinking',
   },
   embedding: {
     label: 'Embedding',
-    className: 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30',
+    className: 'bg-cp-teal/15 text-cp-teal-light border-cp-teal/30',
     title: 'Embedding model (not for chat)',
   },
   image_generation: {
@@ -1540,7 +1540,7 @@ const CapabilityBadges = ({ capabilities }: { capabilities: string[] }) => {
   if (known.length === 0) {
     return (
       <div className="mt-1.5 flex items-center gap-1">
-        <span className="text-[10px] text-white/25 italic">capabilities unknown</span>
+        <span className="text-[10px] text-ui/25 italic">capabilities unknown</span>
       </div>
     );
   }
@@ -1688,13 +1688,13 @@ const ModelRow = ({
     <div className="glass-card p-4">
       <div className="flex items-center justify-between mb-3">
         <div>
-          <h3 className="text-sm font-medium text-white">
+          <h3 className="text-sm font-medium text-ui">
             {model.name}
             {isPrimaryModel && (
               <span className="ml-2 text-xs text-cp-blue font-normal">(primary agent model)</span>
             )}
           </h3>
-          <p className="text-xs white/40 mt-0.5">
+          <p className="text-xs text-ui/40 mt-0.5">
             {model.apiModelId}
             {model.contextWindow ? ` | ${Math.round(model.contextWindow / 1000)}k context` : ''}
             {' | '}{model.providerId}
@@ -1709,9 +1709,9 @@ const ModelRow = ({
                 type="checkbox"
                 checked={thinkingEnabled}
                 onChange={handleThinkingToggle}
-                className="h-3.5 w-3.5 rounded border-white/20 bg-white/[0.05] accent-amber-500 cursor-pointer"
+                className="h-3.5 w-3.5 rounded border-ui/[0.15] bg-ui/[0.05] accent-amber-500 cursor-pointer"
               />
-              <span className="text-[11px] text-white/60">
+              <span className="text-[11px] text-ui/55">
                 Enable thinking
               </span>
             </label>
@@ -1735,7 +1735,7 @@ const ModelRow = ({
                 toast.error(result.error ?? 'Delete failed');
               }
             }}
-            className="w-6 h-6 flex items-center justify-center rounded text-white/30 hover:text-cp-coral hover:bg-cp-coral/10 transition-colors"
+            className="w-6 h-6 flex items-center justify-center rounded text-ui/25 hover:text-cp-coral hover:bg-cp-coral/10 transition-colors"
             title="Delete model"
           >
             <span className="text-sm leading-none">×</span>
@@ -1746,7 +1746,7 @@ const ModelRow = ({
       {/* Pricing fields */}
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2">
-          <label className="text-xs white/40 w-20">Input $/M</label>
+          <label className="text-xs text-ui/40 w-20">Input $/M</label>
           <input
             type="number"
             step="0.01"
@@ -1758,7 +1758,7 @@ const ModelRow = ({
           />
         </div>
         <div className="flex items-center gap-2">
-          <label className="text-xs white/40 w-20">Output $/M</label>
+          <label className="text-xs text-ui/40 w-20">Output $/M</label>
           <input
             type="number"
             step="0.01"
@@ -1785,7 +1785,7 @@ const ModelRow = ({
         <div className="mt-3 flex items-center gap-4">
           <div className="flex items-center gap-2">
             <label
-              className="text-xs white/40 w-20"
+              className="text-xs text-ui/40 w-20"
               title="Context window (num_ctx) passed to Ollama for every call to this model. The pre-filled value is a RAM-aware recommendation based on your machine's memory and this model's architecture. Higher values use more RAM."
             >
               Context
@@ -1802,12 +1802,12 @@ const ModelRow = ({
               disabled={ctxSaving}
               className="glass-input w-28 font-mono text-right disabled:opacity-60"
             />
-            <span className="text-[10px] text-white/30">tokens</span>
+            <span className="text-[10px] text-ui/25">tokens</span>
             {model.numCtxRecommended !== null && (
               <button
                 onClick={handleNumCtxReset}
                 disabled={ctxSaving || (model.numCtxOverride === null && numCtxInput === String(model.numCtxRecommended))}
-                className="text-[10px] text-white/40 hover:text-white/80 underline disabled:text-white/20 disabled:no-underline disabled:cursor-default"
+                className="text-[10px] text-ui/40 hover:text-ui/70 underline disabled:text-ui/25 disabled:no-underline disabled:cursor-default"
                 title={`Reset to auto-sized recommendation (${model.numCtxRecommended.toLocaleString()} tokens)`}
               >
                 reset
@@ -1816,7 +1816,7 @@ const ModelRow = ({
           </div>
           {ctxSaved && <span className="text-xs text-cp-teal">Saved</span>}
           {ctxError && <span className="text-xs text-cp-coral">{ctxError}</span>}
-          <span className="text-[10px] text-white/25 italic">
+          <span className="text-[10px] text-ui/25 italic">
             {model.numCtxOverride !== null
               ? 'override set — reset for auto-sized default'
               : model.numCtxRecommended !== null
@@ -1867,7 +1867,7 @@ const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: 
   return (
     <div className="glass-card p-4 space-y-3">
       <h3 className="card-header">Browse {providerName} Models</h3>
-      <p className="text-xs white/40">Search the model catalog and add models you want to use.</p>
+      <p className="text-xs text-ui/40">Search the model catalog and add models you want to use.</p>
       <div className="flex gap-2">
         <input
           type="text"
@@ -1891,8 +1891,8 @@ const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: 
           {results.map((model) => (
             <div key={model.apiModelId} className="flex items-center justify-between glass-nested p-2.5 rounded-lg">
               <div className="min-w-0 flex-1">
-                <div className="text-sm text-white/90 truncate">{model.name}</div>
-                <div className="text-[10px] white/40 flex items-center gap-2 mt-0.5">
+                <div className="text-sm text-ui/90 truncate">{model.name}</div>
+                <div className="text-[10px] text-ui/40 flex items-center gap-2 mt-0.5">
                   <span className="truncate">{model.apiModelId}</span>
                   {model.contextWindow && <span>{(model.contextWindow / 1000).toFixed(0)}k ctx</span>}
                   {model.maxOutputTokens && <span>{(model.maxOutputTokens / 1000).toFixed(0)}k out</span>}
@@ -1903,7 +1903,7 @@ const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: 
               <button
                 onClick={() => handleAdd(model)}
                 disabled={adding === model.apiModelId}
-                className="ml-2 px-3 py-1 text-xs bg-cp-teal/20 text-cp-teal hover:bg-cp-teal/30 disabled:bg-white/[0.05] disabled:white/30 rounded-lg transition-colors shrink-0"
+                className="ml-2 px-3 py-1 text-xs bg-cp-teal/20 text-cp-teal hover:bg-cp-teal/30 disabled:bg-ui/[0.05] disabled:text-ui/25 rounded-lg transition-colors shrink-0"
               >
                 {adding === model.apiModelId ? 'Adding...' : 'Add'}
               </button>
@@ -1913,7 +1913,7 @@ const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: 
       )}
 
       {searched && results.length === 0 && !searching && (
-        <p className="text-xs white/30 text-center py-2">No models found matching "{query}"</p>
+        <p className="text-xs text-ui/25 text-center py-2">No models found matching "{query}"</p>
       )}
 
       {/* Manual Add — for models not in the catalog */}
@@ -1977,17 +1977,17 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
   };
 
   return (
-    <div className="border-t border-white/[0.06] pt-3 mt-3">
+    <div className="border-t border-ui/[0.06] pt-3 mt-3">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="text-xs text-white/40 hover:text-white/70 transition-colors"
+        className="text-xs text-ui/40 hover:text-ui/70 transition-colors"
       >
         {expanded ? '▾ Hide manual add' : '▸ Manual add (model not in catalog?)'}
       </button>
 
       {expanded && (
         <div className="mt-3 space-y-3">
-          <p className="text-[10px] text-white/30">
+          <p className="text-[10px] text-ui/25">
             For models not listed in the catalog (e.g. new image models, private endpoints).
             Enter the exact model ID from the provider and select its capabilities.
           </p>
@@ -2020,8 +2020,8 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
                   title={cap.desc}
                   className={`px-2.5 py-1 rounded text-[11px] font-medium border transition-colors ${
                     selectedCaps.has(cap.key)
-                      ? 'bg-blue-500/20 text-blue-300 border-blue-400/40'
-                      : 'bg-white/[0.03] text-white/40 border-white/[0.08] hover:border-white/20'
+                      ? 'bg-cp-blue/20 text-cp-blue-light border-cp-blue/40'
+                      : 'bg-ui/[0.03] text-ui/40 border-ui/[0.10] hover:border-ui/[0.15]'
                   }`}
                 >
                   {cap.label}
@@ -2120,8 +2120,8 @@ const ModelsTab = () => {
       {showWarning && (
         <div className="alert-banner alert-warning flex items-center justify-between gap-4">
           <div>
-            <h3 className="text-sm font-medium text-yellow-400">Primary agent has no model assigned</h3>
-            <p className="text-xs text-yellow-400/70 mt-0.5">
+            <h3 className="text-sm font-medium text-cp-amber">Primary agent has no model assigned</h3>
+            <p className="text-xs text-cp-amber/70 mt-0.5">
               Your primary agent can't respond to messages without a model. Pick one below.
             </p>
           </div>
@@ -2129,7 +2129,7 @@ const ModelsTab = () => {
             onChange={(e) => handleSetPrimaryModel(e.target.value)}
             disabled={settingModel}
             defaultValue=""
-            className="px-3 py-2 bg-white/[0.05] border border-yellow-500/40 rounded-lg text-sm white/90 focus:outline-none focus:ring-2 focus:ring-yellow-500 min-w-[180px]"
+            className="px-3 py-2 bg-ui/[0.05] border border-cp-amber/40 rounded-lg text-sm text-ui/90 focus:outline-none focus:ring-2 focus:ring-cp-amber min-w-[180px]"
           >
             <option value="" disabled>
               {settingModel ? 'Setting...' : 'Set Model'}
@@ -2142,7 +2142,7 @@ const ModelsTab = () => {
       )}
 
       {providers.length === 0 ? (
-        <p className="white/40 text-sm">No providers configured. Add one in the Providers tab first.</p>
+        <p className="text-ui/40 text-sm">No providers configured. Add one in the Providers tab first.</p>
       ) : (
         providers.map(provider => {
           const providerModels = models
@@ -2220,7 +2220,7 @@ const ProfileTab = () => {
       {/* Your Name */}
       <div className="glass-card p-4 space-y-3">
         <h3 className="card-header">Your Name</h3>
-        <p className="text-xs white/40">Used in memory summaries and agent conversations to identify you.</p>
+        <p className="text-xs text-ui/40">Used in memory summaries and agent conversations to identify you.</p>
         {loadingName ? (
           <div className="h-10 glass-nested rounded-xl animate-pulse" />
         ) : (
@@ -2248,7 +2248,7 @@ const ProfileTab = () => {
         <div className="flex items-center justify-between">
           <div>
             <h3 className="card-header">About You</h3>
-            <p className="text-xs white/40 mt-0.5">
+            <p className="text-xs text-ui/40 mt-0.5">
               Information about you that agents will know when "Share User Profile" is enabled.
               Your preferences, businesses, projects, communication style, etc.
             </p>
@@ -2346,7 +2346,7 @@ const RouterTab = () => {
   };
 
   if (loading) return <div className="loading-state">Loading...</div>;
-  if (!config) return <p className="white/40">Unable to load router config.</p>;
+  if (!config) return <p className="text-ui/40">Unable to load router config.</p>;
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -2529,7 +2529,7 @@ const DreamingTab = () => {
       <div className="glass-card p-4 space-y-4">
         <div>
           <h3 className="card-header">Dreaming</h3>
-          <p className="text-xs text-white/40 mt-1">
+          <p className="text-xs text-ui/40 mt-1">
             Configure how the dojo processes its daily conversations into long-term memories overnight. A temporary "Dreamer" agent is spawned to do the work -- it uses the tracker, extracts knowledge, and dismisses itself when done.
           </p>
         </div>
@@ -2548,7 +2548,7 @@ const DreamingTab = () => {
               </option>
             ))}
           </select>
-          <p className="text-[10px] text-white/30 mt-1">
+          <p className="text-[10px] text-ui/25 mt-1">
             The model the Dreamer agent uses. Standard tier recommended for good extraction quality at reasonable cost.
           </p>
         </div>
@@ -2561,7 +2561,7 @@ const DreamingTab = () => {
             onChange={(e) => setDreamTime(e.target.value)}
             className="glass-select w-full"
           />
-          <p className="text-[10px] text-white/30 mt-1">
+          <p className="text-[10px] text-ui/25 mt-1">
             When the Dreamer agent wakes up to process the day's conversations. Default: 3:00 AM.
           </p>
         </div>
@@ -2583,8 +2583,8 @@ const DreamingTab = () => {
                   className="mt-1 accent-cp-amber"
                 />
                 <div>
-                  <span className="text-sm text-white/80">{option.label}</span>
-                  <p className="text-[10px] text-white/30">{option.desc}</p>
+                  <span className="text-sm text-ui/70">{option.label}</span>
+                  <p className="text-[10px] text-ui/25">{option.desc}</p>
                 </div>
               </label>
             ))}
@@ -2602,14 +2602,14 @@ const DreamingTab = () => {
           <button
             onClick={handleRunNow}
             disabled={running}
-            className="px-4 py-2 text-sm font-medium rounded-lg bg-white/[0.06] text-white/60 border border-white/10 hover:border-white/20 hover:text-white/80 transition-colors disabled:opacity-40"
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-ui/[0.08] text-ui/55 border border-ui/[0.10] hover:border-ui/[0.15] hover:text-ui/70 transition-colors disabled:opacity-40"
             title="Wake the Dreamer now to process unprocessed archives"
           >
             {running ? 'Starting...' : 'Run Now'}
           </button>
           {saved && <span className="text-xs text-cp-teal">Saved!</span>}
           {runStatus.kind === 'ok' && <span className="text-xs text-cp-teal">{runStatus.message}</span>}
-          {runStatus.kind === 'err' && <span className="text-xs text-red-400">{runStatus.message}</span>}
+          {runStatus.kind === 'err' && <span className="text-xs text-cp-coral">{runStatus.message}</span>}
         </div>
       </div>
 
@@ -2624,11 +2624,11 @@ const DreamingTab = () => {
       {lastDream && (
         <div className="glass-card p-4 space-y-2 mt-6">
           <h3 className="card-header">Last Dream</h3>
-          <p className="text-[10px] text-white/30">
+          <p className="text-[10px] text-ui/25">
             {formatDate(lastDream.createdAt)}
             {lastDream.durationMs && ` (${(lastDream.durationMs / 1000).toFixed(1)}s)`}
           </p>
-          <pre className="text-xs text-white/60 whitespace-pre-wrap font-mono bg-white/[0.03] rounded p-2">
+          <pre className="text-xs text-ui/55 whitespace-pre-wrap font-mono bg-ui/[0.03] rounded p-2">
             {lastDream.reportText ?? 'No report text available'}
           </pre>
         </div>
@@ -2738,7 +2738,7 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
     <div className="glass-card p-4 space-y-4">
       <div>
         <h3 className="card-header">Imaginer (Image Generation Sensei)</h3>
-        <p className="text-xs text-white/40 mt-1">
+        <p className="text-xs text-ui/40 mt-1">
           Imaginer is a system agent that turns text descriptions into images when any agent calls the{' '}
           <code className="text-cp-amber">image_create</code> tool. Kevin and sub-agents never need to switch models
           to generate images — they describe what they want and Imaginer handles the rest.
@@ -2751,9 +2751,9 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
           type="checkbox"
           checked={enabled}
           onChange={(e) => setEnabled(e.target.checked)}
-          className="h-4 w-4 rounded border-white/20 bg-white/[0.05] accent-cp-amber cursor-pointer"
+          className="h-4 w-4 rounded border-ui/[0.15] bg-ui/[0.05] accent-cp-amber cursor-pointer"
         />
-        <span className="text-sm text-white/80">Enable Imaginer</span>
+        <span className="text-sm text-ui/70">Enable Imaginer</span>
       </label>
 
       {/* Model dropdown */}
@@ -2780,7 +2780,7 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
                 </option>
               ))}
             </select>
-            <p className="text-[10px] text-white/30 mt-1">
+            <p className="text-[10px] text-ui/25 mt-1">
               Only models with the <code className="text-cp-amber">Image Gen</code> capability are shown. Imaginer
               calls this model whenever it needs to actually produce an image — its orchestration/chat brain uses a
               separate text model (Kevin's default by default).
@@ -2799,7 +2799,7 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
         >
           {ASPECT_RATIOS.map(r => <option key={r} value={r}>{r}</option>)}
         </select>
-        <p className="text-[10px] text-white/30 mt-1">Used when requesting agents don't specify one.</p>
+        <p className="text-[10px] text-ui/25 mt-1">Used when requesting agents don't specify one.</p>
       </div>
 
       {/* Default style */}
@@ -2812,13 +2812,13 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
           placeholder="e.g. photorealistic, cinematic lighting"
           className="glass-input w-full"
         />
-        <p className="text-[10px] text-white/30 mt-1">Fallback style hint when requesting agents don't specify one.</p>
+        <p className="text-[10px] text-ui/25 mt-1">Fallback style hint when requesting agents don't specify one.</p>
       </div>
 
       {/* Output dir (read-only info) */}
       <div>
         <label className="form-label">Output Directory</label>
-        <code className="block text-[11px] text-white/50 px-3 py-2 bg-white/[0.03] rounded font-mono">
+        <code className="block text-[11px] text-ui/55 px-3 py-2 bg-ui/[0.03] rounded font-mono">
           ~/.dojo/uploads/generated/
         </code>
       </div>
@@ -2835,12 +2835,12 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
         <button
           onClick={handleTest}
           disabled={testing || !imageModelId || imageCapableModels.length === 0}
-          className="px-4 py-2 bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] disabled:bg-white/[0.02] disabled:text-white/30 text-white/80 text-sm font-medium rounded-lg transition-colors"
+          className="px-4 py-2 bg-ui/[0.05] hover:bg-ui/[0.08] border border-ui/[0.10] disabled:bg-ui/[0.03] disabled:text-ui/25 text-ui/70 text-sm font-medium rounded-lg transition-colors"
         >
           {testing ? 'Testing...' : 'Generate test image'}
         </button>
         {saved && <span className="text-xs text-cp-teal">Saved!</span>}
-        {testResult && <span className="text-xs text-white/60">{testResult}</span>}
+        {testResult && <span className="text-xs text-ui/55">{testResult}</span>}
       </div>
     </div>
   );
@@ -2955,7 +2955,7 @@ const HealerCard = ({ models }: { models: Model[] }) => {
     <div className="glass-card p-4 space-y-4">
       <div>
         <h3 className="card-header">Healing</h3>
-        <p className="text-xs text-white/40 mt-1">
+        <p className="text-xs text-ui/40 mt-1">
           The Healer agent analyzes daily health data, auto-fixes routine issues (stuck agents, orphaned tasks), and proposes solutions for complex problems. Proposals appear on the Vitals page for your approval.
         </p>
       </div>
@@ -2974,15 +2974,15 @@ const HealerCard = ({ models }: { models: Model[] }) => {
             </option>
           ))}
         </select>
-        <p className="text-[10px] text-white/30 mt-1">
+        <p className="text-[10px] text-ui/25 mt-1">
           Mid-tier model recommended. Needs good reasoning but doesn't need to be frontier.
         </p>
         {/* v2.3.19 — provider-isolation warning. The Healer's whole point is
             being on a DIFFERENT provider from the main agent so it can step
             in when the main provider goes down. Same provider = no backup. */}
         {providerSharedWithPrimary && primaryProviderName && (
-          <div className="mt-3 rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-200/90 leading-relaxed">
-            <div className="font-medium mb-1 text-amber-200">Heads up — both agents are using the same service</div>
+          <div className="mt-3 rounded-md border border-cp-amber/40 bg-cp-amber/10 px-3 py-2.5 text-xs text-cp-amber-light/90 leading-relaxed">
+            <div className="font-medium mb-1 text-cp-amber-light">Heads up — both agents are using the same service</div>
             <div>
               Your main agent and your Healer agent are both using {primaryProviderName}. If {primaryProviderName} has a problem, both will stop working at the same time and there's nothing to step in and fix it. Pick a different model from a different service for one of them.
             </div>
@@ -2998,7 +2998,7 @@ const HealerCard = ({ models }: { models: Model[] }) => {
           onChange={(e) => setHealerTime(e.target.value)}
           className="glass-select w-full"
         />
-        <p className="text-[10px] text-white/30 mt-1">
+        <p className="text-[10px] text-ui/25 mt-1">
           When the Healer runs each day. Default: 4:00 AM (after the Dreamer).
         </p>
       </div>
@@ -3021,8 +3021,8 @@ const HealerCard = ({ models }: { models: Model[] }) => {
                 className="mt-1 accent-cp-amber"
               />
               <div>
-                <span className="text-sm text-white/80">{option.label}</span>
-                <p className="text-[10px] text-white/30">{option.desc}</p>
+                <span className="text-sm text-ui/70">{option.label}</span>
+                <p className="text-[10px] text-ui/25">{option.desc}</p>
               </div>
             </label>
           ))}
@@ -3040,7 +3040,7 @@ const HealerCard = ({ models }: { models: Model[] }) => {
         <button
           onClick={handleRunNow}
           disabled={running || healerMode === 'off'}
-          className="px-4 py-2 text-sm font-medium rounded-lg bg-white/[0.06] text-white/60 border border-white/10 hover:border-white/20 hover:text-white/80 transition-colors disabled:opacity-40"
+          className="px-4 py-2 text-sm font-medium rounded-lg bg-ui/[0.08] text-ui/55 border border-ui/[0.10] hover:border-ui/[0.15] hover:text-ui/70 transition-colors disabled:opacity-40"
         >
           {running ? 'Running...' : 'Run Now'}
         </button>
@@ -3051,25 +3051,25 @@ const HealerCard = ({ models }: { models: Model[] }) => {
         <button
           onClick={handleSendReport}
           disabled={sendingReport}
-          className="px-4 py-2 text-sm font-medium rounded-lg bg-white/[0.06] text-white/60 border border-white/10 hover:border-white/20 hover:text-white/80 transition-colors disabled:opacity-40"
+          className="px-4 py-2 text-sm font-medium rounded-lg bg-ui/[0.08] text-ui/55 border border-ui/[0.10] hover:border-ui/[0.15] hover:text-ui/70 transition-colors disabled:opacity-40"
         >
           {sendingReport ? 'Sending...' : 'Send Healer Report'}
         </button>
-        <p className="text-[10px] text-white/30 mt-1">
+        <p className="text-[10px] text-ui/25 mt-1">
           Emails a summary of everything the Healer has found and fixed, then starts a new log.
         </p>
       </div>
 
       {lastDiagnostic && (
-        <div className="pt-2 border-t border-white/[0.06]">
-          <p className="text-[10px] text-white/30 mb-1">
+        <div className="pt-2 border-t border-ui/[0.06]">
+          <p className="text-[10px] text-ui/25 mb-1">
             Last cycle: {formatDate(lastDiagnostic.created_at)}
             {' — '}
             {lastDiagnostic.critical_count > 0 && <span className="text-cp-coral">{lastDiagnostic.critical_count} critical</span>}
             {lastDiagnostic.critical_count > 0 && lastDiagnostic.warning_count > 0 && ', '}
             {lastDiagnostic.warning_count > 0 && <span className="text-cp-amber">{lastDiagnostic.warning_count} warnings</span>}
             {(lastDiagnostic.critical_count > 0 || lastDiagnostic.warning_count > 0) && lastDiagnostic.info_count > 0 && ', '}
-            {lastDiagnostic.info_count > 0 && <span className="text-white/40">{lastDiagnostic.info_count} info</span>}
+            {lastDiagnostic.info_count > 0 && <span className="text-ui/40">{lastDiagnostic.info_count} info</span>}
             {lastDiagnostic.critical_count === 0 && lastDiagnostic.warning_count === 0 && lastDiagnostic.info_count === 0 && <span className="text-cp-teal">All clear</span>}
           </p>
         </div>
@@ -3133,20 +3133,20 @@ const UpdateTab = () => {
       <div className="glass-card p-4 space-y-4">
         <div>
           <h3 className="card-header">Software Update</h3>
-          <p className="text-xs text-white/40 mt-1">
+          <p className="text-xs text-ui/40 mt-1">
             Check for and install updates from the Agent D.O.J.O. repository.
           </p>
         </div>
 
         <div className="flex items-center justify-between py-2">
-          <span className="text-sm text-white/50">Current Version</span>
-          <span className="text-sm text-white/90 font-mono">{updateInfo?.currentVersion ?? '...'}</span>
+          <span className="text-sm text-ui/55">Current Version</span>
+          <span className="text-sm text-ui/90 font-mono">{updateInfo?.currentVersion ?? '...'}</span>
         </div>
 
         {updateInfo?.latestVersion && (
           <div className="flex items-center justify-between py-2">
-            <span className="text-sm text-white/50">Latest Version</span>
-            <span className="text-sm text-white/90 font-mono">{updateInfo.latestVersion}</span>
+            <span className="text-sm text-ui/55">Latest Version</span>
+            <span className="text-sm text-ui/90 font-mono">{updateInfo.latestVersion}</span>
           </div>
         )}
 
@@ -3160,7 +3160,7 @@ const UpdateTab = () => {
           <div className="alert-banner alert-warning text-sm">
             Update available: {updateInfo.latestVersion}
             {updateInfo.downloadSize && (
-              <span className="text-xs text-amber-400/60 ml-2">
+              <span className="text-xs text-cp-amber/60 ml-2">
                 ({(updateInfo.downloadSize / 1024).toFixed(0)} KB)
               </span>
             )}
@@ -3169,8 +3169,8 @@ const UpdateTab = () => {
 
         {updateInfo?.releaseNotes && updateInfo.updateAvailable && (
           <div>
-            <span className="text-xs text-white/40">Release Notes</span>
-            <pre className="mt-1 text-xs text-white/60 whitespace-pre-wrap font-mono bg-white/[0.03] rounded p-2 max-h-40 overflow-y-auto">
+            <span className="text-xs text-ui/40">Release Notes</span>
+            <pre className="mt-1 text-xs text-ui/55 whitespace-pre-wrap font-mono bg-ui/[0.03] rounded p-2 max-h-40 overflow-y-auto">
               {updateInfo.releaseNotes}
             </pre>
           </div>
@@ -3192,7 +3192,7 @@ const UpdateTab = () => {
           <button
             onClick={checkUpdates}
             disabled={checking || updating}
-            className="px-4 py-2 bg-white/[0.05] hover:bg-white/[0.08] disabled:opacity-40 text-white/70 text-sm font-medium rounded-lg transition-colors"
+            className="px-4 py-2 bg-ui/[0.05] hover:bg-ui/[0.08] disabled:opacity-40 text-ui/70 text-sm font-medium rounded-lg transition-colors"
           >
             {checking ? 'Checking...' : 'Check for Updates'}
           </button>
@@ -3209,7 +3209,7 @@ const UpdateTab = () => {
         </div>
 
         {updating && (
-          <div className="text-xs text-white/40">
+          <div className="text-xs text-ui/40">
             Downloading and installing update. The server will restart automatically. This page will reload when the server is back.
           </div>
         )}
@@ -3269,11 +3269,11 @@ const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) 
   return (
     <div className="glass-card p-4 space-y-3">
       <h3 className="card-header">Previous Releases</h3>
-      <p className="text-xs text-white/40">
+      <p className="text-xs text-ui/40">
         Roll back to a previous version if the current release has issues.
       </p>
 
-      {loading && <p className="text-xs text-white/30">Loading releases...</p>}
+      {loading && <p className="text-xs text-ui/25">Loading releases...</p>}
 
       {result && (
         <div className="alert-banner alert-info text-sm">
@@ -3298,14 +3298,14 @@ const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) 
           >
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <span className="text-sm font-mono text-white/90">{r.version}</span>
+                <span className="text-sm font-mono text-ui/90">{r.version}</span>
                 {r.isCurrent && (
                   <span className="text-[9px] px-1.5 py-0.5 rounded bg-cp-amber/20 text-cp-amber font-medium">
                     current
                   </span>
                 )}
               </div>
-              <div className="text-[10px] text-white/40 mt-0.5 truncate">
+              <div className="text-[10px] text-ui/40 mt-0.5 truncate">
                 {r.name} · {new Date(r.publishedAt).toLocaleDateString()}
               </div>
             </div>
@@ -3314,7 +3314,7 @@ const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) 
               <button
                 onClick={() => handleRollback(r.tag, r.version)}
                 disabled={!!rollingBack}
-                className="shrink-0 ml-2 px-3 py-1.5 text-xs bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-white/70 hover:text-white rounded-lg transition-colors disabled:opacity-30"
+                className="shrink-0 ml-2 px-3 py-1.5 text-xs bg-ui/[0.05] hover:bg-ui/[0.08] border border-ui/[0.10] text-ui/70 hover:text-ui rounded-lg transition-colors disabled:opacity-30"
               >
                 {rollingBack === r.tag ? 'Rolling back...' : 'Rollback'}
               </button>

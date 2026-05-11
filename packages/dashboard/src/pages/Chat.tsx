@@ -103,12 +103,12 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
   return (
     <div className="flex flex-col items-end">
       {fromIMessage && (
-        <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/[0.04] text-tertiary text-[10px] font-mono mb-1 mr-1">
-          <span className="text-white/40">{'\u{1F4AC}'}</span>
+        <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono mb-1 mr-1">
+          <span className="text-ui/40">{'\u{1F4AC}'}</span>
           <span>via iMessage</span>
         </div>
       )}
-      <div className="bubble-user max-w-[92%] sm:max-w-[75%] px-3 py-2 sm:px-4 sm:py-3 text-white">
+      <div className="bubble-user max-w-[92%] sm:max-w-[75%] px-3 py-2 sm:px-4 sm:py-3 text-ui">
         {displayContent && (
           <pre className="whitespace-pre-wrap font-sans text-xs sm:text-sm leading-relaxed break-words">
             {displayContent}
@@ -151,26 +151,26 @@ const AssistantBubble = ({ msg, wordyMode = true, modelNames = {} }: { msg: Chat
             Wordy-mode only: in regular chat we just see the standard
             three bouncing dots from the streaming bubble below. */}
         {hasReasoning && wordyMode && (
-          <div className="mb-1.5 rounded-lg border border-white/[0.06] bg-white/[0.02] overflow-hidden">
+          <div className="mb-1.5 rounded-lg border border-ui/[0.06] bg-ui/[0.03] overflow-hidden">
             <button
               type="button"
               onClick={() => setReasoningOpen((v) => !v)}
-              className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-[10px] sm:text-[11px] text-white/45 hover:text-white/70 transition-colors"
+              className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-[10px] sm:text-[11px] text-ui/40 hover:text-ui/70 transition-colors"
             >
               <span className="inline-flex items-center gap-1.5">
                 <span>{msg.isReasoningStreaming ? 'Thinking…' : 'Thought'}</span>
                 {msg.isReasoningStreaming && (
                   <span className="inline-flex gap-0.5">
-                    <span className="w-1 h-1 rounded-full bg-white/30 animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <span className="w-1 h-1 rounded-full bg-white/30 animate-bounce" style={{ animationDelay: '150ms' }} />
-                    <span className="w-1 h-1 rounded-full bg-white/30 animate-bounce" style={{ animationDelay: '300ms' }} />
+                    <span className="w-1 h-1 rounded-full bg-ui/[0.12] animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1 h-1 rounded-full bg-ui/[0.12] animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-1 h-1 rounded-full bg-ui/[0.12] animate-bounce" style={{ animationDelay: '300ms' }} />
                   </span>
                 )}
               </span>
-              <span className="text-white/30">{reasoningOpen ? '▾' : '▸'}</span>
+              <span className="text-ui/25">{reasoningOpen ? '▾' : '▸'}</span>
             </button>
             {reasoningOpen && (
-              <div className="px-3 pb-2.5 pt-0.5 text-[11px] sm:text-xs text-white/55 whitespace-pre-wrap font-mono leading-relaxed border-t border-white/[0.04]">
+              <div className="px-3 pb-2.5 pt-0.5 text-[11px] sm:text-xs text-ui/55 whitespace-pre-wrap font-mono leading-relaxed border-t border-ui/[0.06]">
                 {msg.reasoningContent}
               </div>
             )}
@@ -181,7 +181,7 @@ const AssistantBubble = ({ msg, wordyMode = true, modelNames = {} }: { msg: Chat
         {text && (
           <div className="bubble-assistant px-3 py-2 sm:px-4 sm:py-3 whitespace-pre-wrap text-xs sm:text-sm">
             {wordyMode && msg.modelId && (
-              <div className="text-[9px] sm:text-[10px] text-white/25 mb-1">{modelNames[msg.modelId] ?? msg.modelId}</div>
+              <div className="text-[9px] sm:text-[10px] text-ui/25 mb-1">{modelNames[msg.modelId] ?? msg.modelId}</div>
             )}
             <Markdown content={text} />
             {msg.isStreaming && (
@@ -265,8 +265,8 @@ const ToolOnlyPill = ({ msg }: { msg: ChatMessage }) => {
     : `${toolUses.length} tools`;
   return (
     <div className="flex justify-start">
-      <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/[0.04] text-tertiary text-[11px] font-mono">
-        <span className="text-white/40">⚙</span>
+      <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[11px] font-mono">
+        <span className="text-ui/40">⚙</span>
         <span>{label}</span>
       </div>
     </div>
@@ -762,14 +762,14 @@ export const Chat = () => {
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto min-h-0 px-2 sm:px-4 md:px-6 py-3 sm:py-6 space-y-2 sm:space-y-4">
         {loadingMore && (
           <div className="text-center py-2">
-            <span className="text-xs white/30">Loading older messages...</span>
+            <span className="text-xs text-ui/25">Loading older messages...</span>
           </div>
         )}
         {messages.length === 0 && (
           <div className="flex-1 flex items-center justify-center h-full">
             <div className="text-center animate-fade-up">
               <div className="text-4xl mb-4">{'\u{1F4AC}'}</div>
-              <h2 className="text-xl font-semibold text-white/80 mb-2">Chat with {agentName || 'your agent'}</h2>
+              <h2 className="text-xl font-semibold text-ui/70 mb-2">Chat with {agentName || 'your agent'}</h2>
               <p className="text-sm text-secondary">Send a message to get started.</p>
             </div>
           </div>
@@ -810,9 +810,9 @@ export const Chat = () => {
             if (dividerMatch) {
               return (
                 <div key={msg.id} className="flex items-center gap-3 my-4 px-4">
-                  <div className="flex-1 h-px bg-white/10" />
-                  <span className="text-xs text-white/30 shrink-0">{dividerMatch[1]}</span>
-                  <div className="flex-1 h-px bg-white/10" />
+                  <div className="flex-1 h-px bg-ui/[0.12]" />
+                  <span className="text-xs text-ui/25 shrink-0">{dividerMatch[1]}</span>
+                  <div className="flex-1 h-px bg-ui/[0.12]" />
                 </div>
               );
             }
@@ -825,8 +825,8 @@ export const Chat = () => {
             if (imSentMatch) {
               return (
                 <div key={msg.id} className="flex justify-end my-1 px-1">
-                  <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/[0.04] text-tertiary text-[10px] font-mono">
-                    <span className="text-white/40">{'\u{1F4AC}'}</span>
+                  <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono">
+                    <span className="text-ui/40">{'\u{1F4AC}'}</span>
                     <span>sent via iMessage</span>
                   </div>
                 </div>

@@ -98,7 +98,7 @@ export const Techniques = () => {
     <div className="flex-1 p-4 md:p-6 overflow-y-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-lg sm:text-xl font-bold text-white">Techniques</h1>
+        <h1 className="text-lg sm:text-xl font-bold text-ui">Techniques</h1>
         <button
           onClick={() => navigate('/techniques/new')}
           className="glass-btn glass-btn-primary text-sm"
@@ -124,8 +124,8 @@ export const Techniques = () => {
               onClick={() => setStateFilter(f)}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                 stateFilter === f
-                  ? 'bg-white/[0.12] text-white'
-                  : 'bg-white/[0.04] text-white/40 hover:text-white/70'
+                  ? 'bg-ui/[0.12] text-ui'
+                  : 'bg-ui/[0.05] text-ui/40 hover:text-ui/70'
               }`}
             >
               {f}
@@ -150,13 +150,13 @@ export const Techniques = () => {
       {/* Grid */}
       {loading ? (
         <div className="flex items-center justify-center py-12">
-          <p className="text-white/40">Loading techniques...</p>
+          <p className="text-ui/40">Loading techniques...</p>
         </div>
       ) : techniques.length === 0 ? (
         <div className="text-center py-16">
           <div className="text-4xl mb-4">{'\u{1F94B}'}</div>
-          <h2 className="text-lg font-semibold text-white/60 mb-2">No techniques yet</h2>
-          <p className="text-sm text-white/40 max-w-md mx-auto">
+          <h2 className="text-lg font-semibold text-ui/55 mb-2">No techniques yet</h2>
+          <p className="text-sm text-ui/40 max-w-md mx-auto">
             Techniques are reusable skills your agents learn and share.
             Create your first one or ask your agent to save what they learn.
           </p>

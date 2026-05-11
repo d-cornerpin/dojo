@@ -23,6 +23,12 @@ export const THEMES: ThemeMeta[] = [
     description: 'Deep space glassmorphism with warm amber accents',
     cssPath: '/themes/miyagi/theme.css',
   },
+  {
+    id: 'sumi',
+    name: 'Sumi',
+    description: 'Dark ink on washi paper — light theme with deep saturated accents',
+    cssPath: '/themes/sumi/theme.css',
+  },
 ];
 
 export const DEFAULT_THEME = 'miyagi';

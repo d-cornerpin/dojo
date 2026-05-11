@@ -102,14 +102,14 @@ const ImageLightbox = ({
         <button
           onClick={handleDownload}
           title="Download image (D)"
-          className="px-3 py-1.5 rounded-lg bg-white/[0.08] hover:bg-white/[0.15] border border-white/[0.12] text-xs text-white/85 font-medium backdrop-blur transition-colors"
+          className="px-3 py-1.5 rounded-lg bg-ui/[0.08] hover:bg-ui/[0.12] border border-ui/[0.15] text-xs text-ui/90 font-medium backdrop-blur transition-colors"
         >
           <span aria-hidden>⬇</span> Download
         </button>
         <button
           onClick={onClose}
           title="Close (Esc)"
-          className="w-9 h-9 flex items-center justify-center rounded-lg bg-white/[0.08] hover:bg-white/[0.15] border border-white/[0.12] text-white/85 backdrop-blur transition-colors"
+          className="w-9 h-9 flex items-center justify-center rounded-lg bg-ui/[0.08] hover:bg-ui/[0.12] border border-ui/[0.15] text-ui/90 backdrop-blur transition-colors"
           aria-label="Close"
         >
           <span className="text-xl leading-none">×</span>
@@ -134,7 +134,7 @@ const ImageLightbox = ({
       {/* Optional caption */}
       {caption && (
         <div
-          className="mt-4 max-w-3xl text-center text-xs text-white/60 px-4"
+          className="mt-4 max-w-3xl text-center text-xs text-ui/55 px-4"
           onClick={(e) => e.stopPropagation()}
           style={{ cursor: 'default' }}
         >
@@ -143,9 +143,9 @@ const ImageLightbox = ({
       )}
 
       {/* Keyboard hint */}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-[10px] text-white/25">
-        Press <kbd className="px-1 py-0.5 rounded bg-white/[0.08] border border-white/[0.12] text-white/40">D</kbd> to download ·
-        <kbd className="ml-1 px-1 py-0.5 rounded bg-white/[0.08] border border-white/[0.12] text-white/40">Esc</kbd> to close
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-[10px] text-ui/25">
+        Press <kbd className="px-1 py-0.5 rounded bg-ui/[0.08] border border-ui/[0.15] text-ui/40">D</kbd> to download ·
+        <kbd className="ml-1 px-1 py-0.5 rounded bg-ui/[0.08] border border-ui/[0.15] text-ui/40">Esc</kbd> to close
       </div>
     </div>
   );
@@ -183,12 +183,12 @@ export const AttachmentChips = ({ attachments }: { attachments: Attachment[] }) 
                   <img
                     src={url}
                     alt={att.filename}
-                    className="w-14 h-14 rounded-lg object-cover border-2 border-white/10 group-hover:border-white/30 transition-colors shadow-md"
+                    className="w-14 h-14 rounded-lg object-cover border-2 border-ui/[0.10] group-hover:border-ui/[0.15] transition-colors shadow-md"
                     style={isStacked ? { boxShadow: '0 2px 8px rgba(0,0,0,0.4)' } : undefined}
                   />
                   {/* Count badge for stacked images */}
                   {isStacked && i === images.length - 1 && images.length > 2 && (
-                    <div className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-white/20 backdrop-blur-sm text-[9px] text-white font-bold flex items-center justify-center border border-white/20">
+                    <div className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-ui/[0.12] backdrop-blur-sm text-[9px] text-ui font-bold flex items-center justify-center border border-ui/[0.15]">
                       {images.length}
                     </div>
                   )}
@@ -205,11 +205,11 @@ export const AttachmentChips = ({ attachments }: { attachments: Attachment[] }) 
           return (
             <div
               key={att.fileId || i}
-              className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-white/[0.06] border border-white/[0.08] text-[11px]"
+              className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-ui/[0.08] border border-ui/[0.10] text-[11px]"
             >
               <span>{icon}</span>
-              <span className="text-white/70 truncate max-w-[120px]">{att.filename}</span>
-              <span className="text-white/30">{formatSize(att.size)}</span>
+              <span className="text-ui/70 truncate max-w-[120px]">{att.filename}</span>
+              <span className="text-ui/25">{formatSize(att.size)}</span>
             </div>
           );
         })}

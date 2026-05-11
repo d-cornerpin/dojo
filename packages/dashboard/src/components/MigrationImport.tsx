@@ -1,6 +1,11 @@
 import { useState, useRef, useCallback, useContext, type DragEvent, type FormEvent } from 'react';
 import type { ExportManifest } from './PostMigrationBanner';
 
+// FENG-SHUI EXEMPTION: migration flow uses standard Tailwind status colors
+// (text-red-400, text-yellow-400, text-green-400) for error/warning/success
+// during the migration. Migration is explicitly exempt per
+// FENG-SHUI-THEME-SPEC.md. The input focus ring IS themed (via .glass-input).
+
 interface Props {
   /** If true, use /api/setup/migration/* (no auth). If false, use /api/migration/* (auth required) */
   isOobe?: boolean;
@@ -104,8 +109,8 @@ export const MigrationImport = ({ isOobe = false, onComplete }: Props) => {
     return (
       <div className="space-y-4 text-center">
         <div className="text-4xl mb-2">&#x2705;</div>
-        <h3 className="text-lg font-bold text-white">Your dojo has been restored!</h3>
-        <p className="text-sm text-white/55">Check the post-migration checklist for any items that need attention.</p>
+        <h3 className="text-lg font-bold text-ui">Your dojo has been restored!</h3>
+        <p className="text-sm text-ui/55">Check the post-migration checklist for any items that need attention.</p>
         {isOobe ? (
           <button
             onClick={() => { window.location.href = '/'; }}
@@ -145,13 +150,13 @@ export const MigrationImport = ({ isOobe = false, onComplete }: Props) => {
           onDrop={handleDrop}
           onClick={() => fileInputRef.current?.click()}
           className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${
-            dragOver ? 'border-blue-500 bg-blue-500/5' : 'border-white/10 hover:border-white/20'
+            dragOver ? 'border-blue-500 bg-blue-500/5' : 'border-ui/[0.10] hover:border-ui/[0.15]'
           }`}
         >
-          <p className="text-white/55 text-sm">
-            Drag and drop your <strong className="text-white/70">dojo-export.zip</strong> here
+          <p className="text-ui/55 text-sm">
+            Drag and drop your <strong className="text-ui/70">dojo-export.zip</strong> here
           </p>
-          <p className="text-white/30 text-xs mt-1">or click to browse</p>
+          <p className="text-ui/25 text-xs mt-1">or click to browse</p>
           <input
             ref={fileInputRef}
             type="file"
@@ -166,42 +171,42 @@ export const MigrationImport = ({ isOobe = false, onComplete }: Props) => {
       ) : manifest ? (
         <>
           {/* Manifest Preview */}
-          <div className="bg-white/[0.03] border border-white/10 rounded-lg p-4 space-y-2">
+          <div className="bg-ui/[0.03] border border-ui/[0.10] rounded-lg p-4 space-y-2">
             <div className="flex items-center justify-between">
-              <h4 className="text-sm font-medium text-white">Export Summary</h4>
+              <h4 className="text-sm font-medium text-ui">Export Summary</h4>
               <button
                 onClick={() => { setFile(null); setManifest(null); setPassword(''); }}
-                className="text-xs text-white/40 hover:text-white/60"
+                className="text-xs text-ui/40 hover:text-ui/55"
               >
                 Choose different file
               </button>
             </div>
-            <p className="text-xs text-white/40">
+            <p className="text-xs text-ui/40">
               Created on {new Date(manifest.exported_at).toLocaleDateString()} from{' '}
-              <span className="text-white/55">{manifest.exported_from.hostname}</span>
+              <span className="text-ui/55">{manifest.exported_from.hostname}</span>
             </p>
             <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="text-white/55">
-                <span className="text-white/30">Agents:</span> {manifest.contents.agents_count}
+              <div className="text-ui/55">
+                <span className="text-ui/25">Agents:</span> {manifest.contents.agents_count}
                 {manifest.contents.agents.length > 0 && (
-                  <span className="text-white/30"> ({manifest.contents.agents.map(a => a.name).join(', ')})</span>
+                  <span className="text-ui/25"> ({manifest.contents.agents.map(a => a.name).join(', ')})</span>
                 )}
               </div>
-              <div className="text-white/55">
-                <span className="text-white/30">Techniques:</span> {manifest.contents.techniques_count}
+              <div className="text-ui/55">
+                <span className="text-ui/25">Techniques:</span> {manifest.contents.techniques_count}
               </div>
-              <div className="text-white/55">
-                <span className="text-white/30">Vault entries:</span> {manifest.contents.vault_entries_count}
+              <div className="text-ui/55">
+                <span className="text-ui/25">Vault entries:</span> {manifest.contents.vault_entries_count}
               </div>
-              <div className="text-white/55">
-                <span className="text-white/30">Providers:</span> {manifest.contents.providers.join(', ') || 'None'}
+              <div className="text-ui/55">
+                <span className="text-ui/25">Providers:</span> {manifest.contents.providers.join(', ') || 'None'}
               </div>
             </div>
             {manifest.contents.google_workspace_connected && (
-              <p className="text-xs text-white/40">Google Workspace: {manifest.contents.google_workspace_email}</p>
+              <p className="text-xs text-ui/40">Google Workspace: {manifest.contents.google_workspace_email}</p>
             )}
             {manifest.contents.ollama_models.length > 0 && (
-              <p className="text-xs text-white/40">
+              <p className="text-xs text-ui/40">
                 Ollama models to download: {manifest.contents.ollama_models.join(', ')}
               </p>
             )}
@@ -211,13 +216,13 @@ export const MigrationImport = ({ isOobe = false, onComplete }: Props) => {
           {!importing ? (
             <form onSubmit={handleImport} className="space-y-3">
               <div>
-                <label className="block text-sm text-white/70 mb-1">Export Password</label>
+                <label className="block text-sm text-ui/70 mb-1">Export Password</label>
                 <input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Enter the password used during export"
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
+                  className="glass-input"
                   autoFocus
                 />
               </div>
@@ -232,13 +237,13 @@ export const MigrationImport = ({ isOobe = false, onComplete }: Props) => {
             </form>
           ) : (
             <div className="space-y-3">
-              <div className="relative h-2 bg-white/10 rounded-full overflow-hidden">
+              <div className="relative h-2 bg-ui/[0.12] rounded-full overflow-hidden">
                 <div
                   className="absolute inset-y-0 left-0 bg-blue-500 rounded-full transition-all duration-300 animate-pulse"
                   style={{ width: '60%' }}
                 />
               </div>
-              <p className="text-sm text-white/55 text-center">{stage}</p>
+              <p className="text-sm text-ui/55 text-center">{stage}</p>
             </div>
           )}
         </>

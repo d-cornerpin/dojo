@@ -41,6 +41,15 @@
     --cp-sidebar-ch: 26 31 53;
     --cp-sidebar: rgb(var(--cp-sidebar-ch));
 
+    /* ── Foreground / UI accent over the page bg ──
+       This is the "ink" color that contrasts with the page background.
+       White (255 255 255) on dark themes, black (0 0 0) on light themes.
+       Consumed via Tailwind utilities text-ui/X, bg-ui/X, border-ui/X,
+       ring-ui/X — and via the rgb(var(--ui-on-base-ch) / X) channel
+       pattern in CSS rules. Override in a light theme to flip the entire
+       foreground/border/inset system in one line. */
+    --ui-on-base-ch: 255 255 255;
+
     /* Accent palette */
     --cp-amber-ch: 245 166 35;
     --cp-amber: rgb(var(--cp-amber-ch));
@@ -62,9 +71,9 @@
     --cp-purple-deep: rgb(var(--cp-purple-deep-ch));
 
     /* ── Text ── */
-    --text-primary: rgba(255, 255, 255, 0.92);
-    --text-secondary: rgba(255, 255, 255, 0.55);
-    --text-tertiary: rgba(255, 255, 255, 0.30);
+    --text-primary: rgb(var(--ui-on-base-ch) / 0.92);
+    --text-secondary: rgb(var(--ui-on-base-ch) / 0.55);
+    --text-tertiary: rgb(var(--ui-on-base-ch) / 0.30);
 
     /* ── Agent avatar accent palette — cycled by hash ── */
     --agent-color-1: var(--cp-amber);
@@ -85,7 +94,7 @@
     --status-healthy: var(--cp-teal-light);
     --status-warning: var(--cp-amber);
     --status-error: var(--cp-coral);
-    --status-idle: rgba(255, 255, 255, 0.3);
+    --status-idle: rgb(var(--ui-on-base-ch) / 0.3);
 
     /* ── Overlay backdrop ── */
     --overlay-dark: rgba(0, 0, 0, 0.88);
@@ -98,20 +107,23 @@
     --blob-2-color: #06b6d4;
     --blob-3-color: #ec4899;
 
-    /* ── Glass surfaces ── */
-    --glass-bg: rgba(255, 255, 255, 0.08);
-    --glass-bg-hover: rgba(255, 255, 255, 0.12);
-    --glass-border: rgba(255, 255, 255, 0.15);
-    --glass-border-hover: rgba(255, 255, 255, 0.2);
-    --glass-subtle: rgba(255, 255, 255, 0.04);
-    --glass-input-bg: rgba(255, 255, 255, 0.05);
-    --glass-input-border: rgba(255, 255, 255, 0.08);
+    /* ── Glass surfaces ──
+       Built from --ui-on-base-ch via the channel pattern, so a light theme
+       that flips --ui-on-base-ch to "0 0 0" automatically makes all glass
+       surfaces dark-on-light instead of light-on-dark. */
+    --glass-bg: rgb(var(--ui-on-base-ch) / 0.08);
+    --glass-bg-hover: rgb(var(--ui-on-base-ch) / 0.12);
+    --glass-border: rgb(var(--ui-on-base-ch) / 0.15);
+    --glass-border-hover: rgb(var(--ui-on-base-ch) / 0.2);
+    --glass-subtle: rgb(var(--ui-on-base-ch) / 0.04);
+    --glass-input-bg: rgb(var(--ui-on-base-ch) / 0.05);
+    --glass-input-border: rgb(var(--ui-on-base-ch) / 0.08);
 
     /* ── Chat bubbles ── */
     --bubble-user-bg: rgba(124, 58, 237, 0.25);
     --bubble-user-border: rgba(124, 58, 237, 0.4);
-    --bubble-assistant-bg: rgba(255, 255, 255, 0.08);
-    --bubble-assistant-border: rgba(255, 255, 255, 0.15);
+    --bubble-assistant-bg: rgb(var(--ui-on-base-ch) / 0.08);
+    --bubble-assistant-border: rgb(var(--ui-on-base-ch) / 0.15);
 
     /* ── Primary button gradient ── */
     --btn-primary-from: var(--cp-amber);
@@ -144,8 +156,8 @@
 
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 3px; }
-  ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.2); }
+  ::-webkit-scrollbar-thumb { background: rgb(var(--ui-on-base-ch) / 0.1); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgb(var(--ui-on-base-ch) / 0.2); }
 }
 
 @layer components {
@@ -207,7 +219,7 @@
     border-radius: 16px;
     box-shadow:
       0 8px 32px rgba(0, 0, 0, 0.4),
-      inset 0 1px 0 rgba(255, 255, 255, 0.1);
+      inset 0 1px 0 rgb(var(--ui-on-base-ch) / 0.1);
     transition: all 0.25s ease;
   }
   .glass-card-hover:hover {
@@ -215,7 +227,7 @@
     border-color: var(--glass-border-hover);
     box-shadow:
       0 12px 40px rgba(0, 0, 0, 0.5),
-      inset 0 1px 0 rgba(255, 255, 255, 0.15);
+      inset 0 1px 0 rgb(var(--ui-on-base-ch) / 0.15);
     transform: translateY(-1px);
   }
 
@@ -224,64 +236,82 @@
     background: var(--glass-subtle);
     border: 1px solid var(--glass-input-border);
     border-radius: 12px;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    box-shadow: inset 0 1px 0 rgb(var(--ui-on-base-ch) / 0.05);
   }
 
   /* ════════════════════════════════════════
      GLASS SIDEBAR — translucent, blobs visible through it
      ════════════════════════════════════════ */
 
+  /* Sidebar — translucent, page blobs visible through it. v2.5.x: was
+     hardcoded white-alpha; now uses the canonical --glass-input-bg /
+     --glass-border vars so a theme can override. The white-alpha values
+     themselves still assume a dark base — see "Light themes and
+     dark-alpha" in FENG-SHUI-THEME-SPEC.md for the path forward. */
   .glass-sidebar {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--glass-input-bg);
     backdrop-filter: blur(30px);
     -webkit-backdrop-filter: blur(30px);
-    border-right: 1px solid rgba(255, 255, 255, 0.1);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    border-right: 1px solid var(--glass-border);
+    box-shadow: inset 0 1px 0 var(--glass-input-border);
   }
 
-  /* Mobile top bar — translucent header on phones */
+  /* Mobile top bar — translucent header on phones. Background tints with
+     the page bg, so it themes via the channel pattern. */
   .glass-topbar {
-    background: rgba(11, 15, 26, 0.85);
+    background: rgb(var(--cp-bg-ch) / 0.85);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid var(--glass-input-border);
   }
 
-  /* Mobile slide-out menu background */
+  /* Mobile slide-out menu — tints with the sidebar bg. */
   .glass-menu {
-    background: rgba(26, 31, 53, 0.95);
+    background: rgb(var(--cp-sidebar-ch) / 0.95);
     backdrop-filter: blur(30px);
     -webkit-backdrop-filter: blur(30px);
   }
 
-  /* Chat input bar — glass tray at bottom of chat */
+  /* Chat input bar — glass tray at bottom of chat. */
   .glass-input-bar {
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--glass-bg);
     backdrop-filter: blur(24px);
     -webkit-backdrop-filter: blur(24px);
-    border-top: 1px solid rgba(255, 255, 255, 0.12);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    border-top: 1px solid var(--glass-border);
+    box-shadow: inset 0 1px 0 var(--glass-input-border);
   }
 
   /* Secondary input bar variant (agent detail chat) */
   .glass-input-bar-subtle {
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
-    background: rgba(255, 255, 255, 0.04);
+    border-top: 1px solid var(--glass-input-border);
+    background: var(--glass-subtle);
   }
 
   /* Glass panel — used for side panels, detail drawers, etc. */
   .glass-panel {
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--glass-bg);
     backdrop-filter: blur(30px);
     -webkit-backdrop-filter: blur(30px);
-    border-left: 1px solid rgba(255, 255, 255, 0.12);
-    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4), inset 1px 0 0 rgba(255, 255, 255, 0.08);
+    border-left: 1px solid var(--glass-border);
+    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4), inset 1px 0 0 var(--glass-input-border);
   }
 
   /* Vertical divider between panels */
   .glass-divider-v {
     width: 1px;
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--glass-input-border);
+  }
+
+  /* Modal / dropdown background — opaque enough to read text against, but
+     themed via the channel pattern so a new Feng Shui theme can change it.
+     Replaces the hardcoded `bg-[#1a1a2e]` literals that used to appear in
+     migration modals and vault dropdowns. */
+  .glass-modal-bg {
+    background: rgb(var(--cp-bg-secondary-ch) / 0.95);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid var(--glass-border);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   }
 
   /* ════════════════════════════════════════
@@ -299,7 +329,7 @@
     outline: none;
     width: 100%;
   }
-  .glass-input::placeholder { color: rgba(255, 255, 255, 0.3); }
+  .glass-input::placeholder { color: rgb(var(--ui-on-base-ch) / 0.3); }
   .glass-input:focus {
     outline: none;
     box-shadow: 0 0 0 2px var(--focus-ring);
@@ -315,6 +345,10 @@
     outline: none;
     cursor: pointer;
     appearance: none;
+    /* Chevron stroke is white-on-dark. SVG background-image URLs can't read
+       CSS vars, so themes that need a different chevron color should
+       override this `background-image` rule entirely in their theme.css.
+       (Light themes will need a black-stroke version of the SVG.) */
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='rgba(255,255,255,0.4)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 12px center;
@@ -339,7 +373,7 @@
     min-height: 80px;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
-  .glass-textarea::placeholder { color: rgba(255, 255, 255, 0.3); }
+  .glass-textarea::placeholder { color: rgb(var(--ui-on-base-ch) / 0.3); }
   .glass-textarea:focus {
     outline: none;
     box-shadow: 0 0 0 2px var(--focus-ring);
@@ -373,8 +407,8 @@
     backdrop-filter: blur(12px);
   }
   .glass-btn-secondary:not(:disabled):hover {
-    background: rgba(255, 255, 255, 0.12);
-    border-color: rgba(255, 255, 255, 0.2);
+    background: rgb(var(--ui-on-base-ch) / 0.12);
+    border-color: rgb(var(--ui-on-base-ch) / 0.2);
   }
 
   .glass-btn-destructive {
@@ -403,13 +437,13 @@
 
   .glass-btn-ghost {
     background: transparent;
-    color: rgba(255, 255, 255, 0.55);
+    color: rgb(var(--ui-on-base-ch) / 0.55);
     border: none;
     padding: 8px 16px;
   }
   .glass-btn-ghost:not(:disabled):hover {
-    color: rgba(255, 255, 255, 0.92);
-    background: rgba(255, 255, 255, 0.04);
+    color: rgb(var(--ui-on-base-ch) / 0.92);
+    background: rgb(var(--ui-on-base-ch) / 0.04);
   }
 
   .glass-btn-success {
@@ -436,7 +470,7 @@
   .glass-badge-coral  { background: rgb(var(--cp-coral-ch) / 0.2); color: var(--cp-coral); border: 1px solid rgb(var(--cp-coral-ch) / 0.3); }
   .glass-badge-blue   { background: rgb(var(--cp-blue-ch) / 0.2); color: var(--cp-blue-light); border: 1px solid rgb(var(--cp-blue-ch) / 0.3); }
   .glass-badge-purple { background: rgb(var(--cp-purple-deep-ch) / 0.2); color: var(--cp-purple); border: 1px solid rgb(var(--cp-purple-deep-ch) / 0.3); }
-  .glass-badge-gray   { background: var(--glass-bg); color: var(--text-secondary); border: 1px solid rgba(255, 255, 255, 0.1); }
+  .glass-badge-gray   { background: var(--glass-bg); color: var(--text-secondary); border: 1px solid rgb(var(--ui-on-base-ch) / 0.1); }
 
   .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
   .status-dot-healthy { background: var(--status-healthy); box-shadow: 0 0 8px rgb(var(--cp-teal-light-ch) / 0.5); }
@@ -464,22 +498,22 @@
     justify-content: center;
   }
   .glass-modal {
-    background: rgba(255, 255, 255, 0.1);
+    background: rgb(var(--ui-on-base-ch) / 0.1);
     backdrop-filter: blur(32px);
     -webkit-backdrop-filter: blur(32px);
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    border: 1px solid rgb(var(--ui-on-base-ch) / 0.15);
     border-radius: 20px;
-    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgb(var(--ui-on-base-ch) / 0.1);
     max-height: 85vh;
     overflow-y: auto;
   }
 
   .glass-toast {
-    background: rgba(255, 255, 255, 0.1);
+    background: rgb(var(--ui-on-base-ch) / 0.1);
     backdrop-filter: blur(20px);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    border: 1px solid rgb(var(--ui-on-base-ch) / 0.12);
     border-radius: 12px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgb(var(--ui-on-base-ch) / 0.08);
     border-left: 3px solid;
     animation: slideInRight 0.3s ease-out;
   }
@@ -516,14 +550,14 @@
     display: block;
     font-size: 12px;
     font-weight: 500;
-    color: rgba(255, 255, 255, 0.55);
+    color: rgb(var(--ui-on-base-ch) / 0.55);
     margin-bottom: 4px;
   }
 
   /* Form hint text below inputs */
   .form-hint {
     font-size: 10px;
-    color: rgba(255, 255, 255, 0.3);
+    color: rgb(var(--ui-on-base-ch) / 0.3);
     margin-top: 4px;
   }
 
@@ -531,13 +565,13 @@
   .card-header {
     font-size: 14px;
     font-weight: 500;
-    color: rgba(255, 255, 255, 0.7);
+    color: rgb(var(--ui-on-base-ch) / 0.7);
   }
 
   /* Card description text below headers */
   .card-description {
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.4);
+    color: rgb(var(--ui-on-base-ch) / 0.4);
     margin-top: 4px;
   }
 
@@ -547,7 +581,7 @@
     align-items: center;
     justify-content: center;
     padding: 32px 16px;
-    color: rgba(255, 255, 255, 0.4);
+    color: rgb(var(--ui-on-base-ch) / 0.4);
     font-size: 14px;
   }
 
@@ -555,7 +589,7 @@
   .empty-state {
     text-align: center;
     padding: 24px 16px;
-    color: rgba(255, 255, 255, 0.4);
+    color: rgb(var(--ui-on-base-ch) / 0.4);
     font-size: 14px;
   }
   .empty-state-icon {
@@ -565,7 +599,7 @@
   }
   .empty-state-text {
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.3);
+    color: rgb(var(--ui-on-base-ch) / 0.3);
     margin-top: 4px;
   }
 
@@ -576,7 +610,7 @@
     border-radius: 16px 16px 4px 16px;
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    box-shadow: inset 0 1px 0 rgb(var(--ui-on-base-ch) / 0.1);
   }
 
   .bubble-assistant {
@@ -585,8 +619,8 @@
     border-radius: 16px 16px 16px 4px;
     backdrop-filter: blur(24px);
     -webkit-backdrop-filter: blur(24px);
-    color: rgba(255, 255, 255, 0.92);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    color: rgb(var(--ui-on-base-ch) / 0.92);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgb(var(--ui-on-base-ch) / 0.1);
   }
 
   /* Toggle switch */
@@ -600,7 +634,7 @@
     transition: background-color 0.2s ease;
     cursor: pointer;
     border: none;
-    background: rgba(255, 255, 255, 0.12);
+    background: rgb(var(--ui-on-base-ch) / 0.12);
   }
   .toggle-switch[aria-checked="true"],
   .toggle-switch.toggle-on {
@@ -664,12 +698,12 @@
   /* Sidebar nav links */
   .nav-link {
     border-left: 3px solid transparent;
-    color: rgba(255, 255, 255, 0.45);
+    color: rgb(var(--ui-on-base-ch) / 0.45);
     transition: all 0.2s ease;
   }
   .nav-link:hover {
-    color: rgba(255, 255, 255, 0.8);
-    background: rgba(255, 255, 255, 0.04);
+    color: rgb(var(--ui-on-base-ch) / 0.8);
+    background: rgb(var(--ui-on-base-ch) / 0.04);
   }
   .nav-link-active {
     background: rgb(var(--cp-amber-ch) / 0.1);
@@ -708,11 +742,11 @@
 
   .btn-sm-ghost {
     background: transparent;
-    color: rgba(255, 255, 255, 0.5);
+    color: rgb(var(--ui-on-base-ch) / 0.5);
   }
   .btn-sm-ghost:not(:disabled):hover {
-    color: rgba(255, 255, 255, 0.8);
-    background: rgba(255, 255, 255, 0.04);
+    color: rgb(var(--ui-on-base-ch) / 0.8);
+    background: rgb(var(--ui-on-base-ch) / 0.04);
   }
 
   /* Inline alert banners */
@@ -760,19 +794,19 @@
   .stat-card { position: relative; overflow: hidden; }
   .stat-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--stat-accent, #F5A623); }
   .stat-number { font-size: 36px; font-weight: 300; font-variant-numeric: tabular-nums; line-height: 1.1; }
-  .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(255, 255, 255, 0.55); }
+  .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: rgb(var(--ui-on-base-ch) / 0.55); }
 
   /* Glass table */
   .glass-table { width: 100%; border-collapse: separate; border-spacing: 0; }
-  .glass-table thead th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(255, 255, 255, 0.45); padding: 12px 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); text-align: left; font-weight: 600; }
+  .glass-table thead th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: rgb(var(--ui-on-base-ch) / 0.45); padding: 12px 16px; border-bottom: 1px solid rgb(var(--ui-on-base-ch) / 0.08); text-align: left; font-weight: 600; }
   .glass-table tbody tr { transition: background 0.15s ease; }
-  .glass-table tbody tr:hover { background: rgba(255, 255, 255, 0.04); }
-  .glass-table tbody td { padding: 12px 16px; color: rgba(255, 255, 255, 0.85); border-bottom: 1px solid rgba(255, 255, 255, 0.04); }
-  .glass-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.02); }
+  .glass-table tbody tr:hover { background: rgb(var(--ui-on-base-ch) / 0.04); }
+  .glass-table tbody td { padding: 12px 16px; color: rgb(var(--ui-on-base-ch) / 0.85); border-bottom: 1px solid rgb(var(--ui-on-base-ch) / 0.04); }
+  .glass-table tbody tr:nth-child(even) { background: rgb(var(--ui-on-base-ch) / 0.02); }
 
   /* Tier badges */
   .badge-heavy    { background: rgb(var(--cp-purple-deep-ch) / 0.2); color: var(--cp-purple); border: 1px solid rgb(var(--cp-purple-deep-ch) / 0.3); }
-  .badge-light    { background: var(--glass-bg); color: var(--text-secondary); border: 1px solid rgba(255, 255, 255, 0.12); }
+  .badge-light    { background: var(--glass-bg); color: var(--text-secondary); border: 1px solid rgb(var(--ui-on-base-ch) / 0.12); }
   .badge-system   { background: rgb(var(--cp-teal-ch) / 0.2); color: var(--cp-teal-light); border: 1px solid rgb(var(--cp-teal-ch) / 0.3); }
   .badge-permanent { background: rgb(var(--cp-amber-ch) / 0.2); color: var(--cp-amber-light); border: 1px solid rgb(var(--cp-amber-ch) / 0.3); }
 }
@@ -953,8 +987,8 @@
 }
 
 @supports not (backdrop-filter: blur(1px)) {
-  .glass-card { background: rgba(26, 31, 53, 0.92); }
-  .glass-sidebar { background: rgba(26, 31, 53, 0.95); }
+  .glass-card { background: rgb(var(--cp-sidebar-ch) / 0.92); }
+  .glass-sidebar { background: rgb(var(--cp-sidebar-ch) / 0.95); }
 }
 
 /* ── Typing / Thinking Indicator ── */
@@ -969,7 +1003,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background-color: rgba(255, 255, 255, 0.35);
+  background-color: rgb(var(--ui-on-base-ch) / 0.35);
   animation: thinking-bounce 0.6s infinite alternate;
 }
 
@@ -979,7 +1013,7 @@
 @keyframes thinking-bounce {
   to {
     transform: translateY(-6px);
-    background-color: rgba(255, 255, 255, 0.6);
+    background-color: rgb(var(--ui-on-base-ch) / 0.6);
   }
 }
 

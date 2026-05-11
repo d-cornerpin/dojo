@@ -17,12 +17,12 @@ interface ColumnDef {
 }
 
 const columns: ColumnDef[] = [
-  { key: 'on_deck', label: 'On Deck', headerColor: 'white/55' },
-  { key: 'in_progress', label: 'In Progress', headerColor: 'text-yellow-400' },
-  { key: 'paused', label: 'Paused', headerColor: 'text-purple-400' },
-  { key: 'complete', label: 'Complete', headerColor: 'text-green-400' },
-  { key: 'blocked', label: 'Blocked', headerColor: 'text-orange-400' },
-  { key: 'fallen', label: 'Fallen', headerColor: 'text-red-400' },
+  { key: 'on_deck', label: 'On Deck', headerColor: 'text-ui/55' },
+  { key: 'in_progress', label: 'In Progress', headerColor: 'text-cp-amber' },
+  { key: 'paused', label: 'Paused', headerColor: 'text-cp-purple' },
+  { key: 'complete', label: 'Complete', headerColor: 'text-cp-teal' },
+  { key: 'blocked', label: 'Blocked', headerColor: 'text-cp-amber-light' },
+  { key: 'fallen', label: 'Fallen', headerColor: 'text-cp-coral' },
 ];
 
 const KanbanColumn = ({
@@ -64,7 +64,7 @@ const KanbanColumn = ({
   return (
     <div
       className={`flex-1 min-w-[200px] flex flex-col rounded-xl transition-colors ${
-        dragOver ? 'bg-blue-500/10 ring-2 ring-blue-500/40' : ''
+        dragOver ? 'bg-cp-blue/10 ring-2 ring-cp-blue/40' : ''
       }`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -73,14 +73,14 @@ const KanbanColumn = ({
       {/* Column header */}
       <div className="flex items-center gap-2 mb-3 px-2">
         <h3 className={`text-sm font-semibold ${column.headerColor}`}>{column.label}</h3>
-        <span className="text-xs white/40 bg-white/[0.05] px-1.5 py-0.5 rounded-full">
+        <span className="text-xs text-ui/40 bg-ui/[0.05] px-1.5 py-0.5 rounded-full">
           {tasks.length}
         </span>
       </div>
 
       {/* Cards */}
       <div className={`flex-1 space-y-2 overflow-y-auto min-h-[80px] px-1 pb-1 rounded-lg ${
-        dragOver ? 'bg-blue-500/5' : ''
+        dragOver ? 'bg-cp-blue/5' : ''
       }`}>
         {tasks.map((task) => (
           <DraggableTaskCard
@@ -94,7 +94,7 @@ const KanbanColumn = ({
 
         {tasks.length === 0 && (
           <div className={`text-center py-8 text-xs rounded-lg border border-dashed ${
-            dragOver ? 'border-blue-500/40 text-blue-400' : 'white/[0.06] white/30'
+            dragOver ? 'border-cp-blue/40 text-cp-blue' : 'text-ui/25 text-ui/25'
           }`}>
             {dragOver ? 'Drop here' : 'No tasks'}
           </div>

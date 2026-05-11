@@ -124,7 +124,7 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
 
   return (
     <div className="flex justify-end">
-      <div className="bubble-user max-w-[85%] px-4 py-3 text-white">
+      <div className="bubble-user max-w-[85%] px-4 py-3 text-ui">
         {displayContent && (
           <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed break-words">
             {displayContent}
@@ -296,9 +296,9 @@ const CanvasPanel = ({
   return (
     <div className="flex flex-col h-full overflow-y-auto">
       {/* Header */}
-      <div className="shrink-0 px-4 py-3 border-b border-white/[0.06]">
+      <div className="shrink-0 px-4 py-3 border-b border-ui/[0.06]">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-white/80">Technique Mat</h2>
+          <h2 className="text-sm font-semibold text-ui/70">Technique Mat</h2>
           <span className="glass-badge glass-badge-amber text-[10px]">Draft — not yet published</span>
         </div>
       </div>
@@ -307,7 +307,7 @@ const CanvasPanel = ({
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {/* Name */}
         <div>
-          <label className="text-xs text-white/40 block mb-1">Technique Name</label>
+          <label className="text-xs text-ui/40 block mb-1">Technique Name</label>
           <input
             value={canvas.displayName}
             onChange={(e) => onChange({ displayName: e.target.value })}
@@ -318,7 +318,7 @@ const CanvasPanel = ({
 
         {/* Slug */}
         <div>
-          <label className="text-xs text-white/40 block mb-1">Slug (directory name)</label>
+          <label className="text-xs text-ui/40 block mb-1">Slug (directory name)</label>
           <input
             value={canvas.name}
             onChange={(e) => onChange({ name: e.target.value })}
@@ -329,7 +329,7 @@ const CanvasPanel = ({
 
         {/* Description */}
         <div>
-          <label className="text-xs text-white/40 block mb-1">Description</label>
+          <label className="text-xs text-ui/40 block mb-1">Description</label>
           <textarea
             value={canvas.description}
             onChange={(e) => onChange({ description: e.target.value })}
@@ -341,12 +341,12 @@ const CanvasPanel = ({
 
         {/* Tags */}
         <div>
-          <label className="text-xs text-white/40 block mb-1">Tags</label>
+          <label className="text-xs text-ui/40 block mb-1">Tags</label>
           <div className="flex flex-wrap gap-1.5 mb-2">
             {canvas.tags.map(tag => (
               <span key={tag} className="glass-badge glass-badge-blue text-xs flex items-center gap-1">
                 {tag}
-                <button onClick={() => removeTag(tag)} className="text-white/40 hover:text-white ml-0.5">&times;</button>
+                <button onClick={() => removeTag(tag)} className="text-ui/40 hover:text-ui ml-0.5">&times;</button>
               </span>
             ))}
           </div>
@@ -364,7 +364,7 @@ const CanvasPanel = ({
 
         {/* TECHNIQUE.md */}
         <div>
-          <label className="text-xs text-white/40 block mb-1">TECHNIQUE.md (Instructions)</label>
+          <label className="text-xs text-ui/40 block mb-1">TECHNIQUE.md (Instructions)</label>
           <textarea
             value={canvas.instructions}
             onChange={(e) => onChange({ instructions: e.target.value })}
@@ -377,17 +377,17 @@ const CanvasPanel = ({
 
         {/* Files */}
         <div>
-          <label className="text-xs text-white/40 block mb-1">Supporting Files ({canvas.files.length})</label>
+          <label className="text-xs text-ui/40 block mb-1">Supporting Files ({canvas.files.length})</label>
           <div className="glass-card p-3 space-y-1.5">
             {canvas.files.map((f, i) => (
-              <div key={i} className="text-xs text-white/60 flex items-center justify-between group">
+              <div key={i} className="text-xs text-ui/55 flex items-center justify-between group">
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-white/30 shrink-0">{'\u{1F4C4}'}</span>
+                  <span className="text-ui/25 shrink-0">{'\u{1F4C4}'}</span>
                   <span className="font-mono truncate">{f.path}</span>
                 </div>
                 <button
                   onClick={() => onChange({ files: canvas.files.filter((_, idx) => idx !== i) })}
-                  className="text-white/20 hover:text-cp-coral transition-colors shrink-0 ml-2 text-sm opacity-0 group-hover:opacity-100"
+                  className="text-ui/25 hover:text-cp-coral transition-colors shrink-0 ml-2 text-sm opacity-0 group-hover:opacity-100"
                   title="Remove file"
                 >
                   &times;
@@ -397,7 +397,7 @@ const CanvasPanel = ({
 
             {/* Drop zone / upload area */}
             <label
-              className="block mt-2 border border-dashed border-white/[0.1] hover:border-white/[0.2] rounded-lg p-3 text-center cursor-pointer transition-colors"
+              className="block mt-2 border border-dashed border-ui/[0.10] hover:border-ui/[0.15] rounded-lg p-3 text-center cursor-pointer transition-colors"
               onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-cp-amber/40', 'bg-cp-amber/5'); }}
               onDragLeave={(e) => { e.currentTarget.classList.remove('border-cp-amber/40', 'bg-cp-amber/5'); }}
               onDrop={(e) => {
@@ -416,14 +416,14 @@ const CanvasPanel = ({
                   e.target.value = '';
                 }}
               />
-              <span className="text-xs text-white/30">Drop files here or click to upload</span>
+              <span className="text-xs text-ui/25">Drop files here or click to upload</span>
             </label>
           </div>
         </div>
       </div>
 
       {/* Actions */}
-      <div className="shrink-0 p-4 border-t border-white/[0.06] flex gap-2">
+      <div className="shrink-0 p-4 border-t border-ui/[0.06] flex gap-2">
         <button
           onClick={onSaveDraft}
           disabled={saving || !canvas.displayName.trim()}
@@ -945,15 +945,15 @@ export const TechniqueBuilder = () => {
       {/* Left Panel — Chat (full width on mobile, 60% on desktop) */}
       <div className="flex flex-col min-h-0 w-full md:w-[60%]">
         {/* Chat header */}
-        <div className="shrink-0 px-3 sm:px-4 py-2 sm:py-3 border-b border-white/[0.06] flex items-center gap-2 sm:gap-3">
+        <div className="shrink-0 px-3 sm:px-4 py-2 sm:py-3 border-b border-ui/[0.06] flex items-center gap-2 sm:gap-3">
           <button
             onClick={() => navigate(isEditMode ? `/techniques/${editId}` : '/techniques')}
-            className="text-xs text-white/40 hover:text-white/70"
+            className="text-xs text-ui/40 hover:text-ui/70"
           >
             {'\u2190'} Back
           </button>
-          <h1 className="text-sm font-semibold text-white/80">Technique Trainer</h1>
-          <span className="text-xs text-white/30">{isEditMode ? `Edit technique with ${agentName || 'your agent'}` : `Train ${agentName || 'your agent'} on a new technique`}</span>
+          <h1 className="text-sm font-semibold text-ui/70">Technique Trainer</h1>
+          <span className="text-xs text-ui/25">{isEditMode ? `Edit technique with ${agentName || 'your agent'}` : `Train ${agentName || 'your agent'} on a new technique`}</span>
         </div>
 
         {/* Messages */}
@@ -962,7 +962,7 @@ export const TechniqueBuilder = () => {
             <div className="flex-1 flex items-center justify-center h-full">
               <div className="text-center animate-fade-up max-w-sm px-4">
                 <div className="text-3xl mb-3">{'\u{1F3AF}'}</div>
-                <h2 className="text-lg font-semibold text-white/80 mb-1">Technique Trainer</h2>
+                <h2 className="text-lg font-semibold text-ui/70 mb-1">Technique Trainer</h2>
                 <p className="text-xs text-secondary">
                   {isEditMode
                     ? `Edit the mat directly — or message ${agentName || 'the trainer'} for help. The current technique will be sent along with your first message.`
@@ -997,7 +997,7 @@ export const TechniqueBuilder = () => {
           {/* Mobile toggle for canvas panel */}
           <button
             onClick={() => setCanvasOpen(!canvasOpen)}
-            className="md:hidden shrink-0 px-3 py-2 mr-2 mb-1 text-xs bg-white/[0.06] border border-white/[0.08] rounded-lg text-white/60 hover:text-white/90"
+            className="md:hidden shrink-0 px-3 py-2 mr-2 mb-1 text-xs bg-ui/[0.08] border border-ui/[0.10] rounded-lg text-ui/55 hover:text-ui/90"
           >
             {canvasOpen ? 'Chat' : 'Mat'}
           </button>
@@ -1014,12 +1014,12 @@ export const TechniqueBuilder = () => {
           ? 'fixed inset-0 z-40 md:relative md:inset-auto md:z-auto'
           : 'hidden md:block'
         }
-      `} style={{ width: canvasOpen && window.innerWidth < 768 ? '100%' : '40%', background: 'rgba(0,0,0,0.15)' }}>
+      `} style={{ width: canvasOpen && window.innerWidth < 768 ? '100%' : '40%', background: 'rgb(var(--cp-bg-ch) / 0.3)' }}>
         {/* Mobile close button */}
         {canvasOpen && (
           <button
             onClick={() => setCanvasOpen(false)}
-            className="md:hidden absolute top-3 right-3 z-50 px-3 py-1.5 bg-white/[0.1] rounded-lg text-xs text-white/70 hover:text-white"
+            className="md:hidden absolute top-3 right-3 z-50 px-3 py-1.5 bg-ui/[0.12] rounded-lg text-xs text-ui/70 hover:text-ui"
           >
             ← Back to chat
           </button>

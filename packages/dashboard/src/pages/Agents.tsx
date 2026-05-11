@@ -79,7 +79,7 @@ const CreateAgentModal = ({
   return (
     <div className="glass-modal-backdrop">
       <div className="glass-modal p-6 max-w-2xl w-full mx-4 max-h-[85vh] overflow-y-auto">
-        <h3 className="text-lg font-semibold text-white mb-4">Recruit Agent</h3>
+        <h3 className="text-lg font-semibold text-ui mb-4">Recruit Agent</h3>
 
         {error && (
           <div className="alert-banner alert-error mb-4">
@@ -89,7 +89,7 @@ const CreateAgentModal = ({
 
         <div className="space-y-4">
           <div>
-            <label className="text-xs font-semibold white/55 uppercase tracking-wide block mb-1">Name</label>
+            <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Name</label>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -99,7 +99,7 @@ const CreateAgentModal = ({
           </div>
 
           <div>
-            <label className="text-xs font-semibold white/55 uppercase tracking-wide block mb-1">System Prompt</label>
+            <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">System Prompt</label>
             <textarea
               value={systemPrompt}
               onChange={(e) => setSystemPrompt(e.target.value)}
@@ -111,7 +111,7 @@ const CreateAgentModal = ({
 
           <div className="flex gap-4">
             <div className="flex-1">
-              <label className="text-xs font-semibold white/55 uppercase tracking-wide block mb-1">Model</label>
+              <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Model</label>
               <select
                 value={modelId}
                 onChange={(e) => setModelId(e.target.value)}
@@ -128,7 +128,7 @@ const CreateAgentModal = ({
               </select>
             </div>
             <div className="w-36">
-              <label className="text-xs font-semibold white/55 uppercase tracking-wide block mb-1">Timeout (sec)</label>
+              <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Timeout (sec)</label>
               <input
                 value={timeout}
                 onChange={(e) => setTimeout_(e.target.value)}
@@ -142,29 +142,29 @@ const CreateAgentModal = ({
 
           {/* Classification */}
           <div>
-            <label className="text-xs font-semibold white/55 uppercase tracking-wide block mb-1">Classification</label>
+            <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Classification</label>
             <div className="flex gap-2">
               <button
                 onClick={() => setClassification('apprentice')}
                 className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors border ${
                   classification === 'apprentice'
-                    ? 'bg-white/[0.08] text-white white/[0.10]'
-                    : 'bg-white/[0.05] white/40 white/[0.08] hover:white/70'
+                    ? 'bg-ui/[0.08] text-ui text-ui/25'
+                    : 'bg-ui/[0.05] text-ui/40 text-ui/25 hover:text-ui/70'
                 }`}
               >
                 <div>Apprentice</div>
-                <div className="text-[10px] font-normal white/40 mt-0.5">Auto-dismisses, subject to timeouts</div>
+                <div className="text-[10px] font-normal text-ui/40 mt-0.5">Auto-dismisses, subject to timeouts</div>
               </button>
               <button
                 onClick={() => setClassification('ronin')}
                 className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors border ${
                   classification === 'ronin'
                     ? 'bg-cp-amber/20 text-cp-amber border-cp-amber/30'
-                    : 'bg-white/[0.05] white/40 white/[0.08] hover:white/70'
+                    : 'bg-ui/[0.05] text-ui/40 text-ui/25 hover:text-ui/70'
                 }`}
               >
                 <div>Ronin</div>
-                <div className="text-[10px] font-normal white/40 mt-0.5">Persists across restarts, only you can dismiss</div>
+                <div className="text-[10px] font-normal text-ui/40 mt-0.5">Persists across restarts, only you can dismiss</div>
               </button>
             </div>
           </div>
@@ -172,7 +172,7 @@ const CreateAgentModal = ({
           {/* Group */}
           {availableGroups.length > 0 && (
             <div>
-              <label className="text-xs font-semibold white/55 uppercase tracking-wide block mb-1">Group</label>
+              <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Group</label>
               <select value={selectedGroupId} onChange={(e) => setSelectedGroupId(e.target.value)} className="glass-select w-full">
                 <option value="">No group (ungrouped)</option>
                 {availableGroups.filter(g => g.id !== 'system-group').map((g) => (
@@ -186,10 +186,10 @@ const CreateAgentModal = ({
           <div>
             <button
               onClick={() => setShowPerms(!showPerms)}
-              className="flex items-center gap-2 text-xs font-semibold white/55 uppercase tracking-wide hover:white/70 transition-colors"
+              className="flex items-center gap-2 text-xs font-semibold text-ui/55 uppercase tracking-wide hover:text-ui/70 transition-colors"
             >
-              <span className="white/30">{showPerms ? '\u25BC' : '\u25B6'}</span>
-              Permissions {!showPerms && <span className="normal-case font-normal white/30">(restrictive defaults — click to customize)</span>}
+              <span className="text-ui/25">{showPerms ? '\u25BC' : '\u25B6'}</span>
+              Permissions {!showPerms && <span className="normal-case font-normal text-ui/25">(restrictive defaults — click to customize)</span>}
             </button>
             {showPerms && (
               <div className="mt-3 glass-nested rounded-xl p-4">
@@ -206,14 +206,14 @@ const CreateAgentModal = ({
 
         {/* Equipped Techniques */}
         <div>
-          <label className="text-xs font-semibold white/55 uppercase tracking-wide block mb-1">Equipped Techniques</label>
+          <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Equipped Techniques</label>
           <TechniqueSelector selected={equippedTechniques} onChange={setEquippedTechniques} />
         </div>
 
         <div className="flex gap-3 justify-end mt-6">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-sm white/55 hover:white/90 transition-colors"
+            className="px-4 py-2 text-sm text-ui/55 hover:text-ui/90 transition-colors"
           >
             Cancel
           </button>
@@ -244,7 +244,7 @@ const TerminatedAgentRow = ({
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const statusColor =
-    agent.status === 'terminated' ? 'white/40' : 'text-cp-coral';
+    agent.status === 'terminated' ? 'text-ui/40' : 'text-cp-coral';
 
   const duration = agent.uptime > 0
     ? agent.uptime < 60
@@ -255,22 +255,22 @@ const TerminatedAgentRow = ({
     : '--';
 
   return (
-    <div className="border-b white/[0.04] last:border-b-0">
+    <div className="border-b border-ui/[0.06] last:border-b-0">
       <div
-        className="flex items-center gap-3 px-4 py-2.5 hover:white/[0.02] cursor-pointer transition-colors"
+        className="flex items-center gap-3 px-4 py-2.5 hover:text-ui/25 cursor-pointer transition-colors"
         onClick={() => setExpanded(!expanded)}
       >
-        <span className="text-xs white/30 w-4">{expanded ? '-' : '+'}</span>
-        <span className="text-sm white/70 font-medium w-36 truncate">{agent.name}</span>
+        <span className="text-xs text-ui/25 w-4">{expanded ? '-' : '+'}</span>
+        <span className="text-sm text-ui/70 font-medium w-36 truncate">{agent.name}</span>
         <StatusBadge status={agent.status} />
-        <span className="text-xs white/40 w-20">{duration}</span>
-        <span className="text-xs white/40 w-16">{agent.messageCount} msgs</span>
-        <span className="text-xs white/40 flex-1 truncate">{agent.taskId || ''}</span>
-        <span className="text-xs white/30">{formatDateShort(agent.updatedAt)}</span>
+        <span className="text-xs text-ui/40 w-20">{duration}</span>
+        <span className="text-xs text-ui/40 w-16">{agent.messageCount} msgs</span>
+        <span className="text-xs text-ui/40 flex-1 truncate">{agent.taskId || ''}</span>
+        <span className="text-xs text-ui/25">{formatDateShort(agent.updatedAt)}</span>
       </div>
 
       {expanded && (
-        <div className="px-4 pb-3 pt-1 white/[0.02] flex items-center gap-3">
+        <div className="px-4 pb-3 pt-1 text-ui/25 flex items-center gap-3">
           <button
             onClick={(e) => { e.stopPropagation(); navigate(`/agents/${agent.id}`); }}
             className="text-xs text-cp-blue hover:text-cp-blue/80 transition-colors"
@@ -288,13 +288,13 @@ const TerminatedAgentRow = ({
                     onReload();
                     setConfirmDelete(false);
                   }}
-                  className="text-xs px-2 py-0.5 bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
+                  className="text-xs px-2 py-0.5 bg-cp-coral hover:bg-cp-coral/80 text-[var(--btn-primary-text)] rounded transition-colors"
                 >
                   Yes
                 </button>
                 <button
                   onClick={(e) => { e.stopPropagation(); setConfirmDelete(false); }}
-                  className="text-xs white/55 hover:white/90"
+                  className="text-xs text-ui/55 hover:text-ui/90"
                 >
                   No
                 </button>
@@ -308,7 +308,7 @@ const TerminatedAgentRow = ({
               </button>
             )
           )}
-          <span className="text-xs white/30 ml-auto">
+          <span className="text-xs text-ui/25 ml-auto">
             Model: {agent.model?.name || 'None'} | Type: {agent.agentType}
           </span>
         </div>
@@ -441,7 +441,7 @@ export const Agents = () => {
     <div className="flex-1 p-4 md:p-6 overflow-y-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-lg sm:text-xl font-bold text-white">Agents</h1>
+        <h1 className="text-lg sm:text-xl font-bold text-ui">Agents</h1>
         <div className="flex items-center gap-2">
           <button onClick={() => setShowCreateGroup(true)} className="glass-btn glass-btn-secondary text-sm">+ Form Squad</button>
           <button onClick={() => setShowCreate(true)} className="glass-btn glass-btn-primary text-sm">+ Recruit Agent</button>
@@ -465,7 +465,7 @@ export const Agents = () => {
                 </button>
               </div>
               {ollamaWarningExpanded && (
-                <div className="mt-2 text-xs white/50 space-y-1">
+                <div className="mt-2 text-xs text-ui/55 space-y-1">
                   <p>
                     <span className="font-semibold">{w.providerName}</span> can only keep {w.maxConcurrentModels} Ollama model{w.maxConcurrentModels > 1 ? 's' : ''} loaded in RAM at once.
                     When agents assigned to this provider use different models, they have to wait for the current one to finish before swapping.
@@ -508,7 +508,7 @@ export const Agents = () => {
           <div className="flex items-center gap-3 mb-2">
             <button
               onClick={() => setHistoryExpanded(!historyExpanded)}
-              className="flex items-center gap-2 text-sm font-semibold white/55 uppercase tracking-wide hover:white/70 transition-colors"
+              className="flex items-center gap-2 text-sm font-semibold text-ui/55 uppercase tracking-wide hover:text-ui/70 transition-colors"
             >
               <span className="text-xs">{historyExpanded ? '\u25BC' : '\u25B6'}</span>
               Recent History ({terminatedAgents.length})
@@ -516,7 +516,7 @@ export const Agents = () => {
             {historyExpanded && terminatedAgents.length > 0 && (
               <button
                 onClick={handleClearHistory}
-                className="text-xs white/30 hover:white/55 transition-colors ml-auto"
+                className="text-xs text-ui/25 hover:text-ui/55 transition-colors ml-auto"
               >
                 Clear older than 7 days
               </button>
@@ -526,7 +526,7 @@ export const Agents = () => {
           {historyExpanded && (
             <div className="glass-card overflow-hidden">
               {/* Column headers */}
-              <div className="flex items-center gap-3 px-4 py-2 border-b white/[0.06] text-xs white/30 uppercase tracking-wide">
+              <div className="flex items-center gap-3 px-4 py-2 border-b border-ui/[0.06] text-xs text-ui/25 uppercase tracking-wide">
                 <span className="w-4" />
                 <span className="w-36">Name</span>
                 <span className="w-16">Status</span>
@@ -545,7 +545,7 @@ export const Agents = () => {
               ))}
 
               {terminatedAgents.length > 20 && !showAllHistory && (
-                <div className="px-4 py-2 border-t white/[0.06]">
+                <div className="px-4 py-2 border-t border-ui/[0.06]">
                   <button
                     onClick={() => setShowAllHistory(true)}
                     className="text-xs text-cp-blue hover:text-cp-blue/80 transition-colors"
@@ -596,18 +596,18 @@ const CreateGroupModal = ({ onClose, onCreated }: { onClose: () => void; onCreat
   return (
     <div className="glass-modal-backdrop">
       <div className="glass-modal p-6 max-w-md w-full mx-4">
-        <h3 className="text-lg font-semibold text-white mb-4">Form Squad</h3>
-        <p className="text-sm text-white/40 mb-4">Groups organize agents around a shared purpose. The description is injected into all member agents' context.</p>
+        <h3 className="text-lg font-semibold text-ui mb-4">Form Squad</h3>
+        <p className="text-sm text-ui/40 mb-4">Groups organize agents around a shared purpose. The description is injected into all member agents' context.</p>
 
         {error && <div className="mb-4 px-3 py-2 rounded-xl bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
 
         <div className="space-y-4">
           <div>
-            <label className="text-xs font-semibold text-white/55 uppercase tracking-wide block mb-1">Group Name</label>
+            <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Group Name</label>
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g., Research Team" className="glass-input" autoFocus />
           </div>
           <div>
-            <label className="text-xs font-semibold text-white/55 uppercase tracking-wide block mb-1">Description</label>
+            <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Description</label>
             <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What this group does..." className="glass-textarea" rows={3} />
           </div>
         </div>
@@ -650,14 +650,14 @@ const UngroupedSection = ({
 
   return (
     <div
-      className={`mb-6 p-4 rounded-2xl transition-all ${dragOver ? 'ring-2 ring-white/20 bg-white/[0.02]' : ''}`}
+      className={`mb-6 p-4 rounded-2xl transition-all ${dragOver ? 'ring-2 ring-ui/20 bg-ui/[0.03]' : ''}`}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
     >
       <h2 className="section-label mb-3">Unassigned ({agents.length})</h2>
       {agents.length === 0 ? (
-        <p className="text-sm text-white/30 text-center py-4">
+        <p className="text-sm text-ui/25 text-center py-4">
           {dragOver ? 'Drop here to remove from squad' : 'No unassigned agents'}
         </p>
       ) : (

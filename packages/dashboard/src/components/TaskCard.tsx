@@ -75,10 +75,10 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
   const card = (
     <div
       onClick={onClick}
-      className={`w-full text-left glass-nested p-3 hover:bg-white/[0.06] transition-colors cursor-pointer group relative${isPaused ? ' opacity-60' : ''}`}
+      className={`w-full text-left glass-nested p-3 hover:bg-ui/[0.08] transition-colors cursor-pointer group relative${isPaused ? ' opacity-60' : ''}`}
     >
       <div className="flex items-start justify-between gap-2 mb-2">
-        <h4 className="text-sm font-medium text-white/90 leading-tight line-clamp-2">
+        <h4 className="text-sm font-medium text-ui/90 leading-tight line-clamp-2">
           {task.title}
         </h4>
         <div className="flex items-center gap-1.5 shrink-0">
@@ -87,7 +87,7 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
           </span>
           <button
             onClick={(e) => { e.stopPropagation(); setConfirmDelete(true); }}
-            className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-cp-coral transition-all p-0.5"
+            className="opacity-0 group-hover:opacity-100 text-ui/25 hover:text-cp-coral transition-all p-0.5"
             title="Delete task"
           >
             &times;
@@ -118,7 +118,7 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
             </div>
           )}
           {task.repeatInterval && task.repeatUnit && (
-            <div className="text-[10px] text-white/40 flex items-center gap-1">
+            <div className="text-[10px] text-ui/40 flex items-center gap-1">
               <span>{'\u{1F501}'}</span>
               <span>{formatRepeat(task.repeatInterval, task.repeatUnit, task.repeatDaysOfWeek)}</span>
               {task.runCount > 0 && <span>({task.runCount} runs)</span>}
@@ -133,7 +133,7 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
         </div>
       )}
 
-      <div className="flex items-center justify-between text-xs text-white/40">
+      <div className="flex items-center justify-between text-xs text-ui/40">
         {task.assignedTo ? (
           <span className="truncate max-w-[120px]">{task.assignedToName ?? task.assignedTo}</span>
         ) : task.assignedToGroup ? (
@@ -150,7 +150,7 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
           className="absolute inset-0 bg-black/80 rounded-xl flex items-center justify-center gap-2 z-10"
           onClick={(e) => e.stopPropagation()}
         >
-          <span className="text-xs text-white/70">Delete?</span>
+          <span className="text-xs text-ui/70">Delete?</span>
           <button onClick={handleDelete} className="glass-btn glass-btn-destructive text-xs py-1 px-2">Yes</button>
           <button onClick={(e) => { e.stopPropagation(); setConfirmDelete(false); }} className="glass-btn glass-btn-ghost text-xs py-1 px-2">No</button>
         </div>

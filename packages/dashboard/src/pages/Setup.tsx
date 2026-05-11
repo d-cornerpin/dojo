@@ -3,6 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import type { Model, Provider } from '@dojo/shared';
 import * as api from '../lib/api';
 import { SetupDeps, SetupPermissions } from '../components/SetupDeps';
+
+// FENG-SHUI EXEMPTION: setup wizard uses standard Tailwind status colors
+// (text-red-500, text-green-500, text-blue-400, text-yellow-400) for
+// universal error/success/info/warning. Wizard is explicitly exempt per
+// FENG-SHUI-THEME-SPEC.md. Primary-action button text IS themed (uses
+// var(--btn-primary-text) / var(--btn-success-text)).
 import { MigrationImport } from '../components/MigrationImport';
 
 type Step = 'welcome' | 'dependencies' | 'permissions' | 'provider' | 'models' | 'your-profile' | 'primary-agent' | 'pm-agent' | 'trainer-agent' | 'dreamer' | 'imessage' | 'workspace' | 'web-search' | 'complete';
@@ -108,7 +114,7 @@ export const Setup = () => {
         {/* Header */}
         <div className="text-center mb-8">
           <img src="/dojologo.svg" alt="DOJO" className="w-12 h-12 mx-auto mb-3" />
-          <h1 className="text-2xl font-bold text-white">Agent D.O.J.O.</h1>
+          <h1 className="text-2xl font-bold text-ui">Agent D.O.J.O.</h1>
           <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Delegated Operations & Job Orchestration</p>
         </div>
 
@@ -119,23 +125,23 @@ export const Setup = () => {
               <div
                 className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold transition-all duration-300 ${
                   i < currentIndex
-                    ? 'bg-cp-teal text-[#0B0F1A]'
+                    ? 'bg-cp-teal text-[var(--btn-success-text)]'
                     : i === currentIndex
-                      ? 'bg-cp-amber text-[#0B0F1A] ring-2 ring-cp-amber/40 shadow-glass-glow'
-                      : 'bg-white/[0.06] text-white/30'
+                      ? 'bg-cp-amber text-[var(--btn-primary-text)] ring-2 ring-cp-amber/40 shadow-glass-glow'
+                      : 'bg-ui/[0.08] text-ui/25'
                 }`}
               >
                 {i < currentIndex ? '\u2713' : i + 1}
               </div>
               {i < STEPS.length - 1 && (
-                <div className={`w-5 h-0.5 mx-0.5 transition-colors duration-300 ${i < currentIndex ? 'bg-cp-teal' : 'bg-white/[0.06]'}`} />
+                <div className={`w-5 h-0.5 mx-0.5 transition-colors duration-300 ${i < currentIndex ? 'bg-cp-teal' : 'bg-ui/[0.08]'}`} />
               )}
             </div>
           ))}
         </div>
 
         {/* Step Label */}
-        <h2 className="text-lg font-semibold text-white text-center mb-6">
+        <h2 className="text-lg font-semibold text-ui text-center mb-6">
           {STEP_LABELS[currentStep]}
         </h2>
 
@@ -257,10 +263,10 @@ const WelcomeStep = () => {
     return (
       <div className="space-y-6">
         <div className="flex items-center gap-3 mb-4">
-          <button onClick={() => setShowImport(false)} className="text-white/40 hover:text-white/60 text-sm">
+          <button onClick={() => setShowImport(false)} className="text-ui/40 hover:text-ui/55 text-sm">
             &larr; Back
           </button>
-          <h3 className="text-sm font-bold text-white">Import Your Dojo</h3>
+          <h3 className="text-sm font-bold text-ui">Import Your Dojo</h3>
         </div>
         <MigrationImport isOobe onComplete={() => navigate('/')} />
       </div>
@@ -271,16 +277,16 @@ const WelcomeStep = () => {
     <div className="space-y-6">
       <div className="text-center">
         <img src="/dojologo.svg" alt="DOJO" className="w-16 h-16 mx-auto mb-4" />
-        <p className="white/70">
-          Prepare to enter the <strong className="text-white">D.O.J.O.</strong>
+        <p className="text-ui/70">
+          Prepare to enter the <strong className="text-ui">D.O.J.O.</strong>
         </p>
-        <p className="text-sm text-white/40 mt-2">
+        <p className="text-sm text-ui/40 mt-2">
           The path to mastery begins with a single step. Take yours.
         </p>
       </div>
 
       {loading ? (
-        <p className="text-white/55 text-center py-4">Checking system...</p>
+        <p className="text-ui/55 text-center py-4">Checking system...</p>
       ) : (
         <div className="space-y-3">
           {[
@@ -291,14 +297,14 @@ const WelcomeStep = () => {
               <span className={`text-lg ${check.ok ? 'text-green-500' : 'text-red-500'}`}>
                 {check.ok ? '\u2713' : '\u2717'}
               </span>
-              <span className="white/70">{check.label}</span>
+              <span className="text-ui/70">{check.label}</span>
             </div>
           ))}
         </div>
       )}
 
-      <div className="border-t border-white/10 pt-4 text-center">
-        <p className="text-xs text-white/30">
+      <div className="border-t border-ui/[0.10] pt-4 text-center">
+        <p className="text-xs text-ui/25">
           Migrating from another machine?{' '}
           <button
             onClick={() => setShowImport(true)}
@@ -343,12 +349,12 @@ const PasswordStep = ({ onComplete }: { onComplete: () => void }) => {
 
   return (
     <form onSubmit={handleSet} className="space-y-4">
-      <p className="text-sm text-white/55">
+      <p className="text-sm text-ui/55">
         Create a password for your dashboard. You'll use this to log in.
       </p>
 
       <div>
-        <label className="block text-sm font-medium white/70 mb-1">New Password</label>
+        <label className="block text-sm font-medium text-ui/70 mb-1">New Password</label>
         <input
           type="password"
           value={password}
@@ -360,7 +366,7 @@ const PasswordStep = ({ onComplete }: { onComplete: () => void }) => {
       </div>
 
       <div>
-        <label className="block text-sm font-medium white/70 mb-1">Confirm Password</label>
+        <label className="block text-sm font-medium text-ui/70 mb-1">Confirm Password</label>
         <input
           type="password"
           value={confirm}
@@ -383,8 +389,8 @@ const PasswordStep = ({ onComplete }: { onComplete: () => void }) => {
       <button
         type="submit"
         disabled={!password.trim() || !confirm.trim() || saved}
-        className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
-          saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
+        className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${
+          saved ? 'bg-cp-teal text-[var(--btn-success-text)] font-semibold' : 'glass-btn glass-btn-primary'
         }`}
       >
         {saved ? '\u2713 Password Created' : 'Create Password'}
@@ -487,7 +493,7 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-white/55">
+      <p className="text-sm text-ui/55">
         Connect a cloud AI provider for your agents. You can add more providers later in Settings.
       </p>
 
@@ -509,16 +515,16 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
 
       {/* Add provider form */}
       <form onSubmit={handleAdd} className="space-y-4">
-        <h3 className="text-sm font-medium text-white/70">{hasCloudProvider ? 'Add Another Provider' : 'Add a Cloud Provider'}</h3>
+        <h3 className="text-sm font-medium text-ui/70">{hasCloudProvider ? 'Add Another Provider' : 'Add a Cloud Provider'}</h3>
 
         <div>
-          <label className="block text-sm font-medium white/70 mb-1">Provider Name</label>
+          <label className="block text-sm font-medium text-ui/70 mb-1">Provider Name</label>
           <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g., My Anthropic"
             className="glass-input" />
         </div>
 
         <div>
-          <label className="block text-sm font-medium white/70 mb-1">Type</label>
+          <label className="block text-sm font-medium text-ui/70 mb-1">Type</label>
           <select value={preset} onChange={(e) => setPreset(e.target.value)}
             className="glass-select w-full">
             <option value="anthropic">Anthropic</option>
@@ -531,7 +537,7 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
 
         {preset === 'ollama' && (
           <div>
-            <label className="block text-sm font-medium white/70 mb-1">Base URL</label>
+            <label className="block text-sm font-medium text-ui/70 mb-1">Base URL</label>
             <input type="text" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://localhost:11434"
               className="glass-input" />
           </div>
@@ -541,7 +547,7 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
           <>
             {preset === 'anthropic' && (
               <div>
-                <label className="block text-sm font-medium white/70 mb-1">Auth Type</label>
+                <label className="block text-sm font-medium text-ui/70 mb-1">Auth Type</label>
                 <select value={authType} onChange={(e) => setAuthType(e.target.value)}
                   className="glass-select w-full">
                   <option value="api_key">API Key</option>
@@ -553,22 +559,22 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
 
             {authType === 'agent-sdk' && preset === 'anthropic' ? (
               <div className="space-y-3">
-                <p className="text-xs text-white/40">
+                <p className="text-xs text-ui/40">
                   Use your Claude Pro or Max subscription. Two steps needed before adding this provider:
                 </p>
-                <div className="text-xs text-white/50 space-y-2">
+                <div className="text-xs text-ui/55 space-y-2">
                   <div>
-                    <p className="font-medium text-white/70">Step 1: Install Claude Code CLI</p>
-                    <p className="text-white/40 mt-0.5">Run this in your terminal:</p>
-                    <code className="block bg-white/5 px-2 py-1 rounded text-[11px] mt-1">curl -fsSL https://claude.ai/install.sh | bash</code>
+                    <p className="font-medium text-ui/70">Step 1: Install Claude Code CLI</p>
+                    <p className="text-ui/40 mt-0.5">Run this in your terminal:</p>
+                    <code className="block bg-ui/[0.05] px-2 py-1 rounded text-[11px] mt-1">curl -fsSL https://claude.ai/install.sh | bash</code>
                   </div>
                   <div>
-                    <p className="font-medium text-white/70">Step 2: Sign in to Claude</p>
-                    <p className="text-white/40 mt-0.5">Run this in your terminal and sign in with your Claude Pro/Max account:</p>
-                    <code className="block bg-white/5 px-2 py-1 rounded text-[11px] mt-1">claude</code>
+                    <p className="font-medium text-ui/70">Step 2: Sign in to Claude</p>
+                    <p className="text-ui/40 mt-0.5">Run this in your terminal and sign in with your Claude Pro/Max account:</p>
+                    <code className="block bg-ui/[0.05] px-2 py-1 rounded text-[11px] mt-1">claude</code>
                   </div>
                 </div>
-                <p className="text-[11px] text-white/30">
+                <p className="text-[11px] text-ui/25">
                   Once both steps are done, click "Add & Validate Provider" below. The dojo will verify your connection.
                 </p>
                 <div className="alert-banner alert-warning">
@@ -580,7 +586,7 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
             ) : (
               <>
                 <div>
-                  <label className="block text-sm font-medium white/70 mb-1">{authType === 'oauth' && preset === 'anthropic' ? 'OAuth Token' : 'API Key'}</label>
+                  <label className="block text-sm font-medium text-ui/70 mb-1">{authType === 'oauth' && preset === 'anthropic' ? 'OAuth Token' : 'API Key'}</label>
                   <input type="password" value={credential} onChange={(e) => setCredential(e.target.value)}
                     placeholder={
                       preset === 'deepseek' ? 'sk-... (DeepSeek API key from platform.deepseek.com)' :
@@ -595,9 +601,9 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
                   <div className="px-3 py-2.5 rounded-lg bg-blue-500/5 border border-blue-500/10 text-[11px] text-blue-300/70 leading-relaxed space-y-1.5">
                     <p className="font-medium text-blue-300/90">How to get your OAuth token:</p>
                     <p>1. Install Claude Code (if you haven't already):</p>
-                    <code className="block px-2 py-1 rounded bg-white/[0.05] font-mono text-[10px] text-white/60">curl -fsSL https://claude.ai/install.sh | bash</code>
+                    <code className="block px-2 py-1 rounded bg-ui/[0.05] font-mono text-[10px] text-ui/55">curl -fsSL https://claude.ai/install.sh | bash</code>
                     <p>2. Generate your token:</p>
-                    <code className="block px-2 py-1 rounded bg-white/[0.05] font-mono text-[10px] text-white/60">claude setup-token</code>
+                    <code className="block px-2 py-1 rounded bg-ui/[0.05] font-mono text-[10px] text-ui/55">claude setup-token</code>
                     <p>3. Copy the token (starts with <span className="font-mono">sk-ant-oat</span>) and paste it above.</p>
                   </div>
                 )}
@@ -609,7 +615,7 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
         {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
 
         <button type="submit" disabled={status === 'validating' || !name.trim() || (preset !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())}
-          className="px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors glass-btn glass-btn-primary">
+          className="px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors glass-btn glass-btn-primary">
           {status === 'validating' ? 'Validating...' : 'Add & Validate Provider'}
         </button>
       </form>
@@ -661,7 +667,7 @@ const SetupBrowseModels = ({ providerId, providerName, onModelsAdded }: { provid
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-white/55">
+      <p className="text-sm text-ui/55">
         {providerName} has thousands of models. Search for the ones you want to use.
       </p>
 
@@ -688,8 +694,8 @@ const SetupBrowseModels = ({ providerId, providerName, onModelsAdded }: { provid
           {results.map((model) => (
             <div key={model.apiModelId} className="flex items-center justify-between glass-nested p-2.5 rounded-lg">
               <div className="min-w-0 flex-1">
-                <div className="text-sm text-white/90 truncate">{model.name}</div>
-                <div className="text-[10px] white/40 flex items-center gap-2 mt-0.5">
+                <div className="text-sm text-ui/90 truncate">{model.name}</div>
+                <div className="text-[10px] text-ui/40 flex items-center gap-2 mt-0.5">
                   <span className="truncate">{model.apiModelId}</span>
                   {model.contextWindow && <span>{(model.contextWindow / 1000).toFixed(0)}k ctx</span>}
                   <span>In: {formatCost(model.inputCostPerM)}/M</span>
@@ -699,7 +705,7 @@ const SetupBrowseModels = ({ providerId, providerName, onModelsAdded }: { provid
               <button
                 onClick={() => handleAdd(model)}
                 disabled={adding === model.apiModelId}
-                className="ml-2 px-3 py-1 text-xs bg-cp-teal/20 text-cp-teal hover:bg-cp-teal/30 disabled:bg-white/[0.05] disabled:white/30 rounded-lg transition-colors shrink-0"
+                className="ml-2 px-3 py-1 text-xs bg-cp-teal/20 text-cp-teal hover:bg-cp-teal/30 disabled:bg-ui/[0.05] disabled:text-ui/25 rounded-lg transition-colors shrink-0"
               >
                 {adding === model.apiModelId ? 'Adding...' : 'Add & Enable'}
               </button>
@@ -709,7 +715,7 @@ const SetupBrowseModels = ({ providerId, providerName, onModelsAdded }: { provid
       )}
 
       {searched && results.length === 0 && !searching && (
-        <p className="text-xs white/30 text-center py-2">No models found matching &ldquo;{query}&rdquo;</p>
+        <p className="text-xs text-ui/25 text-center py-2">No models found matching &ldquo;{query}&rdquo;</p>
       )}
 
       {addedCount > 0 && (
@@ -772,7 +778,7 @@ const ModelsStep = () => {
     setSaved(true);
   };
 
-  if (loading) return <p className="text-white/55 text-center py-8">Loading models...</p>;
+  if (loading) return <p className="text-ui/55 text-center py-8">Loading models...</p>;
   if (error) return <p className="text-red-400 text-center py-8">{error}</p>;
 
   return (
@@ -780,24 +786,24 @@ const ModelsStep = () => {
       {/* Direct providers (Anthropic, OpenAI, Ollama): show toggle checkboxes */}
       {hasDirectProviders && models.length > 0 && (
         <>
-          <p className="text-sm text-white/55">Select which models to enable. You can change this later in Settings.</p>
+          <p className="text-sm text-ui/55">Select which models to enable. You can change this later in Settings.</p>
           <div className="space-y-2 max-h-64 overflow-y-auto">
             {models.map((model) => (
-              <label key={model.id} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/[0.04] cursor-pointer">
+              <label key={model.id} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-ui/[0.05] cursor-pointer">
                 <input type="checkbox" checked={selected.has(model.id)} onChange={() => toggleModel(model.id)}
-                  className="w-4 h-4 rounded white/[0.10] bg-white/[0.08] text-cp-amber focus:ring-cp-amber focus:ring-offset-0" />
+                  className="w-4 h-4 rounded text-ui/25 bg-ui/[0.08] text-cp-amber focus:ring-cp-amber focus:ring-offset-0" />
                 <div>
-                  <span className="text-sm white/90">{model.name}</span>
+                  <span className="text-sm text-ui/90">{model.name}</span>
                   {model.contextWindow && (
-                    <span className="text-xs text-white/40 ml-2">{Math.round(model.contextWindow / 1000)}k ctx</span>
+                    <span className="text-xs text-ui/40 ml-2">{Math.round(model.contextWindow / 1000)}k ctx</span>
                   )}
                 </div>
               </label>
             ))}
           </div>
           <button onClick={handleSave} disabled={selected.size === 0}
-            className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
-              saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
+            className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${
+              saved ? 'bg-cp-teal text-[var(--btn-success-text)] font-semibold' : 'glass-btn glass-btn-primary'
             }`}>
             {saved ? `\u2713 ${selected.size} Model(s) Enabled` : `Enable ${selected.size} Model(s)`}
           </button>
@@ -811,7 +817,7 @@ const ModelsStep = () => {
 
       {/* No models at all and no aggregator */}
       {!hasAggregatorProviders && models.length === 0 && (
-        <p className="text-white/55 text-center py-4">No models available from provider.</p>
+        <p className="text-ui/55 text-center py-4">No models available from provider.</p>
       )}
     </div>
   );
@@ -839,20 +845,20 @@ const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =>
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-white/55">
+      <p className="text-sm text-ui/55">
         Tell us about yourself. Your agents will use this information to personalize their interactions with you.
         You can update this anytime in Settings &gt; Profile.
       </p>
 
       <div>
-        <label className="block text-sm font-medium white/70 mb-1">Your Name</label>
+        <label className="block text-sm font-medium text-ui/70 mb-1">Your Name</label>
         <input type="text" value={userName} onChange={(e) => setUserName(e.target.value)} placeholder="e.g., David"
           className="glass-input" />
       </div>
 
       <div>
-        <label className="block text-sm font-medium white/70 mb-1">About You</label>
-        <p className="text-xs text-white/40 mb-2">
+        <label className="block text-sm font-medium text-ui/70 mb-1">About You</label>
+        <p className="text-xs text-ui/40 mb-2">
           Your work, preferences, projects, communication style — anything you want your agents to know about you.
         </p>
         <textarea value={aboutYou} onChange={(e) => setAboutYou(e.target.value)} rows={5}
@@ -865,8 +871,8 @@ const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =>
       )}
 
       <button onClick={handleSave} disabled={!userName.trim() || !aboutYou.trim() || saved}
-        className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
-          saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
+        className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${
+          saved ? 'bg-cp-teal text-[var(--btn-success-text)] font-semibold' : 'glass-btn glass-btn-primary'
         }`}>
         {saved ? '\u2713 Profile Saved' : 'Save Profile'}
       </button>
@@ -942,20 +948,20 @@ const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-white/55">
-        Your <strong className="white/90">primary agent</strong> is the main AI you'll interact with.
+      <p className="text-sm text-ui/55">
+        Your <strong className="text-ui/90">primary agent</strong> is the main AI you'll interact with.
         It orchestrates everything — managing sub-agents, executing tasks, searching the web, controlling your Mac, and communicating with you via the dashboard and iMessage.
       </p>
 
       <div>
-        <label className="block text-sm font-medium white/70 mb-1">Agent Name</label>
+        <label className="block text-sm font-medium text-ui/70 mb-1">Agent Name</label>
         <input type="text" value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder="e.g., Atlas, Friday, Jarvis"
           className="glass-input" />
       </div>
 
       {models.length > 0 && (
         <div>
-          <label className="block text-sm font-medium white/70 mb-1">Model</label>
+          <label className="block text-sm font-medium text-ui/70 mb-1">Model</label>
           <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}
             className="glass-select w-full">
             {models.map((m) => <option key={m.id} value={m.id}>{m.name} ({m.apiModelId})</option>)}
@@ -964,23 +970,23 @@ const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       )}
 
       <div>
-        <label className="block text-sm font-medium white/70 mb-2">Communication Style</label>
+        <label className="block text-sm font-medium text-ui/70 mb-2">Communication Style</label>
         <div className="flex gap-4">
           {['casual', 'balanced', 'formal'].map((s) => (
             <label key={s} className="flex items-center gap-2 cursor-pointer">
               <input type="radio" name="style" value={s} checked={style === s} onChange={() => setStyle(s)}
-                className="w-4 h-4 text-cp-amber bg-white/[0.08] white/[0.10] focus:ring-cp-amber" />
-              <span className="text-sm white/70 capitalize">{s}</span>
+                className="w-4 h-4 text-cp-amber bg-ui/[0.08] text-ui/25 focus:ring-cp-amber" />
+              <span className="text-sm text-ui/70 capitalize">{s}</span>
             </label>
           ))}
         </div>
       </div>
 
       <div>
-        <label className="block text-sm font-medium white/70 mb-1">
-          Personality & Instructions <span className="text-white/30 font-normal">(optional)</span>
+        <label className="block text-sm font-medium text-ui/70 mb-1">
+          Personality & Instructions <span className="text-ui/25 font-normal">(optional)</span>
         </label>
-        <p className="text-xs text-white/40 mb-2">
+        <p className="text-xs text-ui/40 mb-2">
           Describe how this agent should behave — its tone, areas of expertise, things to avoid, or any special instructions.
           You can edit this later from the agent's Config tab.
         </p>
@@ -997,8 +1003,8 @@ const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       )}
 
       <button onClick={handleSave} disabled={!agentName.trim() || saved}
-        className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
-          saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
+        className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${
+          saved ? 'bg-cp-teal text-[var(--btn-success-text)] font-semibold' : 'glass-btn glass-btn-primary'
         }`}>
         {saved ? `\u2713 ${agentName} Configured` : `Configure ${agentName || 'Agent'}`}
       </button>
@@ -1044,13 +1050,13 @@ const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-white/55">
-        The <strong className="white/90">project manager</strong> tracks tasks,
+      <p className="text-sm text-ui/55">
+        The <strong className="text-ui/90">project manager</strong> tracks tasks,
         pokes stalled work, and escalates issues. It runs on a lighter model to save costs and keeps your primary agent accountable.
       </p>
 
       <div>
-        <label className="block text-sm font-medium white/70 mb-1">PM Name</label>
+        <label className="block text-sm font-medium text-ui/70 mb-1">PM Name</label>
         <input type="text" value={pmName} onChange={(e) => { setPmName(e.target.value); setSaved(false); }}
           placeholder="e.g., Kelly, Max, Tracker"
           className="glass-input" />
@@ -1058,8 +1064,8 @@ const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
 
       {models.length > 0 && (
         <div>
-          <label className="block text-sm font-medium white/70 mb-1">Model</label>
-          <p className="text-xs text-white/40 mb-2">
+          <label className="block text-sm font-medium text-ui/70 mb-1">Model</label>
+          <p className="text-xs text-ui/40 mb-2">
             The PM uses a lighter model to save costs. A free local model works well here.
           </p>
           <select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); setSaved(false); }}
@@ -1080,8 +1086,8 @@ const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
       )}
 
       <button onClick={handleSave} disabled={saved || !pmName.trim()}
-        className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
-          saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
+        className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${
+          saved ? 'bg-cp-teal text-[var(--btn-success-text)] font-semibold' : 'glass-btn glass-btn-primary'
         }`}>
         {saved ? '\u2713 Saved' : 'Save'}
       </button>
@@ -1126,13 +1132,13 @@ const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-white/55">
-        The <strong className="white/90">technique trainer</strong> helps you create, refine, and manage
+      <p className="text-sm text-ui/55">
+        The <strong className="text-ui/90">technique trainer</strong> helps you create, refine, and manage
         reusable techniques for the dojo. It runs the Technique Trainer interface and ensures techniques are well-documented and useful.
       </p>
 
       <div>
-        <label className="block text-sm font-medium white/70 mb-1">Trainer Name</label>
+        <label className="block text-sm font-medium text-ui/70 mb-1">Trainer Name</label>
         <input type="text" value={trainerName} onChange={(e) => { setTrainerName(e.target.value); setSaved(false); }}
           placeholder="e.g., Sensei, Coach, Instructor"
           className="glass-input" />
@@ -1140,8 +1146,8 @@ const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
 
       {models.length > 0 && (
         <div>
-          <label className="block text-sm font-medium white/70 mb-1">Model</label>
-          <p className="text-xs text-white/40 mb-2">
+          <label className="block text-sm font-medium text-ui/70 mb-1">Model</label>
+          <p className="text-xs text-ui/40 mb-2">
             The Trainer uses the same model as other agents. A capable model works best here since it writes detailed instructions.
           </p>
           <select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); setSaved(false); }}
@@ -1162,8 +1168,8 @@ const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       )}
 
       <button onClick={handleSave} disabled={saved || !trainerName.trim()}
-        className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
-          saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
+        className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${
+          saved ? 'bg-cp-teal text-[var(--btn-success-text)] font-semibold' : 'glass-btn glass-btn-primary'
         }`}>
         {saved ? '\u2713 Saved' : 'Save'}
       </button>
@@ -1206,20 +1212,20 @@ const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-white/55">
-        Every night, the dojo <strong className="text-white/90">dreams</strong>. Just like humans consolidate memories during sleep,
-        a temporary <strong className="text-white/90">Dreamer</strong> agent wakes up, processes the day's conversations, and
+      <p className="text-sm text-ui/55">
+        Every night, the dojo <strong className="text-ui/90">dreams</strong>. Just like humans consolidate memories during sleep,
+        a temporary <strong className="text-ui/90">Dreamer</strong> agent wakes up, processes the day's conversations, and
         extracts the important stuff into the dojo's long-term memory vault: facts, preferences, decisions,
         procedures, relationships, and events.
       </p>
-      <p className="text-sm text-white/55">
+      <p className="text-sm text-ui/55">
         Without dreaming, your agents would gradually forget things as older conversations get compacted.
         The Dreamer makes sure nothing important is lost.
       </p>
 
       <div>
-        <label className="block text-sm font-medium text-white/70 mb-1">Dreamer Model</label>
-        <p className="text-xs text-white/40 mb-2">
+        <label className="block text-sm font-medium text-ui/70 mb-1">Dreamer Model</label>
+        <p className="text-xs text-ui/40 mb-2">
           The model the Dreamer uses to read conversations and extract knowledge. A Standard tier model
           (like Sonnet) gives good quality at reasonable cost. A smaller model works but may miss subtleties.
         </p>
@@ -1236,8 +1242,8 @@ const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-white/70 mb-1">Dream Time</label>
-        <p className="text-xs text-white/40 mb-2">
+        <label className="block text-sm font-medium text-ui/70 mb-1">Dream Time</label>
+        <p className="text-xs text-ui/40 mb-2">
           What time should the Dreamer run each night? Pick a time when the dojo is idle.
         </p>
         <input
@@ -1249,7 +1255,7 @@ const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-white/70 mb-2">Dream Mode</label>
+        <label className="block text-sm font-medium text-ui/70 mb-2">Dream Mode</label>
         <div className="space-y-3">
           <label className="flex items-start gap-3 cursor-pointer">
             <input
@@ -1260,8 +1266,8 @@ const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
               className="mt-1 accent-cp-amber"
             />
             <div>
-              <span className="text-sm text-white/80 font-medium">Full Dream</span>
-              <p className="text-xs text-white/40 mt-0.5">
+              <span className="text-sm text-ui/70 font-medium">Full Dream</span>
+              <p className="text-xs text-ui/40 mt-0.5">
                 Extract memories from conversations AND identify reusable techniques.
                 When the Dreamer spots a procedure that other agents could benefit from,
                 it sends it to the Trainer to be turned into a proper technique.
@@ -1277,8 +1283,8 @@ const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
               className="mt-1 accent-cp-amber"
             />
             <div>
-              <span className="text-sm text-white/80 font-medium">Light Dream</span>
-              <p className="text-xs text-white/40 mt-0.5">
+              <span className="text-sm text-ui/70 font-medium">Light Dream</span>
+              <p className="text-xs text-ui/40 mt-0.5">
                 Extract memories only. Faster and cheaper, but won't discover new techniques automatically.
               </p>
             </div>
@@ -1293,8 +1299,8 @@ const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
       )}
 
       <button onClick={handleSave} disabled={saved}
-        className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
-          saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
+        className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${
+          saved ? 'bg-cp-teal text-[var(--btn-success-text)] font-semibold' : 'glass-btn glass-btn-primary'
         }`}>
         {saved ? '\u2713 Saved' : 'Save'}
       </button>
@@ -1379,15 +1385,15 @@ const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-white/55">
+      <p className="text-sm text-ui/55">
         The iMessage bridge lets you communicate with your agent via text message. It can send you alerts,
         respond to your questions, and receive commands — all through iMessage. Requires Full Disk Access (granted in a previous step).
       </p>
 
       <div className="flex items-center justify-between py-3 px-4 glass-nested rounded-xl">
         <div>
-          <span className="text-sm font-medium white/90">Enable iMessage Bridge</span>
-          <p className="text-xs text-white/40 mt-0.5">Send and receive messages with your agent via iMessage</p>
+          <span className="text-sm font-medium text-ui/90">Enable iMessage Bridge</span>
+          <p className="text-xs text-ui/40 mt-0.5">Send and receive messages with your agent via iMessage</p>
         </div>
         <button onClick={() => { setEnabled(!enabled); setSaved(false); }}
           className={`toggle-switch ${enabled ? 'toggle-on' : ''}`}>
@@ -1398,8 +1404,8 @@ const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
       {enabled && (
         <div className="space-y-3">
           <div>
-            <label className="block text-xs font-medium text-white/55 mb-1">Approved Senders</label>
-            <p className="text-xs text-white/30 mb-2">
+            <label className="block text-xs font-medium text-ui/55 mb-1">Approved Senders</label>
+            <p className="text-xs text-ui/25 mb-2">
               Phone numbers or Apple IDs your agent will accept messages from. Click the star to set the default sender for alerts.
             </p>
           </div>
@@ -1408,12 +1414,12 @@ const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
             <div key={i} className="flex items-center justify-between glass-nested rounded-xl px-3 py-2">
               <div className="flex items-center gap-2">
                 <button onClick={() => { setDefaultSender(sender); setSaved(false); }}
-                  className={`text-lg leading-none transition-colors ${sender === defaultSender ? 'text-yellow-400' : 'text-white/30 hover:text-yellow-400'}`}>
+                  className={`text-lg leading-none transition-colors ${sender === defaultSender ? 'text-yellow-400' : 'text-ui/25 hover:text-yellow-400'}`}>
                   {sender === defaultSender ? '\u2605' : '\u2606'}
                 </button>
-                <span className="text-sm white/90 font-mono">{sender}</span>
+                <span className="text-sm text-ui/90 font-mono">{sender}</span>
               </div>
-              <button onClick={() => removeSender(i)} className="text-white/40 hover:text-red-400">&times;</button>
+              <button onClick={() => removeSender(i)} className="text-ui/40 hover:text-red-400">&times;</button>
             </div>
           ))}
 
@@ -1423,7 +1429,7 @@ const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
               placeholder="+15551234567 or user@icloud.com"
               className="glass-input flex-1 font-mono" />
             <button onClick={addSender} disabled={!newSender.trim()}
-              className="px-3 py-2 glass-btn glass-btn-primary text-white text-sm rounded-lg transition-colors">
+              className="px-3 py-2 glass-btn glass-btn-primary text-ui text-sm rounded-lg transition-colors">
               Add
             </button>
           </div>
@@ -1436,8 +1442,8 @@ const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
       </div>}
 
       <button onClick={handleSave} disabled={saved || sending}
-        className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
-          saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
+        className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${
+          saved ? 'bg-cp-teal text-[var(--btn-success-text)] font-semibold' : 'glass-btn glass-btn-primary'
         }`}>
         {sending ? 'Sending welcome message...' : saved ? '\u2713 Saved' : enabled ? 'Save & Test iMessage' : 'Skip (Leave Disabled)'}
       </button>
@@ -1494,13 +1500,13 @@ const WorkspaceStep = () => {
   if (connected) {
     return (
       <div className="space-y-4">
-        <p className="text-sm text-white/55">
+        <p className="text-sm text-ui/55">
           Your agents can read and manage Gmail, Calendar, Drive, Docs, Sheets, and Slides.
         </p>
         <div className="px-3 py-3 rounded-lg bg-cp-teal/10 border border-cp-teal/20">
           <div className="flex items-center gap-2">
             <span className="text-cp-teal">{'\u2713'}</span>
-            <span className="text-sm text-white/80">Connected as <strong className="text-white">{email}</strong></span>
+            <span className="text-sm text-ui/70">Connected as <strong className="text-ui">{email}</strong></span>
           </div>
         </div>
       </div>
@@ -1510,10 +1516,10 @@ const WorkspaceStep = () => {
   if (saved && !connected) {
     return (
       <div className="space-y-4">
-        <p className="text-sm text-white/55">
+        <p className="text-sm text-ui/55">
           Connect a Google account to let your agents manage Gmail, Calendar, Drive, Docs, Sheets, and Slides.
         </p>
-        <div className="px-3 py-2 rounded-lg bg-white/[0.05] text-white/40 text-sm">
+        <div className="px-3 py-2 rounded-lg bg-ui/[0.05] text-ui/40 text-sm">
           Google Workspace skipped. You can connect later in Settings.
         </div>
       </div>
@@ -1522,7 +1528,7 @@ const WorkspaceStep = () => {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-white/55">
+      <p className="text-sm text-ui/55">
         Connect a Google account to let your agents read and manage Gmail, Calendar, Drive, Docs, Sheets, and Slides.
         Your primary agent gets full access; other agents get read-only.
       </p>
@@ -1536,7 +1542,7 @@ const WorkspaceStep = () => {
       </button>
 
       {connecting && (
-        <p className="text-xs text-white/30">
+        <p className="text-xs text-ui/25">
           Complete the sign-in in the browser window that opened. This page will update automatically.
         </p>
       )}
@@ -1544,8 +1550,8 @@ const WorkspaceStep = () => {
       {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
 
       <button onClick={() => setSaved(true)} disabled={saved}
-        className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
-          saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
+        className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${
+          saved ? 'bg-cp-teal text-[var(--btn-success-text)] font-semibold' : 'glass-btn glass-btn-primary'
         }`}>
         {saved ? '\u2713 Skipped' : 'Skip (Set Up Later in Settings)'}
       </button>
@@ -1592,14 +1598,14 @@ const WebSearchStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-white/55">
+      <p className="text-sm text-ui/55">
         Web search lets your agent search the internet for up-to-date information. This requires a Brave Search API key
         (free tier available at <span className="text-blue-400">brave.com/search/api</span>).
         You can skip this and add it later in Settings.
       </p>
 
       <div>
-        <label className="block text-sm font-medium white/70 mb-1">Search Provider</label>
+        <label className="block text-sm font-medium text-ui/70 mb-1">Search Provider</label>
         <select value={provider} onChange={(e) => { setProvider(e.target.value); setSaved(false); }}
           className="glass-select w-full">
           <option value="brave">Brave Search</option>
@@ -1607,8 +1613,8 @@ const WebSearchStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
       </div>
 
       <div>
-        <label className="block text-sm font-medium white/70 mb-1">
-          API Key <span className="text-white/30 font-normal">(optional)</span>
+        <label className="block text-sm font-medium text-ui/70 mb-1">
+          API Key <span className="text-ui/25 font-normal">(optional)</span>
         </label>
         <input type="password" value={apiKey} onChange={(e) => { setApiKey(e.target.value); setSaved(false); setValidationResult(null); }}
           placeholder="BSA..."
@@ -1620,12 +1626,12 @@ const WebSearchStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
       )}
       {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
       {saved && !apiKey.trim() && (
-        <div className="px-3 py-2 rounded-lg bg-white/[0.05] text-white/40 text-sm">Web search skipped. You can add a key later in Settings.</div>
+        <div className="px-3 py-2 rounded-lg bg-ui/[0.05] text-ui/40 text-sm">Web search skipped. You can add a key later in Settings.</div>
       )}
 
       <button onClick={handleSave} disabled={validating || saved}
-        className={`px-4 py-2 text-white text-sm font-medium rounded-lg transition-colors ${
-          saved ? 'bg-cp-teal text-[#0B0F1A] font-semibold' : 'glass-btn glass-btn-primary'
+        className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${
+          saved ? 'bg-cp-teal text-[var(--btn-success-text)] font-semibold' : 'glass-btn glass-btn-primary'
         }`}>
         {validating ? 'Validating...' : saved ? '\u2713 Saved' : apiKey.trim() ? 'Validate & Save' : 'Skip for Now'}
       </button>
@@ -1657,13 +1663,13 @@ const CompleteStep = () => {
   return (
     <div className="text-center space-y-4">
       <div className="text-5xl">&#128640;</div>
-      <h3 className="text-xl font-semibold text-white">You're all set!</h3>
-      <div className="text-sm text-white/55 space-y-1">
-        <p>Primary agent: <strong className="white/90">{primaryName || 'Agent'}</strong></p>
-        {pmName && <p>Project manager: <strong className="white/90">{pmName}</strong></p>}
-        {trainerName && <p>Technique trainer: <strong className="white/90">{trainerName}</strong></p>}
+      <h3 className="text-xl font-semibold text-ui">You're all set!</h3>
+      <div className="text-sm text-ui/55 space-y-1">
+        <p>Primary agent: <strong className="text-ui/90">{primaryName || 'Agent'}</strong></p>
+        {pmName && <p>Project manager: <strong className="text-ui/90">{pmName}</strong></p>}
+        {trainerName && <p>Technique trainer: <strong className="text-ui/90">{trainerName}</strong></p>}
       </div>
-      <p className="text-sm text-white/40">
+      <p className="text-sm text-ui/40">
         Click <strong className="text-green-400">Launch</strong> to enter the dashboard and start chatting.
       </p>
     </div>
@@ -1684,7 +1690,7 @@ const LaunchButton = () => {
 
   return (
     <button onClick={handleLaunch} disabled={launching}
-      className="px-6 py-2.5 bg-cp-amber hover:bg-cp-amber-light disabled:bg-white/10 text-white text-sm font-semibold rounded-lg transition-colors">
+      className="px-6 py-2.5 bg-cp-amber hover:bg-cp-amber-light disabled:bg-ui/[0.12] text-ui text-sm font-semibold rounded-lg transition-colors">
       {launching ? 'Launching...' : 'Launch'}
     </button>
   );

@@ -84,14 +84,14 @@ export const GoogleActivityLog = () => {
 
       {/* Table */}
       {loading ? (
-        <p className="text-xs text-white/30">Loading...</p>
+        <p className="text-xs text-ui/25">Loading...</p>
       ) : entries.length === 0 ? (
-        <p className="text-xs text-white/30">No activity yet.</p>
+        <p className="text-xs text-ui/25">No activity yet.</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
-              <tr className="text-white/40 border-b border-white/[0.06]">
+              <tr className="text-ui/40 border-b border-ui/[0.06]">
                 <th className="text-left py-1.5 pr-2 font-medium">Time</th>
                 <th className="text-left py-1.5 pr-2 font-medium">Agent</th>
                 <th className="text-left py-1.5 pr-2 font-medium">Action</th>
@@ -101,21 +101,21 @@ export const GoogleActivityLog = () => {
             </thead>
             <tbody>
               {entries.map(entry => (
-                <tr key={entry.id} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
-                  <td className="py-1.5 pr-2 text-white/30 whitespace-nowrap">
+                <tr key={entry.id} className="border-b border-ui/[0.06] hover:bg-ui/[0.03]">
+                  <td className="py-1.5 pr-2 text-ui/25 whitespace-nowrap">
                     {new Date(entry.createdAt).toLocaleTimeString()}
                   </td>
-                  <td className="py-1.5 pr-2 text-white/60">
+                  <td className="py-1.5 pr-2 text-ui/55">
                     {entry.agentName ?? entry.agentId.slice(0, 8)}
                   </td>
-                  <td className="py-1.5 pr-2 text-white/70">
+                  <td className="py-1.5 pr-2 text-ui/70">
                     {formatAction(entry.action)}
                   </td>
                   <td className="py-1.5 pr-2">
                     <span className={`px-1.5 py-0.5 rounded text-[10px] ${
                       entry.actionType === 'write'
                         ? 'bg-cp-amber/10 text-cp-amber border border-cp-amber/20'
-                        : 'bg-white/[0.06] text-white/40'
+                        : 'bg-ui/[0.08] text-ui/40'
                     }`}>
                       {entry.actionType}
                     </span>
@@ -125,7 +125,7 @@ export const GoogleActivityLog = () => {
                       </span>
                     )}
                   </td>
-                  <td className="py-1.5 text-white/40 truncate max-w-[200px]" title={formatDetails(entry)}>
+                  <td className="py-1.5 text-ui/40 truncate max-w-[200px]" title={formatDetails(entry)}>
                     {formatDetails(entry)}
                   </td>
                 </tr>

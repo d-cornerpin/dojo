@@ -4,6 +4,7 @@ import { BarChart, PercentageBar } from '../components/CostCharts';
 import { BudgetConfig } from '../components/BudgetConfig';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { formatDate } from '../lib/dates';
+import { cssVar } from '../lib/theme';
 
 type Period = '24h' | '7d' | '30d' | 'all';
 type SortField = 'time' | 'agent' | 'model' | 'tier' | 'inputTokens' | 'outputTokens' | 'cost' | 'latency';
@@ -47,13 +48,25 @@ interface AgentOption {
   name: string;
 }
 
-const TIER_COLORS: Record<string, string> = {
-  tier1: '#a855f7',
-  tier2: '#3b82f6',
-  tier3: '#22c55e',
+// Theme-aware tier and model palettes. Read from CSS vars at render time
+// so a Feng Shui theme switch updates the chart colors live.
+const tierColor = (tier: string): string => {
+  switch (tier) {
+    case 'tier1': return cssVar('--cp-purple-deep') || '#a855f7';
+    case 'tier2': return cssVar('--cp-blue') || '#3b82f6';
+    case 'tier3': return cssVar('--cp-teal') || '#22c55e';
+    default: return cssVar('--text-tertiary') || '#6b7280';
+  }
 };
 
-const MODEL_COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f97316', '#06b6d4', '#84cc16'];
+const modelColors = (): string[] => [
+  cssVar('--cp-blue') || '#3b82f6',
+  cssVar('--cp-purple') || '#8b5cf6',
+  cssVar('--cp-coral') || '#ec4899',
+  cssVar('--cp-amber') || '#f97316',
+  cssVar('--cp-teal') || '#06b6d4',
+  cssVar('--cp-teal-light') || '#84cc16',
+];
 
 // ── OpenRouter Budget ──
 
@@ -110,9 +123,9 @@ const OpenRouterBudget = () => {
         <h2 className="card-header">OpenRouter Balance</h2>
         <p className={`text-lg font-semibold ${balanceColor}`}>${balance.toFixed(2)}</p>
       </div>
-      <p className="text-xs white/30 mt-1">Lifetime spend: ${totalUsage.toFixed(2)}</p>
-      <div className="flex items-center gap-2 mt-3 pt-3 border-t border-white/[0.06]">
-        <span className="text-xs white/40">Warning threshold: $</span>
+      <p className="text-xs text-ui/25 mt-1">Lifetime spend: ${totalUsage.toFixed(2)}</p>
+      <div className="flex items-center gap-2 mt-3 pt-3 border-t border-ui/[0.06]">
+        <span className="text-xs text-ui/40">Warning threshold: $</span>
         <input
           type="number"
           step="1"
@@ -188,11 +201,11 @@ const DeepSeekBudget = () => {
         <h2 className="card-header">DeepSeek Balance</h2>
         <p className={`text-lg font-semibold ${balanceColor}`}>${balance.toFixed(2)}</p>
       </div>
-      <p className="text-xs white/30 mt-1">
+      <p className="text-xs text-ui/25 mt-1">
         Topped up: ${toppedUp.toFixed(2)}{granted > 0 ? ` · Granted credits: $${granted.toFixed(2)}` : ''}
       </p>
-      <div className="flex items-center gap-2 mt-3 pt-3 border-t border-white/[0.06]">
-        <span className="text-xs white/40">Warning threshold: $</span>
+      <div className="flex items-center gap-2 mt-3 pt-3 border-t border-ui/[0.06]">
+        <span className="text-xs text-ui/40">Warning threshold: $</span>
         <input
           type="number"
           step="1"
@@ -331,13 +344,16 @@ export const Costs = () => {
 
   if (loading) return <div className="flex-1 loading-state">Loading...</div>;
 
+  // Compute palette once per render so a theme switch updates chart colors live.
+  const modelPalette = modelColors();
+
   return (
     <div className="flex-1 p-3 sm:p-6 overflow-y-auto">
       <div className="flex items-center justify-between mb-4 sm:mb-6">
-        <h1 className="text-lg sm:text-xl font-bold text-white">Costs</h1>
+        <h1 className="text-lg sm:text-xl font-bold text-ui">Costs</h1>
 
         {/* Time range selector */}
-        <div className="flex gap-1 bg-white/[0.04] rounded-lg p-1">
+        <div className="flex gap-1 bg-ui/[0.05] rounded-lg p-1">
           {(['24h', '7d', '30d', 'all'] as Period[]).map((p) => (
             <button
               key={p}
@@ -345,7 +361,7 @@ export const Costs = () => {
               className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                 period === p
                   ? 'bg-cp-amber text-cp-bg'
-                  : 'white/55 hover:white/90'
+                  : 'text-ui/55 hover:text-ui/90'
               }`}
             >
               {p === 'all' ? 'All' : p.toUpperCase()}
@@ -375,16 +391,16 @@ export const Costs = () => {
           sub={mostExpensiveAgent ? `$${(((mostExpensiveAgent as Record<string, unknown>).spend ?? (mostExpensiveAgent as Record<string, unknown>).totalCost ?? 0) as number).toFixed(2)}` : undefined}
         />
         <div className="glass-card p-4">
-          <p className="text-xs white/40 uppercase tracking-wider mb-1">Budget</p>
+          <p className="text-xs text-ui/40 uppercase tracking-wider mb-1">Budget</p>
           {budgets?.global && budgets.global.limitUsd > 0 ? (
             <>
-              <p className="text-lg font-semibold text-white mb-1">
+              <p className="text-lg font-semibold text-ui mb-1">
                 ${budgets.global.spentUsd.toFixed(2)} / ${budgets.global.limitUsd.toFixed(2)}
               </p>
               <PercentageBar value={budgets.global.spentUsd} max={budgets.global.limitUsd} />
             </>
           ) : (
-            <p className="text-lg font-semibold white/30">No limit</p>
+            <p className="text-lg font-semibold text-ui/25">No limit</p>
           )}
         </div>
       </div>
@@ -398,7 +414,7 @@ export const Costs = () => {
             data={(summary?.byModel ?? []).map((m: Record<string, unknown>, i: number) => ({
               label: (m.modelName ?? m.modelId ?? 'Unknown') as string,
               value: (m.spend ?? m.totalCost ?? 0) as number,
-              color: MODEL_COLORS[i % MODEL_COLORS.length],
+              color: modelPalette[i % modelPalette.length],
             }))}
           />
         </div>
@@ -410,7 +426,7 @@ export const Costs = () => {
             data={(summary?.byAgent ?? []).map((a: Record<string, unknown>, i: number) => ({
               label: (a.agentName ?? a.agentId ?? 'Unknown') as string,
               value: (a.spend ?? a.totalCost ?? 0) as number,
-              color: MODEL_COLORS[(i + 2) % MODEL_COLORS.length],
+              color: modelPalette[(i + 2) % modelPalette.length],
             }))}
           />
         </div>
@@ -425,21 +441,21 @@ export const Costs = () => {
               return (
                 <div key={t.tier}>
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs white/55 capitalize">{t.tier}</span>
-                    <span className="text-xs white/40">
+                    <span className="text-xs text-ui/55 capitalize">{t.tier}</span>
+                    <span className="text-xs text-ui/40">
                       {count.toLocaleString()} calls{pct > 0 ? ` (${pct.toFixed(0)}%)` : ''}
                     </span>
                   </div>
                   <PercentageBar
                     value={pct > 0 ? pct : (count > 0 ? 100 : 0)}
                     max={100}
-                    color={TIER_COLORS[t.tier] || '#6b7280'}
+                    color={tierColor(t.tier)}
                   />
                 </div>
               );
             })}
             {(summary?.byTier ?? []).length === 0 && (
-              <p className="text-sm white/30">No data</p>
+              <p className="text-sm text-ui/25">No data</p>
             )}
           </div>
         </div>
@@ -472,14 +488,14 @@ export const Costs = () => {
 
       {/* Recent API calls table */}
       <div className="glass-card overflow-hidden">
-        <div className="px-4 py-3 border-b white/[0.06] flex items-center justify-between">
+        <div className="px-4 py-3 border-b border-ui/[0.06] flex items-center justify-between">
           <h3 className="card-header">Recent API Calls</h3>
-          <span className="text-xs white/30">{records.length} records</span>
+          <span className="text-xs text-ui/25">{records.length} records</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-white/[0.04]">
-              <tr className="text-left white/40 text-xs uppercase tracking-wider">
+            <thead className="sticky top-0 bg-ui/[0.05]">
+              <tr className="text-left text-ui/40 text-xs uppercase tracking-wider">
                 <SortableHeader field="time" label="Time" current={sortField} dir={sortDir} onSort={handleSort} />
                 <SortableHeader field="agent" label="Agent" current={sortField} dir={sortDir} onSort={handleSort} />
                 <SortableHeader field="model" label="Model" current={sortField} dir={sortDir} onSort={handleSort} />
@@ -492,32 +508,32 @@ export const Costs = () => {
             </thead>
             <tbody>
               {sortedRecords.map((r) => (
-                <tr key={r.id} className="border-t white/[0.04] hover:white/[0.02]">
-                  <td className="px-4 py-1.5 text-xs white/40 font-mono whitespace-nowrap">
+                <tr key={r.id} className="border-t border-ui/[0.06] hover:text-ui/25">
+                  <td className="px-4 py-1.5 text-xs text-ui/40 font-mono whitespace-nowrap">
                     {r.time ? formatDate(r.time) : '--'}
                   </td>
-                  <td className="px-4 py-1.5 text-xs white/70">{r.agentName || r.agentId}</td>
-                  <td className="px-4 py-1.5 text-xs white/55">{r.modelName || r.modelId?.slice(0, 8)}</td>
+                  <td className="px-4 py-1.5 text-xs text-ui/70">{r.agentName || r.agentId}</td>
+                  <td className="px-4 py-1.5 text-xs text-ui/55">{r.modelName || r.modelId?.slice(0, 8)}</td>
                   <td className="px-4 py-1.5">
                     <TierBadge tier={r.tier} />
                   </td>
-                  <td className="px-4 py-1.5 text-xs white/55 text-right font-mono">
+                  <td className="px-4 py-1.5 text-xs text-ui/55 text-right font-mono">
                     {(r.inputTokens ?? 0).toLocaleString()}
                   </td>
-                  <td className="px-4 py-1.5 text-xs white/55 text-right font-mono">
+                  <td className="px-4 py-1.5 text-xs text-ui/55 text-right font-mono">
                     {(r.outputTokens ?? 0).toLocaleString()}
                   </td>
-                  <td className="px-4 py-1.5 text-xs white/70 text-right font-mono">
+                  <td className="px-4 py-1.5 text-xs text-ui/70 text-right font-mono">
                     ${(r.cost ?? 0).toFixed(4)}
                   </td>
-                  <td className="px-4 py-1.5 text-xs white/55 text-right font-mono">
+                  <td className="px-4 py-1.5 text-xs text-ui/55 text-right font-mono">
                     {(r.latencyMs ?? 0).toLocaleString()}ms
                   </td>
                 </tr>
               ))}
               {sortedRecords.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center white/30 text-sm">
+                  <td colSpan={8} className="px-4 py-8 text-center text-ui/25 text-sm">
                     No cost records for this period
                   </td>
                 </tr>
@@ -540,20 +556,20 @@ const SummaryCard = ({
   sub?: string;
 }) => (
   <div className="glass-card p-4">
-    <p className="text-xs white/40 uppercase tracking-wider mb-1">{label}</p>
-    <p className="text-lg font-semibold text-white truncate" title={value}>{value}</p>
-    {sub && <p className="text-xs white/40 mt-0.5">{sub}</p>}
+    <p className="text-xs text-ui/40 uppercase tracking-wider mb-1">{label}</p>
+    <p className="text-lg font-semibold text-ui truncate" title={value}>{value}</p>
+    {sub && <p className="text-xs text-ui/40 mt-0.5">{sub}</p>}
   </div>
 );
 
 const TierBadge = ({ tier }: { tier: string }) => {
   const colors: Record<string, string> = {
-    tier1: 'bg-purple-600/20 text-purple-300',
+    tier1: 'bg-cp-purple-deep/20 text-cp-purple',
     tier2: 'bg-cp-amber/20 text-cp-amber',
-    tier3: 'bg-green-600/20 text-cp-teal',
+    tier3: 'bg-cp-teal/20 text-cp-teal',
   };
   return (
-    <span className={`text-xs px-1.5 py-0.5 rounded ${colors[tier] || 'bg-white/[0.08] white/70'}`}>
+    <span className={`text-xs px-1.5 py-0.5 rounded ${colors[tier] || 'bg-ui/[0.08] text-ui/70'}`}>
       {tier}
     </span>
   );
@@ -573,7 +589,7 @@ const SortableHeader = ({
   onSort: (field: SortField) => void;
 }) => (
   <th
-    className="px-4 py-2 cursor-pointer hover:white/70 transition-colors select-none"
+    className="px-4 py-2 cursor-pointer hover:text-ui/70 transition-colors select-none"
     onClick={() => onSort(field)}
   >
     <span className="inline-flex items-center gap-1">

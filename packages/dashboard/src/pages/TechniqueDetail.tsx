@@ -46,7 +46,7 @@ const stateBadge: Record<string, { cls: string; label: string }> = {
   draft: { cls: 'glass-badge-amber', label: 'Draft' },
   review: { cls: 'glass-badge-blue', label: 'Review' },
   disabled: { cls: 'glass-badge-gray', label: 'Disabled' },
-  archived: { cls: 'text-white/20 bg-white/[0.03]', label: 'Archived' },
+  archived: { cls: 'text-ui/25 bg-ui/[0.03]', label: 'Archived' },
 };
 
 function getToken(): string | null { return localStorage.getItem('dojo_token'); }
@@ -89,7 +89,7 @@ export const TechniqueDetail = () => {
   useEffect(() => { load(); }, [id]);
 
   if (loading) return <div className="flex-1 loading-state">Loading...</div>;
-  if (!technique) return <div className="flex-1 flex items-center justify-center"><p className="text-red-400">Technique not found</p></div>;
+  if (!technique) return <div className="flex-1 flex items-center justify-center"><p className="text-cp-coral">Technique not found</p></div>;
 
   const badge = stateBadge[technique.state] ?? stateBadge.draft;
   const isPublished = technique.state === 'published';
@@ -120,18 +120,18 @@ export const TechniqueDetail = () => {
   return (
     <div className="flex-1 flex flex-col min-h-0 p-4 md:p-6 overflow-y-auto">
       {/* Back link */}
-      <Link to="/techniques" className="text-xs text-white/40 hover:text-white/70 mb-4 inline-flex items-center gap-1">
+      <Link to="/techniques" className="text-xs text-ui/40 hover:text-ui/70 mb-4 inline-flex items-center gap-1">
         {'\u2190'} Back to Techniques
       </Link>
 
       {/* Header */}
       <div className="flex items-start justify-between mb-4">
         <div>
-          <h1 className="text-xl font-bold text-white">{technique.name}</h1>
+          <h1 className="text-xl font-bold text-ui">{technique.name}</h1>
           <div className="flex items-center gap-2 mt-1">
             <span className={`glass-badge ${badge.cls}`}>{badge.label}</span>
-            <span className="text-xs text-white/30">v{technique.version}</span>
-            {technique.authorAgentName && <span className="text-xs text-white/30">by {technique.authorAgentName}</span>}
+            <span className="text-xs text-ui/25">v{technique.version}</span>
+            {technique.authorAgentName && <span className="text-xs text-ui/25">by {technique.authorAgentName}</span>}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -157,15 +157,15 @@ export const TechniqueDetail = () => {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 mb-4 border-b border-white/[0.06] pb-1">
+      <div className="flex gap-1 mb-4 border-b border-ui/[0.06] pb-1">
         {tabs.map(tab => (
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
             className={`px-3 py-1.5 text-xs rounded-t-lg transition-colors ${
               activeTab === tab.key
-                ? 'bg-white/[0.08] text-white font-medium'
-                : 'text-white/40 hover:text-white/70'
+                ? 'bg-ui/[0.08] text-ui font-medium'
+                : 'text-ui/40 hover:text-ui/70'
             }`}
           >
             {tab.label}
@@ -189,7 +189,7 @@ const OverviewTab = ({ technique }: { technique: TechniqueData }) => (
   <div className="space-y-4 max-w-2xl">
     <div className="glass-card p-4 space-y-2">
       <h3 className="card-header">Description</h3>
-      <p className="text-sm text-white/80">{technique.description || <span className="text-white/30 italic">No description</span>}</p>
+      <p className="text-sm text-ui/70">{technique.description || <span className="text-ui/25 italic">No description</span>}</p>
     </div>
 
     {technique.tags.length > 0 && (
@@ -205,12 +205,12 @@ const OverviewTab = ({ technique }: { technique: TechniqueData }) => (
 
     <div className="glass-card p-4 space-y-2">
       <h3 className="card-header">Stats</h3>
-      <div className="grid grid-cols-2 gap-2 text-xs text-white/50">
-        <div>Usage count: <span className="text-white/80">{technique.usageCount}</span></div>
-        <div>Last used: <span className="text-white/80">{technique.lastUsedAt ? formatDate(technique.lastUsedAt) : 'Never'}</span></div>
-        <div>Created: <span className="text-white/80">{formatDate(technique.createdAt)}</span></div>
-        <div>Updated: <span className="text-white/80">{formatDate(technique.updatedAt)}</span></div>
-        {technique.publishedAt && <div>Published: <span className="text-white/80">{formatDate(technique.publishedAt)}</span></div>}
+      <div className="grid grid-cols-2 gap-2 text-xs text-ui/55">
+        <div>Usage count: <span className="text-ui/70">{technique.usageCount}</span></div>
+        <div>Last used: <span className="text-ui/70">{technique.lastUsedAt ? formatDate(technique.lastUsedAt) : 'Never'}</span></div>
+        <div>Created: <span className="text-ui/70">{formatDate(technique.createdAt)}</span></div>
+        <div>Updated: <span className="text-ui/70">{formatDate(technique.updatedAt)}</span></div>
+        {technique.publishedAt && <div>Published: <span className="text-ui/70">{formatDate(technique.publishedAt)}</span></div>}
         {technique.buildProjectId && <div>Build project: <Link to={`/tracker?project=${technique.buildProjectId}`} className="text-cp-blue hover:underline">{technique.buildProjectId.slice(0, 8)}</Link></div>}
       </div>
     </div>
@@ -222,11 +222,11 @@ const OverviewTab = ({ technique }: { technique: TechniqueData }) => (
 const InstructionsTab = ({ technique }: { technique: TechniqueData }) => (
   <div className="glass-card p-4">
     {technique.instructions ? (
-      <pre className="text-sm text-white/80 font-mono whitespace-pre-wrap overflow-auto max-h-[600px]">
+      <pre className="text-sm text-ui/70 font-mono whitespace-pre-wrap overflow-auto max-h-[600px]">
         {technique.instructions}
       </pre>
     ) : (
-      <p className="text-white/30 text-sm italic">No instructions yet.</p>
+      <p className="text-ui/25 text-sm italic">No instructions yet.</p>
     )}
   </div>
 );
@@ -253,34 +253,34 @@ const FilesTab = ({ technique }: { technique: TechniqueData }) => {
     <div className="flex gap-4 min-h-[400px]">
       <div className="w-64 shrink-0 glass-card p-3 overflow-y-auto">
         {dirs.map(d => (
-          <div key={d.path} className="text-xs text-white/40 py-1 pl-1">{'\u{1F4C1}'} {d.path}/</div>
+          <div key={d.path} className="text-xs text-ui/40 py-1 pl-1">{'\u{1F4C1}'} {d.path}/</div>
         ))}
         {files.map(f => (
           <button
             key={f.path}
             onClick={() => loadFile(f.path)}
             className={`w-full text-left text-xs py-1.5 px-2 rounded transition-colors ${
-              selectedFile === f.path ? 'bg-white/[0.08] text-white' : 'text-white/60 hover:text-white/80 hover:bg-white/[0.04]'
+              selectedFile === f.path ? 'bg-ui/[0.08] text-ui' : 'text-ui/55 hover:text-ui/70 hover:bg-ui/[0.05]'
             }`}
           >
-            {'\u{1F4C4}'} {f.path} <span className="text-white/30 ml-1">({f.size}B)</span>
+            {'\u{1F4C4}'} {f.path} <span className="text-ui/25 ml-1">({f.size}B)</span>
           </button>
         ))}
-        {files.length === 0 && <p className="text-xs text-white/30 py-2">No files</p>}
+        {files.length === 0 && <p className="text-xs text-ui/25 py-2">No files</p>}
       </div>
 
       <div className="flex-1 glass-card p-4">
         {selectedFile ? (
           loadingFile ? (
-            <p className="text-white/40 text-sm">Loading...</p>
+            <p className="text-ui/40 text-sm">Loading...</p>
           ) : (
             <div>
-              <div className="text-xs text-white/40 mb-2">{selectedFile}</div>
-              <pre className="text-xs text-white/80 font-mono whitespace-pre-wrap overflow-auto max-h-[500px]">{fileContent}</pre>
+              <div className="text-xs text-ui/40 mb-2">{selectedFile}</div>
+              <pre className="text-xs text-ui/70 font-mono whitespace-pre-wrap overflow-auto max-h-[500px]">{fileContent}</pre>
             </div>
           )
         ) : (
-          <p className="text-white/30 text-sm">Select a file to view</p>
+          <p className="text-ui/25 text-sm">Select a file to view</p>
         )}
       </div>
     </div>
@@ -300,14 +300,14 @@ const UsageTab = ({ techniqueId }: { techniqueId: string }) => {
     });
   }, [techniqueId]);
 
-  if (loading) return <p className="text-white/40">Loading usage...</p>;
-  if (usage.length === 0) return <p className="text-white/30 text-sm">No usage recorded yet.</p>;
+  if (loading) return <p className="text-ui/40">Loading usage...</p>;
+  if (usage.length === 0) return <p className="text-ui/25 text-sm">No usage recorded yet.</p>;
 
   return (
     <div className="glass-card overflow-hidden">
       <table className="w-full text-sm">
         <thead>
-          <tr className="text-xs text-white/40 border-b border-white/[0.06]">
+          <tr className="text-xs text-ui/40 border-b border-ui/[0.06]">
             <th className="text-left p-3">Agent</th>
             <th className="text-left p-3">When</th>
             <th className="text-left p-3">Notes</th>
@@ -315,10 +315,10 @@ const UsageTab = ({ techniqueId }: { techniqueId: string }) => {
         </thead>
         <tbody>
           {usage.map(u => (
-            <tr key={u.id} className="border-b border-white/[0.04]">
-              <td className="p-3 text-white/80">{u.agentName ?? u.agentId.slice(0, 8)}</td>
-              <td className="p-3 text-white/50">{formatDate(u.usedAt)}</td>
-              <td className="p-3 text-white/40">{u.notes ?? '-'}</td>
+            <tr key={u.id} className="border-b border-ui/[0.06]">
+              <td className="p-3 text-ui/70">{u.agentName ?? u.agentId.slice(0, 8)}</td>
+              <td className="p-3 text-ui/55">{formatDate(u.usedAt)}</td>
+              <td className="p-3 text-ui/40">{u.notes ?? '-'}</td>
             </tr>
           ))}
         </tbody>
@@ -341,7 +341,7 @@ const VersionsTab = ({ techniqueId }: { techniqueId: string }) => {
     });
   }, [techniqueId]);
 
-  if (loading) return <p className="text-white/40">Loading versions...</p>;
+  if (loading) return <p className="text-ui/40">Loading versions...</p>;
 
   return (
     <div className="flex gap-4 min-h-[400px]">
@@ -351,12 +351,12 @@ const VersionsTab = ({ techniqueId }: { techniqueId: string }) => {
             key={v.id}
             onClick={() => setSelectedVersion(v)}
             className={`w-full text-left glass-nested p-3 rounded-lg transition-colors ${
-              selectedVersion?.id === v.id ? 'ring-1 ring-cp-amber/40' : 'hover:bg-white/[0.04]'
+              selectedVersion?.id === v.id ? 'ring-1 ring-cp-amber/40' : 'hover:bg-ui/[0.05]'
             }`}
           >
-            <div className="text-sm text-white/80">Version {v.versionNumber}</div>
-            <div className="text-xs text-white/40 mt-0.5">{v.changeSummary ?? 'No description'}</div>
-            <div className="text-[10px] text-white/30 mt-0.5">
+            <div className="text-sm text-ui/70">Version {v.versionNumber}</div>
+            <div className="text-xs text-ui/40 mt-0.5">{v.changeSummary ?? 'No description'}</div>
+            <div className="text-[10px] text-ui/25 mt-0.5">
               {v.changedBy ?? 'system'} &middot; {formatDate(v.createdAt)}
             </div>
           </button>
@@ -367,14 +367,14 @@ const VersionsTab = ({ techniqueId }: { techniqueId: string }) => {
         {selectedVersion ? (
           <>
             <div className="flex items-center justify-between mb-3">
-              <span className="text-sm text-white/70">Version {selectedVersion.versionNumber}</span>
+              <span className="text-sm text-ui/70">Version {selectedVersion.versionNumber}</span>
             </div>
-            <pre className="text-xs text-white/70 font-mono whitespace-pre-wrap overflow-auto max-h-[500px]">
+            <pre className="text-xs text-ui/70 font-mono whitespace-pre-wrap overflow-auto max-h-[500px]">
               {selectedVersion.techniqueMd}
             </pre>
           </>
         ) : (
-          <p className="text-white/30 text-sm">Select a version to preview</p>
+          <p className="text-ui/25 text-sm">Select a version to preview</p>
         )}
       </div>
     </div>

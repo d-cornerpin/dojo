@@ -49,7 +49,7 @@ export const BudgetConfig = ({ budgets, agents, onUpdateGlobal, onUpdateAgent }:
         <h3 className="card-header mb-3">Global Daily Budget</h3>
         {budgets.global && (
           <div className="mb-3">
-            <div className="flex items-center justify-between text-xs white/40 mb-1">
+            <div className="flex items-center justify-between text-xs text-ui/40 mb-1">
               <span>Spent today: ${budgets.global.spentUsd.toFixed(2)}</span>
               <span>Limit: ${budgets.global.limitUsd.toFixed(2)}</span>
             </div>
@@ -57,7 +57,7 @@ export const BudgetConfig = ({ budgets, agents, onUpdateGlobal, onUpdateAgent }:
           </div>
         )}
         <div className="flex items-center gap-2">
-          <span className="text-sm white/55">$</span>
+          <span className="text-sm text-ui/55">$</span>
           <input
             type="number"
             step="0.01"
@@ -74,7 +74,7 @@ export const BudgetConfig = ({ budgets, agents, onUpdateGlobal, onUpdateAgent }:
           >
             {savingGlobal ? 'Saving...' : 'Save'}
           </button>
-          {savedGlobal && <span className="text-xs text-green-400">Saved!</span>}
+          {savedGlobal && <span className="text-xs text-cp-teal">Saved!</span>}
         </div>
       </div>
 
@@ -82,15 +82,15 @@ export const BudgetConfig = ({ budgets, agents, onUpdateGlobal, onUpdateAgent }:
       <div className="glass-card overflow-hidden">
         <button
           onClick={() => setAgentBudgetsOpen(!agentBudgetsOpen)}
-          className="w-full px-4 py-3 flex items-center justify-between card-header hover:bg-white/[0.03] transition-colors"
+          className="w-full px-4 py-3 flex items-center justify-between card-header hover:bg-ui/[0.03] transition-colors"
         >
           <span>Per-Agent Budgets</span>
-          <span className="white/40">{agentBudgetsOpen ? '[-]' : '[+]'}</span>
+          <span className="text-ui/40">{agentBudgetsOpen ? '[-]' : '[+]'}</span>
         </button>
         {agentBudgetsOpen && (
           <div className="px-4 pb-4">
             {budgets.agents.length === 0 && agents.length === 0 ? (
-              <p className="text-sm white/30">No agents configured.</p>
+              <p className="text-sm text-ui/25">No agents configured.</p>
             ) : (
               <div className="space-y-3">
                 {budgets.agents.map((ab) => (
@@ -157,8 +157,8 @@ const AgentBudgetRow = ({
   };
 
   return (
-    <div className="flex items-center gap-3 py-2 border-b white/[0.04] last:border-0">
-      <span className="text-sm white/70 w-32 truncate" title={agentName}>
+    <div className="flex items-center gap-3 py-2 border-b border-ui/[0.06] last:border-0">
+      <span className="text-sm text-ui/70 w-32 truncate" title={agentName}>
         {agentName}
       </span>
       {limitUsd > 0 && (
@@ -166,11 +166,11 @@ const AgentBudgetRow = ({
           <PercentageBar value={spentUsd} max={limitUsd} showLabel={false} />
         </div>
       )}
-      <span className="text-xs white/40 w-20">
+      <span className="text-xs text-ui/40 w-20">
         ${spentUsd.toFixed(2)} used
       </span>
       <div className="flex items-center gap-1 ml-auto">
-        <span className="text-xs white/40">$</span>
+        <span className="text-xs text-ui/40">$</span>
         <input
           type="number"
           step="0.01"
@@ -196,7 +196,7 @@ const AgentBudgetRow = ({
         >
           {saving ? '...' : 'Set'}
         </button>
-        {saved && <span className="text-xs text-green-400">OK</span>}
+        {saved && <span className="text-xs text-cp-teal">OK</span>}
       </div>
     </div>
   );

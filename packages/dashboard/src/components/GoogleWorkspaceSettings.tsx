@@ -89,7 +89,7 @@ export const GoogleWorkspaceSettings = () => {
 
         {!status.connected ? (
           <div className="space-y-3">
-            <p className="text-xs text-white/40">
+            <p className="text-xs text-ui/40">
               Connect your Google account to give agents access to Gmail, Calendar, Drive, Docs, Sheets, and Slides.
             </p>
             {error && <div className="alert-banner alert-error">{error}</div>}
@@ -101,7 +101,7 @@ export const GoogleWorkspaceSettings = () => {
               {connecting ? 'Waiting for sign-in...' : 'Sign in with Google'}
             </button>
             {connecting && (
-              <p className="text-xs text-white/30">
+              <p className="text-xs text-ui/25">
                 Complete the sign-in in the browser window that opened. This page will update automatically.
               </p>
             )}
@@ -112,8 +112,8 @@ export const GoogleWorkspaceSettings = () => {
             <div className="flex items-center gap-3">
               <span className="w-2 h-2 rounded-full bg-cp-teal animate-pulse shrink-0" />
               <div className="min-w-0">
-                <p className="text-sm text-white/80 truncate">{status.email}</p>
-                <p className="text-xs text-white/30">
+                <p className="text-sm text-ui/70 truncate">{status.email}</p>
+                <p className="text-xs text-ui/25">
                   {status.lastVerified ? `Verified ${new Date(status.lastVerified).toLocaleDateString()}` : 'Connected'}
                 </p>
               </div>
@@ -121,7 +121,7 @@ export const GoogleWorkspaceSettings = () => {
 
             {/* Activity summary */}
             {status.todayActivity && (status.todayActivity.reads > 0 || status.todayActivity.writes > 0) && (
-              <div className="text-xs text-white/30">
+              <div className="text-xs text-ui/25">
                 Today: {status.todayActivity.reads} reads, {status.todayActivity.writes} writes
               </div>
             )}
@@ -132,14 +132,14 @@ export const GoogleWorkspaceSettings = () => {
               {services.map(svc => (
                 <label key={svc.key} className="flex items-center justify-between py-1.5 cursor-pointer">
                   <div>
-                    <span className="text-sm text-white/70">{svc.label}</span>
-                    <span className="text-xs text-white/30 ml-2">{svc.desc}</span>
+                    <span className="text-sm text-ui/70">{svc.label}</span>
+                    <span className="text-xs text-ui/25 ml-2">{svc.desc}</span>
                   </div>
                   <input
                     type="checkbox"
                     checked={status.services[svc.key] ?? true}
                     onChange={(e) => handleToggleService(svc.key, e.target.checked)}
-                    className="rounded border-white/20 bg-white/5 text-cp-amber focus:ring-cp-amber focus:ring-offset-0"
+                    className="rounded border-ui/[0.15] bg-ui/[0.05] text-cp-amber focus:ring-cp-amber focus:ring-offset-0"
                   />
                 </label>
               ))}
@@ -152,7 +152,7 @@ export const GoogleWorkspaceSettings = () => {
                 {testing ? 'Testing...' : 'Test Connection'}
               </button>
               <button onClick={() => setShowActivity(!showActivity)}
-                className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white/60 text-xs rounded-lg transition-colors">
+                className="px-3 py-1.5 bg-ui/[0.05] hover:bg-ui/[0.12] text-ui/55 text-xs rounded-lg transition-colors">
                 {showActivity ? 'Hide Activity' : 'Activity Log'}
               </button>
               <button onClick={handleDisconnect}

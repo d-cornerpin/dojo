@@ -100,7 +100,7 @@ export const MicrosoftWorkspaceSettings = () => {
 
         {!status.connected ? (
           <div className="space-y-3">
-            <p className="text-xs text-white/40">
+            <p className="text-xs text-ui/40">
               Connect your Microsoft account to give agents access to Outlook, Calendar, OneDrive, and Teams.
             </p>
             {error && <div className="alert-banner alert-error">{error}</div>}
@@ -112,11 +112,11 @@ export const MicrosoftWorkspaceSettings = () => {
               {connecting ? 'Waiting for sign-in...' : 'Sign in with Microsoft'}
             </button>
             {connecting && (
-              <p className="text-xs text-white/30">
+              <p className="text-xs text-ui/25">
                 Complete the sign-in in your browser. This page will update automatically.
               </p>
             )}
-            <p className="text-[10px] text-white/25">
+            <p className="text-[10px] text-ui/25">
               For work/school accounts: if you see "Need admin approval", your organization's admin needs to approve the app once.
             </p>
           </div>
@@ -126,8 +126,8 @@ export const MicrosoftWorkspaceSettings = () => {
             <div className="flex items-center gap-3">
               <span className="w-2 h-2 rounded-full bg-cp-teal animate-pulse shrink-0" />
               <div className="min-w-0 flex-1">
-                <p className="text-sm text-white/80 truncate">{status.email}</p>
-                <p className="text-xs text-white/30">
+                <p className="text-sm text-ui/70 truncate">{status.email}</p>
+                <p className="text-xs text-ui/25">
                   {status.accountType === 'entra' ? 'Work/School' : 'Personal'}
                   {status.lastVerified && ` · Verified ${new Date(status.lastVerified).toLocaleDateString()}`}
                 </p>
@@ -136,7 +136,7 @@ export const MicrosoftWorkspaceSettings = () => {
 
             {/* Activity summary */}
             {status.todayActivity && (status.todayActivity.reads > 0 || status.todayActivity.writes > 0) && (
-              <div className="text-xs text-white/30">
+              <div className="text-xs text-ui/25">
                 Today: {status.todayActivity.reads} reads, {status.todayActivity.writes} writes
               </div>
             )}
@@ -149,8 +149,8 @@ export const MicrosoftWorkspaceSettings = () => {
                 return (
                   <label key={svc.key} className={`flex items-center justify-between py-1.5 ${blocked ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
                     <div>
-                      <span className="text-sm text-white/70">{svc.label}</span>
-                      <span className="text-xs text-white/30 ml-2">{svc.desc}</span>
+                      <span className="text-sm text-ui/70">{svc.label}</span>
+                      <span className="text-xs text-ui/25 ml-2">{svc.desc}</span>
                       {blocked && <span className="text-[10px] text-cp-amber/70 ml-2">(work/school only)</span>}
                     </div>
                     <input
@@ -158,7 +158,7 @@ export const MicrosoftWorkspaceSettings = () => {
                       checked={!blocked && (status.services[svc.key] ?? true)}
                       onChange={(e) => !blocked && handleServiceToggle(svc.key, e.target.checked)}
                       disabled={blocked}
-                      className="rounded border-white/20 bg-white/5 text-cp-amber focus:ring-cp-amber focus:ring-offset-0"
+                      className="rounded border-ui/[0.15] bg-ui/[0.05] text-cp-amber focus:ring-cp-amber focus:ring-offset-0"
                     />
                   </label>
                 );
@@ -166,21 +166,21 @@ export const MicrosoftWorkspaceSettings = () => {
             </div>
 
             {/* Office Document Tools */}
-            <div className="border-t border-white/[0.06] pt-3">
+            <div className="border-t border-ui/[0.06] pt-3">
               <div className="flex items-center justify-between mb-1">
                 <p className="form-label mb-0">Office Document Tools</p>
                 <span className={`text-[10px] px-2 py-0.5 rounded-full ${
                   status.officeTools.status === 'installed' ? 'bg-cp-teal/10 text-cp-teal' :
                   status.officeTools.status === 'installing' ? 'bg-cp-amber/10 text-cp-amber' :
                   status.officeTools.status === 'failed' ? 'bg-cp-coral/10 text-cp-coral' :
-                  'bg-white/[0.06] text-white/40'
+                  'bg-ui/[0.08] text-ui/40'
                 }`}>
                   {status.officeTools.status === 'installed' ? 'Ready' :
                    status.officeTools.status === 'installing' ? 'Installing...' :
                    status.officeTools.status === 'failed' ? 'Failed' : 'Not installed'}
                 </span>
               </div>
-              <p className="text-xs text-white/30 mb-2">
+              <p className="text-xs text-ui/25 mb-2">
                 Word, Excel, and PowerPoint document creation.
               </p>
               {status.officeTools.status === 'failed' && status.officeTools.error && (
@@ -201,7 +201,7 @@ export const MicrosoftWorkspaceSettings = () => {
                 {testing ? 'Testing...' : 'Test Connection'}
               </button>
               <button onClick={() => setShowActivity(!showActivity)}
-                className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white/60 text-xs rounded-lg transition-colors">
+                className="px-3 py-1.5 bg-ui/[0.05] hover:bg-ui/[0.12] text-ui/55 text-xs rounded-lg transition-colors">
                 {showActivity ? 'Hide Activity' : 'Activity Log'}
               </button>
               <button onClick={handleDisconnect}

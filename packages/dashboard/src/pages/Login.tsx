@@ -56,7 +56,7 @@ export const Login = () => {
         {/* Logo */}
         <div className="text-center mb-8">
           <img src="/dojologo.svg" alt="DOJO" className="w-14 h-14 mx-auto mb-4" />
-          <h1 className="text-2xl font-bold text-white tracking-wide">Agent D.O.J.O.</h1>
+          <h1 className="text-2xl font-bold text-ui tracking-wide">Agent D.O.J.O.</h1>
           <p className="text-sm mt-1 text-secondary">Delegated Operations & Job Orchestration</p>
         </div>
 
@@ -65,13 +65,13 @@ export const Login = () => {
           <div className="mb-5">
             {isFirstRun ? (
               <>
-                <h2 className="text-sm font-semibold text-white mb-1">Create Your Dashboard Password</h2>
+                <h2 className="text-sm font-semibold text-ui mb-1">Create Your Dashboard Password</h2>
                 <p className="text-xs mb-4 text-secondary">
                   This password protects your DOJO dashboard. You'll use it each time you log in.
                 </p>
               </>
             ) : (
-              <label htmlFor="password" className="block text-sm font-medium text-white/80 mb-2">Password</label>
+              <label htmlFor="password" className="block text-sm font-medium text-ui/70 mb-2">Password</label>
             )}
             <input
               id="password"

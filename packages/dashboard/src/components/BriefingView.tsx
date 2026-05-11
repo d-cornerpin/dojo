@@ -59,7 +59,7 @@ export const BriefingView = ({ agentId }: BriefingViewProps) => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full white/40 text-sm">
+      <div className="flex items-center justify-center h-full text-ui/40 text-sm">
         Loading briefing...
       </div>
     );
@@ -68,7 +68,7 @@ export const BriefingView = ({ agentId }: BriefingViewProps) => {
   if (error && !briefing) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-3">
-        <p className="white/40 text-sm">No briefing available yet.</p>
+        <p className="text-ui/40 text-sm">No briefing available yet.</p>
         <button
           onClick={handleRegenerate}
           disabled={regenerating}
@@ -85,10 +85,10 @@ export const BriefingView = ({ agentId }: BriefingViewProps) => {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b white/[0.06]">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-ui/[0.06]">
         <div>
           <h3 className="card-header">Morning Briefing</h3>
-          <div className="flex items-center gap-3 mt-0.5 text-[10px] white/40">
+          <div className="flex items-center gap-3 mt-0.5 text-[10px] text-ui/40">
             <span>Generated: {formatDate(briefing.generatedAt)}</span>
             <span>{briefing.tokenCount.toLocaleString()} tokens</span>
           </div>
@@ -100,7 +100,7 @@ export const BriefingView = ({ agentId }: BriefingViewProps) => {
                 setEditContent(briefing.content);
                 setEditing(true);
               }}
-              className="px-3 py-1.5 text-xs rounded bg-white/[0.05] white/70 hover:bg-white/[0.08] transition-colors"
+              className="px-3 py-1.5 text-xs rounded bg-ui/[0.05] text-ui/70 hover:bg-ui/[0.08] transition-colors"
             >
               Edit
             </button>
@@ -141,14 +141,14 @@ export const BriefingView = ({ agentId }: BriefingViewProps) => {
               </button>
               <button
                 onClick={() => setEditing(false)}
-                className="px-4 py-1.5 text-xs rounded bg-white/[0.05] white/70 hover:bg-white/[0.08] transition-colors"
+                className="px-4 py-1.5 text-xs rounded bg-ui/[0.05] text-ui/70 hover:bg-ui/[0.08] transition-colors"
               >
                 Cancel
               </button>
             </div>
           </div>
         ) : (
-          <pre className="text-sm white/90 whitespace-pre-wrap font-mono leading-relaxed">
+          <pre className="text-sm text-ui/90 whitespace-pre-wrap font-mono leading-relaxed">
             {briefing.content}
           </pre>
         )}

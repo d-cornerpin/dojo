@@ -37,7 +37,7 @@ export const TechniqueSelector = ({ selected, onChange }: TechniqueSelectorProps
     onChange(selected.filter(s => s !== id));
   };
 
-  if (loading) return <p className="text-xs white/30">Loading techniques...</p>;
+  if (loading) return <p className="text-xs text-ui/25">Loading techniques...</p>;
   if (techniques.length === 0) return null;
 
   return (
@@ -47,12 +47,12 @@ export const TechniqueSelector = ({ selected, onChange }: TechniqueSelectorProps
         <div key={t.id} className="flex items-center justify-between px-3 py-1.5 glass-nested rounded-lg">
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-xs">{'\u{1F94B}'}</span>
-            <span className="text-xs white/80 truncate">{t.name}</span>
-            <span className="text-[10px] white/25 font-mono shrink-0">{t.id}</span>
+            <span className="text-xs text-ui/70 truncate">{t.name}</span>
+            <span className="text-[10px] text-ui/25 font-mono shrink-0">{t.id}</span>
           </div>
           <button
             onClick={() => handleRemove(t.id)}
-            className="text-white/20 hover:text-cp-coral text-sm shrink-0 ml-2 transition-colors"
+            className="text-ui/25 hover:text-cp-coral text-sm shrink-0 ml-2 transition-colors"
           >
             &times;
           </button>
@@ -75,7 +75,7 @@ export const TechniqueSelector = ({ selected, onChange }: TechniqueSelectorProps
           </select>
           <button
             onClick={() => setShowAdd(false)}
-            className="text-xs white/40 hover:white/70 transition-colors shrink-0"
+            className="text-xs text-ui/40 hover:text-ui/70 transition-colors shrink-0"
           >
             Cancel
           </button>
@@ -84,7 +84,7 @@ export const TechniqueSelector = ({ selected, onChange }: TechniqueSelectorProps
         available.length > 0 && (
           <button
             onClick={() => setShowAdd(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-white/40 hover:text-white/70 hover:bg-white/[0.04] rounded-lg transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-ui/40 hover:text-ui/70 hover:bg-ui/[0.05] rounded-lg transition-colors"
           >
             <span className="text-sm">+</span> Add technique
           </button>
@@ -92,7 +92,7 @@ export const TechniqueSelector = ({ selected, onChange }: TechniqueSelectorProps
       )}
 
       {selected.length === 0 && !showAdd && (
-        <p className="text-[10px] white/25">No techniques equipped. Equipped techniques are pre-loaded into the agent's context.</p>
+        <p className="text-[10px] text-ui/25">No techniques equipped. Equipped techniques are pre-loaded into the agent's context.</p>
       )}
     </div>
   );

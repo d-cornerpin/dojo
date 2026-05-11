@@ -3,6 +3,10 @@ import { useState, useEffect, useCallback } from 'react';
 // ════════════════════════════════════════
 // Dependencies & Local Models — OOBE Step
 // ════════════════════════════════════════
+//
+// FENG-SHUI EXEMPTION: this component intentionally uses standard Tailwind
+// status colors (text-green-400, text-yellow-400) for installed/installing
+// status. Setup wizard is explicitly exempt per FENG-SHUI-THEME-SPEC.md.
 
 const API = '/api/setup';
 
@@ -58,7 +62,7 @@ const DepItem = ({ label, status, detail, error, onRetry }: {
     : status === 'installing' ? 'text-yellow-400'
     : status === 'checking' ? 'text-yellow-400'
     : status === 'failed' ? 'text-red-400'
-    : 'white/40';
+    : 'text-ui/40';
 
   return (
     <div className="flex items-center justify-between py-2.5">
@@ -66,7 +70,7 @@ const DepItem = ({ label, status, detail, error, onRetry }: {
         <span className={`text-lg ${status === 'installing' ? 'animate-spin' : ''}`}>{icon}</span>
         <div className="min-w-0">
           <span className={`text-sm ${color}`}>{label}</span>
-          {detail && <p className="text-[10px] white/30">{detail}</p>}
+          {detail && <p className="text-[10px] text-ui/25">{detail}</p>}
           {error && <p className="text-[10px] text-red-400/70">{error}</p>}
         </div>
       </div>
@@ -415,18 +419,18 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       {phase === 'models' && deps.ollamaRunning && deps.nomic === 'installed' && (
         <div>
           <h3 className="card-header mb-1">Choose a Local Model</h3>
-          <p className="text-xs white/40 mb-3">
+          <p className="text-xs text-ui/40 mb-3">
             A local model runs on your machine for free. It's used for lightweight tasks, as a fallback when API providers are down,
             and for system services. You can skip this if you only want to use API models.
           </p>
 
           {/* Recommended model */}
-          <div className="glass-nested rounded-xl p-4 mb-3 border white/[0.08]">
+          <div className="glass-nested rounded-xl p-4 mb-3 border border-ui/[0.10]">
             <div className="flex items-start justify-between">
               <div>
-                <span className="text-sm font-medium white/90">qwen3.5:9b</span>
+                <span className="text-sm font-medium text-ui/90">qwen3.5:9b</span>
                 <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400">Recommended</span>
-                <p className="text-xs white/40 mt-1">Good balance of capability and speed for machines with 16GB+ RAM. Free, runs locally.</p>
+                <p className="text-xs text-ui/40 mt-1">Good balance of capability and speed for machines with 16GB+ RAM. Free, runs locally.</p>
               </div>
               {installedModels.some(m => m.name.includes('qwen3.5')) ? (
                 <span className="text-xs text-green-400 shrink-0">{'\u2705'} Installed</span>
@@ -486,7 +490,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
                 </div>
 
                 {/* Progress bar */}
-                <div className="w-full h-2 rounded-full bg-white/[0.08] overflow-hidden mb-1.5">
+                <div className="w-full h-2 rounded-full bg-ui/[0.08] overflow-hidden mb-1.5">
                   <div
                     className="h-full rounded-full bg-yellow-500/60 transition-all duration-300"
                     style={{ width: `${pct ?? 0}%` }}
@@ -517,7 +521,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
           {/* Installed models */}
           {installedModels.length > 0 && (
             <div>
-              <h4 className="text-xs font-medium white/55 mb-2">Installed Models</h4>
+              <h4 className="text-xs font-medium text-ui/55 mb-2">Installed Models</h4>
               <div className="glass-nested rounded-xl divide-y divide-gray-700">
                 {installedModels.map((m) => {
                   const sizeMb = Math.round(m.size / (1024 * 1024));
@@ -525,9 +529,9 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
                   return (
                     <div key={m.name} className="flex items-center justify-between px-4 py-2">
                       <div>
-                        <span className="text-sm white/90">{m.name}</span>
-                        <span className="text-xs white/30 ml-2">{sizeMb > 1024 ? `${(sizeMb / 1024).toFixed(1)}GB` : `${sizeMb}MB`}</span>
-                        {isEmbedding && <span className="text-[10px] white/20 ml-2">(embedding model)</span>}
+                        <span className="text-sm text-ui/90">{m.name}</span>
+                        <span className="text-xs text-ui/25 ml-2">{sizeMb > 1024 ? `${(sizeMb / 1024).toFixed(1)}GB` : `${sizeMb}MB`}</span>
+                        {isEmbedding && <span className="text-[10px] text-ui/25 ml-2">(embedding model)</span>}
                       </div>
                       {!isEmbedding && (
                         <button onClick={() => removeModel(m.name)}
@@ -604,11 +608,11 @@ export const SetupPermissions = () => {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-white/55">
+      <p className="text-sm text-ui/55">
         These macOS permissions allow your agents to interact with your system. They're optional — you can grant them now or later in System Settings.
       </p>
 
-      <p className="text-[10px] text-white/30">
+      <p className="text-[10px] text-ui/25">
         DOJO runs as a Node.js process, so permissions need to be granted to "node" (not Terminal). Each button opens the correct section of System Settings. Click "Help" for step-by-step instructions.
       </p>
 
@@ -624,8 +628,8 @@ export const SetupPermissions = () => {
                 <div className="flex items-center gap-3 min-w-0">
                   <span className="text-lg">{icon}</span>
                   <div className="min-w-0">
-                    <span className="text-sm white/80">{item.label}</span>
-                    <p className="text-[10px] white/30">{item.description}</p>
+                    <span className="text-sm text-ui/70">{item.label}</span>
+                    <p className="text-[10px] text-ui/25">{item.description}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -635,7 +639,7 @@ export const SetupPermissions = () => {
                     <>
                       <button
                         onClick={() => setExpandedHint(isExpanded ? null : item.key)}
-                        className="text-[10px] text-white/30 hover:text-white/50 transition-colors"
+                        className="text-[10px] text-ui/25 hover:text-ui/55 transition-colors"
                       >
                         {isExpanded ? 'Hide help' : 'Help'}
                       </button>

@@ -196,19 +196,19 @@ export const Memory = () => {
   return (
     <div className="flex flex-col h-full">
       {/* Top bar */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-ui/[0.06]">
         <div className="flex items-center gap-4">
-          <h2 className="text-lg font-semibold text-white">Vault</h2>
+          <h2 className="text-lg font-semibold text-ui">Vault</h2>
           {/* Tabs */}
-          <div className="flex items-center gap-1 bg-white/[0.03] rounded-lg p-0.5">
+          <div className="flex items-center gap-1 bg-ui/[0.03] rounded-lg p-0.5">
             {(['vault', 'dag', 'dreams'] as MainTab[]).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setMainTab(tab)}
                 className={`px-3 py-1 text-xs rounded-md transition-colors ${
                   mainTab === tab
-                    ? 'bg-white/[0.1] text-white'
-                    : 'text-white/40 hover:text-white/70'
+                    ? 'bg-ui/[0.12] text-ui'
+                    : 'text-ui/40 hover:text-ui/70'
                 }`}
               >
                 {tab === 'vault' ? 'Entries' : tab === 'dag' ? 'DAG' : 'Dreams'}
@@ -264,7 +264,7 @@ export const Memory = () => {
               className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
                 rightPanel === 'search'
                   ? 'bg-cp-amber/20 text-cp-amber'
-                  : 'bg-white/[0.05] text-white/55 hover:text-white/90'
+                  : 'bg-ui/[0.05] text-ui/55 hover:text-ui/90'
               }`}
             >
               Search
@@ -282,9 +282,9 @@ export const Memory = () => {
         {mainTab === 'vault' && (
           <div className="flex-1 overflow-y-auto p-4">
             {vaultLoading ? (
-              <div className="text-center text-white/40 text-sm py-8">Loading vault entries...</div>
+              <div className="text-center text-ui/40 text-sm py-8">Loading vault entries...</div>
             ) : vaultEntries.length === 0 ? (
-              <div className="text-center text-white/40 text-sm py-8">
+              <div className="text-center text-ui/40 text-sm py-8">
                 No vault entries yet. Agents will populate the vault as they learn, or the dreaming cycle will extract knowledge from conversations.
               </div>
             ) : (
@@ -305,18 +305,18 @@ export const Memory = () => {
         {/* DAG Tab */}
         {mainTab === 'dag' && (
           <>
-            <div className="w-80 border-r border-white/[0.06] flex flex-col bg-white/[0.02]">
-              <div className="px-4 py-2 border-b border-white/[0.06] flex items-center justify-between">
-                <span className="text-xs font-medium text-white/40 uppercase tracking-wider">
+            <div className="w-80 border-r border-ui/[0.06] flex flex-col bg-ui/[0.03]">
+              <div className="px-4 py-2 border-b border-ui/[0.06] flex items-center justify-between">
+                <span className="text-xs font-medium text-ui/40 uppercase tracking-wider">
                   Summary DAG
                 </span>
-                <span className="text-[10px] text-white/30">
+                <span className="text-[10px] text-ui/25">
                   {summaries.length} nodes
                 </span>
               </div>
               <div className="flex-1 overflow-y-auto">
                 {dagLoading ? (
-                  <div className="p-4 text-center text-white/40 text-sm">Loading...</div>
+                  <div className="p-4 text-center text-ui/40 text-sm">Loading...</div>
                 ) : (
                   <DagTree
                     summaries={summaries}
@@ -342,7 +342,7 @@ export const Memory = () => {
               )}
               {rightPanel === 'briefing' && <BriefingView agentId={agentId} />}
               {rightPanel === 'none' && (
-                <div className="flex items-center justify-center h-full text-white/30 text-sm">
+                <div className="flex items-center justify-center h-full text-ui/25 text-sm">
                   Select a summary from the DAG or use search
                 </div>
               )}
@@ -359,31 +359,31 @@ export const Memory = () => {
                 <button
                   onClick={handleDreamNow}
                   disabled={dreaming}
-                  className="px-3 py-1.5 text-xs rounded-lg bg-purple-600/20 text-purple-400 hover:bg-purple-600/30 transition-colors disabled:opacity-50"
+                  className="px-3 py-1.5 text-xs rounded-lg bg-cp-purple/20 text-cp-purple hover:bg-cp-purple/30 transition-colors disabled:opacity-50"
                 >
                   {dreaming ? 'Dreaming...' : 'Dream Now'}
                 </button>
               </div>
               {dreamReports.length === 0 ? (
-                <div className="text-center text-white/30 text-sm py-8">
+                <div className="text-center text-ui/25 text-sm py-8">
                   No dream reports yet. The dreaming cycle runs nightly at the configured time, or you can trigger it manually.
                 </div>
               ) : (
                 dreamReports.map((report) => (
-                  <div key={report.id} className="border border-white/[0.06] rounded-lg p-4 bg-white/[0.02]">
+                  <div key={report.id} className="border border-ui/[0.06] rounded-lg p-4 bg-ui/[0.03]">
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs text-white/50">
+                      <span className="text-xs text-ui/55">
                         {formatDate(report.createdAt)}
                       </span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-cp-purple/20 text-cp-purple">
                         {report.dreamMode}
                       </span>
                     </div>
-                    <pre className="text-xs text-white/70 whitespace-pre-wrap font-mono leading-relaxed">
+                    <pre className="text-xs text-ui/70 whitespace-pre-wrap font-mono leading-relaxed">
                       {report.reportText}
                     </pre>
                     {report.durationMs && (
-                      <div className="text-[10px] text-white/30 mt-2">
+                      <div className="text-[10px] text-ui/25 mt-2">
                         Duration: {(report.durationMs / 1000).toFixed(1)}s
                       </div>
                     )}
@@ -396,20 +396,20 @@ export const Memory = () => {
       </div>
 
       {/* Bottom bar */}
-      <div className="flex items-center justify-between px-6 py-3 border-t border-white/[0.06] bg-white/[0.02]">
+      <div className="flex items-center justify-between px-6 py-3 border-t border-ui/[0.06] bg-ui/[0.03]">
         <div className="flex items-center gap-2">
           {mainTab === 'dag' && (
             <>
               <button
                 onClick={() => setInjectOpen(!injectOpen)}
-                className="px-3 py-1.5 text-xs rounded-lg bg-white/[0.05] text-white/70 hover:bg-white/[0.08] transition-colors"
+                className="px-3 py-1.5 text-xs rounded-lg bg-ui/[0.05] text-ui/70 hover:bg-ui/[0.08] transition-colors"
               >
                 Inject Memory
               </button>
               <button
                 onClick={handleCompact}
                 disabled={compacting}
-                className="px-3 py-1.5 text-xs rounded-lg bg-white/[0.05] text-white/70 hover:bg-white/[0.08] transition-colors disabled:opacity-50"
+                className="px-3 py-1.5 text-xs rounded-lg bg-ui/[0.05] text-ui/70 hover:bg-ui/[0.08] transition-colors disabled:opacity-50"
               >
                 {compacting ? 'Compacting...' : 'Compact Now'}
               </button>
@@ -420,7 +420,7 @@ export const Memory = () => {
                 className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
                   rightPanel === 'briefing'
                     ? 'bg-cp-amber/20 text-cp-amber'
-                    : 'bg-white/[0.05] text-white/70 hover:bg-white/[0.08]'
+                    : 'bg-ui/[0.05] text-ui/70 hover:bg-ui/[0.08]'
                 }`}
               >
                 View Briefing
@@ -430,7 +430,7 @@ export const Memory = () => {
           {mainTab === 'vault' && (
             <button
               onClick={loadVault}
-              className="px-3 py-1.5 text-xs rounded-lg bg-white/[0.05] text-white/70 hover:bg-white/[0.08] transition-colors"
+              className="px-3 py-1.5 text-xs rounded-lg bg-ui/[0.05] text-ui/70 hover:bg-ui/[0.08] transition-colors"
             >
               Refresh
             </button>
@@ -453,9 +453,9 @@ export const Memory = () => {
       {injectOpen && (
         <div className="glass-modal-backdrop">
           <div className="glass-modal w-full max-w-lg mx-4 shadow-2xl">
-            <div className="px-5 py-4 border-b white/[0.06]">
-              <h3 className="text-sm font-medium text-white">Inject Memory</h3>
-              <p className="text-xs white/40 mt-1">
+            <div className="px-5 py-4 border-b border-ui/[0.06]">
+              <h3 className="text-sm font-medium text-ui">Inject Memory</h3>
+              <p className="text-xs text-ui/40 mt-1">
                 Add content directly into the agent's memory store.
               </p>
             </div>
@@ -467,13 +467,13 @@ export const Memory = () => {
                 className="glass-textarea w-full h-40 font-mono resize-y"
               />
             </div>
-            <div className="flex items-center justify-end gap-2 px-5 py-3 border-t white/[0.06]">
+            <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-ui/[0.06]">
               <button
                 onClick={() => {
                   setInjectOpen(false);
                   setInjectContent('');
                 }}
-                className="px-4 py-2 text-xs rounded-lg bg-white/[0.05] white/70 hover:bg-white/[0.08] transition-colors"
+                className="px-4 py-2 text-xs rounded-lg bg-ui/[0.05] text-ui/70 hover:bg-ui/[0.08] transition-colors"
               >
                 Cancel
               </button>

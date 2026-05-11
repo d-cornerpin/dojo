@@ -115,17 +115,17 @@ const CodeBlock = ({ code, language }: { code: string; language: string }) => {
   };
 
   return (
-    <div className="my-2 rounded-lg bg-transparent border white/[0.08] overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-1.5 bg-white/[0.04] border-b white/[0.08]">
-        <span className="text-xs white/40 font-mono">{language || 'code'}</span>
+    <div className="my-2 rounded-lg bg-transparent border border-ui/[0.10] overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-ui/[0.05] border-b border-ui/[0.10]">
+        <span className="text-xs text-ui/40 font-mono">{language || 'code'}</span>
         <button
           onClick={handleCopy}
-          className="text-xs white/40 hover:white/70 transition-colors"
+          className="text-xs text-ui/40 hover:text-ui/70 transition-colors"
         >
           {copied ? 'Copied!' : 'Copy'}
         </button>
       </div>
-      <pre className="px-3 py-2 text-xs font-mono white/70 overflow-x-auto whitespace-pre">
+      <pre className="px-3 py-2 text-xs font-mono text-ui/70 overflow-x-auto whitespace-pre">
         {code}
       </pre>
     </div>
@@ -147,7 +147,7 @@ function InlineMarkdown({ text }: { text: string }): React.ReactNode {
       parts.push(
         <code
           key={key++}
-          className="px-1.5 py-0.5 bg-transparent border white/[0.08] rounded text-xs font-mono text-blue-300"
+          className="px-1.5 py-0.5 bg-transparent border border-ui/[0.10] rounded text-xs font-mono text-cp-blue-light"
         >
           {codeMatch[2]}
         </code>,
@@ -177,7 +177,7 @@ function renderUrl(url: string, key: number): React.ReactNode[] {
   }
   const out: React.ReactNode[] = [
     <a key={key} href={href} target="_blank" rel="noopener noreferrer"
-      className="text-blue-400 hover:underline break-all">
+      className="text-cp-blue hover:underline break-all">
       {href}
     </a>,
   ];
@@ -193,7 +193,7 @@ function renderMarkdownLink(text: string, url: string, key: number): React.React
   if (trailMatch) href = href.slice(0, href.length - trailMatch[0].length);
   return (
     <a key={key} href={href} target="_blank" rel="noopener noreferrer"
-      className="text-blue-400 hover:underline break-all">
+      className="text-cp-blue hover:underline break-all">
       {text}
     </a>
   );
@@ -268,7 +268,7 @@ function processInline(text: string, baseKey: number): React.ReactNode {
       const m = winner.match;
       if (m[1]) parts.push(m[1]);
       parts.push(
-        <strong key={key++} className="font-semibold text-white">
+        <strong key={key++} className="font-semibold text-ui">
           {processInline(m[2], baseKey * 100 + key)}
         </strong>,
       );

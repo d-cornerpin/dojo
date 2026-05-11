@@ -16,6 +16,12 @@ export default {
         mono: ['var(--font-mono)', 'ui-monospace', 'monospace'],
       },
       colors: {
+        // Foreground / UI accent over the page bg. White on dark themes,
+        // black on light themes — see --ui-on-base-ch in index.css. Use
+        // text-ui/X, bg-ui/X, border-ui/X, ring-ui/X everywhere instead
+        // of the literal text-white/X. A theme overrides --ui-on-base-ch
+        // to flip the entire foreground/border/inset system.
+        'ui': 'rgb(var(--ui-on-base-ch) / <alpha-value>)',
         // Backgrounds — use channel vars for opacity modifier support
         'cp-bg': 'rgb(var(--cp-bg-ch) / <alpha-value>)',
         'cp-bg-secondary': 'rgb(var(--cp-bg-secondary-ch) / <alpha-value>)',

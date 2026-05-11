@@ -110,7 +110,7 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
     const parts = text.split(regex);
     return parts.map((part, i) =>
       regex.test(part) ? (
-        <mark key={i} className="bg-yellow-500/30 text-yellow-200 rounded px-0.5">
+        <mark key={i} className="bg-cp-amber/30 text-cp-amber-light rounded px-0.5">
           {part}
         </mark>
       ) : (
@@ -122,14 +122,14 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
   const formatSimilarity = (sim: number) => {
     const pct = Math.round(sim * 100);
     const color =
-      pct >= 80 ? 'text-green-400' : pct >= 60 ? 'text-yellow-400' : 'white/55';
+      pct >= 80 ? 'text-cp-teal' : pct >= 60 ? 'text-cp-amber' : 'text-ui/55';
     return <span className={`${color} font-mono`}>{pct}%</span>;
   };
 
   return (
     <div className="flex flex-col h-full">
       {/* Search input */}
-      <div className="px-4 py-3 border-b white/[0.06] space-y-2">
+      <div className="px-4 py-3 border-b border-ui/[0.06] space-y-2">
         <div className="relative">
           <input
             type="text"
@@ -142,11 +142,11 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
             }
             className="glass-input w-full pl-9 pr-3"
           />
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 white/40 text-sm">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-ui/40 text-sm">
             {mode === 'semantic' ? '\u2731' : '?'}
           </span>
           {loading && (
-            <span className="absolute right-3 top-1/2 -translate-y-1/2 white/40 text-xs">
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-ui/40 text-xs">
               ...
             </span>
           )}
@@ -155,13 +155,13 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
         {/* Mode + Scope toggles */}
         <div className="flex items-center gap-3">
           {/* Search mode toggle */}
-          <div className="flex gap-1 white/[0.03] rounded-lg p-0.5">
+          <div className="flex gap-1 text-ui/25 rounded-lg p-0.5">
             <button
               onClick={() => setMode('text')}
               className={`px-2.5 py-1 text-xs rounded transition-colors ${
                 mode === 'text'
                   ? 'bg-cp-amber/20 text-cp-amber'
-                  : 'white/40 hover:white/70'
+                  : 'text-ui/40 hover:text-ui/70'
               }`}
             >
               Text
@@ -176,9 +176,9 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
               }
               className={`px-2.5 py-1 text-xs rounded transition-colors ${
                 mode === 'semantic'
-                  ? 'bg-purple-600/20 text-purple-400'
+                  ? 'bg-cp-purple/20 text-cp-purple'
                   : embeddingsAvailable
-                    ? 'white/40 hover:white/70'
+                    ? 'text-ui/40 hover:text-ui/70'
                     : 'text-gray-700 cursor-not-allowed'
               }`}
             >
@@ -187,7 +187,7 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
           </div>
 
           {/* Divider */}
-          <div className="w-px h-4 bg-white/[0.08]" />
+          <div className="w-px h-4 bg-ui/[0.08]" />
 
           {/* Scope toggle (only for text mode) */}
           <div className={`flex gap-1 ${mode === 'semantic' ? 'opacity-40 pointer-events-none' : ''}`}>
@@ -198,7 +198,7 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
                 className={`px-2.5 py-1 text-xs rounded transition-colors ${
                   scope === s
                     ? 'bg-cp-amber/20 text-cp-amber'
-                    : 'bg-white/[0.05] white/40 hover:white/70'
+                    : 'bg-ui/[0.05] text-ui/40 hover:text-ui/70'
                 }`}
               >
                 {s.charAt(0).toUpperCase() + s.slice(1)}
@@ -211,14 +211,14 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
       {/* Results */}
       <div className="flex-1 overflow-y-auto">
         {!searched && !loading && (
-          <div className="p-4 text-center white/40 text-sm">
+          <div className="p-4 text-center text-ui/40 text-sm">
             {mode === 'semantic'
               ? 'Describe what you remember — finds similar content even without exact keywords'
               : 'Type to search messages and summaries'}
           </div>
         )}
         {searched && results.length === 0 && !loading && (
-          <div className="p-4 text-center white/40 text-sm">
+          <div className="p-4 text-center text-ui/40 text-sm">
             No results found
           </div>
         )}
@@ -226,7 +226,7 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
           <button
             key={`${result.id}-${idx}`}
             onClick={() => onSelectResult(result.id, result.type)}
-            className="w-full text-left px-4 py-3 border-b white/[0.04] hover:white/[0.03] transition-colors"
+            className="w-full text-left px-4 py-3 border-b border-ui/[0.06] hover:text-ui/25 transition-colors"
           >
             <div className="flex items-center gap-2 mb-1">
               <span
@@ -244,17 +244,17 @@ export const MemorySearch = ({ agentId, onSelectResult }: MemorySearchProps) => 
                 </span>
               )}
               {result.timestamp && (
-                <span className="text-[10px] white/40">
+                <span className="text-[10px] text-ui/40">
                   {formatDate(result.timestamp)}
                 </span>
               )}
               {result.tokenCount > 0 && (
-                <span className="text-[10px] white/30">
+                <span className="text-[10px] text-ui/25">
                   {result.tokenCount} tokens
                 </span>
               )}
             </div>
-            <div className="text-xs white/70 line-clamp-2">
+            <div className="text-xs text-ui/70 line-clamp-2">
               {mode === 'text' ? highlightMatch(result.snippet, query) : result.snippet}
             </div>
           </button>

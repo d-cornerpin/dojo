@@ -1,3 +1,8 @@
+// FENG-SHUI EXEMPTION: this component intentionally uses standard Tailwind
+// status colors (text-green-400, text-yellow-400, text-red-400) for universal
+// healthy/degraded/down semantics. See FENG-SHUI-THEME-SPEC.md "Tailwind
+// Classes and Theme Colors" — these stay recognizable across themes.
+
 interface ProviderStatus {
   id: string;
   name: string;
@@ -50,7 +55,7 @@ const getStatusInfo = (provider: ProviderStatus): { label: string; color: string
 
 export const ProviderHealth = ({ providers }: ProviderHealthProps) => {
   if (providers.length === 0) {
-    return <p className="text-sm white/30">No providers configured.</p>;
+    return <p className="text-sm text-ui/25">No providers configured.</p>;
   }
 
   return (
@@ -63,19 +68,19 @@ export const ProviderHealth = ({ providers }: ProviderHealthProps) => {
             className={`border rounded-xl p-4 ${status.bgColor} ${status.borderColor}`}
           >
             <div className="flex items-center justify-between mb-2">
-              <h4 className="text-sm font-medium text-white">{provider.name}</h4>
+              <h4 className="text-sm font-medium text-ui">{provider.name}</h4>
               <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${status.color} ${status.bgColor}`}>
                 {status.label}
               </span>
             </div>
             <div className="space-y-1">
               <div className="flex items-center justify-between">
-                <span className="text-xs white/40">Last success</span>
-                <span className="text-xs white/55">{formatTimestamp(provider.lastSuccess)}</span>
+                <span className="text-xs text-ui/40">Last success</span>
+                <span className="text-xs text-ui/55">{formatTimestamp(provider.lastSuccess)}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-xs white/40">Errors</span>
-                <span className={`text-xs font-mono ${provider.errorCount > 0 ? 'text-red-400' : 'white/55'}`}>
+                <span className="text-xs text-ui/40">Errors</span>
+                <span className={`text-xs font-mono ${provider.errorCount > 0 ? 'text-red-400' : 'text-ui/55'}`}>
                   {provider.errorCount}
                 </span>
               </div>

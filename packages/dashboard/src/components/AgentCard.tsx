@@ -102,15 +102,15 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged }: A
       <div className="flex items-start justify-between mb-2 sm:mb-4">
         <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center text-xs sm:text-sm font-bold shrink-0"
-            style={{ background: `${color}20`, color }}>
+            style={{ background: `color-mix(in srgb, ${color} 12%, transparent)`, color }}>
             {agent.name.charAt(0).toUpperCase()}
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
               <span className={`glass-badge ${cls.cls} text-[9px] sm:text-[10px]`}>{cls.label}</span>
-              <h3 className="text-sm sm:text-base font-semibold text-white truncate">{agent.name}</h3>
+              <h3 className="text-sm sm:text-base font-semibold text-ui truncate">{agent.name}</h3>
             </div>
-            {senseiRole && <p className="text-[9px] sm:text-[10px] text-white/40 mt-0.5 truncate">{senseiRole}</p>}
+            {senseiRole && <p className="text-[9px] sm:text-[10px] text-ui/40 mt-0.5 truncate">{senseiRole}</p>}
           </div>
         </div>
         <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
@@ -119,7 +119,7 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged }: A
           {agent.status === 'working' && (
             <button
               onClick={async (e) => { e.stopPropagation(); await api.stopAgent(agent.id); onModelChanged(); }}
-              className="md:opacity-0 md:group-hover:opacity-100 text-white/30 hover:text-amber-400 transition-all p-1"
+              className="md:opacity-0 md:group-hover:opacity-100 text-ui/25 hover:text-cp-amber transition-all p-1"
               title="Stop agent"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>
@@ -128,7 +128,7 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged }: A
           {agent.classification !== 'sensei' && agent.status !== 'terminated' && (
             <button
               onClick={(e) => { e.stopPropagation(); setConfirmTerminate(true); }}
-              className="md:opacity-0 md:group-hover:opacity-100 text-white/30 hover:text-cp-coral transition-all p-1"
+              className="md:opacity-0 md:group-hover:opacity-100 text-ui/25 hover:text-cp-coral transition-all p-1"
               title="Dismiss agent"
             >
               &times;
@@ -141,7 +141,7 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged }: A
       {confirmTerminate && (
         <div className="absolute inset-0 bg-black/80 rounded-2xl flex items-center justify-center gap-2 z-10"
           onClick={(e) => e.stopPropagation()}>
-          <span className="text-xs text-white/70">Dismiss {agent.name} from the dojo?</span>
+          <span className="text-xs text-ui/70">Dismiss {agent.name} from the dojo?</span>
           <button
             onClick={async (e) => { e.stopPropagation(); await api.terminateAgent(agent.id); onModelChanged(); setConfirmTerminate(false); }}
             className="glass-btn glass-btn-destructive text-xs py-1 px-2"
@@ -177,7 +177,7 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged }: A
           ) : (
             <button
               onClick={(e) => { e.stopPropagation(); setChangingModel(true); }}
-              className="text-white/80 hover:text-cp-amber transition-colors text-right truncate max-w-[160px]"
+              className="text-ui/70 hover:text-cp-amber transition-colors text-right truncate max-w-[160px]"
             >
               {agent.modelId === 'auto'
                 ? <span className="text-cp-purple">Auto (Router)</span>
@@ -188,16 +188,16 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged }: A
 
         <div className="flex justify-between">
           <span className="text-secondary">Uptime</span>
-          <span className="text-white/80">{formatUptime(agent.uptime)}</span>
+          <span className="text-ui/70">{formatUptime(agent.uptime)}</span>
         </div>
         <div className="flex justify-between">
           <span className="text-secondary">Messages</span>
-          <span className="text-white/80">{agent.messageCount.toLocaleString()}</span>
+          <span className="text-ui/70">{agent.messageCount.toLocaleString()}</span>
         </div>
 
         {/* Delete for terminated non-permanent */}
         {agent.status === 'terminated' && agent.classification !== 'sensei' && (
-          <div className="pt-2 mt-2 border-t border-white/[0.06]">
+          <div className="pt-2 mt-2 border-t border-ui/[0.06]">
             {confirmDelete ? (
               <div className="flex items-center gap-2">
                 <span className="text-xs text-cp-coral">Delete permanently?</span>

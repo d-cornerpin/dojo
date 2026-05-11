@@ -78,9 +78,9 @@ export const MigrationExport = () => {
 
       {showModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-[#1a1a2e] border border-white/10 rounded-xl p-6 max-w-md w-full shadow-2xl">
-            <h2 className="text-lg font-bold text-white mb-2">Export Your Dojo</h2>
-            <p className="text-white/55 text-sm mb-4">
+          <div className="glass-modal-bg rounded-xl p-6 max-w-md w-full">
+            <h2 className="text-lg font-bold text-ui mb-2">Export Your Dojo</h2>
+            <p className="text-ui/55 text-sm mb-4">
               This will create an encrypted backup of your entire dojo: all agents, settings, vault,
               techniques, and configuration. You&apos;ll need the password to import on another machine.
             </p>
@@ -88,56 +88,56 @@ export const MigrationExport = () => {
             {!exporting ? (
               <form onSubmit={handleExport} className="space-y-4">
                 <div>
-                  <label className="block text-sm text-white/70 mb-1">Encryption Password</label>
+                  <label className="block text-sm text-ui/70 mb-1">Encryption Password</label>
                   <input
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="Minimum 8 characters"
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
+                    className="glass-input"
                     autoFocus
                   />
                 </div>
                 <div>
-                  <label className="block text-sm text-white/70 mb-1">Confirm Password</label>
+                  <label className="block text-sm text-ui/70 mb-1">Confirm Password</label>
                   <input
                     type="password"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     placeholder="Re-enter password"
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
+                    className="glass-input"
                   />
                 </div>
 
                 <button
                   type="button"
                   onClick={() => setShowDetails(!showDetails)}
-                  className="text-xs text-white/40 hover:text-white/60 transition-colors"
+                  className="text-xs text-ui/40 hover:text-ui/55 transition-colors"
                 >
                   {showDetails ? '▾' : '▸'} What&apos;s included
                 </button>
 
                 {showDetails && (
-                  <div className="text-xs text-white/40 bg-white/[0.03] rounded-lg p-3 space-y-1">
+                  <div className="text-xs text-ui/40 bg-ui/[0.03] rounded-lg p-3 space-y-1">
                     <p>• All agents, their personalities, and configurations</p>
                     <p>• All vault entries and conversation archives</p>
                     <p>• All techniques and their files</p>
                     <p>• API keys and provider settings (encrypted)</p>
                     <p>• Google Workspace auth tokens (if connected)</p>
                     <p>• iMessage, remote access, and all other settings</p>
-                    <p className="text-white/25 mt-2">Excludes: logs, Ollama model weights, node_modules</p>
+                    <p className="text-ui/25 mt-2">Excludes: logs, Ollama model weights, node_modules</p>
                   </div>
                 )}
 
                 {error && (
-                  <p className="text-red-400 text-sm">{error}</p>
+                  <p className="text-cp-coral text-sm">{error}</p>
                 )}
 
                 <div className="flex gap-3">
                   <button
                     type="button"
                     onClick={() => { setShowModal(false); setPassword(''); setConfirmPassword(''); setError(null); }}
-                    className="flex-1 px-4 py-2 bg-white/5 hover:bg-white/10 text-white/70 text-sm rounded-lg transition-colors"
+                    className="flex-1 px-4 py-2 bg-ui/[0.05] hover:bg-ui/[0.12] text-ui/70 text-sm rounded-lg transition-colors"
                   >
                     Cancel
                   </button>
@@ -152,13 +152,13 @@ export const MigrationExport = () => {
               </form>
             ) : (
               <div className="space-y-4">
-                <div className="relative h-2 bg-white/10 rounded-full overflow-hidden">
+                <div className="relative h-2 bg-ui/[0.12] rounded-full overflow-hidden">
                   <div
-                    className="absolute inset-y-0 left-0 bg-blue-500 rounded-full transition-all duration-300 animate-pulse"
+                    className="absolute inset-y-0 left-0 bg-cp-blue rounded-full transition-all duration-300 animate-pulse"
                     style={{ width: '60%' }}
                   />
                 </div>
-                <p className="text-sm text-white/55 text-center">{stage}</p>
+                <p className="text-sm text-ui/55 text-center">{stage}</p>
               </div>
             )}
           </div>

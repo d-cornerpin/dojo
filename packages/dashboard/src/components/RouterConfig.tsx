@@ -83,7 +83,7 @@ export const RouterConfig = ({ config, onUpdateTierModels, onUpdateDimension }: 
         <div className="glass-card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left white/40 text-xs uppercase tracking-wider border-b white/[0.06]">
+              <tr className="text-left text-ui/40 text-xs uppercase tracking-wider border-b border-ui/[0.06]">
                 <th className="px-4 py-3">Dimension</th>
                 <th className="px-4 py-3 w-32">Weight</th>
                 <th className="px-4 py-3 w-24 text-center">Enabled</th>
@@ -99,7 +99,7 @@ export const RouterConfig = ({ config, onUpdateTierModels, onUpdateDimension }: 
               ))}
               {config.dimensions.length === 0 && (
                 <tr>
-                  <td colSpan={3} className="px-4 py-6 text-center white/30 text-sm">
+                  <td colSpan={3} className="px-4 py-6 text-center text-ui/25 text-sm">
                     No dimensions configured
                   </td>
                 </tr>
@@ -167,42 +167,42 @@ const TierPanel = ({
   };
 
   const tierColors: Record<string, string> = {
-    tier1: 'border-purple-500/30',
-    tier2: 'border-blue-500/30',
-    tier3: 'border-green-500/30',
+    tier1: 'border-cp-purple/30',
+    tier2: 'border-cp-blue/30',
+    tier3: 'border-cp-teal/30',
   };
 
   return (
-    <div className={`bg-white/[0.04] border rounded-xl p-4 ${tierColors[tier.id] || 'white/[0.06]'}`}>
+    <div className={`bg-ui/[0.05] border rounded-xl p-4 ${tierColors[tier.id] || 'text-ui/25'}`}>
       <div className="mb-3">
-        <h4 className="text-sm font-medium text-white">{tier.name}</h4>
-        <p className="text-xs white/40 mt-0.5">{tier.description}</p>
+        <h4 className="text-sm font-medium text-ui">{tier.name}</h4>
+        <p className="text-xs text-ui/40 mt-0.5">{tier.description}</p>
       </div>
 
       {sortedModels.length === 0 ? (
-        <p className="text-xs white/30 mb-3">No models assigned</p>
+        <p className="text-xs text-ui/25 mb-3">No models assigned</p>
       ) : (
         <div className="space-y-1 mb-3">
           {sortedModels.map((model, index) => (
             <div
               key={model.modelId}
-              className="flex items-center gap-2 py-1.5 px-2 white/[0.03] rounded"
+              className="flex items-center gap-2 py-1.5 px-2 text-ui/25 rounded"
             >
-              <span className="text-xs white/40 w-4 text-center font-mono">
+              <span className="text-xs text-ui/40 w-4 text-center font-mono">
                 {index + 1}
               </span>
               <div className="flex-1 min-w-0">
-                <span className="text-xs white/70 truncate block">
+                <span className="text-xs text-ui/70 truncate block">
                   {model.modelName}
                   {model.providerName && (
-                    <span className="white/40"> ({model.providerName})</span>
+                    <span className="text-ui/40"> ({model.providerName})</span>
                   )}
                 </span>
               </div>
               <button
                 onClick={() => handleMoveUp(index)}
                 disabled={index === 0 || saving}
-                className="white/40 hover:white/70 disabled:text-gray-700 text-xs px-1"
+                className="text-ui/40 hover:text-ui/70 disabled:text-gray-700 text-xs px-1"
                 title="Move up"
               >
                 &#9650;
@@ -210,7 +210,7 @@ const TierPanel = ({
               <button
                 onClick={() => handleMoveDown(index)}
                 disabled={index === sortedModels.length - 1 || saving}
-                className="white/40 hover:white/70 disabled:text-gray-700 text-xs px-1"
+                className="text-ui/40 hover:text-ui/70 disabled:text-gray-700 text-xs px-1"
                 title="Move down"
               >
                 &#9660;
@@ -218,7 +218,7 @@ const TierPanel = ({
               <button
                 onClick={() => handleRemove(index)}
                 disabled={saving}
-                className="white/40 hover:text-red-400 disabled:text-gray-700 text-xs px-1"
+                className="text-ui/40 hover:text-cp-coral disabled:text-ui/25 text-xs px-1"
                 title="Remove from tier"
               >
                 &times;
@@ -232,7 +232,7 @@ const TierPanel = ({
       {showAddDropdown ? (
         <div className="space-y-1">
           {availableModels.length === 0 ? (
-            <p className="text-xs white/30">No available models. Enable models in the Models tab first.</p>
+            <p className="text-xs text-ui/25">No available models. Enable models in the Models tab first.</p>
           ) : (
             <select
               defaultValue=""
@@ -254,7 +254,7 @@ const TierPanel = ({
           )}
           <button
             onClick={() => setShowAddDropdown(false)}
-            className="text-xs white/40 hover:white/70 transition-colors"
+            className="text-xs text-ui/40 hover:text-ui/70 transition-colors"
           >
             Cancel
           </button>
@@ -263,7 +263,7 @@ const TierPanel = ({
         <button
           onClick={() => setShowAddDropdown(true)}
           disabled={saving}
-          className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 disabled:white/30 transition-colors"
+          className="flex items-center gap-1 text-xs text-cp-blue hover:text-cp-blue-light disabled:text-ui/25 transition-colors"
         >
           <span className="text-lg leading-none">+</span> Add Model
         </button>
@@ -297,9 +297,9 @@ const DimensionRow = ({
   };
 
   return (
-    <tr className="border-t white/[0.04]">
+    <tr className="border-t border-ui/[0.06]">
       <td className="px-4 py-2.5">
-        <span className={`text-sm ${dimension.isEnabled ? 'white/70' : 'white/30'}`}>
+        <span className={`text-sm ${dimension.isEnabled ? 'text-ui/70' : 'text-ui/25'}`}>
           {dimension.name}
         </span>
       </td>
@@ -314,7 +314,7 @@ const DimensionRow = ({
             onChange={(e) => setWeight(e.target.value)}
             onBlur={handleWeightSave}
             disabled={!dimension.isEnabled || saving}
-            className="glass-input w-16 disabled:white/30"
+            className="glass-input w-16 disabled:text-ui/25"
           />
         </div>
       </td>

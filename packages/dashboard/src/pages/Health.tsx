@@ -5,6 +5,7 @@ import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { formatDate } from '../lib/dates';
 import { PercentageBar } from '../components/CostCharts';
+import { cssVar } from '../lib/theme';
 import { ProviderHealth } from '../components/ProviderHealth';
 import { HealerVitals } from '../components/HealerVitals';
 import { WatcherCards } from '../components/WatcherCards';
@@ -39,7 +40,7 @@ const formatTimestamp = (ts: string | null): string => {
 };
 
 const levelColors: Record<string, string> = {
-  debug: 'bg-white/[0.12] white/90',
+  debug: 'bg-ui/[0.12] text-ui/90',
   info: 'bg-cp-blue/30 text-cp-blue',
   warn: 'bg-cp-amber/30 text-cp-amber',
   error: 'bg-cp-coral/30 text-cp-coral',
@@ -104,10 +105,10 @@ const RemoteAccessCard = () => {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className={`w-2 h-2 rounded-full ${isActive ? 'bg-cp-teal animate-pulse' : tunnel.status === 'starting' ? 'bg-cp-amber animate-pulse' : 'bg-cp-coral'}`} />
-            <span className="text-sm white/80">{isActive ? 'Active' : tunnel.status === 'starting' ? 'Starting...' : 'Inactive'}</span>
-            <span className="text-xs white/30">{tunnel.mode === 'quick' ? 'Quick Tunnel' : 'Named Tunnel'}</span>
+            <span className="text-sm text-ui/70">{isActive ? 'Active' : tunnel.status === 'starting' ? 'Starting...' : 'Inactive'}</span>
+            <span className="text-xs text-ui/25">{tunnel.mode === 'quick' ? 'Quick Tunnel' : 'Named Tunnel'}</span>
           </div>
-          {isActive && <span className="text-xs white/30">{uptime}m uptime</span>}
+          {isActive && <span className="text-xs text-ui/25">{uptime}m uptime</span>}
         </div>
         {tunnel.url && (
           <div className="mt-2 text-xs font-mono text-cp-teal truncate">{tunnel.url}</div>
@@ -148,16 +149,16 @@ const GoogleWorkspaceCard = () => {
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-cp-teal animate-pulse" />
-            <span className="text-sm white/80">Connected</span>
+            <span className="text-sm text-ui/70">Connected</span>
           </div>
-          <span className="text-xs white/30">{status.email}</span>
+          <span className="text-xs text-ui/25">{status.email}</span>
         </div>
         <div className="flex flex-wrap gap-1 mb-2">
           {enabledServices.map(svc => (
             <span key={svc} className="text-[10px] px-1.5 py-0.5 rounded bg-cp-teal/10 text-cp-teal border border-cp-teal/20">{svc}</span>
           ))}
         </div>
-        <div className="flex gap-4 text-xs white/30">
+        <div className="flex gap-4 text-xs text-ui/25">
           <span>Today: {status.todayActivity.reads}R / {status.todayActivity.writes}W</span>
           {status.lastActivity && (
             <span>Last: {new Date(status.lastActivity).toLocaleTimeString()}</span>
@@ -316,7 +317,7 @@ export const Health = () => {
 
   return (
     <div className="flex-1 p-3 sm:p-6 flex flex-col min-h-0 overflow-y-auto">
-      <h1 className="text-lg sm:text-xl font-bold text-white mb-4 sm:mb-6">System Health</h1>
+      <h1 className="text-lg sm:text-xl font-bold text-ui mb-4 sm:mb-6">System Health</h1>
 
       {/* Stat Cards */}
       <div className="grid grid-cols-1 xs:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-4 sm:mb-6">
@@ -355,7 +356,7 @@ export const Health = () => {
       <div className="glass-card p-4 mb-6">
         <h3 className="card-header mb-3">Memory Usage</h3>
         <div className="space-y-2">
-          <div className="flex items-center justify-between text-xs white/40">
+          <div className="flex items-center justify-between text-xs text-ui/40">
             <span>
               {resources
                 ? formatBytes(resources.memory.used * 1024 * 1024)
@@ -376,22 +377,22 @@ export const Health = () => {
           <PercentageBar value={memPct} max={100} />
           {resources?.cpu?.usage != null && (
             <div className="mt-3">
-              <div className="flex items-center justify-between text-xs white/40 mb-1">
+              <div className="flex items-center justify-between text-xs text-ui/40 mb-1">
                 <span>CPU Usage</span>
                 <span>{resources.cpu.usage.toFixed(0)}%</span>
               </div>
-              <PercentageBar value={resources.cpu.usage} max={100} color="#3b82f6" />
+              <PercentageBar value={resources.cpu.usage} max={100} color={cssVar('--cp-blue') || '#3b82f6'} />
             </div>
           )}
           {resources?.ollama && (
             <div className="mt-3 space-y-1.5">
               <div className="flex items-center gap-2">
-                <span className="text-xs white/40">Ollama:</span>
+                <span className="text-xs text-ui/40">Ollama:</span>
                 <span className={`text-xs ${resources.ollama.running ? 'text-cp-teal' : 'text-cp-coral'}`}>
                   {resources.ollama.running ? 'Running' : 'Stopped'}
                 </span>
                 {resources.ollama.running && resources.ollama.models.length > 0 && (
-                  <span className="text-xs white/30">
+                  <span className="text-xs text-ui/25">
                     ({resources.ollama.models.length} model{resources.ollama.models.length !== 1 ? 's' : ''} installed)
                   </span>
                 )}
@@ -400,10 +401,10 @@ export const Health = () => {
                 <>
                   {resources.ollamaLock.slots.length > 0 && (
                     <div className="flex items-center gap-2">
-                      <span className="text-xs white/40">Loaded:</span>
+                      <span className="text-xs text-ui/40">Loaded:</span>
                       {resources.ollamaLock.slots.map((s, i) => (
                         <span key={i} className="text-xs text-cp-teal">
-                          {s.modelName} <span className="white/30">({s.activeRequests} active)</span>
+                          {s.modelName} <span className="text-ui/25">({s.activeRequests} active)</span>
                         </span>
                       ))}
                     </div>
@@ -457,16 +458,16 @@ export const Health = () => {
           {watchdog ? (
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
-                <span className="text-xs white/40">Last check</span>
-                <span className="text-xs white/55">{formatTimestamp(watchdog.lastCheck)}</span>
+                <span className="text-xs text-ui/40">Last check</span>
+                <span className="text-xs text-ui/55">{formatTimestamp(watchdog.lastCheck)}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-xs white/40">Last alert</span>
-                <span className="text-xs white/55">{formatTimestamp(watchdog.lastAlert)}</span>
+                <span className="text-xs text-ui/40">Last alert</span>
+                <span className="text-xs text-ui/55">{formatTimestamp(watchdog.lastAlert)}</span>
               </div>
             </div>
           ) : (
-            <p className="text-xs white/30">Unable to fetch status</p>
+            <p className="text-xs text-ui/25">Unable to fetch status</p>
           )}
         </div>
 
@@ -481,7 +482,7 @@ export const Health = () => {
                     ? 'bg-cp-teal/10 text-cp-teal'
                     : imBridge.enabled
                       ? 'bg-cp-amber/10 text-cp-amber'
-                      : 'bg-white/[0.04] white/55'
+                      : 'bg-ui/[0.05] text-ui/55'
                 }`}
               >
                 {imBridge.connected ? 'Connected' : imBridge.enabled ? 'Disconnected' : 'Disabled'}
@@ -491,15 +492,15 @@ export const Health = () => {
           {imBridge ? (
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
-                <span className="text-xs white/40">Last received</span>
-                <span className="text-xs white/55">{formatTimestamp(imBridge.lastReceived)}</span>
+                <span className="text-xs text-ui/40">Last received</span>
+                <span className="text-xs text-ui/55">{formatTimestamp(imBridge.lastReceived)}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-xs white/40">Last sent</span>
-                <span className="text-xs white/55">{formatTimestamp(imBridge.lastSent)}</span>
+                <span className="text-xs text-ui/40">Last sent</span>
+                <span className="text-xs text-ui/55">{formatTimestamp(imBridge.lastSent)}</span>
               </div>
               {imBridge.enabled && (
-                <div className="flex items-center gap-2 mt-2 pt-2 border-t white/[0.06]">
+                <div className="flex items-center gap-2 mt-2 pt-2 border-t border-ui/[0.06]">
                   <input
                     type="text"
                     value={testMsg}
@@ -518,7 +519,7 @@ export const Health = () => {
               )}
             </div>
           ) : (
-            <p className="text-xs white/30">Unable to fetch status</p>
+            <p className="text-xs text-ui/25">Unable to fetch status</p>
           )}
         </div>
       </div>
@@ -526,8 +527,8 @@ export const Health = () => {
       {/* Log Viewer */}
       <div className="flex-1 flex flex-col min-h-[1200px] glass-card overflow-hidden">
         {/* Log Filters */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b white/[0.06]">
-          <span className="text-sm font-medium white/55">Logs</span>
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-ui/[0.06]">
+          <span className="text-sm font-medium text-ui/55">Logs</span>
           <select
             value={levelFilter}
             onChange={(e) => setLevelFilter(e.target.value)}
@@ -550,14 +551,14 @@ export const Health = () => {
             ))}
           </select>
           <div className="flex-1" />
-          <span className="text-xs white/30">{filteredLogs.length} entries</span>
+          <span className="text-xs text-ui/25">{filteredLogs.length} entries</span>
         </div>
 
         {/* Log Table */}
         <div className="flex-1 overflow-y-auto">
           <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-white/[0.04]">
-              <tr className="text-left white/40 text-xs uppercase tracking-wider">
+            <thead className="sticky top-0 bg-ui/[0.05]">
+              <tr className="text-left text-ui/40 text-xs uppercase tracking-wider">
                 <th className="px-4 py-2 w-40">Timestamp</th>
                 <th className="px-4 py-2 w-20">Level</th>
                 <th className="px-4 py-2 w-32">Component</th>
@@ -570,7 +571,7 @@ export const Health = () => {
               ))}
               {filteredLogs.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="px-4 py-8 text-center white/30 text-sm">
+                  <td colSpan={4} className="px-4 py-8 text-center text-ui/25 text-sm">
                     No log entries
                   </td>
                 </tr>
@@ -590,33 +591,33 @@ const LogRow = ({ log }: { log: LogEntry }) => {
   return (
     <>
       <tr
-        className={`border-t white/[0.04] hover:white/[0.02] ${hasMeta ? 'cursor-pointer' : ''}`}
+        className={`border-t border-ui/[0.06] hover:text-ui/25 ${hasMeta ? 'cursor-pointer' : ''}`}
         onClick={() => hasMeta && setExpanded(!expanded)}
       >
-        <td className="px-4 py-1.5 text-xs white/40 font-mono whitespace-nowrap">
+        <td className="px-4 py-1.5 text-xs text-ui/40 font-mono whitespace-nowrap">
           {formatDate(log.timestamp)}
         </td>
         <td className="px-4 py-1.5">
-          <span className={`text-xs px-1.5 py-0.5 rounded ${levelColors[log.level] || 'bg-white/[0.08] white/70'}`}>
+          <span className={`text-xs px-1.5 py-0.5 rounded ${levelColors[log.level] || 'bg-ui/[0.08] text-ui/70'}`}>
             {log.level}
           </span>
         </td>
-        <td className="px-4 py-1.5 text-xs white/55 font-mono">
+        <td className="px-4 py-1.5 text-xs text-ui/55 font-mono">
           {log.component}
         </td>
-        <td className="px-4 py-1.5 text-xs white/70">
+        <td className="px-4 py-1.5 text-xs text-ui/70">
           <span className={expanded ? '' : 'line-clamp-2'}>
             {log.message}
           </span>
           {hasMeta && !expanded && (
-            <span className="ml-1 white/30">[+]</span>
+            <span className="ml-1 text-ui/25">[+]</span>
           )}
         </td>
       </tr>
       {expanded && hasMeta && (
-        <tr className="border-t white/[0.06]/20">
-          <td colSpan={4} className="px-4 py-2 white/[0.02]">
-            <pre className="text-xs white/55 font-mono whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
+        <tr className="border-t border-ui/[0.06]/20">
+          <td colSpan={4} className="px-4 py-2 text-ui/25">
+            <pre className="text-xs text-ui/55 font-mono whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
               {JSON.stringify(log.meta, null, 2)}
             </pre>
           </td>
@@ -636,7 +637,7 @@ const StatCard = ({
   valueColor?: string;
 }) => (
   <div className="glass-card p-4">
-    <p className="text-xs white/40 uppercase tracking-wider mb-1">{label}</p>
-    <p className={`text-lg font-semibold ${valueColor || 'text-white'}`}>{value}</p>
+    <p className="text-xs text-ui/40 uppercase tracking-wider mb-1">{label}</p>
+    <p className={`text-lg font-semibold ${valueColor || 'text-ui'}`}>{value}</p>
   </div>
 );

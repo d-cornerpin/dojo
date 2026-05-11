@@ -218,17 +218,17 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
               {pf.previewUrl ? (
                 <img src={pf.previewUrl} alt={pf.file.name} className="w-10 h-10 rounded object-cover shrink-0" />
               ) : (
-                <div className="w-8 h-8 rounded bg-white/[0.08] flex items-center justify-center text-white/40 shrink-0 text-[10px] font-mono">
+                <div className="w-8 h-8 rounded bg-ui/[0.08] flex items-center justify-center text-ui/40 shrink-0 text-[10px] font-mono">
                   {pf.file.name.split('.').pop()?.toUpperCase() || '?'}
                 </div>
               )}
               <div className="min-w-0 flex-1">
-                <div className="text-white/80 truncate">{pf.file.name}</div>
-                <div className="text-white/30">{formatFileSize(pf.file.size)}</div>
+                <div className="text-ui/70 truncate">{pf.file.name}</div>
+                <div className="text-ui/25">{formatFileSize(pf.file.size)}</div>
               </div>
               <button
                 onClick={() => removeFile(i)}
-                className="text-white/30 hover:text-cp-coral shrink-0 text-sm"
+                className="text-ui/25 hover:text-cp-coral shrink-0 text-sm"
               >
                 &times;
               </button>
@@ -253,7 +253,7 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
           <button
             onClick={handleFileSelect}
             disabled={disabled || uploading}
-            className="absolute left-3 top-1/2 -translate-y-1/2 flex items-center justify-center w-7 h-7 rounded-lg text-white/30 hover:text-white/60 hover:bg-white/[0.08] transition-all disabled:opacity-30 z-10"
+            className="absolute left-3 top-1/2 -translate-y-1/2 flex items-center justify-center w-7 h-7 rounded-lg text-ui/25 hover:text-ui/55 hover:bg-ui/[0.08] transition-all disabled:opacity-30 z-10"
             title="Attach files"
             type="button"
           >
@@ -325,8 +325,8 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
             title={wordyMode ? 'Wordy Mode: ON (showing tool calls)' : 'Wordy Mode: OFF (chat only)'}
             className={`shrink-0 flex items-center justify-center w-9 h-9 rounded-full transition-all ${
               wordyMode
-                ? 'bg-purple-500/20 text-purple-400'
-                : 'bg-white/[0.06] text-white/25 hover:text-white/50'
+                ? 'bg-cp-purple/20 text-cp-purple'
+                : 'bg-ui/[0.08] text-ui/25 hover:text-ui/55'
             }`}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -346,7 +346,7 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
             onClick={onNewSession}
             disabled={disabled}
             title="Start a new session (archives current conversation to vault)"
-            className="shrink-0 flex items-center justify-center w-9 h-9 rounded-full transition-all bg-white/[0.06] text-white/25 hover:text-white/50 hover:bg-white/[0.10] disabled:opacity-30"
+            className="shrink-0 flex items-center justify-center w-9 h-9 rounded-full transition-all bg-ui/[0.08] text-ui/25 hover:text-ui/55 hover:bg-ui/[0.12] disabled:opacity-30"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="1 4 1 10 7 10" />

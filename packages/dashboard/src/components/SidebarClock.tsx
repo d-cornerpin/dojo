@@ -20,16 +20,16 @@ export const SidebarClock = ({ collapsed }: SidebarClockProps) => {
 
   if (collapsed) {
     return (
-      <div className="text-center py-2 font-mono text-[11px] text-white/40">
+      <div className="text-center py-2 font-mono text-[11px] text-ui/40">
         {now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
       </div>
     );
   }
 
   return (
-    <div className="text-center py-3 px-2 border-t border-white/[0.06]">
-      <div className="text-xs text-white/45">{dateLine}</div>
-      <div className="font-mono text-sm font-medium text-white/70">{timeLine}</div>
+    <div className="text-center py-3 px-2 border-t border-ui/[0.06]">
+      <div className="text-xs text-ui/40">{dateLine}</div>
+      <div className="font-mono text-sm font-medium text-ui/70">{timeLine}</div>
       <div className="text-[10px] text-tertiary">{tzAbbr}</div>
     </div>
   );

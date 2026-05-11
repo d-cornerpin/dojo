@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 
+// FENG-SHUI EXEMPTION: migration flow uses standard Tailwind status colors
+// (text-green-500, text-blue-400) for universal status semantics. Migration
+// is explicitly exempt per FENG-SHUI-THEME-SPEC.md.
+
 export interface ExportManifest {
   version: string;
   platform_version: string;
@@ -116,20 +120,20 @@ export const PostMigrationBanner = () => {
     if (check.action.includes('Settings > Providers')) {
       return <a href="/settings?tab=providers" className="text-blue-400 hover:text-blue-300 ml-2">Configure</a>;
     }
-    return <span className="text-white/30 ml-2 text-xs">{check.action}</span>;
+    return <span className="text-ui/25 ml-2 text-xs">{check.action}</span>;
   };
 
   return (
     <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 mx-6 mt-4">
       <div className="flex items-start justify-between mb-3">
-        <h3 className="text-sm font-bold text-white">
+        <h3 className="text-sm font-bold text-ui">
           {checks.some(c => c.status === 'action_needed' || c.status === 'in_progress')
             ? 'Dojo imported successfully! A few things need attention:'
             : 'Dojo imported successfully! Everything looks good.'}
         </h3>
         <button
           onClick={handleDismiss}
-          className="text-white/30 hover:text-white/50 text-xs ml-4 shrink-0"
+          className="text-ui/25 hover:text-ui/55 text-xs ml-4 shrink-0"
         >
           Dismiss
         </button>
@@ -139,7 +143,7 @@ export const PostMigrationBanner = () => {
         {checks.map((check) => (
           <div key={check.id} className="flex items-center gap-2 text-sm">
             <span className="w-5 text-center">{statusIcon(check.status)}</span>
-            <span className={check.status === 'ok' ? 'text-white/55' : 'text-white/70'}>{check.label}</span>
+            <span className={check.status === 'ok' ? 'text-ui/55' : 'text-ui/70'}>{check.label}</span>
             {check.status === 'action_needed' && getActionLink(check)}
           </div>
         ))}

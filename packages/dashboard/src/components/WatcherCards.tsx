@@ -26,7 +26,7 @@ function relativeTime(iso: string | null): string {
 }
 
 function indicatorColor(status: api.WatcherStatusDto): { color: string; label: string } {
-  if (!status.enabled) return { color: 'bg-white/20', label: 'Disabled' };
+  if (!status.enabled) return { color: 'bg-ui/[0.12]', label: 'Disabled' };
   if (!status.connected) return { color: 'bg-cp-coral', label: 'Not connected' };
   if (!status.running) return { color: 'bg-cp-coral', label: 'Stopped' };
   if (status.consecutiveFailures >= 3) return { color: 'bg-cp-coral animate-pulse', label: `Failing (${status.consecutiveFailures} in a row)` };
@@ -46,18 +46,18 @@ const WatcherCard = ({ status, label }: { status: api.WatcherStatusDto; label: s
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <span className={`w-2 h-2 rounded-full ${ind.color}`} />
-          <span className="text-sm text-white/80 font-medium">{label}</span>
-          <span className="text-xs text-white/40">{ind.label}</span>
+          <span className="text-sm text-ui/70 font-medium">{label}</span>
+          <span className="text-xs text-ui/40">{ind.label}</span>
         </div>
-        <span className="text-[10px] text-white/30">poll every {intervalLabel}</span>
+        <span className="text-[10px] text-ui/25">poll every {intervalLabel}</span>
       </div>
 
-      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-white/40 mb-2">
-        <span>Last poll: <span className="text-white/60">{relativeTime(status.lastPollAt)}</span></span>
-        <span>Polls: <span className="text-white/60">{status.totalPolls}</span></span>
-        <span>Notifications: <span className="text-white/60">{status.totalNotifications}</span></span>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-ui/40 mb-2">
+        <span>Last poll: <span className="text-ui/55">{relativeTime(status.lastPollAt)}</span></span>
+        <span>Polls: <span className="text-ui/55">{status.totalPolls}</span></span>
+        <span>Notifications: <span className="text-ui/55">{status.totalNotifications}</span></span>
         {status.lastNotifiedAt && (
-          <span>Last delivery: <span className="text-white/60">{relativeTime(status.lastNotifiedAt)}</span></span>
+          <span>Last delivery: <span className="text-ui/55">{relativeTime(status.lastNotifiedAt)}</span></span>
         )}
       </div>
 
@@ -69,15 +69,15 @@ const WatcherCard = ({ status, label }: { status: api.WatcherStatusDto; label: s
 
       {status.recentNotifications.length > 0 && (
         <details className="mt-2">
-          <summary className="text-[11px] text-white/40 cursor-pointer hover:text-white/60 select-none">
+          <summary className="text-[11px] text-ui/40 cursor-pointer hover:text-ui/55 select-none">
             Recent {status.recentNotifications.length} notification{status.recentNotifications.length === 1 ? '' : 's'}
           </summary>
           <div className="mt-1.5 space-y-1">
             {status.recentNotifications.map((n, i) => (
-              <div key={i} className="text-[11px] text-white/50 truncate">
-                <span className="text-white/30">{relativeTime(n.at)}</span>
+              <div key={i} className="text-[11px] text-ui/55 truncate">
+                <span className="text-ui/25">{relativeTime(n.at)}</span>
                 {' · '}
-                <span className="text-white/70">{n.from}</span>
+                <span className="text-ui/70">{n.from}</span>
                 {' — '}
                 <span>{n.subject}</span>
               </div>

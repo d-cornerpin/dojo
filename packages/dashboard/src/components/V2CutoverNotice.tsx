@@ -86,23 +86,23 @@ export const V2CutoverNotice = () => {
 
   return (
     <div className="fixed top-14 sm:top-4 left-1/2 -translate-x-1/2 z-[60] max-w-[calc(100vw-16px)] sm:max-w-xl w-full px-2">
-      <div className="glass-toast glass-toast-info px-4 py-3 text-sm text-white animate-slide-in-right">
+      <div className="glass-toast glass-toast-info px-4 py-3 text-sm text-ui animate-slide-in-right">
         <div className="flex flex-col gap-3">
           <div className="flex items-start gap-2.5">
             <span className="text-base shrink-0 mt-0.5">🚀</span>
             <div className="flex-1 leading-relaxed space-y-1.5">
               <div className="font-semibold">DOJO v2 is live.</div>
-              <div className="text-white/85">
+              <div className="text-ui/90">
                 Agents have been upgraded — expect faster turns, true streaming, and rare-to-zero compaction.
                 Sessions in progress will carry over with slightly more context for the first few turns.
               </div>
-              <div className="text-white/70">
+              <div className="text-ui/70">
                 If your agents aren't currently in the middle of a task, consider resetting their sessions for a clean start.
               </div>
             </div>
             <button
               onClick={handleDismiss}
-              className="text-white/40 hover:text-white shrink-0 ml-1 text-lg leading-none"
+              className="text-ui/40 hover:text-ui shrink-0 ml-1 text-lg leading-none"
               aria-label="Dismiss"
             >
               ×
@@ -112,13 +112,13 @@ export const V2CutoverNotice = () => {
             <button
               onClick={handleReset}
               disabled={resetting}
-              className="px-3 py-1.5 rounded bg-white/15 hover:bg-white/25 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium transition-colors"
+              className="px-3 py-1.5 rounded bg-ui/[0.12] hover:bg-ui/[0.12] disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium transition-colors"
             >
               {resetting ? 'Resetting…' : 'Reset all idle sessions'}
             </button>
             <button
               onClick={handleDismiss}
-              className="px-3 py-1.5 rounded text-white/70 hover:text-white text-sm transition-colors"
+              className="px-3 py-1.5 rounded text-ui/70 hover:text-ui text-sm transition-colors"
             >
               Dismiss
             </button>

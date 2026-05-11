@@ -91,17 +91,17 @@ const PermRow = ({
     <div className="flex items-center justify-between">
       <div className="flex-1 min-w-0 mr-4">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium white/90">{label}</span>
+          <span className="text-sm font-medium text-ui/90">{label}</span>
           {warning && enabled && (
-            <span className="text-orange-400 text-xs" title="This permission can be dangerous">&#9888;</span>
+            <span className="text-cp-amber-light text-xs" title="This permission can be dangerous">&#9888;</span>
           )}
         </div>
-        <p className="text-xs white/40 mt-0.5">{description}</p>
+        <p className="text-xs text-ui/40 mt-0.5">{description}</p>
       </div>
       <Toggle enabled={enabled} onChange={onToggle} color={warning && enabled ? 'red' : 'blue'} />
     </div>
     {enabled && children && (
-      <div className="mt-2 ml-1 pl-3 border-l-2 white/[0.08] overflow-hidden transition-all duration-200">
+      <div className="mt-2 ml-1 pl-3 border-l-2 text-ui/25 overflow-hidden transition-all duration-200">
         {children}
       </div>
     )}
@@ -134,18 +134,18 @@ const SubOption = ({
           type="radio"
           checked={isAll}
           onChange={() => onAllChange(true)}
-          className="text-cp-amber bg-white/[0.05] white/[0.10] focus:ring-cp-amber focus:ring-offset-0"
+          className="text-cp-amber bg-ui/[0.05] text-ui/25 focus:ring-cp-amber focus:ring-offset-0"
         />
-        <span className="text-xs white/70">{allLabel}</span>
+        <span className="text-xs text-ui/70">{allLabel}</span>
       </label>
       <label className="flex items-center gap-1.5 cursor-pointer">
         <input
           type="radio"
           checked={!isAll}
           onChange={() => onAllChange(false)}
-          className="text-cp-amber bg-white/[0.05] white/[0.10] focus:ring-cp-amber focus:ring-offset-0"
+          className="text-cp-amber bg-ui/[0.05] text-ui/25 focus:ring-cp-amber focus:ring-offset-0"
         />
-        <span className="text-xs white/70">{specificLabel}</span>
+        <span className="text-xs text-ui/70">{specificLabel}</span>
       </label>
     </div>
     {!isAll && (
@@ -163,7 +163,7 @@ const SubOption = ({
 
 const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
   <div>
-    <h4 className="text-[10px] font-bold white/40 uppercase tracking-widest mb-1 px-1">{title}</h4>
+    <h4 className="text-[10px] font-bold text-ui/40 uppercase tracking-widest mb-1 px-1">{title}</h4>
     <div className="divide-y divide-gray-800">{children}</div>
   </div>
 );
@@ -347,7 +347,7 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
       <div className="pt-2">
         <button
           onClick={() => setShowAdvanced(!showAdvanced)}
-          className="flex items-center gap-2 text-xs white/40 hover:white/55 transition-colors"
+          className="flex items-center gap-2 text-xs text-ui/40 hover:text-ui/55 transition-colors"
         >
           <span>{showAdvanced ? '\u25BC' : '\u25B6'}</span>
           <span>Advanced (for power users)</span>
@@ -355,17 +355,17 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
         {showAdvanced && (
           <div className="mt-3 space-y-3 pl-1">
             <div>
-              <label className="text-[10px] font-semibold white/40 uppercase tracking-wide block mb-1">Blocked Commands</label>
+              <label className="text-[10px] font-semibold text-ui/40 uppercase tracking-wide block mb-1">Blocked Commands</label>
               <input
                 value={execDeny}
                 onChange={(e) => setExecDeny(e.target.value)}
                 placeholder="rm -rf *, sudo *, ..."
                 className="glass-input w-full font-mono"
               />
-              <p className="text-[10px] white/30 mt-0.5">Global deny (rm -rf /, sudo *, chmod 777 *) always enforced.</p>
+              <p className="text-[10px] text-ui/25 mt-0.5">Global deny (rm -rf /, sudo *, chmod 777 *) always enforced.</p>
             </div>
             <div>
-              <label className="text-[10px] font-semibold white/40 uppercase tracking-wide block mb-1">Max Processes</label>
+              <label className="text-[10px] font-semibold text-ui/40 uppercase tracking-wide block mb-1">Max Processes</label>
               <input
                 type="number"
                 min={1}
@@ -376,7 +376,7 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
               />
             </div>
             <div>
-              <label className="text-[10px] font-semibold white/40 uppercase tracking-wide block mb-1">Network Domains (raw)</label>
+              <label className="text-[10px] font-semibold text-ui/40 uppercase tracking-wide block mb-1">Network Domains (raw)</label>
               <input
                 value={webDomainsAll ? '*' : webDomainsList}
                 onChange={(e) => {
@@ -389,7 +389,7 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-[10px] font-semibold white/40 uppercase tracking-wide block mb-1">Allowed Tools (raw)</label>
+                <label className="text-[10px] font-semibold text-ui/40 uppercase tracking-wide block mb-1">Allowed Tools (raw)</label>
                 <input
                   value={rawToolsAllow}
                   onChange={(e) => setRawToolsAllow(e.target.value)}
@@ -398,7 +398,7 @@ export const PermissionsEditor = ({ permissions, toolsPolicy, shareUserProfile: 
                 />
               </div>
               <div>
-                <label className="text-[10px] font-semibold white/40 uppercase tracking-wide block mb-1">Denied Tools (raw)</label>
+                <label className="text-[10px] font-semibold text-ui/40 uppercase tracking-wide block mb-1">Denied Tools (raw)</label>
                 <input
                   value={rawToolsDeny}
                   onChange={(e) => setRawToolsDeny(e.target.value)}

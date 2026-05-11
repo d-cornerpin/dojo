@@ -59,11 +59,11 @@ export const Sidebar = () => {
         }`}
       >
         {/* Logo */}
-        <div className={`flex items-center gap-3 border-b border-white/[0.06] ${collapsed ? 'px-4 py-5 justify-center' : 'px-5 py-5'}`}>
+        <div className={`flex items-center gap-3 border-b border-ui/[0.06] ${collapsed ? 'px-4 py-5 justify-center' : 'px-5 py-5'}`}>
           <img src="/dojologo.svg" alt="DOJO" className="w-8 h-8 flex-shrink-0" />
           {!collapsed && (
             <div>
-              <h1 className="text-base font-bold text-white tracking-wide">Agent D.O.J.O.</h1>
+              <h1 className="text-base font-bold text-ui tracking-wide">Agent D.O.J.O.</h1>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className={`status-dot ${ws.dot}`} />
                 <span className="text-[10px] text-tertiary">{ws.label}</span>
@@ -107,7 +107,7 @@ export const Sidebar = () => {
           {/* Collapse toggle */}
           <button
             onClick={() => setCollapsed(!collapsed)}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-glass-xs text-white/30 hover:text-white/60 hover:bg-white/[0.04] transition-colors text-xs"
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-glass-xs text-ui/25 hover:text-ui/55 hover:bg-ui/[0.05] transition-colors text-xs"
           >
             {collapsed ? '\u{276F}' : '\u{276E}'}
             {!collapsed && <span>Chop</span>}
@@ -121,7 +121,7 @@ export const Sidebar = () => {
 
           <button
             onClick={logout}
-            className={`w-full flex items-center gap-3 rounded-glass-xs text-white/30 hover:text-white/60 hover:bg-white/[0.04] transition-colors ${
+            className={`w-full flex items-center gap-3 rounded-glass-xs text-ui/25 hover:text-ui/55 hover:bg-ui/[0.05] transition-colors ${
               collapsed ? 'px-0 py-2.5 justify-center' : 'px-3 py-2.5'
             }`}
           >
@@ -164,10 +164,10 @@ const MobileTopBar = ({ connectionStatus }: { connectionStatus: ConnectionStatus
       <div
         className="glass-topbar md:hidden fixed top-0 left-0 right-0 z-40 flex items-center justify-between px-3 py-2.5 safe-area-top"
       >
-        <button onClick={() => setMenuOpen(true)} className="text-white/60 hover:text-white text-xl p-2 -ml-1">
+        <button onClick={() => setMenuOpen(true)} className="text-ui/55 hover:text-ui text-xl p-2 -ml-1">
           {'\u2630'}
         </button>
-        <span className="text-xs font-semibold text-white truncate max-w-[200px]">{pageTitle}</span>
+        <span className="text-xs font-semibold text-ui truncate max-w-[200px]">{pageTitle}</span>
         <span className={`status-dot ${ws.dot}`} title={ws.label} />
       </div>
 
@@ -178,9 +178,9 @@ const MobileTopBar = ({ connectionStatus }: { connectionStatus: ConnectionStatus
           <div
             className="glass-menu absolute left-0 top-0 bottom-0 w-[280px] flex flex-col safe-area-top"
           >
-            <div className="flex items-center gap-3 px-5 py-4 border-b border-white/[0.06]">
+            <div className="flex items-center gap-3 px-5 py-4 border-b border-ui/[0.06]">
               <img src="/dojologo.svg" alt="DOJO" className="w-7 h-7" />
-              <h1 className="text-sm font-bold text-white">Agent D.O.J.O.</h1>
+              <h1 className="text-sm font-bold text-ui">Agent D.O.J.O.</h1>
             </div>
             <nav className="flex-1 py-2 px-2 space-y-0.5 overflow-y-auto">
               {navItems.map((item) => {
@@ -195,15 +195,15 @@ const MobileTopBar = ({ connectionStatus }: { connectionStatus: ConnectionStatus
                       <button
                         onClick={() => setSettingsExpanded(!settingsExpanded)}
                         className={`w-full flex items-center gap-3 px-3 py-3 rounded-glass-sm transition-colors ${
-                          isActive ? 'bg-white/[0.08] text-white' : 'text-white/50'
+                          isActive ? 'bg-ui/[0.08] text-ui' : 'text-ui/55'
                         }`}
                       >
                         <span className="text-base w-6 text-center">{item.icon}</span>
                         <span className="text-sm font-medium flex-1 text-left">{item.label}</span>
-                        <span className="text-[10px] text-white/30">{settingsExpanded ? '▾' : '▸'}</span>
+                        <span className="text-[10px] text-ui/25">{settingsExpanded ? '▾' : '▸'}</span>
                       </button>
                       {settingsExpanded && (
-                        <div className="ml-5 pl-4 border-l border-white/[0.06] space-y-0.5 mt-0.5">
+                        <div className="ml-5 pl-4 border-l border-ui/[0.06] space-y-0.5 mt-0.5">
                           {settingsSubItems.map(sub => {
                             const subActive = isActive && settingsTab === sub.tab;
                             return (
@@ -214,7 +214,7 @@ const MobileTopBar = ({ connectionStatus }: { connectionStatus: ConnectionStatus
                                 className={`block px-3 py-2 rounded-lg text-xs transition-colors ${
                                   subActive
                                     ? 'bg-cp-amber/10 text-cp-amber font-medium'
-                                    : 'text-white/40 hover:text-white/70'
+                                    : 'text-ui/40 hover:text-ui/70'
                                 }`}
                               >
                                 {sub.label}
@@ -233,7 +233,7 @@ const MobileTopBar = ({ connectionStatus }: { connectionStatus: ConnectionStatus
                     to={item.path}
                     onClick={() => setMenuOpen(false)}
                     className={`flex items-center gap-3 px-3 py-3 rounded-glass-sm transition-colors ${
-                      isActive ? 'bg-white/[0.08] text-white' : 'text-white/50 hover:text-white/80'
+                      isActive ? 'bg-ui/[0.08] text-ui' : 'text-ui/55 hover:text-ui/70'
                     }`}
                   >
                     <span className="text-base w-6 text-center">{item.icon}</span>
@@ -242,10 +242,10 @@ const MobileTopBar = ({ connectionStatus }: { connectionStatus: ConnectionStatus
                 );
               })}
             </nav>
-            <div className="p-3 border-t border-white/[0.06]">
+            <div className="p-3 border-t border-ui/[0.06]">
               <PresenceToggle collapsed={false} />
               <button onClick={() => { logout(); setMenuOpen(false); }}
-                className="w-full flex items-center gap-3 px-3 py-3 rounded-glass-xs text-white/40 hover:text-white/70 transition-colors mt-1">
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-glass-xs text-ui/40 hover:text-ui/70 transition-colors mt-1">
                 <span>{'\u{1F6AA}'}</span>
                 <span className="text-sm">Leave the Dojo</span>
               </button>

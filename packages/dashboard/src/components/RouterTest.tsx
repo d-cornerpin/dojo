@@ -29,7 +29,7 @@ export const RouterTest = ({ onTest }: RouterTestProps) => {
   return (
     <div className="glass-card p-4">
       <h3 className="card-header mb-3">Test Router</h3>
-      <p className="text-xs white/40 mb-3">
+      <p className="text-xs text-ui/40 mb-3">
         Enter a prompt to see how the router would score and route it.
       </p>
 
@@ -61,13 +61,13 @@ export const RouterTest = ({ onTest }: RouterTestProps) => {
 
           {/* Dimension scores */}
           <div>
-            <h4 className="text-xs font-medium white/55 uppercase tracking-wider mb-2">
+            <h4 className="text-xs font-medium text-ui/55 uppercase tracking-wider mb-2">
               Dimension Scores
             </h4>
-            <div className="white/[0.03] rounded-lg overflow-hidden">
+            <div className="text-ui/25 rounded-lg overflow-hidden">
               <table className="w-full text-xs">
                 <thead>
-                  <tr className="white/40 uppercase tracking-wider">
+                  <tr className="text-ui/40 uppercase tracking-wider">
                     <th className="px-3 py-2 text-left">Dimension</th>
                     <th className="px-3 py-2 text-right">Score</th>
                     <th className="px-3 py-2 text-right">Weight</th>
@@ -77,21 +77,21 @@ export const RouterTest = ({ onTest }: RouterTestProps) => {
                 </thead>
                 <tbody>
                   {result.scores.map((s) => (
-                    <tr key={s.dimension} className="border-t white/[0.04]">
-                      <td className="px-3 py-1.5 white/70">{s.dimension}</td>
-                      <td className="px-3 py-1.5 white/55 text-right font-mono">
+                    <tr key={s.dimension} className="border-t border-ui/[0.06]">
+                      <td className="px-3 py-1.5 text-ui/70">{s.dimension}</td>
+                      <td className="px-3 py-1.5 text-ui/55 text-right font-mono">
                         {s.score.toFixed(3)}
                       </td>
-                      <td className="px-3 py-1.5 white/40 text-right font-mono">
+                      <td className="px-3 py-1.5 text-ui/40 text-right font-mono">
                         {s.weight.toFixed(2)}
                       </td>
-                      <td className="px-3 py-1.5 white/70 text-right font-mono">
+                      <td className="px-3 py-1.5 text-ui/70 text-right font-mono">
                         {s.weighted.toFixed(3)}
                       </td>
                       <td className="px-3 py-1.5">
-                        <div className="bg-white/[0.08] rounded-full h-2 overflow-hidden">
+                        <div className="bg-ui/[0.08] rounded-full h-2 overflow-hidden">
                           <div
-                            className="h-full rounded-full bg-blue-500"
+                            className="h-full rounded-full bg-cp-blue"
                             style={{ width: `${Math.min(s.score * 100, 100)}%` }}
                           />
                         </div>
@@ -117,9 +117,9 @@ const ResultCard = ({
   value: string;
   highlight?: boolean;
 }) => (
-  <div className="white/[0.03] rounded-lg px-3 py-2">
-    <p className="text-xs white/40 mb-0.5">{label}</p>
-    <p className={`text-sm font-medium ${highlight ? 'text-blue-400' : 'text-white'}`}>
+  <div className="text-ui/25 rounded-lg px-3 py-2">
+    <p className="text-xs text-ui/40 mb-0.5">{label}</p>
+    <p className={`text-sm font-medium ${highlight ? 'text-cp-blue' : 'text-ui'}`}>
       {value}
     </p>
   </div>

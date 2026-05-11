@@ -1,4 +1,4 @@
-import { getThresholdColor } from '../lib/theme';
+import { getThresholdColor, cssVar } from '../lib/theme';
 
 interface BarChartItem {
   label: string;
@@ -14,7 +14,7 @@ interface BarChartProps {
 
 export const BarChart = ({ data, maxValue, formatValue }: BarChartProps) => {
   if (data.length === 0) {
-    return <p className="text-sm white/30">No data</p>;
+    return <p className="text-sm text-ui/25">No data</p>;
   }
 
   const safeData = data.map(d => ({ ...d, value: d.value ?? 0 }));
@@ -27,19 +27,19 @@ export const BarChart = ({ data, maxValue, formatValue }: BarChartProps) => {
         const pct = max > 0 ? Math.min((item.value / max) * 100, 100) : 0;
         return (
           <div key={item.label} className="flex items-center gap-3">
-            <span className="text-xs white/55 w-28 truncate text-right" title={item.label}>
+            <span className="text-xs text-ui/55 w-28 truncate text-right" title={item.label}>
               {item.label}
             </span>
-            <div className="flex-1 bg-white/[0.05] rounded-full h-5 overflow-hidden">
+            <div className="flex-1 bg-ui/[0.05] rounded-full h-5 overflow-hidden">
               <div
                 className="h-full rounded-full transition-all duration-300"
                 style={{
                   width: `${Math.max(pct, 1)}%`,
-                  backgroundColor: item.color || '#3b82f6',
+                  backgroundColor: item.color || cssVar('--cp-blue') || '#3b82f6',
                 }}
               />
             </div>
-            <span className="text-xs white/70 w-20 text-right font-mono">
+            <span className="text-xs text-ui/70 w-20 text-right font-mono">
               {fmt(item.value)}
             </span>
           </div>
@@ -65,7 +65,7 @@ export const PercentageBar = ({ value, max, color, showLabel = true }: Percentag
 
   return (
     <div className="flex items-center gap-2">
-      <div className="flex-1 bg-white/[0.05] rounded-full h-3 overflow-hidden">
+      <div className="flex-1 bg-ui/[0.05] rounded-full h-3 overflow-hidden">
         <div
           className="h-full rounded-full transition-all duration-300"
           style={{
@@ -75,7 +75,7 @@ export const PercentageBar = ({ value, max, color, showLabel = true }: Percentag
         />
       </div>
       {showLabel && (
-        <span className="text-xs white/55 w-10 text-right">
+        <span className="text-xs text-ui/55 w-10 text-right">
           {pct.toFixed(0)}%
         </span>
       )}

@@ -44,7 +44,7 @@ export const LinkPreview = ({ url }: { url: string }) => {
   if (loading || !data || (!data.title && !data.description && !data.image)) {
     return (
       <a href={url} target="_blank" rel="noopener noreferrer"
-        className="text-blue-400 hover:underline break-all">
+        className="text-cp-blue hover:underline break-all">
         {url}
       </a>
     );
@@ -56,9 +56,9 @@ export const LinkPreview = ({ url }: { url: string }) => {
 
   return (
     <a href={url} target="_blank" rel="noopener noreferrer"
-      className="block my-2 rounded-lg border border-white/[0.08] hover:border-white/[0.15] bg-white/[0.03] hover:bg-white/[0.05] transition-colors overflow-hidden no-underline">
+      className="block my-2 rounded-lg border border-ui/[0.10] hover:border-ui/[0.15] bg-ui/[0.03] hover:bg-ui/[0.05] transition-colors overflow-hidden no-underline">
       {data.image && !imgError && (
-        <div className="w-full h-36 overflow-hidden bg-white/[0.02]">
+        <div className="w-full h-36 overflow-hidden bg-ui/[0.03]">
           <img
             src={data.image}
             alt=""
@@ -69,17 +69,17 @@ export const LinkPreview = ({ url }: { url: string }) => {
       )}
       <div className="px-3 py-2.5">
         {(data.siteName || hostname) && (
-          <p className="text-[10px] text-white/30 mb-0.5 truncate">
+          <p className="text-[10px] text-ui/25 mb-0.5 truncate">
             {data.siteName ?? hostname}
           </p>
         )}
         {data.title && (
-          <p className="text-sm font-medium text-white/90 leading-snug line-clamp-2">
+          <p className="text-sm font-medium text-ui/90 leading-snug line-clamp-2">
             {data.title}
           </p>
         )}
         {data.description && (
-          <p className="text-xs text-white/50 mt-1 leading-relaxed line-clamp-2">
+          <p className="text-xs text-ui/55 mt-1 leading-relaxed line-clamp-2">
             {data.description}
           </p>
         )}

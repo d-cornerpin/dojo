@@ -1,0 +1,228 @@
+/*
+ * Sumi (墨) — Light Dojo Theme
+ *
+ * Dark ink on washi paper. Inverse of Miyagi: light cream backgrounds,
+ * warm near-black ink, soft pastel blobs, deeper saturated accents tuned
+ * to read clearly against a light page.
+ *
+ * This theme also serves as the canonical reference for what a light
+ * theme needs to override — beyond just flipping --ui-on-base-ch, a few
+ * elements (button success text, the .glass-select chevron SVG, and the
+ * threshold/blob colors) need theme-specific values to look right.
+ */
+
+/* Same fonts as Miyagi for now — Sumi is about color, not type.
+   A future revision might switch sans to a humanist serif (Lora, Spectral). */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  color-scheme: light;
+
+  /* ── Fonts ── */
+  --font-sans: 'DM Sans';
+  --font-mono: 'JetBrains Mono';
+
+  /* ── Background surfaces (light, warm cream / washi paper) ── */
+  --cp-bg-ch: 250 245 235;          /* page bg — warm off-white */
+  --cp-bg-secondary-ch: 240 232 218; /* card bg / working state — soft ivory */
+  --cp-sidebar-ch: 230 220 200;      /* sidebar bg tint — deeper warm beige */
+
+  /* ── Foreground / UI accent over the page bg ──
+     Warm near-black "sumi ink" — not pure black, gives a softer feel.
+     This single override flips ALL text-ui/X, bg-ui/X, border-ui/X
+     utilities AND every --glass-* surface AND every --text-* var. */
+  --ui-on-base-ch: 30 28 25;
+
+  /* ── Accent palette — deeper, more saturated than Miyagi.
+     On a light page, mid-saturation colors recede; deep saturation reads. ── */
+  --cp-amber-ch: 195 130 30;        /* warm amber/persimmon */
+  --cp-amber-light-ch: 220 160 60;
+  --cp-teal-ch: 20 145 110;         /* deep jade/bamboo green */
+  --cp-teal-light-ch: 60 175 140;
+  --cp-coral-ch: 200 80 95;         /* deep coral/momiji */
+  --cp-blue-ch: 50 95 180;          /* indigo / aizome */
+  --cp-blue-light-ch: 90 135 215;
+  --cp-purple-ch: 130 100 195;      /* warm violet */
+  --cp-purple-deep-ch: 105 70 175;
+
+  /* ── Threshold / health colors — slightly deeper than Miyagi for
+       readability on light bg. Bright/neon greens and yellows turn into
+       glare on white; deeper variants stay legible. ── */
+  --threshold-ok: #16a34a;
+  --threshold-warn: #ca8a04;
+  --threshold-high: #ea580c;
+  --threshold-critical: #dc2626;
+
+  /* ── Overlay backdrop — stays dark for media lightboxes
+       (overlays are conventionally dark even in light themes) ── */
+  --overlay-dark: rgba(0, 0, 0, 0.75);
+
+  /* ── Page background gradient ── */
+  --bg-gradient: linear-gradient(135deg, #faf6ee 0%, #f0e6d2 25%, #f5ebd9 50%, #ede4d4 75%, #faf6ee 100%);
+
+  /* ── Gradient blobs — soft pastels that complement cream paper ── */
+  --blob-1-color: #f4a8c4;          /* sakura — soft cherry blossom */
+  --blob-2-color: #a8d4b6;          /* matcha — soft jade */
+  --blob-3-color: #f4c19c;          /* kaki — soft persimmon */
+
+  /* ── Chat bubbles ──
+       User bubble keeps the purple-violet identity but tuned for light bg.
+       Assistant bubble auto-themes via --ui-on-base-ch. */
+  --bubble-user-bg: rgba(105, 70, 175, 0.15);
+  --bubble-user-border: rgba(105, 70, 175, 0.35);
+  /* --bubble-assistant-bg/border auto-derive from --ui-on-base-ch — no override */
+
+  /* ── Button text overrides ──
+     --btn-success-text in index.css defaults to var(--cp-bg). On Miyagi
+     that's deep navy (light text on bright teal — readable). On Sumi
+     --cp-bg is a light cream, so a light-on-light teal button would be
+     unreadable. Force a dark warm text for success buttons. */
+  --btn-primary-text: rgb(60 40 15);    /* warm dark brown on amber gradient */
+  --btn-success-text: rgb(15 50 40);    /* deep ink-green on teal gradient */
+
+  /* Stop button stays bright red — universal destructive color. */
+  --btn-stop: #dc2626;
+  --btn-stop-hover: #b91c1c;
+
+  /* ── Text alpha tuning for light bg ──
+     index.css defaults are tuned for white-on-dark (Miyagi). Dark-on-light
+     needs higher opacities to maintain perceived contrast — these drive
+     .text-tertiary, .text-secondary, the body color, and the glass-badge
+     text colors. The Tailwind utilities (text-ui/25, /40, /55) are also
+     overridden separately below. */
+  --text-primary: rgb(var(--ui-on-base-ch) / 0.95);
+  --text-secondary: rgb(var(--ui-on-base-ch) / 0.68);
+  --text-tertiary: rgb(var(--ui-on-base-ch) / 0.50);
+
+  /* ── Focus ring — derives from cp-amber, but with slightly higher
+       opacity since the page bg is brighter and the ring competes. ── */
+  --focus-ring: rgb(var(--cp-amber-ch) / 0.5);
+
+  /* ── Deeper accent variants for TEXT on light bg ──
+     The cp-* accent palette above (cp-amber, cp-teal, etc.) is tuned for
+     surfaces — bg-cp-amber/20, accent borders, button backgrounds, status
+     dots — where vibrancy reads well even on cream. But the SAME color
+     used as TEXT on light bg fails contrast (e.g. amber 195/130/30 on
+     cream gives ~2.5:1 — fails WCAG AA). These -text-ch variants are
+     deeper, ~5:1+ contrast on cream, used ONLY for text. */
+  --cp-amber-text-ch: 145 85 15;
+  --cp-amber-light-text-ch: 170 110 30;
+  --cp-teal-text-ch: 10 100 75;
+  --cp-teal-light-text-ch: 30 130 100;
+  --cp-coral-text-ch: 165 55 70;
+  --cp-blue-text-ch: 30 65 145;
+  --cp-blue-light-text-ch: 55 95 180;
+  --cp-purple-text-ch: 95 65 165;
+  --cp-purple-deep-text-ch: 75 50 145;
+}
+
+/*
+ * Override the text-cp-* Tailwind utilities and the CSS rules that use
+ * accent colors as foreground text. Surfaces (bg-cp-*, border-cp-*) keep
+ * using the bright --cp-*-ch values from :root so buttons, badges, and
+ * tints stay vivid — only the TEXT color is darkened.
+ */
+
+/* Tailwind text utilities (full opacity) plus their hover variants */
+.text-cp-amber, .hover\:text-cp-amber:hover { color: rgb(var(--cp-amber-text-ch)); }
+.text-cp-amber-light, .hover\:text-cp-amber-light:hover { color: rgb(var(--cp-amber-light-text-ch)); }
+.text-cp-teal, .hover\:text-cp-teal:hover { color: rgb(var(--cp-teal-text-ch)); }
+.text-cp-teal-light, .hover\:text-cp-teal-light:hover { color: rgb(var(--cp-teal-light-text-ch)); }
+.text-cp-coral, .hover\:text-cp-coral:hover { color: rgb(var(--cp-coral-text-ch)); }
+.text-cp-blue, .hover\:text-cp-blue:hover { color: rgb(var(--cp-blue-text-ch)); }
+.text-cp-blue-light, .hover\:text-cp-blue-light:hover { color: rgb(var(--cp-blue-light-text-ch)); }
+.text-cp-purple, .hover\:text-cp-purple:hover { color: rgb(var(--cp-purple-text-ch)); }
+.text-cp-purple-deep, .hover\:text-cp-purple-deep:hover { color: rgb(var(--cp-purple-deep-text-ch)); }
+
+/* Tailwind text utilities — opacity-modified variants used in source */
+.text-cp-amber\/50 { color: rgb(var(--cp-amber-text-ch) / 0.5); }
+.text-cp-amber\/60 { color: rgb(var(--cp-amber-text-ch) / 0.6); }
+.text-cp-amber\/70 { color: rgb(var(--cp-amber-text-ch) / 0.7); }
+.text-cp-amber\/80 { color: rgb(var(--cp-amber-text-ch) / 0.8); }
+.text-cp-amber-light\/90 { color: rgb(var(--cp-amber-light-text-ch) / 0.9); }
+.text-cp-teal\/80 { color: rgb(var(--cp-teal-text-ch) / 0.8); }
+.text-cp-blue\/80 { color: rgb(var(--cp-blue-text-ch) / 0.8); }
+.text-cp-coral\/70 { color: rgb(var(--cp-coral-text-ch) / 0.7); }
+.text-cp-coral\/80 { color: rgb(var(--cp-coral-text-ch) / 0.8); }
+.text-cp-coral\/90 { color: rgb(var(--cp-coral-text-ch) / 0.9); }
+
+/* CSS-class-based accent text — alerts, badges, nav-link-active */
+.glass-badge-amber  { color: rgb(var(--cp-amber-text-ch)); }
+.glass-badge-teal   { color: rgb(var(--cp-teal-text-ch)); }
+.glass-badge-coral  { color: rgb(var(--cp-coral-text-ch)); }
+.glass-badge-blue   { color: rgb(var(--cp-blue-text-ch)); }
+.glass-badge-purple { color: rgb(var(--cp-purple-text-ch)); }
+
+.alert-error   { color: rgb(var(--cp-coral-text-ch)); }
+.alert-success { color: rgb(var(--cp-teal-text-ch)); }
+.alert-warning { color: rgb(var(--cp-amber-text-ch)); }
+.alert-info    { color: rgb(var(--cp-blue-text-ch)); }
+
+.nav-link-active, .nav-link-active:hover {
+  color: rgb(var(--cp-amber-text-ch));
+}
+
+/*
+ * Per-theme alpha tuning.
+ * On dark themes, low-opacity white text reads fine — the eye is more
+ * sensitive to light-on-dark contrast. On light themes, low-opacity dark
+ * ink on cream becomes nearly invisible (e.g., dark ink at 25% on white
+ * gives ~1.7:1 contrast — fails WCAG). Bump the faintest tiers so the
+ * visual hierarchy stays the same but every tier remains readable.
+ *
+ * Pattern: theme files override the Tailwind utility classes directly.
+ * Same class name in source code, different resolved opacity per theme.
+ * Future light themes should adopt similar tuning. Borders and bg surfaces
+ * are not bumped — those are decorative tints, not text, so reduced
+ * contrast is acceptable.
+ */
+.text-ui\/25 { color: rgb(var(--ui-on-base-ch) / 0.50); }
+.text-ui\/40 { color: rgb(var(--ui-on-base-ch) / 0.60); }
+.text-ui\/55 { color: rgb(var(--ui-on-base-ch) / 0.68); }
+/* /70 and /90 stay as-is — they're already strong enough on light bg. */
+
+/* Hover variants of the same — Tailwind generates these as separate rules
+   keyed to the hover: prefix, so override them too. */
+.hover\:text-ui\/25:hover { color: rgb(var(--ui-on-base-ch) / 0.50); }
+.hover\:text-ui\/40:hover { color: rgb(var(--ui-on-base-ch) / 0.60); }
+.hover\:text-ui\/55:hover { color: rgb(var(--ui-on-base-ch) / 0.68); }
+
+/* Disabled variants. */
+.disabled\:text-ui\/25:disabled { color: rgb(var(--ui-on-base-ch) / 0.50); }
+.disabled\:text-ui\/40:disabled { color: rgb(var(--ui-on-base-ch) / 0.60); }
+
+/*
+ * .glass-select chevron override.
+ * The SVG `background-image` URL in index.css has `stroke='rgba(255,255,255,0.4)'`
+ * baked in (CSS vars don't work inside data: URIs). On Sumi that chevron would
+ * be invisible against the light bg. Override with a dark-stroke variant.
+ */
+.glass-select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='rgba(30,28,25,0.5)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+/*
+ * Soften shadows for a light theme.
+ * The --glass-card and --glass-panel box-shadows in index.css use
+ * rgba(0,0,0,0.4)/0.5 for depth. On a light bg those are very heavy
+ * and look like dark blotches. Re-apply the shadow-bearing classes
+ * with softer black so cards still float but don't smudge.
+ */
+.glass-card {
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 rgb(var(--ui-on-base-ch) / 0.05);
+}
+.glass-card-hover:hover {
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 rgb(var(--ui-on-base-ch) / 0.08);
+}
+.glass-panel {
+  box-shadow:
+    -8px 0 32px rgba(0, 0, 0, 0.08),
+    inset 1px 0 0 var(--glass-input-border);
+}
+.glass-modal-bg {
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.10);
+}

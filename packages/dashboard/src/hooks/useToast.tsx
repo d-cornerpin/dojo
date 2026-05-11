@@ -126,14 +126,14 @@ export const ToastContainer = () => {
         return (
           <div
             key={t.id}
-            className={`glass-toast ${style.cssClass} px-4 py-3 text-sm text-white animate-slide-in-right`}
+            className={`glass-toast ${style.cssClass} px-4 py-3 text-sm text-ui animate-slide-in-right`}
           >
             <div className="flex items-start gap-2.5">
               <span className="text-sm shrink-0 mt-0.5 opacity-70">{style.icon}</span>
               <span className="flex-1 leading-relaxed">{t.message}</span>
               <button
                 onClick={() => removeToast(t.id)}
-                className="text-white/40 hover:text-white shrink-0 ml-1 text-lg leading-none"
+                className="text-ui/40 hover:text-ui shrink-0 ml-1 text-lg leading-none"
               >
                 ×
               </button>

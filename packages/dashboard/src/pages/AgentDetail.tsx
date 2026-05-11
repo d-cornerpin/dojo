@@ -84,8 +84,8 @@ function parseMessageContent(raw: string): { text: string; blocks?: ContentBlock
 
 const classificationStyles: Record<string, { bg: string; text: string; label: string }> = {
   sensei: { bg: 'bg-cp-amber/20', text: 'text-cp-amber', label: 'Sensei' },
-  ronin: { bg: 'bg-blue-500/20', text: 'text-cp-blue', label: 'Ronin' },
-  apprentice: { bg: 'bg-white/[0.08]', text: 'white/55', label: 'Apprentice' },
+  ronin: { bg: 'bg-cp-blue/20', text: 'text-cp-blue', label: 'Ronin' },
+  apprentice: { bg: 'bg-ui/[0.08]', text: 'text-ui/55', label: 'Apprentice' },
 };
 
 const getClassification = (agent: AgentDetailType) => {
@@ -106,8 +106,8 @@ const ToolOnlyPill = ({ msg }: { msg: ChatMessage }) => {
     : `${toolUses.length} tools`;
   return (
     <div className="flex justify-start">
-      <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/[0.04] text-tertiary text-[11px] font-mono">
-        <span className="text-white/40">⚙</span>
+      <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[11px] font-mono">
+        <span className="text-ui/40">⚙</span>
         <span>{label}</span>
       </div>
     </div>
@@ -130,12 +130,12 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
   return (
     <div className="flex flex-col items-end">
       {fromIMessage && (
-        <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/[0.04] text-tertiary text-[10px] font-mono mb-1 mr-1">
-          <span className="text-white/40">{'\u{1F4AC}'}</span>
+        <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono mb-1 mr-1">
+          <span className="text-ui/40">{'\u{1F4AC}'}</span>
           <span>via iMessage</span>
         </div>
       )}
-      <div className="bubble-user max-w-[75%] px-4 py-3 text-white">
+      <div className="bubble-user max-w-[75%] px-4 py-3 text-ui">
         {displayContent && (
           <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed break-words">
             {displayContent}
@@ -144,7 +144,7 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
         {msg.attachments && msg.attachments.length > 0 && (
           <AttachmentChips attachments={msg.attachments} />
         )}
-        <div className="text-xs mt-2 text-blue-200">
+        <div className="text-xs mt-2 text-cp-blue-light">
           {formatDate(msg.createdAt)}
         </div>
       </div>
@@ -164,9 +164,9 @@ const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMod
             <Markdown content={text} />
             {msg.isStreaming && (
               <span className="inline-flex gap-1 ml-1 align-middle">
-                <span className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                <span className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                <span className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                <span className="w-1.5 h-1.5 bg-ui/[0.12] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 bg-ui/[0.12] rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 bg-ui/[0.12] rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
               </span>
             )}
           </div>
@@ -174,9 +174,9 @@ const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMod
         {!text && msg.isStreaming && (
           <div className="bubble-assistant px-3 py-2 sm:px-4 sm:py-3">
             <span className="inline-flex gap-1">
-              <span className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-              <span className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-              <span className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+              <span className="w-1.5 h-1.5 bg-ui/[0.12] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+              <span className="w-1.5 h-1.5 bg-ui/[0.12] rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+              <span className="w-1.5 h-1.5 bg-ui/[0.12] rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
             </span>
           </div>
         )}
@@ -207,7 +207,7 @@ const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMod
           </div>
         )}
         {!msg.isStreaming && (
-          <div className="text-xs mt-1 white/40 px-1">
+          <div className="text-xs mt-1 text-ui/40 px-1">
             {formatDate(msg.createdAt)}
           </div>
         )}
@@ -539,7 +539,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <p className="white/40">Loading chat...</p>
+        <p className="text-ui/40">Loading chat...</p>
       </div>
     );
   }
@@ -549,14 +549,14 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto min-h-0 px-2 sm:px-4 md:px-6 py-3 sm:py-6 space-y-2 sm:space-y-4">
         {loadingMore && (
           <div className="text-center py-2">
-            <span className="text-xs white/30">Loading older messages...</span>
+            <span className="text-xs text-ui/25">Loading older messages...</span>
           </div>
         )}
         {messages.length === 0 && (
           <div className="flex-1 flex items-center justify-center h-full">
             <div className="text-center">
-              <h2 className="text-xl font-semibold white/55 mb-2">Chat with this agent</h2>
-              <p className="text-sm white/30">Send a message to get started.</p>
+              <h2 className="text-xl font-semibold text-ui/55 mb-2">Chat with this agent</h2>
+              <p className="text-sm text-ui/25">Send a message to get started.</p>
             </div>
           </div>
         )}
@@ -579,9 +579,9 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             if (dividerMatch) {
               return (
                 <div key={msg.id} className="flex items-center gap-3 py-2">
-                  <div className="flex-1 h-px bg-white/10" />
-                  <span className="text-xs text-white/30 shrink-0">{dividerMatch[1]}</span>
-                  <div className="flex-1 h-px bg-white/10" />
+                  <div className="flex-1 h-px bg-ui/[0.12]" />
+                  <span className="text-xs text-ui/25 shrink-0">{dividerMatch[1]}</span>
+                  <div className="flex-1 h-px bg-ui/[0.12]" />
                 </div>
               );
             }
@@ -590,8 +590,8 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             if (imSentMatch) {
               return (
                 <div key={msg.id} className="flex justify-end my-1 px-1">
-                  <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-white/[0.04] text-tertiary text-[10px] font-mono">
-                    <span className="text-white/40">{'\u{1F4AC}'}</span>
+                  <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono">
+                    <span className="text-ui/40">{'\u{1F4AC}'}</span>
                     <span>sent via iMessage</span>
                   </div>
                 </div>
@@ -657,7 +657,7 @@ const EquippedTechniquesSection = ({ agent, onUpdated, showToast }: { agent: Age
 
   return (
     <div>
-      <h3 className="text-sm font-semibold white/55 uppercase tracking-wide mb-2">Equipped Techniques</h3>
+      <h3 className="text-sm font-semibold text-ui/55 uppercase tracking-wide mb-2">Equipped Techniques</h3>
       <div className="glass-nested rounded-xl p-4">
         <TechniqueSelector selected={equipped} onChange={handleChange} />
       </div>
@@ -703,8 +703,8 @@ const DreamerIgnoreToggle = ({ agentId, initial, onSaved }: { agentId: string; i
   return (
     <div className="flex items-start justify-between gap-4">
       <div className="flex-1">
-        <div className="text-sm font-medium text-white/85">Skip in Dreamer cycle</div>
-        <p className="text-xs text-white/40 mt-1 max-w-2xl">
+        <div className="text-sm font-medium text-ui/90">Skip in Dreamer cycle</div>
+        <p className="text-xs text-ui/40 mt-1 max-w-2xl">
           When on, this agent's conversations are NOT archived for the Dreamer to process.
           Useful for ephemeral test agents and any agent whose chatter you don't want extracted into long-term memory.
           The agent's own memory and chat history are unaffected — only the nightly Dreamer cycle is bypassed.
@@ -716,11 +716,11 @@ const DreamerIgnoreToggle = ({ agentId, initial, onSaved }: { agentId: string; i
           onClick={toggle}
           disabled={saving}
           className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
-            enabled ? 'bg-cp-teal' : 'bg-white/10'
+            enabled ? 'bg-cp-teal' : 'bg-ui/[0.12]'
           } ${saving ? 'opacity-60' : ''}`}
         >
           <span
-            className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+            className={`inline-block h-5 w-5 transform rounded-full bg-ui transition-transform ${
               enabled ? 'translate-x-5' : 'translate-x-0.5'
             }`}
           />
@@ -733,7 +733,7 @@ const DreamerIgnoreToggle = ({ agentId, initial, onSaved }: { agentId: string; i
 const SaveToast = ({ message }: { message: string | null }) => {
   if (!message) return null;
   return (
-    <div className="fixed bottom-6 right-6 px-4 py-2 bg-green-600 text-white text-sm rounded-lg shadow-lg z-50 animate-pulse">
+    <div className="fixed bottom-6 right-6 px-4 py-2 bg-cp-teal text-[var(--btn-success-text)] text-sm rounded-lg shadow-lg z-50 animate-pulse">
       {message}
     </div>
   );
@@ -851,7 +851,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
 
       {/* Name */}
       <div>
-        <h3 className="text-sm font-semibold white/55 uppercase tracking-wide mb-2">Name</h3>
+        <h3 className="text-sm font-semibold text-ui/55 uppercase tracking-wide mb-2">Name</h3>
         <div className="glass-nested rounded-xl p-4">
           <div className="flex items-center gap-3">
             <input
@@ -868,14 +868,14 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
             </button>
           </div>
           {agent.classification === 'sensei' && (
-            <p className="text-xs text-white/30 mt-2">Changing a Sensei's name updates the platform config.</p>
+            <p className="text-xs text-ui/25 mt-2">Changing a Sensei's name updates the platform config.</p>
           )}
         </div>
       </div>
 
       {/* Model */}
       <div>
-        <h3 className="text-sm font-semibold white/55 uppercase tracking-wide mb-2">Model</h3>
+        <h3 className="text-sm font-semibold text-ui/55 uppercase tracking-wide mb-2">Model</h3>
         <div className="glass-nested rounded-xl p-4">
           <div className="flex items-center gap-3">
             <select
@@ -905,12 +905,12 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
 
       {/* Classification */}
       <div>
-        <h3 className="text-sm font-semibold white/55 uppercase tracking-wide mb-2">Classification</h3>
+        <h3 className="text-sm font-semibold text-ui/55 uppercase tracking-wide mb-2">Classification</h3>
         <div className="glass-nested rounded-xl p-4">
           {agent.classification === 'sensei' ? (
             <div className="flex items-center gap-2">
               <span className="px-2 py-1 rounded text-xs font-bold bg-cp-amber/20 text-cp-amber">Sensei</span>
-              <span className="text-sm white/40">Cannot be dismissed or deleted. Set programmatically.</span>
+              <span className="text-sm text-ui/40">Cannot be dismissed or deleted. Set programmatically.</span>
             </div>
           ) : (
             <div className="flex items-center gap-3">
@@ -925,7 +925,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
                 <option value="apprentice">Apprentice</option>
                 <option value="ronin">Ronin</option>
               </select>
-              <span className="text-xs white/40">
+              <span className="text-xs text-ui/40">
                 {agent.classification === 'ronin'
                   ? 'Persists across restarts. Only you can dismiss from the dashboard.'
                   : 'Can be dismissed by other agents. Subject to timeouts.'}
@@ -938,7 +938,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
       {/* Group */}
       {!isPrimary && groups.length > 0 && (
         <div>
-          <h3 className="text-sm font-semibold white/55 uppercase tracking-wide mb-2">Group</h3>
+          <h3 className="text-sm font-semibold text-ui/55 uppercase tracking-wide mb-2">Group</h3>
           <div className="glass-nested rounded-xl p-4">
             <select
               value={agent.groupId ?? ''}
@@ -963,8 +963,8 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
 
       {/* System Prompt */}
       <div>
-        <h3 className="text-sm font-semibold white/55 uppercase tracking-wide mb-2">
-          System Prompt {isPrimary && <span className="text-xs white/30 normal-case">(SOUL.md)</span>}
+        <h3 className="text-sm font-semibold text-ui/55 uppercase tracking-wide mb-2">
+          System Prompt {isPrimary && <span className="text-xs text-ui/25 normal-case">(SOUL.md)</span>}
         </h3>
         <div className="glass-nested rounded-xl p-4">
           <textarea
@@ -986,7 +986,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
 
       {/* Memory — Dreamer ignore toggle */}
       <div>
-        <h3 className="text-sm font-semibold white/55 uppercase tracking-wide mb-2">Memory</h3>
+        <h3 className="text-sm font-semibold text-ui/55 uppercase tracking-wide mb-2">Memory</h3>
         <div className="glass-nested rounded-xl p-4">
           <DreamerIgnoreToggle
             agentId={agent.id}
@@ -998,7 +998,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
 
       {/* Permissions + Tools — unified toggle UI */}
       <div>
-        <h3 className="text-sm font-semibold white/55 uppercase tracking-wide mb-2">Permissions</h3>
+        <h3 className="text-sm font-semibold text-ui/55 uppercase tracking-wide mb-2">Permissions</h3>
         {isPrimary ? (
           <div className="glass-nested rounded-xl p-4">
             <p className="text-sm text-cp-teal">This Sensei agent has full access to all files, commands, tools, and system controls.</p>
@@ -1011,7 +1011,7 @@ const ConfigTab = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: ()
               shareUserProfile={(agent.config as Record<string, unknown>)?.shareUserProfile === true}
               onChange={handlePermsChange}
             />
-            <div className="flex justify-end mt-4 pt-3 border-t white/[0.08]">
+            <div className="flex justify-end mt-4 pt-3 border-t border-ui/[0.10]">
               <button
                 onClick={savePermissions}
                 className="px-4 py-2 text-sm glass-btn-primary rounded-lg transition-colors font-medium"
@@ -1046,7 +1046,7 @@ const HistoryTab = ({ agentId }: { agentId: string }) => {
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <p className="white/40">Loading history...</p>
+        <p className="text-ui/40">Loading history...</p>
       </div>
     );
   }
@@ -1054,7 +1054,7 @@ const HistoryTab = ({ agentId }: { agentId: string }) => {
   return (
     <div className="flex-1 overflow-y-auto p-6">
       {messages.length === 0 ? (
-        <p className="white/40 text-center py-8">No message history.</p>
+        <p className="text-ui/40 text-center py-8">No message history.</p>
       ) : (
         <div className="space-y-2">
           {messages.map((msg) => (
@@ -1063,18 +1063,18 @@ const HistoryTab = ({ agentId }: { agentId: string }) => {
                 msg.role === 'user' ? 'text-cp-blue' :
                 msg.role === 'assistant' ? 'text-cp-teal' :
                 msg.role === 'tool' ? 'text-cp-amber' :
-                'white/40'
+                'text-ui/40'
               }`}>
                 {msg.role}
               </span>
               <div className="flex-1 min-w-0">
-                <pre className="white/70 whitespace-pre-wrap break-words font-sans text-sm leading-relaxed">
+                <pre className="text-ui/70 whitespace-pre-wrap break-words font-sans text-sm leading-relaxed">
                   {(() => {
                     const { text } = parseMessageContent(msg.content);
                     return text || '[structured content]';
                   })()}
                 </pre>
-                <div className="text-xs white/30 mt-0.5">
+                <div className="text-xs text-ui/25 mt-0.5">
                   {formatDate(msg.createdAt)}
                   {msg.tokenCount ? ` | ${msg.tokenCount} tokens` : ''}
                   {msg.cost ? ` | $${msg.cost.toFixed(4)}` : ''}
@@ -1094,8 +1094,8 @@ const messageTypeBadgeColors: Record<string, { bg: string; text: string }> = {
   task: { bg: 'bg-cp-blue/20', text: 'text-cp-blue' },
   result: { bg: 'bg-cp-teal/20', text: 'text-cp-teal' },
   poke: { bg: 'bg-cp-amber/20', text: 'text-cp-amber' },
-  status: { bg: 'bg-white/[0.08]', text: 'white/55' },
-  chat: { bg: 'bg-purple-500/20', text: 'text-purple-400' },
+  status: { bg: 'bg-ui/[0.08]', text: 'text-ui/55' },
+  chat: { bg: 'bg-cp-purple/20', text: 'text-cp-purple' },
 };
 
 const InterAgentTab = ({ agentId }: { agentId: string }) => {
@@ -1127,7 +1127,7 @@ const InterAgentTab = ({ agentId }: { agentId: string }) => {
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <p className="white/40">Loading messages...</p>
+        <p className="text-ui/40">Loading messages...</p>
       </div>
     );
   }
@@ -1135,7 +1135,7 @@ const InterAgentTab = ({ agentId }: { agentId: string }) => {
   return (
     <div className="flex-1 overflow-y-auto p-6">
       {messages.length === 0 ? (
-        <p className="white/40 text-center py-8">No inter-agent messages.</p>
+        <p className="text-ui/40 text-center py-8">No inter-agent messages.</p>
       ) : (
         <div className="space-y-3">
           {messages.map((msg) => {
@@ -1151,16 +1151,16 @@ const InterAgentTab = ({ agentId }: { agentId: string }) => {
                   <span className={`text-xs px-1.5 py-0.5 rounded ${badge.bg} ${badge.text} capitalize`}>
                     {msg.messageType}
                   </span>
-                  <span className="text-xs white/40 ml-auto">
+                  <span className="text-xs text-ui/40 ml-auto">
                     {formatDate(msg.createdAt)}
                   </span>
                 </div>
-                <div className="flex items-center gap-1 text-xs white/40 mb-2">
+                <div className="flex items-center gap-1 text-xs text-ui/40 mb-2">
                   <span>{msg.fromAgent}</span>
-                  <span className="white/30">-&gt;</span>
+                  <span className="text-ui/25">-&gt;</span>
                   <span>{msg.toAgent}</span>
                 </div>
-                <pre className="text-sm white/70 whitespace-pre-wrap break-words font-sans">
+                <pre className="text-sm text-ui/70 whitespace-pre-wrap break-words font-sans">
                   {msg.content}
                 </pre>
               </div>
@@ -1188,23 +1188,23 @@ const TerminateDialog = ({
   return (
     <div className="glass-modal-backdrop">
       <div className="glass-modal p-6 max-w-sm w-full mx-4">
-        <h3 className="text-lg font-semibold text-white mb-2">Dismiss Agent</h3>
-        <p className="text-sm white/55 mb-6">
+        <h3 className="text-lg font-semibold text-ui mb-2">Dismiss Agent</h3>
+        <p className="text-sm text-ui/55 mb-6">
           {classification === 'ronin'
-            ? <>This is a <strong className="text-cp-blue">Ronin</strong> agent. Are you sure you want to dismiss <strong className="text-white">{agentName}</strong> from the dojo?</>
-            : <>Are you sure you want to dismiss <strong className="text-white">{agentName}</strong> from the dojo? This action cannot be undone.</>
+            ? <>This is a <strong className="text-cp-blue">Ronin</strong> agent. Are you sure you want to dismiss <strong className="text-ui">{agentName}</strong> from the dojo?</>
+            : <>Are you sure you want to dismiss <strong className="text-ui">{agentName}</strong> from the dojo? This action cannot be undone.</>
           }
         </p>
         <div className="flex gap-3 justify-end">
           <button
             onClick={onCancel}
-            className="px-4 py-2 text-sm white/55 hover:white/90 transition-colors"
+            className="px-4 py-2 text-sm text-ui/55 hover:text-ui/90 transition-colors"
           >
             Cancel
           </button>
           <button
             onClick={onConfirm}
-            className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+            className="px-4 py-2 text-sm bg-cp-coral hover:bg-cp-coral/80 text-[var(--btn-primary-text)] rounded-lg transition-colors"
           >
             Dismiss from the dojo
           </button>
@@ -1264,7 +1264,7 @@ export const AgentDetailPage = () => {
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <p className="white/40">Loading agent...</p>
+        <p className="text-ui/40">Loading agent...</p>
       </div>
     );
   }
@@ -1289,16 +1289,16 @@ export const AgentDetailPage = () => {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Header */}
-      <div className="shrink-0 border-b white/[0.06] px-6 py-4">
-        <div className="flex items-center gap-2 text-sm white/40 mb-2">
-          <Link to="/agents" className="hover:white/70 transition-colors">Agents</Link>
+      <div className="shrink-0 border-b border-ui/[0.06] px-6 py-4">
+        <div className="flex items-center gap-2 text-sm text-ui/40 mb-2">
+          <Link to="/agents" className="hover:text-ui/70 transition-colors">Agents</Link>
           <span>/</span>
-          <span className="white/70">{agent.name}</span>
+          <span className="text-ui/70">{agent.name}</span>
         </div>
 
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <h1 className="text-xl font-bold text-white">{agent.name}</h1>
+            <h1 className="text-xl font-bold text-ui">{agent.name}</h1>
             <StatusBadge status={agent.status} />
             <span className={`text-xs px-1.5 py-0.5 rounded ${cls.bg} ${cls.text}`}>
               {cls.label}
@@ -1306,9 +1306,9 @@ export const AgentDetailPage = () => {
           </div>
 
           <div className="flex items-center gap-4">
-            <div className="text-sm white/55 flex items-center gap-4">
-              <span>Model: <span className="white/90">{agent.modelId === 'auto' ? 'Auto (Smart Router)' : (agent.model?.name || 'None')}</span></span>
-              <span>Uptime: <span className="white/90">{formatUptime(agent.uptime)}</span></span>
+            <div className="text-sm text-ui/55 flex items-center gap-4">
+              <span>Model: <span className="text-ui/90">{agent.modelId === 'auto' ? 'Auto (Smart Router)' : (agent.model?.name || 'None')}</span></span>
+              <span>Uptime: <span className="text-ui/90">{formatUptime(agent.uptime)}</span></span>
               {agent.parentAgent && (
                 <span>
                   Parent:{' '}
@@ -1318,10 +1318,10 @@ export const AgentDetailPage = () => {
                 </span>
               )}
               {agent.spawnDepth > 0 && (
-                <span>Depth: <span className="white/90">{agent.spawnDepth}</span></span>
+                <span>Depth: <span className="text-ui/90">{agent.spawnDepth}</span></span>
               )}
               {agent.timeoutAt && (
-                <span className="text-orange-400">
+                <span className="text-cp-amber-light">
                   Timeout: {formatTimeRemaining(agent.timeoutAt)}
                 </span>
               )}
@@ -1346,8 +1346,8 @@ export const AgentDetailPage = () => {
               onClick={() => setActiveTab(tab.key)}
               className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
                 activeTab === tab.key
-                  ? 'bg-white/[0.05] text-white'
-                  : 'white/40 hover:white/70 hover:white/[0.03]'
+                  ? 'bg-ui/[0.05] text-ui'
+                  : 'text-ui/40 hover:text-ui/70 hover:text-ui/25'
               }`}
             >
               {tab.label}

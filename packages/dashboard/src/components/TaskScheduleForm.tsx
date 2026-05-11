@@ -95,7 +95,7 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
     <div className="space-y-3">
       {/* Toggle */}
       <div className="flex items-center justify-between">
-        <span className="text-sm text-white/70">Schedule this task</span>
+        <span className="text-sm text-ui/70">Schedule this task</span>
         <button
           onClick={() => handleToggle(!enabled)}
           className={`toggle-switch ${enabled ? 'toggle-on' : ''}`}
@@ -105,10 +105,10 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
       </div>
 
       {enabled && (
-        <div className="space-y-3 pl-2 border-l-2 border-white/[0.06]">
+        <div className="space-y-3 pl-2 border-l-2 border-ui/[0.06]">
           {/* Start date/time */}
           <div>
-            <label className="text-xs text-white/40 block mb-1">Start Date & Time</label>
+            <label className="text-xs text-ui/40 block mb-1">Start Date & Time</label>
             <input
               type="datetime-local"
               value={dateTimeValue}
@@ -119,7 +119,7 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
 
           {/* Repeat toggle */}
           <div className="flex items-center justify-between">
-            <span className="text-xs text-white/50">Repeat</span>
+            <span className="text-xs text-ui/55">Repeat</span>
             <button
               onClick={() => {
                 setRepeatEnabled(!repeatEnabled);
@@ -137,7 +137,7 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
               <div className="flex items-center gap-2">
                 {value.repeatUnit !== 'specific_days' && (
                   <>
-                    <span className="text-xs text-white/40">Every</span>
+                    <span className="text-xs text-ui/40">Every</span>
                     <input
                       type="number"
                       min={1}
@@ -172,7 +172,7 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
 
               {value.repeatUnit === 'specific_days' && (
                 <div>
-                  <label className="text-xs text-white/40 block mb-1">Days</label>
+                  <label className="text-xs text-ui/40 block mb-1">Days</label>
                   <div className="flex flex-wrap gap-1.5">
                     {DAY_PILLS.map((pill) => {
                       const selected = parseDaysCSV(value.repeatDaysOfWeek);
@@ -191,7 +191,7 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
                           className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
                             isOn
                               ? 'bg-cp-teal/20 text-cp-teal border border-cp-teal/40'
-                              : 'bg-white/[0.05] text-white/50 border border-white/[0.08] hover:bg-white/[0.08]'
+                              : 'bg-ui/[0.05] text-ui/55 border border-ui/[0.10] hover:bg-ui/[0.08]'
                           }`}
                         >
                           {pill.label}
@@ -207,28 +207,28 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
 
               {/* End condition */}
               <div>
-                <label className="text-xs text-white/40 block mb-1">End</label>
+                <label className="text-xs text-ui/40 block mb-1">End</label>
                 <div className="space-y-1.5">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input type="radio" checked={value.repeatEndType === 'never'} onChange={() => update({ repeatEndType: 'never', repeatEndValue: null })}
-                      className="text-cp-teal bg-white/[0.05] border-white/[0.12]" />
-                    <span className="text-xs text-white/60">Never</span>
+                      className="text-cp-teal bg-ui/[0.05] border-ui/[0.15]" />
+                    <span className="text-xs text-ui/55">Never</span>
                   </label>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input type="radio" checked={value.repeatEndType === 'after_count'} onChange={() => update({ repeatEndType: 'after_count', repeatEndValue: '10' })}
-                      className="text-cp-teal bg-white/[0.05] border-white/[0.12]" />
-                    <span className="text-xs text-white/60">After</span>
+                      className="text-cp-teal bg-ui/[0.05] border-ui/[0.15]" />
+                    <span className="text-xs text-ui/55">After</span>
                     {value.repeatEndType === 'after_count' && (
                       <input type="number" min={1} value={value.repeatEndValue ?? '10'}
                         onChange={(e) => update({ repeatEndValue: e.target.value })}
                         className="glass-input w-16 text-xs py-0.5 text-center" />
                     )}
-                    <span className="text-xs text-white/40">runs</span>
+                    <span className="text-xs text-ui/40">runs</span>
                   </label>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input type="radio" checked={value.repeatEndType === 'on_date'} onChange={() => update({ repeatEndType: 'on_date', repeatEndValue: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10) })}
-                      className="text-cp-teal bg-white/[0.05] border-white/[0.12]" />
-                    <span className="text-xs text-white/60">On</span>
+                      className="text-cp-teal bg-ui/[0.05] border-ui/[0.15]" />
+                    <span className="text-xs text-ui/55">On</span>
                     {value.repeatEndType === 'on_date' && (
                       <input type="date" value={value.repeatEndValue ?? ''}
                         onChange={(e) => update({ repeatEndValue: e.target.value })}

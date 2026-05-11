@@ -78,7 +78,7 @@ export const HealerVitals = () => {
             </span>
           )}
         </h3>
-        <span className="text-white/30 text-xs">{expanded ? '���' : '▼'}</span>
+        <span className="text-ui/25 text-xs">{expanded ? '���' : '▼'}</span>
       </button>
 
       {expanded && (
@@ -92,14 +92,14 @@ export const HealerVitals = () => {
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1">
                         <span>{severityIcon(p.severity)}</span>
-                        <span className="text-sm font-medium text-white/90">{p.title}</span>
+                        <span className="text-sm font-medium text-ui/90">{p.title}</span>
                       </div>
-                      <p className="text-xs text-white/50 mb-1">{p.description}</p>
-                      <p className="text-xs text-white/70">
+                      <p className="text-xs text-ui/55 mb-1">{p.description}</p>
+                      <p className="text-xs text-ui/70">
                         <span className="text-cp-amber">Suggested fix:</span> {p.proposed_fix}
                       </p>
                       {p.confidence !== null && (
-                        <p className="text-[10px] text-white/30 mt-1">Confidence: {p.confidence}%</p>
+                        <p className="text-[10px] text-ui/25 mt-1">Confidence: {p.confidence}%</p>
                       )}
                     </div>
                   </div>
@@ -124,7 +124,7 @@ export const HealerVitals = () => {
                         </button>
                         <button
                           onClick={() => { setDenyingId(null); setDenyNote(''); }}
-                          className="px-3 py-1 text-xs rounded text-white/40 hover:text-white/60 transition-colors"
+                          className="px-3 py-1 text-xs rounded text-ui/40 hover:text-ui/55 transition-colors"
                         >
                           Cancel
                         </button>
@@ -141,7 +141,7 @@ export const HealerVitals = () => {
                       </button>
                       <button
                         onClick={() => handleDeny(p.id)}
-                        className="px-3 py-1 text-xs rounded bg-white/[0.06] text-white/50 hover:text-white/70 border border-white/10 hover:border-white/20 transition-colors"
+                        className="px-3 py-1 text-xs rounded bg-ui/[0.08] text-ui/55 hover:text-ui/70 border border-ui/[0.10] hover:border-ui/[0.15] transition-colors"
                       >
                         Deny
                       </button>
@@ -160,7 +160,7 @@ export const HealerVitals = () => {
           */}
           {resolvedProposals.length > 0 && (
             <div className="space-y-1">
-              <p className="text-[10px] text-white/30 uppercase tracking-wider">Previous Suggestions</p>
+              <p className="text-[10px] text-ui/25 uppercase tracking-wider">Previous Suggestions</p>
               {resolvedProposals.map(p => {
                 const isApplied = p.status === 'approved' && !!p.applied_at;
                 const isApprovedPending = p.status === 'approved' && !p.applied_at;
@@ -168,7 +168,7 @@ export const HealerVitals = () => {
                 const iconColor = isApplied ? 'text-cp-teal'
                   : isApprovedPending ? 'text-cp-amber'
                   : isDenied ? 'text-cp-coral'
-                  : 'text-white/30';
+                  : 'text-ui/25';
                 const icon = isApplied ? '✓'
                   : isApprovedPending ? '⋯'
                   : isDenied ? '✗'
@@ -177,10 +177,10 @@ export const HealerVitals = () => {
                   : isApprovedPending ? 'approved — waiting on Healer'
                   : p.status;
                 return (
-                  <div key={p.id} className="flex items-center gap-2 text-xs text-white/40 py-1">
+                  <div key={p.id} className="flex items-center gap-2 text-xs text-ui/40 py-1">
                     <span className={iconColor}>{icon}</span>
                     <span>{p.title}</span>
-                    <span className="text-white/20">({label})</span>
+                    <span className="text-ui/25">({label})</span>
                   </div>
                 );
               })}
@@ -193,8 +193,8 @@ export const HealerVitals = () => {
               doing over time, not just the most recent handful. */}
           {recentActions.length > 0 && (
             <div className="space-y-1">
-              <p className="text-[10px] text-white/30 uppercase tracking-wider">
-                Things the Healer Did Automatically {recentActions.length >= 50 && <span className="text-white/20">(showing last 50)</span>}
+              <p className="text-[10px] text-ui/25 uppercase tracking-wider">
+                Things the Healer Did Automatically {recentActions.length >= 50 && <span className="text-ui/25">(showing last 50)</span>}
               </p>
               <div className="max-h-64 overflow-y-auto pr-1 space-y-0.5">
                 {recentActions.map(a => (
@@ -202,8 +202,8 @@ export const HealerVitals = () => {
                     <span className={a.result === 'success' ? 'text-cp-teal' : a.result === 'failed' ? 'text-cp-coral' : 'text-cp-amber'}>
                       {a.result === 'success' ? '✓' : a.result === 'failed' ? '✗' : '~'}
                     </span>
-                    <span className="text-white/50 flex-1 truncate" title={a.description}>{a.description}</span>
-                    <span className="text-white/20 text-[10px] shrink-0">{formatDate(a.created_at)}</span>
+                    <span className="text-ui/55 flex-1 truncate" title={a.description}>{a.description}</span>
+                    <span className="text-ui/25 text-[10px] shrink-0">{formatDate(a.created_at)}</span>
                   </div>
                 ))}
               </div>

@@ -19,7 +19,7 @@ const stateBadge: Record<string, { cls: string; label: string }> = {
   draft: { cls: 'glass-badge-amber', label: 'Draft' },
   review: { cls: 'glass-badge-blue', label: 'Review' },
   disabled: { cls: 'glass-badge-gray', label: 'Disabled' },
-  archived: { cls: 'text-white/20 bg-white/[0.03]', label: 'Archived' },
+  archived: { cls: 'text-ui/25 bg-ui/[0.03]', label: 'Archived' },
 };
 
 const tagColors = ['glass-badge-purple', 'glass-badge-blue', 'glass-badge-teal', 'glass-badge-amber', 'glass-badge-coral'];
@@ -37,8 +37,8 @@ export const TechniqueCard = ({ technique, onToggle }: { technique: TechniqueDat
       {/* Header */}
       <div className="flex items-start justify-between mb-3">
         <div className="min-w-0 flex-1">
-          <h3 className="text-base font-semibold text-white truncate">{technique.name}</h3>
-          <p className="text-xs text-white/40 mt-0.5 line-clamp-2">{technique.description ?? 'No description'}</p>
+          <h3 className="text-base font-semibold text-ui truncate">{technique.name}</h3>
+          <p className="text-xs text-ui/40 mt-0.5 line-clamp-2">{technique.description ?? 'No description'}</p>
         </div>
         <span className={`glass-badge ${badge.cls} shrink-0 ml-2`}>{badge.label}</span>
       </div>
@@ -52,13 +52,13 @@ export const TechniqueCard = ({ technique, onToggle }: { technique: TechniqueDat
             </span>
           ))}
           {technique.tags.length > 4 && (
-            <span className="text-[10px] text-white/30">+{technique.tags.length - 4}</span>
+            <span className="text-[10px] text-ui/25">+{technique.tags.length - 4}</span>
           )}
         </div>
       )}
 
       {/* Footer */}
-      <div className="flex items-center justify-between text-xs text-white/40">
+      <div className="flex items-center justify-between text-xs text-ui/40">
         <span>{technique.authorAgentName ?? 'Unknown'}</span>
         <div className="flex items-center gap-3">
           <span>{technique.usageCount} use{technique.usageCount !== 1 ? 's' : ''}</span>
@@ -69,8 +69,8 @@ export const TechniqueCard = ({ technique, onToggle }: { technique: TechniqueDat
 
       {/* Enable/Disable toggle for published */}
       {technique.state === 'published' && onToggle && (
-        <div className="mt-3 pt-3 border-t border-white/[0.06] flex items-center justify-between">
-          <span className="text-xs text-white/40">Enabled</span>
+        <div className="mt-3 pt-3 border-t border-ui/[0.06] flex items-center justify-between">
+          <span className="text-xs text-ui/40">Enabled</span>
           <button
             onClick={(e) => { e.stopPropagation(); onToggle(technique.id, !technique.enabled); }}
             className={`toggle-switch ${technique.enabled ? 'toggle-on' : ''}`}

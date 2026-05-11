@@ -72,22 +72,22 @@ export const ToolCallCard = ({ name, input }: ToolCallCardProps) => {
   const summary = toolSummary(name, input);
 
   return (
-    <div className="my-1.5 rounded-lg border white/[0.08] bg-white/[0.04]/60 overflow-hidden">
+    <div className="my-1.5 rounded-lg border border-ui/[0.10] bg-ui/[0.05]/60 overflow-hidden">
       <div
-        className="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-white/[0.05]/40 transition-colors"
+        className="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-ui/[0.05]/40 transition-colors"
         onClick={() => setShowRaw(!showRaw)}
       >
-        <span className="w-6 h-6 rounded bg-white/[0.08] text-blue-400 text-xs font-mono flex items-center justify-center shrink-0">
+        <span className="w-6 h-6 rounded bg-ui/[0.08] text-cp-blue text-xs font-mono flex items-center justify-center shrink-0">
           {icon}
         </span>
-        <span className="text-xs font-semibold white/70">{name}</span>
-        <span className="text-xs white/40 truncate flex-1 font-mono">
+        <span className="text-xs font-semibold text-ui/70">{name}</span>
+        <span className="text-xs text-ui/40 truncate flex-1 font-mono">
           {summary}
         </span>
-        <span className="text-xs white/30 shrink-0">{showRaw ? '-' : '+'}</span>
+        <span className="text-xs text-ui/25 shrink-0">{showRaw ? '-' : '+'}</span>
       </div>
       {showRaw && (
-        <pre className="px-3 py-2 text-xs white/55 font-mono border-t white/[0.08]/50 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap break-all">
+        <pre className="px-3 py-2 text-xs text-ui/55 font-mono border-t border-ui/[0.10]/50 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap break-all">
           {JSON.stringify(input, null, 2)}
         </pre>
       )}
@@ -114,18 +114,18 @@ export const ToolResultBlock = ({ content, isError }: ToolResultBlockProps) => {
     <div
       className={`my-1.5 rounded-lg border overflow-hidden ${
         isError
-          ? 'border-red-500/30 bg-red-500/5'
-          : 'border-green-500/20 bg-green-500/5'
+          ? 'border-cp-coral/30 bg-cp-coral/5'
+          : 'border-cp-teal/20 bg-cp-teal/5'
       }`}
     >
       <div className="px-3 py-1 flex items-center gap-1.5">
-        <span className={`text-xs font-medium ${isError ? 'text-red-400' : 'text-green-400'}`}>
+        <span className={`text-xs font-medium ${isError ? 'text-cp-coral' : 'text-cp-teal'}`}>
           {isError ? 'error' : 'result'}
         </span>
       </div>
       <pre
         className={`px-3 pb-2 text-xs font-mono whitespace-pre-wrap break-words max-h-64 overflow-y-auto ${
-          isError ? 'text-red-300/80' : 'white/55'
+          isError ? 'text-cp-coral/80' : 'text-ui/55'
         }`}
       >
         {displayContent}
@@ -133,7 +133,7 @@ export const ToolResultBlock = ({ content, isError }: ToolResultBlockProps) => {
       {content.length > TRUNCATE_LENGTH && (
         <button
           onClick={() => setExpanded(!expanded)}
-          className="w-full px-3 py-1 text-xs white/40 hover:white/70 border-t white/[0.08]/30 transition-colors"
+          className="w-full px-3 py-1 text-xs text-ui/40 hover:text-ui/70 border-t border-ui/[0.10]/30 transition-colors"
         >
           {expanded ? 'Show less' : `Show all (${content.length} chars)`}
         </button>

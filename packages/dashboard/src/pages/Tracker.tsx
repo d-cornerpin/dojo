@@ -77,10 +77,10 @@ const TaskDetailPanel = ({
         <div className="p-6 space-y-6">
           {/* Header */}
           <div className="flex items-start justify-between">
-            <h2 className="text-lg font-semibold text-white pr-4">{task.title}</h2>
+            <h2 className="text-lg font-semibold text-ui pr-4">{task.title}</h2>
             <button
               onClick={onClose}
-              className="white/40 hover:white/70 transition-colors text-xl leading-none"
+              className="text-ui/40 hover:text-ui/70 transition-colors text-xl leading-none"
             >
               &times;
             </button>
@@ -89,14 +89,14 @@ const TaskDetailPanel = ({
           {/* Description */}
           {task.description && (
             <div>
-              <h3 className="text-xs font-semibold white/55 uppercase tracking-wide mb-1">Description</h3>
-              <p className="text-sm white/70 whitespace-pre-wrap">{task.description}</p>
+              <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-1">Description</h3>
+              <p className="text-sm text-ui/70 whitespace-pre-wrap">{task.description}</p>
             </div>
           )}
 
           {/* Status */}
           <div>
-            <h3 className="text-xs font-semibold white/55 uppercase tracking-wide mb-1">Status</h3>
+            <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-1">Status</h3>
             <select
               value={status}
               onChange={(e) => {
@@ -118,7 +118,7 @@ const TaskDetailPanel = ({
 
           {/* Priority */}
           <div>
-            <h3 className="text-xs font-semibold white/55 uppercase tracking-wide mb-1">Priority</h3>
+            <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-1">Priority</h3>
             <select
               value={priority}
               onChange={(e) => {
@@ -137,7 +137,7 @@ const TaskDetailPanel = ({
 
           {/* Assigned Agent */}
           <div>
-            <h3 className="text-xs font-semibold white/55 uppercase tracking-wide mb-1">Assigned Agent</h3>
+            <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-1">Assigned Agent</h3>
             <select
               value={assignedTo}
               onChange={(e) => {
@@ -166,13 +166,13 @@ const TaskDetailPanel = ({
           {/* Dependencies */}
           {task.dependsOn.length > 0 && (
             <div>
-              <h3 className="text-xs font-semibold text-white/55 uppercase tracking-wide mb-1">Dependencies</h3>
+              <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-1">Dependencies</h3>
               <div className="space-y-1">
                 {task.dependsOn.map((depId) => {
                   const depTask = allTasks.find(t => t.id === depId);
                   return (
-                    <div key={depId} className="text-sm text-white/55 flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full shrink-0 ${depTask?.status === 'complete' ? 'bg-cp-teal' : depTask?.status === 'in_progress' ? 'bg-cp-blue' : 'bg-white/20'}`} />
+                    <div key={depId} className="text-sm text-ui/55 flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${depTask?.status === 'complete' ? 'bg-cp-teal' : depTask?.status === 'in_progress' ? 'bg-cp-blue' : 'bg-ui/[0.12]'}`} />
                       {depTask?.title ?? depId}
                     </div>
                   );
@@ -187,13 +187,13 @@ const TaskDetailPanel = ({
           {/* Run History */}
           {task.scheduleStatus && task.scheduleStatus !== 'unscheduled' && task.runCount > 0 && (
             <div>
-              <h3 className="text-xs font-semibold white/55 uppercase tracking-wide mb-2">Run History</h3>
+              <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-2">Run History</h3>
               <TaskRunHistory taskId={task.id} />
             </div>
           )}
 
           {/* Meta */}
-          <div className="text-xs white/40 space-y-1">
+          <div className="text-xs text-ui/40 space-y-1">
             {task.stepNumber && (
               <div>Step {task.stepNumber}{task.totalSteps ? ` of ${task.totalSteps}` : ''}</div>
             )}
@@ -205,10 +205,10 @@ const TaskDetailPanel = ({
 
           {/* Notes */}
           <div>
-            <h3 className="text-xs font-semibold white/55 uppercase tracking-wide mb-2">Notes</h3>
+            <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-2">Notes</h3>
             {task.notes && (
               <div className="glass-nested rounded-xl p-3 mb-3 max-h-48 overflow-y-auto">
-                <pre className="text-sm white/70 whitespace-pre-wrap font-sans">{task.notes}</pre>
+                <pre className="text-sm text-ui/70 whitespace-pre-wrap font-sans">{task.notes}</pre>
               </div>
             )}
             <textarea
@@ -302,7 +302,7 @@ const CreateProjectModal = ({
   return (
     <div className="glass-modal-backdrop">
       <div className="glass-modal p-6 max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto">
-        <h3 className="text-lg font-semibold text-white mb-4">Create Project</h3>
+        <h3 className="text-lg font-semibold text-ui mb-4">Create Project</h3>
 
         {error && (
           <div className="alert-banner alert-error mb-4">
@@ -312,7 +312,7 @@ const CreateProjectModal = ({
 
         <div className="space-y-4">
           <div>
-            <label className="text-xs font-semibold white/55 uppercase tracking-wide block mb-1">Title</label>
+            <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Title</label>
             <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
@@ -322,7 +322,7 @@ const CreateProjectModal = ({
           </div>
 
           <div>
-            <label className="text-xs font-semibold white/55 uppercase tracking-wide block mb-1">Description</label>
+            <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Description</label>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -333,7 +333,7 @@ const CreateProjectModal = ({
           </div>
 
           <div>
-            <label className="text-xs font-semibold white/55 uppercase tracking-wide block mb-1">Level</label>
+            <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Level</label>
             <select
               value={level}
               onChange={(e) => setLevel(Number(e.target.value))}
@@ -347,13 +347,13 @@ const CreateProjectModal = ({
 
           {/* Task builder */}
           <div>
-            <label className="text-xs font-semibold white/55 uppercase tracking-wide block mb-1">Tasks</label>
+            <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Tasks</label>
             {tasks.length > 0 && (
               <div className="space-y-1 mb-2">
                 {tasks.map((t, i) => (
                   <div key={i} className="flex items-center gap-2 glass-nested rounded-xl px-3 py-2">
-                    <span className="text-xs white/40 font-mono w-6">{i + 1}.</span>
-                    <span className="text-sm white/90 flex-1 truncate">{t.title}</span>
+                    <span className="text-xs text-ui/40 font-mono w-6">{i + 1}.</span>
+                    <span className="text-sm text-ui/90 flex-1 truncate">{t.title}</span>
                     <select
                       value={t.assignedTo}
                       onChange={(e) => {
@@ -369,7 +369,7 @@ const CreateProjectModal = ({
                     </select>
                     <button
                       onClick={() => removeTask(i)}
-                      className="white/40 hover:text-cp-coral transition-colors text-sm"
+                      className="text-ui/40 hover:text-cp-coral transition-colors text-sm"
                     >
                       &times;
                     </button>
@@ -397,7 +397,7 @@ const CreateProjectModal = ({
               <button
                 onClick={addTask}
                 disabled={!taskTitle.trim()}
-                className="px-3 py-2 text-sm bg-white/[0.08] hover:bg-white/[0.12] disabled:opacity-50 white/90 rounded-lg transition-colors"
+                className="px-3 py-2 text-sm bg-ui/[0.08] hover:bg-ui/[0.12] disabled:opacity-50 text-ui/90 rounded-lg transition-colors"
               >
                 Add
               </button>
@@ -408,7 +408,7 @@ const CreateProjectModal = ({
         <div className="flex gap-3 justify-end mt-6">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-sm white/55 hover:white/90 transition-colors"
+            className="px-4 py-2 text-sm text-ui/55 hover:text-ui/90 transition-colors"
           >
             Cancel
           </button>
@@ -528,7 +528,7 @@ export const Tracker = () => {
       <div className="shrink-0 mb-6 space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <h1 className="text-lg sm:text-xl font-bold text-white">Tracker</h1>
+            <h1 className="text-lg sm:text-xl font-bold text-ui">Tracker</h1>
 
             {/* Project selector */}
             <select
@@ -552,9 +552,9 @@ export const Tracker = () => {
         {/* Project action bar — shows when a specific project is selected */}
         {selectedProjectId !== 'all' && (
           <div className="flex items-center justify-between glass-card px-4 py-2">
-            <div className="text-sm white/70">
-              Project: <span className="font-medium text-white">{projects.find(p => p.id === selectedProjectId)?.title}</span>
-              <span className="white/40 ml-3">{tasks.length} task{tasks.length !== 1 ? 's' : ''}</span>
+            <div className="text-sm text-ui/70">
+              Project: <span className="font-medium text-ui">{projects.find(p => p.id === selectedProjectId)?.title}</span>
+              <span className="text-ui/40 ml-3">{tasks.length} task{tasks.length !== 1 ? 's' : ''}</span>
             </div>
 
             {confirmDeleteProject ? (
@@ -567,13 +567,13 @@ export const Tracker = () => {
                     setConfirmDeleteProject(false);
                     loadData();
                   }}
-                  className="px-3 py-1 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+                  className="px-3 py-1 text-sm bg-cp-coral hover:bg-cp-coral/80 text-[var(--btn-primary-text)] rounded-lg transition-colors"
                 >
                   Yes, delete
                 </button>
                 <button
                   onClick={() => setConfirmDeleteProject(false)}
-                  className="px-3 py-1 text-sm white/55 hover:white/90 transition-colors"
+                  className="px-3 py-1 text-sm text-ui/55 hover:text-ui/90 transition-colors"
                 >
                   Cancel
                 </button>
@@ -695,26 +695,26 @@ const CreateTaskModal = ({
   return (
     <div className="glass-modal-backdrop">
       <div className="glass-modal p-6 max-w-lg w-full mx-4">
-        <h3 className="text-lg font-semibold text-white mb-4">Create Task</h3>
+        <h3 className="text-lg font-semibold text-ui mb-4">Create Task</h3>
 
         {error && <div className="mb-4 px-3 py-2 rounded-xl bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
 
         <div className="space-y-4">
           <div>
-            <label className="text-xs font-semibold text-white/55 uppercase tracking-wide block mb-1">Title</label>
+            <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Title</label>
             <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Task title"
               className="glass-input" autoFocus />
           </div>
 
           <div>
-            <label className="text-xs font-semibold text-white/55 uppercase tracking-wide block mb-1">Description</label>
+            <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Description</label>
             <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What needs to be done..."
               className="glass-textarea" rows={3} />
           </div>
 
           <div className="flex gap-3">
             <div className="flex-1">
-              <label className="text-xs font-semibold text-white/55 uppercase tracking-wide block mb-1">Priority</label>
+              <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Priority</label>
               <select value={priority} onChange={(e) => setPriority(e.target.value)} className="glass-select w-full">
                 <option value="high">High</option>
                 <option value="normal">Normal</option>
@@ -722,7 +722,7 @@ const CreateTaskModal = ({
               </select>
             </div>
             <div className="flex-1">
-              <label className="text-xs font-semibold text-white/55 uppercase tracking-wide block mb-1">Assign To</label>
+              <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Assign To</label>
               <select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} className="glass-select w-full">
                 <option value="">Unassigned</option>
                 {activeAgents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
@@ -732,7 +732,7 @@ const CreateTaskModal = ({
 
           {projects.length > 0 && (
             <div>
-              <label className="text-xs font-semibold text-white/55 uppercase tracking-wide block mb-1">Project</label>
+              <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Project</label>
               <select value={projectId} onChange={(e) => setProjectId(e.target.value)} className="glass-select w-full">
                 <option value="">No project (standalone task)</option>
                 {projects.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}
@@ -799,25 +799,25 @@ const ScheduleEditor = ({ task, onUpdate }: { task: Task; onUpdate: () => void }
 
   return (
     <div>
-      <h3 className="text-xs font-semibold white/55 uppercase tracking-wide mb-2">Schedule</h3>
+      <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-2">Schedule</h3>
       <div className="glass-nested rounded-xl p-3">
         <TaskScheduleForm value={schedule} onChange={handleChange} />
 
         {task.scheduleStatus && task.scheduleStatus !== 'unscheduled' && (
-          <div className="mt-3 pt-3 border-t border-white/[0.06] space-y-1 text-xs">
+          <div className="mt-3 pt-3 border-t border-ui/[0.06] space-y-1 text-xs">
             {task.nextRunAt && (
-              <div className="flex justify-between text-white/50">
+              <div className="flex justify-between text-ui/55">
                 <span>Next Run</span>
                 <span className="text-cp-blue">{formatDate(task.nextRunAt)}</span>
               </div>
             )}
-            <div className="flex justify-between text-white/50">
+            <div className="flex justify-between text-ui/55">
               <span>Status</span>
               <span className={task.isPaused ? 'text-cp-amber' : 'text-cp-teal'}>
                 {task.isPaused ? 'Paused' : task.scheduleStatus}
               </span>
             </div>
-            <div className="flex justify-between text-white/50">
+            <div className="flex justify-between text-ui/55">
               <span>Completed Runs</span>
               <span>{task.runCount}</span>
             </div>
