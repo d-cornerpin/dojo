@@ -13,7 +13,8 @@ import { getWSStatus } from '../ws.js';
 import { getPresence, setPresence, isImessageConfigured, type PresenceStatus } from '../../services/presence.js';
 import {
   getTunnelStatus, enableTunnel, disableTunnel, startTunnel, stopTunnel,
-  isCloudflaredInstalled, installCloudflared, setTunnelToken, type TunnelMode,
+  isCloudflaredInstalled, installCloudflared, setTunnelToken,
+  setNamedTunnelUrl, type TunnelMode,
 } from '../../services/tunnel.js';
 
 // In-memory provider health tracking — updated by model.ts after successful calls
@@ -264,12 +265,22 @@ servicesRouter.post('/tunnel/disable', (c) => {
   return c.json({ ok: true, data: getTunnelStatus() });
 });
 
-// POST /tunnel/token — save named tunnel token
+// POST /tunnel/token — save named tunnel token (and optionally the public URL)
 servicesRouter.post('/tunnel/token', async (c) => {
   const body = await c.req.json().catch(() => null);
   if (!body?.token) return c.json({ ok: false, error: 'Token is required' }, 400);
   setTunnelToken(body.token);
+  // v2.5.6 — same payload can carry the public URL the user configured in
+  // Cloudflare's Published Application Routes. Optional. null/empty clears it.
+  if (body.url !== undefined) setNamedTunnelUrl(body.url);
   return c.json({ ok: true });
+});
+
+// POST /tunnel/named-url — set just the named-tunnel URL (no token change)
+servicesRouter.post('/tunnel/named-url', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  setNamedTunnelUrl(body?.url ?? null);
+  return c.json({ ok: true, data: getTunnelStatus() });
 });
 
 // POST /tunnel/install-cloudflared — install cloudflared via brew

@@ -1205,7 +1205,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Tunnel (Remote Access) ──
   {
     name: 'tunnel_status',
-    description: 'Get the current Cloudflare tunnel status and public URL. Use this when the user asks for the dojo URL or wants to know if remote access is running.',
+    description: 'Get the current Cloudflare tunnel status and public URL. Use this when the user asks for the dojo URL or wants to know if remote access is running. Works for both quick tunnels (auto-generated trycloudflare.com URL) and named tunnels (custom domain URL the user configured in Cloudflare and saved in Settings → Remote Access). The `url` field in the response is the URL to share with the user. The `mode` field tells you which kind of tunnel is active.',
     input_schema: { type: 'object', properties: {}, required: [] },
   },
   {

@@ -432,6 +432,7 @@ const RemoteAccessSettings = () => {
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState<'quick' | 'named'>('quick');
   const [token, setToken] = useState('');
+  const [namedUrl, setNamedUrl] = useState('');
   const [acting, setActing] = useState(false);
   const [installing, setInstalling] = useState(false);
 
@@ -455,6 +456,11 @@ const RemoteAccessSettings = () => {
     if (data.ok) {
       setStatus(data.data);
       setMode(data.data.mode);
+      // Pre-fill the named URL field from the saved value (when in named mode)
+      // so the user can see what's stored without re-typing it.
+      if (data.data.mode === 'named' && data.data.url && !namedUrl) {
+        setNamedUrl(data.data.url);
+      }
     }
     setLoading(false);
   };
@@ -468,13 +474,28 @@ const RemoteAccessSettings = () => {
     return () => clearInterval(interval);
   }, [status?.status]);
 
+  const handleSaveNamedUrl = async () => {
+    setActing(true);
+    await fetch('/api/system/tunnel/named-url', {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({ url: namedUrl.trim() || null }),
+    });
+    await load();
+    setActing(false);
+  };
+
   const handleEnable = async () => {
     setActing(true);
     if (mode === 'named' && token.trim()) {
       await fetch('/api/system/tunnel/token', {
         method: 'POST',
         headers: getHeaders(),
-        body: JSON.stringify({ token: token.trim() }),
+        body: JSON.stringify({
+          token: token.trim(),
+          // Send the URL alongside the token so it's persisted in the same call
+          url: namedUrl.trim() || null,
+        }),
       });
     }
     await fetch('/api/system/tunnel/enable', {
@@ -559,12 +580,33 @@ const RemoteAccessSettings = () => {
               </div>
               {status.url && (
                 <div className="flex items-center gap-2">
-                  <code className="text-xs text-cp-teal font-mono flex-1 truncate">{status.url}</code>
+                  <a href={status.url} target="_blank" rel="noopener noreferrer" className="text-xs text-cp-teal font-mono flex-1 truncate hover:underline">{status.url}</a>
                   <button onClick={copyUrl} className="text-[10px] text-ui/40 hover:text-ui/70 shrink-0">Copy</button>
                 </div>
               )}
+              {/* When in named mode and no URL saved yet, let the user add it
+                  inline without disabling+re-enabling. The URL is what was
+                  configured in Cloudflare's Published Application Routes. */}
               {status.mode === 'named' && !status.url && (
-                <p className="text-[10px] text-ui/25">URL configured in your Cloudflare dashboard</p>
+                <div className="space-y-1">
+                  <p className="text-[10px] text-ui/40">Add the public URL you configured in Cloudflare so the dashboard and the agent can use it.</p>
+                  <div className="flex gap-1">
+                    <input
+                      type="text"
+                      value={namedUrl}
+                      onChange={(e) => setNamedUrl(e.target.value)}
+                      placeholder="https://dojo.example.com"
+                      className="glass-input flex-1 text-xs"
+                    />
+                    <button
+                      onClick={handleSaveNamedUrl}
+                      disabled={acting || !namedUrl.trim()}
+                      className="px-3 text-xs glass-btn-primary rounded-lg shrink-0 disabled:opacity-40"
+                    >
+                      Save
+                    </button>
+                  </div>
+                </div>
               )}
               <button
                 onClick={handleDisable}
@@ -634,24 +676,42 @@ const RemoteAccessSettings = () => {
               {mode === 'named' && (
                 <div className="space-y-2">
                   <p className="text-[10px] text-ui/40">
-                    Requires a free Cloudflare account.{' '}
+                    Requires a free Cloudflare account AND a domain on that account.{' '}
                     <a href="https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-remote-tunnel/" target="_blank" rel="noopener noreferrer" className="text-cp-blue hover:underline">
-                      Set up a Cloudflare Tunnel &rarr;
+                      Cloudflare docs &rarr;
                     </a>
                   </p>
+                  <div className="text-[10px] text-ui/40 font-medium pt-1">Phase 1 — Get the token</div>
                   <div className="text-[10px] text-ui/25 space-y-0.5">
-                    <p>1. Create a free account at dash.cloudflare.com</p>
-                    <p>2. Go to Networks &gt; Tunnels &gt; Create Tunnel</p>
-                    <p>3. Name your tunnel and copy the token</p>
-                    <p>4. Paste the token below</p>
+                    <p>1. Sign in at <a href="https://one.dash.cloudflare.com/" target="_blank" rel="noopener noreferrer" className="font-mono text-cp-blue hover:underline">one.dash.cloudflare.com</a> (NOT dash.cloudflare.com — that's a different product). First time only: pick a Team name when prompted.</p>
+                    <p>2. Sidebar: <span className="font-mono">Networks &rarr; Connectors &rarr; Cloudflare Tunnels</span> &rarr; <span className="font-mono">Create a tunnel</span></p>
+                    <p>3. Connector type: <span className="font-mono">Cloudflared</span>. Name it (e.g. <span className="font-mono">dojo</span>) &rarr; Save.</p>
+                    <p>4. Cloudflare shows an install command. The token is the long <span className="font-mono">eyJ…</span> string after <span className="font-mono">service install</span>. Copy just that token (no spaces) and paste below.</p>
                   </div>
                   <input
                     type="password"
                     value={token}
                     onChange={(e) => setToken(e.target.value)}
-                    placeholder="Cloudflare tunnel token..."
+                    placeholder="Cloudflare tunnel token (eyJ...)"
                     className="glass-input w-full"
                   />
+                  <div className="text-[10px] text-ui/40 font-medium pt-1">Phase 2 — Bind a URL (after the tunnel connects)</div>
+                  <div className="text-[10px] text-ui/25 space-y-0.5">
+                    <p>5. In Cloudflare, click into your tunnel &rarr; <span className="font-mono">Published application routes</span> tab &rarr; <span className="font-mono">Add a route</span></p>
+                    <p>6. Subdomain: <span className="font-mono">dojo</span> (or anything). Domain: pick from the dropdown (one of your Cloudflare-managed domains). Service type: <span className="font-mono">HTTP</span> (NOT HTTPS). URL: <span className="font-mono">localhost:3001</span></p>
+                    <p>7. Save. Your Dojo is now reachable at <span className="font-mono">https://subdomain.yourdomain.com</span>.</p>
+                    <p>8. Paste that final URL below so the dashboard and the agent can show/use it.</p>
+                  </div>
+                  <input
+                    type="text"
+                    value={namedUrl}
+                    onChange={(e) => setNamedUrl(e.target.value)}
+                    placeholder="https://dojo.example.com"
+                    className="glass-input w-full"
+                  />
+                  <p className="text-[10px] text-ui/25">
+                    No domain on Cloudflare yet? Add one at <a href="https://dash.cloudflare.com/" target="_blank" rel="noopener noreferrer" className="font-mono text-cp-blue hover:underline">dash.cloudflare.com</a> &rarr; <span className="font-mono">+ Add &rarr; Existing domain</span> (free DNS transfer), or register one through Cloudflare Registrar (~$8–10/yr).
+                  </p>
                 </div>
               )}
 

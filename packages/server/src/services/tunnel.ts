@@ -130,13 +130,42 @@ function broadcastStatus(): void {
   } as never);
 }
 
+/**
+ * v2.5.6 — read the user-entered named-tunnel URL (e.g. https://kevin.theagentdojo.com).
+ * Quick tunnels parse their URL from cloudflared stderr; named tunnels can't
+ * (the URL lives in Cloudflare's dashboard, not in cloudflared's logs), so
+ * we ask the user to type it in once and persist it here.
+ */
+export function getNamedTunnelUrl(): string | null {
+  try {
+    const row = getDb().prepare("SELECT value FROM config WHERE key = 'tunnel_named_url'").get() as { value: string } | undefined;
+    return row?.value?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export function setNamedTunnelUrl(url: string | null): void {
+  if (!url || !url.trim()) {
+    try { getDb().prepare("DELETE FROM config WHERE key = 'tunnel_named_url'").run(); } catch { /* ignore */ }
+    return;
+  }
+  setConfig('tunnel_named_url', url.trim());
+}
+
 export function getTunnelStatus(): TunnelStatus {
   const config = getConfig();
+  // For named tunnels, prefer the user-saved public URL over the (always
+  // null) parsed URL — cloudflared running a named tunnel doesn't emit the
+  // hostname anywhere we can scrape it from.
+  const url = config.mode === 'named'
+    ? (tunnelUrl ?? getNamedTunnelUrl())
+    : tunnelUrl;
   return {
     enabled: config.enabled,
     mode: config.mode,
     status: tunnelStatus,
-    url: tunnelUrl,
+    url,
     error: tunnelError,
     startedAt: tunnelStartedAt,
     cloudflaredInstalled: isCloudflaredInstalled(),
