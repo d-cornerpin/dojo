@@ -41,10 +41,15 @@ const ERROR_COOLDOWN_MS = 30 * 60 * 1000;
 let frequentAutoFixTimer: ReturnType<typeof setInterval> | null = null;
 
 export function runFrequentAutoFixes(): void {
-  // Heartbeat log so we can confirm the timer is firing even when there
-  // are no agents to recover. Pre-spec, a silent sweep was impossible to
-  // distinguish from a dead timer.
-  logger.info('Frequent auto-fix sweep firing');
+  // v2.5.8 — Heartbeat demoted to DEBUG. Pre-spec we logged at INFO so a
+  // silent sweep could be distinguished from a dead timer. That concern
+  // was a one-time debugging need; in production it just spams the Health
+  // page log viewer every 5 min with no actionable information. The
+  // actual recoveries below (resumed/reset paths) still log at INFO, AND
+  // get their own healer_actions DB row — those are the only events worth
+  // surfacing. The startup log in startFrequentAutoFixes still confirms
+  // the timer kicked off.
+  logger.debug('Frequent auto-fix sweep firing');
   try {
     const db = getDb();
     const now = Date.now();
