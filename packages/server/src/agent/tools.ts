@@ -5697,10 +5697,23 @@ Thread is closed — respond to the user, not Imaginer.`;
 
       case 'office_create_word_document':
       case 'office_append_to_word_document':
+      case 'office_get_word_document_outline':
+      case 'office_replace_in_word_document':
+      case 'office_insert_in_word_document':
+      case 'office_delete_block_in_word_document':
       case 'office_create_spreadsheet':
-      case 'office_create_presentation': {
+      case 'office_get_spreadsheet_range':
+      case 'office_write_spreadsheet_range':
+      case 'office_append_spreadsheet_rows':
+      case 'office_add_sheet':
+      case 'office_delete_sheet':
+      case 'office_create_presentation':
+      case 'office_get_presentation_outline':
+      case 'office_replace_in_presentation':
+      case 'office_insert_slide':
+      case 'office_delete_slide': {
         if (!isPrimaryAgent(agentId)) {
-          content = 'Permission denied: only the primary agent can create Office documents.';
+          content = 'Permission denied: only the primary agent can create or edit Office documents.';
           isError = true;
           break;
         }
