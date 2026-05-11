@@ -364,6 +364,86 @@ agentsRouter.post('/:id/stop', (c) => {
   return c.json({ ok: true, data: { agentId: id, status: 'idle' } });
 });
 
+// POST /:id/reset-session — reset a single agent's session.
+// v2.3.19 (finding #196): pre-spec, dev-test-tools/bin/reset only set
+// session_started_at via raw SQL, skipping the divider, broadcast,
+// archive-to-vault, and reorientation prompt that the agent's
+// reset_session tool does. That made dev resets invisible in the chat
+// and structurally different from real resets. This endpoint mirrors
+// the tool exactly, so dev tooling AND any future UI button get the
+// real behavior.
+agentsRouter.post('/:id/reset-session', async (c) => {
+  const id = c.req.param('id');
+  const db = getDb();
+  const agent = db.prepare('SELECT id, name, status FROM agents WHERE id = ?')
+    .get(id) as { id: string; name: string; status: string } | undefined;
+  if (!agent) return c.json({ ok: false, error: 'Agent not found' }, 404);
+  if (agent.status === 'terminated') {
+    return c.json({ ok: false, error: 'Agent is terminated — no live session to reset' }, 400);
+  }
+
+  try {
+    // 1. Archive current conversation to vault (best-effort).
+    const { archiveAgentConversation } = await import('../../vault/archive.js');
+    try { archiveAgentConversation(id, true); } catch { /* */ }
+
+    // 2. Set session boundary + clear continuity brief.
+    const boundary = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+    db.prepare(
+      "UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief') WHERE id = ?",
+    ).run(boundary, boundary, id);
+
+    // 3. Insert UI divider + broadcast.
+    const dividerId = uuidv4();
+    db.prepare(
+      "INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', '── New Session ──', ?)",
+    ).run(dividerId, id, boundary);
+    broadcast({
+      type: 'chat:message',
+      agentId: id,
+      message: {
+        id: dividerId, agentId: id, role: 'system', content: '── New Session ──',
+        tokenCount: null, modelId: null, cost: null, latencyMs: null,
+        createdAt: boundary,
+      },
+    });
+
+    // 4. Insert reorientation prompt + broadcast.
+    const { buildSessionResetMessage } = await import('../../agent/session-reset.js');
+    const reorientId = uuidv4();
+    const reorientContent = buildSessionResetMessage(id);
+    db.prepare(
+      "INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, ?)",
+    ).run(reorientId, id, reorientContent, boundary);
+    broadcast({
+      type: 'chat:message',
+      agentId: id,
+      message: {
+        id: reorientId, agentId: id, role: 'system', content: reorientContent,
+        tokenCount: null, modelId: null, cost: null, latencyMs: null,
+        createdAt: boundary,
+      },
+    });
+
+    // 5. Heal error/paused status. A reset clears the corrupted context
+    // that's often the root cause.
+    if (agent.status === 'error' || agent.status === 'paused') {
+      db.prepare(
+        "UPDATE agents SET status = 'idle', last_error = NULL, last_error_at = NULL, updated_at = datetime('now') WHERE id = ?",
+      ).run(id);
+      broadcast({ type: 'agent:status', agentId: id, status: 'idle' });
+    }
+
+    logger.info('Agent session reset via API', { agentId: id, agentName: agent.name });
+    return c.json({ ok: true, data: { agentId: id, name: agent.name, boundary } });
+  } catch (err) {
+    logger.error('Failed to reset agent session', {
+      agentId: id, error: err instanceof Error ? err.message : String(err),
+    });
+    return c.json({ ok: false, error: err instanceof Error ? err.message : 'Reset failed' }, 500);
+  }
+});
+
 // POST /:id/purge — permanently delete a terminated agent and all its data
 agentsRouter.post('/:id/purge', (c) => {
   const id = c.req.param('id');

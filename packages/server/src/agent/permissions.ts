@@ -61,11 +61,32 @@ const GLOBAL_FILE_DELETE_DENY = [
   '~/.dojo/**',
 ];
 
+// v2.3.19 (error-handling-spec Phase 3 — Dreamer-style log discipline).
+// The Healer is allowed to ASK ABOUT its history, but not via raw file
+// reads — those bypass the engine helpers that cap response size and
+// could choke the Healer's prompt. Use healer_recent_actions /
+// healer_action_detail instead.
+const GLOBAL_FILE_READ_DENY = [
+  '~/.dojo/logs/healer.log',
+  '~/.dojo/logs/healer-report.log',
+  '~/.dojo/logs/healer-archives/**',
+];
+
 const GLOBAL_EXEC_DENY = [
   'rm -rf /',
   'rm -rf ~',
   'sudo *',
   'chmod 777 *',
+];
+
+// v2.3.19 (Scenario 3 finding) — file_write permission denies are
+// trivial to bypass via shell exec ("echo '...' >> ~/.dojo/secrets.yaml"
+// went through cleanly). The substring approach below catches every
+// path form: tilde, absolute, $HOME, relative — all match. Targeted at
+// the API-key store specifically; we don't try to build a general
+// exec-write firewall here.
+const GLOBAL_EXEC_DENY_SUBSTRINGS = [
+  'secrets.yaml',
 ];
 
 // ── Glob Matching ──
@@ -198,6 +219,19 @@ function checkGlobalDenyFileWrite(filePath: string): PermissionResult {
   return { allowed: true };
 }
 
+function checkGlobalDenyFileRead(filePath: string): PermissionResult {
+  const expanded = expandTilde(filePath);
+  for (const pattern of GLOBAL_FILE_READ_DENY) {
+    if (matchGlob(pattern, expanded)) {
+      return {
+        allowed: false,
+        reason: `Global deny: ${filePath} is restricted. Use the engine helper tools (healer_recent_actions / healer_action_detail) to access this kind of data with bounded response size.`,
+      };
+    }
+  }
+  return { allowed: true };
+}
+
 function checkGlobalDenyFileDelete(filePath: string): PermissionResult {
   const expanded = expandTilde(filePath);
   for (const pattern of GLOBAL_FILE_DELETE_DENY) {
@@ -224,6 +258,19 @@ function checkGlobalDenyExec(command: string): PermissionResult {
       if (trimmed === prefix || trimmed.startsWith(prefix + ' ')) {
         return { allowed: false, reason: `Global deny: command starting with "${prefix}" is prohibited` };
       }
+    }
+  }
+  // v2.3.19 — substring deny for sensitive paths. Catches every form
+  // ("~/.dojo/secrets.yaml", "/Users/x/.dojo/secrets.yaml",
+  // "$HOME/.dojo/secrets.yaml", or bare "secrets.yaml") regardless of
+  // command shape (read, write, redirect, pipe). The path holds API
+  // keys — no agent should ever touch it via shell.
+  for (const needle of GLOBAL_EXEC_DENY_SUBSTRINGS) {
+    if (command.includes(needle)) {
+      return {
+        allowed: false,
+        reason: `Global deny: shell commands cannot read or modify ${needle} — this file holds API keys and is protected. Use Settings → Providers in the dashboard to change credentials.`,
+      };
     }
   }
   return { allowed: true };
@@ -255,6 +302,11 @@ function checkFileAccess(manifest: PermissionManifest, filePath: string, accessT
   if (accessType === 'file_write') {
     // Check global deny first
     const globalCheck = checkGlobalDenyFileWrite(expanded);
+    if (!globalCheck.allowed) return globalCheck;
+  } else if (accessType === 'file_read') {
+    // v2.3.19 — Dreamer-style log discipline; deny direct reads of
+    // Healer log files regardless of agent permission manifest.
+    const globalCheck = checkGlobalDenyFileRead(expanded);
     if (!globalCheck.allowed) return globalCheck;
   }
 

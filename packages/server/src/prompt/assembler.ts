@@ -11,6 +11,7 @@ import { getAgentMicrosoftAccessLevel, getMsAccountType, getMicrosoftWorkspaceCo
 import { assembleGroupContext as _assembleGroupContext } from '../agent/groups.js';
 import { generateTechniqueIndex, generateDraftTechniqueContext } from '../techniques/index-builder.js';
 import { getContextWindow } from '../agent/model.js';
+import { isIMBridgeRunning } from '../services/imessage-bridge.js';
 
 // Prompt complexity tiers based on model context window
 type PromptTier = 'full' | 'standard' | 'compact' | 'minimal';
@@ -211,16 +212,33 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
   //    are deleted — engine enforces the underlying rules):
 
   const hasImessage = agentTools.some(t => t.name === 'imessage_send');
-  if (isPrimaryAgent(agentId) && hasImessage) {
+  if (hasImessage) {
     const ownerName = getOwnerName();
-    lines.push(`## iMessage`);
-    lines.push(`Use \`imessage_send\` for proactive outreach to ${ownerName} only. Replies to incoming iMessages are routed automatically — do not call \`imessage_send\` to reply.`);
-    // Only inject the no-reply guidance when this turn is actually
-    // iMessage-triggered. Saves ~50 tokens on every dashboard turn.
-    if (isIMessageTurn(agentId)) {
-      lines.push(`If the message closes the conversation ("goodnight", "thanks", "ok bye"), reply with literal \`[no-reply]\` and nothing else — skips the send. Use it to end loops.`);
+    // v2.3.19 — proactively tell the agent whether the bridge is on. If
+    // it's off, the agent should use the dashboard chat instead of
+    // wasting a tool call. (The tool dispatcher also fails loudly if
+    // the agent tries anyway — this is just the cheaper signal.)
+    let bridgeRunning = false;
+    try { bridgeRunning = isIMBridgeRunning(); } catch { /* default: assume off */ }
+
+    if (isPrimaryAgent(agentId)) {
+      lines.push(`## iMessage`);
+      if (bridgeRunning) {
+        lines.push(`Use \`imessage_send\` for proactive outreach to ${ownerName} only. Replies to incoming iMessages are routed automatically — do not call \`imessage_send\` to reply.`);
+        if (isIMessageTurn(agentId)) {
+          lines.push(`If the message closes the conversation ("goodnight", "thanks", "ok bye"), reply with literal \`[no-reply]\` and nothing else — skips the send. Use it to end loops.`);
+        }
+      } else {
+        lines.push(`iMessage is currently disabled on this server — \`imessage_send\` will fail. Use the dashboard chat for all communication with ${ownerName} until they re-enable it in Settings → iMessage.`);
+      }
+      lines.push('');
+    } else if (!bridgeRunning) {
+      // Non-primary agents with the tool — also tell them it's off so
+      // they don't try.
+      lines.push(`## iMessage`);
+      lines.push(`iMessage is currently disabled on this server. \`imessage_send\` will fail; tell ${ownerName} in the dashboard chat instead.`);
+      lines.push('');
     }
-    lines.push('');
   }
 
   const hasSendToAgent = agentTools.some(t => t.name === 'send_to_agent');

@@ -187,7 +187,9 @@ async function refreshAccessToken(): Promise<string | null> {
       logger.error('Google token refresh failed', { status: resp.status, error: err });
       if (resp.status === 400 || resp.status === 401) {
         setGoogleConnected(false);
-        try { sendAlert('Google Workspace connection expired. Re-authenticate in Settings > Google.', 'warning'); } catch {}
+        // v2.3.19 — OAuth expiry is a true blocker (Gmail/Calendar/Drive
+        // tools can't function until the user re-auths). Critical.
+        try { sendAlert('Google Workspace connection expired. Re-authenticate in Settings > Google.', 'critical'); } catch {}
       }
       return null;
     }

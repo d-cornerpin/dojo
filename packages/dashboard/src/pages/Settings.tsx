@@ -2858,19 +2858,30 @@ const HealerCard = ({ models }: { models: Model[] }) => {
   const [running, setRunning] = useState(false);
   const [lastDiagnostic, setLastDiagnostic] = useState<api.HealerDiagnostic | null>(null);
   const [sendingReport, setSendingReport] = useState(false);
+  // v2.3.19 — provider-isolation surface from the API
+  const [providerSharedWithPrimary, setProviderSharedWithPrimary] = useState(false);
+  const [primaryProviderName, setPrimaryProviderName] = useState<string | null>(null);
+  const [healerProviderName, setHealerProviderName] = useState<string | null>(null);
   const toast = useToast();
+
+  const reloadConfig = async () => {
+    const configResult = await api.getHealerConfig();
+    if (configResult.ok) {
+      setHealerModelId(configResult.data.modelId ?? '');
+      setHealerTime(configResult.data.healerTime);
+      setHealerMode(configResult.data.healerMode);
+      setProviderSharedWithPrimary(configResult.data.providerSharedWithPrimary ?? false);
+      setPrimaryProviderName(configResult.data.primaryProviderName ?? null);
+      setHealerProviderName(configResult.data.healerProviderName ?? null);
+    }
+  };
 
   useEffect(() => {
     const load = async () => {
-      const [configResult, diagResult] = await Promise.all([
-        api.getHealerConfig(),
+      const [, diagResult] = await Promise.all([
+        reloadConfig(),
         api.getHealerDiagnostic(),
       ]);
-      if (configResult.ok) {
-        setHealerModelId(configResult.data.modelId ?? '');
-        setHealerTime(configResult.data.healerTime);
-        setHealerMode(configResult.data.healerMode);
-      }
       if (diagResult.ok && diagResult.data) {
         setLastDiagnostic(diagResult.data);
       }
@@ -2889,6 +2900,9 @@ const HealerCard = ({ models }: { models: Model[] }) => {
     if (result.ok) {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+      // v2.3.19 — reload so the provider-isolation banner reflects the new
+      // model selection without requiring a page refresh.
+      await reloadConfig();
     }
     setSaving(false);
   };
@@ -2942,7 +2956,7 @@ const HealerCard = ({ models }: { models: Model[] }) => {
       <div>
         <h3 className="card-header">Healing</h3>
         <p className="text-xs text-white/40 mt-1">
-          The Healer agent analyzes daily health data, auto-fixes routine issues (stuck agents, orphaned tasks), and proposes solutions for complex problems. Proposals appear on the Health page for your approval.
+          The Healer agent analyzes daily health data, auto-fixes routine issues (stuck agents, orphaned tasks), and proposes solutions for complex problems. Proposals appear on the Vitals page for your approval.
         </p>
       </div>
 
@@ -2963,6 +2977,17 @@ const HealerCard = ({ models }: { models: Model[] }) => {
         <p className="text-[10px] text-white/30 mt-1">
           Mid-tier model recommended. Needs good reasoning but doesn't need to be frontier.
         </p>
+        {/* v2.3.19 — provider-isolation warning. The Healer's whole point is
+            being on a DIFFERENT provider from the main agent so it can step
+            in when the main provider goes down. Same provider = no backup. */}
+        {providerSharedWithPrimary && primaryProviderName && (
+          <div className="mt-3 rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-200/90 leading-relaxed">
+            <div className="font-medium mb-1 text-amber-200">Heads up — both agents are using the same service</div>
+            <div>
+              Your main agent and your Healer agent are both using {primaryProviderName}. If {primaryProviderName} has a problem, both will stop working at the same time and there's nothing to step in and fix it. Pick a different model from a different service for one of them.
+            </div>
+          </div>
+        )}
       </div>
 
       <div>

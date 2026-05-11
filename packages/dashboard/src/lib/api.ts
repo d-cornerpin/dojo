@@ -1261,6 +1261,12 @@ export interface HealerConfig {
   modelId: string | null;
   healerTime: string;
   healerMode: 'active' | 'monitor' | 'off';
+  // v2.3.19 — provider-isolation surface. true when the Healer and the
+  // primary agent are on the same provider, which defeats the cross-
+  // provider safety net (if that provider goes down both go down).
+  providerSharedWithPrimary?: boolean;
+  primaryProviderName?: string | null;
+  healerProviderName?: string | null;
 }
 
 export interface HealerProposal {
@@ -1279,6 +1285,10 @@ export interface HealerProposal {
   agent_id: string | null;
   created_at: string;
   resolved_at: string | null;
+  // v2.3.19 — set when the Healer calls healer_mark_applied AFTER an
+  // approved proposal has been carried out. Distinguishes "approved
+  // (waiting for Healer to execute)" from "applied (done)".
+  applied_at?: string | null;
 }
 
 export interface HealerAction {

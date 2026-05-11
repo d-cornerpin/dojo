@@ -14,6 +14,7 @@ import { handleIMCommand } from './imessage-commands.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { v4 as uuidv4 } from 'uuid';
 import Database from 'better-sqlite3';
+import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 
 // ── iMessage attachment pipeline ────────────────────────────────────────────
 //
@@ -747,7 +748,12 @@ function sendIMessageViaAppleScript(recipient: string, text: string): void {
   });
 }
 
-export function sendIMessage(recipient: string, rawText: string): void {
+// v2.3.19 — returns true if the send actually succeeded, false if every
+// path failed (imsg CLI errored, AppleScript denied, etc.). Pre-spec
+// this returned void and silently swallowed failures, which left
+// imessage_send callers reporting "sent" to the agent (and thus to the
+// user) when nothing actually went through.
+export function sendIMessage(recipient: string, rawText: string): boolean {
   // Sanitize for iMessage — strip markdown, literal \n, excessive whitespace.
   // This runs on ALL iMessage paths so nothing gets through unsanitized.
   let text = rawText;
@@ -781,11 +787,13 @@ export function sendIMessage(recipient: string, rawText: string): void {
     // (v2.3.16) Dropped dedicated `imessage:sent` WS broadcast — the
     // dashboard sees outbound delivery via the [SENT VIA IMESSAGE to <owner>]
     // system marker that the loop persists in the chat stream.
+    return true;
   } catch (err) {
     logger.error('Failed to send iMessage', {
       error: err instanceof Error ? err.message : String(err),
       recipient,
     });
+    return false;
   }
 }
 
@@ -879,12 +887,28 @@ export function getApprovedSenders(): string[] {
 
 export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical'): void {
   try {
-    const prefix = urgency === 'critical' ? '[CRITICAL]' : urgency === 'warning' ? '[WARNING]' : '[INFO]';
-    const fullMessage = `${prefix} ${message}`;
+    // v2.3.19 (error-handling-spec Phase 5) — only CRITICAL alerts go
+    // to iMessage. User feedback: "I only want true blockers or true
+    // issues the user needs to be aware of to go to imessage." Warning
+    // and info still get logged (and broadcast to the dashboard
+    // separately via chat:error / Vitals), they just don't ping the
+    // phone. If a caller is wrong-severity, fix it at the call site —
+    // don't override here.
+    const scrubbed = scrubTechnicalDetail(message);
 
-    logger.info('Sending alert', { urgency, message: message.slice(0, 200) });
+    if (urgency !== 'critical') {
+      logger.info('Alert suppressed from iMessage (non-critical)', {
+        urgency,
+        message: scrubbed.slice(0, 200),
+      });
+      return;
+    }
 
-    // Always send to default sender only
+    const fullMessage = `[CRITICAL] ${scrubbed}`;
+    logger.info('Sending critical alert to iMessage', {
+      message: scrubbed.slice(0, 200),
+    });
+
     const recipient = getDefaultSender();
     if (!recipient) {
       logger.warn('Cannot send alert: no default sender configured');

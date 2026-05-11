@@ -1129,6 +1129,41 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'healer_recent_actions',
+    description: 'Get a tight summary of recent Healer actions — timestamp, category, agent, and result only. Use BEFORE proposing a fix to check whether you (or a previous cycle) already tried something similar. The full description of any specific action is available via healer_action_detail(action_id). Output is capped — you cannot pull all history; pick a reasonable limit and look-back window.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max number of rows to return (default 20, max 50)' },
+        since_hours: { type: 'number', description: 'Look back this many hours (default 24, max 168 = 7 days)' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'healer_action_detail',
+    description: 'Get the full description of ONE specific Healer action by its ID (from healer_recent_actions). Use to drill into the why/what of a past action without pulling the whole log. Description is capped at ~1500 chars.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action_id: { type: 'string', description: 'The ID of the action to look up.' },
+      },
+      required: ['action_id'],
+    },
+  },
+  {
+    name: 'healer_mark_applied',
+    description: 'Record that you have actually carried out an approved proposal. Call this AFTER you have executed the proposed fix (model switch, config change, etc.). The proposal then transitions from "approved" to "applied" in the Vitals dashboard so the user sees the work is done. Without this, an approved proposal sits visible forever with no indication of whether the fix actually happened.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        proposal_id: { type: 'string', description: 'The ID of the proposal you carried out. Available in the diagnostic message you received.' },
+        notes: { type: 'string', description: 'Brief note about what you actually did (e.g., "Switched Kelly to Claude Haiku 4.5 via API"). Stored alongside the timestamp for the audit trail.' },
+      },
+      required: ['proposal_id'],
+    },
+  },
+  {
     name: 'get_current_time',
     description: 'Get the current date and time in UTC and local. Returns utc (ISO 8601), local (human-readable), and timezone. ALWAYS use the utc value when setting scheduled_start on tasks.',
     input_schema: {
@@ -2408,6 +2443,33 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
   let content: string = '';
   let isError = false;
 
+  // ── v2.3.19 (Scenario 18 finding) — unknown-arg detection ──
+  // Pre-spec, an agent could call e.g. tracker_create_task with
+  // schedule_cron="every fortnight" and the engine silently dropped the
+  // unknown arg. Net result: the agent thought it scheduled a task and
+  // it didn't, with no feedback. Now we detect args not in the tool's
+  // declared schema and prepend a warning to the tool result so the
+  // agent (and through it, the user) finds out.
+  let unknownArgsWarning: string | null = null;
+  try {
+    const def = toolDefinitions.find((t) => t.name === name);
+    if (def && def.input_schema && typeof def.input_schema === 'object') {
+      const schema = def.input_schema as { properties?: Record<string, unknown> };
+      const declared = new Set(Object.keys(schema.properties ?? {}));
+      const extras = Object.keys(args ?? {}).filter(
+        (k) => !k.startsWith('__') && !declared.has(k),
+      );
+      if (extras.length > 0) {
+        const declaredList = [...declared].join(', ') || '(none)';
+        unknownArgsWarning =
+          `[Engine warning: "${name}" was called with arg(s) not in its schema — ${extras.map((e) => `"${e}"`).join(', ')}. These were silently ignored. Declared args: ${declaredList}. If you meant a different param, check the spelling with load_tool_docs(tools=["${name}"]).]`;
+        logger.warn('Unknown tool args ignored', {
+          tool: name, extras, declared: [...declared],
+        }, agentId);
+      }
+    }
+  } catch { /* best effort */ }
+
   // ── Malformed tool call arguments ──
   // If the model produced invalid JSON for tool arguments, model.ts flags it
   // with __malformed_args. Return a clear error so the model can retry.
@@ -2756,26 +2818,44 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
             break;
           }
         }
-        const result = await spawnAgent({
-          parentId: agentId,
-          name: args.name as string,
-          systemPrompt: args.system_prompt as string,
-          modelId: args.model_id as string | undefined,
-          permissions: args.permissions as Parameters<typeof spawnAgent>[0]['permissions'],
-          toolsPolicy: args.tools as { allow: string[]; deny: string[] } | undefined,
-          timeout: args.timeout as number | undefined,
-          taskId: args.task_id as string | undefined,
-          contextHints: args.context_hints as string[] | undefined,
-          persist: args.persist as boolean | undefined,
-          classification: args.classification as 'ronin' | 'apprentice' | undefined,
-          shareUserProfile: args.share_user_profile as boolean | undefined,
-          groupId: args.group_id as string | undefined,
-          initialMessage: args.initial_message as string | undefined,
-          equippedTechniques: args.techniques as string[] | undefined,
-          alwaysLoadedTools: args.always_loaded_tools as string[] | undefined,
-          autoStart: args.auto_start as boolean | undefined,
-        });
-        content = `Agent spawned successfully.\nAgent ID: ${result.agentId}\nName: ${result.name}\nStatus: ${result.status}\nPersistent: ${result.persist ? 'yes' : 'no'}`;
+        // v2.3.19 (Scenario 7 finding) — wrap in try/catch so raw SQLite
+        // errors ("FOREIGN KEY constraint failed", etc.) don't leak to
+        // the agent. friendlyDbError translates them into actionable
+        // plain language.
+        try {
+          const result = await spawnAgent({
+            parentId: agentId,
+            name: args.name as string,
+            systemPrompt: args.system_prompt as string,
+            modelId: args.model_id as string | undefined,
+            permissions: args.permissions as Parameters<typeof spawnAgent>[0]['permissions'],
+            toolsPolicy: args.tools as { allow: string[]; deny: string[] } | undefined,
+            timeout: args.timeout as number | undefined,
+            taskId: args.task_id as string | undefined,
+            contextHints: args.context_hints as string[] | undefined,
+            persist: args.persist as boolean | undefined,
+            classification: args.classification as 'ronin' | 'apprentice' | undefined,
+            shareUserProfile: args.share_user_profile as boolean | undefined,
+            groupId: args.group_id as string | undefined,
+            initialMessage: args.initial_message as string | undefined,
+            equippedTechniques: args.techniques as string[] | undefined,
+            alwaysLoadedTools: args.always_loaded_tools as string[] | undefined,
+            autoStart: args.auto_start as boolean | undefined,
+          });
+          content = `Agent spawned successfully.\nAgent ID: ${result.agentId}\nName: ${result.name}\nStatus: ${result.status}\nPersistent: ${result.persist ? 'yes' : 'no'}`;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          // FK constraint failure usually means a bad model_id, group_id,
+          // or task_id reference. Make that explicit instead of leaking
+          // the raw SQLite message.
+          if (msg.includes('FOREIGN KEY constraint failed')) {
+            content = `Could not spawn agent — one of the references you passed (model_id, group_id, task_id, or parent_agent) points at something that doesn't exist. Double-check the IDs. Use list_models to find a valid model_id.`;
+          } else {
+            content = friendlyDbError(err, 'spawn_agent');
+          }
+          isError = true;
+          auditLog(agentId, 'spawn_agent', args.name as string | null, 'error', msg.slice(0, 200));
+        }
         break;
       }
       case 'kill_agent': {
@@ -3265,6 +3345,169 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
           content = `[OK] proposal_id=${propId}\n\nProposal created: "${args.title}". The user will see this in the dashboard vitals panel and can approve or deny it.`;
         } catch (err) {
           content = friendlyDbError(err, 'healer_propose');
+          isError = true;
+        }
+        break;
+      }
+      case 'healer_recent_actions': {
+        // v2.3.19 (error-handling-spec Phase 3 — Dreamer-style log
+        // discipline). Returns ONLY (timestamp, category, agent, result)
+        // — no descriptions. Capped to keep the Healer's prompt from
+        // growing unbounded.
+        const { isHealerAgent } = await import('../config/platform.js');
+        if (!isHealerAgent(agentId)) {
+          content = 'This tool is only available to the Healer agent.';
+          isError = true;
+          break;
+        }
+        const limit = Math.min(50, Math.max(1, (args.limit as number | undefined) ?? 20));
+        const sinceHours = Math.min(168, Math.max(1, (args.since_hours as number | undefined) ?? 24));
+        try {
+          const db = getDb();
+          const rows = db.prepare(`
+            SELECT id, created_at, category, agent_id, result
+            FROM healer_actions
+            WHERE created_at > datetime('now', '-${sinceHours} hours')
+            ORDER BY created_at DESC
+            LIMIT ?
+          `).all(limit) as Array<{ id: string; created_at: string; category: string; agent_id: string | null; result: string | null }>;
+          if (rows.length === 0) {
+            content = `No Healer actions in the last ${sinceHours}h.`;
+            break;
+          }
+          // Resolve agent IDs to names in a single batch query.
+          const agentIds = [...new Set(rows.map((r) => r.agent_id).filter(Boolean))] as string[];
+          const nameMap = new Map<string, string>();
+          if (agentIds.length > 0) {
+            const placeholders = agentIds.map(() => '?').join(',');
+            const nameRows = db.prepare(`SELECT id, name FROM agents WHERE id IN (${placeholders})`)
+              .all(...agentIds) as Array<{ id: string; name: string }>;
+            for (const n of nameRows) nameMap.set(n.id, n.name);
+          }
+          // Each line ~80 chars; total well under 1500 char cap.
+          const lines = rows.map((r) => {
+            const who = r.agent_id ? (nameMap.get(r.agent_id) ?? r.agent_id) : '(no agent)';
+            return `${r.created_at}  ${r.id.slice(0, 8)}  ${r.category.padEnd(20).slice(0, 20)}  ${who.padEnd(12).slice(0, 12)}  ${r.result ?? '?'}`;
+          });
+          const header = `(${rows.length} actions in last ${sinceHours}h, newest first)`;
+          let body = `${header}\n${lines.join('\n')}`;
+          if (body.length > 1500) body = body.slice(0, 1500) + '\n[truncated]';
+          content = body;
+        } catch (err) {
+          content = friendlyDbError(err, 'healer_recent_actions');
+          isError = true;
+        }
+        break;
+      }
+      case 'healer_action_detail': {
+        const { isHealerAgent } = await import('../config/platform.js');
+        if (!isHealerAgent(agentId)) {
+          content = 'This tool is only available to the Healer agent.';
+          isError = true;
+          break;
+        }
+        const actionId = (args.action_id as string | undefined)?.trim();
+        if (!actionId) {
+          content = 'Error: action_id is required. Get IDs from healer_recent_actions.';
+          isError = true;
+          break;
+        }
+        try {
+          const db = getDb();
+          // Allow short-prefix match so the Healer can quote the
+          // displayed 8-char prefix from healer_recent_actions.
+          const row = db.prepare(`
+            SELECT id, created_at, category, description, agent_id, action_taken, result
+            FROM healer_actions
+            WHERE id = ? OR id LIKE ?
+            LIMIT 1
+          `).get(actionId, `${actionId}%`) as
+            | { id: string; created_at: string; category: string; description: string; agent_id: string | null; action_taken: string; result: string | null }
+            | undefined;
+          if (!row) {
+            content = `No Healer action found for ID "${actionId}". Use healer_recent_actions to list recent ones.`;
+            break;
+          }
+          // Cap description so a runaway entry can't choke the model.
+          const desc = (row.description ?? '').slice(0, 1500);
+          let agentName = row.agent_id ?? '(no agent)';
+          if (row.agent_id) {
+            const n = db.prepare('SELECT name FROM agents WHERE id = ?').get(row.agent_id) as { name: string } | undefined;
+            if (n?.name) agentName = n.name;
+          }
+          content =
+            `Action ${row.id.slice(0, 8)} @ ${row.created_at}\n` +
+            `Category: ${row.category}\n` +
+            `Agent: ${agentName}\n` +
+            `Action taken: ${row.action_taken}\n` +
+            `Result: ${row.result ?? '?'}\n` +
+            `Description: ${desc}` +
+            (row.description && row.description.length > 1500 ? '\n[description truncated at 1500 chars]' : '');
+        } catch (err) {
+          content = friendlyDbError(err, 'healer_action_detail');
+          isError = true;
+        }
+        break;
+      }
+      case 'healer_mark_applied': {
+        // v2.3.19 (error-handling-spec Phase 3) — close the loop on
+        // approved proposals so the Vitals dashboard can show pending →
+        // approved → applied as three distinct states.
+        const { isHealerAgent } = await import('../config/platform.js');
+        if (!isHealerAgent(agentId)) {
+          content = 'This tool is only available to the Healer agent.';
+          isError = true;
+          break;
+        }
+        const proposalId = (args.proposal_id as string | undefined)?.trim();
+        if (!proposalId) {
+          content = 'Error: proposal_id is required.';
+          isError = true;
+          break;
+        }
+        const notes = (args.notes as string | undefined)?.slice(0, 500) ?? null;
+        try {
+          const db = getDb();
+          // Resolve short-prefix match for convenience (mirrors action_detail).
+          const row = db.prepare(`
+            SELECT id, status, applied_at FROM healer_proposals
+            WHERE id = ? OR id LIKE ?
+            LIMIT 1
+          `).get(proposalId, `${proposalId}%`) as
+            | { id: string; status: string; applied_at: string | null }
+            | undefined;
+          if (!row) {
+            content = `No proposal found for ID "${proposalId}".`;
+            isError = true;
+            break;
+          }
+          if (row.status !== 'approved') {
+            content = `Proposal ${row.id.slice(0, 8)} has status "${row.status}", not "approved". Only approved proposals can be marked applied.`;
+            isError = true;
+            break;
+          }
+          if (row.applied_at) {
+            content = `Proposal ${row.id.slice(0, 8)} was already marked applied at ${row.applied_at}. No change.`;
+            break;
+          }
+          db.prepare(`
+            UPDATE healer_proposals
+            SET applied_at = datetime('now'),
+                result_summary = COALESCE(?, result_summary)
+            WHERE id = ?
+          `).run(notes, row.id);
+          // Broadcast so the dashboard updates the Vitals card from
+          // "approved" to "applied" in real time.
+          try {
+            const { broadcast } = await import('../gateway/ws.js');
+            broadcast({
+              type: 'healer:proposal',
+              data: { id: row.id, status: 'applied' },
+            } as never);
+          } catch { /* best effort */ }
+          content = `Proposal ${row.id.slice(0, 8)} marked applied.${notes ? ' Notes recorded.' : ''}`;
+        } catch (err) {
+          content = friendlyDbError(err, 'healer_mark_applied');
           isError = true;
         }
         break;
@@ -4306,17 +4549,53 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
         let recipient = args.recipient as string | undefined;
         const message = args.message as string;
 
+        // v2.3.19 — fail loudly when the iMessage bridge is OFF. Pre-spec
+        // the tool returned "iMessage sent to X" regardless of bridge
+        // state, which left the agent confidently claiming delivery to
+        // the user when nothing was actually sent. Now the agent gets a
+        // clear error so it can tell the user the bridge is disabled
+        // and use the dashboard chat instead.
+        const { getIMBridgeStatus } = await import('../services/imessage-bridge.js');
+        const bridgeStatus = getIMBridgeStatus();
+        if (!bridgeStatus.running) {
+          content =
+            'iMessage bridge is currently disabled, so this message was NOT sent. ' +
+            'Tell the user that iMessage is turned off on this server and respond to them in the dashboard chat instead. ' +
+            (bridgeStatus.enabled
+              ? 'To re-enable iMessage delivery, the user can start it from Settings → iMessage.'
+              : 'The user can enable iMessage by adding an approved sender in Settings → iMessage.');
+          isError = true;
+          auditLog(agentId, 'imessage_send', recipient ?? '(no recipient)', 'denied', 'bridge disabled');
+          break;
+        }
+
         if (!recipient) {
           const defaultSender = getDefaultSender();
           if (!defaultSender) {
-            content = 'Error: No default sender configured and no recipient specified.';
+            content =
+              'iMessage was NOT sent — there is no default recipient configured on this server. ' +
+              'Tell the user in the dashboard chat instead, and let them know they can set a default contact in Settings → iMessage if they want this agent to text them.';
             isError = true;
+            auditLog(agentId, 'imessage_send', '(no recipient)', 'error', 'no default sender');
             break;
           }
           recipient = defaultSender;
         }
 
-        sendIMessage(recipient, message);
+        const sendOk = sendIMessage(recipient, message);
+        if (!sendOk) {
+          // v2.3.19 — the low-level send failed even though the bridge
+          // is reportedly "running" (e.g. imsg CLI not installed +
+          // AppleScript denied permission). Tell the agent honestly so
+          // it can fall back to the dashboard chat.
+          content =
+            'iMessage delivery failed at the system level — neither the imsg CLI nor AppleScript could send the message. ' +
+            'Tell the user the message did not go through, and respond in the dashboard chat instead. ' +
+            'The user can check System Settings → Privacy & Security → Automation to grant Messages access if AppleScript is the issue.';
+          isError = true;
+          auditLog(agentId, 'imessage_send', recipient, 'error', 'send returned false');
+          break;
+        }
 
         // Prevent double-sending when the agent is responding to an
         // incoming iMessage. If the turn was triggered by an iMessage
@@ -5307,6 +5586,14 @@ Thread is closed — respond to the user, not Imaginer.`;
   // Successful results only — error messages stay intact regardless of size.
   if (!isError) {
     content = applyMaxResultTokensCap(name, content);
+  }
+
+  // v2.3.19 — prepend the unknown-args warning if one was raised at
+  // the top of executeTool. Goes BEFORE the cap so it survives any
+  // result truncation. Applied to both success and error results so the
+  // agent always sees it.
+  if (unknownArgsWarning) {
+    content = `${unknownArgsWarning}\n\n${content}`;
   }
 
   return {

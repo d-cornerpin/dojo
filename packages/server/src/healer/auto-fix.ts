@@ -21,6 +21,93 @@ interface AutoFixResult {
   agentId?: string;
 }
 
+// ── v2.3.19 (error-handling-spec Phase 4) — frequent auto-fix sweep ──
+//
+// Runs every 5 minutes engine-level, bypassing the daily Healer cycle.
+// Targets the deterministic status-recovery fixes only (stuck-working,
+// long-paused, long-errored). Other auto-fixes (orphaned messages,
+// orphaned tasks/projects) need the full diagnostic and stay in the
+// daily cycle.
+//
+// This replaces the pre-spec "wait until 04:00 for a stuck agent to be
+// unstuck" behavior. Stuck-working detection (>10 min) was already at
+// runtime.ts:recoverStuckAgents on 5-min cadence; this adds the long-
+// paused (>30 min) and long-errored (>30 min) recovery to the same
+// cadence.
+
+const FREQUENT_AUTOFIX_INTERVAL_MS = 5 * 60 * 1000;
+const PAUSED_COOLDOWN_MS = 30 * 60 * 1000;
+const ERROR_COOLDOWN_MS = 30 * 60 * 1000;
+let frequentAutoFixTimer: ReturnType<typeof setInterval> | null = null;
+
+export function runFrequentAutoFixes(): void {
+  // Heartbeat log so we can confirm the timer is firing even when there
+  // are no agents to recover. Pre-spec, a silent sweep was impossible to
+  // distinguish from a dead timer.
+  logger.info('Frequent auto-fix sweep firing');
+  try {
+    const db = getDb();
+    const now = Date.now();
+
+    // Long-paused agents (status='paused' for >30 min).
+    const longPaused = db.prepare(`
+      SELECT id, name, status, updated_at FROM agents
+      WHERE status = 'paused'
+        AND updated_at < datetime('now', '-${PAUSED_COOLDOWN_MS / 1000} seconds')
+    `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
+
+    for (const a of longPaused) {
+      db.prepare(`UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?`).run(a.id);
+      broadcast({ type: 'agent:status', agentId: a.id, status: 'idle' });
+      logger.info('Frequent auto-fix: resumed long-paused agent', {
+        agentId: a.id, agentName: a.name, pausedSince: a.updated_at,
+      });
+      void persistAction(`Resumed ${a.name} — it had been paused for over 30 minutes`, 'success', a.id);
+    }
+
+    // Long-errored agents (status='error' for >30 min).
+    const longErrored = db.prepare(`
+      SELECT id, name, status, updated_at FROM agents
+      WHERE status = 'error'
+        AND updated_at < datetime('now', '-${ERROR_COOLDOWN_MS / 1000} seconds')
+    `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
+
+    for (const a of longErrored) {
+      db.prepare(`UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?`).run(a.id);
+      broadcast({ type: 'agent:status', agentId: a.id, status: 'idle' });
+      logger.info('Frequent auto-fix: reset long-errored agent', {
+        agentId: a.id, agentName: a.name, erroredSince: a.updated_at,
+      });
+      void persistAction(`Reset ${a.name} — it had been in error state for over 30 minutes`, 'success', a.id);
+    }
+  } catch (err) {
+    logger.error('runFrequentAutoFixes failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+async function persistAction(description: string, result: string, agentId: string | null): Promise<void> {
+  try {
+    const db = getDb();
+    db.prepare(`
+      INSERT INTO healer_actions (id, category, description, action_taken, result, agent_id, created_at)
+      VALUES (?, 'frequent_autofix', ?, 'auto_reset_status', ?, ?, datetime('now'))
+    `).run(uuidv4(), description, result, agentId);
+  } catch (err) {
+    logger.warn('persistAction failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+export function startFrequentAutoFixes(): void {
+  if (frequentAutoFixTimer) return;
+  frequentAutoFixTimer = setInterval(runFrequentAutoFixes, FREQUENT_AUTOFIX_INTERVAL_MS);
+  setTimeout(runFrequentAutoFixes, 60_000); // first run 1 min after start
+  logger.info('Frequent auto-fix sweep started', { intervalMs: FREQUENT_AUTOFIX_INTERVAL_MS });
+}
+
 // ── Individual Fix Functions ──
 
 function fixStuckAgent(item: DiagnosticItem): AutoFixResult {

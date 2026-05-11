@@ -16,6 +16,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { sendAlert } from '../services/imessage-bridge.js';
+import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 import { broadcast } from '../gateway/ws.js';
 
 const logger = createLogger('injury-recovery');
@@ -83,8 +84,134 @@ const AUTO_WAKE_DELAY_MS = 5 * 1000; // 5s — enough for DB writes to settle
 const GRACE_PERIOD_MS_TRANSIENT = 30 * 1000;
 const GRACE_PERIOD_MS_NON_TRANSIENT = 5 * 1000;
 
-// Max recovery attempts per agent before giving up and alerting the user
+// Max recovery attempts per agent before applying backoff. v2.3.19: this
+// is no longer "permanent suppression" — once the backoff window
+// elapses, Healer fires again. See healerBackoffMs() and
+// suppressedUntil below.
 const MAX_RECOVERY_ATTEMPTS = 3;
+
+// v2.3.19 (error-handling-spec Phase 3) — per-agent Healer backoff.
+//
+// Pre-spec: once recovery_attempts hit MAX, the Healer was suppressed
+// PERMANENTLY for that agent until the user manually intervened
+// (send message / reset_session / update_agent_profile). User feedback
+// was that this turned every transient escalation into a manual chore.
+//
+// New behavior: once attempts hit MAX, the Healer enters per-agent
+// backoff. After backoff window elapses, Healer fires again on the next
+// injury. Each consecutive attempt during/after backoff doubles the
+// next window: 10 min → 1 hr → 6 hr → 24 hr (cap). Reset on any
+// successful turn OR any applied Healer fix.
+const HEALER_BACKOFF_LADDER_MS: number[] = [
+  10 * 60 * 1000,        // 10 min after MAX
+  60 * 60 * 1000,        // 1 hr after MAX+1
+  6 * 60 * 60 * 1000,    // 6 hr after MAX+2
+  24 * 60 * 60 * 1000,   // 24 hr cap
+];
+function healerBackoffMs(attempts: number): number {
+  // attempts here is the count AFTER it was incremented past MAX. So
+  // attempts=MAX is index 0, attempts=MAX+1 is index 1, etc. Cap at last
+  // entry for any value past the ladder length.
+  const idx = Math.min(attempts - MAX_RECOVERY_ATTEMPTS, HEALER_BACKOFF_LADDER_MS.length - 1);
+  return HEALER_BACKOFF_LADDER_MS[Math.max(0, idx)];
+}
+
+// Per-agent absolute timestamp before which Healer will NOT re-fire.
+// Cleared on any successful turn (via onAgentRecovered).
+const healerSuppressedUntil = new Map<string, number>();
+
+// v2.3.19 (error-handling-spec Phase 4) — provider-wide pattern dedup.
+//
+// When the same provider is hurting MULTIPLE agents (e.g. an OpenRouter
+// outage), the pre-spec code spawned one Healer cycle per injured
+// agent. Three agents → three diagnostic cycles → three duplicate
+// Vitals proposals → wasted tokens + UI clutter.
+//
+// New behavior: once a provider-wide pattern is detected, mark it
+// alerted for 30 minutes. Subsequent injuries on the same provider
+// within that window skip the Healer dispatch (the pattern is already
+// being handled by the cycle that fired for the first agent — which
+// sees ALL three injuries in its diagnostic report).
+//
+// Map<providerName, lastAlertTimestampMs>
+const providerPatternAlerted = new Map<string, number>();
+const PROVIDER_PATTERN_WINDOW_MS = 30 * 60 * 1000;       // 30 min dedup
+const PROVIDER_PATTERN_LOOKBACK_MS = 60 * 60 * 1000;     // count peers errored in last 1h
+const PROVIDER_PATTERN_PEER_THRESHOLD = 2;               // 2 other agents = pattern (3 total)
+
+/**
+ * Decide whether this injury is part of a provider-wide outage already
+ * being handled. Returns the provider name if a recent pattern alert
+ * exists (in which case the caller should skip per-agent Healer
+ * dispatch), or null if no active pattern.
+ */
+function isProviderPatternHandled(agentId: string): string | null {
+  try {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT p.name AS provider_name
+      FROM agents a
+      JOIN models m ON m.id = a.model_id
+      JOIN providers p ON p.id = m.provider_id
+      WHERE a.id = ?
+    `).get(agentId) as { provider_name: string } | undefined;
+    if (!row?.provider_name) return null;
+
+    const alertedAt = providerPatternAlerted.get(row.provider_name);
+    if (!alertedAt) return null;
+    if (Date.now() - alertedAt > PROVIDER_PATTERN_WINDOW_MS) {
+      providerPatternAlerted.delete(row.provider_name);
+      return null;
+    }
+    return row.provider_name;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Mark a provider-wide pattern detected. Subsequent injuries on the same
+ * provider within PROVIDER_PATTERN_WINDOW_MS will skip Healer dispatch.
+ * Returns the provider name if a pattern was newly recorded, or null if
+ * no pattern (fewer than threshold peers).
+ */
+function maybeRecordProviderPattern(agentId: string): string | null {
+  try {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT p.name AS provider_name
+      FROM agents a
+      JOIN models m ON m.id = a.model_id
+      JOIN providers p ON p.id = m.provider_id
+      WHERE a.id = ?
+    `).get(agentId) as { provider_name: string } | undefined;
+    if (!row?.provider_name) return null;
+
+    const lookbackSec = Math.floor(PROVIDER_PATTERN_LOOKBACK_MS / 1000);
+    const peers = db.prepare(`
+      SELECT COUNT(*) AS cnt FROM agents a
+      JOIN models m ON m.id = a.model_id
+      JOIN providers p ON p.id = m.provider_id
+      WHERE p.name = ?
+        AND a.id != ?
+        AND a.last_error IS NOT NULL
+        AND a.last_error_at > datetime('now', '-${lookbackSec} seconds')
+    `).get(row.provider_name, agentId) as { cnt: number };
+
+    if (peers.cnt < PROVIDER_PATTERN_PEER_THRESHOLD) return null;
+
+    providerPatternAlerted.set(row.provider_name, Date.now());
+    logger.info('Provider-wide injury pattern detected — Healer will run ONE cycle for it', {
+      provider: row.provider_name,
+      triggeredBy: agentId,
+      peerCount: peers.cnt,
+      windowMinutes: PROVIDER_PATTERN_WINDOW_MS / 60_000,
+    });
+    return row.provider_name;
+  } catch {
+    return null;
+  }
+}
 
 // Pending recovery timers — keyed by agent ID. Cancelled if the agent recovers
 // within the grace period (no need to bother the healer).
@@ -134,34 +261,69 @@ export function onAgentInjured(agentId: string, errorMessage: string): void {
     if (healerRow && agentId === healerRow.value) {
       logger.warn('Healer agent is injured — alerting user directly (cannot self-heal)', { agentId });
       const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-      // sendAlert (iMessage to owner) keeps the technical detail; the toast
-      // shows a concise version with a clear instruction.
-      const techMsg = `The Healer agent${agent ? ` (${agent.name})` : ''} is injured and cannot self-heal. Error: ${errorMessage.slice(0, 200)}. Manual intervention needed.`;
+      // v2.3.19 (error-handling-spec Phase 2): both iMessage and dashboard
+      // toast use the same plain-English wording. Raw provider error stays
+      // in logs only (logged at line ~135 above). No JSON, no field paths,
+      // no "Error: ..." dump.
       const userMsg = `The Healer agent is broken and can't auto-fix itself. Open the Healer's detail page to investigate, or restart it from Settings.`;
-      sendAlert(techMsg, 'critical');
+      sendAlert(userMsg, 'critical');
       broadcastInjuryEvent(agentId, 'error', userMsg, 'HEALER_SELF_INJURED');
       return;
     }
   } catch { /* config not available */ }
 
-  // Check if we've already hit the max recovery attempts for this agent.
-  // If so, don't schedule another healer notification — alert the user
-  // instead, AND broadcast to the dashboard. Pre-2026-04-29 this only sent
-  // an iMessage which the user could miss, leaving an agent silently stuck.
+  // v2.3.19 (error-handling-spec Phase 3) — per-agent Healer backoff.
+  //
+  // Once attempts hit MAX, we enter backoff. The Healer can fire again
+  // after the backoff window elapses (10 min → 1 hr → 6 hr → 24 hr cap).
+  // The user gets a one-time iMessage on the FIRST entry into backoff;
+  // subsequent injuries within the window stay silent (the user already
+  // knows). This replaces the pre-spec permanent suppression that
+  // required manual unsticking.
   const attempts = getAttempts(agentId);
   if (attempts >= MAX_RECOVERY_ATTEMPTS) {
-    logger.warn('Max recovery attempts reached for agent — alerting user', {
-      agentId, attempts, max: MAX_RECOVERY_ATTEMPTS,
-    });
-    try {
-      const db = getDb();
-      const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-      const techMsg = `${agent?.name ?? agentId} has been injured ${attempts} times and auto-recovery has not worked. Healer is suppressed for this agent until it recovers. To unstick: send a message, call reset_session, or use update_agent_profile. Last error: ${errorMessage.slice(0, 200)}`;
-      const userMsg = `${agent?.name ?? agentId} is stuck and auto-recovery isn't working. Send a message or reset the session from the agent's detail page to unstick it.`;
-      sendAlert(techMsg, 'warning');
-      broadcastInjuryEvent(agentId, 'warning', userMsg, 'HEALER_SUPPRESSED_MAX_ATTEMPTS');
-    } catch { /* best effort */ }
-    return;
+    const now = Date.now();
+    const suppressedUntil = healerSuppressedUntil.get(agentId) ?? 0;
+
+    if (suppressedUntil > now) {
+      // Still in backoff window — silent. Healer will get a fresh shot
+      // when the timer elapses.
+      logger.info('Healer in backoff for agent — skipping this injury', {
+        agentId,
+        attempts,
+        suppressedUntilIso: new Date(suppressedUntil).toISOString(),
+        remainingMs: suppressedUntil - now,
+      });
+      return;
+    }
+
+    // Backoff window has elapsed (or this is the first entry into
+    // backoff). Schedule the NEXT backoff window now so we don't fire
+    // again immediately on a re-injury during this Healer cycle.
+    const nextBackoffMs = healerBackoffMs(attempts);
+    healerSuppressedUntil.set(agentId, now + nextBackoffMs);
+
+    // Only alert the user on the FIRST entry into the backoff cycle
+    // (attempts === MAX). Subsequent re-tries should be silent so the
+    // user isn't pinged every few minutes for a slow-resolving issue.
+    if (attempts === MAX_RECOVERY_ATTEMPTS) {
+      logger.warn('Max recovery attempts hit — entering Healer backoff', {
+        agentId, attempts, max: MAX_RECOVERY_ATTEMPTS, nextRetryInMs: nextBackoffMs,
+      });
+      try {
+        const db = getDb();
+        const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+        const userMsg = `${agent?.name ?? agentId} has been stuck for a few tries and auto-recovery isn't unsticking it. I'll keep trying in the background. You can also send a message or reset its session from the detail page.`;
+        sendAlert(userMsg, 'warning');
+        broadcastInjuryEvent(agentId, 'warning', userMsg, 'HEALER_SUPPRESSED_MAX_ATTEMPTS');
+      } catch { /* best effort */ }
+    } else {
+      logger.info('Healer retry after backoff window — re-engaging', {
+        agentId, attempts, nextRetryInMs: nextBackoffMs,
+      });
+    }
+    // Fall through — Healer attempts again. attempts++ happens later in
+    // the normal flow.
   }
 
   // Cancel any existing timers for this agent (rapid re-injury)
@@ -178,11 +340,22 @@ export function onAgentInjured(agentId: string, errorMessage: string): void {
   const isTransient = errorClass === 'rate_limit' || errorClass === 'network';
   const gracePeriodMs = isTransient ? GRACE_PERIOD_MS_TRANSIENT : GRACE_PERIOD_MS_NON_TRANSIENT;
 
+  // v2.3.19 — known-permanent errors (auth, config) should NOT auto-wake.
+  // The pre-spec auto-wake was useful for transient flakes, but firing it
+  // on a 401 just spams paid model calls every 5 seconds with the same
+  // broken credentials. Tier D conditions get the Healer's attention but
+  // skip the engine-level retry.
+  const isKnownPermanent =
+    errorClass === 'auth' ||
+    errorClass === 'config' ||
+    /\[auth_invalid\]|\[access_denied\]|\[quota_exhausted\]|\[no_models_available\]|invalid_api_key|\bunauthorized\b|api key/i.test(errorMessage);
+
   logger.info('Agent injured — scheduling auto-wake + healer notification', {
     agentId,
     errorClass,
     isTransient,
-    autoWakeDelayMs: AUTO_WAKE_DELAY_MS,
+    isKnownPermanent,
+    autoWakeDelayMs: isKnownPermanent ? 0 : AUTO_WAKE_DELAY_MS,
     gracePeriodMs,
     attempt: attempts + 1,
     maxAttempts: MAX_RECOVERY_ATTEMPTS,
@@ -192,6 +365,16 @@ export function onAgentInjured(agentId: string, errorMessage: string): void {
   // loop without involving the Healer (no LLM cost). If transient errors
   // cleared or in-loop recovery handles the failure, the agent recovers
   // here and onAgentRecovered cancels the Healer timer below.
+  //
+  // v2.3.19 — skip auto-wake entirely for known-permanent errors. The
+  // Healer is still scheduled below (it can audit, propose, log), but no
+  // wasteful model retry.
+  if (isKnownPermanent) {
+    logger.info('Skipping auto-wake — error is known-permanent (will not self-clear)', {
+      agentId, errorClass,
+    });
+    // Still schedule the Healer notification below — fall through.
+  } else {
   const wakeTimer = setTimeout(async () => {
     autoWakeTimers.delete(agentId);
     try {
@@ -222,10 +405,35 @@ export function onAgentInjured(agentId: string, errorMessage: string): void {
     }
   }, AUTO_WAKE_DELAY_MS);
   autoWakeTimers.set(agentId, wakeTimer);
+  } // end of "not known-permanent" auto-wake block
 
   // Step 2 — Healer notification. Fires after the grace period if the
   // agent is still injured. With the auto-wake above, this only fires
   // when the agent is genuinely stuck.
+  //
+  // v2.3.19 (error-handling-spec Phase 4) — pattern-aware dispatch:
+  // before scheduling, check if this injury is part of a provider-wide
+  // pattern that's ALREADY being handled by a recent Healer dispatch.
+  // If yes, skip — the existing cycle sees all the injuries in its
+  // diagnostic report and there's no point spawning another.
+  const alreadyHandledProvider = isProviderPatternHandled(agentId);
+  if (alreadyHandledProvider) {
+    logger.info('Skipping per-agent Healer dispatch — provider-wide pattern already in flight', {
+      agentId,
+      provider: alreadyHandledProvider,
+    });
+    // We still bump the attempts counter so the per-agent backoff
+    // ladder progresses correctly on repeat injuries.
+    setAttempts(agentId, attempts + 1);
+    return;
+  }
+
+  // No active pattern yet — but is this injury part of a NEW emerging
+  // pattern (≥2 peers on the same provider already errored in last 1h)?
+  // If so, record it BEFORE scheduling so subsequent injuries on the
+  // same provider during the dispatch window get deduped.
+  maybeRecordProviderPattern(agentId);
+
   const timer = setTimeout(() => {
     pendingTimers.delete(agentId);
     setAttempts(agentId, attempts + 1);
@@ -245,6 +453,11 @@ export function onAgentRecovered(agentId: string): void {
   // If it errors again later, the counter starts fresh. Persisted to DB
   // so a future restart sees a clean state.
   setAttempts(agentId, 0);
+
+  // v2.3.19 — also clear the Healer backoff window so the next injury
+  // gets full attention again (don't carry a "muted Healer" state across
+  // a successful turn).
+  healerSuppressedUntil.delete(agentId);
 
   // Cancel the engine auto-wake timer if it's still pending — agent recovered
   // before we needed to poke them.
@@ -327,9 +540,12 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
       .get(healerId) as { id: string; status: string } | undefined;
     if (!healer) {
       logger.warn('Healer agent not available — cannot auto-recover injured agent', { agentId, healerId });
-      const techMsg = `${agent.name} is injured but the Healer agent is missing or terminated, so auto-recovery cannot run. Restore the Healer in Settings → Sensei, or manually unstick this agent. Last error: ${errorMessage.slice(0, 200)}`;
+      // v2.3.19 (error-handling-spec Phase 2): plain language only on
+      // user-facing surfaces. Provider error already logged above.
       const userMsg = `${agent.name} is stuck and the Healer agent is missing. Restore the Healer in Settings → Sensei, or send a message to unstick the agent manually.`;
-      try { sendAlert(techMsg, 'warning'); } catch { /* best effort */ }
+      // v2.3.19 — Healer missing is a true blocker (auto-recovery
+      // entirely off until restored). Critical.
+      try { sendAlert(userMsg, 'critical'); } catch { /* best effort */ }
       broadcastInjuryEvent(agentId, 'error', userMsg, 'HEALER_MISSING');
       return;
     }
@@ -368,11 +584,21 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
 
     const content = parts.join('\n');
 
-    // Deliver via A2A transport — ASSIGN intent wakes the healer to act
-    const { deliverA2AMessage, makeThreadId } = await import('../agent/a2a-transport.js');
+    // Deliver via A2A transport — ASSIGN intent wakes the healer to act.
+    //
+    // v2.3.19 — fresh thread per injury. Pre-spec, all injuries for the
+    // same agent shared a single deterministic thread ID
+    // (`injury-${agentId}`), which meant the 8-message hop limit
+    // permanently retired the thread after enough flapping. Subsequent
+    // injuries got HOP_LIMIT_EXCEEDED and the Healer never saw them.
+    // Each injury notification now opens its own thread — correct
+    // because each injury IS a separate event the Healer should
+    // diagnose freshly. Recovery notices below still get a fresh
+    // thread too (they're informational, not part of the conversation).
+    const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
     const result = await deliverA2AMessage({
       intent: 'ASSIGN',
-      threadId: makeThreadId(`injury-${agentId}`),
+      threadId: `injury-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       requiresResponse: true,
       payload: content,
       toAgent: healerId,
@@ -448,10 +674,11 @@ async function notifyHealerOfRecovery(agentId: string): Promise<void> {
 
     // Deliver via A2A transport — FYI intent does NOT wake the healer.
     // The recovery notice sits as read-only context, no tokens spent.
-    const { deliverA2AMessage, makeThreadId } = await import('../agent/a2a-transport.js');
+    // v2.3.19 — fresh thread (matches the injury-alert change above).
+    const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
     await deliverA2AMessage({
       intent: 'FYI',
-      threadId: makeThreadId(`injury-${agentId}`), // Same thread as the injury alert
+      threadId: `recovery-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       requiresResponse: false,
       payload: content,
       toAgent: healerId,
@@ -476,11 +703,11 @@ export function rehydrateInjuredAgents(): void {
   try {
     const db = getDb();
     const injured = db.prepare(`
-      SELECT id, last_error FROM agents
+      SELECT id, last_error, recovery_attempts FROM agents
       WHERE status IN ('error', 'paused')
         AND status != 'terminated'
         AND last_error IS NOT NULL
-    `).all() as Array<{ id: string; last_error: string | null }>;
+    `).all() as Array<{ id: string; last_error: string | null; recovery_attempts: number | null }>;
 
     if (injured.length > 0) {
       logger.info('Rehydrating injured agents after server restart', {
@@ -488,6 +715,21 @@ export function rehydrateInjuredAgents(): void {
         agentIds: injured.map(a => a.id),
       });
       for (const agent of injured) {
+        // v2.3.19 — a server restart is a meaningful "fresh start"
+        // signal. Pre-spec, recovery_attempts persisted across restarts,
+        // so an agent that hit attempt 12 before a restart picked up at
+        // attempt 13 — instantly into the longest backoff window with
+        // no chance to actually heal naturally. Reset to 0 on rehydrate
+        // and clear any in-memory backoff suppression. The Healer gets
+        // a fresh shot.
+        const prevAttempts = agent.recovery_attempts ?? 0;
+        if (prevAttempts > 0) {
+          setAttempts(agent.id, 0);
+          healerSuppressedUntil.delete(agent.id);
+          logger.info('Reset stale recovery_attempts on rehydrate', {
+            agentId: agent.id, prevAttempts,
+          });
+        }
         onAgentInjured(agent.id, agent.last_error ?? 'Unknown error (pre-restart)');
       }
     }

@@ -26,6 +26,14 @@ export type RecoveryActionKind =
   | 'tool_crash'
   | 'network'
   | 'auth'
+  // v2.3.19 additions from the expanded provider classifier
+  | 'image_too_large_post_sips'
+  | 'image_too_many'
+  | 'tool_name_unknown'
+  | 'tool_args_invalid_json'
+  | 'tool_args_schema_mismatch'
+  | 'refusal'
+  | 'provider_garbage'
   | 'unknown';
 
 export interface RecoveryAction {

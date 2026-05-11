@@ -218,7 +218,27 @@ export async function webFetch(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Web fetch failed', { error: msg, url }, agentId);
-    return `Web fetch failed: ${msg}`;
+    // v2.3.19 — translate the raw Node fetch error into something
+    // actionable. Pre-spec the agent got "Web fetch failed: fetch
+    // failed" which is doubled-up and unhelpful — the doubled "fetch
+    // failed" is the literal Node error message with no detail.
+    const lower = msg.toLowerCase();
+    let friendly: string;
+    if (lower.includes('enotfound') || lower.includes('getaddrinfo')) {
+      friendly = `Couldn't reach ${url} — the domain doesn't resolve. Check the URL for typos or confirm the site is live.`;
+    } else if (lower.includes('econnrefused')) {
+      friendly = `Couldn't reach ${url} — connection refused. The server may be down or blocking the request.`;
+    } else if (lower.includes('etimedout') || lower.includes('timeout')) {
+      friendly = `Couldn't reach ${url} — request timed out. The server is slow or unresponsive.`;
+    } else if (lower.includes('certificate') || lower.includes('cert_') || lower.includes('ssl')) {
+      friendly = `Couldn't reach ${url} — TLS/certificate problem. The site may have an invalid HTTPS certificate.`;
+    } else if (msg === 'fetch failed' || lower === 'fetch failed') {
+      // Generic Node fetch fallback when no `cause` was attached.
+      friendly = `Couldn't reach ${url} — the request failed at the network layer. The domain may not exist or there may be no internet connection.`;
+    } else {
+      friendly = `Web fetch of ${url} failed: ${msg}`;
+    }
+    return friendly;
   }
 
   // Phase 3.5 (2026-05-04) — when a `prompt` is provided, call a cheap

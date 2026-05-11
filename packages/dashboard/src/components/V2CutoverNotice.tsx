@@ -67,7 +67,7 @@ export const V2CutoverNotice = () => {
         if (errors > 0) parts.push(`${errors} failed`);
         toast.success(parts.join(', ') + '.');
       } else {
-        toast.error(r.error || 'Could not reset sessions. Try again or check the Health page.');
+        toast.error(r.error || 'Could not reset sessions. Try again or check the Vitals page.');
       }
     } catch {
       toast.error('Network error while resetting sessions.');

@@ -50,7 +50,8 @@ export const HealerVitals = () => {
   };
 
   const pendingCount = proposals.filter(p => p.status === 'pending').length;
-  const recentActions = actions.slice(0, 10);
+  // v2.3.19 — show the last 50 actions in a scrollable timeline (was 10).
+  const recentActions = actions.slice(0, 50);
   const pendingProposals = proposals.filter(p => p.status === 'pending');
   const resolvedProposals = proposals.filter(p => p.status !== 'pending').slice(0, 5);
 
@@ -151,35 +152,61 @@ export const HealerVitals = () => {
             </div>
           )}
 
-          {/* Resolved proposals */}
+          {/* Resolved proposals — three states post v2.3.19:
+              approved + applied: Healer carried it out (green, "Applied")
+              approved + not yet applied: user said yes, Healer hasn't done it
+                                          yet (amber, "Approved — waiting")
+              denied: user said no (coral, "Denied")
+          */}
           {resolvedProposals.length > 0 && (
             <div className="space-y-1">
               <p className="text-[10px] text-white/30 uppercase tracking-wider">Previous Suggestions</p>
-              {resolvedProposals.map(p => (
-                <div key={p.id} className="flex items-center gap-2 text-xs text-white/40 py-1">
-                  <span className={p.status === 'approved' || p.status === 'completed' ? 'text-cp-teal' : p.status === 'denied' ? 'text-cp-coral' : 'text-white/30'}>
-                    {p.status === 'approved' || p.status === 'completed' ? '✓' : p.status === 'denied' ? '✗' : '○'}
-                  </span>
-                  <span>{p.title}</span>
-                  <span className="text-white/20">({p.status})</span>
-                </div>
-              ))}
+              {resolvedProposals.map(p => {
+                const isApplied = p.status === 'approved' && !!p.applied_at;
+                const isApprovedPending = p.status === 'approved' && !p.applied_at;
+                const isDenied = p.status === 'denied';
+                const iconColor = isApplied ? 'text-cp-teal'
+                  : isApprovedPending ? 'text-cp-amber'
+                  : isDenied ? 'text-cp-coral'
+                  : 'text-white/30';
+                const icon = isApplied ? '✓'
+                  : isApprovedPending ? '⋯'
+                  : isDenied ? '✗'
+                  : '○';
+                const label = isApplied ? 'applied'
+                  : isApprovedPending ? 'approved — waiting on Healer'
+                  : p.status;
+                return (
+                  <div key={p.id} className="flex items-center gap-2 text-xs text-white/40 py-1">
+                    <span className={iconColor}>{icon}</span>
+                    <span>{p.title}</span>
+                    <span className="text-white/20">({label})</span>
+                  </div>
+                );
+              })}
             </div>
           )}
 
-          {/* Recent auto-fix actions */}
+          {/* Recent Healer action timeline (last 50, scrollable).
+              v2.3.19 — promoted from "last 10" to a proper scrollable
+              activity log so the user can see what the Healer's been
+              doing over time, not just the most recent handful. */}
           {recentActions.length > 0 && (
             <div className="space-y-1">
-              <p className="text-[10px] text-white/30 uppercase tracking-wider">Things the Healer Fixed Automatically</p>
-              {recentActions.map(a => (
-                <div key={a.id} className="flex items-center gap-2 text-xs py-1">
-                  <span className={a.result === 'success' ? 'text-cp-teal' : a.result === 'failed' ? 'text-cp-coral' : 'text-cp-amber'}>
-                    {a.result === 'success' ? '✓' : a.result === 'failed' ? '✗' : '~'}
-                  </span>
-                  <span className="text-white/50">{a.description}</span>
-                  <span className="text-white/20 text-[10px] ml-auto">{formatDate(a.created_at)}</span>
-                </div>
-              ))}
+              <p className="text-[10px] text-white/30 uppercase tracking-wider">
+                Things the Healer Did Automatically {recentActions.length >= 50 && <span className="text-white/20">(showing last 50)</span>}
+              </p>
+              <div className="max-h-64 overflow-y-auto pr-1 space-y-0.5">
+                {recentActions.map(a => (
+                  <div key={a.id} className="flex items-center gap-2 text-xs py-1">
+                    <span className={a.result === 'success' ? 'text-cp-teal' : a.result === 'failed' ? 'text-cp-coral' : 'text-cp-amber'}>
+                      {a.result === 'success' ? '✓' : a.result === 'failed' ? '✗' : '~'}
+                    </span>
+                    <span className="text-white/50 flex-1 truncate" title={a.description}>{a.description}</span>
+                    <span className="text-white/20 text-[10px] shrink-0">{formatDate(a.created_at)}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>

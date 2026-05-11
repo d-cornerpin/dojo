@@ -35,17 +35,35 @@ export const turnContinuationCounts = new Map<string, number>();
 // the agent loop is active, so dashboard reconnects mid-turn pick up state.
 export const statusHeartbeats = new Map<string, ReturnType<typeof setInterval>>();
 
-// Per-agent streak of consecutive same-kind in-loop recoveries. Capped at
-// MAX_CONSECUTIVE_INLOOP_RECOVERIES (=3) so a recovery that can't actually
-// fix the underlying problem doesn't loop forever (we saw 132 retries-in-
-// seconds before the cap existed).
+// Per-agent streak of consecutive same-kind in-loop recoveries.
 //
-// Shared across v1 and v2 so an agent's streak persists across the runtime
-// boundary. Phase 6 (2026-05-04) moved this from runtime.ts to here so v2's
-// recovery cascade can read/write it directly without import cycles.
-export const recoveryRunStreak = new Map<string, { kind: string; count: number }>();
+// v2.3.19 (error-handling-spec Phase 1): the streak is now keyed by
+// `(kind, inputsFingerprint)`. The agent gets unlimited adaptation
+// attempts as long as it actually CHANGES its inputs each turn (different
+// tool args, different message body, etc.). The cap fires only when the
+// agent keeps re-running the SAME failing inputs — that's when system
+// notes aren't helping and we should escalate to Healer (Tier C), not
+// inject a 4th identical note.
+//
+// Pre-v2.3.19: count-based cap of 3 per kind. Worked for short loops but
+// punished agents that hit the same KIND with different inputs across a
+// long session (e.g. three different malformed tool calls in one turn,
+// none of them identical).
+//
+// Shared across v1 and v2 so an agent's streak persists across the
+// runtime boundary.
+export const recoveryRunStreak = new Map<
+  string,
+  { kind: string; inputsFingerprint: string; count: number }
+>();
 
-// Maximum consecutive same-kind in-loop recoveries before escalating to
-// injury (status='error', healer notification). Lives here because both
-// runtime.ts and v2/recovery.ts need it.
+// Hard ceiling on retries when the inputs DON'T change — that means the
+// system note isn't helping and the cycle is wasteful. Lowered from 3 to
+// 2: one retry with the note, one to confirm it's not just transient,
+// then escalate.
+export const MAX_INLOOP_RECOVERIES_SAME_INPUTS = 2;
+
+// Legacy export — kept so old callers still compile. v2.3.19 code paths
+// use MAX_INLOOP_RECOVERIES_SAME_INPUTS instead. Will be removed once
+// all callers migrate.
 export const MAX_CONSECUTIVE_INLOOP_RECOVERIES = 3;

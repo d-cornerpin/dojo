@@ -62,8 +62,9 @@ export function recordError(agentId: string): boolean {
     agentErrors.delete(agentId); // Reset after pausing
 
     // Broadcast structured error to dashboard so the chat shows why the agent was paused.
-    // Plain language; user must dismiss this and decide whether to resume the agent.
-    const errorMsg = `Agent paused after repeated errors (${ERROR_LOOP_THRESHOLD} in ${ERROR_LOOP_WINDOW_MS / 1000}s). Open the Health page to investigate, or resume the agent from its detail page.`;
+    // v2.3.19 (error-handling-spec Phase 2) — plain language, no jargon
+    // about thresholds in user-facing copy. The technical count is in logs.
+    const errorMsg = `Agent paused after repeated errors. Open the Vitals page to investigate, or resume the agent from its detail page.`;
     broadcast({
       type: 'chat:error',
       agentId,
@@ -78,7 +79,10 @@ export function recordError(agentId: string): boolean {
       const db = getDb();
       const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
       const name = agent?.name ?? agentId;
-      sendAlert(`${name} has been paused due to repeated errors (${ERROR_LOOP_THRESHOLD} failures in ${ERROR_LOOP_WINDOW_MS / 1000}s). Check the dashboard.`, 'critical');
+      // v2.3.19 — a single agent paused is NOT a true blocker. The
+      // Healer's backoff handles it; the dashboard banner already
+      // surfaces it. Demoted to warning (dashboard only).
+      sendAlert(`${name} has been paused after repeated errors. Open the dashboard to investigate.`, 'warning');
     } catch (err) {
       logger.warn('Failed to send iMessage alert for error loop', { agentId, error: err instanceof Error ? err.message : String(err) });
     }

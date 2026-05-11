@@ -10,6 +10,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getModelCapabilities } from '../services/capabilities.js';
 import { prepareImageForModel } from './image-prep.js';
+import { rectifyAttachment } from './input-rectification.js';
 import { runV2Turn } from './v2/loop.js';
 
 // One-shot dedup so the "model does not support tools" banner only fires once
@@ -324,12 +325,13 @@ class AgentRuntime {
     } catch (err) {
       // Safety-net only. v2/recovery.ts is the primary error handler and is
       // wrapped in v2/loop.ts's own try/catch — escapes here mean recovery
-      // itself failed (rare but possible). Without these defensive writes
-      // the agent would stay 'working' in the DB forever and the dashboard
-      // would show no error banner. Best-effort: status, last_error, toast.
+      // itself failed OR the error fired BEFORE the cascade got control
+      // (e.g. preflight throws like NO_MODEL / AGENT_NOT_FOUND).
       const errMsg = err instanceof Error ? err.message : String(err);
-      logger.error('v2 runtime escaped its own recovery cascade — bug', {
+      const errCode = (err as { code?: string } | null | undefined)?.code;
+      logger.error('v2 runtime escaped its own recovery cascade', {
         agentId,
+        code: errCode,
         error: errMsg.slice(0, 500),
       }, agentId);
 
@@ -345,12 +347,30 @@ class AgentRuntime {
         }
       } catch { /* best effort */ }
 
+      // v2.3.19 — when the escape is a known preflight error code, use a
+      // specific plain-English message instead of the generic fallback.
+      // These are the cases where the cascade couldn't even RUN because
+      // preflight validation threw first. Each one points the user at
+      // the actual fix — config, restart, or Settings.
+      let toastError: string;
+      let toastCode: 'NO_MODEL' | 'AGENT_NOT_FOUND' | 'MODEL_FAILED';
+      if (errCode === 'NO_MODEL' || /no model configured/i.test(errMsg)) {
+        toastError = "This agent isn't pointed at a model right now. Open Settings → Agents and pick a model for it. (Sometimes a provider's API-key change can clear the link — re-selecting the model fixes it.)";
+        toastCode = 'NO_MODEL';
+      } else if (errCode === 'AGENT_NOT_FOUND') {
+        toastError = "I couldn't find that agent in the database. It may have been deleted. Refresh the page and check the Agents list.";
+        toastCode = 'AGENT_NOT_FOUND';
+      } else {
+        toastError = 'Agent hit a problem the recovery system could not handle. Send a new message to retry, or check the Vitals page.';
+        toastCode = 'MODEL_FAILED';
+      }
+
       try {
         broadcast({
           type: 'chat:error',
           agentId,
-          error: 'Agent hit a problem the recovery system could not handle. Send a new message to retry, or check the Health page.',
-          code: 'MODEL_FAILED',
+          error: toastError,
+          code: toastCode,
           severity: 'error',
           retryable: false,
         });
@@ -361,6 +381,19 @@ class AgentRuntime {
       // calling stopStatusHeartbeat (e.g., uncaught throw, early return).
       // Idempotent — no-op if the heartbeat was already stopped.
       stopStatusHeartbeat(agentId);
+
+      // v2.3.19 (finding #195) — clear any stale preempt flag so the
+      // next run (the queued wakeup we're about to fire) starts with a
+      // clean slate. Pre-spec, when a preempted in-flight model call
+      // returned "successfully" with partial content (race: abort
+      // landed during the response stream so the SDK returned what it
+      // had instead of throwing), the v2 loop took the natural "no tool
+      // calls — exit" path and never hit the preempt check at the top
+      // of its outer iteration. The flag stayed set across the
+      // handleMessage boundary, and the NEXT (queued-wakeup) run exited
+      // immediately on entering the loop — stalling the queued user
+      // message. Cleared here as a hard guarantee.
+      preemptedAgents.delete(agentId);
 
       // If a message arrived while we were busy, re-trigger the loop.
       // Don't clear turnBoundary yet — clear it AFTER the wakeup starts
@@ -507,15 +540,21 @@ class AgentRuntime {
 }
 
 /**
- * One image that the engine downscaled at injection time to fit a model's
- * per-image base64 cap (Anthropic 5MB). Returned to the caller so it can
- * persist a one-shot system note for the user — only fires on the first
- * compression pass; later turns hit the on-disk cache and stay silent.
+ * One attachment the engine rectified at injection time (downscaled
+ * image, dropped oversized PDF, etc.). Returned to the caller so it can
+ * persist a one-shot system note for the user. v2.3.19 (Phase 4): now
+ * carries the rectifier's agent-facing `note` directly — older callers
+ * formatted from originalSize/finalSize, which only made sense for the
+ * image-downscale case.
  */
 export interface AttachmentResizeEvent {
   filename: string;
-  originalSize: number;
-  finalSize: number;
+  /** Plain-language note from the rectifier. Persisted as a `[System: …]`
+   *  message so the agent can mention what changed to the user. */
+  note: string;
+  /** Legacy fields — preserved for back-compat with v2.3.18 callers. */
+  originalSize?: number;
+  finalSize?: number;
 }
 
 // Transform messages with image/PDF attachments into content block arrays for the model
@@ -622,28 +661,31 @@ export function injectAttachmentBlocks(
       blocks.push({ type: 'text', text: msg.content });
     }
 
-    // Add image blocks. v2.3.18: route through prepareImageForModel so any
-    // image whose base64 would blow Anthropic's 5MB-per-image cap gets
-    // downscaled with sips. Resized variant is cached on disk (next to
-    // original) so the work fires once per upload, not per turn.
+    // Add image blocks. v2.3.19 (error-handling-spec Phase 4): route
+    // through the input-rectification registry. Today the only registered
+    // rectifier is the v2.3.18 image-downscale flow (sips → cache →
+    // re-encode), but new rectifiers (PDF size, HEIC fallback, etc.)
+    // plug in without touching this call site.
     for (const img of imageAttachments) {
       try {
         if (!fs.existsSync(img.path)) continue;
-        const prepared = prepareImageForModel(img.path, img.mimeType);
-        if (!prepared) continue;
+        const result = rectifyAttachment(img);
+        if (!result || !result.kept || !result.data || !result.mediaType) continue;
         blocks.push({
           type: 'image',
           source: {
             type: 'base64',
-            media_type: prepared.mediaType,
-            data: prepared.data.toString('base64'),
+            media_type: result.mediaType,
+            data: result.data.toString('base64'),
           },
         });
-        if (prepared.freshlyResized) {
+        if (result.freshlyApplied && result.agentNote) {
+          // Surface fresh rectifications so the loop can persist a
+          // one-shot system note for the user. The rectifier already
+          // formatted the message; the loop just wraps + broadcasts.
           freshResizes.push({
             filename: img.filename,
-            originalSize: prepared.originalSize,
-            finalSize: prepared.finalSize,
+            note: result.agentNote,
           });
         }
       } catch {
@@ -707,10 +749,70 @@ function recoverStuckAgents(): void {
   }
 }
 
+// ── Orphaned model_id repair (v2.3.19) ──
+//
+// If an agent's model_id points at a row that no longer exists in the
+// models table (e.g. because the user re-created the provider, or
+// because some upstream code path nuked the model row), the agent will
+// throw "Agent has no model configured" on the very next message — and
+// that error fires BEFORE the v2 recovery cascade can do anything,
+// landing in the safety-net catch.
+//
+// Best fix: detect orphans on startup AND every 5 minutes, repair by
+// setting them to 'auto' so the auto-router picks a working model at
+// runtime. Logged loudly so the user can see what was repaired.
+function repairOrphanedModelPointers(): void {
+  try {
+    const db = getDb();
+    const orphans = db.prepare(`
+      SELECT a.id, a.name, a.model_id FROM agents a
+      LEFT JOIN models m ON m.id = a.model_id
+      WHERE a.model_id IS NOT NULL
+        AND a.model_id != 'auto'
+        AND a.status != 'terminated'
+        AND m.id IS NULL
+    `).all() as Array<{ id: string; name: string; model_id: string }>;
+
+    for (const agent of orphans) {
+      db.prepare(`
+        UPDATE agents SET model_id = 'auto', updated_at = datetime('now') WHERE id = ?
+      `).run(agent.id);
+      logger.warn('Repaired orphaned model_id pointer — set to auto-router', {
+        agentId: agent.id,
+        agentName: agent.name,
+        deadModelId: agent.model_id,
+      });
+      // Broadcast a chat:error so the user knows what happened in plain
+      // English. severity:warning so it surfaces in the dashboard but
+      // doesn't iMessage them.
+      try {
+        broadcast({
+          type: 'chat:error',
+          agentId: agent.id,
+          error: `${agent.name} was pointed at a model that no longer exists. I switched them to auto-routing so they keep working — pick a specific model in Settings if you want one.`,
+          code: 'MODEL_FAILED',
+          severity: 'warning',
+          retryable: false,
+        });
+      } catch { /* best effort */ }
+    }
+  } catch (err) {
+    logger.error('repairOrphanedModelPointers failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 // Start the stuck-agent recovery check
 setInterval(recoverStuckAgents, STUCK_AGENT_CHECK_MS);
 // Also run immediately on startup to clean up after crashes
 recoverStuckAgents();
+
+// v2.3.19 — orphaned model_id repair on the same cadence as stuck-agent
+// recovery. Catches the case where a provider re-create or some other
+// flow nukes a model row, leaving agents pointing at a dead UUID.
+setInterval(repairOrphanedModelPointers, STUCK_AGENT_CHECK_MS);
+repairOrphanedModelPointers();
 
 // Singleton
 let runtimeInstance: AgentRuntime | null = null;

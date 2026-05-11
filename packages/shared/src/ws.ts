@@ -71,7 +71,14 @@ export interface ChatErrorEvent {
     // Phase 8 F1 toast audit — emitted by onAgentRecovered so the dashboard
     // can auto-dismiss the lingering injury error toast once the agent
     // self-resolves (most provider 4xx errors are transient).
-    | 'AGENT_RECOVERED';
+    | 'AGENT_RECOVERED'
+    // error-handling-spec v2.3.19 Tier D — platform-level lock codes.
+    // Each represents a condition where the engine can't proceed and the
+    // user needs to act. Plain-English user message lives in `error`.
+    | 'AUTH_INVALID' | 'ACCESS_DENIED' | 'QUOTA_EXHAUSTED' | 'DNS_FAILURE'
+    // v2.3.19 (Phase 1 hardening, 2026-05-10) — preflight escapes that
+    // bypass the recovery cascade entirely (thrown before its try/catch).
+    | 'NO_MODEL' | 'AGENT_NOT_FOUND';
   severity?: 'info' | 'warning' | 'error';
   retryable?: boolean;
 }

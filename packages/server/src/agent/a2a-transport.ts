@@ -354,8 +354,17 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   // silence acknowledgement loops ("thanks!" / "you're welcome!"), not
   // completion notices. FYI keeps dedup because it's the prime culprit
   // for back-and-forth ack loops between agents.
+  //
+  // v2.3.19 — also skip dedup for system-originated messages. Engine
+  // alerts (injury notifications, scheduler pokes, system health
+  // signals) are operational — every fresh event represents a new
+  // condition the receiver needs to know about. Pre-spec, a repeated
+  // injury for the same agent kept getting dropped as "duplicate"
+  // because the payload phrasing was similar, and the Healer never
+  // saw any of them.
   const COMPLETION_INTENTS_SKIP_DEDUP = new Set<A2AIntent>(['ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL']);
-  if (!COMPLETION_INTENTS_SKIP_DEDUP.has(effectiveIntent)) {
+  const senderIsSystem = envelope.fromAgent === 'system';
+  if (!COMPLETION_INTENTS_SKIP_DEDUP.has(effectiveIntent) && !senderIsSystem) {
     const isDuplicate = await checkSemanticDedup(envelope.payload, threadId, envelope.fromAgent);
     if (isDuplicate) {
       logDrop(envelope, 'SEMANTIC_DUPLICATE');

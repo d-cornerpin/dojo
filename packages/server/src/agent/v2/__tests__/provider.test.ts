@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { classifyRecoverableProviderError } from '../classifiers/provider.js';
+import {
+  classifyRecoverableProviderError,
+  classifyPlatformError,
+} from '../classifiers/provider.js';
 
 describe('classifyRecoverableProviderError', () => {
   it('returns null for empty string', () => {
@@ -90,5 +93,102 @@ describe('classifyRecoverableProviderError', () => {
       expect(r!.userFacingReason.length).toBeGreaterThan(0);
       expect(r!.guidance.length).toBeGreaterThan(0);
     }
+  });
+
+  // ── v2.3.19 (error-handling-spec Phase 1) — new Tier B branches ──
+
+  it('classifies image_too_large_post_sips (the real Anthropic error string)', () => {
+    const r = classifyRecoverableProviderError(
+      '400 invalid_request_error: messages.2.content.1.image.source.base64: image exceeds 5 MB maximum: 5595668 bytes > 5242880 bytes',
+    );
+    expect(r).not.toBeNull();
+    expect(r!.kind).toBe('image_too_large_post_sips');
+  });
+
+  it('classifies image_too_many (request had too many images)', () => {
+    const r = classifyRecoverableProviderError(
+      '400 invalid_request_error: too many images in request — maximum is 100',
+    );
+    expect(r).not.toBeNull();
+    expect(r!.kind).toBe('image_too_many');
+  });
+
+  it('classifies tool_name_unknown for unknown tool reference', () => {
+    const r = classifyRecoverableProviderError(
+      '400 invalid_request_error: tool "memry_save" does not exist',
+    );
+    expect(r).not.toBeNull();
+    expect(r!.kind).toBe('tool_name_unknown');
+  });
+
+  it('classifies tool_args_invalid_json', () => {
+    const r = classifyRecoverableProviderError(
+      '400 invalid_request_error: tool arguments invalid json: unexpected token',
+    );
+    expect(r).not.toBeNull();
+    expect(r!.kind).toBe('tool_args_invalid_json');
+  });
+
+  it('classifies tool_args_schema_mismatch', () => {
+    const r = classifyRecoverableProviderError(
+      '400 invalid_request_error: tool arguments schema validation failed: required field missing',
+    );
+    expect(r).not.toBeNull();
+    expect(r!.kind).toBe('tool_args_schema_mismatch');
+  });
+
+  it('classifies refusal (content policy / safety)', () => {
+    const r = classifyRecoverableProviderError(
+      'content_filter: model refused to respond due to safety policy',
+    );
+    expect(r).not.toBeNull();
+    expect(r!.kind).toBe('refusal');
+  });
+
+  it('classifies provider_garbage for malformed response', () => {
+    const r = classifyRecoverableProviderError(
+      'parse error: truncated json in response body',
+    );
+    expect(r).not.toBeNull();
+    expect(r!.kind).toBe('provider_garbage');
+  });
+
+  it('image_too_large is preferred over generic malformed_request', () => {
+    // Both branches could match. Specific should win.
+    const r = classifyRecoverableProviderError(
+      '400 invalid_request_error: image.source.base64 exceeds 5 MB maximum',
+    );
+    expect(r).not.toBeNull();
+    expect(r!.kind).toBe('image_too_large_post_sips');
+  });
+});
+
+describe('classifyPlatformError (Tier D)', () => {
+  it('returns null for empty', () => {
+    expect(classifyPlatformError('')).toBeNull();
+  });
+
+  it('classifies auth_invalid for 401', () => {
+    expect(classifyPlatformError('401 Unauthorized')!.kind).toBe('auth_invalid');
+    expect(classifyPlatformError('invalid_api_key')!.kind).toBe('auth_invalid');
+    expect(classifyPlatformError('API key expired')!.kind).toBe('auth_invalid');
+  });
+
+  it('classifies access_denied for 403', () => {
+    expect(classifyPlatformError('403 Forbidden')!.kind).toBe('access_denied');
+  });
+
+  it('classifies quota_exhausted (distinct from rate limit)', () => {
+    expect(classifyPlatformError('quota exceeded for the day')!.kind).toBe('quota_exhausted');
+    expect(classifyPlatformError('insufficient_quota')!.kind).toBe('quota_exhausted');
+  });
+
+  it('classifies dns_failure for ENOTFOUND', () => {
+    expect(classifyPlatformError('getaddrinfo ENOTFOUND api.anthropic.com')!.kind).toBe('dns_failure');
+  });
+
+  it('returns null for ordinary 4xx (those are Tier B recoverable errors)', () => {
+    expect(classifyPlatformError('400 invalid_request_error: bad image')).toBeNull();
+    expect(classifyPlatformError('404 model not found')).toBeNull();
   });
 });

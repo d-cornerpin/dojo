@@ -4,6 +4,12 @@
 // Reads logs, DB state, and agent health to produce
 // a structured diagnostic report for the Healer agent.
 // This is engine-level — no LLM involved.
+//
+// v2.3.19 (error-handling-spec Phase 3) — every collector is wrapped in
+// a per-collector char cap. This is the Dreamer-pattern hardening: the
+// Healer must never receive a runaway diagnostic that blows its context
+// window. Total cycle-message budget is enforced separately in
+// healer-agent.ts:buildHealerCycleMessage.
 // ════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
@@ -11,6 +17,73 @@ import { createLogger } from '../logger.js';
 import { v4 as uuidv4 } from 'uuid';
 
 const logger = createLogger('healer-diagnostic');
+
+// Per-collector char caps. Source: docs/error-handling-spec.md "Healer
+// log access — Dreamer-pattern hardening". Each collector's items are
+// rendered to text and the rendered total is capped here. If a
+// collector would emit more, the engine drops the lowest-severity items
+// first (we always keep critical).
+const COLLECTOR_CAPS = {
+  agent_anomalies: 4000,
+  error_digest: 2000,
+  model_performance: 1000,
+  tracker_health: 2000,
+  bulletproof_health: 1500,
+  nudge_stats: 500,
+  budget: 500,
+  context_health: 1500,
+} as const;
+
+/**
+ * Cap a list of items so the rendered text stays under `maxChars`. Drops
+ * lowest-severity items first (info → warning → critical). If even the
+ * critical items overflow, truncates titles and details.
+ */
+// Exported for tests. Pure function — no DB access. See
+// healer/__tests__/healer-hardening.test.ts.
+export function capItemsByText(
+  items: DiagnosticItem[],
+  maxChars: number,
+  collectorLabel: string,
+): DiagnosticItem[] {
+  const renderLength = (xs: DiagnosticItem[]): number =>
+    xs.reduce((sum, i) => sum + i.title.length + i.detail.length + 12, 0);
+
+  if (renderLength(items) <= maxChars) return items;
+
+  // Sort: keep critical, then warning, then info. Truncate from the tail.
+  const sevOrder: Record<DiagnosticItem['severity'], number> = {
+    critical: 0, warning: 1, info: 2,
+  };
+  const sorted = [...items].sort(
+    (a, b) => sevOrder[a.severity] - sevOrder[b.severity],
+  );
+
+  const kept: DiagnosticItem[] = [];
+  let len = 0;
+  let dropped = 0;
+  for (const item of sorted) {
+    const itemLen = item.title.length + item.detail.length + 12;
+    if (len + itemLen <= maxChars) {
+      kept.push(item);
+      len += itemLen;
+    } else {
+      dropped++;
+    }
+  }
+
+  if (dropped > 0) {
+    logger.warn('Diagnostic collector cap fired — dropping low-severity items', {
+      collector: collectorLabel,
+      total: items.length,
+      kept: kept.length,
+      dropped,
+      maxChars,
+    });
+  }
+
+  return kept;
+}
 
 export interface DiagnosticItem {
   severity: 'critical' | 'warning' | 'info';
@@ -468,6 +541,58 @@ function getNudgeStats(): DiagnosticItem[] {
   return items;
 }
 
+// v2.3.19 (error-handling-spec Phase 4) — provider-wide outage detector.
+//
+// When 3+ agents on the same provider hit errors classified as transient
+// (5xx / network / overloaded) within the last hour, that's a provider
+// problem, not an agent problem. The Healer should propose failover to
+// a different provider rather than auto-fixing each agent in isolation.
+function getProviderOutagePatterns(): DiagnosticItem[] {
+  const db = getDb();
+  const items: DiagnosticItem[] = [];
+  try {
+    // Look back 1 hour at agents with last_error matching transient
+    // patterns, grouped by their provider.
+    const rows = db.prepare(`
+      SELECT p.name AS provider_name,
+             COUNT(DISTINCT a.id) AS agent_count,
+             GROUP_CONCAT(DISTINCT a.name) AS agent_names
+      FROM agents a
+      JOIN models m ON m.id = a.model_id
+      JOIN providers p ON p.id = m.provider_id
+      WHERE a.last_error IS NOT NULL
+        AND a.last_error_at > datetime('now', '-1 hours')
+        AND (
+          a.last_error LIKE '%500%'
+          OR a.last_error LIKE '%502%'
+          OR a.last_error LIKE '%503%'
+          OR a.last_error LIKE '%504%'
+          OR a.last_error LIKE '%529%'
+          OR a.last_error LIKE '%overloaded%'
+          OR a.last_error LIKE '%fetch failed%'
+          OR a.last_error LIKE '%ECONNRESET%'
+          OR a.last_error LIKE '%ETIMEDOUT%'
+        )
+      GROUP BY p.name
+      HAVING agent_count >= 3
+    `).all() as Array<{ provider_name: string; agent_count: number; agent_names: string }>;
+
+    for (const row of rows) {
+      items.push({
+        severity: 'warning',
+        code: 'PROVIDER_OUTAGE_PATTERN',
+        title: `${row.provider_name} appears to be having problems`,
+        detail: `${row.agent_count} agents (${row.agent_names}) hit a transient ${row.provider_name} error in the last hour. Consider routing affected agents to a different provider until this clears.`,
+      });
+    }
+  } catch (err) {
+    logger.warn('Provider outage pattern collector failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return items;
+}
+
 function getBudgetStatus(): DiagnosticItem[] {
   const db = getDb();
   const items: DiagnosticItem[] = [];
@@ -519,15 +644,19 @@ function getModelName(modelId: string): string {
 // ── Main Compiler ──
 
 export function compileDiagnosticReport(): DiagnosticReport {
+  // v2.3.19 — apply per-collector caps so a runaway collector can't
+  // drown the report. Critical items are always preserved; warning/info
+  // items get dropped first when the cap fires.
   const items: DiagnosticItem[] = [
-    ...getAgentStatusAnomalies(),
-    ...getErrorDigest(),
-    ...getModelPerformance(),
-    ...getContextHealth(),
-    ...getTrackerHealth(),
-    ...getBulletproofToolHealth(),
-    ...getNudgeStats(),
-    ...getBudgetStatus(),
+    ...capItemsByText(getAgentStatusAnomalies(), COLLECTOR_CAPS.agent_anomalies, 'agent_anomalies'),
+    ...capItemsByText(getErrorDigest(), COLLECTOR_CAPS.error_digest, 'error_digest'),
+    ...capItemsByText(getModelPerformance(), COLLECTOR_CAPS.model_performance, 'model_performance'),
+    ...capItemsByText(getContextHealth(), COLLECTOR_CAPS.context_health, 'context_health'),
+    ...capItemsByText(getTrackerHealth(), COLLECTOR_CAPS.tracker_health, 'tracker_health'),
+    ...capItemsByText(getBulletproofToolHealth(), COLLECTOR_CAPS.bulletproof_health, 'bulletproof_health'),
+    ...capItemsByText(getNudgeStats(), COLLECTOR_CAPS.nudge_stats, 'nudge_stats'),
+    ...capItemsByText(getProviderOutagePatterns(), 1500, 'provider_outage'),
+    ...capItemsByText(getBudgetStatus(), COLLECTOR_CAPS.budget, 'budget'),
   ];
 
   // Sort: critical first, then warning, then info

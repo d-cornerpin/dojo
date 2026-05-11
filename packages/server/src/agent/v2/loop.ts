@@ -669,11 +669,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
       const freshResizes = injectAttachmentBlocks(messages, agentId) ?? [];
       if (freshResizes.length > 0) {
         try {
+          // v2.3.19 — rectifier supplies the agent-facing note directly.
+          // Fall back to the legacy size-based formatter for back-compat
+          // when only originalSize/finalSize are present.
           const { formatBytes } = await import('../image-prep.js');
-          const lines = freshResizes.map((r) =>
-            `Image \`${r.filename}\` was downscaled from ${formatBytes(r.originalSize)} to ${formatBytes(r.finalSize)} to fit the model's 5 MB per-image limit.`,
-          );
-          const noteContent = `[Engine: image preparation]\n${lines.join('\n')}`;
+          const lines = freshResizes.map((r) => {
+            if (r.note) return r.note;
+            const orig = r.originalSize ?? 0;
+            const fin = r.finalSize ?? 0;
+            return `Image \`${r.filename}\` was downscaled from ${formatBytes(orig)} to ${formatBytes(fin)} to fit the model's 5 MB per-image limit.`;
+          });
+          const noteContent = `[Engine: input preparation]\n${lines.join('\n')}`;
           const noteId = uuidv4();
           db.prepare(`
             INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)

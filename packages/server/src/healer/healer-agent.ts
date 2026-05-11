@@ -32,20 +32,148 @@ import {
 const logger = createLogger('healer-agent');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// ── v2.3.19 (error-handling-spec Phase 3) — Dreamer-pattern budget ──
+//
+// The Healer must never receive a runaway cycle message that blows its
+// context window. Constants mirror the Dreamer's approach in
+// vault/maintenance.ts. Per-collector caps are enforced in diagnostic.ts;
+// these constants are for the TOTAL cycle-message ceiling.
+const CHARS_PER_TOKEN = 3;             // conservative — same as Dreamer
+const HEALER_CONTEXT_OVERHEAD_TOKENS = 40_000; // sys prompt + tool schemas + vault retrieval
+const HEALER_PROCESSING_GROWTH_FACTOR = 1.3;   // Healer makes fewer tool calls than Dreamer
+const HEALER_BATCH_BUDGET_CAP_RATIO = 0.35;    // hard ceiling: 35% of context for diagnostic payload
+const HEALER_FALLBACK_CONTEXT_WINDOW = 200_000; // sane default if we can't look up the model's window
+
+function getHealerContextWindow(modelId: string | null): number {
+  if (!modelId || modelId === 'auto') return HEALER_FALLBACK_CONTEXT_WINDOW;
+  try {
+    const db = getDb();
+    const row = db
+      .prepare('SELECT context_window FROM models WHERE id = ?')
+      .get(modelId) as { context_window: number | null } | undefined;
+    if (row?.context_window && row.context_window > 0) return row.context_window;
+  } catch { /* */ }
+  return HEALER_FALLBACK_CONTEXT_WINDOW;
+}
+
+interface BuildCycleMessageOptions {
+  reportText: string;
+  approvedSection: string;
+  autoFixCount: number;
+  contextWindow: number;
+}
+
+interface BuildCycleMessageResult {
+  message: string;
+  contextWindow: number;
+  /** True if the report text was trimmed to fit the budget. */
+  trimmed: boolean;
+}
+
+/**
+ * Compose the Healer's cycle message under a strict char budget. If the
+ * composed text would exceed the budget, the diagnostic REPORT is
+ * truncated (with a marker) so approved proposals + instructions are
+ * preserved — those are the highest-value content.
+ */
+function buildHealerCycleMessage(opts: BuildCycleMessageOptions): BuildCycleMessageResult {
+  const { reportText, approvedSection, autoFixCount, contextWindow } = opts;
+
+  // Budget calculation mirrors Dreamer's batchArchives (vault/maintenance.ts).
+  const overheadChars = HEALER_CONTEXT_OVERHEAD_TOKENS * CHARS_PER_TOKEN;
+  const availableTokens = contextWindow - HEALER_CONTEXT_OVERHEAD_TOKENS;
+  const rawBudget = Math.max(0, availableTokens / HEALER_PROCESSING_GROWTH_FACTOR);
+  const ratioCap = contextWindow * HEALER_BATCH_BUDGET_CAP_RATIO;
+  const tokenBudget = Math.min(rawBudget, ratioCap);
+  const charBudget = Math.floor(tokenBudget * CHARS_PER_TOKEN);
+
+  const instructions =
+    `\n\n${autoFixCount > 0 ? `Note: ${autoFixCount} auto-fix(es) were already applied before this report was delivered to you. Focus on the remaining issues.\n\n` : ''}` +
+    `For each issue in the diagnostic:\n` +
+    `1. Search the vault for past healer context on similar issues\n` +
+    `2. Fix it yourself, propose it to the user (healer_propose), or log and skip it (healer_log_action)\n` +
+    `3. Do NOT message other agents for advice — you are the diagnostician\n` +
+    `4. When done with all issues, call complete_task with a summary`;
+
+  const fixedOverhead = approvedSection.length + instructions.length;
+  const reportBudget = charBudget - fixedOverhead;
+
+  let trimmed = false;
+  let reportPayload = reportText;
+  if (reportPayload.length > reportBudget && reportBudget > 500) {
+    const head = reportPayload.slice(0, Math.floor(reportBudget * 0.65));
+    const tail = reportPayload.slice(-Math.floor(reportBudget * 0.25));
+    reportPayload =
+      `${head}\n\n[…${reportPayload.length - head.length - tail.length} chars elided for context budget…]\n\n${tail}`;
+    trimmed = true;
+  }
+
+  const message = `${reportPayload}${approvedSection}${instructions}`;
+  return { message, contextWindow, trimmed };
+}
+
 export type HealerMode = 'active' | 'monitor' | 'off';
 
 // ── Config ──
 
-export function getHealerConfig(): { modelId: string | null; healerTime: string; healerMode: HealerMode } {
+export function getHealerConfig(): {
+  modelId: string | null;
+  healerTime: string;
+  healerMode: HealerMode;
+  /** v2.3.19 — true when the Healer and primary agent share a provider.
+   *  If their provider goes down both Healers go down at once, defeating
+   *  the cross-provider isolation that's the whole point of having a
+   *  separate Healer model. The dashboard surfaces a Settings warning
+   *  when this is true. */
+  providerSharedWithPrimary: boolean;
+  primaryProviderName: string | null;
+  healerProviderName: string | null;
+} {
   const db = getDb();
   const modelRow = db.prepare("SELECT value FROM config WHERE key = 'healer_model_id'").get() as { value: string } | undefined;
   const timeRow = db.prepare("SELECT value FROM config WHERE key = 'healer_time'").get() as { value: string } | undefined;
   const modeRow = db.prepare("SELECT value FROM config WHERE key = 'healer_mode'").get() as { value: string } | undefined;
 
+  // Provider-isolation check. Resolve each model to its provider name.
+  // Pre-spec the dashboard surfaced no warning for this, so users could
+  // unknowingly run both agents on Anthropic and lose every recovery
+  // path the moment Anthropic flapped.
+  let primaryProviderName: string | null = null;
+  let healerProviderName: string | null = null;
+  let providerSharedWithPrimary = false;
+  try {
+    const primaryId = getPrimaryAgentId();
+    const primaryAgent = db.prepare('SELECT model_id FROM agents WHERE id = ?').get(primaryId) as { model_id: string | null } | undefined;
+    const healerModelId = modelRow?.value ?? primaryAgent?.model_id ?? null;
+
+    if (primaryAgent?.model_id) {
+      const row = db.prepare(`
+        SELECT p.name FROM models m
+        JOIN providers p ON p.id = m.provider_id
+        WHERE m.id = ?
+      `).get(primaryAgent.model_id) as { name: string } | undefined;
+      primaryProviderName = row?.name ?? null;
+    }
+    if (healerModelId) {
+      const row = db.prepare(`
+        SELECT p.name FROM models m
+        JOIN providers p ON p.id = m.provider_id
+        WHERE m.id = ?
+      `).get(healerModelId) as { name: string } | undefined;
+      healerProviderName = row?.name ?? null;
+    }
+    if (primaryProviderName && healerProviderName && primaryProviderName === healerProviderName) {
+      providerSharedWithPrimary = true;
+    }
+  } catch { /* best effort */ }
+
   return {
     modelId: modelRow?.value ?? null,
     healerTime: timeRow?.value ?? '04:00',
     healerMode: (modeRow?.value as HealerMode) ?? 'active',
+    providerSharedWithPrimary,
+    primaryProviderName,
+    healerProviderName,
   };
 }
 
@@ -155,6 +283,13 @@ const HEALER_TOOLS_POLICY = JSON.stringify({
     // Diagnostic and healing
     'healer_propose',
     'healer_log_action',
+    // v2.3.19 — Dreamer-style log access via engine helpers. NEVER read
+    // healer-report-*.log directly; these helpers cap the response so
+    // the Healer can't choke on its own history.
+    'healer_recent_actions',
+    'healer_action_detail',
+    // v2.3.19 — close the audit loop on approved proposals.
+    'healer_mark_applied',
     // Agent management — for injury recovery
     'list_agents',
     'send_to_agent',       // Poke injured agents to see if they can resume
@@ -164,7 +299,8 @@ const HEALER_TOOLS_POLICY = JSON.stringify({
     'vault_remember', 'vault_search', 'vault_forget',
     // Memory
     'memory_grep', 'memory_describe', 'memory_search',
-    // File operations (for reading logs, configs)
+    // File operations (for reading configs only — Healer permissions
+    // below deny log-file paths to force the engine helpers).
     'file_read', 'file_list',
     // Utility
     'load_tool_docs', 'get_current_time', 'complete_task',
@@ -183,6 +319,84 @@ const HEALER_PERMISSIONS = JSON.stringify({
   can_assign_permissions: false,
   system_control: [],
 });
+
+// ── v2.3.19 (error-handling-spec Phase 3) — Healer self-watchdog ──
+//
+// The pre-spec system had a chicken-and-egg problem: if the Healer
+// itself was injured, onAgentInjured exited early ("can't heal myself")
+// and just iMessaged the user. Other agents that errored during the
+// Healer outage stayed stuck because nothing else could deal with them.
+//
+// This watchdog runs every 5 minutes and, bypassing onAgentInjured's
+// self-skip, applies the existing Tier 1 auto-fix logic to the Healer
+// directly. If the Healer is stuck in 'error', 'paused', or has been
+// 'working' too long, the watchdog resets it to idle. The Healer can
+// then be re-engaged by the next normal cycle or any new injury.
+//
+// This is engine-level, deterministic, no LLM cost.
+
+const HEALER_WATCHDOG_INTERVAL_MS = 5 * 60 * 1000;
+const HEALER_WORKING_STUCK_MINUTES = 10;
+let healerWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+
+function runHealerSelfWatchdog(): void {
+  try {
+    if (!isSetupCompleted()) return;
+    const db = getDb();
+    const healerId = getHealerAgentId();
+    const row = db
+      .prepare('SELECT id, name, status, updated_at FROM agents WHERE id = ?')
+      .get(healerId) as { id: string; name: string; status: string; updated_at: string } | undefined;
+    if (!row) return; // Healer doesn't exist yet; ensureHealerAgentRunning will create it
+
+    let shouldReset = false;
+    let reason = '';
+
+    if (row.status === 'error') {
+      shouldReset = true;
+      reason = 'in error status';
+    } else if (row.status === 'paused') {
+      shouldReset = true;
+      reason = 'in paused status';
+    } else if (row.status === 'working') {
+      const updatedMs = new Date(row.updated_at.replace(' ', 'T') + 'Z').getTime();
+      if (Date.now() - updatedMs > HEALER_WORKING_STUCK_MINUTES * 60 * 1000) {
+        shouldReset = true;
+        reason = `stuck in working status for >${HEALER_WORKING_STUCK_MINUTES} min`;
+      }
+    }
+
+    if (shouldReset) {
+      db.prepare(`UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?`).run(healerId);
+      broadcast({ type: 'agent:status', agentId: healerId, status: 'idle' });
+      logger.warn('Healer self-watchdog reset Healer to idle', {
+        healerId, healerName: row.name, prevStatus: row.status, reason,
+      });
+      // Also clear the per-agent backoff state for the Healer if any
+      // (defensive — under normal flow this won't be set since the
+      // Healer's onAgentInjured short-circuits, but if a future code path
+      // changes that this keeps us safe).
+      import('./injury-recovery.js').then((m) => {
+        try { m.onAgentRecovered(healerId); } catch { /* */ }
+      }).catch(() => { /* best effort */ });
+    }
+  } catch (err) {
+    logger.error('Healer self-watchdog failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+export function startHealerSelfWatchdog(): void {
+  if (healerWatchdogTimer) return;
+  healerWatchdogTimer = setInterval(runHealerSelfWatchdog, HEALER_WATCHDOG_INTERVAL_MS);
+  // Also run once on startup so any state left over from a crash gets cleaned.
+  setTimeout(runHealerSelfWatchdog, 30_000);
+  // One-shot prune of stale archives at startup — catches accumulated
+  // logs even if no new cycle ran in the retention window.
+  setTimeout(pruneOldArchives, 60_000);
+  logger.info('Healer self-watchdog started', { intervalMs: HEALER_WATCHDOG_INTERVAL_MS });
+}
 
 // ── Ensure Healer Agent Running ──
 
@@ -298,11 +512,25 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
     autoFixCount = autoResult.fixCount;
   }
 
-  // Step 3: If there are warnings/critical items remaining, wake the permanent Healer agent
+  // Step 3: If there are warnings/critical items remaining, OR if there
+  // are approved-but-not-yet-applied proposals waiting, wake the permanent
+  // Healer agent. v2.3.19 — pre-spec, the Healer only fired when the
+  // diagnostic found something to diagnose. If David approved a proposal
+  // but no NEW issues came up, the proposal sat forever waiting for
+  // Healer to execute it. Now any pending approval also triggers the
+  // cycle.
   const remainingIssues = report.items.filter(i => i.severity !== 'info');
+  const pendingApprovals = (() => {
+    try {
+      const row = getDb()
+        .prepare(`SELECT COUNT(*) AS cnt FROM healer_proposals WHERE status = 'approved' AND applied_at IS NULL`)
+        .get() as { cnt: number };
+      return row.cnt;
+    } catch { return 0; }
+  })();
   let llmTriggered = false;
 
-  if (config.healerMode === 'active' && remainingIssues.length > 0) {
+  if (config.healerMode === 'active' && (remainingIssues.length > 0 || pendingApprovals > 0)) {
     try {
       const db = getDb();
       const healerId = getHealerAgentId();
@@ -319,20 +547,62 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
       } else if (!healerState) {
         logger.warn('Healer agent not found after ensureHealerAgentRunning — skipping LLM trigger');
       } else {
-        // Check for approved proposals from the user
+        // Check for approved proposals from the user. v2.3.19:
+        // applied_at filters out proposals you've already executed in a
+        // prior cycle — only the OUTSTANDING approvals show up here.
+        // After executing, you MUST call healer_mark_applied(proposal_id)
+        // to record the work — otherwise the proposal will show up
+        // again on the next cycle.
         const approved = db.prepare(`
           SELECT id, title, proposed_fix, fix_action FROM healer_proposals
-          WHERE status = 'approved'
+          WHERE status = 'approved' AND applied_at IS NULL
         `).all() as Array<{ id: string; title: string; proposed_fix: string; fix_action: string | null }>;
 
         let approvedSection = '';
         if (approved.length > 0) {
-          approvedSection = '\n\n═══ APPROVED PROPOSALS (execute these) ═══\n' +
-            approved.map((p, i) => `${i + 1}. ${p.title}\n   Fix: ${p.proposed_fix}`).join('\n') +
+          approvedSection = '\n\n═══ APPROVED PROPOSALS — execute these, then call healer_mark_applied(proposal_id) ═══\n' +
+            approved.map((p) =>
+              `[ID: ${p.id.slice(0, 8)}] ${p.title}\n   Fix: ${p.proposed_fix}`
+            ).join('\n') +
             '\n═══ END APPROVED ═══';
         }
 
-        const cycleMessage = `${report.reportText}${approvedSection}\n\n${autoFixCount > 0 ? `Note: ${autoFixCount} auto-fix(es) were already applied before this report was delivered to you. Focus on the remaining issues.\n\n` : ''}For each issue in the diagnostic:\n1. Search the vault for past healer context on similar issues\n2. Fix it yourself, propose it to the user (healer_propose), or log and skip it (healer_log_action)\n3. Do NOT message other agents for advice — you are the diagnostician\n4. When done with all issues, call complete_task with a summary`;
+        // v2.3.19 (error-handling-spec Phase 3) — Dreamer-pattern budget.
+        // Build the cycle message and enforce a hard ceiling on its
+        // length BEFORE delivering it. If it exceeds the cap, drop the
+        // lowest-priority sections (approved proposals are KEPT — user
+        // explicitly asked for those; report content gets trimmed first
+        // since collectors were already capped individually).
+        const buildResult = buildHealerCycleMessage({
+          reportText: report.reportText,
+          approvedSection,
+          autoFixCount,
+          contextWindow: getHealerContextWindow(healerState.model_id),
+        });
+        const cycleMessage = buildResult.message;
+
+        // Telemetry: log the final composed prompt size. If it ever
+        // climbs past 80% of context, that's a Tier C signal — the
+        // collectors need further tightening. Surface via warning log.
+        const promptCharLimit = Math.floor(
+          buildResult.contextWindow * HEALER_BATCH_BUDGET_CAP_RATIO * CHARS_PER_TOKEN,
+        );
+        const utilizationPct = Math.round((cycleMessage.length / promptCharLimit) * 100);
+        if (utilizationPct >= 80) {
+          logger.warn('Healer cycle message at high utilization — consider tightening collectors', {
+            charLength: cycleMessage.length,
+            charLimit: promptCharLimit,
+            utilizationPct,
+            wasTrimmed: buildResult.trimmed,
+          });
+        } else {
+          logger.info('Healer cycle message budget OK', {
+            charLength: cycleMessage.length,
+            charLimit: promptCharLimit,
+            utilizationPct,
+            wasTrimmed: buildResult.trimmed,
+          });
+        }
 
         // Inject the cycle message and wake the permanent Healer
         const msgId = uuidv4();
@@ -546,6 +816,43 @@ export function getHealerLogContent(): string | null {
  * Archive the current healer log and start a new one.
  * Returns the archive filename.
  */
+// v2.3.19 (error-handling-spec Phase 3 cleanup) — archive retention.
+// Without pruning, healer-report-*.log files accumulate forever in
+// ~/.dojo/logs/healer-archives/. 30 days is generous — if you need
+// older diagnostics they're in the structured DB tables anyway
+// (healer_diagnostics, healer_actions).
+const ARCHIVE_RETENTION_DAYS = 30;
+
+function pruneOldArchives(): void {
+  try {
+    if (!fs.existsSync(HEALER_ARCHIVE_DIR)) return;
+    const cutoffMs = Date.now() - ARCHIVE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    const entries = fs.readdirSync(HEALER_ARCHIVE_DIR);
+    let pruned = 0;
+    for (const name of entries) {
+      if (!name.startsWith('healer-report-') || !name.endsWith('.log')) continue;
+      const full = path.join(HEALER_ARCHIVE_DIR, name);
+      try {
+        const stat = fs.statSync(full);
+        if (stat.mtimeMs < cutoffMs) {
+          fs.unlinkSync(full);
+          pruned++;
+        }
+      } catch { /* skip individual file errors */ }
+    }
+    if (pruned > 0) {
+      logger.info('Pruned old Healer archives', {
+        prunedCount: pruned,
+        retentionDays: ARCHIVE_RETENTION_DAYS,
+      });
+    }
+  } catch (err) {
+    logger.warn('Archive pruning failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 export function archiveHealerLog(): string | null {
   try {
     if (!fs.existsSync(HEALER_LOG_PATH)) return null;
@@ -560,6 +867,11 @@ export function archiveHealerLog(): string | null {
 
     fs.renameSync(HEALER_LOG_PATH, archivePath);
     logger.info('Healer log archived', { archivePath });
+
+    // Prune anything older than the retention window. Best-effort —
+    // failures here don't fail the archive operation.
+    pruneOldArchives();
+
     return archiveName;
   } catch (err) {
     logger.error('Failed to archive healer log', {

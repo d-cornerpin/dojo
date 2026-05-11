@@ -11,6 +11,12 @@ const PLATFORM_DIR = path.join(os.homedir(), '.dojo');
 const SECRETS_PATH = path.join(PLATFORM_DIR, 'secrets.yaml');
 
 let cachedSecrets: SecretsData | null = null;
+// v2.3.19 — also track the mtime of the secrets file so we can detect
+// out-of-band edits (user opens secrets.yaml in a text editor and saves)
+// and invalidate the cache automatically. Pre-spec, the cache stayed
+// stale until a full server restart, which meant agents kept failing
+// 401 with the OLD api key even after the user fixed it.
+let cachedSecretsMtimeMs: number | null = null;
 
 function ensurePlatformDir(): void {
   if (!fs.existsSync(PLATFORM_DIR)) {
@@ -18,7 +24,35 @@ function ensurePlatformDir(): void {
   }
 }
 
+/**
+ * v2.3.19 — invalidate the cache if secrets.yaml has been edited
+ * out-of-band since we last read it. Cheap stat call on every access.
+ */
+function invalidateIfStale(): void {
+  if (!cachedSecrets || cachedSecretsMtimeMs === null) return;
+  try {
+    const stat = fs.statSync(SECRETS_PATH);
+    if (stat.mtimeMs > cachedSecretsMtimeMs) {
+      logger.info('secrets.yaml changed on disk — invalidating in-memory cache', {
+        prevMtimeMs: cachedSecretsMtimeMs,
+        newMtimeMs: stat.mtimeMs,
+      });
+      cachedSecrets = null;
+      cachedSecretsMtimeMs = null;
+      // Also clear the model-client cache so the next call rebuilds with
+      // the fresh credential. Avoids the "stale 401 after key fix" loop.
+      try {
+        // Dynamic to avoid an import cycle (config → model → config).
+        import('../agent/model.js').then((m) => {
+          if (typeof m.clearClientCache === 'function') m.clearClientCache();
+        }).catch(() => { /* */ });
+      } catch { /* */ }
+    }
+  } catch { /* file missing or unreadable — let the loader handle it */ }
+}
+
 export function loadSecrets(): SecretsData {
+  invalidateIfStale();
   if (cachedSecrets) return cachedSecrets;
 
   ensurePlatformDir();
@@ -35,6 +69,7 @@ export function loadSecrets(): SecretsData {
   }
 
   try {
+    const stat = fs.statSync(SECRETS_PATH);
     const content = fs.readFileSync(SECRETS_PATH, 'utf-8');
     const parsed = yaml.parse(content) ?? {};
     // YAML parses empty values as null — convert nulls to undefined for Zod
@@ -43,6 +78,7 @@ export function loadSecrets(): SecretsData {
     }
     const validated = SecretsSchema.parse(parsed);
     cachedSecrets = validated;
+    cachedSecretsMtimeMs = stat.mtimeMs;
     return cachedSecrets;
   } catch (err) {
     logger.error('Failed to load secrets.yaml', {
@@ -57,6 +93,9 @@ export function saveSecrets(data: SecretsData): void {
   const content = yaml.stringify(data);
   fs.writeFileSync(SECRETS_PATH, content, { mode: 0o600 });
   cachedSecrets = data;
+  // Record post-write mtime so the staleness check doesn't trigger on
+  // our own write.
+  try { cachedSecretsMtimeMs = fs.statSync(SECRETS_PATH).mtimeMs; } catch { /* */ }
 }
 
 export function getProviderCredential(providerId: string): string | null {
@@ -120,4 +159,5 @@ export function getSearchProvider(): string | null {
 
 export function clearSecretsCache(): void {
   cachedSecrets = null;
+  cachedSecretsMtimeMs = null;
 }

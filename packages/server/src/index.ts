@@ -374,9 +374,17 @@ async function main(): Promise<void> {
 
   // Schedule the healer cycle (agent spawns on-demand when the cycle fires)
   try {
-    const { scheduleHealingCycle } = await import('./healer/healer-agent.js');
+    const { scheduleHealingCycle, startHealerSelfWatchdog } = await import('./healer/healer-agent.js');
     scheduleHealingCycle();
-    logger.info('Healer cycle scheduled');
+    // v2.3.19 (error-handling-spec Phase 3) — engine-level safety net so
+    // the Healer can't get permanently stuck. Runs every 5 min.
+    startHealerSelfWatchdog();
+    // v2.3.19 (error-handling-spec Phase 4) — frequent auto-fix sweep for
+    // status recovery (stuck/paused/errored agents past their cooldown).
+    // Replaces the "wait until 04:00 to unstick a paused agent" behavior.
+    const { startFrequentAutoFixes } = await import('./healer/auto-fix.js');
+    startFrequentAutoFixes();
+    logger.info('Healer cycle scheduled + self-watchdog + frequent auto-fix started');
   } catch (err) {
     logger.warn('Failed to schedule healing cycle', { error: err instanceof Error ? err.message : String(err) });
   }

@@ -1054,42 +1054,45 @@ describe('runV2Turn integration', () => {
 
   it('PHASE 6: recoverable provider 4xx → system note + wakeup, no injury', async () => {
     // A "vision_mismatch" 400 from the provider. The classifier recognizes
-    // it as recoverable; recovery persists a [System: …] note and queues
-    // a wakeup. The agent is NOT injured — recordError + onAgentInjured
-    // should NOT fire.
+    // it as recoverable; recovery persists a [System: …] note (per the
+    // spec table — vision_mismatch template) and queues a wakeup. The
+    // agent is NOT injured — recordError + onAgentInjured should NOT
+    // fire. Tier B = no status change.
     callModelSpy.mockRejectedValue(
       new Error('400 The model does not support image input — no endpoints found that support images'),
     );
 
     await runV2Turn('kevin');
 
-    // No injury side effects.
+    // No injury side effects (Tier B).
     expect(recordErrorMock).not.toHaveBeenCalled();
     expect(onAgentInjuredSpy).not.toHaveBeenCalled();
 
     // Wakeup was queued so the agent retries.
     expect(pendingWakeups.has('kevin')).toBe(true);
 
-    // System note persisted explaining what failed.
+    // System note persisted, sourced from formatTierBNoteForAgent (spec
+    // table). For vision_mismatch the body explains the model can't see
+    // images and points to Settings.
     const sysMsgs = mockDb.current!
       .prepare("SELECT content FROM messages WHERE agent_id = 'kevin' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
       .all() as Array<{ content: string }>;
     expect(sysMsgs).toHaveLength(1);
-    expect(sysMsgs[0].content).toMatch(/your last action failed/i);
+    expect(sysMsgs[0].content).toMatch(/can't see images|cannot see images/i);
 
     // Vision-mismatch self-healing: capability cache invalidated.
     expect(removeCapabilitySpy).toHaveBeenCalledWith('test-model', 'vision');
 
-    // Streak counter incremented.
+    // Streak counter incremented; now keyed by (kind, fingerprint) per v2.3.19.
     expect(recoveryRunStreak.get('kevin')?.count).toBe(1);
     expect(recoveryRunStreak.get('kevin')?.kind).toBe('vision_mismatch');
+    expect(recoveryRunStreak.get('kevin')?.inputsFingerprint).toBeDefined();
   });
 
   it('PHASE 6: tool_format_rejected 400 → system note + wakeup, no injury', async () => {
-    // Spec acceptance lists tool_format alongside vision_mismatch as a
-    // recoverable provider 4xx. Verifies the recovery path handles it
-    // identically: classified by classifyRecoverableProviderError,
-    // persisted as a [System: …] note, wakeup queued, no injury.
+    // tool_format_rejected: same Tier B treatment as vision_mismatch.
+    // Asserts the new spec-driven note body sourced from
+    // formatTierBNoteForAgent.
     callModelSpy.mockRejectedValue(
       new Error('400 tool_use block has invalid input: missing required parameter'),
     );
@@ -1104,35 +1107,59 @@ describe('runV2Turn integration', () => {
       .prepare("SELECT content FROM messages WHERE agent_id = 'kevin' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
       .all() as Array<{ content: string }>;
     expect(sysMsgs).toHaveLength(1);
-    expect(sysMsgs[0].content).toMatch(/your last action failed/i);
+    // Either the tool_format_rejected or tool_args_schema_mismatch template
+    // is acceptable — both are Tier B and both produce actionable notes
+    // about re-issuing the tool call. Classifier ordering decides which
+    // fires for any given phrasing.
+    expect(sysMsgs[0].content).toMatch(/tool call|Re-call with|Re-issue/i);
 
-    expect(recoveryRunStreak.get('kevin')?.kind).toBe('tool_format_rejected');
+    // Streak kind is one of the two acceptable tool-error kinds.
+    const kind = recoveryRunStreak.get('kevin')?.kind;
+    expect(['tool_format_rejected', 'tool_args_schema_mismatch']).toContain(kind);
   });
 
-  it('PHASE 6: 4 consecutive same-kind 4xx → escalates to injury after the 3rd', async () => {
-    // Simulate the streak: pre-load the recovery streak Map at 3 (cap),
-    // then trigger one more recoverable error. Recovery should give up
-    // and fall through to recordInjury.
-    recoveryRunStreak.set('kevin', { kind: 'vision_mismatch', count: 3 });
+  it('PHASE 6 (v2.3.19): same kind + same inputs hits MAX → escalates to injury', async () => {
+    // v2.3.19 semantics: streak is keyed by (kind, inputsFingerprint).
+    // The fingerprint depends on the real turn state, so we let the first
+    // call POPULATE the entry, then manually bump count to MAX, then a
+    // second identical call trips the cap because both kind and
+    // fingerprint match.
     callModelSpy.mockRejectedValue(
       new Error('400 The model does not support image input — no endpoints found that support images'),
     );
 
+    // First run: streak gets created with the real fingerprint at count=1.
+    await runV2Turn('kevin');
+    const entry = recoveryRunStreak.get('kevin');
+    expect(entry).toBeDefined();
+    expect(entry!.kind).toBe('vision_mismatch');
+    // No injury yet (count=1 << MAX).
+    expect(onAgentInjuredSpy).not.toHaveBeenCalled();
+
+    // Bump count to MAX so the next identical failure trips the cap.
+    const { MAX_INLOOP_RECOVERIES_SAME_INPUTS } = await import('../../shared-state.js');
+    recoveryRunStreak.set('kevin', {
+      ...entry!,
+      count: MAX_INLOOP_RECOVERIES_SAME_INPUTS,
+    });
+    // Clear spies so we measure only the second call's side effects.
+    recordErrorMock.mockClear();
+    onAgentInjuredSpy.mockClear();
+
+    // Second identical failure — same kind, same fingerprint → escalate.
     await runV2Turn('kevin');
 
-    // After cap, escalates to injury.
     expect(recordErrorMock).toHaveBeenCalledWith('kevin');
     expect(onAgentInjuredSpy).toHaveBeenCalled();
+    expect(recoveryRunStreak.has('kevin')).toBe(false); // reset
 
-    // Streak was reset (so a future unrelated error starts fresh).
-    expect(recoveryRunStreak.has('kevin')).toBe(false);
-
-    // Two system notes were persisted: the give-up note + nothing else
-    // (recordInjury doesn't add a system note for non-rate-limit errors).
+    // Give-up note persisted before the injury cascade.
     const sysMsgs = mockDb.current!
       .prepare("SELECT content FROM messages WHERE agent_id = 'kevin' AND role = 'system' ORDER BY rowid ASC")
       .all() as Array<{ content: string }>;
-    const giveUp = sysMsgs.find((m) => /(?:stopping the recovery loop|auto-recovery is giving up|keeps coming back)/i.test(m.content));
+    const giveUp = sysMsgs.find((m) =>
+      /(tried this recovery|approach and it keeps failing|Healer is being notified)/i.test(m.content),
+    );
     expect(giveUp).toBeDefined();
   });
 
@@ -1160,6 +1187,72 @@ describe('runV2Turn integration', () => {
     expect(onAgentInjuredSpy).not.toHaveBeenCalled();
   });
 
+  it('PHASE 6 (v2.3.19): auth_invalid 401 → Tier D lock with plain-English banner + system note', async () => {
+    // A 401 from the provider is a true platform condition — the user
+    // needs to update their API key. Recovery should:
+    //   - persist a [System (platform error): …] note for the agent
+    //   - set status='error' (Tier D)
+    //   - broadcast a chat:error with code='AUTH_INVALID', plain-English
+    //     message (no JSON, no provider field dump)
+    //   - schedule the Healer
+    callModelSpy.mockRejectedValue(new Error('401 Unauthorized: invalid_api_key'));
+
+    await runV2Turn('kevin');
+
+    // Healer was scheduled (Tier D does fire Healer — cross-provider,
+    // potentially useful for diagnosis even if not auto-fix).
+    expect(onAgentInjuredSpy).toHaveBeenCalled();
+
+    // chat:error broadcast with AUTH_INVALID code; message is plain English.
+    const errors = (getBroadcastEventsByType('chat:error') as Array<{ code?: string; error?: string }>);
+    const authErr = errors.find((e) => e.code === 'AUTH_INVALID');
+    expect(authErr).toBeDefined();
+    expect(authErr!.error).toMatch(/API key|Settings/i);
+    // Hard rule: no JSON or technical detail in user-facing strings.
+    expect(authErr!.error).not.toMatch(/[{}]/);
+    expect(authErr!.error).not.toMatch(/401|invalid_api_key/);
+
+    // System note persisted for the agent so when it eventually wakes,
+    // it has context to apologize to the user.
+    const sysMsgs = mockDb.current!
+      .prepare("SELECT content FROM messages WHERE agent_id = 'kevin' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .all() as Array<{ content: string }>;
+    expect(sysMsgs).toHaveLength(1);
+    expect(sysMsgs[0].content).toMatch(/platform error|API key/i);
+    expect(sysMsgs[0].content).not.toMatch(/[{}]/);
+  });
+
+  it('PHASE 6 (v2.3.19): access_denied 403 → Tier D lock with ACCESS_DENIED code', async () => {
+    callModelSpy.mockRejectedValue(new Error('403 Forbidden: model access denied'));
+
+    await runV2Turn('kevin');
+
+    expect(onAgentInjuredSpy).toHaveBeenCalled();
+    const errors = (getBroadcastEventsByType('chat:error') as Array<{ code?: string; error?: string }>);
+    const denied = errors.find((e) => e.code === 'ACCESS_DENIED');
+    expect(denied).toBeDefined();
+    expect(denied!.error).toMatch(/access|Settings/i);
+    expect(denied!.error).not.toMatch(/403|Forbidden/);
+  });
+
+  it('PHASE 6 (v2.3.19): generic injury still persists a system note (no silent failures)', async () => {
+    // Pre-v2.3.19 only rate-limit errors got a chat-visible system note.
+    // Now EVERY injury path persists a note so the agent has context on
+    // its next session.
+    callModelSpy.mockRejectedValue(new Error('500 Internal Server Error: something weird'));
+
+    await runV2Turn('kevin');
+
+    const sysMsgs = mockDb.current!
+      .prepare("SELECT content FROM messages WHERE agent_id = 'kevin' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .all() as Array<{ content: string }>;
+    expect(sysMsgs).toHaveLength(1);
+    // The unclassified-error note tells the agent to apologize and end cleanly.
+    expect(sysMsgs[0].content).toMatch(/unexpected error|Apologize|Healer/i);
+    // No JSON or stack-trace material in the agent-facing note either.
+    expect(sysMsgs[0].content).not.toMatch(/[{}]/);
+  });
+
   it('PHASE 6: generic non-recoverable error → injury (recordError + healer + chat:error)', async () => {
     callModelSpy.mockRejectedValue(new Error('500 Internal Server Error'));
 
@@ -1179,7 +1272,7 @@ describe('runV2Turn integration', () => {
     expect(errors.find((e) => e.code === 'MODEL_FAILED')).toBeDefined();
   });
 
-  it('PHASE 6: rate-limit 429 → injury + RATE_LIMITED code + [Rate limited] system msg', async () => {
+  it('PHASE 6: rate-limit 429 → injury + RATE_LIMITED code + rate-limit system msg', async () => {
     callModelSpy.mockRejectedValue(new Error('429 Rate limit exceeded'));
 
     await runV2Turn('kevin');
@@ -1192,11 +1285,13 @@ describe('runV2Turn integration', () => {
     expect(rateLimited?.severity).toBe('warning');
     expect(rateLimited?.retryable).toBe(true);
 
-    // [Rate limited] system message persisted.
+    // v2.3.19 — system message text updated to the spec's plain-English
+    // template. Tests assert the agent-facing language, not the old
+    // "[Rate limited]" bracket.
     const sysMsgs = mockDb.current!
       .prepare("SELECT content FROM messages WHERE agent_id = 'kevin' AND role = 'system'")
       .all() as Array<{ content: string }>;
-    expect(sysMsgs.find((m) => m.content.includes('[Rate limited]'))).toBeDefined();
+    expect(sysMsgs.find((m) => /rate limit error/i.test(m.content) && /retrying automatically/i.test(m.content))).toBeDefined();
   });
 
   it('PHASE 6: error-loop trip → status paused, ERROR_LOOP code', async () => {

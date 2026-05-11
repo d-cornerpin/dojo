@@ -171,7 +171,9 @@ async function refreshAccessToken(): Promise<string | null> {
       logger.error('Token refresh failed', { status: resp.status, error: err });
       if (resp.status === 400 || resp.status === 401) {
         setMicrosoftConnected(false);
-        try { sendAlert('Microsoft 365 connection expired. Re-authenticate in Settings > Microsoft.', 'warning'); } catch {}
+        // v2.3.19 — OAuth expiry is a true blocker (Outlook/Calendar/
+        // OneDrive/Teams tools can't function until re-auth). Critical.
+        try { sendAlert('Microsoft 365 connection expired. Re-authenticate in Settings > Microsoft.', 'critical'); } catch {}
       }
       return null;
     }

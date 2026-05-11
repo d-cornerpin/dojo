@@ -21,14 +21,19 @@ import { createLogger } from '../../logger.js';
 import { broadcast } from '../../gateway/ws.js';
 import { getDb } from '../../db/connection.js';
 import { recordError, AgentError } from '../errors.js';
-import { classifyRecoverableProviderError } from './classifiers/provider.js';
+import { classifyRecoverableProviderError, classifyPlatformError } from './classifiers/provider.js';
 import {
   pendingWakeups,
   recoveryRunStreak,
-  MAX_CONSECUTIVE_INLOOP_RECOVERIES,
+  MAX_INLOOP_RECOVERIES_SAME_INPUTS,
 } from '../shared-state.js';
 import { setAgentStatus } from './loop.js';
 import type { AgentTurnState } from './state.js';
+import {
+  formatErrorForHuman,
+  formatTierBNoteForAgent,
+  type ErrorKind,
+} from './error-format.js';
 
 const logger = createLogger('v2-recovery');
 
@@ -78,28 +83,61 @@ export async function recoverFromError(
     return;
   }
 
-  // 2. Output truncation as a thrown error. Most providers signal output
-  //    truncation via stopReason='max_tokens' (handled in-loop by
-  //    outputTruncationClassifier with budget escalation). Some providers
-  //    instead throw an error like "max_output_tokens exceeded". Catch
-  //    that here so the agent gets a system note + wakeup instead of an
-  //    injury — Phase 6 spec acceptance criterion.
+  // 2. Output truncation as a thrown error.
   if (await tryOutputTruncationRecovery(agentId, fullErrText)) {
     return;
   }
 
-  // 3. Provider 4xx that the agent itself can adapt to (vision mismatch,
-  //    malformed tool call, etc.). Persist a [System: …] note → wakeup.
-  //    Capped at MAX_CONSECUTIVE_INLOOP_RECOVERIES of the same kind so
-  //    a recovery that can't actually fix the problem doesn't loop.
-  if (await tryProviderRecovery(agentId, fullErrText, message)) {
+  // 3. Platform errors (Tier D) — auth invalid, access denied, quota
+  //    exhausted, DNS failure. The platform genuinely can't proceed; the
+  //    user needs to act. Persist a human-language system note for the
+  //    agent (so when it eventually wakes, it has context) AND set
+  //    status='error' AND surface a plain-English banner + iMessage.
+  //    error-handling-spec Phase 1 / Phase 2.
+  if (await tryPlatformErrorRecovery(state, fullErrText, message)) {
     return;
   }
 
-  // 3. Generic injury path: log, recordError (loop detection), persist
-  //    last_error, set status, schedule healer notification, broadcast
-  //    chat:error. This is the "we couldn't fix it ourselves" exit.
-  await recordInjury(agentId, message, cause, code);
+  // 4. Provider 4xx that the agent itself can adapt to. Persist a
+  //    [System: …] note + wakeup. Status STAYS idle. error-handling-spec
+  //    Phase 1: no status change for Tier B. Same-kind cap replaced with
+  //    "same kind + same inputs" so the agent has unlimited adaptation
+  //    attempts as long as it actually changes its approach.
+  if (await tryProviderRecovery(state, fullErrText, message)) {
+    return;
+  }
+
+  // 5. Unclassified error. Per spec Phase 1: still persist a
+  //    plain-language system note so the agent has context on its
+  //    next turn. Only THEN consider injury — and even then, the agent
+  //    has something in chat history to read instead of just going
+  //    silent.
+  await recordInjury(state, message, cause, code);
+}
+
+/**
+ * v2.3.19 — fingerprint an agent's "inputs" so we can detect when a
+ * recovery is being re-tried with identical inputs (system note isn't
+ * helping). Stable across identical retries; changes when the agent's
+ * trigger message or last response actually differs.
+ *
+ * Uses readily-available state: the turn's trigger user message and the
+ * canonical signature of the agent's most recent response (already
+ * computed for repetition detection). Cheap, no DB query.
+ */
+// Exported for tests in agent/v2/__tests__/integration.test.ts so the
+// cap-reach test can pre-populate `recoveryRunStreak` with the exact
+// fingerprint runV2Turn will compute on the next failure.
+export function computeInputsFingerprint(state: AgentTurnState): string {
+  const trigger = state.lastUserMessageContent?.slice(0, 200) ?? '';
+  const lastResp = state.lastResponseSig ?? '';
+  let h = 0;
+  const seed = `${trigger}|${lastResp}`;
+  for (let i = 0; i < seed.length; i++) {
+    h = ((h << 5) - h) + seed.charCodeAt(i);
+    h |= 0;
+  }
+  return `t${state.turnNumber}:${h.toString(36)}`;
 }
 
 /**
@@ -204,10 +242,11 @@ async function tryOutputTruncationRecovery(
 // ── Step 2: provider 4xx ──
 
 async function tryProviderRecovery(
-  agentId: string,
+  state: AgentTurnState,
   fullErrText: string,
   message: string,
 ): Promise<boolean> {
+  const agentId = state.agentId;
   let recovery;
   try {
     recovery = classifyRecoverableProviderError(fullErrText);
@@ -220,33 +259,51 @@ async function tryProviderRecovery(
   }
   if (!recovery) return false;
 
+  // v2.3.19 — inputs-changed check replaces the per-kind count cap. We
+  // only consider a retry "wasteful" when the same kind fires WITH the
+  // same inputs fingerprint. If the agent has adapted (different message
+  // content, different last response), the streak resets even if the
+  // error kind is identical.
+  const fingerprint = computeInputsFingerprint(state);
   const prev = recoveryRunStreak.get(agentId);
-  const sameKind = prev?.kind === recovery.kind;
-  const newCount = sameKind ? prev!.count + 1 : 1;
-  recoveryRunStreak.set(agentId, { kind: recovery.kind, count: newCount });
+  const sameKindSameInputs =
+    prev?.kind === recovery.kind && prev?.inputsFingerprint === fingerprint;
+  const newCount = sameKindSameInputs ? prev!.count + 1 : 1;
+  recoveryRunStreak.set(agentId, {
+    kind: recovery.kind,
+    inputsFingerprint: fingerprint,
+    count: newCount,
+  });
 
-  if (newCount > MAX_CONSECUTIVE_INLOOP_RECOVERIES) {
-    // Cap reached — give up on in-loop recovery, escalate to injury.
+  if (newCount > MAX_INLOOP_RECOVERIES_SAME_INPUTS) {
+    // Same error, same inputs, multiple attempts in a row. The system note
+    // isn't unsticking the agent — escalate to Healer (Tier C) instead of
+    // looping uselessly. We still leave the agent IDLE — only the Healer
+    // path runs. The agent will get one final "we've tried, the Healer is
+    // looking" note so it can apologize cleanly to the user if asked.
     recoveryRunStreak.delete(agentId);
-    logger.error('v2: in-loop recovery cap reached — escalating to injury', {
+    logger.warn('v2: in-loop recovery exhausted on same inputs — handing off to Healer (Tier C)', {
       agentId,
       kind: recovery.kind,
       count: newCount,
-      max: MAX_CONSECUTIVE_INLOOP_RECOVERIES,
+      fingerprint,
     }, agentId);
     const giveUpNote =
-      `[System: The same problem keeps coming back (${recovery.kind}, ${newCount} attempts). ` +
-      `Auto-recovery is giving up and handing this off to the Healer agent. ` +
-      `Underlying issue: ${recovery.userFacingReason}.]`;
+      `[System: We have tried this recovery ${newCount} times with the same approach and it keeps failing. ` +
+      `The Healer is being notified to investigate. ` +
+      `If the user is waiting, apologize and tell them you ran into a problem you cannot work around right now.]`;
     persistAndBroadcastSystemNote(agentId, giveUpNote);
-    // Fall through to caller — return false so recoverFromError calls recordInjury.
+    // Fall through so recoverFromError calls recordInjury — but per
+    // spec Phase 1, recordInjury now persists a Tier B note first AND
+    // tries to keep the agent recoverable without status='error'.
     return false;
   }
 
-  logger.warn('v2: recoverable provider error — injecting system note instead of injuring', {
+  logger.warn('v2: recoverable provider error — injecting Tier B system note', {
     agentId,
     kind: recovery.kind,
     count: newCount,
+    fingerprint,
     message: message.slice(0, 200),
   }, agentId);
 
@@ -267,33 +324,163 @@ async function tryProviderRecovery(
     }
   }
 
-  const systemNote =
-    `[System: Your last action failed because the model could not handle the request as sent. ` +
-    `Reason: ${recovery.userFacingReason}. ${recovery.guidance} ` +
-    `Do not retry the exact same action; adapt your approach and continue.]`;
+  // v2.3.19 — agent system note is now sourced from the spec table via
+  // formatTierBNoteForAgent. The recovery.userFacingReason / guidance
+  // fields still live on the recovery object so legacy callers don't
+  // break, but the user-facing wording flows through one place.
+  const recoveryKindAsErrorKind = recovery.kind as ErrorKind;
+  const tierBBody = formatTierBNoteForAgent(recoveryKindAsErrorKind, recovery.context ?? {});
+  const systemNote = `[System: ${tierBBody}]`;
   persistAndBroadcastSystemNote(agentId, systemNote);
 
-  // Don't mark error/injury. Queue a wakeup so the agent retries with
+  // Tier B: NO status change. Queue a wakeup so the agent retries with
   // the system note in context.
   pendingWakeups.add(agentId);
+  return true;
+}
+
+/**
+ * Tier D — true platform conditions (auth invalid, access denied, quota
+ * exhausted, DNS failure). The agent CAN'T proceed and the user needs to
+ * act. Sets status='error', persists a chat-history system note for the
+ * agent (so the next session has context), broadcasts a plain-English
+ * banner, sends iMessage.
+ *
+ * Returns true if it handled the error (caller should NOT fall through
+ * to recordInjury).
+ */
+async function tryPlatformErrorRecovery(
+  state: AgentTurnState,
+  fullErrText: string,
+  message: string,
+): Promise<boolean> {
+  const agentId = state.agentId;
+  let platform;
+  try {
+    platform = classifyPlatformError(fullErrText);
+  } catch (err) {
+    logger.warn('v2: platform classifier threw', {
+      agentId,
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+    return false;
+  }
+  if (!platform) return false;
+
+  // Resolve display context for human-language message.
+  let agentName = agentId;
+  let providerName: string | undefined;
+  try {
+    const row = getDb()
+      .prepare(`
+        SELECT a.name AS agent_name, p.name AS provider_name
+        FROM agents a
+        LEFT JOIN models m ON m.id = a.model_id
+        LEFT JOIN providers p ON p.id = m.provider_id
+        WHERE a.id = ?
+      `)
+      .get(agentId) as { agent_name: string; provider_name: string | null } | undefined;
+    if (row?.agent_name) agentName = row.agent_name;
+    if (row?.provider_name) providerName = row.provider_name;
+  } catch { /* */ }
+
+  logger.error('v2: platform error — Tier D (locking agent, alerting user)', {
+    agentId, kind: platform.kind, message: message.slice(0, 200),
+  }, agentId);
+
+  // Persist a chat-history system note for the agent. The agent will
+  // not run again until the platform issue is resolved, but if/when it
+  // does, this note will be at the top of its next session context.
+  const humanText = formatErrorForHuman(platform.kind as ErrorKind, { agentName, providerName });
+  const systemNote = `[System (platform error): ${humanText}]`;
+  persistAndBroadcastSystemNote(agentId, systemNote);
+
+  // Set status='error' so the dashboard reflects the locked state.
+  setAgentStatus(agentId, 'error');
+
+  // Persist last_error for diagnostics (full technical detail logged
+  // already above; only sanitized version stored).
+  try {
+    getDb()
+      .prepare(
+        `UPDATE agents SET last_error = ?, last_error_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+      )
+      .run(`[${platform.kind}] ${message.slice(0, 400)}`, agentId);
+  } catch { /* best effort */ }
+
+  // Plain-English chat:error toast.
+  const code =
+    platform.kind === 'auth_invalid' ? 'AUTH_INVALID' as const :
+    platform.kind === 'access_denied' ? 'ACCESS_DENIED' as const :
+    platform.kind === 'quota_exhausted' ? 'QUOTA_EXHAUSTED' as const :
+    'DNS_FAILURE' as const;
+  broadcast({
+    type: 'chat:error',
+    agentId,
+    error: humanText,
+    code,
+    severity: 'error',
+    retryable: false,
+  });
+
+  // Schedule Healer (it can still help — different provider, can audit).
+  try {
+    const { onAgentInjured } = await import('../../healer/injury-recovery.js');
+    onAgentInjured(agentId, `[${platform.kind}] ${humanText}`);
+  } catch { /* */ }
+
   return true;
 }
 
 // ── Step 3: injury ──
 
 async function recordInjury(
-  agentId: string,
+  state: AgentTurnState,
   message: string,
   cause: string | undefined,
   code: string | undefined,
 ): Promise<void> {
+  const agentId = state.agentId;
   logger.error(`v2 agent loop failed: ${message}`, { agentId, code, cause }, agentId);
 
-  // Loop detection (5 errors in 2min → pause). Returns true if the
-  // threshold tripped; we leave status alone in that case (errors.ts
-  // sets it to 'paused' for us).
+  // v2.3.19 — ALWAYS persist a chat-history system note FIRST so the
+  // agent has context on its next turn. Pre-spec the only path that
+  // wrote a note was rate-limit; every other error went silent. The
+  // note uses plain language and never contains raw provider JSON.
+  const lower = message.toLowerCase();
+  const isRateLimit =
+    lower.includes('429') ||
+    lower.includes('rate_limit') ||
+    lower.includes('rate limit') ||
+    lower.includes('overloaded');
+
+  // Persist the unclassified-error note as a system message so the agent
+  // sees something it can act on (apologize to user, try a different
+  // approach next session, etc.) rather than just going silent.
+  if (isRateLimit) {
+    persistAndBroadcastSystemNote(
+      agentId,
+      `[System: The model provider returned a rate limit error. The platform is retrying automatically — give it a moment. Tell the user there is a short delay if they are waiting.]`,
+    );
+  } else {
+    persistAndBroadcastSystemNote(
+      agentId,
+      `[System: Your last turn hit an unexpected error that the platform could not classify or auto-recover. ` +
+      `Apologize to the user, end your turn cleanly, and the Healer will look into it.]`,
+    );
+  }
+
+  // Loop detection (5 errors in 2min → pause). Per spec Phase 1, this
+  // remains as the SAFETY NET for genuine error loops — but the
+  // threshold should rarely be hit now that Tier B errors don't bump
+  // the count (they no longer reach recordInjury).
   const paused = recordError(agentId);
   if (!paused) {
+    // v2.3.19 — keep setting status='error' here for the unclassified
+    // and rate-limit paths. Tier B and Tier D are handled BEFORE
+    // recordInjury fires; anything that reaches this function is by
+    // definition "we couldn't classify or recover, the agent should
+    // pause until something changes."
     setAgentStatus(agentId, 'error');
   }
 
@@ -310,8 +497,7 @@ async function recordInjury(
     /* best effort */
   }
 
-  // Schedule healer notification after grace period. If the agent
-  // recovers within 5 minutes the timer is cancelled automatically.
+  // Schedule healer notification after grace period.
   try {
     const { onAgentInjured } = await import('../../healer/injury-recovery.js');
     onAgentInjured(agentId, message);
@@ -319,19 +505,14 @@ async function recordInjury(
     /* module may not be available */
   }
 
-  // Broadcast structured chat:error to dashboard. User-facing text is plain
-  // language; the raw provider message goes to logs only (already at line ~250).
-  const lower = message.toLowerCase();
-  const isRateLimit =
-    lower.includes('429') ||
-    lower.includes('rate_limit') ||
-    lower.includes('rate limit') ||
-    lower.includes('overloaded');
+  // Broadcast plain-English chat:error to dashboard. The persisted
+  // system note (above) is the durable record; the toast is the
+  // ephemeral signal.
   const userMsg = isRateLimit
     ? 'Model is rate-limited. Retrying automatically — give it a moment.'
     : paused
-      ? 'Agent paused after repeated errors. Open the Health page to investigate, or resume from its detail page.'
-      : 'Agent hit an error and stopped. Send a new message to retry, or check the Health page if it keeps failing.';
+      ? 'Agent paused after repeated errors. Open the Vitals page to investigate, or resume from its detail page.'
+      : 'Agent hit an error and the Healer is looking into it. Send a new message to retry, or check the Vitals page if it keeps failing.';
   broadcast({
     type: 'chat:error',
     agentId,
@@ -340,42 +521,6 @@ async function recordInjury(
     severity: isRateLimit ? 'warning' : 'error',
     retryable: isRateLimit,
   });
-
-  // For rate limit errors, also persist a visible system message so the
-  // user can see what's happening (the error banner can be missed).
-  if (isRateLimit) {
-    const msgId = uuidv4();
-    const now = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-    try {
-      getDb()
-        .prepare(
-          `INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, ?)`,
-        )
-        .run(
-          msgId,
-          agentId,
-          '[Rate limited] The model provider returned a rate limit error. Retrying shortly...',
-          now,
-        );
-      broadcast({
-        type: 'chat:message',
-        agentId,
-        message: {
-          id: msgId,
-          agentId,
-          role: 'system',
-          content: '[Rate limited] The model provider returned a rate limit error. Retrying shortly...',
-          tokenCount: null,
-          modelId: null,
-          cost: null,
-          latencyMs: null,
-          createdAt: now,
-        },
-      });
-    } catch {
-      /* best effort */
-    }
-  }
 }
 
 // ── Helpers ──
