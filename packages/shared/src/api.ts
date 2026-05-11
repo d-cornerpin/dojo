@@ -146,12 +146,20 @@ export interface CreateTaskRequest {
   repeat_unit?: string;
   repeat_end_type?: string;
   repeat_end_value?: string;
+  /** v2.5.2 — CSV of day-of-week ints (0=Sun..6=Sat) for repeat_unit='specific_days'. */
+  repeat_days_of_week?: string | null;
 }
 export interface UpdateTaskRequest {
   status?: string;
   assignedTo?: string;
   priority?: string;
   notes?: string;
+  scheduled_start?: string | null;
+  repeat_interval?: number | null;
+  repeat_unit?: string | null;
+  repeat_end_type?: string | null;
+  repeat_end_value?: string | null;
+  repeat_days_of_week?: string | null;
 }
 export type CreateProjectResponse = { projectId: string; taskIds: string[] };
 

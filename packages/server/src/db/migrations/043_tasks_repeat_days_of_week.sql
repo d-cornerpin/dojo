@@ -1,0 +1,17 @@
+-- v2.5.2 — specific-days-of-week scheduling for tasks.
+--
+-- The pre-spec scheduler supported repeat_unit='weekdays' meaning Mon-Fri.
+-- That's too coarse for "every Monday and Wednesday" or "every weekday
+-- except Friday." This column adds a per-task day allowlist used when
+-- repeat_unit='specific_days'.
+--
+-- Format: comma-separated integers, 0=Sun through 6=Sat.
+-- Examples:
+--   '1,3'        — Mondays and Wednesdays
+--   '1,2,3,4'    — weekdays except Friday
+--   '0,6'        — weekends
+--
+-- Nullable; only meaningful when repeat_unit='specific_days'. The
+-- existing 'weekdays' value keeps working for back-compat (it's a
+-- shorthand for '1,2,3,4,5').
+ALTER TABLE tasks ADD COLUMN repeat_days_of_week TEXT;

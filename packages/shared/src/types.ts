@@ -301,6 +301,7 @@ export interface Task {
   repeatUnit: string | null;
   repeatEndType: string;
   repeatEndValue: string | null;
+  repeatDaysOfWeek: string | null;
   nextRunAt: string | null;
   runCount: number;
   isPaused: boolean;

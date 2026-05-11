@@ -133,6 +133,9 @@ trackerRouter.post('/tasks', async (c) => {
     if (body.scheduled_start) {
       const db = getDb();
       const { calculateNextRun } = await import('../../scheduler/engine.js');
+      // v2.5.2 — specific_days requires the day-of-week allowlist.
+      // Dashboard sends repeat_days_of_week as a CSV string (e.g. "1,3").
+      const repeatDaysOfWeek = (body.repeat_days_of_week ?? null) as string | null;
       const taskForCalc = {
         id: taskId,
         scheduled_start: body.scheduled_start,
@@ -145,6 +148,7 @@ trackerRouter.post('/tasks', async (c) => {
         last_run_at: null,
         next_run_at: null,
         schedule_status: 'waiting',
+        repeat_days_of_week: repeatDaysOfWeek,
       };
       const nextRun = calculateNextRun(taskForCalc) ?? body.scheduled_start;
 
@@ -152,6 +156,7 @@ trackerRouter.post('/tasks', async (c) => {
         UPDATE tasks SET
           scheduled_start = ?, repeat_interval = ?, repeat_unit = ?,
           repeat_end_type = ?, repeat_end_value = ?,
+          repeat_days_of_week = ?,
           next_run_at = ?, schedule_status = 'waiting',
           updated_at = datetime('now')
         WHERE id = ?
@@ -161,6 +166,7 @@ trackerRouter.post('/tasks', async (c) => {
         body.repeat_unit ?? null,
         body.repeat_end_type ?? 'never',
         body.repeat_end_value ?? null,
+        repeatDaysOfWeek,
         nextRun,
         taskId,
       );
@@ -212,13 +218,15 @@ trackerRouter.put('/tasks/:id', async (c) => {
         // Remove schedule
         db.prepare(`
           UPDATE tasks SET scheduled_start = NULL, repeat_interval = NULL, repeat_unit = NULL,
-            repeat_end_type = NULL, repeat_end_value = NULL, next_run_at = NULL,
+            repeat_end_type = NULL, repeat_end_value = NULL, repeat_days_of_week = NULL,
+            next_run_at = NULL,
             schedule_status = 'unscheduled', updated_at = datetime('now')
           WHERE id = ?
         `).run(id);
       } else {
         const { calculateNextRun } = await import('../../scheduler/engine.js');
         const existingTask = getTask(id);
+        const repeatDaysOfWeek = (body.repeat_days_of_week ?? null) as string | null;
         const taskForCalc = {
           id,
           scheduled_start: body.scheduled_start,
@@ -231,12 +239,14 @@ trackerRouter.put('/tasks/:id', async (c) => {
           last_run_at: null,
           next_run_at: null,
           schedule_status: 'waiting',
+          repeat_days_of_week: repeatDaysOfWeek,
         };
         const nextRun = calculateNextRun(taskForCalc) ?? body.scheduled_start;
 
         db.prepare(`
           UPDATE tasks SET scheduled_start = ?, repeat_interval = ?, repeat_unit = ?,
             repeat_end_type = ?, repeat_end_value = ?,
+            repeat_days_of_week = ?,
             next_run_at = ?, schedule_status = 'waiting', is_paused = 0,
             updated_at = datetime('now')
           WHERE id = ?
@@ -246,6 +256,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
           body.repeat_unit ?? null,
           body.repeat_end_type ?? 'never',
           body.repeat_end_value ?? null,
+          repeatDaysOfWeek,
           nextRun,
           id,
         );

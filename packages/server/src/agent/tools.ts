@@ -924,8 +924,13 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         repeat_unit: {
           type: 'string',
-          enum: ['minutes', 'hours', 'days', 'weekdays', 'weeks', 'months', 'years'],
-          description: 'Unit for repeat interval. Use "weekdays" for Mon–Fri only (skips Saturday/Sunday — useful for daily work tasks that should not run on weekends).',
+          enum: ['minutes', 'hours', 'days', 'weekdays', 'specific_days', 'weeks', 'months', 'years'],
+          description: 'Unit for repeat interval. "weekdays" = Mon–Fri only (skips weekends). "specific_days" = an explicit set of weekdays you provide via repeat_days_of_week (e.g. "every Monday and Wednesday" or "every weekday except Friday"). For specific_days, repeat_interval is ignored — the task fires on each listed day every week.',
+        },
+        repeat_days_of_week: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Required when repeat_unit="specific_days". List of weekday names: ["mon","wed"] for Mondays and Wednesdays, ["mon","tue","wed","thu"] for weekdays except Friday. Accepted names: sun/mon/tue/wed/thu/fri/sat (case-insensitive). Integers 0-6 (0=Sun..6=Sat) also accepted.',
         },
         repeat_end_type: {
           type: 'string',
@@ -3163,6 +3168,58 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
           { name: 'title', value: args.title, type: 'string' },
         ]);
         if (taskErr) { content = taskErr; isError = true; break; }
+
+        // v2.5.2 — normalize repeat_days_of_week from agent-friendly
+        // formats (array of names, array of ints, or CSV string) into
+        // the canonical CSV-of-ints stored in the DB. Day name table
+        // accepts the common 3-letter abbreviations.
+        let repeatDaysOfWeek: string | undefined = undefined;
+        const rawDays = args.repeat_days_of_week;
+        if (rawDays != null) {
+          const NAME_MAP: Record<string, number> = {
+            sun: 0, sunday: 0,
+            mon: 1, monday: 1,
+            tue: 2, tues: 2, tuesday: 2,
+            wed: 3, weds: 3, wednesday: 3,
+            thu: 4, thur: 4, thurs: 4, thursday: 4,
+            fri: 5, friday: 5,
+            sat: 6, saturday: 6,
+          };
+          const nums = new Set<number>();
+          const raw: unknown[] = Array.isArray(rawDays)
+            ? rawDays
+            : typeof rawDays === 'string'
+              ? rawDays.split(',')
+              : [];
+          for (const item of raw) {
+            if (typeof item === 'number' && Number.isInteger(item) && item >= 0 && item <= 6) {
+              nums.add(item);
+            } else if (typeof item === 'string') {
+              const trimmed = item.trim().toLowerCase();
+              if (trimmed === '') continue;
+              const asNum = parseInt(trimmed, 10);
+              if (Number.isInteger(asNum) && asNum >= 0 && asNum <= 6) {
+                nums.add(asNum);
+              } else if (NAME_MAP[trimmed] !== undefined) {
+                nums.add(NAME_MAP[trimmed]);
+              }
+            }
+          }
+          if (nums.size === 0 && args.repeat_unit === 'specific_days') {
+            content = 'Error: repeat_unit="specific_days" requires repeat_days_of_week with at least one valid day. Accepted: sun/mon/tue/wed/thu/fri/sat or 0-6.';
+            isError = true;
+            break;
+          }
+          if (nums.size > 0) {
+            repeatDaysOfWeek = [...nums].sort((a, b) => a - b).join(',');
+          }
+        }
+        if (args.repeat_unit === 'specific_days' && !repeatDaysOfWeek) {
+          content = 'Error: repeat_unit="specific_days" requires repeat_days_of_week (e.g. ["mon","wed"]).';
+          isError = true;
+          break;
+        }
+
         try {
           content = trackerCreateTask(agentId, {
             projectId: args.project_id as string | undefined,
@@ -3175,10 +3232,15 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
             phase: args.phase as number | undefined,
             // Schedule parameters
             scheduled_start: args.scheduled_start as string | undefined,
-            repeat_interval: args.repeat_interval as number | undefined,
+            // v2.5.2 — interval is meaningless for specific_days but the
+            // engine and DB row should still carry 1 so downstream callers
+            // (UI form, formatter) can detect a recurring schedule.
+            repeat_interval: (args.repeat_interval as number | undefined)
+              ?? (args.repeat_unit === 'specific_days' ? 1 : undefined),
             repeat_unit: args.repeat_unit as string | undefined,
             repeat_end_type: args.repeat_end_type as string | undefined,
             repeat_end_value: args.repeat_end_value as string | undefined,
+            repeat_days_of_week: repeatDaysOfWeek,
             // Group assignment
             assigned_to_group: args.assigned_to_group as string | undefined,
           });

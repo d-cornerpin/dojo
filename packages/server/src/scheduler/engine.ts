@@ -15,6 +15,9 @@ export interface ScheduledTask {
   last_run_at: string | null;
   next_run_at: string | null;
   schedule_status: string;
+  // v2.5.2 — comma-separated day numbers (0=Sun..6=Sat) used when
+  // repeat_unit='specific_days'. e.g. '1,3' = Mon+Wed. Nullable.
+  repeat_days_of_week?: string | null;
 }
 
 export function calculateNextRun(task: ScheduledTask): string | null {
@@ -50,29 +53,50 @@ export function calculateNextRun(task: ScheduledTask): string | null {
 
   const next = new Date(baseTime);
 
-  advanceByUnit(next, task.repeat_interval, task.repeat_unit);
+  advanceByUnit(next, task.repeat_interval, task.repeat_unit, task.repeat_days_of_week ?? null);
   if (task.repeat_unit !== 'minutes' && task.repeat_unit !== 'hours' &&
       task.repeat_unit !== 'days' && task.repeat_unit !== 'weeks' &&
       task.repeat_unit !== 'months' && task.repeat_unit !== 'years' &&
-      task.repeat_unit !== 'weekdays') {
+      task.repeat_unit !== 'weekdays' &&
+      task.repeat_unit !== 'specific_days') {
     return null;
   }
 
   // If the computed next run is in the past (e.g., server was down), advance until future
   const now = new Date();
   while (next <= now && task.repeat_interval && task.repeat_unit) {
-    advanceByUnit(next, task.repeat_interval, task.repeat_unit);
+    advanceByUnit(next, task.repeat_interval, task.repeat_unit, task.repeat_days_of_week ?? null);
   }
 
   return next.toISOString();
 }
 
 /**
+ * Parse a comma-separated day-of-week string like "1,3" into a Set of
+ * day numbers (0=Sun..6=Sat). Returns null if the string is empty or
+ * has no valid entries (caller decides what to do).
+ */
+function parseDaysOfWeek(s: string | null): Set<number> | null {
+  if (!s) return null;
+  const out = new Set<number>();
+  for (const part of s.split(',')) {
+    const n = parseInt(part.trim(), 10);
+    if (Number.isInteger(n) && n >= 0 && n <= 6) out.add(n);
+  }
+  return out.size > 0 ? out : null;
+}
+
+/**
  * Advance `d` in place by `interval` of `unit`. For 'weekdays', advance
  * `interval` calendar days and then skip past Saturday/Sunday to Monday —
  * so an interval of 1 means "every business day."
+ *
+ * For 'specific_days', `daysCSV` selects which day-of-week the task
+ * fires on (e.g. "1,3" = Mon+Wed). `interval` is ignored — the next
+ * matching day after `d` is chosen. If `daysCSV` is empty/invalid, the
+ * date is unchanged (caller should treat this as a config error).
  */
-function advanceByUnit(d: Date, interval: number, unit: string): void {
+function advanceByUnit(d: Date, interval: number, unit: string, daysCSV: string | null = null): void {
   switch (unit) {
     case 'minutes':
       d.setMinutes(d.getMinutes() + interval);
@@ -99,13 +123,45 @@ function advanceByUnit(d: Date, interval: number, unit: string): void {
       else if (dow === 0) d.setDate(d.getDate() + 1);
       break;
     }
+    case 'specific_days': {
+      // v2.5.2 — advance to the next allowed day-of-week. Bounded loop
+      // (max 7 iterations) so a misconfigured empty set can't spin.
+      const allowed = parseDaysOfWeek(daysCSV);
+      if (!allowed) {
+        // No valid days configured — leave date unchanged. Caller's
+        // outer while-loop in calculateNextRun would otherwise spin
+        // forever; calculateNextRun's "advance until future" guard
+        // also relies on this returning bounded behavior.
+        return;
+      }
+      for (let i = 0; i < 7; i++) {
+        d.setDate(d.getDate() + 1);
+        if (allowed.has(d.getDay())) return;
+      }
+      break;
+    }
   }
 }
 
-export function formatRepeatPattern(interval: number | null, unit: string | null): string {
+const DAY_NAMES_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+export function formatRepeatPattern(
+  interval: number | null,
+  unit: string | null,
+  daysCSV: string | null = null,
+): string {
   if (!interval || !unit) return '';
   if (unit === 'weekdays') {
     return interval === 1 ? 'Every weekday' : `Every ${interval} weekdays`;
+  }
+  if (unit === 'specific_days') {
+    const allowed = parseDaysOfWeek(daysCSV);
+    if (!allowed || allowed.size === 0) return 'Every (no days selected)';
+    if (allowed.size === 7) return 'Every day';
+    if (allowed.size === 5 && [1, 2, 3, 4, 5].every((n) => allowed.has(n))) return 'Every weekday';
+    if (allowed.size === 2 && allowed.has(0) && allowed.has(6)) return 'Every weekend';
+    const names = [...allowed].sort().map((n) => DAY_NAMES_SHORT[n]);
+    return `Every ${names.join(', ')}`;
   }
   if (interval === 1) return `Every ${unit.replace(/s$/, '')}`;
   return `Every ${interval} ${unit}`;

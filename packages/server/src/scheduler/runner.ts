@@ -208,6 +208,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
     last_run_at: now,
     next_run_at: task.next_run_at as string | null,
     schedule_status: task.schedule_status as string,
+    repeat_days_of_week: task.repeat_days_of_week as string | null,
   };
 
   const nextRun = calculateNextRun(scheduledTask);
@@ -410,6 +411,7 @@ function forceResetStuckRecurringTask(taskId: string): void {
     last_run_at: task.last_run_at as string | null,
     next_run_at: task.next_run_at as string | null,
     schedule_status: task.schedule_status as string,
+    repeat_days_of_week: task.repeat_days_of_week as string | null,
   };
 
   const nextRun = calculateNextRun(scheduledTask);

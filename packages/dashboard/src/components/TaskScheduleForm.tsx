@@ -16,6 +16,28 @@ export interface ScheduleConfig {
   repeatUnit: string | null;
   repeatEndType: string;
   repeatEndValue: string | null;
+  /** v2.5.2 — CSV of day-of-week ints (0=Sun..6=Sat) for repeatUnit='specific_days'. */
+  repeatDaysOfWeek: string | null;
+}
+
+const DAY_PILLS: Array<{ value: number; label: string }> = [
+  { value: 0, label: 'Sun' },
+  { value: 1, label: 'Mon' },
+  { value: 2, label: 'Tue' },
+  { value: 3, label: 'Wed' },
+  { value: 4, label: 'Thu' },
+  { value: 5, label: 'Fri' },
+  { value: 6, label: 'Sat' },
+];
+
+function parseDaysCSV(s: string | null): Set<number> {
+  if (!s) return new Set();
+  const out = new Set<number>();
+  for (const part of s.split(',')) {
+    const n = parseInt(part.trim(), 10);
+    if (Number.isInteger(n) && n >= 0 && n <= 6) out.add(n);
+  }
+  return out;
 }
 
 interface TaskScheduleFormProps {
@@ -29,11 +51,15 @@ export const DEFAULT_SCHEDULE: ScheduleConfig = {
   repeatUnit: null,
   repeatEndType: 'never',
   repeatEndValue: null,
+  repeatDaysOfWeek: null,
 };
 
 export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => {
   const [enabled, setEnabled] = useState(!!value.scheduledStart);
-  const [repeatEnabled, setRepeatEnabled] = useState(!!value.repeatInterval);
+  // v2.5.2 — a recurring schedule is identified by repeatUnit (the unit drives
+  // the engine; interval is ignored for specific_days). Keying off interval
+  // alone hid the picker for agent-created specific_days tasks.
+  const [repeatEnabled, setRepeatEnabled] = useState(!!value.repeatUnit || !!value.repeatInterval);
 
   const update = (partial: Partial<ScheduleConfig>) => {
     onChange({ ...value, ...partial });
@@ -109,17 +135,29 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
           {repeatEnabled && (
             <div className="space-y-2">
               <div className="flex items-center gap-2">
-                <span className="text-xs text-white/40">Every</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={value.repeatInterval ?? 1}
-                  onChange={(e) => update({ repeatInterval: Number(e.target.value) })}
-                  className="glass-input w-16 text-sm text-center py-1"
-                />
+                {value.repeatUnit !== 'specific_days' && (
+                  <>
+                    <span className="text-xs text-white/40">Every</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={value.repeatInterval ?? 1}
+                      onChange={(e) => update({ repeatInterval: Number(e.target.value) })}
+                      className="glass-input w-16 text-sm text-center py-1"
+                    />
+                  </>
+                )}
                 <select
                   value={value.repeatUnit ?? 'days'}
-                  onChange={(e) => update({ repeatUnit: e.target.value })}
+                  onChange={(e) => {
+                    const nextUnit = e.target.value;
+                    if (nextUnit === 'specific_days') {
+                      // Switching to specific_days: interval is fixed at 1, clear it from UI
+                      update({ repeatUnit: nextUnit, repeatInterval: 1, repeatDaysOfWeek: value.repeatDaysOfWeek ?? '' });
+                    } else {
+                      update({ repeatUnit: nextUnit, repeatDaysOfWeek: null });
+                    }
+                  }}
                   className="glass-select text-sm py-1"
                 >
                   <option value="minutes">Minutes</option>
@@ -128,8 +166,44 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
                   <option value="weekdays">Weekdays (Mon–Fri)</option>
                   <option value="weeks">Weeks</option>
                   <option value="months">Months</option>
+                  <option value="specific_days">Specific days of week…</option>
                 </select>
               </div>
+
+              {value.repeatUnit === 'specific_days' && (
+                <div>
+                  <label className="text-xs text-white/40 block mb-1">Days</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {DAY_PILLS.map((pill) => {
+                      const selected = parseDaysCSV(value.repeatDaysOfWeek);
+                      const isOn = selected.has(pill.value);
+                      return (
+                        <button
+                          key={pill.value}
+                          type="button"
+                          onClick={() => {
+                            const next = new Set(selected);
+                            if (isOn) next.delete(pill.value);
+                            else next.add(pill.value);
+                            const csv = [...next].sort((a, b) => a - b).join(',');
+                            update({ repeatDaysOfWeek: csv.length > 0 ? csv : '' });
+                          }}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                            isOn
+                              ? 'bg-cp-teal/20 text-cp-teal border border-cp-teal/40'
+                              : 'bg-white/[0.05] text-white/50 border border-white/[0.08] hover:bg-white/[0.08]'
+                          }`}
+                        >
+                          {pill.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {!value.repeatDaysOfWeek && (
+                    <p className="text-[11px] text-cp-coral/70 mt-1">Select at least one day.</p>
+                  )}
+                </div>
+              )}
 
               {/* End condition */}
               <div>

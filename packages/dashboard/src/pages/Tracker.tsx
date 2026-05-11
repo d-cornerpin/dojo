@@ -678,6 +678,7 @@ const CreateTaskModal = ({
         taskData.repeat_unit = schedule.repeatUnit;
         taskData.repeat_end_type = schedule.repeatEndType;
         taskData.repeat_end_value = schedule.repeatEndValue;
+        taskData.repeat_days_of_week = schedule.repeatDaysOfWeek;
       }
     }
 
@@ -765,6 +766,7 @@ const ScheduleEditor = ({ task, onUpdate }: { task: Task; onUpdate: () => void }
     repeatUnit: task.repeatUnit,
     repeatEndType: task.repeatEndType ?? 'never',
     repeatEndValue: task.repeatEndValue ?? null,
+    repeatDaysOfWeek: task.repeatDaysOfWeek ?? null,
   });
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -784,6 +786,7 @@ const ScheduleEditor = ({ task, onUpdate }: { task: Task; onUpdate: () => void }
       body.repeat_unit = schedule.repeatUnit;
       body.repeat_end_type = schedule.repeatEndType;
       body.repeat_end_value = schedule.repeatEndValue;
+      body.repeat_days_of_week = schedule.repeatDaysOfWeek;
     } else {
       body.scheduled_start = null;
     }

@@ -41,6 +41,7 @@ interface TaskRow {
   repeat_unit: string | null;
   repeat_end_type: string | null;
   repeat_end_value: string | null;
+  repeat_days_of_week: string | null;
   next_run_at: string | null;
   run_count: number;
   is_paused: number;
@@ -121,6 +122,7 @@ function mapTaskRow(row: TaskRow): Task {
     repeatUnit: row.repeat_unit ?? null,
     repeatEndType: row.repeat_end_type ?? 'never',
     repeatEndValue: row.repeat_end_value ?? null,
+    repeatDaysOfWeek: row.repeat_days_of_week ?? null,
     nextRunAt: row.next_run_at ?? null,
     runCount: row.run_count ?? 0,
     isPaused: Boolean(row.is_paused),

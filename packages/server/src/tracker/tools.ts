@@ -265,8 +265,10 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       const repeatUnit = args.repeat_unit as string | undefined;
       const repeatEndType = (args.repeat_end_type as string | undefined) ?? 'never';
       const repeatEndValue = args.repeat_end_value as string | undefined;
+      // v2.5.2 — specific_days uses an explicit day-of-week allowlist.
+      // Already normalized to CSV-of-ints by the tool dispatcher.
+      const repeatDaysOfWeek = args.repeat_days_of_week as string | undefined;
 
-      
       const taskForCalc = {
         id: taskId,
         scheduled_start: scheduledStart,
@@ -279,6 +281,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
         last_run_at: null,
         next_run_at: null,
         schedule_status: 'waiting',
+        repeat_days_of_week: repeatDaysOfWeek ?? null,
       };
       const nextRun = calculateNextRun(taskForCalc) ?? scheduledStart;
 
@@ -286,10 +289,11 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
         UPDATE tasks SET
           scheduled_start = ?, repeat_interval = ?, repeat_unit = ?,
           repeat_end_type = ?, repeat_end_value = ?,
+          repeat_days_of_week = ?,
           next_run_at = ?, schedule_status = 'waiting',
           updated_at = datetime('now')
         WHERE id = ?
-      `).run(scheduledStart, repeatInterval ?? null, repeatUnit ?? null, repeatEndType, repeatEndValue ?? null, nextRun, taskId);
+      `).run(scheduledStart, repeatInterval ?? null, repeatUnit ?? null, repeatEndType, repeatEndValue ?? null, repeatDaysOfWeek ?? null, nextRun, taskId);
     }
 
     // Handle group assignment

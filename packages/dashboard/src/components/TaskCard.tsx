@@ -30,7 +30,25 @@ const formatNextRun = (dateStr: string): string => {
     d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 };
 
-const formatRepeat = (interval: number, unit: string): string => {
+const DAY_NAMES_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+const formatRepeat = (interval: number, unit: string, daysCSV: string | null = null): string => {
+  if (unit === 'weekdays') {
+    return interval === 1 ? 'Every weekday' : `Every ${interval} weekdays`;
+  }
+  if (unit === 'specific_days') {
+    if (!daysCSV) return 'Every (no days selected)';
+    const nums = daysCSV
+      .split(',')
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => Number.isInteger(n) && n >= 0 && n <= 6)
+      .sort((a, b) => a - b);
+    if (nums.length === 0) return 'Every (no days selected)';
+    if (nums.length === 7) return 'Every day';
+    if (nums.length === 5 && [1, 2, 3, 4, 5].every((n) => nums.includes(n))) return 'Every weekday';
+    if (nums.length === 2 && nums.includes(0) && nums.includes(6)) return 'Every weekend';
+    return `Every ${nums.map((n) => DAY_NAMES_SHORT[n]).join(', ')}`;
+  }
   if (interval === 1) return `Every ${unit.replace(/s$/, '')}`;
   return `Every ${interval} ${unit}`;
 };
@@ -102,7 +120,7 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
           {task.repeatInterval && task.repeatUnit && (
             <div className="text-[10px] text-white/40 flex items-center gap-1">
               <span>{'\u{1F501}'}</span>
-              <span>{formatRepeat(task.repeatInterval, task.repeatUnit)}</span>
+              <span>{formatRepeat(task.repeatInterval, task.repeatUnit, task.repeatDaysOfWeek)}</span>
               {task.runCount > 0 && <span>({task.runCount} runs)</span>}
             </div>
           )}
