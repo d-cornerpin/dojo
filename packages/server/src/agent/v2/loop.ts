@@ -95,6 +95,34 @@ import { listTechniques } from '../../techniques/store.js';
 
 const logger = createLogger('v2-loop');
 
+// v2.5.9 — Just-in-time visibility hint helper.
+//
+// When a tool result contains content the user will not see (URLs the
+// agent might want to share, file paths from the shared uploads dir),
+// append a small informational note so the agent knows the user can't
+// read its tool results directly. The note is intentionally NEUTRAL —
+// it doesn't tell the agent it MUST surface anything, just clarifies the
+// visibility model. The agent retains full discretion about what to
+// share, what to summarize, and what to keep internal.
+//
+// Trade-off: ~50 tokens per triggering tool result, vs. spending the
+// same tokens in the system prompt every turn whether or not relevant.
+const VISIBILITY_HINT = `\n\n[VISIBILITY: tool results are shown only to you, not to the user. The user sees only your reply text and any files you attach via show_to_user. If you want them to have a URL or detail from this result, include it inline in your reply — they cannot "see above". If there's nothing here worth surfacing, no action needed.]`;
+
+// Match http(s) URLs OR file paths under the shared uploads dir.
+// Conservative: only triggers on patterns that are typically things the
+// agent might want to surface, not generic mentions of paths/URLs.
+const VISIBILITY_TRIGGER_RE = /https?:\/\/\S+|[~/]\.dojo\/uploads\//;
+
+function appendVisibilityHintIfRelevant<T extends { content?: string; isError?: boolean }>(toolResult: T): T {
+  // Skip on errors — error messages aren't artifacts to share.
+  if (toolResult.isError) return toolResult;
+  const content = toolResult.content;
+  if (typeof content !== 'string' || !content) return toolResult;
+  if (!VISIBILITY_TRIGGER_RE.test(content)) return toolResult;
+  return { ...toolResult, content: content + VISIBILITY_HINT };
+}
+
 const STATUS_HEARTBEAT_INTERVAL_MS = 30_000;
 const MAX_TOOL_LOOPS = 75;                     // matches v1
 const TURN_TIME_BUDGET_MS = 15 * 60 * 1000;    // matches v1 — 15 min/turn
@@ -1354,6 +1382,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
               | undefined;
             if (contentBlocks) {
               (toolResult as { contentBlocks?: unknown }).contentBlocks = contentBlocks;
+            }
+            // v2.5.9 — Just-in-time visibility hint. When a tool result
+            // contains a URL or a shared-uploads file path, append a small
+            // informational note reminding the agent that tool results are
+            // only visible to itself, not to the user. Informational only —
+            // does NOT pressure the agent to share anything, just makes
+            // sure it knows the user can't "see above". Skips sub-agents
+            // (their results go to their parent agent, not the user).
+            if (isPrimaryAgent(agentId)) {
+              toolResult = appendVisibilityHintIfRelevant(toolResult);
             }
           } catch (toolErr) {
             const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
