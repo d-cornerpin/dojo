@@ -41,6 +41,7 @@ import { executeVaultRemember, executeVaultSearch, executeVaultForget, executeVa
 import { googleReadToolDefinitions, executeGoogleReadTool } from '../google/tools-read.js';
 import { googleWriteToolDefinitions, executeGoogleWriteTool } from '../google/tools-write.js';
 import { slidesToolDefinitions, slidesToolNames, executeGoogleSlidesTool } from '../google/tools-slides.js';
+import { formsToolDefinitions, formsToolNames, executeGoogleFormsTool } from '../google/tools-forms.js';
 import { getAgentGoogleAccessLevel, getEnabledServices } from '../google/auth.js';
 import { microsoftReadToolDefinitions, executeMicrosoftReadTool } from '../microsoft/tools-read.js';
 import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../microsoft/tools-write.js';
@@ -237,6 +238,7 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
     docs: ['docs_'],
     sheets: ['sheets_'],
     slides: ['slides_'],
+    forms: ['forms_'],
   };
 
   function isToolEnabledByService(toolName: string): boolean {
@@ -250,7 +252,7 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
 
   if (googleAccess === 'full') {
     // Primary agent: all read + write tools, filtered by enabled services
-    const allGoogleTools = [...googleReadToolDefinitions, ...googleWriteToolDefinitions, ...slidesToolDefinitions];
+    const allGoogleTools = [...googleReadToolDefinitions, ...googleWriteToolDefinitions, ...slidesToolDefinitions, ...formsToolDefinitions];
     filtered.push(...allGoogleTools.filter(t => isToolEnabledByService(t.name)));
   } else if (googleAccess === 'read') {
     // Read-only agents (Ronin/Apprentice): read-only tools for Gmail/Calendar/
@@ -259,6 +261,15 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
     // They still cannot send email, edit docs, or modify Drive files directly.
     filtered.push(...googleReadToolDefinitions.filter(t => isToolEnabledByService(t.name)));
     filtered.push(...slidesToolDefinitions.filter(t => isToolEnabledByService(t.name)));
+    // Forms is gated tighter than Slides because forms collect responses from
+    // external people (durable real-world impact). Sub-agents get the read
+    // tools (forms_get, forms_list_responses) — they can summarize survey
+    // results — but not the create/edit tools. Primary owns those.
+    filtered.push(
+      ...formsToolDefinitions
+        .filter(t => t.name === 'forms_get' || t.name === 'forms_list_responses')
+        .filter(t => isToolEnabledByService(t.name)),
+    );
     // drive_upload is also exposed because it's the only way to get a local
     // file (e.g. an Imaginer-generated image) into a deck via
     // slides_add_image_from_drive. Without it the Slides toolkit is half
@@ -2681,6 +2692,24 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       } else {
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         content = await executeGoogleSlidesTool(name, args, agentId, agentRow?.name ?? agentId);
+        isError = content.startsWith('Error');
+      }
+      return { toolCallId: id, name, content, isError };
+    }
+
+    // ── Google Forms tools (mirror of slides dispatch). Read tools are
+    // available to read-level agents; write tools are primary-only (enforced
+    // by the tool-filtering step above — write tools won't appear in a
+    // read-level agent's registry, so they fall through to "unknown tool"). ──
+    if (formsToolNames.includes(name)) {
+      const formsAccess = getAgentGoogleAccessLevel(agentId, isPrimaryAgent(agentId), isPMAgent(agentId));
+      if (formsAccess === 'none') {
+        content = 'Permission denied: this agent does not have Google Forms access.';
+        isError = true;
+        auditLog(agentId, name, null, 'denied', 'Google Forms tool blocked: no Google access');
+      } else {
+        const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+        content = await executeGoogleFormsTool(name, args, agentId, agentRow?.name ?? agentId);
         isError = content.startsWith('Error');
       }
       return { toolCallId: id, name, content, isError };
@@ -5534,6 +5563,7 @@ Thread is closed — respond to the user, not Imaginer.`;
       case 'calendar_unsubscribe':
       case 'drive_upload':
       case 'drive_share':
+      case 'drive_delete':
       case 'docs_create':
       case 'docs_edit':
       case 'sheets_create':
@@ -5579,6 +5609,7 @@ Thread is closed — respond to the user, not Imaginer.`;
             { name: 'content', value: args.content, type: 'string', allowEmpty: true },
           ],
           drive_share: [{ name: 'file_id', value: args.file_id, type: 'string' }],
+          drive_delete: [{ name: 'file_id', value: args.file_id, type: 'string' }],
           docs_create: [{ name: 'title', value: args.title, type: 'string' }],
           docs_edit: [{ name: 'document_id', value: args.document_id, type: 'string' }],
           sheets_create: [{ name: 'title', value: args.title, type: 'string' }],

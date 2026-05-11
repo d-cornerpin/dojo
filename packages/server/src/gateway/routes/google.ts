@@ -17,6 +17,8 @@ import {
   getStoredState,
   getStoredRedirectUri,
   disconnectGoogle,
+  getMissingScopes,
+  discoverGrantedScopes,
 } from '../../google/auth.js';
 import { queryGoogleActivity, getTodayActivityCounts, getLastActivityTimestamp } from '../../google/activity-log.js';
 
@@ -25,10 +27,21 @@ const logger = createLogger('google-routes');
 export const googleRouter = new Hono<AppEnv>();
 
 // GET /api/google/status
-googleRouter.get('/status', (c) => {
+googleRouter.get('/status', async (c) => {
+  // v2.5.5 — for users who connected before scope tracking landed, probe
+  // tokeninfo lazily on first /status call so getMissingScopes can return
+  // accurate data. No-op when scopes are already stored.
+  await discoverGrantedScopes();
+
   const config = getGoogleWorkspaceConfig();
   const todayCounts = getTodayActivityCounts();
   const lastActivity = getLastActivityTimestamp();
+
+  // v2.5.5 — when missingScopes is non-empty, the user is connected but
+  // hasn't granted some scopes that the current build needs (typically
+  // because the scope list grew between releases). UI surfaces a
+  // "Reconnect to enable new permissions" banner.
+  const missingScopes = getMissingScopes();
 
   return c.json({
     ok: true,
@@ -40,6 +53,7 @@ googleRouter.get('/status', (c) => {
       lastVerified: config.lastVerifiedAt,
       lastActivity,
       todayActivity: todayCounts,
+      missingScopes,
     },
   });
 });

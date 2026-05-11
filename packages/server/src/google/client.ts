@@ -143,3 +143,20 @@ export function googleWrite(
     return result;
   });
 }
+
+/**
+ * v2.5.5 — Internal Google API call that does NOT log to the activity feed.
+ * Use for plumbing/lookup calls that are part of a higher-level user-visible
+ * action (e.g. forms_add_*_question internally calls forms.get to find the
+ * append index — that lookup shouldn't show up as a separate activity row).
+ *
+ * The user-visible parent call still logs through googleRead/googleWrite.
+ */
+export function googleSilentFetch(
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE',
+  url: string,
+  body?: unknown,
+  contentType?: string,
+): Promise<GoogleApiResult> {
+  return googleFetch(method, url, body, contentType);
+}

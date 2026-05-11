@@ -10,6 +10,8 @@ interface GoogleStatus {
   lastVerified: string | null;
   lastActivity: string | null;
   todayActivity: { reads: number; writes: number };
+  /** v2.5.5 — scopes the current build needs but the connected user hasn't granted. */
+  missingScopes?: string[];
 }
 
 const services = [
@@ -19,7 +21,25 @@ const services = [
   { key: 'docs', label: 'Docs', desc: 'Read and create documents' },
   { key: 'sheets', label: 'Sheets', desc: 'Read and write spreadsheets' },
   { key: 'slides', label: 'Slides', desc: 'Create presentations' },
+  { key: 'forms', label: 'Forms', desc: 'Create surveys, edit questions, read responses' },
 ];
+
+/** Map a raw scope URL to the human label of the service it unlocks.
+ *  Returns null for OAuth identity scopes (openid, email, profile) — those
+ *  aren't user-visible features, so we hide them from the reconnect banner. */
+function scopeLabel(scope: string): string | null {
+  if (scope === 'openid') return null;
+  if (scope === 'email' || scope.includes('/userinfo.email')) return null;
+  if (scope === 'profile' || scope.includes('/userinfo.profile')) return null;
+  if (scope.includes('/forms.')) return 'Forms';
+  if (scope.includes('/gmail.')) return 'Gmail';
+  if (scope.includes('/calendar')) return 'Calendar';
+  if (scope.includes('/drive')) return 'Drive';
+  if (scope.includes('/documents')) return 'Docs';
+  if (scope.includes('/spreadsheets')) return 'Sheets';
+  if (scope.includes('/presentations')) return 'Slides';
+  return scope; // unknown scope — show the raw value for visibility
+}
 
 export const GoogleWorkspaceSettings = () => {
   const [status, setStatus] = useState<GoogleStatus | null>(null);
@@ -90,7 +110,7 @@ export const GoogleWorkspaceSettings = () => {
         {!status.connected ? (
           <div className="space-y-3">
             <p className="text-xs text-ui/40">
-              Connect your Google account to give agents access to Gmail, Calendar, Drive, Docs, Sheets, and Slides.
+              Connect your Google account to give agents access to Gmail, Calendar, Drive, Docs, Sheets, Slides, and Forms.
             </p>
             {error && <div className="alert-banner alert-error">{error}</div>}
             <button
@@ -108,6 +128,38 @@ export const GoogleWorkspaceSettings = () => {
           </div>
         ) : (
           <div className="space-y-4">
+            {/* v2.5.5 — Missing-scopes banner: connected, but the build wants
+                scopes the user hasn't granted yet (e.g. Forms scopes added
+                after the user originally connected). */}
+            {(() => {
+              // Map missing scopes to user-visible labels, drop nulls
+              // (identity scopes), and dedupe. Only render the banner if any
+              // FEATURE-level scope is missing — identity-only diffs would
+              // produce an empty list, in which case there's nothing actionable
+              // to show.
+              const labels = Array.from(new Set(
+                (status.missingScopes ?? []).map(scopeLabel).filter((l): l is string => l !== null),
+              ));
+              if (labels.length === 0) return null;
+              return (
+                <div className="alert-banner alert-warning flex items-center justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">New permissions available</p>
+                    <p className="text-xs text-ui/55 mt-0.5">
+                      Reconnect to enable: {labels.join(', ')}
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleConnect}
+                    disabled={connecting}
+                    className="px-3 py-1.5 glass-btn-primary text-xs rounded-lg transition-colors shrink-0"
+                  >
+                    {connecting ? 'Waiting...' : 'Reconnect'}
+                  </button>
+                </div>
+              );
+            })()}
+
             {/* Connected status */}
             <div className="flex items-center gap-3">
               <span className="w-2 h-2 rounded-full bg-cp-teal animate-pulse shrink-0" />

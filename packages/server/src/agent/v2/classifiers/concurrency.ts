@@ -131,6 +131,18 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   slides_create_deck: 'serial',
   slides_add_slide: 'serial',
   slides_set_style: 'serial',
+  // Forms — write-shaped (each call mutates the form). Reads are 'safe'
+  // and don't need entries here (default).
+  forms_create_form: 'serial',
+  forms_add_text_question: 'serial',
+  forms_add_choice_question: 'serial',
+  forms_add_scale_question: 'serial',
+  forms_add_date_question: 'serial',
+  forms_update_question: 'serial',
+  forms_rename_question: 'serial',
+  forms_set_settings: 'serial',
+  forms_delete_item: 'serial',
+  forms_delete_form: 'serial',
   // Office (Word/Excel/PowerPoint local files)
   word_create: 'serial',
   word_update: 'serial',

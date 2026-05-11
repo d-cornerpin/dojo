@@ -202,6 +202,18 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'drive_delete',
+    description: 'Delete a Google Drive file (or folder). Works for any Drive file: docs, sheets, slides, forms, uploads. Defaults to TRASH (recoverable for 30 days from the Drive trash UI). Pass permanent: true to skip trash and delete immediately — irreversible.\n\nNote: Forms are stored as Drive files. To delete a form, pass its form_id as file_id here. The Forms API itself has no delete endpoint.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'File or folder ID to delete (for forms, this is the form_id)' },
+        permanent: { type: 'boolean', description: 'true = permanently delete (no recovery). false (default) = move to Drive trash (user can restore for 30 days).' },
+      },
+      required: ['file_id'],
+    },
+  },
+  {
     name: 'docs_create',
     description: 'Create a new Google Doc with optional initial content.',
     input_schema: {
@@ -636,6 +648,36 @@ export async function executeGoogleWriteTool(
       );
       if (!result.ok) return `Error sharing file: ${result.error}`;
       return `File ${fileId} shared with ${rawEmail} as ${role}.`;
+    }
+
+    case 'drive_delete': {
+      const fileId = args.file_id as string;
+      if (!fileId) return 'Error: file_id is required';
+      const permanent = args.permanent === true;
+      // Drive API: DELETE /files/{id} permanently removes; PATCH /files/{id}
+      // with {trashed: true} sends to trash (recoverable for 30 days).
+      // Default to trash so a wrong-id mistake doesn't destroy data outright.
+      if (permanent) {
+        const result = await googleWrite(
+          'DELETE',
+          `https://www.googleapis.com/drive/v3/files/${fileId}`,
+          undefined,
+          agentId, agentName, 'drive_delete',
+          { fileId, permanent: true },
+        );
+        if (!result.ok) return `Error permanently deleting file: ${result.error}`;
+        return `File ${fileId} permanently deleted.`;
+      } else {
+        const result = await googleWrite(
+          'PATCH',
+          `https://www.googleapis.com/drive/v3/files/${fileId}`,
+          { trashed: true },
+          agentId, agentName, 'drive_delete',
+          { fileId, permanent: false },
+        );
+        if (!result.ok) return `Error trashing file: ${result.error}`;
+        return `File ${fileId} moved to Drive trash (recoverable for 30 days).`;
+      }
     }
 
     case 'docs_create': {

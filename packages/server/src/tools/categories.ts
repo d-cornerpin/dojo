@@ -93,7 +93,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'Google Drive / Docs / Sheets',
-    tools: ['drive_list', 'drive_read', 'drive_upload', 'drive_share', 'docs_read', 'docs_create', 'docs_edit', 'sheets_read', 'sheets_create', 'sheets_append', 'sheets_write'],
+    tools: ['drive_list', 'drive_read', 'drive_upload', 'drive_share', 'drive_delete', 'docs_read', 'docs_create', 'docs_edit', 'sheets_read', 'sheets_create', 'sheets_append', 'sheets_write'],
   },
   {
     label: 'Google Slides',
@@ -112,6 +112,17 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
       'slides_add_shape', 'slides_add_line', 'slides_add_table', 'slides_populate_table',
       // Utility
       'slides_get_slides', 'slides_get_elements', 'slides_delete_element', 'slides_move_element', 'slides_resize_element', 'slides_find_replace',
+    ],
+  },
+  {
+    label: 'Google Forms',
+    tools: [
+      'forms_create_form',
+      'forms_add_text_question', 'forms_add_choice_question', 'forms_add_scale_question', 'forms_add_date_question',
+      'forms_update_question', 'forms_rename_question',
+      'forms_set_settings',
+      'forms_delete_item', 'forms_delete_form',
+      'forms_get', 'forms_list_responses',
     ],
   },
   {

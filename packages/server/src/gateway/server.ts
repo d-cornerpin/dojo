@@ -203,6 +203,13 @@ export function createServer() {
       app.use('/assets/*', serveStatic({ root: './packages/dashboard/dist' }));
       app.use('/favicon.png', serveStatic({ root: './packages/dashboard/dist', path: '/favicon.png' }));
       app.use('/dojologo.svg', serveStatic({ root: './packages/dashboard/dist', path: '/dojologo.svg' }));
+      // v2.5.5 — Feng Shui theme files live in dashboard's public/themes/<id>/
+      // and are emitted to dist/themes/ at build time. ThemeProvider injects
+      // <link href="/themes/<id>/theme.css"> at runtime when the user picks a
+      // non-default theme. Without this handler, those requests fall through
+      // to the SPA fallback below, which returns index.html — the browser
+      // then tries to parse HTML as CSS and silently no-ops the theme switch.
+      app.use('/themes/*', serveStatic({ root: './packages/dashboard/dist' }));
 
       // SPA fallback: serve index.html for all non-API routes
       app.get('*', (c) => {

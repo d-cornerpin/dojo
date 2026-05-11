@@ -31,7 +31,28 @@ const SCOPES = [
   'https://www.googleapis.com/auth/documents',
   'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/presentations',
+  // v2.5.5 — Forms create/edit + read responses
+  'https://www.googleapis.com/auth/forms.body',
+  'https://www.googleapis.com/auth/forms.responses.readonly',
 ].join(' ');
+
+// Exported as an array for downstream code that needs to compare against a
+// token's granted scopes (e.g. detecting "user is connected but missing the
+// new Forms scopes — needs to reconnect").
+export const REQUIRED_SCOPES: readonly string[] = SCOPES.split(' ');
+
+/**
+ * v2.5.5 — Normalize scope IDs to a canonical form for set comparison.
+ * Google's auth flow accepts shorthand ("email", "profile") but tokeninfo
+ * reports them back as full URLs ("https://www.googleapis.com/auth/userinfo.email").
+ * Without this normalization, the missing-scopes diff thinks "email" is
+ * missing even when "userinfo.email" is granted.
+ */
+function canonicalizeScope(scope: string): string {
+  if (scope === 'email') return 'https://www.googleapis.com/auth/userinfo.email';
+  if (scope === 'profile') return 'https://www.googleapis.com/auth/userinfo.profile';
+  return scope;
+}
 
 export interface GoogleWorkspaceConfig {
   enabled: boolean;
@@ -44,6 +65,7 @@ export interface GoogleWorkspaceConfig {
     docs: boolean;
     sheets: boolean;
     slides: boolean;
+    forms: boolean;
   };
   lastVerifiedAt: string | null;
 }
@@ -55,6 +77,7 @@ const DEFAULT_SERVICES = {
   docs: true,
   sheets: true,
   slides: true,
+  forms: true,
 };
 
 // ── Config Helpers ──
@@ -141,10 +164,74 @@ function getAccessToken(): string | null { return getConfigValue('gws_access_tok
 function getRefreshToken(): string | null { return getConfigValue('gws_refresh_token'); }
 function getTokenExpiresAt(): number { const v = getConfigValue('gws_token_expires_at'); return v ? parseInt(v, 10) : 0; }
 
-function storeTokens(accessToken: string, refreshToken: string | null, expiresIn: number): void {
+function storeTokens(accessToken: string, refreshToken: string | null, expiresIn: number, grantedScopes?: string): void {
   setConfigValue('gws_access_token', accessToken);
   if (refreshToken) setConfigValue('gws_refresh_token', refreshToken);
   setConfigValue('gws_token_expires_at', String(Date.now() + expiresIn * 1000));
+  // v2.5.5 — track which scopes Google actually granted, so we can detect
+  // when an existing user is missing scopes that were added in a later
+  // release (e.g. Forms scopes added after user already connected).
+  // refresh_token responses don't always include `scope`; only update when present.
+  if (grantedScopes) setConfigValue('gws_granted_scopes', grantedScopes);
+}
+
+/**
+ * v2.5.5 — Returns scopes from REQUIRED_SCOPES that the connected user has
+ * NOT granted. Empty array means everything is fine. Non-empty means the
+ * user connected before the scope list was extended and needs to re-consent.
+ *
+ * Returns empty array if the user is not connected at all (different problem).
+ *
+ * Sync function — for the lazy-discovery path that probes Google's tokeninfo
+ * endpoint when granted_scopes isn't yet stored, use `discoverGrantedScopes`
+ * separately (callable from the gateway route ahead of getMissingScopes).
+ */
+export function getMissingScopes(): string[] {
+  if (!isGoogleConnected()) return [];
+  const granted = getConfigValue('gws_granted_scopes');
+  if (!granted) {
+    // No granted_scopes recorded — discoverGrantedScopes() didn't run yet
+    // or failed. We genuinely don't know what the user has. Conservative
+    // default: assume nothing extra is granted, so EVERY scope shows as
+    // missing — this surfaces the reconnect prompt and re-grants the
+    // entire current set, which is the safe outcome.
+    return [...REQUIRED_SCOPES];
+  }
+  // Canonicalize both sides so shorthand-vs-fullurl pairs (e.g. "email" vs
+  // "https://www.googleapis.com/auth/userinfo.email") compare correctly.
+  const grantedSet = new Set(granted.split(' ').map(canonicalizeScope));
+  return REQUIRED_SCOPES.filter((s) => !grantedSet.has(canonicalizeScope(s)));
+}
+
+/**
+ * v2.5.5 — Probe Google's tokeninfo endpoint with the current access token
+ * to learn which scopes were actually granted, then persist them. Lets us
+ * detect "missing scopes" correctly for users who connected before scope
+ * tracking was added.
+ *
+ * No-op if granted_scopes is already stored, or if the user isn't connected.
+ * Idempotent and safe to call on every status request.
+ */
+export async function discoverGrantedScopes(): Promise<void> {
+  if (!isGoogleConnected()) return;
+  if (getConfigValue('gws_granted_scopes')) return; // already known
+  const token = await getValidAccessToken();
+  if (!token) return;
+  try {
+    const resp = await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(token)}`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!resp.ok) return;
+    const data = await resp.json() as { scope?: string };
+    if (data.scope) {
+      setConfigValue('gws_granted_scopes', data.scope);
+      logger.info('Discovered granted Google scopes', { count: data.scope.split(' ').length });
+    }
+  } catch (e) {
+    // Non-fatal — getMissingScopes will keep using its conservative default
+    // until a successful refresh stores the scope list.
+    logger.warn('discoverGrantedScopes failed', { error: e instanceof Error ? e.message : String(e) });
+  }
 }
 
 // Mutex to prevent concurrent refresh
@@ -194,8 +281,8 @@ async function refreshAccessToken(): Promise<string | null> {
       return null;
     }
 
-    const data = await resp.json() as { access_token: string; refresh_token?: string; expires_in: number };
-    storeTokens(data.access_token, data.refresh_token ?? null, data.expires_in);
+    const data = await resp.json() as { access_token: string; refresh_token?: string; expires_in: number; scope?: string };
+    storeTokens(data.access_token, data.refresh_token ?? null, data.expires_in, data.scope);
     logger.debug('Google access token refreshed');
     return data.access_token;
   } catch (err) {
@@ -256,8 +343,8 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string): 
       return { success: false, error: `Token exchange failed (${resp.status}): ${errText.slice(0, 300)}` };
     }
 
-    const data = await resp.json() as { access_token: string; refresh_token?: string; expires_in: number; id_token?: string };
-    storeTokens(data.access_token, data.refresh_token ?? null, data.expires_in);
+    const data = await resp.json() as { access_token: string; refresh_token?: string; expires_in: number; id_token?: string; scope?: string };
+    storeTokens(data.access_token, data.refresh_token ?? null, data.expires_in, data.scope);
 
     // Get email from userinfo
     let email = '';
