@@ -158,8 +158,13 @@ export async function generateSummary(params: {
   agentId: string;
   modelId?: string;
   previousContext?: string;
+  // v2.5.14 — Optional abort signal for cancellation. Used by the routine
+  // gap-trigger drain so a hanging summarizer call (e.g. provider timeout
+  // beyond a sane wall-clock) can actually be cancelled rather than
+  // continuing in the background.
+  abortSignal?: AbortSignal;
 }): Promise<{ text: string; tokenCount: number }> {
-  const { content, depth, targetTokens, agentId, modelId, previousContext } = params;
+  const { content, depth, targetTokens, agentId, modelId, previousContext, abortSignal } = params;
 
   // Need a model to summarize with
   if (!modelId) {
@@ -184,6 +189,7 @@ export async function generateSummary(params: {
       messages: [{ role: 'user', content }],
       systemPrompt,
       tools: false,
+      abortSignal,
     });
 
     const resultTokens = estimateTokens(result.content);
@@ -213,6 +219,7 @@ export async function generateSummary(params: {
       messages: [{ role: 'user', content: result.content }],
       systemPrompt: aggressivePrompt,
       tools: false,
+      abortSignal,
     });
 
     const aggressiveTokens = estimateTokens(aggressiveResult.content);

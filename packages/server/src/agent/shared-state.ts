@@ -24,6 +24,12 @@ export const activeAbortControllers = new Map<string, AbortController>();
 // queued urgent wakeup can fire promptly.
 export const preemptedAgents = new Set<string>();
 
+// v2.5.14 — Per-agent flag set while a routine background gap-drain
+// (compaction) is in flight. The v2 loop checks this before kicking off
+// another drain so a slow/hung drain can't pile up. Released only when
+// the drain promise actually settles (success, error, or abort).
+export const backgroundDrains = new Set<string>();
+
 // Track agent start times for uptime calculation.
 export const agentStartTimes = new Map<string, number>();
 

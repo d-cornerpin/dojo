@@ -65,6 +65,7 @@ import {
   statusHeartbeats,
   turnContinuationCounts,
   recoveryRunStreak,
+  backgroundDrains,
 } from '../shared-state.js';
 
 // Force-import side-effect: also register the runtime singleton getter so v2
@@ -414,35 +415,58 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // The token gate above only fires at high utilization. Long-running
       // agents whose fresh tail stays bounded never trip it, so messages
       // silently fall outside the fresh tail without ever being summarized.
-      // After enough turns the user's earlier conversation is gone with no
-      // summary trail. This check fires when too many uncompacted messages
-      // have accumulated outside the fresh tail, regardless of token level.
-      // Cost: two cheap SQLite reads per turn.
+      // This check fires when too many uncompacted messages have accumulated
+      // outside the fresh tail, regardless of token level.
       //
-      // v2.5.12 — Critical bound: pass maxChunksPerRun=1 so a backlog
-      // (e.g. an agent upgrading from v2.5.10 with thousands of unsummarized
-      // messages) drains ONE chunk per turn (~one extra LLM call, ~10s)
-      // instead of blocking a single turn for many minutes while it does
-      // dozens of LLM calls back-to-back. Also skipContinuityBrief=true so
-      // routine drains don't pay the brief cost or spam the chat with
-      // "Memory Compacted" dividers on every turn.
+      // v2.5.12 — Per-call cap: maxChunksPerRun=1 so a backlog drains
+      // incrementally instead of all at once. skipContinuityBrief=true so
+      // routine drains don't pay brief cost or spam chat with dividers.
+      //
+      // v2.5.14 — CRITICAL: fire-and-forget. Previously the agent's turn
+      // awaited checkAndCompact, which awaited a summarizer LLM call, which
+      // had only the OpenAI SDK's 10-minute default timeout. A hung
+      // summarizer call would block the turn for up to 10 minutes with no
+      // error and no logs. Now: kick off the drain in the background with
+      // a 60s wall-clock abort, and the agent's turn proceeds immediately.
+      // backgroundDrains flag prevents re-entry while a drain is in-flight
+      // for this agent (so slow drains can't pile up; one in-flight max).
       if (gateResult.decision === 'noop') {
         const gapCount = getUncompactedGapCount(agentId, contextWindow);
-        if (gapCount > UNCOMPACTED_GAP_THRESHOLD) {
-          logger.info('v2: routine gap-trigger compaction (capped)', {
-            agentId, gapCount, gapThreshold: UNCOMPACTED_GAP_THRESHOLD,
-            maxChunksPerRun: 1,
-          }, agentId);
-          try {
-            await checkAndCompact(agentId, configuredModelId, contextWindow, {
-              maxChunksPerRun: 1,
-              skipContinuityBrief: true,
-            });
-          } catch (compErr) {
-            logger.warn('v2: routine gap-trigger compaction failed', {
-              agentId, error: compErr instanceof Error ? compErr.message : String(compErr),
+        if (gapCount > UNCOMPACTED_GAP_THRESHOLD && !backgroundDrains.has(agentId)) {
+          backgroundDrains.add(agentId);
+          const drainAbort = new AbortController();
+          const drainTimeout = setTimeout(() => {
+            logger.warn('v2: background drain wall-clock timeout (60s) — aborting', {
+              agentId,
             }, agentId);
-          }
+            drainAbort.abort();
+          }, 60_000);
+          logger.info('v2: kicking off background gap-drain (fire-and-forget)', {
+            agentId, gapCount, gapThreshold: UNCOMPACTED_GAP_THRESHOLD,
+            maxChunksPerRun: 1, wallClockTimeoutMs: 60_000,
+          }, agentId);
+          checkAndCompact(agentId, configuredModelId, contextWindow, {
+            maxChunksPerRun: 1,
+            skipContinuityBrief: true,
+            abortSignal: drainAbort.signal,
+          })
+            .then((result) => {
+              logger.info('v2: background gap-drain complete', {
+                agentId,
+                leafCreated: result.leafCreated,
+                tokensReclaimed: result.tokensReclaimed,
+              }, agentId);
+            })
+            .catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.warn('v2: background gap-drain failed or aborted', {
+                agentId, error: msg,
+              }, agentId);
+            })
+            .finally(() => {
+              clearTimeout(drainTimeout);
+              backgroundDrains.delete(agentId);
+            });
         }
       }
 

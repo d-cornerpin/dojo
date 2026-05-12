@@ -262,6 +262,11 @@ export async function checkAndCompact(
     // pay the brief cost on every chunk and don't spam the chat with
     // "Memory Compacted" notifications while we drain a backlog.
     skipContinuityBrief?: boolean;
+    // v2.5.14 — Optional abort signal for cancellation. Used by the
+    // routine background drain in v2 loop so a hung summarizer LLM call
+    // can actually be cancelled instead of running until the SDK's
+    // 10-minute default timeout fires.
+    abortSignal?: AbortSignal;
   },
 ): Promise<{ leafCreated: number; condensedCreated: number; tokensReclaimed: number }> {
   // If the caller passed the sentinel 'auto' model id (auto-routed agent),
@@ -418,6 +423,7 @@ export async function checkAndCompact(
     const tokensBefore = totalTokens;
     const leafCreated = await runLeafCompaction(agentId, modelId, contextWindow, {
       maxChunks: options?.maxChunksPerRun,
+      abortSignal: options?.abortSignal,
     });
     // v2.5.12 — Skip condensation on routine drain too. Condensation walks
     // the depth tree and can do multiple LLM calls; backlog drains will
@@ -523,7 +529,7 @@ export async function runLeafCompaction(
   agentId: string,
   modelId: string,
   contextWindow?: number,
-  opts?: { maxChunks?: number },
+  opts?: { maxChunks?: number; abortSignal?: AbortSignal },
 ): Promise<number> {
   const cw = contextWindow ?? 200000;
   const messagesOutside = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(cw));
@@ -567,12 +573,22 @@ export async function runLeafCompaction(
     const latestAt = chunk[chunk.length - 1].createdAt;
 
     try {
+      // Bail out fast if a caller-supplied abort signal has already fired
+      // (e.g. background-drain wall-clock timeout). Prevents starting a
+      // brand-new chunk's LLM call after the caller has given up.
+      if (opts?.abortSignal?.aborted) {
+        logger.info('Leaf compaction aborted before chunk started', {
+          messageCount: chunk.length, summariesCreated,
+        }, agentId);
+        break;
+      }
       const summary = await generateSummary({
         content,
         depth: 0,
         targetTokens: DEFAULTS.leafTargetTokens,
         agentId,
         modelId,
+        abortSignal: opts?.abortSignal,
       });
 
       createLeafSummary(
