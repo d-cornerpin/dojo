@@ -2735,10 +2735,43 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'load_tool_docs': {
         const { executeLoadToolDocs } = await import('../tools/tool-docs.js');
         const requestedTools = (args.tools as string[]) ?? [];
-        // Only allow loading docs for tools the agent actually has access to
+        // v2.5.15 — Validate the input shape FIRST and emit a precise error
+        // so the agent doesn't conflate format problems with permission
+        // problems. Previously a permission-stripped request fell through
+        // to executeLoadToolDocs([]) which then complained about an
+        // "empty array" — sending the agent down the wrong rabbit hole.
+        if (!Array.isArray(requestedTools)) {
+          content = `Error: tools parameter must be an array of tool names. You passed ${typeof args.tools}. Example: load_tool_docs({tools: ["web_fetch", "gmail_send"]}).`;
+          isError = true;
+          break;
+        }
+        if (requestedTools.length === 0) {
+          content = 'Error: tools parameter must be a non-empty array. Pass at least one tool name. Example: load_tool_docs({tools: ["web_fetch"]}).';
+          isError = true;
+          break;
+        }
+        // Now intersect with the agent's accessible tools.
         const allowedToolNames = new Set(getFilteredTools(agentId).map(t => t.name));
         const filteredTools = requestedTools.filter(t => allowedToolNames.has(t));
+        const blockedTools = requestedTools.filter(t => !allowedToolNames.has(t));
+        if (filteredTools.length === 0) {
+          content =
+            `Error: none of the requested tools are accessible to this agent. ` +
+            `Requested: [${requestedTools.join(', ')}]. ` +
+            `This is a permission issue, not a format issue — the tools may exist for other agents but are not on this agent's allow list, or the permission filter is stripping them ` +
+            `(e.g. web_search/web_fetch require network_domains != "none", exec requires exec_allow non-empty, file_read requires file_read permission). ` +
+            `Ask the user to update this agent's permissions, or call complete_task(status="blocked").`;
+          isError = true;
+          break;
+        }
         content = executeLoadToolDocs(agentId, filteredTools);
+        // If some (but not all) of the requested tools were blocked, append
+        // a note so the agent knows which ones it didn't get and why.
+        if (blockedTools.length > 0 && !content.startsWith('Error')) {
+          content +=
+            `\n\n[Note: these requested tools were not accessible to this agent and were skipped: ${blockedTools.join(', ')}. ` +
+            `Tools may be blocked by tools_policy or by permission filters (network/file/exec/etc.).]`;
+        }
         isError = content.startsWith('Error');
         break;
       }

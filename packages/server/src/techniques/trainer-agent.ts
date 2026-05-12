@@ -105,6 +105,23 @@ export function ensureTrainerAgentRunning(): void {
     ],
   });
 
+  // v2.5.15 — Permissions are also defined here (before the early-return path)
+  // so the "trainer already exists" branch can refresh them too. Previously
+  // permissions were only set on initial create, which meant existing
+  // trainers from older versions kept restrictive defaults forever
+  // (network_domains:'none' → web_fetch silently stripped by the permission
+  // filter even when web_fetch was on the tools_policy.allow list).
+  const trainerPermissions = JSON.stringify({
+    file_read: '*',
+    file_write: ['~/.dojo/techniques/**'],
+    file_delete: 'none',
+    exec_allow: ['*'],
+    exec_deny: [],
+    network_domains: '*',
+    can_spawn_agents: false,
+    can_assign_permissions: false,
+  });
+
   // Ensure config settings exist (may be missing if created before setup wizard)
   const configCheck = db.prepare("SELECT value FROM config WHERE key = 'trainer_agent_id'").get();
   if (!configCheck) {
@@ -115,9 +132,12 @@ export function ensureTrainerAgentRunning(): void {
   }
 
   if (trainer && trainer.status !== 'terminated') {
-    logger.info('Trainer agent already running', { status: trainer.status });
-    // Ensure permissions are up to date on every boot
-    db.prepare("UPDATE agents SET tools_policy = ?, updated_at = datetime('now') WHERE id = ?").run(trainerToolsPolicy, trainerId);
+    logger.info('Trainer agent already running — refreshing tools_policy + permissions', { status: trainer.status });
+    // v2.5.15 — Refresh BOTH tools_policy and permissions on every boot.
+    // Previously only tools_policy was refreshed, leaving stale permissions
+    // (e.g. network_domains:'none') that silently blocked tools.
+    db.prepare("UPDATE agents SET tools_policy = ?, permissions = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(trainerToolsPolicy, trainerPermissions, trainerId);
     return;
   }
 
@@ -130,17 +150,6 @@ export function ensureTrainerAgentRunning(): void {
     const primary = db.prepare('SELECT model_id FROM agents WHERE id = ?').get(primaryId) as { model_id: string | null } | undefined;
     modelId = primary?.model_id ?? null;
   }
-
-  const trainerPermissions = JSON.stringify({
-    file_read: '*',
-    file_write: ['~/.dojo/techniques/**'],
-    file_delete: 'none',
-    exec_allow: ['*'],
-    exec_deny: [],
-    network_domains: '*',
-    can_spawn_agents: false,
-    can_assign_permissions: false,
-  });
 
   if (trainer) {
     // Trainer exists but was terminated — reactivate
