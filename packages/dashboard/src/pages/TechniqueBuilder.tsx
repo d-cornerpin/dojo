@@ -117,10 +117,34 @@ function parseMessageContent(raw: string): { text: string; blocks?: ContentBlock
 
 // ── Message Bubble Renderers ──
 
+// v2.5.17 — The first user message of a builder/edit session has the
+// builder context prepended (BUILDER_CONTEXT or getEditContext output)
+// followed by "\n\n---\n\n" and then the user's actual text. The trainer
+// agent needs to see the context, but the USER doesn't want it cluttering
+// the chat — their actual prompt is the part they care about. Detect the
+// wrap pattern and strip it from the visible bubble. The DB row still
+// contains the full content (so the trainer's context is preserved across
+// reloads), but the chat UI only shows what the user typed.
+function stripBuilderContext(content: string): string {
+  // Both BUILDER_CONTEXT and getEditContext start with a stable phrase.
+  // If we see those AT THE START of the content and a "\n\n---\n\n"
+  // separator further down, take only what's after the separator.
+  const startsWithBuilder = content.startsWith('I want to build a new technique for the dojo');
+  const startsWithEdit = content.startsWith('I want to edit an existing technique in the dojo called');
+  // Refresh-context (technique edited mid-conversation) prepends a
+  // "[Technique state refresh — ...]" line.
+  const startsWithRefresh = content.startsWith('[Technique state refresh');
+  if (!startsWithBuilder && !startsWithEdit && !startsWithRefresh) return content;
+  const sepIdx = content.indexOf('\n\n---\n\n');
+  if (sepIdx === -1) return content;
+  return content.slice(sepIdx + '\n\n---\n\n'.length);
+}
+
 const UserBubble = ({ msg }: { msg: ChatMessage }) => {
+  const stripped = stripBuilderContext(msg.content);
   const displayContent = msg.attachments?.length
-    ? msg.content.replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '').trim()
-    : msg.content;
+    ? stripped.replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '').trim()
+    : stripped;
 
   return (
     <div className="flex justify-end">
@@ -141,7 +165,7 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
   );
 };
 
-const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
+const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMode?: boolean }) => {
   const { text, blocks } = parseMessageContent(msg.content);
   const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
 
@@ -171,7 +195,7 @@ const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
           </div>
         )}
 
-        {hasToolUse && (
+        {wordyMode && hasToolUse && (
           <div className="mt-1">
             {blocks!
               .filter((b) => b.type === 'tool_use')
@@ -185,7 +209,7 @@ const AssistantBubble = ({ msg }: { msg: ChatMessage }) => {
           </div>
         )}
 
-        {msg.toolCalls && msg.toolCalls.length > 0 && !hasToolUse && (
+        {wordyMode && msg.toolCalls && msg.toolCalls.length > 0 && !hasToolUse && (
           <div className="mt-1">
             {msg.toolCalls.map((tc, i) => (
               <ToolCallBlock
@@ -463,6 +487,13 @@ export const TechniqueBuilder = () => {
   const [saving, setSaving] = useState(false);
   const [createdTechniqueId, setCreatedTechniqueId] = useState<string | null>(editId ?? null);
   const [contextSent, setContextSent] = useState(false);
+  // v2.5.17 — wordy-mode parity with Chat.tsx and AgentDetail.tsx. Shares
+  // the same localStorage key so toggling wordy mode anywhere on the
+  // dashboard sticks across all chat surfaces.
+  const [wordyMode, setWordyMode] = useState(() => {
+    const stored = localStorage.getItem('dojo_wordy_mode');
+    return stored === null ? true : stored === 'true';
+  });
   // Tracks when the technique was last touched on disk and when the trainer
   // last saw it in this conversation. If the user manually edits between
   // sessions, the trainer would be working from stale context — when these
@@ -671,6 +702,13 @@ export const TechniqueBuilder = () => {
             updated.toolCalls = currentToolCallsRef.current.length > 0
               ? [...currentToolCallsRef.current]
               : undefined;
+            // v2.5.17 — bump createdAt to the finalization moment so the
+            // chronological render-time sort places this bubble AFTER any
+            // tool-call / tool-result bubbles that landed during the turn.
+            // Previously the bubble kept its stream-start createdAt and
+            // would sort BEFORE intermediate tool bubbles with later
+            // timestamps, anchoring the response at the wrong position.
+            updated.createdAt = new Date().toISOString();
             currentToolCallsRef.current = [];
             setIsWorking(false);
           }
@@ -733,9 +771,24 @@ export const TechniqueBuilder = () => {
       if (e.agentId !== agentIdRef.current) return;
 
       setMessages((prev) => {
-        if (prev.some((m) => m.id === e.message.id)) return prev;
-        const last = prev[prev.length - 1];
-        if (last?.isStreaming && last.id === e.message.id) return prev;
+        const idx = prev.findIndex((m) => m.id === e.message.id);
+        if (idx >= 0) {
+          // v2.5.17 — sync createdAt + clear toolCalls when the canonical
+          // message lands on an existing streaming bubble. Same rationale
+          // as Chat.tsx and AgentDetail.tsx: the chronological render-time
+          // sort needs the bubble's createdAt to match its real
+          // finalization time, and the JSON content is now the source of
+          // truth for whether tool_use blocks should be rendered.
+          const existing = prev[idx];
+          const updated = [...prev];
+          updated[idx] = {
+            ...existing,
+            createdAt: e.message.createdAt ?? existing.createdAt,
+            toolCalls: undefined,
+            isStreaming: false,
+          };
+          return updated;
+        }
 
         return [
           ...prev,
@@ -972,10 +1025,20 @@ export const TechniqueBuilder = () => {
             </div>
           )}
 
-          {messages.map((msg) => {
+          {/* v2.5.17 — Same chronological sort as Chat.tsx / AgentDetail.tsx.
+              Streaming bubbles created at stream-start otherwise anchor at
+              their early insertion position even after canonical chat:message
+              events with later createdAts arrive. */}
+          {[...messages].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((msg) => {
             if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} />;
-            if (msg.role === 'tool') return <ToolResultBubble key={msg.id} msg={msg} />;
-            return <AssistantBubble key={msg.id} msg={msg} />;
+            // Hide tool results entirely outside wordy mode — same UX as
+            // the other chat surfaces. Assistant bubbles still appear,
+            // but tool-call/result detail is gated.
+            if (msg.role === 'tool') {
+              if (!wordyMode) return null;
+              return <ToolResultBubble key={msg.id} msg={msg} />;
+            }
+            return <AssistantBubble key={msg.id} msg={msg} wordyMode={wordyMode} />;
           })}
           {isWorking && !messages.some(m => m.isStreaming) && <ThinkingBubble />}
           <div ref={messagesEndRef} />
@@ -992,7 +1055,44 @@ export const TechniqueBuilder = () => {
         {/* Input */}
         <div className="flex items-center gap-2">
           <div className="flex-1">
-            <ChatInput agentId={AGENT_ID} onSend={handleSend} variant="agent" />
+            <ChatInput
+              agentId={AGENT_ID}
+              onSend={handleSend}
+              variant="agent"
+              wordyMode={wordyMode}
+              onToggleWordyMode={() => {
+                const next = !wordyMode;
+                setWordyMode(next);
+                localStorage.setItem('dojo_wordy_mode', String(next));
+              }}
+              onNewSession={async () => {
+                if (!confirm('Start a new session with the trainer? The current conversation will be cleared.')) return;
+                const token = localStorage.getItem('dojo_token');
+                const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
+                const csrf = csrfMatch ? csrfMatch[1] : null;
+                try {
+                  await fetch('/api/techniques/clear-session', {
+                    method: 'POST',
+                    headers: {
+                      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                      ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+                    },
+                  });
+                  // Wipe the chat history and reset the context-injection gate
+                  // so the next user message re-prepends the builder/edit
+                  // context for the trainer.
+                  setMessages([]);
+                  setContextSent(false);
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : String(err));
+                }
+              }}
+              isWorking={isWorking}
+              onStop={async () => {
+                await api.stopAgent(AGENT_ID);
+                setIsWorking(false);
+              }}
+            />
           </div>
           {/* Mobile toggle for canvas panel */}
           <button
