@@ -498,6 +498,23 @@ export const Chat = () => {
       const e = event as ChatChunkEvent;
       if (e.agentId !== agentIdRef.current) return;
 
+      // v2.5.22 — On every done event, snapshot the tool-call ref and clear
+      // it BEFORE entering the state updater. Previously the clear was only
+      // inside the idx>=0 branch, which meant a tool-only iteration (no
+      // streaming bubble was ever created because the assistant message
+      // had no text) would leave currentToolCallsRef populated. The NEXT
+      // iteration's streaming bubble's done event then picked up those
+      // stale tool calls and attached them as the new bubble's toolCalls.
+      // That triggered the "duplicate tool calls below the response" bug:
+      // the tool_use blocks already render via the JSON content's
+      // hasToolUse path inside iter1's bubble, AND a second time via
+      // msg.toolCalls inside iter2's plain-text bubble (where hasToolUse
+      // is false, so the toolCalls-render branch activates).
+      const toolCallsSnapshot = e.done && currentToolCallsRef.current.length > 0
+        ? [...currentToolCallsRef.current]
+        : null;
+      if (e.done) currentToolCallsRef.current = [];
+
       setMessages((prev) => {
         // Look up by messageId rather than just the tail — when a reasoning
         // bubble was created first, the answer chunks need to update THAT
@@ -514,10 +531,7 @@ export const Chat = () => {
           if (e.done) {
             updated.isStreaming = false;
             updated.modelId = (e as any).modelId ?? null;
-            updated.toolCalls = currentToolCallsRef.current.length > 0
-              ? [...currentToolCallsRef.current]
-              : undefined;
-            currentToolCallsRef.current = [];
+            updated.toolCalls = toolCallsSnapshot ?? undefined;
             requestAnimationFrame(() => scrollToBottom());
           }
           const out = [...prev];

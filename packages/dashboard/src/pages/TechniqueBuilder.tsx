@@ -708,23 +708,20 @@ export const TechniqueBuilder = () => {
       const e = event as ChatChunkEvent;
       if (e.agentId !== agentIdRef.current) return;
 
+      // v2.5.22 — see Chat.tsx for rationale.
+      const toolCallsSnapshot = e.done && currentToolCallsRef.current.length > 0
+        ? [...currentToolCallsRef.current]
+        : null;
+      if (e.done) currentToolCallsRef.current = [];
+
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last && last.isStreaming && last.id === e.messageId) {
           const updated = { ...last, content: last.content + e.content };
           if (e.done) {
             updated.isStreaming = false;
-            updated.toolCalls = currentToolCallsRef.current.length > 0
-              ? [...currentToolCallsRef.current]
-              : undefined;
-            // v2.5.17 — bump createdAt to the finalization moment so the
-            // chronological render-time sort places this bubble AFTER any
-            // tool-call / tool-result bubbles that landed during the turn.
-            // Previously the bubble kept its stream-start createdAt and
-            // would sort BEFORE intermediate tool bubbles with later
-            // timestamps, anchoring the response at the wrong position.
+            updated.toolCalls = toolCallsSnapshot ?? undefined;
             updated.createdAt = new Date().toISOString();
-            currentToolCallsRef.current = [];
             setIsWorking(false);
           }
           return [...prev.slice(0, -1), updated];

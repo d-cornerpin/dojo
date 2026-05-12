@@ -343,16 +343,21 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
       const e = event as ChatChunkEvent;
       if (e.agentId !== agentId) return;
 
+      // v2.5.22 — see Chat.tsx for rationale. Snapshot + clear the tool-call
+      // ref on every done event so a tool-only iteration doesn't leak its
+      // tool calls into the next iteration's text-only bubble.
+      const toolCallsSnapshot = e.done && currentToolCallsRef.current.length > 0
+        ? [...currentToolCallsRef.current]
+        : null;
+      if (e.done) currentToolCallsRef.current = [];
+
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last && last.isStreaming && last.id === e.messageId) {
           const updated = { ...last, content: last.content + e.content };
           if (e.done) {
             updated.isStreaming = false;
-            updated.toolCalls = currentToolCallsRef.current.length > 0
-              ? [...currentToolCallsRef.current]
-              : undefined;
-            currentToolCallsRef.current = [];
+            updated.toolCalls = toolCallsSnapshot ?? undefined;
             // Do NOT setIsWorking(false) — chat:chunk done fires mid-tool-loop.
             // Let agent:status idle/error clear isWorking.
           }
