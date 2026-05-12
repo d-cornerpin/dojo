@@ -220,20 +220,19 @@ const AssistantBubble = ({ msg, wordyMode = true, modelNames = {} }: { msg: Chat
           </div>
         )}
 
-        {/* Live streaming tool calls (from WS events, not yet persisted) */}
-        {wordyMode && msg.toolCalls && msg.toolCalls.length > 0 && !hasToolUse && (
-          <div className="mt-1">
-            {msg.toolCalls.map((tc, i) => (
-              <ToolCallBlock
-                key={`${msg.id}-tool-${i}`}
-                toolName={tc.name}
-                args={tc.args}
-                result={tc.result}
-                isError={tc.isError}
-              />
-            ))}
-          </div>
-        )}
+        {/* v2.5.23 — Removed the msg.toolCalls render path. Tool_use blocks
+            for an assistant message render via the hasToolUse path above,
+            reading from the canonical JSON content set by chat:message.
+            msg.toolCalls was a leftover live-streaming mechanism that
+            became leaky because chat:tool_call events on the server fire
+            AFTER chat:chunk done — so an iteration's tool calls would
+            accumulate in currentToolCallsRef and then attach themselves
+            to the NEXT iteration's streaming bubble's done event,
+            producing the "tool calls below the final response" duplicate.
+            With this path removed, the chat:tool_call broadcasts still
+            accumulate in the ref but are never rendered; the ref is
+            effectively dead and could be removed entirely (left in place
+            to keep the diff minimal). */}
 
         {/* Image / PDF attachments (e.g. Imaginer-generated images) */}
         {msg.attachments && msg.attachments.length > 0 && (

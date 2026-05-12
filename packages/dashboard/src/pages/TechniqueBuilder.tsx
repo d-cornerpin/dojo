@@ -224,19 +224,7 @@ const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMod
           </div>
         )}
 
-        {wordyMode && msg.toolCalls && msg.toolCalls.length > 0 && !hasToolUse && (
-          <div className="mt-1">
-            {msg.toolCalls.map((tc, i) => (
-              <ToolCallBlock
-                key={`${msg.id}-tool-${i}`}
-                toolName={tc.name}
-                args={tc.args}
-                result={tc.result}
-                isError={tc.isError}
-              />
-            ))}
-          </div>
-        )}
+        {/* v2.5.23 — removed msg.toolCalls render path. See Chat.tsx for rationale. */}
 
         {!msg.isStreaming && (
           <div className="text-[10px] mt-1 px-1 text-tertiary">
