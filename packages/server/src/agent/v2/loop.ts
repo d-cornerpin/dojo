@@ -418,14 +418,26 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // summary trail. This check fires when too many uncompacted messages
       // have accumulated outside the fresh tail, regardless of token level.
       // Cost: two cheap SQLite reads per turn.
+      //
+      // v2.5.12 — Critical bound: pass maxChunksPerRun=1 so a backlog
+      // (e.g. an agent upgrading from v2.5.10 with thousands of unsummarized
+      // messages) drains ONE chunk per turn (~one extra LLM call, ~10s)
+      // instead of blocking a single turn for many minutes while it does
+      // dozens of LLM calls back-to-back. Also skipContinuityBrief=true so
+      // routine drains don't pay the brief cost or spam the chat with
+      // "Memory Compacted" dividers on every turn.
       if (gateResult.decision === 'noop') {
         const gapCount = getUncompactedGapCount(agentId, contextWindow);
         if (gapCount > UNCOMPACTED_GAP_THRESHOLD) {
-          logger.info('v2: routine gap-trigger compaction', {
+          logger.info('v2: routine gap-trigger compaction (capped)', {
             agentId, gapCount, gapThreshold: UNCOMPACTED_GAP_THRESHOLD,
+            maxChunksPerRun: 1,
           }, agentId);
           try {
-            await checkAndCompact(agentId, configuredModelId, contextWindow);
+            await checkAndCompact(agentId, configuredModelId, contextWindow, {
+              maxChunksPerRun: 1,
+              skipContinuityBrief: true,
+            });
           } catch (compErr) {
             logger.warn('v2: routine gap-trigger compaction failed', {
               agentId, error: compErr instanceof Error ? compErr.message : String(compErr),

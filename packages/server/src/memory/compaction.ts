@@ -249,7 +249,20 @@ export async function checkAndCompact(
   agentId: string,
   modelId: string,
   contextWindow: number,
-  options?: { force?: boolean },
+  options?: {
+    force?: boolean;
+    // v2.5.12 — Per-call cap on how many leaf chunks may be summarized.
+    // Used by the routine gap-trigger path so a huge backlog (e.g. an
+    // upgrade from a pre-gap-trigger version with thousands of uncompacted
+    // messages) drains across many turns instead of blocking a single turn
+    // for minutes while it does dozens of LLM calls back-to-back.
+    maxChunksPerRun?: number;
+    // v2.5.12 — Skip the expensive continuity-brief LLM call AND the
+    // user-facing divider/nudge insert. Used by routine drain so we don't
+    // pay the brief cost on every chunk and don't spam the chat with
+    // "Memory Compacted" notifications while we drain a backlog.
+    skipContinuityBrief?: boolean;
+  },
 ): Promise<{ leafCreated: number; condensedCreated: number; tokensReclaimed: number }> {
   // If the caller passed the sentinel 'auto' model id (auto-routed agent),
   // resolve it to a real model so the summarizer can actually call it.
@@ -379,8 +392,13 @@ export async function checkAndCompact(
     // compaction DOES run for any reason (force, threshold, recovery
     // cascade), the agent loses raw thread tail. The brief is cheap (one
     // summarizer call) and the failure mode without it ("forgot what we
-    // were doing") is severe. Always run it.
-    await generateContinuityBrief(agentId, modelId, contextWindow);
+    // were doing") is severe. Always run it — UNLESS this is a routine
+    // gap drain (skipContinuityBrief), in which case the agent is not
+    // losing context this turn (fresh tail unchanged) and the brief is
+    // pure overhead.
+    if (!options?.skipContinuityBrief) {
+      await generateContinuityBrief(agentId, modelId, contextWindow);
+    }
 
     // Archive raw messages to vault BEFORE compaction destroys them.
     // If archival fails, ABORT compaction — better to have a bloated context than lost data.
@@ -398,8 +416,16 @@ export async function checkAndCompact(
     }
 
     const tokensBefore = totalTokens;
-    const leafCreated = await runLeafCompaction(agentId, modelId, contextWindow);
-    const condensedCreated = await runCondensation(agentId, modelId, DEFAULTS.incrementalMaxDepth);
+    const leafCreated = await runLeafCompaction(agentId, modelId, contextWindow, {
+      maxChunks: options?.maxChunksPerRun,
+    });
+    // v2.5.12 — Skip condensation on routine drain too. Condensation walks
+    // the depth tree and can do multiple LLM calls; backlog drains will
+    // accumulate enough leaf summaries that condensation runs naturally on
+    // the next forced/emergency compaction.
+    const condensedCreated = options?.skipContinuityBrief
+      ? 0
+      : await runCondensation(agentId, modelId, DEFAULTS.incrementalMaxDepth);
     rebuildContextItems(agentId);
 
     const tokensAfter = estimateAssembledTokens(agentId, contextWindow).total;
@@ -419,7 +445,14 @@ export async function checkAndCompact(
     // of the pre-v1.15.108 runaway-loop bug). The no-op guard above
     // should catch most of those, but also gate the divider as
     // belt-and-braces.
-    if (result.leafCreated > 0 || result.condensedCreated > 0 || result.tokensReclaimed > 1000) {
+    // v2.5.12 — Routine gap drains (skipContinuityBrief) suppress the
+    // divider + nudge entirely. Otherwise upgrading to v2.5.11+ from a
+    // version with thousands of uncompacted messages would spam the chat
+    // with a divider on every turn while the backlog drains.
+    if (
+      !options?.skipContinuityBrief &&
+      (result.leafCreated > 0 || result.condensedCreated > 0 || result.tokensReclaimed > 1000)
+    ) {
       insertCompactionDivider(agentId, {
         label: `Memory Compacted${result.tokensReclaimed > 0 ? ` — reclaimed ~${formatTokens(result.tokensReclaimed)}` : ''}${result.leafCreated > 0 ? ` (${result.leafCreated} new summar${result.leafCreated === 1 ? 'y' : 'ies'})` : ''}`,
       });
@@ -486,12 +519,18 @@ export async function checkAndCompact(
 
 // ── Leaf Compaction ──
 
-export async function runLeafCompaction(agentId: string, modelId: string, contextWindow?: number): Promise<number> {
+export async function runLeafCompaction(
+  agentId: string,
+  modelId: string,
+  contextWindow?: number,
+  opts?: { maxChunks?: number },
+): Promise<number> {
   const cw = contextWindow ?? 200000;
   const messagesOutside = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(cw));
   const compactedIds = getCompactedMessageIds(agentId);
 
-  // Filter to only uncompacted messages
+  // Filter to only uncompacted messages (chronological, oldest first — that's
+  // what getMessagesOutsideFreshTail returns).
   const uncompacted = messagesOutside.filter(m => !compactedIds.has(m.id));
 
   if (uncompacted.length === 0) {
@@ -499,12 +538,17 @@ export async function runLeafCompaction(agentId: string, modelId: string, contex
     return 0;
   }
 
-  // Group into chunks of ~leafChunkTokens
-  const chunks = chunkMessages(uncompacted, getLeafChunkTokens());
+  // Group into chunks of ~leafChunkTokens. Chunks come out in chronological
+  // order (oldest first), which matters for maxChunks: when capped, we drain
+  // the OLDEST gap first so newer messages stay raw in fresh tail longer.
+  const allChunks = chunkMessages(uncompacted, getLeafChunkTokens());
+  const chunks = opts?.maxChunks ? allChunks.slice(0, opts.maxChunks) : allChunks;
 
   logger.info('Leaf compaction: processing chunks', {
     totalMessages: uncompacted.length,
     chunkCount: chunks.length,
+    chunksAvailable: allChunks.length,
+    capped: opts?.maxChunks ? true : false,
   }, agentId);
 
   let summariesCreated = 0;
