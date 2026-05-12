@@ -438,19 +438,20 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             return prev.filter((_, i) => i !== idx);
           }
           const existing = prev[idx];
-          const updated = [...prev];
-          updated[idx] = {
+          const updatedMsg = {
             ...existing,
             content: e.message.content,
             attachments: e.message.attachments ?? existing.attachments,
-            // v2.5.16 — see Chat.tsx for rationale: sync createdAt so the
-            // chronological render-time sort places the finalized message
-            // in its true position, and clear toolCalls so streaming-
-            // collected calls don't double-render under the canonical
-            // tool_use blocks from the JSON content.
             createdAt: e.message.createdAt ?? existing.createdAt,
             toolCalls: undefined,
           };
+          // v2.5.20 — Move-to-tail for finalized streaming bubbles. See
+          // Chat.tsx for rationale.
+          if (existing.role === 'assistant' && existing.isStreaming && idx < prev.length - 1) {
+            return [...prev.slice(0, idx), ...prev.slice(idx + 1), updatedMsg];
+          }
+          const updated = [...prev];
+          updated[idx] = updatedMsg;
           return updated;
         }
         // Reconcile optimistic temp- user bubble (see Chat.tsx for context).
@@ -567,8 +568,6 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             </div>
           </div>
         )}
-        {/* v2.5.19 — See Chat.tsx: reverted the v2.5.16 render-time sort
-            because it was hiding new user temp bubbles. */}
         {messages.map((msg) => {
           // Hide inter-agent and system messages unless wordy mode is on.
           // iMessage-sourced user messages stay visible (they're a real

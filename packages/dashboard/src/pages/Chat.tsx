@@ -649,28 +649,37 @@ export const Chat = () => {
             return prev.filter((_, i) => i !== idx);
           }
           const existing = prev[idx];
-          const updated = [...prev];
-          updated[idx] = {
+          const updatedMsg = {
             ...existing,
             content: e.message.content,
             attachments: e.message.attachments ?? existing.attachments,
-            // v2.5.16 — sync createdAt to the canonical timestamp so render-
-            // time chronological sort puts the finalized message in its
-            // true position. Previously the streaming bubble's createdAt
-            // (set when streaming first began) would survive the replace,
-            // pinning the finalized message to its early insertion position
-            // even though tool-call/result messages with later real
-            // createdAts had already been appended to the array.
             createdAt: e.message.createdAt ?? existing.createdAt,
-            // v2.5.16 — Clear the streaming-collected toolCalls when the
-            // canonical message arrives. The JSON content is now the source
-            // of truth: if it has tool_use blocks, AssistantBubble renders
-            // them from the content (`hasToolUse` path); if not, the live
-            // toolCalls were an artifact of streaming and shouldn't render
-            // as a duplicate set under the finalized response.
+            // Clear the streaming-collected toolCalls — the JSON content is
+            // now the source of truth. If the canonical has tool_use blocks
+            // AssistantBubble renders them via the hasToolUse path; if not,
+            // the live toolCalls were just a streaming artifact.
             toolCalls: undefined,
             isStreaming: false,
           };
+          // v2.5.20 — Chronological-order fix WITHOUT a render-time sort:
+          // when an assistant streaming bubble finalizes, move it to the
+          // array tail if it isn't already there. The streaming bubble was
+          // inserted EARLY in the turn (at the first chunk), but tool-call
+          // and tool-result messages with their own canonical chat:message
+          // events got appended after it during the turn. By the time the
+          // assistant message finalizes, those tool rows sit between the
+          // streaming bubble and the array tail — re-rendering puts the
+          // final response visually above them. Moving the finalized bubble
+          // to the tail restores chronological order at the moment we
+          // KNOW we're finalizing, instead of running a global sort that
+          // has subtle correctness issues with mixed-format timestamps.
+          // Only move ASSISTANT bubbles — user messages stay in place
+          // (they were the trigger for the turn, not part of the turn output).
+          if (existing.role === 'assistant' && existing.isStreaming && idx < prev.length - 1) {
+            return [...prev.slice(0, idx), ...prev.slice(idx + 1), updatedMsg];
+          }
+          const updated = [...prev];
+          updated[idx] = updatedMsg;
           return updated;
         }
 
@@ -790,14 +799,6 @@ export const Chat = () => {
           </div>
         )}
 
-        {/* v2.5.19 — Reverted the v2.5.16 render-time createdAt sort: it
-            was hiding new user temp bubbles in some cases (the symptom
-            being "the user prompt never shows up after sending"). The
-            originally-targeted bug ("response appears above tool calls
-            in a multi-tool turn") will be fixed with a more surgical
-            approach later — most likely by reinserting the streaming
-            bubble to the array tail when its chat:chunk done fires,
-            rather than relying on a global render-time sort. */}
         {messages.map((msg) => {
           // Hide inter-agent messages and system nudges unless wordy mode is on
           if (!wordyMode && msg.role === 'user' && (

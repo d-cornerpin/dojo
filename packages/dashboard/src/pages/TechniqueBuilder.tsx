@@ -788,20 +788,21 @@ export const TechniqueBuilder = () => {
       setMessages((prev) => {
         const idx = prev.findIndex((m) => m.id === e.message.id);
         if (idx >= 0) {
-          // v2.5.17 — sync createdAt + clear toolCalls when the canonical
-          // message lands on an existing streaming bubble. Same rationale
-          // as Chat.tsx and AgentDetail.tsx: the chronological render-time
-          // sort needs the bubble's createdAt to match its real
-          // finalization time, and the JSON content is now the source of
-          // truth for whether tool_use blocks should be rendered.
           const existing = prev[idx];
-          const updated = [...prev];
-          updated[idx] = {
+          const updatedMsg = {
             ...existing,
             createdAt: e.message.createdAt ?? existing.createdAt,
             toolCalls: undefined,
             isStreaming: false,
           };
+          // v2.5.20 — Move finalized streaming-assistant bubble to the
+          // array tail (see Chat.tsx for rationale). User bubbles stay
+          // in place.
+          if (existing.role === 'assistant' && existing.isStreaming && idx < prev.length - 1) {
+            return [...prev.slice(0, idx), ...prev.slice(idx + 1), updatedMsg];
+          }
+          const updated = [...prev];
+          updated[idx] = updatedMsg;
           return updated;
         }
 
