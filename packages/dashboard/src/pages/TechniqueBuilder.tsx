@@ -789,20 +789,14 @@ export const TechniqueBuilder = () => {
         const idx = prev.findIndex((m) => m.id === e.message.id);
         if (idx >= 0) {
           const existing = prev[idx];
-          const updatedMsg = {
+          const updated = [...prev];
+          updated[idx] = {
             ...existing,
             createdAt: e.message.createdAt ?? existing.createdAt,
             toolCalls: undefined,
             isStreaming: false,
           };
-          // v2.5.20 — Move finalized streaming-assistant bubble to the
-          // array tail (see Chat.tsx for rationale). User bubbles stay
-          // in place.
-          if (existing.role === 'assistant' && existing.isStreaming && idx < prev.length - 1) {
-            return [...prev.slice(0, idx), ...prev.slice(idx + 1), updatedMsg];
-          }
-          const updated = [...prev];
-          updated[idx] = updatedMsg;
+          // v2.5.21 — Removed v2.5.20 move-to-tail. See Chat.tsx.
           return updated;
         }
 

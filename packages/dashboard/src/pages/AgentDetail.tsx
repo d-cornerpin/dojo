@@ -438,20 +438,15 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             return prev.filter((_, i) => i !== idx);
           }
           const existing = prev[idx];
-          const updatedMsg = {
+          const updated = [...prev];
+          updated[idx] = {
             ...existing,
             content: e.message.content,
             attachments: e.message.attachments ?? existing.attachments,
             createdAt: e.message.createdAt ?? existing.createdAt,
             toolCalls: undefined,
           };
-          // v2.5.20 — Move-to-tail for finalized streaming bubbles. See
-          // Chat.tsx for rationale.
-          if (existing.role === 'assistant' && existing.isStreaming && idx < prev.length - 1) {
-            return [...prev.slice(0, idx), ...prev.slice(idx + 1), updatedMsg];
-          }
-          const updated = [...prev];
-          updated[idx] = updatedMsg;
+          // v2.5.21 — Removed the v2.5.20 move-to-tail. See Chat.tsx.
           return updated;
         }
         // Reconcile optimistic temp- user bubble (see Chat.tsx for context).

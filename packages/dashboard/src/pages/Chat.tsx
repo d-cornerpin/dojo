@@ -649,7 +649,8 @@ export const Chat = () => {
             return prev.filter((_, i) => i !== idx);
           }
           const existing = prev[idx];
-          const updatedMsg = {
+          const updated = [...prev];
+          updated[idx] = {
             ...existing,
             content: e.message.content,
             attachments: e.message.attachments ?? existing.attachments,
@@ -661,25 +662,17 @@ export const Chat = () => {
             toolCalls: undefined,
             isStreaming: false,
           };
-          // v2.5.20 — Chronological-order fix WITHOUT a render-time sort:
-          // when an assistant streaming bubble finalizes, move it to the
-          // array tail if it isn't already there. The streaming bubble was
-          // inserted EARLY in the turn (at the first chunk), but tool-call
-          // and tool-result messages with their own canonical chat:message
-          // events got appended after it during the turn. By the time the
-          // assistant message finalizes, those tool rows sit between the
-          // streaming bubble and the array tail — re-rendering puts the
-          // final response visually above them. Moving the finalized bubble
-          // to the tail restores chronological order at the moment we
-          // KNOW we're finalizing, instead of running a global sort that
-          // has subtle correctness issues with mixed-format timestamps.
-          // Only move ASSISTANT bubbles — user messages stay in place
-          // (they were the trigger for the turn, not part of the turn output).
-          if (existing.role === 'assistant' && existing.isStreaming && idx < prev.length - 1) {
-            return [...prev.slice(0, idx), ...prev.slice(idx + 1), updatedMsg];
-          }
-          const updated = [...prev];
-          updated[idx] = updatedMsg;
+          // v2.5.21 — Removed the v2.5.20 move-to-tail. It fired when
+          // chat:message arrived for a streaming bubble AND the bubble
+          // wasn't at the array tail. The intended trigger: tool messages
+          // got appended after the streaming bubble during the turn, so
+          // move the response to the bottom on finalization. The unintended
+          // trigger: user sends a new message DURING streaming, that user
+          // temp bubble gets appended after the streaming bubble, then
+          // chat:message arrives and the agent's response jumps PAST the
+          // user's new message — which the user sees as "my new message
+          // appears above the agent's previous response." Way worse than
+          // the chronology issue it was trying to fix.
           return updated;
         }
 
