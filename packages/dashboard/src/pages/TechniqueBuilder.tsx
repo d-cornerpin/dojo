@@ -117,25 +117,40 @@ function parseMessageContent(raw: string): { text: string; blocks?: ContentBlock
 
 // ── Message Bubble Renderers ──
 
-// v2.5.17 — The first user message of a builder/edit session has the
+// v2.5.18 — The first user message of a builder/edit session has the
 // builder context prepended (BUILDER_CONTEXT or getEditContext output)
-// followed by "\n\n---\n\n" and then the user's actual text. The trainer
-// agent needs to see the context, but the USER doesn't want it cluttering
-// the chat — their actual prompt is the part they care about. Detect the
-// wrap pattern and strip it from the visible bubble. The DB row still
-// contains the full content (so the trainer's context is preserved across
-// reloads), but the chat UI only shows what the user typed.
+// followed by the user's actual text. The trainer agent needs to see the
+// context, but the USER doesn't want it cluttering the chat — they only
+// want to see their prompt.
+//
+// The v2.5.17 approach used "\n\n---\n\n" as the boundary, but that
+// collides with markdown horizontal rules inside the technique's own
+// instructions — if the embedded TECHNIQUE.md contained any "---" block,
+// the strip would chop at the wrong place (or fail to chop at all,
+// depending on which way it went).
+//
+// v2.5.18 fix: wrap the user's prompt in a unique sentinel marker so the
+// strip is unambiguous. The LLM sees the marker but it's clearly labeled,
+// so it doesn't confuse the trainer. Falls back to the old "\n\n---\n\n"
+// pattern via lastIndexOf for messages stored under v2.5.17.
+export const USER_PROMPT_MARKER_OPEN = '\n\n════════════════════════════════════════\nUSER MESSAGE BELOW (the rest above is build/edit context for you):\n════════════════════════════════════════\n\n';
+
 function stripBuilderContext(content: string): string {
-  // Both BUILDER_CONTEXT and getEditContext start with a stable phrase.
-  // If we see those AT THE START of the content and a "\n\n---\n\n"
-  // separator further down, take only what's after the separator.
+  // Preferred: unique sentinel marker emitted by v2.5.18+ handleSend.
+  const markerIdx = content.indexOf(USER_PROMPT_MARKER_OPEN);
+  if (markerIdx >= 0) {
+    return content.slice(markerIdx + USER_PROMPT_MARKER_OPEN.length);
+  }
+  // Backwards-compat: detect the v2.5.17 builder/edit/refresh context
+  // headers and use lastIndexOf so a "---" inside the technique's own
+  // markdown doesn't trigger an early match. The outer separator is
+  // always the LAST occurrence because user content is appended at the
+  // very end.
   const startsWithBuilder = content.startsWith('I want to build a new technique for the dojo');
   const startsWithEdit = content.startsWith('I want to edit an existing technique in the dojo called');
-  // Refresh-context (technique edited mid-conversation) prepends a
-  // "[Technique state refresh — ...]" line.
   const startsWithRefresh = content.startsWith('[Technique state refresh');
   if (!startsWithBuilder && !startsWithEdit && !startsWithRefresh) return content;
-  const sepIdx = content.indexOf('\n\n---\n\n');
+  const sepIdx = content.lastIndexOf('\n\n---\n\n');
   if (sepIdx === -1) return content;
   return content.slice(sepIdx + '\n\n---\n\n'.length);
 }
@@ -858,7 +873,10 @@ export const TechniqueBuilder = () => {
       const contextMessage = isEditMode
         ? getEditContext(canvas.displayName, canvas.description, canvas.instructions)
         : BUILDER_CONTEXT;
-      outgoing = `${contextMessage}\n\n---\n\n${content}`;
+      // v2.5.18 — Use the unique USER_PROMPT_MARKER_OPEN sentinel so the
+      // chat-side strip is unambiguous even when the embedded technique
+      // contains markdown horizontal rules.
+      outgoing = `${contextMessage}${USER_PROMPT_MARKER_OPEN}${content}`;
       setContextSent(true);
     } else if (
       isEditMode &&
@@ -874,7 +892,7 @@ export const TechniqueBuilder = () => {
         `[Technique state refresh — the technique has been edited since our last conversation. ` +
         `Treat THIS as the source of truth, not earlier messages in this thread.]\n\n` +
         getEditContext(canvas.displayName, canvas.description, canvas.instructions);
-      outgoing = `${refresh}\n\n---\n\n${content}`;
+      outgoing = `${refresh}${USER_PROMPT_MARKER_OPEN}${content}`;
       staleRefreshFired = true;
     }
 
