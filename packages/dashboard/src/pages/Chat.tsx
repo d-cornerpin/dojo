@@ -654,6 +654,21 @@ export const Chat = () => {
             ...existing,
             content: e.message.content,
             attachments: e.message.attachments ?? existing.attachments,
+            // v2.5.16 — sync createdAt to the canonical timestamp so render-
+            // time chronological sort puts the finalized message in its
+            // true position. Previously the streaming bubble's createdAt
+            // (set when streaming first began) would survive the replace,
+            // pinning the finalized message to its early insertion position
+            // even though tool-call/result messages with later real
+            // createdAts had already been appended to the array.
+            createdAt: e.message.createdAt ?? existing.createdAt,
+            // v2.5.16 — Clear the streaming-collected toolCalls when the
+            // canonical message arrives. The JSON content is now the source
+            // of truth: if it has tool_use blocks, AssistantBubble renders
+            // them from the content (`hasToolUse` path); if not, the live
+            // toolCalls were an artifact of streaming and shouldn't render
+            // as a duplicate set under the finalized response.
+            toolCalls: undefined,
             isStreaming: false,
           };
           return updated;
@@ -775,7 +790,15 @@ export const Chat = () => {
           </div>
         )}
 
-        {messages.map((msg) => {
+        {/* v2.5.16 — Render in chronological order by createdAt. Stable
+            sort preserves insertion order as the tiebreaker, which keeps
+            messages with identical second-precision timestamps in the
+            order the server emitted them. Previously the array was
+            rendered in raw insertion order, so a streaming-bubble that
+            was inserted early in a turn would visually anchor at that
+            position even after canonical tool-call/result messages with
+            later timestamps had been appended below it. */}
+        {[...messages].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((msg) => {
           // Hide inter-agent messages and system nudges unless wordy mode is on
           if (!wordyMode && msg.role === 'user' && (
             msg.content.includes('[SOURCE: AGENT MESSAGE FROM') ||

@@ -443,6 +443,13 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             ...existing,
             content: e.message.content,
             attachments: e.message.attachments ?? existing.attachments,
+            // v2.5.16 — see Chat.tsx for rationale: sync createdAt so the
+            // chronological render-time sort places the finalized message
+            // in its true position, and clear toolCalls so streaming-
+            // collected calls don't double-render under the canonical
+            // tool_use blocks from the JSON content.
+            createdAt: e.message.createdAt ?? existing.createdAt,
+            toolCalls: undefined,
           };
           return updated;
         }
@@ -560,7 +567,11 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             </div>
           </div>
         )}
-        {messages.map((msg) => {
+        {/* v2.5.16 — Sort by createdAt at render time so streaming bubbles
+            (inserted at stream-start time) fall into their true position
+            once their canonical createdAt arrives. Stable sort preserves
+            insertion order as the tiebreaker. */}
+        {[...messages].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((msg) => {
           // Hide inter-agent and system messages unless wordy mode is on.
           // iMessage-sourced user messages stay visible (they're a real
           // channel, not internal routing) — UserBubble strips the framing
