@@ -567,11 +567,9 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             </div>
           </div>
         )}
-        {/* v2.5.16 — Sort by createdAt at render time so streaming bubbles
-            (inserted at stream-start time) fall into their true position
-            once their canonical createdAt arrives. Stable sort preserves
-            insertion order as the tiebreaker. */}
-        {[...messages].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((msg) => {
+        {/* v2.5.19 — See Chat.tsx: reverted the v2.5.16 render-time sort
+            because it was hiding new user temp bubbles. */}
+        {messages.map((msg) => {
           // Hide inter-agent and system messages unless wordy mode is on.
           // iMessage-sourced user messages stay visible (they're a real
           // channel, not internal routing) — UserBubble strips the framing

@@ -1043,11 +1043,10 @@ export const TechniqueBuilder = () => {
             </div>
           )}
 
-          {/* v2.5.17 — Same chronological sort as Chat.tsx / AgentDetail.tsx.
-              Streaming bubbles created at stream-start otherwise anchor at
-              their early insertion position even after canonical chat:message
-              events with later createdAts arrive. */}
-          {[...messages].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((msg) => {
+          {/* v2.5.19 — See Chat.tsx: reverted the v2.5.17 render-time sort
+              because it was hiding new user temp bubbles on the other chat
+              surfaces. Mirroring the revert here for consistency. */}
+          {messages.map((msg) => {
             if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} />;
             // Hide tool results entirely outside wordy mode — same UX as
             // the other chat surfaces. Assistant bubbles still appear,

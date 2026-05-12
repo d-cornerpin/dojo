@@ -790,15 +790,15 @@ export const Chat = () => {
           </div>
         )}
 
-        {/* v2.5.16 — Render in chronological order by createdAt. Stable
-            sort preserves insertion order as the tiebreaker, which keeps
-            messages with identical second-precision timestamps in the
-            order the server emitted them. Previously the array was
-            rendered in raw insertion order, so a streaming-bubble that
-            was inserted early in a turn would visually anchor at that
-            position even after canonical tool-call/result messages with
-            later timestamps had been appended below it. */}
-        {[...messages].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((msg) => {
+        {/* v2.5.19 — Reverted the v2.5.16 render-time createdAt sort: it
+            was hiding new user temp bubbles in some cases (the symptom
+            being "the user prompt never shows up after sending"). The
+            originally-targeted bug ("response appears above tool calls
+            in a multi-tool turn") will be fixed with a more surgical
+            approach later — most likely by reinserting the streaming
+            bubble to the array tail when its chat:chunk done fires,
+            rather than relying on a global render-time sort. */}
+        {messages.map((msg) => {
           // Hide inter-agent messages and system nudges unless wordy mode is on
           if (!wordyMode && msg.role === 'user' && (
             msg.content.includes('[SOURCE: AGENT MESSAGE FROM') ||
