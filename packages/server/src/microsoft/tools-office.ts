@@ -126,6 +126,75 @@ function paragraphPreview(blockXml: string): { text: string; isHeading: boolean;
 }
 
 /**
+ * v2.5.13 — Extract the full text from a `<w:tbl>` table block.
+ * Walks rows (`<w:tr>`) and cells (`<w:tc>`); within each cell, joins all
+ * `<w:t>` text runs. Returns rows as a 2D array of strings. Used by
+ * office_read_word_document so agents can actually see table contents.
+ */
+function extractTableText(blockXml: string): string[][] {
+  const rows: string[][] = [];
+  const rowRe = /<w:tr\b[^>]*>([\s\S]*?)<\/w:tr>/g;
+  let rowM: RegExpExecArray | null;
+  while ((rowM = rowRe.exec(blockXml)) !== null) {
+    const rowInner = rowM[1];
+    const cells: string[] = [];
+    const cellRe = /<w:tc\b[^>]*>([\s\S]*?)<\/w:tc>/g;
+    let cellM: RegExpExecArray | null;
+    while ((cellM = cellRe.exec(rowInner)) !== null) {
+      const cellInner = cellM[1];
+      const texts: string[] = [];
+      const tRe = /<w:t[^>]*>([^<]*)<\/w:t>/g;
+      let tM: RegExpExecArray | null;
+      while ((tM = tRe.exec(cellInner)) !== null) texts.push(tM[1]);
+      cells.push(texts.join('').trim());
+    }
+    rows.push(cells);
+  }
+  return rows;
+}
+
+/**
+ * v2.5.13 — Extract slide text from a slide XML, separated into title and
+ * body. Title is the first text shape with a placeholder type of ctrTitle
+ * or title; body is everything else. Used by office_read_presentation.
+ */
+function extractSlideText(slideXml: string): { title: string; body: string[] } {
+  // Title shape: find a <p:sp> shape that contains a placeholder of type
+  // ctrTitle or title. Use \b after `sp` so we don't accidentally match
+  // <p:spTree> (a wrapper element, not a shape).
+  const titleSpMatch = slideXml.match(/<p:sp\b[^>]*>[\s\S]*?<p:ph[^>]*type="(?:ctrTitle|title)"[^>]*\/?>([\s\S]*?)<\/p:sp>/);
+  const titleScope = titleSpMatch ? titleSpMatch[0] : '';
+  const titleTexts: string[] = [];
+  if (titleScope) {
+    const re = /<a:t[^>]*>([^<]*)<\/a:t>/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(titleScope)) !== null) titleTexts.push(m[1]);
+  }
+  const title = titleTexts.join('').trim();
+  // Body: walk each shape, extract its text. Skip the title shape if found.
+  const body: string[] = [];
+  const spRe = /<p:sp\b[^>]*>([\s\S]*?)<\/p:sp>/g;
+  let spM: RegExpExecArray | null;
+  while ((spM = spRe.exec(slideXml)) !== null) {
+    const spXml = spM[0];
+    if (titleSpMatch && spXml === titleSpMatch[0]) continue;
+    // For body, extract paragraphs (<a:p>) so each line becomes its own entry.
+    const paraRe = /<a:p\b[^>]*>([\s\S]*?)<\/a:p>/g;
+    let paraM: RegExpExecArray | null;
+    while ((paraM = paraRe.exec(spXml)) !== null) {
+      const paraInner = paraM[1];
+      const texts: string[] = [];
+      const tRe = /<a:t[^>]*>([^<]*)<\/a:t>/g;
+      let tM: RegExpExecArray | null;
+      while ((tM = tRe.exec(paraInner)) !== null) texts.push(tM[1]);
+      const line = texts.join('').trim();
+      if (line) body.push(line);
+    }
+  }
+  return { title, body };
+}
+
+/**
  * Generate the body-inner XML for a list of content blocks by using the
  * existing docx generator to produce a temporary document, then extracting
  * just the inner body from it. Reuses generateWordBuffer's logic so all the
@@ -260,8 +329,9 @@ async function getSlideOrder(zip: JSZip): Promise<Array<{ rId: string; file: str
  * first <a:t> anywhere in the slide.
  */
 function slideTitleFromXml(slideXml: string): string {
-  // Try to find a title placeholder shape first
-  const titleSpMatch = slideXml.match(/<p:sp[^>]*>[\s\S]*?<p:ph[^>]*type="(?:ctrTitle|title)"[^>]*\/?>([\s\S]*?)<\/p:sp>/);
+  // Try to find a title placeholder shape first.
+  // v2.5.13 — \b after `sp` to prevent matching <p:spTree> (the wrapper).
+  const titleSpMatch = slideXml.match(/<p:sp\b[^>]*>[\s\S]*?<p:ph[^>]*type="(?:ctrTitle|title)"[^>]*\/?>([\s\S]*?)<\/p:sp>/);
   const searchScope = titleSpMatch ? titleSpMatch[0] : slideXml;
   const texts: string[] = [];
   const re = /<a:t[^>]*>([^<]*)<\/a:t>/g;
@@ -320,7 +390,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'office_get_word_document_outline',
-    description: 'Read the structure of an existing Word document: a list of blocks (paragraphs, headings, tables) with zero-based index numbers and a short text preview of each. Use this BEFORE office_insert_in_word_document or office_delete_block_in_word_document to know which index to target.',
+    description: 'Read the structure of an existing Word document: a list of blocks (paragraphs, headings, tables) with zero-based index numbers and a short text preview of each. Use this BEFORE office_insert_in_word_document or office_delete_block_in_word_document to know which index to target. For the actual content of the document, use office_read_word_document instead.',
     input_schema: {
       type: 'object',
       properties: {
@@ -328,6 +398,22 @@ export const officeToolDefinitions: ToolDefinition[] = [
       },
       required: ['file_id'],
     },
+  },
+  {
+    name: 'office_read_word_document',
+    description: 'Read the FULL text content of a Word document (.docx) on OneDrive. Returns headings, paragraphs, and table contents in document order — this is the read-equivalent of file_read for .docx files. Supports pagination via offset+limit (block-indexed) for large documents. Use this when the user asks you to read, summarize, quote, or extract content from a Word doc; use office_get_word_document_outline only when you need to know block indexes for an edit operation.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'OneDrive file ID of the .docx to read' },
+        offset: { type: 'number', description: 'Zero-based block index to start reading from. Default 0.' },
+        limit: { type: 'number', description: 'Maximum number of blocks to return. Default 200, max 500. Combined with a per-call response cap; very large blocks may produce fewer.' },
+        format: { type: 'string', enum: ['text', 'json'], description: 'Output format: "text" (default — clean, readable transcript with markdown-style headings) or "json" (structured array of {index, type, text, rows?} objects, useful before edits).' },
+      },
+      required: ['file_id'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 8000,
   },
   {
     name: 'office_replace_in_word_document',
@@ -462,7 +548,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'office_get_presentation_outline',
-    description: 'Read the structure of an existing PowerPoint: a list of slides with index numbers and the title text of each. Use this BEFORE office_insert_slide or office_delete_slide.',
+    description: 'Read the structure of an existing PowerPoint: a list of slides with index numbers and the title text of each. Use this BEFORE office_insert_slide or office_delete_slide. For the actual slide content, use office_read_presentation instead.',
     input_schema: {
       type: 'object',
       properties: {
@@ -470,6 +556,22 @@ export const officeToolDefinitions: ToolDefinition[] = [
       },
       required: ['file_id'],
     },
+  },
+  {
+    name: 'office_read_presentation',
+    description: 'Read the FULL text content of a PowerPoint deck (.pptx) on OneDrive — title and body text per slide. This is the read-equivalent of file_read for .pptx files. Supports pagination via offset+limit (slide-indexed) for large decks. Use this when the user asks you to read, summarize, quote, or extract content from a PowerPoint; use office_get_presentation_outline only when you need slide indexes for an edit operation.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'OneDrive file ID of the .pptx to read' },
+        offset: { type: 'number', description: 'Zero-based slide index to start reading from. Default 0.' },
+        limit: { type: 'number', description: 'Maximum number of slides to return. Default 50, max 200.' },
+        format: { type: 'string', enum: ['text', 'json'], description: 'Output format: "text" (default — clean per-slide transcript) or "json" (structured array of {index, title, body[]} objects).' },
+      },
+      required: ['file_id'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 8000,
   },
   {
     name: 'office_replace_in_presentation',
@@ -809,6 +911,93 @@ export async function executeOfficeTool(
       }
     }
 
+    case 'office_read_word_document': {
+      try {
+        const fileId = args.file_id as string;
+        const offset = Math.max(0, Math.floor((args.offset as number | undefined) ?? 0));
+        const limit = Math.min(500, Math.max(1, Math.floor((args.limit as number | undefined) ?? 200)));
+        const format = (args.format as string | undefined) === 'json' ? 'json' : 'text';
+        const buf = await downloadFileBytes(fileId);
+        const zip = await JSZip.loadAsync(buf);
+        const docFile = zip.file('word/document.xml');
+        if (!docFile) return 'Error: file is missing word/document.xml — not a valid Word doc?';
+        const xml = await docFile.async('string');
+        const { bodyInner } = splitDocumentXml(xml);
+        const blocks = parseBodyBlocks(bodyInner);
+        const meta = await getFileMeta(fileId);
+        const totalBlocks = blocks.length;
+        const slice = blocks.slice(offset, offset + limit);
+
+        type ReadBlock =
+          | { index: number; type: 'paragraph'; text: string }
+          | { index: number; type: 'heading'; level: number; text: string }
+          | { index: number; type: 'table'; rows: string[][] };
+        const parsed: ReadBlock[] = slice.map((b, i) => {
+          const idx = offset + i;
+          if (b.startsWith('<w:tbl')) {
+            return { index: idx, type: 'table', rows: extractTableText(b) };
+          }
+          const { text, isHeading, level } = paragraphPreview(b);
+          if (isHeading) {
+            return { index: idx, type: 'heading', level: level ?? 1, text };
+          }
+          return { index: idx, type: 'paragraph', text };
+        });
+
+        logMicrosoftActivity({ agentId, agentName, action: 'office_read_word_document', actionType: 'read', details: JSON.stringify({ fileId, offset, returned: parsed.length, totalBlocks }), apiEndpoint: 'drive/download', success: true });
+
+        if (format === 'json') {
+          return JSON.stringify({
+            file: meta.name,
+            file_id: fileId,
+            total_blocks: totalBlocks,
+            offset,
+            returned: parsed.length,
+            has_more: offset + parsed.length < totalBlocks,
+            blocks: parsed,
+          });
+        }
+
+        // Plain-text mode: clean transcript with markdown-style formatting.
+        const lines: string[] = [];
+        lines.push(`# ${meta.name}`);
+        lines.push(`[blocks ${offset}–${offset + parsed.length - 1} of ${totalBlocks}]`);
+        lines.push('');
+        for (const b of parsed) {
+          if (b.type === 'heading') {
+            lines.push(`${'#'.repeat(Math.min(6, b.level + 1))} ${b.text || '[empty heading]'}`);
+            lines.push('');
+          } else if (b.type === 'paragraph') {
+            lines.push(b.text || '');
+            lines.push('');
+          } else {
+            // table — render as markdown table
+            const rows = b.rows;
+            if (rows.length === 0) {
+              lines.push('[empty table]');
+            } else {
+              const colCount = Math.max(...rows.map(r => r.length));
+              for (let r = 0; r < rows.length; r++) {
+                const padded = [...rows[r]];
+                while (padded.length < colCount) padded.push('');
+                lines.push('| ' + padded.map(c => c.replace(/\|/g, '\\|')).join(' | ') + ' |');
+                if (r === 0) {
+                  lines.push('|' + ' --- |'.repeat(colCount));
+                }
+              }
+            }
+            lines.push('');
+          }
+        }
+        if (offset + parsed.length < totalBlocks) {
+          lines.push(`[truncated — ${totalBlocks - offset - parsed.length} more blocks. Call office_read_word_document(file_id="${fileId}", offset=${offset + parsed.length}) for the next slice.]`);
+        }
+        return lines.join('\n').trim();
+      } catch (err) {
+        return `Error reading document: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
     case 'office_replace_in_word_document': {
       try {
         const fileId = args.file_id as string;
@@ -1088,6 +1277,67 @@ export async function executeOfficeTool(
         return JSON.stringify({ file: meta.name, file_id: fileId, slides: outline });
       } catch (err) {
         return `Error reading presentation outline: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    case 'office_read_presentation': {
+      try {
+        const fileId = args.file_id as string;
+        const offset = Math.max(0, Math.floor((args.offset as number | undefined) ?? 0));
+        const limit = Math.min(200, Math.max(1, Math.floor((args.limit as number | undefined) ?? 50)));
+        const format = (args.format as string | undefined) === 'json' ? 'json' : 'text';
+        const buf = await downloadFileBytes(fileId);
+        const zip = await JSZip.loadAsync(buf);
+        const order = await getSlideOrder(zip);
+        const meta = await getFileMeta(fileId);
+        const totalSlides = order.length;
+        const slice = order.slice(offset, offset + limit);
+
+        const slides: Array<{ index: number; title: string; body: string[] }> = [];
+        for (let i = 0; i < slice.length; i++) {
+          const file = zip.file(slice[i].file);
+          if (!file) {
+            slides.push({ index: offset + i, title: '[unreadable]', body: [] });
+            continue;
+          }
+          const xml = await file.async('string');
+          const { title, body } = extractSlideText(xml);
+          slides.push({ index: offset + i, title: title || '[untitled]', body });
+        }
+
+        logMicrosoftActivity({ agentId, agentName, action: 'office_read_presentation', actionType: 'read', details: JSON.stringify({ fileId, offset, returned: slides.length, totalSlides }), apiEndpoint: 'drive/download', success: true });
+
+        if (format === 'json') {
+          return JSON.stringify({
+            file: meta.name,
+            file_id: fileId,
+            total_slides: totalSlides,
+            offset,
+            returned: slides.length,
+            has_more: offset + slides.length < totalSlides,
+            slides,
+          });
+        }
+
+        const lines: string[] = [];
+        lines.push(`# ${meta.name}`);
+        lines.push(`[slides ${offset + 1}–${offset + slides.length} of ${totalSlides}]`);
+        lines.push('');
+        for (const s of slides) {
+          lines.push(`## Slide ${s.index + 1}: ${s.title}`);
+          if (s.body.length === 0) {
+            lines.push('[no body text]');
+          } else {
+            for (const line of s.body) lines.push(`- ${line}`);
+          }
+          lines.push('');
+        }
+        if (offset + slides.length < totalSlides) {
+          lines.push(`[truncated — ${totalSlides - offset - slides.length} more slides. Call office_read_presentation(file_id="${fileId}", offset=${offset + slides.length}) for the next slice.]`);
+        }
+        return lines.join('\n').trim();
+      } catch (err) {
+        return `Error reading presentation: ${err instanceof Error ? err.message : String(err)}`;
       }
     }
 

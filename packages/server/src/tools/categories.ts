@@ -154,7 +154,8 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     tools: [
       // Word
       'office_create_word_document', 'office_append_to_word_document',
-      'office_get_word_document_outline', 'office_replace_in_word_document',
+      'office_read_word_document', 'office_get_word_document_outline',
+      'office_replace_in_word_document',
       'office_insert_in_word_document', 'office_delete_block_in_word_document',
       // Excel
       'office_create_spreadsheet',
@@ -162,7 +163,8 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
       'office_append_spreadsheet_rows', 'office_add_sheet', 'office_delete_sheet',
       // PowerPoint
       'office_create_presentation',
-      'office_get_presentation_outline', 'office_replace_in_presentation',
+      'office_read_presentation', 'office_get_presentation_outline',
+      'office_replace_in_presentation',
       'office_insert_slide', 'office_delete_slide',
     ],
   },

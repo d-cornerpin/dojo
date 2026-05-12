@@ -5728,6 +5728,7 @@ Thread is closed — respond to the user, not Imaginer.`;
       case 'office_create_word_document':
       case 'office_append_to_word_document':
       case 'office_get_word_document_outline':
+      case 'office_read_word_document':
       case 'office_replace_in_word_document':
       case 'office_insert_in_word_document':
       case 'office_delete_block_in_word_document':
@@ -5739,6 +5740,7 @@ Thread is closed — respond to the user, not Imaginer.`;
       case 'office_delete_sheet':
       case 'office_create_presentation':
       case 'office_get_presentation_outline':
+      case 'office_read_presentation':
       case 'office_replace_in_presentation':
       case 'office_insert_slide':
       case 'office_delete_slide': {
