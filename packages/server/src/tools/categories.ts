@@ -212,10 +212,15 @@ function generateToolIndexInternal(
   lines.push('');
   if (compact) {
     lines.push('Tools listed below by category. Always-loaded tools are callable immediately; for any other tool, call `load_tool_docs` first to get the full schema.');
+    lines.push('**Before defaulting to `exec`**, scan the index below for a purpose-built tool that fits the task — file/web/office/forms/tracker/vault/chat-recall all have dedicated tools. **If you feel disoriented or have just been compacted/model-switched**, call `recall_recent_thread` first.');
   } else {
     lines.push('You have access to the following tools. Tool names and short descriptions are listed below. To use any tool:');
     lines.push('1. If the tool is in your **Always-Loaded** set, you can call it directly without any preparation.');
     lines.push('2. Otherwise, call `load_tool_docs` first with the tool names you need. The full parameter schemas will be loaded and the tools will be callable from that turn forward.');
+    lines.push('');
+    lines.push('**Two reflexes worth building:**');
+    lines.push('- **Before defaulting to `exec`**, scan the index below for a purpose-built tool — file/web/office/forms/tracker/vault/chat-recall all have dedicated tools. `exec` is the fallback, not the default.');
+    lines.push('- **If you feel disoriented, just got compacted, or just switched models**, call `recall_recent_thread` first — it reads the actual chat history from your messages table and is your fastest path back to context.');
   }
   lines.push('');
   lines.push(`**Always-loaded tools**: ${alwaysLoaded.join(', ')}`);

@@ -85,7 +85,7 @@ import { loopDetector, RECENT_TOOL_WINDOW } from './classifiers/loop.js';
 // review (see "Engine-injected ack — DISABLED" comment below).
 import { trackerEnforcer } from './classifiers/tracker.js';
 import { compactionGate } from './classifiers/compaction.js';
-import { checkAndCompact, estimateAssembledTokens } from '../../memory/compaction.js';
+import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD } from '../../memory/compaction.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
 import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText } from './classifiers/output.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
@@ -408,6 +408,30 @@ export async function runV2Turn(agentId: string): Promise<void> {
         } catch { /* best effort */ }
         pendingWakeups.add(agentId);
         break;
+      }
+
+      // ── v2.5.11 — Routine gap-based compaction trigger ──
+      // The token gate above only fires at high utilization. Long-running
+      // agents whose fresh tail stays bounded never trip it, so messages
+      // silently fall outside the fresh tail without ever being summarized.
+      // After enough turns the user's earlier conversation is gone with no
+      // summary trail. This check fires when too many uncompacted messages
+      // have accumulated outside the fresh tail, regardless of token level.
+      // Cost: two cheap SQLite reads per turn.
+      if (gateResult.decision === 'noop') {
+        const gapCount = getUncompactedGapCount(agentId, contextWindow);
+        if (gapCount > UNCOMPACTED_GAP_THRESHOLD) {
+          logger.info('v2: routine gap-trigger compaction', {
+            agentId, gapCount, gapThreshold: UNCOMPACTED_GAP_THRESHOLD,
+          }, agentId);
+          try {
+            await checkAndCompact(agentId, configuredModelId, contextWindow);
+          } catch (compErr) {
+            logger.warn('v2: routine gap-trigger compaction failed', {
+              agentId, error: compErr instanceof Error ? compErr.message : String(compErr),
+            }, agentId);
+          }
+        }
       }
 
       // ── Phase: assemble context ──

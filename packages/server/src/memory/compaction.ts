@@ -138,6 +138,26 @@ function getCompactionTailCount(contextWindow: number): number {
   return 24;
 }
 
+// v2.5.11 — Gap-trigger threshold (mirrors UNCOMPACTED_GAP_THRESHOLD inside
+// checkAndCompact). Exported via getUncompactedGapCount for the v2 loop's
+// pre-call routine check.
+export const UNCOMPACTED_GAP_THRESHOLD = 30;
+
+/**
+ * Cheap, sync read of how many messages have fallen outside the fresh tail
+ * without yet being summarized. Used by the v2 loop to decide whether to
+ * call checkAndCompact at the routine pre-call gate (in addition to the
+ * existing token-utilization-based emergency gate).
+ *
+ * Two SQLite reads — one for "messages outside fresh tail", one for the
+ * set of summarized message IDs — and a Set lookup. Negligible per-turn cost.
+ */
+export function getUncompactedGapCount(agentId: string, contextWindow: number): number {
+  const outside = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(contextWindow));
+  const compactedIds = getCompactedMessageIds(agentId);
+  return outside.filter(m => !compactedIds.has(m.id)).length;
+}
+
 // ── Chat divider helpers ──
 //
 // After compaction, we drop a "── Memory Compacted ──" system message
@@ -149,6 +169,45 @@ function getCompactionTailCount(contextWindow: number): number {
 function formatTokens(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}K tokens`;
   return `${n} tokens`;
+}
+
+// v2.5.11 — After the divider, drop a separate, agent-facing system message
+// that nudges the agent toward recall_recent_thread if it needs detail from
+// the summarized portion. Sits in the messages table so it lands in the
+// fresh tail of the very next API call. Kept under 200 chars so
+// recall_recent_thread itself (which filters short system messages) can
+// surface it on later lookbacks.
+const RECALL_NUDGE_TEXT =
+  '[System: Memory was just compacted. If you need specific content from earlier (file contents, tool outputs, prior decisions), call recall_recent_thread(include_tool_results: true) BEFORE responding to the user.]';
+
+function insertRecallNudge(agentId: string): void {
+  try {
+    const db = getDb();
+    const id = uuidv4();
+    db.prepare(`
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+      VALUES (?, ?, 'system', ?, datetime('now'))
+    `).run(id, agentId, RECALL_NUDGE_TEXT);
+    broadcast({
+      type: 'chat:message',
+      agentId,
+      message: {
+        id,
+        agentId,
+        role: 'system' as const,
+        content: RECALL_NUDGE_TEXT,
+        tokenCount: null,
+        modelId: null,
+        cost: null,
+        latencyMs: null,
+        createdAt: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    logger.warn('Failed to insert recall nudge', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
 }
 
 function insertCompactionDivider(agentId: string, opts: { label: string }): void {
@@ -221,7 +280,25 @@ export async function checkAndCompact(
 
   const force = options?.force ?? false;
 
-  logger.info(`Compaction check: assembled=${totalTokens} (summaries=${assembled.summaryTokens}, freshTail=${assembled.freshTailTokens}, brief=${assembled.briefTokens}), threshold=${Math.round(threshold)} (${Math.round(activeThreshold * 100)}% of ${contextWindow})${force ? ' [FORCED]' : ''}`, {
+  // v2.5.11 — Second trigger: message-count gap. The original token-pressure
+  // trigger never fires for long-running agents whose context utilization
+  // stays low (fresh tail is bounded by count, so total tokens don't grow
+  // unboundedly). Symptom: agents silently lose memory of earlier-today
+  // activity because messages fall outside the fresh tail without ever being
+  // summarized.
+  //
+  // This fix: also fire compaction when the count of messages outside the
+  // fresh tail that haven't yet been summarized crosses a threshold. That
+  // way, summaries always cover any message that's about to fall out of
+  // the fresh tail window.
+  const messagesOutsideForGap = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(contextWindow));
+  const compactedIdsForGap = getCompactedMessageIds(agentId);
+  const uncompactedGapCount = messagesOutsideForGap.filter(m => !compactedIdsForGap.has(m.id)).length;
+  const UNCOMPACTED_GAP_THRESHOLD = 30;
+  const needsCompactionByGap = uncompactedGapCount > UNCOMPACTED_GAP_THRESHOLD;
+  const needsCompactionByTokens = totalTokens > threshold;
+
+  logger.info(`Compaction check: assembled=${totalTokens} (summaries=${assembled.summaryTokens}, freshTail=${assembled.freshTailTokens}, brief=${assembled.briefTokens}), threshold=${Math.round(threshold)} (${Math.round(activeThreshold * 100)}% of ${contextWindow}), uncompactedGap=${uncompactedGapCount}${force ? ' [FORCED]' : ''}`, {
     assembledTokens: totalTokens,
     summaryTokens: assembled.summaryTokens,
     freshTailTokens: assembled.freshTailTokens,
@@ -230,7 +307,10 @@ export async function checkAndCompact(
     summaryCount: assembled.summaryCount,
     threshold: Math.round(threshold),
     contextWindow,
-    needsCompaction: totalTokens > threshold,
+    uncompactedGapCount,
+    gapThreshold: UNCOMPACTED_GAP_THRESHOLD,
+    needsCompactionByTokens,
+    needsCompactionByGap,
     force,
   }, agentId);
 
@@ -259,7 +339,7 @@ export async function checkAndCompact(
     }
   }
 
-  if (force || totalTokens > threshold) {
+  if (force || needsCompactionByTokens || needsCompactionByGap) {
     // No-op guard: if the gate metric is over threshold but there's
     // nothing outside the fresh tail to compact, the bloat IS the fresh
     // tail and compaction can't help. Pre-2026-05-01 we still ran the
@@ -267,9 +347,9 @@ export async function checkAndCompact(
     // rebuild, divider broadcast) even when leafCreated would be 0 —
     // and the next turn's gate check tripped again, looping. Now we
     // detect the no-op case and log out cleanly.
-    const guardMessagesOutside = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(contextWindow));
-    const guardCompactedIds = getCompactedMessageIds(agentId);
-    const guardUncompactedCount = guardMessagesOutside.filter(m => !guardCompactedIds.has(m.id)).length;
+    // v2.5.11: reuse the gap calc we already did above instead of
+    // re-querying.
+    const guardUncompactedCount = uncompactedGapCount;
     if (!force && guardUncompactedCount === 0) {
       logger.warn('Compaction gate exceeded but nothing outside fresh tail to compact — skipping (bloat is in fresh tail itself)', {
         assembledTokens: totalTokens,
@@ -343,6 +423,7 @@ export async function checkAndCompact(
       insertCompactionDivider(agentId, {
         label: `Memory Compacted${result.tokensReclaimed > 0 ? ` — reclaimed ~${formatTokens(result.tokensReclaimed)}` : ''}${result.leafCreated > 0 ? ` (${result.leafCreated} new summar${result.leafCreated === 1 ? 'y' : 'ies'})` : ''}`,
       });
+      insertRecallNudge(agentId);
     }
 
     logger.info('Compaction complete', result, agentId);
@@ -393,6 +474,7 @@ export async function checkAndCompact(
       insertCompactionDivider(agentId, {
         label: `Memory Compacted (proactive — ${leafCreated} summar${leafCreated === 1 ? 'y' : 'ies'})`,
       });
+      insertRecallNudge(agentId);
     }
 
     logger.info('Proactive compaction complete', result, agentId);

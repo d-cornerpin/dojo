@@ -24,6 +24,9 @@ export const DEFAULT_ALWAYS_LOADED_TOOLS = [
 
 // Primary agent: needs file/exec + tracker + vault + communication basics.
 // These are the tools the primary agent uses on nearly every meaningful turn.
+// recall_recent_thread is always-loaded as a memory-recovery affordance — when
+// the agent feels disoriented (post-compaction, post-model-switch), the tool
+// must be reachable in one step, not "scan the index → load_tool_docs → call."
 export const PRIMARY_AGENT_ALWAYS_LOADED = [
   ...DEFAULT_ALWAYS_LOADED_TOOLS,
   'exec',
@@ -39,6 +42,7 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'imessage_send',
   'image_create',
   'show_to_user',
+  'recall_recent_thread',
 ];
 
 // PM agent: tracker-focused, monitors tasks and sends messages to other agents.
@@ -112,6 +116,7 @@ export const SUB_AGENT_ALWAYS_LOADED = [
   'tracker_update_status',
   'image_create',
   'show_to_user',
+  'recall_recent_thread',
 ];
 
 // ── Per-session tool loading state ──

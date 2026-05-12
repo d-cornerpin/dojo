@@ -372,7 +372,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'exec',
-    description: 'Execute a shell command and return its output. Has a 30-second timeout. Use for running scripts, checking system status, installing packages, etc. Example: exec({ command: "ls -la ~/projects" }). Returns stdout and stderr.',
+    description: 'Execute a shell command and return its output. Has a 30-second timeout. **Before reaching for exec, scan the tool index for a purpose-built tool** — there are dedicated tools for reading files (file_read), writing files (file_write), patching files (file_patch), web fetch (web_fetch), calendar, drive, forms, office docs, tracker, vault, scheduling, sending messages, and more. Use exec only when no purpose-built tool fits — running scripts, checking system status, installing packages, ad-hoc one-liners. If the task is "look at the chat / recall what was said," call recall_recent_thread instead of digging through files. Example: exec({ command: "ls -la ~/projects" }). Returns stdout and stderr.',
     input_schema: {
       type: 'object',
       properties: {
@@ -503,7 +503,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'recall_recent_thread',
-    description: 'Read back the recent conversation as a clean transcript — last N user/assistant turns with tool calls reduced to one line each and tool results omitted. Use this when you have just been compacted, lost the thread, or otherwise feel disoriented about what was being worked on. Returns the raw conversation from your messages table for the current session, ignoring whatever the assembler chose to include in your active context. Cheap, read-only, safe to call anytime.',
+    description: '**FIRST RESORT when you feel disoriented, just got compacted, switched models, or cannot recall what was being worked on.** Call this BEFORE running exec, file_read, vault_search, or asking the user to repeat themselves. Returns a clean transcript of the recent conversation read directly from your messages table (same data shown on the dashboard chat), regardless of what the assembler put in your active context.\n\nBy default returns the last 8 user→assistant exchanges with tool *call* lines (file_read path=…, exec command=…). To recover **actual content** the agent saw earlier (file contents, web fetch bodies, search results), set `include_tool_results: true` — that switches on "wordy mode" which includes tool RESULTS up to a per-result char cap (default 1500). For longer lookback, paginate with `before_id` (the response footer tells you which id to pass). Cheap, read-only, safe to call anytime.',
     input_schema: {
       type: 'object',
       properties: {
@@ -513,7 +513,23 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         include_tool_calls: {
           type: 'boolean',
-          description: 'When true, include a one-line summary of each tool call ("[called: file_read path=…]"). Tool RESULTS are never included to keep the transcript tight. Default true.',
+          description: 'When true, include a one-line summary of each tool CALL ("[called: file_read path=…]"). Note: this only shows the call args, not the result. For tool RESULTS, set include_tool_results=true. Default true.',
+        },
+        include_tool_results: {
+          type: 'boolean',
+          description: '"Wordy mode" — include tool RESULTS (file contents, web fetch bodies, exec stdout, etc.) up to truncate_tool_result_chars per result. Use this when you need to recover specific content the agent saw earlier. Default false (results omitted to keep transcript tight).',
+        },
+        truncate_tool_result_chars: {
+          type: 'number',
+          description: 'Per-tool-result character cap when include_tool_results=true. Default 1500, max 4000. Each truncated result ends with a memory_describe pointer for the full body.',
+        },
+        before_id: {
+          type: 'string',
+          description: 'Pagination cursor — return turns OLDER than the message with this id. The response footer tells you which id to pass for the next slice. Omit on the first call to get the most recent turns.',
+        },
+        since: {
+          type: 'string',
+          description: 'Optional ISO timestamp — only include messages on or after this time. Useful for "show me everything since 2pm today" style lookbacks.',
         },
       },
       required: [],
@@ -2813,8 +2829,22 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'recall_recent_thread': {
         const turnCount = Math.min(30, Math.max(1, Math.floor(coerceNumberArg(args.turn_count) ?? 8)));
         const includeToolCalls = args.include_tool_calls === false ? false : true;
+        const includeToolResults = args.include_tool_results === true;
+        const truncateToolResultChars = Math.min(
+          4000,
+          Math.max(200, Math.floor(coerceNumberArg(args.truncate_tool_result_chars) ?? 1500)),
+        );
+        const beforeId = typeof args.before_id === 'string' ? args.before_id : undefined;
+        const since = typeof args.since === 'string' ? args.since : undefined;
         const { recallRecentThread } = await import('../memory/recall.js');
-        content = recallRecentThread(agentId, { turnCount, includeToolCalls });
+        content = recallRecentThread(agentId, {
+          turnCount,
+          includeToolCalls,
+          includeToolResults,
+          truncateToolResultChars,
+          beforeId,
+          since,
+        });
         break;
       }
       case 'memory_grep': {
