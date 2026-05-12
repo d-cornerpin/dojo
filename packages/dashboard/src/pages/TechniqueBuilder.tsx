@@ -785,6 +785,25 @@ export const TechniqueBuilder = () => {
           return updated;
         }
 
+        // For user messages, reconcile with the optimistic temp- bubble that
+        // handleSend pushed locally. The temp id never matches the real DB
+        // id, so without this the user prompt appears twice — once from the
+        // local push, once from the server broadcast. Mirrors Chat.tsx.
+        if (e.message.role === 'user') {
+          const tempIdx = prev.findIndex(
+            (m) => m.role === 'user' && m.id.startsWith('temp-') && m.content === e.message.content,
+          );
+          if (tempIdx >= 0) {
+            const updated = [...prev];
+            updated[tempIdx] = {
+              ...updated[tempIdx],
+              id: e.message.id,
+              createdAt: e.message.createdAt,
+            };
+            return updated;
+          }
+        }
+
         return [
           ...prev,
           {
