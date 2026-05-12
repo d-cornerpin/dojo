@@ -1,6 +1,6 @@
 {
   "name": "@dojo/shared",
-  "version": "2.5.23",
+  "version": "2.5.24",
   "private": true,
   "type": "module",
   "main": "./src/index.ts",

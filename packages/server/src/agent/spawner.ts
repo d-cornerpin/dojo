@@ -471,6 +471,8 @@ export async function completeAgent(
     task_id: string | null;
     config: string;
     created_at: string;
+    classification: string | null;
+    agent_type: string | null;
   } | undefined;
 
   if (!agent) {
@@ -498,12 +500,19 @@ export async function completeAgent(
     (Date.now() - new Date(agent.created_at).getTime()) / 1000,
   );
 
-  // Check persist flag
-  let isPersistent = false;
-  try {
-    const config = JSON.parse(agent.config || '{}');
-    isPersistent = config.persist === true;
-  } catch {}
+  // Sensei agents and anything explicitly marked `agent_type='persistent'`
+  // are treated as persistent regardless of the config JSON. Pre-fix,
+  // this branch only honored `config.persist`, which silently terminated
+  // sensei agents (e.g. the Trainer) whose config row didn't carry that
+  // field — the sensei guard in terminateAgent didn't help because
+  // completeAgent does its own raw UPDATE.
+  let isPersistent = agent.classification === 'sensei' || agent.agent_type === 'persistent';
+  if (!isPersistent) {
+    try {
+      const config = JSON.parse(agent.config || '{}');
+      isPersistent = config.persist === true;
+    } catch {}
+  }
 
   // Archive conversation for the Dreamer before changing status
   try {
