@@ -2081,10 +2081,67 @@ async function executeExec(agentId: string, args: Record<string, unknown>): Prom
     }
     return parts.join('\n\n');
   } catch (err: unknown) {
-    const error = err as { stderr?: string; stdout?: string; message?: string; code?: number };
-    const stderr = error.stderr ?? error.message ?? 'Unknown error';
-    auditLog(agentId, 'exec', command, 'error', String(stderr).slice(0, 500));
-    return `Error (exit ${error.code ?? 'unknown'}): ${stderr}`;
+    // Mirror the success-path structured output: surface BOTH streams with
+    // the same per-stream cap, and translate "no exit code" into the actual
+    // signal/spawn reason so the agent doesn't get "Error (exit unknown)"
+    // when the real cause was a timeout or a missing binary.
+    const error = err as {
+      stderr?: string;
+      stdout?: string;
+      message?: string;
+      code?: number | string;
+      signal?: NodeJS.Signals;
+      killed?: boolean;
+    };
+
+    const STREAM_CHAR_CAP = 16_000;
+    const stdoutRaw = error.stdout ?? '';
+    const stderrRaw = error.stderr ?? '';
+    const stdoutTruncated = stdoutRaw.length > STREAM_CHAR_CAP;
+    const stderrTruncated = stderrRaw.length > STREAM_CHAR_CAP;
+    const stdoutFinal = stdoutTruncated ? stdoutRaw.slice(0, STREAM_CHAR_CAP) : stdoutRaw;
+    const stderrFinal = stderrTruncated ? stderrRaw.slice(0, STREAM_CHAR_CAP) : stderrRaw;
+
+    // Reason header: numeric exit → "exit N", signal kill → "killed by SIGX
+    // (likely timeout after Ns)" for SIGTERM, ENOENT → "command not found",
+    // anything else → fall back to the raw code.
+    let reason: string;
+    if (error.killed && error.signal === 'SIGTERM') {
+      reason = `timed out after ${Math.round(timeout / 1000)}s (killed by SIGTERM)`;
+    } else if (error.signal) {
+      reason = `killed by ${error.signal}`;
+    } else if (error.code === 'ENOENT') {
+      reason = `command not found (ENOENT) — check spelling, PATH, or quote your command properly`;
+    } else if (typeof error.code === 'number') {
+      reason = `exit ${error.code}`;
+    } else if (typeof error.code === 'string') {
+      reason = `spawn error ${error.code}`;
+    } else {
+      reason = 'process failed before reporting an exit code';
+    }
+
+    // Node's exec wraps stderr in `"Command failed: <cmd>\n<stderr>"` on the
+    // error.message field — only use it if we'd otherwise show nothing.
+    let messageFallback = '';
+    if (!stdoutFinal.trim() && !stderrFinal.trim() && error.message) {
+      messageFallback = error.message.replace(/^Command failed:[^\n]*\n?/, '').trim();
+    }
+
+    auditLog(agentId, 'exec', command, 'error',
+      `${reason} | stderr: ${stderrFinal.trim().slice(0, 250) || '(empty)'} | stdout: ${stdoutFinal.trim().slice(0, 250) || '(empty)'}`,
+    );
+
+    const parts: string[] = [`command_failed: ${reason}`];
+    if (stdoutFinal.trim() || stdoutTruncated) {
+      parts.push(`stdout${stdoutTruncated ? ' (truncated, stdout_truncated: true)' : ''}:\n${stdoutFinal.trim() || '(empty)'}`);
+    }
+    if (stderrFinal.trim() || stderrTruncated) {
+      parts.push(`stderr${stderrTruncated ? ' (truncated, stderr_truncated: true)' : ''}:\n${stderrFinal.trim() || '(empty)'}`);
+    }
+    if (messageFallback) {
+      parts.push(`node_error:\n${messageFallback}`);
+    }
+    return parts.join('\n\n');
   }
 }
 
