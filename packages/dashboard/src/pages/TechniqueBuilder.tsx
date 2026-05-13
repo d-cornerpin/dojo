@@ -80,6 +80,27 @@ ${instructions || '(empty)'}
 I can see the technique mat on my screen with the current content. Help me improve or modify this technique. When we're done, use update_technique to save the changes. What would you like to change?`;
 }
 
+// Setup context — fired the first time the user opens the training mat for
+// an imported technique that's still in needs_setup state. Tells Yoshi
+// where to find the staged IMPORT_MANIFEST.json + README.md and how to
+// walk the user through filling in any {{NEEDS_FROM_USER:LABEL}}
+// placeholders before finalizing.
+function getSetupContext(name: string, slug: string, directoryPath: string | null): string {
+  const dirHint = directoryPath ? ` It lives in: \`${directoryPath}\`.` : '';
+  return `I just imported a shared technique called "${name}" (slug: ${slug}) and it landed in needs_setup state.${dirHint}
+
+Please help me finish setting it up:
+
+1. Read \`IMPORT_MANIFEST.json\` and \`README.md\` in the technique directory using file_read so you understand what came in the package and what setup steps the original author documented.
+2. Look at the manifest's \`placeholders\` list — each one is a {{NEEDS_FROM_USER:LABEL}} marker that the exporting Dojo redacted because it was a secret or per-install value. Ask me for each placeholder ONE AT A TIME, in plain language, using the hint from the manifest to explain what it is.
+3. As I give you each value, call technique_set_placeholder({technique: "${slug}", label: "...", value: "..."}) to write it into the technique files.
+4. After every placeholder is filled, call technique_finalize({technique: "${slug}"}) — that flips the technique out of needs_setup and into draft state so I can review it or publish it.
+
+If the README mentions manual setup steps that AREN'T placeholders (e.g. granting an OAuth scope, installing a CLI), call them out so I know to handle them before finalizing.
+
+Ready when you are — start by reading the manifest and the README.`;
+}
+
 // ── Trainer agent ID — loaded from settings ──
 
 let _trainerAgentId: string | null = null;
@@ -504,6 +525,11 @@ export const TechniqueBuilder = () => {
   // so the trainer doesn't suggest changes that overwrite recent edits.
   const [techniqueUpdatedAt, setTechniqueUpdatedAt] = useState<string | null>(null);
   const [lastTrainerActivityAt, setLastTrainerActivityAt] = useState<string | null>(null);
+  // Tracks the technique's server-side state so we can pick the right
+  // first-message context for the trainer. needs_setup techniques (post-import)
+  // get the setup walkthrough instead of the generic edit context.
+  const [techniqueState, setTechniqueState] = useState<string | null>(null);
+  const [techniqueDirectoryPath, setTechniqueDirectoryPath] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
@@ -536,6 +562,12 @@ export const TechniqueBuilder = () => {
       });
       if (typeof data.data.updatedAt === 'string') {
         setTechniqueUpdatedAt(data.data.updatedAt);
+      }
+      if (typeof data.data.state === 'string') {
+        setTechniqueState(data.data.state);
+      }
+      if (typeof data.data.directoryPath === 'string') {
+        setTechniqueDirectoryPath(data.data.directoryPath);
       }
     }
   }, []);
@@ -869,9 +901,12 @@ export const TechniqueBuilder = () => {
     const isFirstMessage = !contextSent;
     let staleRefreshFired = false;
     if (isFirstMessage) {
-      const contextMessage = isEditMode
-        ? getEditContext(canvas.displayName, canvas.description, canvas.instructions)
-        : BUILDER_CONTEXT;
+      const isSetupMode = isEditMode && techniqueState === 'needs_setup';
+      const contextMessage = isSetupMode
+        ? getSetupContext(canvas.displayName, canvas.name, techniqueDirectoryPath)
+        : isEditMode
+          ? getEditContext(canvas.displayName, canvas.description, canvas.instructions)
+          : BUILDER_CONTEXT;
       // v2.5.18 — Use the unique USER_PROMPT_MARKER_OPEN sentinel so the
       // chat-side strip is unambiguous even when the embedded technique
       // contains markdown horizontal rules.
@@ -1034,7 +1069,9 @@ export const TechniqueBuilder = () => {
                 <div className="text-3xl mb-3">{'\u{1F3AF}'}</div>
                 <h2 className="text-lg font-semibold text-ui/70 mb-1">Technique Trainer</h2>
                 <p className="text-xs text-secondary">
-                  {isEditMode
+                  {techniqueState === 'needs_setup'
+                    ? `This technique was imported and needs setup. Send any message to ${agentName || 'the trainer'} (e.g. "let's begin") and they'll walk you through filling in the placeholders.`
+                    : isEditMode
                     ? `Edit the mat directly — or message ${agentName || 'the trainer'} for help. The current technique will be sent along with your first message.`
                     : `Tell ${agentName || 'the trainer'} what you want to build. The build prompt is sent with your first message.`}
                 </p>

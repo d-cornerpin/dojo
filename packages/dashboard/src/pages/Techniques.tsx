@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { TechniqueCard } from '../components/TechniqueCard';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -35,6 +35,27 @@ async function fetchTechniques(state?: string, tag?: string, search?: string): P
   return data.ok ? data.data : [];
 }
 
+async function uploadTechniquePackage(file: File): Promise<{ techniqueId: string; needsSetup: boolean; name: string }> {
+  const token = localStorage.getItem('dojo_token');
+  const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
+  const csrf = csrfMatch ? csrfMatch[1] : null;
+
+  const form = new FormData();
+  form.append('file', file, file.name);
+
+  const res = await fetch('/api/techniques/import', {
+    method: 'POST',
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+    },
+    body: form,
+  });
+  const data = await res.json().catch(() => ({ ok: false, error: 'Server returned a non-JSON response.' }));
+  if (!data.ok) throw new Error(data.error || `Import failed (${res.status})`);
+  return data.data;
+}
+
 async function toggleTechnique(id: string, enabled: boolean): Promise<void> {
   const token = localStorage.getItem('dojo_token');
   const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
@@ -58,6 +79,9 @@ export const Techniques = () => {
   const [search, setSearch] = useState('');
   const [stateFilter, setStateFilter] = useState<string>('All');
   const [tagFilter, setTagFilter] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
 
   const allTags = [...new Set(techniques.flatMap(t => t.tags))].sort();
 
@@ -94,18 +118,65 @@ export const Techniques = () => {
     setTechniques(prev => prev.map(t => t.id === id ? { ...t, enabled } : t));
   };
 
+  const handleImportClick = () => {
+    setImportError(null);
+    fileInputRef.current?.click();
+  };
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // reset so picking the same file twice still fires
+    if (!file) return;
+    setImporting(true);
+    setImportError(null);
+    try {
+      const result = await uploadTechniquePackage(file);
+      // Route to the training mat for setup. Needs_setup techniques land
+      // in the trainer chat with the import context pre-loaded so Yoshi
+      // walks the user through any placeholders.
+      navigate(`/techniques/${result.techniqueId}/edit`);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setImporting(false);
+    }
+  };
+
   return (
     <div className="flex-1 p-4 md:p-6 overflow-y-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-lg sm:text-xl font-bold text-ui">Techniques</h1>
-        <button
-          onClick={() => navigate('/techniques/new')}
-          className="glass-btn glass-btn-primary text-sm"
-        >
-          + Create Technique
-        </button>
+        <div className="flex items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".zip,application/zip,application/x-zip-compressed"
+            className="hidden"
+            onChange={handleImportFile}
+          />
+          <button
+            onClick={handleImportClick}
+            disabled={importing}
+            className="glass-btn text-sm disabled:opacity-60"
+            title="Import a .dojo.zip technique package"
+          >
+            {importing ? 'Importing…' : 'Import Technique'}
+          </button>
+          <button
+            onClick={() => navigate('/techniques/new')}
+            className="glass-btn glass-btn-primary text-sm"
+          >
+            + Create Technique
+          </button>
+        </div>
       </div>
+
+      {importError && (
+        <div className="mb-4 px-4 py-3 rounded-lg bg-cp-coral/[0.08] text-sm text-cp-coral border border-cp-coral/20">
+          Import failed: {importError}
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex flex-wrap gap-3 mb-6">

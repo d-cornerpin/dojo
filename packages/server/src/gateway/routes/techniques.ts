@@ -19,6 +19,8 @@ import {
 } from '../../techniques/store.js';
 import { getVersions, getVersion, restoreVersion, getUsage } from '../../techniques/versioning.js';
 import { clearTrainerSession } from '../../techniques/trainer-agent.js';
+import { exportTechnique } from '../../techniques/share-export.js';
+import { importTechnique } from '../../techniques/share-import.js';
 
 const logger = createLogger('technique-routes');
 
@@ -213,6 +215,44 @@ techniquesRouter.delete('/:id/files/*', (c) => {
 
   fs.unlinkSync(fullPath);
   return c.json({ ok: true, data: { path: filePath } });
+});
+
+// POST /import — import a .dojo.zip package (multipart form-data, field: file)
+techniquesRouter.post('/import', async (c) => {
+  try {
+    const formData = await c.req.formData();
+    const file = formData.get('file');
+    if (!(file instanceof File)) {
+      return c.json({ ok: false, error: 'Missing file. Upload as multipart form-data field "file".' }, 400);
+    }
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const result = await importTechnique(buffer);
+    return c.json({ ok: true, data: result }, 201);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Technique import failed', { error: msg });
+    return c.json({ ok: false, error: msg }, 400);
+  }
+});
+
+// POST /:id/export — build a shareable .dojo.zip and stream it back.
+techniquesRouter.post('/:id/export', async (c) => {
+  const id = c.req.param('id');
+  try {
+    const { stream, filename } = await exportTechnique(id);
+    const { Readable } = await import('node:stream');
+    const webStream = Readable.toWeb(stream) as ReadableStream;
+    return new Response(webStream, {
+      headers: {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Technique export failed', { error: msg, id });
+    return c.json({ ok: false, error: msg }, 400);
+  }
 });
 
 // POST /clear-session — clear trainer agent messages for a fresh session

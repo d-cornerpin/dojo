@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatRelative } from '../lib/dates';
 
@@ -20,14 +21,67 @@ const stateBadge: Record<string, { cls: string; label: string }> = {
   review: { cls: 'glass-badge-blue', label: 'Review' },
   disabled: { cls: 'glass-badge-gray', label: 'Disabled' },
   archived: { cls: 'text-ui/25 bg-ui/[0.03]', label: 'Archived' },
+  needs_setup: { cls: 'glass-badge-coral', label: 'Needs setup' },
 };
 
 const tagColors = ['glass-badge-purple', 'glass-badge-blue', 'glass-badge-teal', 'glass-badge-amber', 'glass-badge-coral'];
 
+async function exportTechniqueToBrowser(id: string): Promise<void> {
+  const token = localStorage.getItem('dojo_token');
+  const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
+  const csrf = csrfMatch ? csrfMatch[1] : null;
+
+  const res = await fetch(`/api/techniques/${id}/export`, {
+    method: 'POST',
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+    },
+  });
+
+  if (!res.ok) {
+    let message = `Export failed (${res.status})`;
+    try {
+      const data = await res.json();
+      if (data?.error) message = data.error;
+    } catch { /* response wasn't JSON */ }
+    throw new Error(message);
+  }
+
+  const blob = await res.blob();
+  const disposition = res.headers.get('Content-Disposition') ?? '';
+  const filenameMatch = disposition.match(/filename="?([^";]+)"?/);
+  const filename = filenameMatch ? filenameMatch[1] : `${id}.dojo.zip`;
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
 
 export const TechniqueCard = ({ technique, onToggle }: { technique: TechniqueData; onToggle?: (id: string, enabled: boolean) => void }) => {
   const navigate = useNavigate();
   const badge = stateBadge[technique.state] ?? stateBadge.draft;
+  const [sharing, setSharing] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+
+  const handleShare = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (sharing) return;
+    setSharing(true);
+    setShareError(null);
+    try {
+      await exportTechniqueToBrowser(technique.id);
+    } catch (err) {
+      setShareError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSharing(false);
+    }
+  };
 
   return (
     <div
@@ -40,8 +94,37 @@ export const TechniqueCard = ({ technique, onToggle }: { technique: TechniqueDat
           <h3 className="text-base font-semibold text-ui truncate">{technique.name}</h3>
           <p className="text-xs text-ui/40 mt-0.5 line-clamp-2">{technique.description ?? 'No description'}</p>
         </div>
-        <span className={`glass-badge ${badge.cls} shrink-0 ml-2`}>{badge.label}</span>
+        <div className="flex items-center gap-1.5 shrink-0 ml-2">
+          <button
+            type="button"
+            onClick={handleShare}
+            disabled={sharing}
+            title={sharing ? 'Packaging…' : 'Share this technique (downloads a .dojo.zip)'}
+            aria-label="Share technique"
+            className="p-1 rounded-md text-ui/40 hover:text-ui hover:bg-ui/[0.06] transition-colors disabled:opacity-50 disabled:cursor-wait"
+          >
+            {sharing ? (
+              <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" strokeOpacity="0.25" />
+                <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7" />
+                <polyline points="16 6 12 2 8 6" />
+                <line x1="12" y1="2" x2="12" y2="15" />
+              </svg>
+            )}
+          </button>
+          <span className={`glass-badge ${badge.cls}`}>{badge.label}</span>
+        </div>
       </div>
+
+      {shareError && (
+        <div className="mb-3 text-xs text-cp-coral" onClick={(e) => e.stopPropagation()}>
+          {shareError}
+        </div>
+      )}
 
       {/* Tags */}
       {technique.tags.length > 0 && (
@@ -77,6 +160,12 @@ export const TechniqueCard = ({ technique, onToggle }: { technique: TechniqueDat
           >
             <span className="toggle-knob" />
           </button>
+        </div>
+      )}
+
+      {technique.state === 'needs_setup' && (
+        <div className="mt-3 pt-3 border-t border-ui/[0.06] text-xs text-ui/55">
+          Open this technique to finish setup with your trainer.
         </div>
       )}
     </div>

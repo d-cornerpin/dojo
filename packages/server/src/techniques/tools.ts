@@ -17,6 +17,12 @@ import {
   recordTechniqueUsage,
   resolveTechniqueRef,
 } from './store.js';
+import {
+  readImportManifest,
+  applyPlaceholderToTechnique,
+  findRemainingPlaceholders,
+  finalizeImportedTechnique,
+} from './share-import.js';
 
 const logger = createLogger('technique-tools');
 
@@ -215,6 +221,72 @@ export function executeUpdateTechnique(agentId: string, agentName: string, class
 
   const updated = getTechnique(resolved.id);
   return `Technique "${updated?.name}" updated (version ${updated?.version}). ${changeSummary}`;
+}
+
+// ── technique_set_placeholder ──
+// Used during import setup. After Yoshi asks the user for a secret/value,
+// he calls this to write it into the technique files in place of the
+// {{NEEDS_FROM_USER:LABEL}} marker.
+
+export function executeTechniqueSetPlaceholder(agentId: string, args: Record<string, unknown>): string {
+  const techniqueRef = args.technique as string;
+  const label = args.label as string;
+  const value = args.value as string;
+
+  if (!techniqueRef || !label || value === undefined) {
+    return 'Error: technique, label, and value are all required.';
+  }
+  if (typeof value !== 'string') {
+    return 'Error: value must be a string.';
+  }
+
+  const resolved = resolveTechniqueRef(techniqueRef);
+  if (!resolved.ok) return resolved.error;
+  const technique = getTechnique(resolved.id);
+  if (!technique) return `Error: Technique "${techniqueRef}" not found.`;
+
+  const manifest = readImportManifest(technique.directoryPath);
+  if (!manifest) {
+    return `Error: Technique "${technique.name}" was not imported and has no placeholders. This tool only applies to techniques that came in via a shared package.`;
+  }
+  const known = manifest.placeholders.find(p => p.label === label);
+  if (!known) {
+    const available = manifest.placeholders.map(p => p.label).join(', ') || '(none)';
+    return `Error: Placeholder "${label}" is not part of this technique's import manifest. Available labels: ${available}.`;
+  }
+
+  const replacements = applyPlaceholderToTechnique(technique.directoryPath, label, value);
+  const remaining = findRemainingPlaceholders(technique.directoryPath);
+  logger.info('Placeholder applied', { techniqueId: technique.id, label, replacements, remaining: remaining.length }, agentId);
+
+  if (replacements === 0) {
+    return `Placeholder "${label}" was already filled in (no remaining markers in the files). Remaining placeholders: ${remaining.length === 0 ? 'none — ready to finalize.' : remaining.join(', ')}.`;
+  }
+  if (remaining.length === 0) {
+    return `Placeholder "${label}" set across ${replacements} location(s). All placeholders are now filled — call technique_finalize to publish this technique as a draft.`;
+  }
+  return `Placeholder "${label}" set across ${replacements} location(s). Remaining placeholders: ${remaining.join(', ')}.`;
+}
+
+// ── technique_finalize ──
+// Used during import setup. Once every placeholder is filled Yoshi calls
+// this to flip the technique out of needs_setup into draft state and
+// remove the staged import manifest.
+
+export function executeTechniqueFinalize(agentId: string, args: Record<string, unknown>): string {
+  const techniqueRef = args.technique as string;
+  if (!techniqueRef) return 'Error: technique is required.';
+
+  const resolved = resolveTechniqueRef(techniqueRef);
+  if (!resolved.ok) return resolved.error;
+  const technique = getTechnique(resolved.id);
+  if (!technique) return `Error: Technique "${techniqueRef}" not found.`;
+
+  const result = finalizeImportedTechnique(resolved.id);
+  if (!result.ok) return `Error: ${result.error}`;
+
+  logger.info('Imported technique finalized', { techniqueId: technique.id }, agentId);
+  return `Technique "${technique.name}" is finalized and now in draft state. Use publish_technique to make it available to other agents, or test it first via use_technique.`;
 }
 
 // ── submit_technique_for_review ──

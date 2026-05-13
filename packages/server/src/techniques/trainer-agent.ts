@@ -90,6 +90,7 @@ export function ensureTrainerAgentRunning(): void {
       'save_technique', 'use_technique', 'list_techniques', 'publish_technique',
       'update_technique', 'submit_technique_for_review', 'delete_technique',
       'technique_list_versions',
+      'technique_set_placeholder', 'technique_finalize',
       // File access
       'file_read', 'file_write', 'file_list',
       // Execution (for testing techniques, installing deps, running scripts)

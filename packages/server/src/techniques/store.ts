@@ -27,7 +27,7 @@ export interface TechniqueMetadata {
   id: string;
   name: string;
   description: string | null;
-  state: 'draft' | 'review' | 'published' | 'disabled' | 'archived';
+  state: 'draft' | 'review' | 'published' | 'disabled' | 'archived' | 'needs_setup';
   authorAgentId: string | null;
   authorAgentName: string | null;
   tags: string[];

@@ -176,7 +176,7 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   // Technique tools: only Sensei can save/publish/update, everyone can use/list
   const agentClassification = (getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined)?.classification;
   if (agentClassification !== 'sensei') {
-    removeTools.push('save_technique', 'publish_technique', 'update_technique', 'submit_technique_for_review', 'delete_technique');
+    removeTools.push('save_technique', 'publish_technique', 'update_technique', 'submit_technique_for_review', 'delete_technique', 'technique_set_placeholder', 'technique_finalize');
   }
 
 
@@ -1740,6 +1740,30 @@ export const toolDefinitions: ToolDefinition[] = [
     },
     concurrency: 'safe',
     maxResultTokens: 2000,
+  },
+  {
+    name: 'technique_set_placeholder',
+    description: 'Fill in a {{NEEDS_FROM_USER:LABEL}} placeholder across an imported technique\'s files with a value the user provided. Use this during the setup conversation that follows a technique import: read the IMPORT_MANIFEST.json + README.md in the technique\'s directory, ask the user for each placeholder one at a time, then call this tool with the answer. After every placeholder is filled, call technique_finalize.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        technique: { type: 'string', description: 'Technique ID (slug) being set up' },
+        label: { type: 'string', description: 'Placeholder label (UPPER_SNAKE_CASE) — must match one listed in the manifest' },
+        value: { type: 'string', description: 'The actual value (API key, token, URL, etc.) the user provided' },
+      },
+      required: ['technique', 'label', 'value'],
+    },
+  },
+  {
+    name: 'technique_finalize',
+    description: 'Finalize an imported technique once every placeholder has been filled in. Removes the staged IMPORT_MANIFEST.json and flips the technique\'s state from needs_setup → draft so it can be published. Only valid after every technique_set_placeholder call has been made; will refuse if any markers remain.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        technique: { type: 'string', description: 'Technique ID (slug) to finalize' },
+      },
+      required: ['technique'],
+    },
   },
 
   // ── Vault (Long-Term Memory) ──
@@ -5382,6 +5406,26 @@ Thread is closed — respond to the user, not Imaginer.`;
         break;
       }
 
+      case 'technique_set_placeholder': {
+        const tspErr = checkRequired([
+          { name: 'technique', value: args.technique, type: 'string' },
+          { name: 'label', value: args.label, type: 'string' },
+          { name: 'value', value: args.value, type: 'string' },
+        ]);
+        if (tspErr) { content = tspErr; isError = true; break; }
+        const { executeTechniqueSetPlaceholder } = await import('../techniques/tools.js');
+        content = executeTechniqueSetPlaceholder(agentId, args);
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'technique_finalize': {
+        const tfErr = checkRequired([{ name: 'technique', value: args.technique, type: 'string' }]);
+        if (tfErr) { content = tfErr; isError = true; break; }
+        const { executeTechniqueFinalize } = await import('../techniques/tools.js');
+        content = executeTechniqueFinalize(agentId, args);
+        isError = content.startsWith('Error');
+        break;
+      }
       case 'technique_list_versions': {
         const tlvErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
         if (tlvErr) { content = tlvErr; isError = true; break; }
