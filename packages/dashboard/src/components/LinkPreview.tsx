@@ -40,15 +40,14 @@ export const LinkPreview = ({ url }: { url: string }) => {
       });
   }, [url]);
 
-  // No preview data or still loading — just render a clickable link
-  if (loading || !data || (!data.title && !data.description && !data.image)) {
-    return (
-      <a href={url} target="_blank" rel="noopener noreferrer"
-        className="text-cp-blue hover:underline break-all">
-        {url}
-      </a>
-    );
-  }
+  // No preview data — don't render anything. The URL is already
+  // rendered inline as a clickable anchor by Markdown.tsx; falling back
+  // to a duplicate <a>{url}</a> here is what produced the "same link
+  // shows up twice in a row" bug (visually: https://x.com/linkhttps://x.com/link).
+  // We only render when we have real preview content (title/desc/image)
+  // that earns its own card.
+  if (loading) return null;
+  if (!data || (!data.title && !data.description && !data.image)) return null;
 
   const hostname = (() => {
     try { return new URL(url).hostname.replace('www.', ''); } catch { return ''; }

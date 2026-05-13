@@ -568,11 +568,14 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
           )) return null;
           if (msg.role === 'tool' && !wordyMode) return null;
           if (msg.role === 'system') {
-            // Always show divider-style markers: any system message shaped
-            // "── label ──" becomes a horizontal divider, regardless of
-            // wordy mode. Covers New Session, Memory Compacted, etc.
+            // Divider-style markers: any system message shaped "── label ──"
+            // becomes a horizontal divider. "Memory Compacted" dividers are
+            // wordy-mode-only (diagnostic chrome); other dividers like
+            // "New Session" stay always-visible.
             const dividerMatch = msg.content.trim().match(/^──\s*(.+?)\s*──$/);
             if (dividerMatch) {
+              const isCompactionDivider = /^Memory Compacted/.test(dividerMatch[1]);
+              if (isCompactionDivider && !wordyMode) return null;
               return (
                 <div key={msg.id} className="flex items-center gap-3 py-2">
                   <div className="flex-1 h-px bg-ui/[0.12]" />

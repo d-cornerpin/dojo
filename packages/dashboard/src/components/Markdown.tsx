@@ -87,8 +87,10 @@ function parseMarkdown(text: string): React.ReactNode[] {
   const haystack = nonCodeText.join('\n');
   for (const match of haystack.matchAll(ANY_URL_RE)) {
     const raw = match[0];
-    // Trim trailing punctuation that isn't part of the URL (sentence enders).
-    const cleaned = raw.replace(/[.,;:!?]+$/, '');
+    // Strip trailing junk (sentence punct, backticks, brackets, quotes)
+    // that agents frequently smear onto URLs. Without this, OG-preview
+    // would 404 because the href ends in %60 or %5D.
+    const cleaned = raw.replace(HREF_TRAIL_JUNK_RE, '');
     if (!isPreviewableUrl(cleaned)) continue;
     if (seen.has(cleaned)) continue;
     seen.add(cleaned);
@@ -164,13 +166,23 @@ function InlineMarkdown({ text }: { text: string }): React.ReactNode {
   return <>{parts}</>;
 }
 
-// Render a clickable URL anchor. Trailing sentence punctuation is split
-// off so "see https://x.com." links to https://x.com and renders the
-// period as plain text after.
+// Trailing junk that LLMs frequently smear onto the end of a URL but that
+// never belongs on a real link href:
+//   - Sentence punctuation: . , ; : ! ?
+//   - Backtick (`) — agents often try to inline-code-wrap a URL and the
+//     closing tick lands inside the href, browser then encodes it as %60
+//   - Quote marks: " ' ’ ” (smart + dumb)
+//   - Closing brackets that weren't opened: ] } > )
+//   - Backslash: occasionally appears when agents try to escape something
+const HREF_TRAIL_JUNK_RE = /[.,;:!?`"'’”\]\}>)\\]+$/;
+
+// Render a clickable URL anchor. Trailing junk is split off so
+// "see https://x.com." links to https://x.com and renders the period
+// as plain text after.
 function renderUrl(url: string, key: number): React.ReactNode[] {
   let href = url;
   let trailing = '';
-  const trailMatch = href.match(/[.,;:!?]+$/);
+  const trailMatch = href.match(HREF_TRAIL_JUNK_RE);
   if (trailMatch) {
     trailing = trailMatch[0];
     href = href.slice(0, href.length - trailing.length);
@@ -186,10 +198,10 @@ function renderUrl(url: string, key: number): React.ReactNode[] {
 }
 
 // Render an explicit markdown link [text](url) where the visible text and
-// the href can differ. Same trailing-punct rule applied to the href.
+// the href can differ. Same trailing-junk rule applied to the href.
 function renderMarkdownLink(text: string, url: string, key: number): React.ReactNode {
   let href = url.trim();
-  const trailMatch = href.match(/[.,;:!?]+$/);
+  const trailMatch = href.match(HREF_TRAIL_JUNK_RE);
   if (trailMatch) href = href.slice(0, href.length - trailMatch[0].length);
   return (
     <a key={key} href={href} target="_blank" rel="noopener noreferrer"

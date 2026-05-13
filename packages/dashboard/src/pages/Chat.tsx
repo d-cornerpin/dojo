@@ -832,12 +832,15 @@ export const Chat = () => {
             return <ToolResultBubble key={msg.id} msg={msg} />;
           }
           if (msg.role === 'system') {
-            // Always show divider-style markers: any system message shaped
-            // "── label ──" renders as a horizontal divider with the label
-            // centered. Used for New Session, Memory Compacted, and any
-            // future inline timeline markers.
+            // Divider-style markers: any system message shaped "── label ──"
+            // renders as a horizontal divider with the label centered.
+            // "Memory Compacted" dividers are wordy-mode-only — they're
+            // diagnostic chrome, not user-facing chronology. "New Session"
+            // and similar markers stay always-visible.
             const dividerMatch = msg.content.trim().match(/^──\s*(.+?)\s*──$/);
             if (dividerMatch) {
+              const isCompactionDivider = /^Memory Compacted/.test(dividerMatch[1]);
+              if (isCompactionDivider && !wordyMode) return null;
               return (
                 <div key={msg.id} className="flex items-center gap-3 my-4 px-4">
                   <div className="flex-1 h-px bg-ui/[0.12]" />
