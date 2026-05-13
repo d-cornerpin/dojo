@@ -274,6 +274,30 @@ export async function assembleContext(
     }
   } catch { /* best effort */ }
 
+  // 3.9. Active user directive — pin the user's most recent substantive ask
+  // verbatim, right before the fresh tail. Survives compaction (read fresh
+  // from messages every turn), so even when the original prompt has been
+  // folded into a summary, the agent still sees what's being asked in the
+  // user's own words. This is the "don't forget what we're doing" anchor
+  // — the single most important piece of context the system can preserve.
+  try {
+    const { getActiveUserDirective, formatDirectiveBlock } = await import('./directive.js');
+    const directive = getActiveUserDirective(agentId);
+    if (directive) {
+      const block = formatDirectiveBlock(directive);
+      const directiveTokens = estimateTokens(block);
+      if (usedTokens + directiveTokens < maxTokens) {
+        messages.push({ role: 'user', content: block });
+        usedTokens += directiveTokens;
+        injectedAnyScaffolding = true;
+      }
+    }
+  } catch (err) {
+    logger.warn('Active directive injection failed', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+
   // Single combined ack for ALL scaffolding sections. Pre-2026-05-01 each
   // section pushed its own assistant ack — five separate scaffolding
   // messages. Now one ack closes them all. The ack also names the
@@ -282,7 +306,7 @@ export async function assembleContext(
   // (below) shows different state — a common failure mode that drove
   // verification spirals before this framing was added.
   if (injectedAnyScaffolding) {
-    const combinedAck = 'Understood, I have reviewed my background context (briefing, vault, summaries, active tasks, continuity brief). Source priority for this turn: live conversation below > active tracker tasks > continuity brief > vault entries > briefing. When sources disagree, trust the most recent and most specific.';
+    const combinedAck = 'Understood, I have reviewed my background context (briefing, vault, summaries, active tasks, continuity brief, active user directive). Source priority for this turn: active user directive > live conversation below > active tracker tasks > continuity brief > vault entries > briefing. When sources disagree, trust the most recent and most specific. The active user directive (if present) is the WHAT — never lose it; everything else is supporting context.';
     messages.push({ role: 'assistant', content: combinedAck });
     usedTokens += estimateTokens(combinedAck);
   }

@@ -503,7 +503,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'recall_recent_thread',
-    description: '**FIRST RESORT when you feel disoriented, just got compacted, switched models, or cannot recall what was being worked on.** Call this BEFORE running exec, file_read, vault_search, or asking the user to repeat themselves. Returns a clean transcript of the recent conversation read directly from your messages table (same data shown on the dashboard chat), regardless of what the assembler put in your active context.\n\nBy default returns the last 8 user→assistant exchanges with tool *call* lines (file_read path=…, exec command=…). To recover **actual content** the agent saw earlier (file contents, web fetch bodies, search results), set `include_tool_results: true` — that switches on "wordy mode" which includes tool RESULTS up to a per-result char cap (default 1500). For longer lookback, paginate with `before_id` (the response footer tells you which id to pass). Cheap, read-only, safe to call anytime.',
+    description: '**FIRST RESORT when you feel disoriented, just got compacted, switched models, or cannot recall what was being worked on.** Call this BEFORE running exec, file_read, vault_search, or asking the user to repeat themselves. Returns a clean transcript of the recent conversation read directly from your messages table (same data shown on the dashboard chat), regardless of what the assembler put in your active context.\n\nBy default returns the last 8 user→assistant exchanges with tool *call* lines (file_read path=…, exec command=…). To recover **actual content** the agent saw earlier (file contents, web fetch bodies, search results), set `include_tool_results: true` — that switches on "wordy mode" which includes tool RESULTS up to a per-result char cap (default 1500). User/assistant message text is also capped per message (default 1500 chars, raise via `truncate_message_chars` up to 8000) — anything truncated ends with a memory_describe pointer so you can fetch the full body. For longer lookback, paginate with `before_id` (the response footer tells you which id to pass). Cheap, read-only, safe to call anytime.',
     input_schema: {
       type: 'object',
       properties: {
@@ -522,6 +522,10 @@ export const toolDefinitions: ToolDefinition[] = [
         truncate_tool_result_chars: {
           type: 'number',
           description: 'Per-tool-result character cap when include_tool_results=true. Default 1500, max 4000. Each truncated result ends with a memory_describe pointer for the full body.',
+        },
+        truncate_message_chars: {
+          type: 'number',
+          description: 'Per-message character cap for user/assistant text. Default 1500, max 8000. Each truncated message ends with a memory_describe pointer for the full body. Raise this when you need to read longer messages in full instead of paginating through memory_describe.',
         },
         before_id: {
           type: 'string',
@@ -2948,6 +2952,10 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           4000,
           Math.max(200, Math.floor(coerceNumberArg(args.truncate_tool_result_chars) ?? 1500)),
         );
+        const truncateMessageChars = Math.min(
+          8000,
+          Math.max(200, Math.floor(coerceNumberArg(args.truncate_message_chars) ?? 1500)),
+        );
         const beforeId = typeof args.before_id === 'string' ? args.before_id : undefined;
         const since = typeof args.since === 'string' ? args.since : undefined;
         const { recallRecentThread } = await import('../memory/recall.js');
@@ -2956,6 +2964,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           includeToolCalls,
           includeToolResults,
           truncateToolResultChars,
+          truncateMessageChars,
           beforeId,
           since,
         });

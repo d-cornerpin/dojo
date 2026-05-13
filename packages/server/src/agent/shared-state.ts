@@ -30,6 +30,13 @@ export const preemptedAgents = new Set<string>();
 // the drain promise actually settles (success, error, or abort).
 export const backgroundDrains = new Set<string>();
 
+// Per-agent timestamp of the most recent "Memory Compacted" divider broadcast.
+// Used to throttle the divider so a backlog drain that runs across many turns
+// doesn't spam the chat with a divider every turn — at most one per 10 min.
+// Pre-fix, the routine drain path suppressed the divider entirely; that meant
+// users got zero visibility into compaction even on long single-task flows.
+export const lastCompactionDividerAt = new Map<string, number>();
+
 // Track agent start times for uptime calculation.
 export const agentStartTimes = new Map<string, number>();
 

@@ -72,6 +72,8 @@ export interface RecallOptions {
   includeToolCalls: boolean;
   includeToolResults?: boolean;
   truncateToolResultChars?: number;
+  /** Per-message cap on user/assistant text. Default 1500, max 8000. */
+  truncateMessageChars?: number;
   beforeId?: string;
   since?: string;
 }
@@ -175,6 +177,11 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
   try {
     const includeToolResults = opts.includeToolResults === true;
     const truncateChars = Math.min(4000, Math.max(200, opts.truncateToolResultChars ?? 1500));
+    // User/assistant message cap. Default 1500 (parity with tool result cap)
+    // — before this it was hardcoded to 600 with no escape hatch and no
+    // truncation marker, so messages got silently cut and the agent had no
+    // way to know or fetch the rest. Max 8000.
+    const messageChars = Math.min(8000, Math.max(200, opts.truncateMessageChars ?? 1500));
 
     // Respect session boundary so a recent reset doesn't bleed pre-reset
     // content into the recall.
@@ -293,8 +300,13 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
         continue;
       }
       if (msg.role === 'user') {
-        const userClip = clip(msg.content.trim(), 600);
+        const userClip = clip(msg.content.trim(), messageChars);
         lines.push(`[${role} ${t}] ${userClip.text || '(no text)'}`);
+        if (userClip.truncated > 0) {
+          lines.push(
+            `  [truncated, ${userClip.truncated} more chars — call memory_describe(id="${msg.id}") for full body]`,
+          );
+        }
         continue;
       }
       if (msg.role === 'tool') {
@@ -319,8 +331,13 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
       // assistant
       const parts = parseAssistantContent(msg.content);
       if (parts.text) {
-        const asstClip = clip(parts.text, 600);
+        const asstClip = clip(parts.text, messageChars);
         lines.push(`[${role} ${t}] ${asstClip.text}`);
+        if (asstClip.truncated > 0) {
+          lines.push(
+            `  [truncated, ${asstClip.truncated} more chars — call memory_describe(id="${msg.id}") for full body]`,
+          );
+        }
       }
       if (opts.includeToolCalls && parts.toolCalls.length > 0) {
         for (const tc of parts.toolCalls) {

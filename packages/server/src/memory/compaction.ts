@@ -14,6 +14,7 @@ import {
 } from './dag.js';
 import { generateSummary } from './summarize.js';
 import { archiveMessagesBeforeCompaction, isDreamerIgnored } from '../vault/archive.js';
+import { lastCompactionDividerAt } from '../agent/shared-state.js';
 import type { Message } from '@dojo/shared';
 
 // ── Assembled-context token estimate ──
@@ -210,6 +211,20 @@ function insertRecallNudge(agentId: string): void {
   }
 }
 
+/** Min interval between compaction dividers shown to the user, per agent. */
+const COMPACTION_DIVIDER_THROTTLE_MS = 10 * 60 * 1000;
+
+/**
+ * True when enough time has elapsed since the last divider broadcast for
+ * this agent to show another one. Avoids spamming the chat during a backlog
+ * drain that runs across many turns, while still surfacing compactions
+ * during a normal long task at most once per 10 minutes.
+ */
+function shouldShowCompactionDivider(agentId: string): boolean {
+  const last = lastCompactionDividerAt.get(agentId) ?? 0;
+  return Date.now() - last >= COMPACTION_DIVIDER_THROTTLE_MS;
+}
+
 function insertCompactionDivider(agentId: string, opts: { label: string }): void {
   try {
     const db = getDb();
@@ -235,6 +250,7 @@ function insertCompactionDivider(agentId: string, opts: { label: string }): void
         createdAt,
       },
     });
+    lastCompactionDividerAt.set(agentId, Date.now());
   } catch (err) {
     logger.warn('Failed to insert compaction divider', {
       agentId,
@@ -451,13 +467,16 @@ export async function checkAndCompact(
     // of the pre-v1.15.108 runaway-loop bug). The no-op guard above
     // should catch most of those, but also gate the divider as
     // belt-and-braces.
-    // v2.5.12 — Routine gap drains (skipContinuityBrief) suppress the
-    // divider + nudge entirely. Otherwise upgrading to v2.5.11+ from a
-    // version with thousands of uncompacted messages would spam the chat
-    // with a divider on every turn while the backlog drains.
+    // v2.5.29 — Show the divider on routine drains too, throttled to once
+    // per 10 min per agent. Pre-v2.5.29 routine drains suppressed it
+    // entirely (because backlog upgrades would emit one per turn); the
+    // side effect was zero compaction visibility on normal long tasks,
+    // which is exactly the path that hits compaction most often. The
+    // throttle covers both: backlog stays quiet across rapid drains,
+    // normal flow gets a marker the user can actually see.
     if (
-      !options?.skipContinuityBrief &&
-      (result.leafCreated > 0 || result.condensedCreated > 0 || result.tokensReclaimed > 1000)
+      (result.leafCreated > 0 || result.condensedCreated > 0 || result.tokensReclaimed > 1000) &&
+      shouldShowCompactionDivider(agentId)
     ) {
       insertCompactionDivider(agentId, {
         label: `Memory Compacted${result.tokensReclaimed > 0 ? ` — reclaimed ~${formatTokens(result.tokensReclaimed)}` : ''}${result.leafCreated > 0 ? ` (${result.leafCreated} new summar${result.leafCreated === 1 ? 'y' : 'ies'})` : ''}`,
@@ -508,8 +527,9 @@ export async function checkAndCompact(
     });
 
     // Lighter divider for proactive compaction (no token threshold hit;
-    // we just folded some old leaves so they wouldn't accumulate).
-    if (leafCreated > 0) {
+    // we just folded some old leaves so they wouldn't accumulate). Same
+    // 10-min throttle as the reactive path.
+    if (leafCreated > 0 && shouldShowCompactionDivider(agentId)) {
       insertCompactionDivider(agentId, {
         label: `Memory Compacted (proactive — ${leafCreated} summar${leafCreated === 1 ? 'y' : 'ies'})`,
       });
