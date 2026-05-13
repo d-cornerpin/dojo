@@ -984,6 +984,22 @@ export const TechniqueBuilder = () => {
       // If the technique already exists (agent created it, or we're in edit mode), update it
       const existingId = createdTechniqueId || (isEditMode ? editId : null);
       if (existingId) {
+        // Upload any newly-added supporting files BEFORE the instructions
+        // PUT. canvas.files entries that came from disk on initial load
+        // have no `content` field (loadTechniqueFromDisk drops it); only
+        // entries the user just dropped into the box carry content, so
+        // those are the ones we need to persist. Has to run before the
+        // instructions PUT because that broadcasts technique:updated,
+        // which triggers a disk reload that strips `content` off
+        // canvas.files mid-save.
+        const filesToUpload = canvas.files.filter(f => typeof f.content === 'string');
+        for (const file of filesToUpload) {
+          await fetch(`/api/techniques/${existingId}/files/${file.path}`, {
+            method: 'PUT',
+            headers,
+            body: JSON.stringify({ content: file.content }),
+          });
+        }
         // Update instructions (creates a version)
         if (canvas.instructions.trim()) {
           await fetch(`/api/techniques/${existingId}/instructions`, {
