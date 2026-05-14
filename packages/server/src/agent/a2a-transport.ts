@@ -630,28 +630,75 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
       // Message persisted and broadcast (steps 10-12 above), but the agent
       // is not woken. Healer or system can still wake them.
     } else {
-      // Urgent-sender preempt. If this delivery comes from PM (poke), the
-      // Healer (injury recovery), or system (engine-level alert) AND the
-      // target is currently mid-turn, abort the in-flight model call so
-      // the urgent message is processed promptly. Without this preempt,
-      // the message gets queued in pendingWakeups and waits up to the
-      // 15-minute turn-time-budget for the current turn to end.
+      // ── Wake-intent preempt (v2.5.38) ──
+      // Any wake-intent A2A delivery (we're already inside the
+      // requiresResponse branch, so non-wake FYI/STATUS doesn't reach
+      // here) preempts the receiver's current turn so they can respond
+      // promptly instead of waiting up to 15 min for their current
+      // turn to end. Subject to a 30s throttle per receiver to prevent
+      // interrupt storms; system/PM/Healer bypass the throttle as
+      // genuinely-urgent operational traffic.
+      //
+      // The receiver gets a context-note marker on the first assembly
+      // after preempt (set in agent.config, picked up by the
+      // assembler — same pattern as stopMarkerPending) explaining what
+      // happened, suggesting they respond to the new ask, warning that
+      // any in-flight tool may have been orphaned, and noting the
+      // recent preempt count so they can self-throttle if A and B are
+      // ping-ponging.
       try {
         let isUrgentSender = envelope.fromAgent === 'system';
         if (!isUrgentSender) {
           const { isPMAgent, isHealerAgent } = await import('../config/platform.js');
           isUrgentSender = isPMAgent(envelope.fromAgent) || isHealerAgent(envelope.fromAgent);
         }
-        if (isUrgentSender) {
+        const { lastA2APreemptAt, A2A_PREEMPT_MIN_INTERVAL_MS } = await import('./shared-state.js');
+        const now = Date.now();
+        const lastPreemptAt = lastA2APreemptAt.get(target.id) ?? 0;
+        const throttled = !isUrgentSender && (now - lastPreemptAt < A2A_PREEMPT_MIN_INTERVAL_MS);
+        if (!throttled) {
           const { preemptAgentForUrgentMessage } = await import('./runtime.js');
           const preempted = preemptAgentForUrgentMessage(target.id);
           if (preempted) {
-            logger.info('A2A delivery: preempted target run for urgent wakeup', {
+            lastA2APreemptAt.set(target.id, now);
+            // Bump the preempt counter for this receiver (windowed) and
+            // set the marker flag so the assembler can inject the
+            // "you were interrupted" note on the next assembly.
+            try {
+              const targetConfigRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(target.id) as { config: string } | undefined;
+              const targetConfig = targetConfigRow?.config ? JSON.parse(targetConfigRow.config) as Record<string, unknown> : {};
+              const recent = (targetConfig.a2aPreemptRecent as Array<{ at: number; from: string }> | undefined) ?? [];
+              const fiveMinAgo = now - 5 * 60 * 1000;
+              const filteredRecent = recent.filter((r) => r.at > fiveMinAgo);
+              filteredRecent.push({ at: now, from: senderName });
+              targetConfig.a2aPreemptRecent = filteredRecent;
+              targetConfig.a2aPreemptPending = {
+                fromAgent: envelope.fromAgent,
+                fromName: senderName,
+                intent: effectiveIntent,
+                threadShort,
+                at: new Date(now).toISOString(),
+                recentCount: filteredRecent.length,
+              };
+              db.prepare("UPDATE agents SET config = ? WHERE id = ?").run(JSON.stringify(targetConfig), target.id);
+            } catch (err) {
+              logger.warn('Failed to set A2A preempt marker', {
+                targetId: target.id,
+                err: err instanceof Error ? err.message : String(err),
+              });
+            }
+            logger.info('A2A delivery: preempted target run for wake-intent message', {
               targetId: target.id,
               from: envelope.fromAgent,
-              intent: envelope.intent,
+              intent: effectiveIntent,
+              urgent: isUrgentSender,
             });
           }
+        } else {
+          logger.info('A2A delivery: skipping preempt (throttled)', {
+            targetId: target.id, from: envelope.fromAgent, intent: effectiveIntent,
+            sinceLastPreemptMs: now - lastPreemptAt,
+          });
         }
       } catch { /* preempt is best-effort */ }
 

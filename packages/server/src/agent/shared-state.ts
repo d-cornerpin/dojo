@@ -37,6 +37,14 @@ export const backgroundDrains = new Set<string>();
 // users got zero visibility into compaction even on long single-task flows.
 export const lastCompactionDividerAt = new Map<string, number>();
 
+// v2.5.38 — per-agent timestamp of the most recent inbound A2A preempt.
+// Used to throttle preempts so a chatty sender can't interrupt a busy
+// receiver more than once every A2A_PREEMPT_MIN_INTERVAL_MS. Subsequent
+// inbound A2As within the window queue normally (existing handleMessage
+// behavior — added to pendingWakeups, fires after current turn ends).
+export const lastA2APreemptAt = new Map<string, number>();
+export const A2A_PREEMPT_MIN_INTERVAL_MS = 30_000;
+
 // Track agent start times for uptime calculation.
 export const agentStartTimes = new Map<string, number>();
 

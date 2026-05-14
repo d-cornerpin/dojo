@@ -589,6 +589,54 @@ export async function assembleContext(
     const row = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
     if (row?.config) {
       const config = JSON.parse(row.config) as Record<string, unknown>;
+      // ── A2A preempt marker (v2.5.38) ──
+      // When another agent's wake-intent A2A delivery preempted this
+      // agent's mid-flight turn, the transport set a2aPreemptPending in
+      // this agent's config. Inject a context note on the next assembly
+      // explaining what happened, encouraging a response, warning about
+      // possible orphan tool_use, and surfacing the recent preempt
+      // count so the agent can self-throttle if pinged repeatedly.
+      // Prepend to the LAST user message (the inbound A2A) so the
+      // model reads the framing immediately before the message itself.
+      if (config.a2aPreemptPending && typeof config.a2aPreemptPending === 'object') {
+        const p = config.a2aPreemptPending as {
+          fromName?: string;
+          intent?: string;
+          threadShort?: string;
+          recentCount?: number;
+        };
+        const fromName = p.fromName ?? 'another agent';
+        const intent = p.intent ?? 'message';
+        const threadShort = p.threadShort ?? '';
+        const recentCount = typeof p.recentCount === 'number' ? p.recentCount : 1;
+
+        const stormHint = recentCount >= 3
+          ? ` ${fromName} has interrupted you ${recentCount}x in the last 5 minutes — if this looks like ping-pong (you keep responding, they keep asking), KEEP YOUR REPLY EXTREMELY TERSE (one sentence max) so the back-and-forth burns out and you can return to the original work.`
+          : '';
+
+        const PREEMPT_MARKER = (
+          `[Context note: ${fromName} interrupted your turn with a [A2A:${intent}] message on thread ${threadShort} — that's the message right below this note. ` +
+          `Handle it now: respond via send_to_agent on the same thread (or take whatever action they're asking for). ` +
+          `Your prior tool work was aborted mid-flight, so the most recent tool_use in your fresh tail may NOT have a matching tool_result yet — if you need that result to continue, re-call the tool. ` +
+          `After dealing with this interruption, resume the work you were on before.${stormHint}]`
+        );
+
+        if (merged.length > 0 && merged[merged.length - 1].role === 'user') {
+          const lastMsg = merged[merged.length - 1];
+          if (typeof lastMsg.content === 'string') {
+            lastMsg.content = `${PREEMPT_MARKER}\n\n${lastMsg.content}`;
+          } else if (Array.isArray(lastMsg.content)) {
+            lastMsg.content = [
+              { type: 'text', text: PREEMPT_MARKER } as Anthropic.TextBlockParam,
+              ...(lastMsg.content as Anthropic.ContentBlockParam[]),
+            ];
+          }
+        }
+        // Clear the pending flag so the marker fires exactly once.
+        delete config.a2aPreemptPending;
+        db.prepare("UPDATE agents SET config = ? WHERE id = ?").run(JSON.stringify(config), agentId);
+      }
+
       if (config.stopMarkerPending === true) {
         // v2.5.35 — Wording fix. Pre-fix the marker said "Read the next
         // user message as a fresh request" — but the marker is PREPENDED
