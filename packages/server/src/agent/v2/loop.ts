@@ -88,6 +88,7 @@ import { trackerEnforcer } from './classifiers/tracker.js';
 import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD } from '../../memory/compaction.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
+import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
 import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText } from './classifiers/output.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
 import { permissionAlternativeFinder } from './classifiers/permission.js';
@@ -209,7 +210,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
   const lastUserMessageContent = triggerRow?.content ?? null;
   const triggeredByIMessage = lastUserMessageContent?.includes('[SOURCE: IMESSAGE FROM') ?? false;
   const imFlagSetAtRunStart = isAwaitingIMResponse(agentId);
-  const a2aReplyContext = parseA2ATrigger(lastUserMessageContent);
+  // v2.5.31 — A2A reply context now sources from the durable a2a_replies
+  // table, not just "is the most recent user message an [A2A:...] tag."
+  // findUnrepliedAssignForAgent returns null if the most recent ASSIGN/
+  // QUESTION/BLOCK has already been replied to via send_to_agent (in any
+  // prior handleMessage invocation), which prevents the enforcer from
+  // firing again for an already-handled inbound message. Falls back to
+  // the legacy parse path so any pre-fix in-flight ASSIGNs (no row in
+  // a2a_replies yet) still trigger the enforcer at least once.
+  const unrepliedAssign = findUnrepliedAssignForAgent(agentId);
+  const a2aReplyContext = unrepliedAssign
+    ? { intent: unrepliedAssign.intent, threadShort: unrepliedAssign.threadShort, fromName: unrepliedAssign.fromName }
+    : parseA2ATrigger(lastUserMessageContent);
+  const a2aReplyAssignMessageId = unrepliedAssign?.messageId ?? null;
 
   // Determine v2 turn_number — read max from messages, increment.
   // Per Part XVIII §E: turn_number is per-agent, monotonically increasing,
@@ -1315,15 +1328,58 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
       // No tools? Loop is done.
       if (result.toolCalls.length === 0) {
+        // v2.5.31 — Hardcap: if the missed-reply nudge already fired once
+        // for this assign id and the LLM STILL produced text-no-tool, end
+        // the turn instead of nudging again. This is the loop-breaker for
+        // models that genuinely can't be talked into a tool call by a
+        // system message (they pattern-match "user wants summary" and
+        // ignore the directive). Pre-fix this looped ~30 times before
+        // the time/token budget killed it (loop.txt 2026-05-13).
+        if (
+          a2aReplyAssignMessageId &&
+          state.nudgedForMissedReplyOnAssignId === a2aReplyAssignMessageId &&
+          !state.sentToAgentThisTurn &&
+          persistedContent && persistedContent.trim().length > 0
+        ) {
+          const stopMsg = (
+            `[System: Ending turn — the missed-reply nudge fired but the agent kept writing text instead of calling send_to_agent. ` +
+            `The inbound A2A message remains marked as unreplied; manual intervention may be needed. ` +
+            `(Hardcap engaged to prevent the v2.5.30-and-earlier nudge spiral.)]`
+          );
+          const stopId = uuidv4();
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+            VALUES (?, ?, 'system', ?, ?, datetime('now'))
+          `).run(stopId, agentId, stopMsg, turnNumber);
+          broadcast({
+            type: 'chat:message',
+            agentId,
+            message: {
+              id: stopId, agentId, role: 'system' as const,
+              content: stopMsg,
+              tokenCount: null, modelId: null, cost: null, latencyMs: null,
+              createdAt: new Date().toISOString(),
+            },
+          });
+          break;
+        }
+
         // Missed-reply nudge (subsumes v1 runtime.ts:1344-1378)
         const replyDecision = a2aReplyEnforcer({
           triggeredByReplyNeededIntent: a2aReplyContext !== null,
           sentToAgentThisTurn: state.sentToAgentThisTurn,
-          alreadyNudgedForMissedReply: false, // Phase 2 baseline: fire-once is per-turn implicit
+          alreadyNudgedForMissedReply:
+            !!a2aReplyAssignMessageId && state.nudgedForMissedReplyOnAssignId === a2aReplyAssignMessageId,
           agentProducedText: !!(persistedContent && persistedContent.trim().length > 0),
           intent: a2aReplyContext?.intent,
           threadShort: a2aReplyContext?.threadShort,
           fromName: a2aReplyContext?.fromName,
+          // v2.5.31 — soften the nudge text when we know the agent already
+          // replied earlier on this thread. Prevents the "system says
+          // receiver got nothing but I sent the message" cognitive
+          // dissonance that drove the loop.txt spiral.
+          priorReplyOnSameThread:
+            !!a2aReplyContext?.threadShort && hasPriorReplyOnThread(agentId, a2aReplyContext.threadShort),
         });
         if (replyDecision.decision === 'nudge') {
           const nudgeId = uuidv4();
@@ -1341,6 +1397,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
               createdAt: new Date().toISOString(),
             },
           });
+          // Mark the nudge as fired for this assign id so the next
+          // iteration's enforcer call returns no_action and the hardcap
+          // above engages if the agent doubles down on text.
+          if (a2aReplyAssignMessageId) {
+            state = advance(state, { nudgedForMissedReplyOnAssignId: a2aReplyAssignMessageId });
+          }
           // Continue loop so the agent reads the nudge and retries
           continue;
         }

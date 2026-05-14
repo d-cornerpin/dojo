@@ -785,7 +785,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'send_to_agent',
-    description: 'Send a structured message to another agent. Every message MUST specify an intent — there is no default. The intent controls whether the receiver wakes to act. Wake intents: QUESTION, ASSIGN, BLOCK (open thread, response expected) and ANSWER, DELIVERABLE (close thread, but receiver still wakes because they were waiting for the content). No-wake intents: FYI, STATUS, COMPLETE, FAIL (read-only context, receiver is NOT woken). Messages are grouped by thread_id — omit to start a new thread, or include an existing thread_id to continue a conversation. Silence is a valid response. Do not acknowledge acknowledgements.\n\nTracker integration: when you use intent="ASSIGN", the DOJO automatically creates a tracker task assigned to the receiver. You do NOT need to call tracker_create_task — the task is structurally created at delivery time. The tool result returns the task ID so you can track progress with tracker_get_status. The receiver gets the task ID in their incoming message and is told to call tracker_update_status when done. This means PM can spot stalled assignments automatically. Use ASSIGN whenever the work is multi-step; use QUESTION or BLOCK for one-shot exchanges that don\'t need tracking.',
+    description: '**USE THIS TOOL when responding to any inbound message that starts with `[A2A:` or `[SOURCE: AGENT MESSAGE FROM`.** Other agents CANNOT see your chat — they only see what you send via this tool. If you write a chat reply instead of calling send_to_agent on an inter-agent turn, the originating agent gets nothing and the engine will nudge you to retry. The pattern: do the work, call send_to_agent once with the right intent on the same thread_id, end your turn. Do not also write a chat summary — it\'s invisible to the originator and gets suppressed by the engine.\n\nSend a structured message to another agent. Every message MUST specify an intent — there is no default. The intent controls whether the receiver wakes to act. Wake intents: QUESTION, ASSIGN, BLOCK (open thread, response expected) and ANSWER, DELIVERABLE (close thread, but receiver still wakes because they were waiting for the content). No-wake intents: FYI, STATUS, COMPLETE, FAIL (read-only context, receiver is NOT woken). Messages are grouped by thread_id — omit to start a new thread, or include the thread_id from the inbound message to reply on that thread. Silence is a valid response. Do not acknowledge acknowledgements.\n\nTracker integration: when you use intent="ASSIGN", the DOJO automatically creates a tracker task assigned to the receiver. You do NOT need to call tracker_create_task — the task is structurally created at delivery time. The tool result returns the task ID so you can track progress with tracker_get_status. The receiver gets the task ID in their incoming message and is told to call tracker_update_status when done. This means PM can spot stalled assignments automatically. Use ASSIGN whenever the work is multi-step; use QUESTION or BLOCK for one-shot exchanges that don\'t need tracking.',
     input_schema: {
       type: 'object',
       properties: {
@@ -3230,6 +3230,24 @@ Re-call send_to_agent with the right intent. When in doubt and the receiver is w
 
           if (result.delivered) {
             const effectiveIntent = result.autoPromotedFromFyi ? 'DELIVERABLE' : intent;
+            // v2.5.31 — Mark any open inbound ASSIGN/QUESTION/BLOCK on this
+            // thread as replied. Without this, the v2 loop's preflight
+            // re-derives "you owe a reply" from the most-recent-user-message
+            // on every handleMessage invocation; the missed-reply enforcer
+            // then fires repeatedly for an ASSIGN the agent already handled.
+            // See loop.txt 2026-05-13 for the 30-nudge spiral this prevents.
+            try {
+              const { findInboundAssignByThread, recordA2AReply } = await import('./a2a-replies.js');
+              const inbound = findInboundAssignByThread(agentId, result.threadId);
+              if (inbound) {
+                recordA2AReply({
+                  assignMessageId: inbound.messageId,
+                  agentId,
+                  threadId: result.threadId,
+                  replyIntent: effectiveIntent,
+                });
+              }
+            } catch { /* best effort — never block the send on bookkeeping */ }
             auditLog(agentId, 'tool_call', 'send_to_agent', 'success',
               `to:${agentRef} intent:${effectiveIntent}${result.autoPromotedFromFyi ? '(promoted from FYI)' : ''} thread:${result.threadId.slice(0, 8)} requires_response:${requiresResponse}${result.autoCreatedTaskId ? ` task:${result.autoCreatedTaskId.slice(0, 8)}` : ''}`,
             );

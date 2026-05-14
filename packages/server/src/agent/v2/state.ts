@@ -108,6 +108,14 @@ export interface AgentTurnState {
   lastAssistantTextForIM: string | null;
   trackerToolCalledThisTurn: boolean;
   nonTrackerToolCalls: number;
+  /**
+   * v2.5.31 — message id of the most recent inbound ASSIGN/QUESTION/BLOCK
+   * the missed-reply enforcer has already nudged about this handleMessage
+   * invocation. Real fire-once: if the next iteration produces text-no-tool
+   * for the same assign id, the loop hard-stops instead of nudging again.
+   * Set to null at turn start; updated when the enforcer fires.
+   */
+  nudgedForMissedReplyOnAssignId: string | null;
 
   // ── Pre-flight enforcement decisions ──
   readonly shouldNudgeTracker: boolean;
@@ -181,6 +189,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     lastAssistantTextForIM: null,
     trackerToolCalledThisTurn: false,
     nonTrackerToolCalls: 0,
+    nudgedForMissedReplyOnAssignId: null,
 
     shouldNudgeTracker: params.shouldNudgeTracker,
 

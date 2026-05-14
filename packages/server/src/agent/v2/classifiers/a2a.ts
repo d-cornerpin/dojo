@@ -46,6 +46,15 @@ export interface A2AReplyEnforcerInput {
   intent?: string;
   threadShort?: string;
   fromName?: string;
+  /**
+   * v2.5.31 — true when a2a_replies has any prior reply from this agent on
+   * the same thread. Switches the nudge text from "the receiver got
+   * nothing" (which is a lie when the agent already replied earlier) to
+   * "you replied earlier; if you're done, end your turn." Avoids the
+   * spiral where the agent reads "got nothing", knows it sent the
+   * message, and writes another summary trying to clarify.
+   */
+  priorReplyOnSameThread?: boolean;
 }
 
 export type A2AReplyDecision =
@@ -53,8 +62,13 @@ export type A2AReplyDecision =
   | { decision: 'nudge'; reason: string; nudgeText: string };
 
 /**
- * Decide whether to inject a missed-reply nudge. Behavior verbatim
- * from v1 runtime.ts:1344-1378.
+ * Decide whether to inject a missed-reply nudge.
+ *
+ * Original behavior (v1 runtime.ts:1344-1378) was a single nudge text. v2.5.31
+ * adds two-flavor nudge: "fresh miss" (the agent never replied) keeps the
+ * urgent original text; "stale miss" (the agent replied earlier on this same
+ * thread but is now writing trailing text) gets a softer "you're done — just
+ * end your turn" message that doesn't lie about delivery.
  */
 export function a2aReplyEnforcer(input: A2AReplyEnforcerInput): A2AReplyDecision {
   if (!input.triggeredByReplyNeededIntent) {
@@ -69,19 +83,35 @@ export function a2aReplyEnforcer(input: A2AReplyEnforcerInput): A2AReplyDecision
   if (!input.agentProducedText) {
     return { decision: 'no_action', reason: 'agent produced no text — no missed reply to nudge about' };
   }
-  // Build the nudge — same format as v1 runtime.ts:1352
   const intent = input.intent ?? 'QUESTION';
   const fromName = input.fromName ?? 'the sender';
   const threadShort = input.threadShort ?? 'unknown';
-  const nudgeText = (
-    `[System: You received an [A2A:${intent}] message from ${fromName} on thread ${threadShort} ` +
-    `but you wrote your reply as text in your own chat instead of calling send_to_agent. ` +
-    `Other agents CANNOT see your chat — only the user can. ${fromName} got nothing. ` +
-    `Retry your reply now using send_to_agent with the same thread_id from the message you received. ` +
-    `Choose an intent that matches your response (ANSWER if you're answering a QUESTION, ` +
-    `COMPLETE/STATUS/FAIL if you finished or are still working, ASSIGN if delegating further). ` +
-    `Then end your turn.]`
-  );
+
+  let nudgeText: string;
+  if (input.priorReplyOnSameThread) {
+    // The agent already sent send_to_agent on this thread in a prior
+    // handleMessage invocation. They handled the inbound — they're now
+    // just writing a trailing summary which the user can see but the
+    // sender doesn't need. Don't lie about delivery; tell them to stop.
+    nudgeText = (
+      `[System: You already replied to ${fromName}'s [A2A:${intent}] on thread ${threadShort} ` +
+      `via send_to_agent in an earlier turn — ${fromName} has the message. ` +
+      `The text you just wrote is going to your own chat (only the user sees it), not to ${fromName}. ` +
+      `If you're done with this thread, just END YOUR TURN — do nothing further. ` +
+      `Only call send_to_agent again if you have NEW information for ${fromName} (use the same thread_id, intent STATUS or ANSWER as appropriate).]`
+    );
+  } else {
+    // The agent has never replied on this thread. Original urgent framing.
+    nudgeText = (
+      `[System: You received an [A2A:${intent}] message from ${fromName} on thread ${threadShort} ` +
+      `but you wrote your reply as text in your own chat instead of calling send_to_agent. ` +
+      `Other agents CANNOT see your chat — only the user can. ${fromName} got nothing. ` +
+      `Retry your reply now using send_to_agent with the same thread_id from the message you received. ` +
+      `Choose an intent that matches your response (ANSWER if you're answering a QUESTION, ` +
+      `COMPLETE/STATUS/FAIL if you finished or are still working, ASSIGN if delegating further). ` +
+      `Then end your turn.]`
+    );
+  }
   return { decision: 'nudge', reason: 'agent received reply-needed intent but did not send_to_agent', nudgeText };
 }
 
