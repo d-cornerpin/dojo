@@ -590,7 +590,17 @@ export async function assembleContext(
     if (row?.config) {
       const config = JSON.parse(row.config) as Record<string, unknown>;
       if (config.stopMarkerPending === true) {
-        const STOP_MARKER = '[Context note: the user just hit the Stop button. Your previous plan is CANCELLED. Do NOT continue the tool loop you were executing. Do NOT retry the last action with a different approach. Do NOT resume your prior work. Read the next user message as a fresh request and respond to what they are asking NOW — ignore what they asked before unless the new message explicitly tells you to continue.]';
+        // v2.5.35 — Wording fix. Pre-fix the marker said "Read the next
+        // user message as a fresh request" — but the marker is PREPENDED
+        // to that user message, not placed before a separate one. Models
+        // (especially weaker ones) read "the next user message" as "wait
+        // for the message that comes after this one to arrive" and just
+        // sit idle, producing no response. Then the user re-sends the
+        // same prompt, the flag has been cleared, no marker fires, and
+        // the second send goes through normally — that's the "first
+        // prompt after Stop gets ignored" symptom reported in v2.5.34
+        // and earlier.
+        const STOP_MARKER = '[Context note: the user just hit the Stop button on your previous turn. Your previous plan is CANCELLED. Do NOT continue the tool loop you were executing. Do NOT retry the last action with a different approach. Do NOT resume your prior work. The user\'s new request follows IMMEDIATELY BELOW — respond to that message as a fresh ask, not whatever you were doing before.]';
         if (merged.length > 0 && merged[merged.length - 1].role === 'user') {
           const lastMsg = merged[merged.length - 1];
           if (typeof lastMsg.content === 'string') {
