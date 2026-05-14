@@ -204,6 +204,16 @@ async function pollForNewEmails(): Promise<void> {
       notifiedIds = new Set();
     }
 
+    // v2.5.37 — diagnostic: log how many messages the list returned. If
+    // the user's "I see the email but agent never notified" complaint
+    // continues, this tells us whether the message even appeared in the
+    // list query (cursor / indexing issue) vs. appeared but got filtered
+    // downstream (label / dedup / detail-fetch failure).
+    logger.info('Gmail poll: list returned', {
+      query, count: data?.messages?.length ?? 0,
+      lastCheckedAt: status.lastCheckedAt,
+    });
+
     if (!data?.messages || data.messages.length === 0) {
       // No new messages, success — advance lastCheckedAt to poll-start time
       // (NOT "now", which would skip any email that arrived during the poll).
@@ -228,7 +238,10 @@ async function pollForNewEmails(): Promise<void> {
     let newCount = 0;
 
     for (const msg of data.messages) {
-      if (notifiedIds.has(msg.id)) continue;
+      if (notifiedIds.has(msg.id)) {
+        logger.info('Gmail poll: skipping already-notified', { messageId: msg.id });
+        continue;
+      }
 
       // Fetch message metadata
       const detailUrl = `${GMAIL_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`;
@@ -261,10 +274,28 @@ async function pollForNewEmails(): Promise<void> {
       // owner's own address. The SENT label is the authoritative "did this
       // user actually send this" signal — ownEmail header matching is a
       // header any sender can spoof; SENT is set by Gmail itself.
-      if (labelIds.includes('SENT')) {
+      //
+      // v2.5.37 — narrowed the filter: we now require BOTH the SENT label
+      // AND the absence of INBOX. A message with both SENT and INBOX is a
+      // self-sent email that ALSO arrived in the inbox (sending to your
+      // own address; some scripted send paths). The user does want to be
+      // notified about those — they represent inbound traffic from the
+      // user's automation surface even if the original send was on the
+      // user's own behalf.
+      const hasSent = labelIds.includes('SENT');
+      const hasInbox = labelIds.includes('INBOX');
+      if (hasSent && !hasInbox) {
+        logger.info('Gmail poll: skipping self-sent (SENT label, no INBOX)', {
+          messageId: msg.id, from, subject, labelIds,
+        });
         notifiedIds.add(msg.id);
         continue;
       }
+      // v2.5.37 — log everything else so we can see exactly what's being
+      // notified and what filter (if any) caught a missing email.
+      logger.info('Gmail poll: notifying', {
+        messageId: msg.id, from, subject, labelIds, hasSent, hasInbox,
+      });
       void ownEmail; // retained for future header-based heuristics if needed
 
       // Inject notification into primary agent's conversation
