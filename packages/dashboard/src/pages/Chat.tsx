@@ -808,6 +808,7 @@ export const Chat = () => {
         {messages.map((msg) => {
           // Hide inter-agent messages and system nudges unless wordy mode is on
           if (!wordyMode && msg.role === 'user' && (
+            msg.content.startsWith('[A2A:') ||
             msg.content.includes('[SOURCE: AGENT MESSAGE FROM') ||
             msg.content.includes('[SOURCE: PM AGENT POKE FROM') ||
             msg.content.includes('[SOURCE: TRACKER TASK') ||

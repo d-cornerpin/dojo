@@ -3275,7 +3275,10 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
             );
             switch (result.reason) {
               case 'TERMINAL_THREAD_CLOSED':
-                content = `Thread ${result.threadId.slice(0, 8)} is closed (a terminal intent was already delivered). To continue this conversation, start a new thread by omitting thread_id, or use a QUESTION/BLOCK/ASSIGN intent to reopen it.`;
+                // v2.5.34 — Transport no longer rejects on this; if it
+                // somehow still surfaces, it's a transport bug. Tell the
+                // agent something useful instead of "the thread is closed."
+                content = `Thread ${result.threadId.slice(0, 8)} reported a stale closure marker (engine bug — the transport should have auto-cleared it). Try again, or omit thread_id to start a fresh thread.`;
                 break;
               case 'HOP_LIMIT_EXCEEDED':
                 content = `Thread ${result.threadId.slice(0, 8)} has reached the maximum of 8 messages. Start a new thread (omit thread_id) if you need to continue.`;

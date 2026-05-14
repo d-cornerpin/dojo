@@ -562,6 +562,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
           // channel, not internal routing) — UserBubble strips the framing
           // and surfaces a "via iMessage" badge.
           if (!wordyMode && msg.role === 'user' && (
+            msg.content.startsWith('[A2A:') ||
             (msg.content.includes('[SOURCE:') && !msg.content.startsWith('[SOURCE: IMESSAGE FROM')) ||
             msg.content.startsWith('[System:') ||
             msg.content.startsWith('Tracker review --')

@@ -341,14 +341,18 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   const threadId = envelope.threadId || uuidv4();
   ensureThread(threadId, envelope.fromAgent);
 
-  // Check if thread is terminated and this intent can't reopen it
-  if (isThreadTerminal(threadId) && !isReopeningIntent(effectiveIntent)) {
-    logDrop(envelope, 'TERMINAL_THREAD_CLOSED');
-    return { delivered: false, reason: 'TERMINAL_THREAD_CLOSED', threadId };
-  }
-
-  // If a reopening intent arrives on a terminal thread, reset the terminal flag
-  if (isThreadTerminal(threadId) && isReopeningIntent(effectiveIntent)) {
+  // v2.5.34 — Removed the TERMINAL_THREAD_CLOSED rejection. Pre-fix, a
+  // thread that received any terminal intent (ANSWER/DELIVERABLE/COMPLETE/
+  // FAIL/FYI) was marked terminal, and any subsequent non-reopening intent
+  // (which was every intent EXCEPT QUESTION/BLOCK/ASSIGN) got silently
+  // dropped with reason TERMINAL_THREAD_CLOSED. That broke legitimate
+  // follow-ups: Maddy delivering work, finding an issue, and sending a
+  // corrected DELIVERABLE on the same thread had her second message
+  // silently dropped. Loop protection comes from semantic dedup + the
+  // hop limit, not from thread closure — both of those still run below.
+  // We still flip the terminal flag back off when a new message lands so
+  // the marker stays consistent for diagnostic queries.
+  if (isThreadTerminal(threadId)) {
     db.prepare('UPDATE a2a_threads SET is_terminal = 0, updated_at = datetime(\'now\') WHERE thread_id = ?').run(threadId);
   }
 
