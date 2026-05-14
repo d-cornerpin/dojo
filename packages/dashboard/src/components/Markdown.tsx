@@ -87,10 +87,13 @@ function parseMarkdown(text: string): React.ReactNode[] {
   const haystack = nonCodeText.join('\n');
   for (const match of haystack.matchAll(ANY_URL_RE)) {
     const raw = match[0];
+    // Split first if the capture contains a duplicated scheme (e.g.
+    // "https://a.com/xhttps://a.com/x"), so the OG preview fetches the
+    // FIRST URL alone rather than the concatenation (which would 404).
     // Strip trailing junk (sentence punct, backticks, brackets, quotes)
-    // that agents frequently smear onto URLs. Without this, OG-preview
-    // would 404 because the href ends in %60 or %5D.
-    const cleaned = raw.replace(HREF_TRAIL_JUNK_RE, '');
+    // that agents frequently smear onto URLs.
+    const { primary } = splitOnRepeatedScheme(raw);
+    const cleaned = primary.replace(HREF_TRAIL_JUNK_RE, '');
     if (!isPreviewableUrl(cleaned)) continue;
     if (seen.has(cleaned)) continue;
     seen.add(cleaned);
@@ -176,11 +179,33 @@ function InlineMarkdown({ text }: { text: string }): React.ReactNode {
 //   - Backslash: occasionally appears when agents try to escape something
 const HREF_TRAIL_JUNK_RE = /[.,;:!?`"'’”\]\}>)\\]+$/;
 
+// Agents sometimes emit the same URL twice in a row with no space between
+// them — `https://x.com/fileAhttps://x.com/fileA`. Our greedy URL regex
+// happily captures the entire concatenation as one href, which then
+// 404s. Detect a second http(s):// occurring later in a captured URL
+// and truncate at that boundary. The remaining text after the truncated
+// URL gets re-processed as part of the surrounding string, so the
+// duplicate URL renders as a second separate link (still wrong, but at
+// least clickable to the right place).
+function splitOnRepeatedScheme(url: string): { primary: string; rest: string } {
+  // Look for "http://" or "https://" AFTER position 8 (past the initial scheme).
+  const re = /https?:\/\//g;
+  const matches = Array.from(url.matchAll(re));
+  if (matches.length <= 1) return { primary: url, rest: '' };
+  const secondIdx = matches[1].index ?? -1;
+  if (secondIdx <= 8) return { primary: url, rest: '' };
+  return { primary: url.slice(0, secondIdx), rest: url.slice(secondIdx) };
+}
+
 // Render a clickable URL anchor. Trailing junk is split off so
 // "see https://x.com." links to https://x.com and renders the period
-// as plain text after.
+// as plain text after. Also defends against agents emitting a URL
+// twice concatenated (no space between them) — we render the first
+// URL as an anchor and dump the rest as plain text, rather than
+// producing one mega-href that 404s.
 function renderUrl(url: string, key: number): React.ReactNode[] {
-  let href = url;
+  const { primary, rest } = splitOnRepeatedScheme(url);
+  let href = primary;
   let trailing = '';
   const trailMatch = href.match(HREF_TRAIL_JUNK_RE);
   if (trailMatch) {
@@ -194,6 +219,7 @@ function renderUrl(url: string, key: number): React.ReactNode[] {
     </a>,
   ];
   if (trailing) out.push(trailing);
+  if (rest) out.push(rest);
   return out;
 }
 

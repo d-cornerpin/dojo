@@ -214,7 +214,7 @@ function generateToolIndexInternal(
   lines.push('');
   if (compact) {
     lines.push('Tools listed below by category. Always-loaded tools are callable immediately; for any other tool, call `load_tool_docs` first to get the full schema.');
-    lines.push('**Before defaulting to `exec`**, scan the index below for a purpose-built tool that fits the task — file/web/office/forms/tracker/vault/chat-recall all have dedicated tools. **If you feel disoriented or have just been compacted/model-switched**, call `recall_recent_thread` first. **When sharing a URL or file path with the user**, copy the literal string from the most recent tool result — never paraphrase, truncate, or type one from memory. If you don\'t have the full string, call the source tool again.');
+    lines.push('**Before defaulting to `exec`**, scan the index below for a purpose-built tool that fits the task — file/web/office/forms/tracker/vault/chat-recall all have dedicated tools. **If you feel disoriented or have just been compacted/model-switched**, call `recall_recent_thread` first. **When sharing a URL or file path with the user**: paste the literal string from the most recent tool result, ONCE, surrounded by spaces. Never wrap a URL in backticks (the closing tick gets sucked into the href and breaks the link). Never write the same URL twice in a row. Never paraphrase, truncate, or type a URL from memory — if you don\'t have the full string, call the source tool again.');
   } else {
     lines.push('You have access to the following tools. Tool names and short descriptions are listed below. To use any tool:');
     lines.push('1. If the tool is in your **Always-Loaded** set, you can call it directly without any preparation.');
@@ -223,7 +223,7 @@ function generateToolIndexInternal(
     lines.push('**Three reflexes worth building:**');
     lines.push('- **Before defaulting to `exec`**, scan the index below for a purpose-built tool — file/web/office/forms/tracker/vault/chat-recall all have dedicated tools. `exec` is the fallback, not the default.');
     lines.push('- **If you feel disoriented, just got compacted, or just switched models**, call `recall_recent_thread` first — it reads the actual chat history from your messages table and is your fastest path back to context.');
-    lines.push('- **When sharing a URL or file path with the user**, copy the literal string from the most recent tool result. Never paraphrase, never truncate to "something like…", and never type one from memory — if you don\'t have the full string handy, call the source tool again. URLs and paths are exact strings; one missing character makes them broken.');
+    lines.push('- **When sharing a URL or file path with the user**: paste the literal string from the most recent tool result, ONCE, surrounded by spaces. Never wrap a URL in backticks (the closing tick gets sucked into the href and the browser encodes it as `%60`, breaking the link). Never write the same URL twice in a row in the same sentence. Never paraphrase, never truncate to "something like…", and never type one from memory — if you don\'t have the full string handy, call the source tool again. URLs and paths are exact strings; one missing character makes them broken.');
   }
   lines.push('');
   lines.push(`**Always-loaded tools**: ${alwaysLoaded.join(', ')}`);
