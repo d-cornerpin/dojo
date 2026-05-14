@@ -785,7 +785,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'send_to_agent',
-    description: '**USE THIS TOOL when responding to any inbound message that starts with `[A2A:` or `[SOURCE: AGENT MESSAGE FROM`.** Other agents CANNOT see your chat — they only see what you send via this tool. If you write a chat reply instead of calling send_to_agent on an inter-agent turn, the originating agent gets nothing and the engine will nudge you to retry. The pattern: do the work, call send_to_agent once with the right intent on the same thread_id, end your turn. Do not also write a chat summary — it\'s invisible to the originator and gets suppressed by the engine.\n\nSend a structured message to another agent. Every message MUST specify an intent — there is no default. The intent controls whether the receiver wakes to act. Wake intents: QUESTION, ASSIGN, BLOCK (open thread, response expected) and ANSWER, DELIVERABLE (close thread, but receiver still wakes because they were waiting for the content). No-wake intents: FYI, STATUS, COMPLETE, FAIL (read-only context, receiver is NOT woken). Messages are grouped by thread_id — omit to start a new thread, or include the thread_id from the inbound message to reply on that thread. Silence is a valid response. Do not acknowledge acknowledgements.\n\nTracker integration: when you use intent="ASSIGN", the DOJO automatically creates a tracker task assigned to the receiver. You do NOT need to call tracker_create_task — the task is structurally created at delivery time. The tool result returns the task ID so you can track progress with tracker_get_status. The receiver gets the task ID in their incoming message and is told to call tracker_update_status when done. This means PM can spot stalled assignments automatically. Use ASSIGN whenever the work is multi-step; use QUESTION or BLOCK for one-shot exchanges that don\'t need tracking.',
+    description: '**USE THIS TOOL when responding to any inbound message that starts with `[A2A:` or `[SOURCE: AGENT MESSAGE FROM`.** Other agents CANNOT see your chat — they only see what you send via this tool. If you write a chat reply instead of calling send_to_agent on an inter-agent turn, the originating agent gets nothing and the engine will nudge you to retry. The pattern: do the work, call send_to_agent once with the right intent on the same thread_id, end your turn. Do not also write a chat summary — it\'s invisible to the originator and gets suppressed by the engine.\n\nSend a structured message to another agent. Every message MUST specify an intent — there is no default. The intent controls whether the receiver wakes to act. **Default to a wake intent unless you are certain the receiver has nothing to do with the message.** Wake intents (receiver wakes): QUESTION, ASSIGN, BLOCK (open thread, response expected); ANSWER, DELIVERABLE (close thread but receiver still wakes because they were waiting); COMPLETE, FAIL (close thread and wake — receiver almost always needs to react to your work being done or failed: forward, notify, decide next step). No-wake intents (ambient context only — receiver does NOT wake): FYI, STATUS. Use FYI/STATUS only when the content is genuinely just for awareness and requires no action. Messages are grouped by thread_id — omit to start a new thread, or include the thread_id from the inbound message to reply on that thread. Silence is a valid response. Do not acknowledge acknowledgements.\n\nTracker integration: when you use intent="ASSIGN", the DOJO automatically creates a tracker task assigned to the receiver. You do NOT need to call tracker_create_task — the task is structurally created at delivery time. The tool result returns the task ID so you can track progress with tracker_get_status. The receiver gets the task ID in their incoming message and is told to call tracker_update_status when done. This means PM can spot stalled assignments automatically. Use ASSIGN whenever the work is multi-step; use QUESTION or BLOCK for one-shot exchanges that don\'t need tracking.',
     input_schema: {
       type: 'object',
       properties: {
@@ -3156,19 +3156,19 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         // Force a deliberate choice every call by erroring on missing intent.
         const VALID_INTENTS = ['QUESTION', 'ASSIGN', 'BLOCK', 'ANSWER', 'DELIVERABLE', 'FYI', 'STATUS', 'COMPLETE', 'FAIL'];
         if (!intent || !VALID_INTENTS.includes(intent)) {
-          content = `Error: \`intent\` is required for send_to_agent. Choose by asking "does the receiver need to act on this?":
-  • Wake intents (receiver wakes and acts):
-    - QUESTION  — you need an answer
-    - ASSIGN    — you are handing off work
-    - BLOCK     — you are stuck and need input
-    - ANSWER    — replying to a prior question
+          content = `Error: \`intent\` is required for send_to_agent. Default to a wake intent unless you are CERTAIN the receiver has nothing to do with this message:
+  • Wake intents (receiver wakes and decides what to do next):
+    - QUESTION    — you need an answer
+    - ASSIGN      — you are handing off work
+    - BLOCK       — you are stuck and need input
+    - ANSWER      — replying to a prior question
     - DELIVERABLE — here is the thing they asked for
-  • No-wake intents (informational, receiver does NOT wake):
-    - FYI       — for awareness
-    - STATUS    — progress update
-    - COMPLETE  — your part is done
-    - FAIL      — you could not do it
-Re-call send_to_agent with the right intent. When in doubt and the receiver is waiting on you for something, use a wake intent.`;
+    - COMPLETE    — your assigned work is done (receiver almost always needs to react: forward, notify, mark tracker, decide next step)
+    - FAIL        — your assigned work failed (receiver almost always needs to react: escalate, retry, abandon)
+  • No-wake intents (ambient context only — receiver does NOT wake):
+    - FYI       — purely for awareness, no action required
+    - STATUS    — mid-work progress update, no action required
+Re-call send_to_agent with the right intent. When in doubt, pick a wake intent — the receiver can decide silence is fine, but they can't act on a message they never woke for.`;
           isError = true;
           break;
         }

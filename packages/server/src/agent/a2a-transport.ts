@@ -31,7 +31,18 @@ const REOPENING_INTENTS = new Set<A2AIntent>(['QUESTION', 'BLOCK', 'ASSIGN']);
 // ANSWER and DELIVERABLE are terminal but DO wake — the receiver is waiting
 // for the content to continue their work. The thread closure prevents
 // acknowledgement loops separately.
-const NO_WAKE_INTENTS = new Set<A2AIntent>(['FYI', 'STATUS', 'COMPLETE', 'FAIL']);
+//
+// v2.5.32 — COMPLETE and FAIL moved out of NO_WAKE. Pre-fix, when a sub-agent
+// finished work and sent COMPLETE back to the assigner, the assigner did NOT
+// wake — so multi-step workflows broke down silently because the follow-up
+// (forward to the next agent, notify the user, decide next step) never
+// triggered. Default is now: wake the receiver and let them decide.
+//
+// Only FYI and STATUS stay no-wake — those are explicitly ambient ("for
+// awareness", "still working, 50% done"). Everything else wakes; the agent
+// can override with requires_response=false on a per-call basis if they're
+// certain the receiver has nothing to do.
+const NO_WAKE_INTENTS = new Set<A2AIntent>(['FYI', 'STATUS']);
 
 const MAX_HOPS_PER_THREAD = 8;
 const DEDUP_SIMILARITY_THRESHOLD = 0.85;
@@ -281,10 +292,11 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   //   - Terminal: closes the thread (prevents acknowledgement replies)
   //   - No-wake: receiver is NOT woken (message is read-only context)
   //
-  // ANSWER and DELIVERABLE are terminal (close thread) but DO wake the
-  // receiver — the receiver asked for this content and needs it to
-  // continue working. FYI, STATUS, COMPLETE, FAIL are both terminal
-  // AND no-wake — nobody is waiting for them.
+  // ANSWER, DELIVERABLE, COMPLETE, FAIL are all terminal (close thread)
+  // AND wake — the receiver either asked for this content (ANSWER/
+  // DELIVERABLE) or assigned the work that just completed/failed
+  // (COMPLETE/FAIL) and needs to react. Only FYI and STATUS are no-wake;
+  // those are ambient context the agent shouldn't be interrupted for.
   //
   // v2.3.17 auto-promote: a sub-agent sending FYI to the primary agent
   // about a deliverable (URL or ID/title + completion keyword) is almost
@@ -436,14 +448,23 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
     // TERMINAL_THREAD_CLOSED. To continue with the sender, start a NEW
     // thread (omit thread_id) with a reopening intent.
     threadInfo = `\n\n[Thread ${threadShort} | Closed — use the content above (do NOT reply on this thread). To start a new conversation with the sender, omit thread_id and pick QUESTION/ASSIGN/BLOCK.]`;
+  } else if (effectiveIntent === 'COMPLETE' || effectiveIntent === 'FAIL') {
+    // v2.5.32 — Terminal AND wake. The receiver assigned (or otherwise
+    // initiated) this work and almost always needs to do something next:
+    // forward the deliverable to another agent, notify the user, mark a
+    // tracker task complete, decide a next step. Pre-fix these were
+    // no-wake, which meant entire multi-step workflows silently stalled
+    // when a sub-agent finished work — the assigner never woke to handle
+    // the completion.
+    const verb = effectiveIntent === 'COMPLETE' ? 'completion' : 'failure';
+    threadInfo = `\n\n[Thread ${threadShort} | Closed — this is a ${verb} report on work you initiated. Do whatever the workflow requires next (forward to another agent, notify the user, update tracker, decide a next step). If nothing further is needed, just end your turn. To restart a new conversation with the sender, omit thread_id and pick QUESTION/ASSIGN/BLOCK.]`;
   } else {
-    // No-wake intents (FYI/STATUS/COMPLETE/FAIL) — informational, but if the
-    // content is something the user/owner cares about (a finished draft, a
-    // shipped artifact), the receiver should still act on it (e.g. iMessage
-    // the owner). v2.3.17: pre-existing footer said "read-only context",
-    // which the model read as "ignore this." Now we make the action surface
-    // explicit so a sub-agent's heads-up actually reaches the owner.
-    threadInfo = `\n\n[Thread ${threadShort} | No reply expected on this thread. If the content is something the user should know about, take action (e.g. iMessage them).]`;
+    // True no-wake intents (FYI/STATUS) — ambient context only. If the
+    // content is genuinely something the user/owner cares about, the
+    // receiver can still act on it next time they wake (e.g. iMessage
+    // the owner during their next turn). Sender should have used a wake
+    // intent if action is actually required.
+    threadInfo = `\n\n[Thread ${threadShort} | No reply expected on this thread. Ambient context — the sender used a no-wake intent (${effectiveIntent}). If the content is something the user should know about, take action next time you wake (e.g. iMessage them).]`;
   }
 
   // Engine-injected hint for the primary agent when a sub-agent ships a
