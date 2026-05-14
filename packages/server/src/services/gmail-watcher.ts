@@ -21,6 +21,23 @@ const POLL_INTERVAL_MS = 300_000; // Check every 5 minutes
 const MAX_RESULTS_PER_POLL = 50; // Was 10 — bumped so a weekend backlog or
                                   // delayed-startup catchup doesn't drop emails.
 
+// v2.5.36 — Re-scan window. Each poll's `after:` cursor is set to
+// (lastCheckedAt - LOOKBACK_MARGIN_MS) instead of just lastCheckedAt, so
+// emails that were indexed by Gmail's messages.list API AFTER they
+// arrived (well-known 1-3 minute indexing lag) still get caught by a
+// later poll. The existing notifiedIds dedup prevents the wider window
+// from re-notifying on emails we already processed. 15 min = 3x the
+// poll interval, comfortable headroom over the worst-case indexing
+// delay we've observed.
+//
+// Without this margin, the failure mode is silent: email arrives at T,
+// watcher polls at T+30s but Gmail's API hasn't indexed it yet so the
+// query returns nothing, watcher advances cursor to T+30s. Email is
+// indexed at T+90s. Next poll at T+5m30s queries `after:T+30s` — the
+// email's internalDate (T) is BEFORE the cursor, so it's excluded
+// forever. User sees the email in the inbox; agent never gets notified.
+const LOOKBACK_MARGIN_MS = 15 * 60 * 1000;
+
 // ── Status state ──
 //
 // Every poll updates this. Surfaced via getStatus() to the dashboard
@@ -153,7 +170,11 @@ async function pollForNewEmails(): Promise<void> {
       // Gmail accepts epoch seconds in after: for second-precision filter.
       // Pre-2026-04-30 we used YYYY/MM/DD which was day-precision and
       // forced re-listing the entire day's emails on every poll.
-      const afterEpoch = Math.floor(new Date(status.lastCheckedAt).getTime() / 1000);
+      // v2.5.36 — Subtract LOOKBACK_MARGIN_MS so emails indexed late by
+      // Gmail's API (1-3 min typical lag) still get picked up on the
+      // next poll. notifiedIds dedup makes the wider window safe.
+      const cursorMs = new Date(status.lastCheckedAt).getTime() - LOOKBACK_MARGIN_MS;
+      const afterEpoch = Math.floor(Math.max(0, cursorMs) / 1000);
       query += ` after:${afterEpoch}`;
     }
 
