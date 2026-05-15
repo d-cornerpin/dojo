@@ -120,12 +120,21 @@ const ToolOnlyPill = ({ msg }: { msg: ChatMessage }) => {
 // consistent everywhere.
 const IMESSAGE_SOURCE_RE = /^\[SOURCE: IMESSAGE FROM [^\]]+\]\s*/;
 
+// Mirrors Chat.tsx's stripper. See chat.ts buildContentWithAttachments
+// for the source of these tags. Exported for the temp-bubble dedup so
+// the comparison ignores server-injected attachment framing.
+function stripAttachmentTags(content: string): string {
+  return content
+    .replace(/\n\[File attached:[^\]]+\]\nPath:[^\n]+\nUse file_read with this path to read the file contents\.?/g, '')
+    .replace(/\n\[Office file attached:[^\]]+\][^\n]*/g, '')
+    .replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '')
+    .trim();
+}
+
 const UserBubble = ({ msg }: { msg: ChatMessage }) => {
   const fromIMessage = IMESSAGE_SOURCE_RE.test(msg.content);
   const stripped = fromIMessage ? msg.content.replace(IMESSAGE_SOURCE_RE, '') : msg.content;
-  const displayContent = msg.attachments?.length
-    ? stripped.replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '').trim()
-    : stripped;
+  const displayContent = msg.attachments?.length ? stripAttachmentTags(stripped) : stripped;
 
   return (
     <div className="flex flex-col items-end">
@@ -443,9 +452,14 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
           return updated;
         }
         // Reconcile optimistic temp- user bubble (see Chat.tsx for context).
+        // Compare on typed-text core (stripAttachmentTags) so messages with
+        // file attachments dedup correctly — server appends [File attached:]
+        // tags the temp bubble doesn't have.
         if (e.message.role === 'user') {
+          const broadcastCore = stripAttachmentTags(e.message.content);
           const tempIdx = prev.findIndex(
-            (m) => m.role === 'user' && m.id.startsWith('temp-') && m.content === e.message.content,
+            (m) => m.role === 'user' && m.id.startsWith('temp-') &&
+                   stripAttachmentTags(m.content) === broadcastCore,
           );
           if (tempIdx >= 0) {
             const updated = [...prev];

@@ -92,12 +92,29 @@ function parseMessageContent(raw: string): { text: string; blocks?: ContentBlock
 // the badge tells you where it came from, the bubble shows what was sent.
 const IMESSAGE_SOURCE_RE = /^\[SOURCE: IMESSAGE FROM [^\]]+\]\s*/;
 
+// Server-side `buildContentWithAttachments` (chat.ts) appends one of these
+// blocks per attachment to the user's typed text. The blocks are FOR THE
+// AGENT (so it knows to file_read the path) — the user just wants to see
+// their original message + the attachment chip. Strip on display.
+//
+// Exported for the temp-bubble dedup so it compares apples to apples
+// (typed-text vs typed-text, not typed-text vs typed-text-plus-tag).
+export function stripAttachmentTags(content: string): string {
+  return content
+    .replace(/\n\[File attached:[^\]]+\]\nPath:[^\n]+\nUse file_read with this path to read the file contents\.?/g, '')
+    .replace(/\n\[Office file attached:[^\]]+\][^\n]*/g, '')
+    // Legacy === File: === blocks from older message persistence (kept so
+    // pre-2026-04-30 rows in the messages table still render cleanly).
+    .replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '')
+    .trim();
+}
+
 const UserBubble = ({ msg }: { msg: ChatMessage }) => {
   const fromIMessage = IMESSAGE_SOURCE_RE.test(msg.content);
   const stripped = fromIMessage ? msg.content.replace(IMESSAGE_SOURCE_RE, '') : msg.content;
-  // Strip === File: === blocks from display text (they're shown as chips instead)
+  // Strip attachment tag blocks from display text (chips render them separately).
   const displayContent = msg.attachments?.length
-    ? stripped.replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '').trim()
+    ? stripAttachmentTags(stripped)
     : stripped;
 
   return (
@@ -694,8 +711,15 @@ export const Chat = () => {
         // appears twice — once from the optimistic insert, once from the
         // server's broadcast — because the temp id never matches the real one.
         if (e.message.role === 'user') {
+          // Compare on the typed-text core, not the full content. The
+          // server appends [File attached: ...] tags to the broadcast
+          // payload but the optimistic temp bubble only has what the
+          // user typed — without normalizing, every message-with-attachment
+          // failed dedup and rendered twice.
+          const broadcastCore = stripAttachmentTags(e.message.content);
           const tempIdx = prev.findIndex(
-            (m) => m.role === 'user' && m.id.startsWith('temp-') && m.content === e.message.content,
+            (m) => m.role === 'user' && m.id.startsWith('temp-') &&
+                   stripAttachmentTags(m.content) === broadcastCore,
           );
           if (tempIdx >= 0) {
             const updated = [...prev];

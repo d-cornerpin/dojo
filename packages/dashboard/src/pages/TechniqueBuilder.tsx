@@ -176,11 +176,19 @@ function stripBuilderContext(content: string): string {
   return content.slice(sepIdx + '\n\n---\n\n'.length);
 }
 
+// Mirror Chat.tsx / AgentDetail.tsx stripper. Removes server-injected
+// attachment framing so the user only sees their typed text + the chip.
+function stripAttachmentTags(content: string): string {
+  return content
+    .replace(/\n\[File attached:[^\]]+\]\nPath:[^\n]+\nUse file_read with this path to read the file contents\.?/g, '')
+    .replace(/\n\[Office file attached:[^\]]+\][^\n]*/g, '')
+    .replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '')
+    .trim();
+}
+
 const UserBubble = ({ msg }: { msg: ChatMessage }) => {
   const stripped = stripBuilderContext(msg.content);
-  const displayContent = msg.attachments?.length
-    ? stripped.replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '').trim()
-    : stripped;
+  const displayContent = msg.attachments?.length ? stripAttachmentTags(stripped) : stripped;
 
   return (
     <div className="flex justify-end">
@@ -821,9 +829,13 @@ export const TechniqueBuilder = () => {
         // handleSend pushed locally. The temp id never matches the real DB
         // id, so without this the user prompt appears twice — once from the
         // local push, once from the server broadcast. Mirrors Chat.tsx.
+        // Compare on typed-text core (stripAttachmentTags) so messages with
+        // file attachments dedup correctly.
         if (e.message.role === 'user') {
+          const broadcastCore = stripAttachmentTags(e.message.content);
           const tempIdx = prev.findIndex(
-            (m) => m.role === 'user' && m.id.startsWith('temp-') && m.content === e.message.content,
+            (m) => m.role === 'user' && m.id.startsWith('temp-') &&
+                   stripAttachmentTags(m.content) === broadcastCore,
           );
           if (tempIdx >= 0) {
             const updated = [...prev];
