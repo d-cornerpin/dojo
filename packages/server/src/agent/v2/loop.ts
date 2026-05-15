@@ -1451,13 +1451,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
               const taskList = openTasks
                 .map((t) => `  - "${t.title}" (${t.id.slice(0, 8)})`)
                 .join('\n');
+              // v2.5.42 — rewritten to a direct, action-only command.
+              // Prior wording was a paragraph with an "or end your turn
+              // silently" escape hatch. Field test showed DeepSeek V4 Pro
+              // ignoring the escape and re-running the whole response,
+              // producing a duplicate reply to the user. The user noticed
+              // immediately ("notice that something triggered him to do
+              // it twice now"). New wording: tool call ONLY, no text,
+              // explicit "do not repeat your prior message" guardrail.
               const nudgeText = (
-                `[System: you're about to end your turn with ${openTasks.length} task(s) in_progress assigned to you:\n` +
+                `[System: ${openTasks.length} in_progress task${openTasks.length === 1 ? '' : 's'} assigned to you was not closed out this turn:\n` +
                 `${taskList}\n` +
-                `You did real work this turn (${state.nonTrackerToolCalls} non-tracker tool call${state.nonTrackerToolCalls === 1 ? '' : 's'}) but never called tracker_update_status or tracker_complete_step. ` +
-                `Close them out NOW before ending the turn — mark complete if done, blocked if stuck, paused if intentionally on hold. ` +
-                `Leaving tasks in_progress after the work is done is the single biggest tracker hygiene failure: the PM agent will eventually poke you, but that costs a turn the user is waiting on. ` +
-                `For multi-step projects, prefer tracker_complete_step (auto-advances to the next step). If you genuinely haven't finished the work on a task yet, it's fine to leave it in_progress — just end your turn without responding to this message and the engine will let you continue next turn.]`
+                `REQUIRED ACTION: call tracker_complete_step (for multi-step projects) or tracker_update_status (complete | blocked | paused) on each task above. Make ONLY the tool call(s). Do NOT write any user-facing text — the user already received your previous response and a duplicate reply is worse than a stale tracker. ` +
+                `If a task is genuinely still in progress, end your turn now with NO text output (no tool call, no message); the engine will continue you on the next user turn.]`
               );
               const nudgeId = uuidv4();
               db.prepare(`
