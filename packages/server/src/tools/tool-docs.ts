@@ -32,8 +32,10 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'exec',
   'file_read',
   'file_write',
+  'file_append',
   'tracker_list_active',
   'tracker_create_task',
+  'tracker_create_project',
   'tracker_update_status',
   'vault_search',
   'vault_remember',
@@ -43,6 +45,7 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'image_create',
   'show_to_user',
   'recall_recent_thread',
+  'scratchpad_set',
 ];
 
 // PM agent: tracker-focused, monitors tasks and sends messages to other agents.

@@ -274,6 +274,35 @@ export async function assembleContext(
     }
   } catch { /* best effort */ }
 
+  // 3.85. Agent scratchpad — agent-controlled outline / progress / checkpoint
+  // surface set via scratchpad_set. Re-injected every turn so the agent's
+  // working state survives compaction. Sits just before the ACTIVE USER
+  // DIRECTIVE so the directive remains closest to fresh tail.
+  try {
+    const db = getDb();
+    const cfgRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
+    if (cfgRow?.config) {
+      const cfg = JSON.parse(cfgRow.config) as Record<string, unknown>;
+      const scratchpad = typeof cfg.scratchpad === 'string' ? cfg.scratchpad.trim() : '';
+      if (scratchpad.length > 0) {
+        const block =
+          `═══ YOUR SCRATCHPAD (agent-maintained outline + progress — survives compaction; update with scratchpad_set) ═══\n` +
+          `${scratchpad}\n` +
+          `═══ END SCRATCHPAD ═══`;
+        const scratchTokens = estimateTokens(block);
+        if (usedTokens + scratchTokens < maxTokens) {
+          messages.push({ role: 'user', content: block });
+          usedTokens += scratchTokens;
+          injectedAnyScaffolding = true;
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn('Scratchpad injection failed', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+
   // 3.9. Active user directive — pin the user's most recent substantive ask
   // verbatim, right before the fresh tail. Survives compaction (read fresh
   // from messages every turn), so even when the original prompt has been
@@ -306,7 +335,7 @@ export async function assembleContext(
   // (below) shows different state — a common failure mode that drove
   // verification spirals before this framing was added.
   if (injectedAnyScaffolding) {
-    const combinedAck = 'Understood, I have reviewed my background context (briefing, vault, summaries, active tasks, continuity brief, active user directive). Source priority for this turn: active user directive > live conversation below > active tracker tasks > continuity brief > vault entries > briefing. When sources disagree, trust the most recent and most specific. The active user directive (if present) is the WHAT — never lose it; everything else is supporting context.';
+    const combinedAck = 'Understood, I have reviewed my background context (briefing, vault, summaries, active tasks, continuity brief, scratchpad, active user directive). Source priority for this turn: active user directive > my scratchpad > live conversation below > active tracker tasks > continuity brief > vault entries > briefing. When sources disagree, trust the most recent and most specific. The active user directive is the WHAT — never lose it. The scratchpad is my own working outline; I maintain it via scratchpad_set as I make progress and read from it when I need to remember where I am.';
     messages.push({ role: 'assistant', content: combinedAck });
     usedTokens += estimateTokens(combinedAck);
   }

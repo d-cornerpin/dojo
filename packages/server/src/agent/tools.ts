@@ -156,7 +156,7 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   const removeTools: string[] = [];
 
   if (!hasFileRead) removeTools.push('file_read', 'file_list');
-  if (!hasFileWrite) removeTools.push('file_write');
+  if (!hasFileWrite) removeTools.push('file_write', 'file_append');
   if (!hasExec) removeTools.push('exec');
   if (!hasNetwork) removeTools.push('web_search', 'web_fetch');
   if (!hasSysControl) removeTools.push('mouse_click', 'mouse_move', 'keyboard_type', 'screen_read', 'applescript_run');
@@ -433,6 +433,19 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'file_append',
+    description: 'Append content to the end of a file at the given absolute path. Creates the file (and parent directories) if they do not exist. Use this for incremental writes — accumulating output across multiple turns, building a long doc one section at a time, logging progress to a scratchpad — instead of `file_write` (which overwrites everything) or the read-modify-rewrite cycle. The latter fills your context with the file\'s existing contents every time you want to add to it; `file_append` does not. Returns bytes appended, total file size, and a download URL.\n\nExample: file_append({ path: "/Users/me/notes.md", content: "\\n## Section 5\\nNew content here." }).\n\nBy default a leading newline is added if the existing file doesn\'t already end in one (so appended sections don\'t smush into the prior line). Set ensure_newline=false to append the exact bytes verbatim.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to the file. Created if it does not exist.' },
+        content: { type: 'string', description: 'Content to append.' },
+        ensure_newline: { type: 'boolean', description: 'When true (default), prepend a newline to `content` if the existing file does not already end with one. Avoids accidentally concatenating two sections into one line.' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+  {
     name: 'file_patch',
     description: 'Surgically edit an existing file in place by find-and-replace, without rewriting the whole thing. Use this when you want to change a specific section of a file you have ALREADY read — the agent equivalent of opening a file, ctrl-F replacing a few strings, and saving. Strongly preferred over file_write for edits, because file_write requires you to reconstruct the entire file from memory and routinely drops content the model didn\'t explicitly type back.\n\nEach patch is `{ search, replace, replace_all? }`. The tool reads the file, applies every patch in order against the in-memory copy, and only writes to disk if every search string matched. If any patch\'s search string is not found, the call FAILS with a hard error and the file on disk is not touched — there is no silent no-op. Patches apply sequentially, so a later patch sees the result of earlier patches.\n\nExamples:\n  • Rename a heading: file_patch({ path: "/Users/me/site.html", patches: [{ search: "<h1>Old Title</h1>", replace: "<h1>New Title</h1>" }] })\n  • Replace every occurrence: file_patch({ path: "/Users/me/style.css", patches: [{ search: "color: red", replace: "color: var(--brand)", replace_all: true }] })\n  • Multiple edits at once: file_patch({ path: "...", patches: [{ search: "...", replace: "..." }, { search: "...", replace: "..." }] })\n  • Preview without writing: pass dry_run=true to see what would change without touching disk.\n\nWorks on any text file (encoding stays as-is on disk; the in-memory edit is utf-8). Refuses files that look binary. Refuses empty search strings.',
     input_schema: {
@@ -472,6 +485,26 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['path', 'patches'],
     },
     maxResultTokens: 2000,
+  },
+  {
+    name: 'scratchpad_set',
+    description: 'Set your scratchpad — an agent-controlled outline / progress / checkpoint surface that the engine ALWAYS re-injects at the top of your context, regardless of compaction. Use for tasks that span multiple turns: keep your outline here (sections you\'re building, batches you\'ve covered, batches still to go, anchor file paths, decisions you\'ve made) so when compaction summarizes your tool results away you don\'t lose the spine of the work.\n\nThe scratchpad is a single string; calling `scratchpad_set` REPLACES the current contents (it does not append). To make a small edit, copy the current scratchpad from the YOUR SCRATCHPAD block in your context, modify, and call this with the full new text. Cap is 8000 characters — if you\'re approaching that, the scratchpad has grown beyond its purpose; move detail into a real file and keep the scratchpad as a high-level index.\n\nClears automatically on session reset. Use `scratchpad_clear` to empty it mid-session.\n\nExample (incremental research synthesis):\n  scratchpad_set({ content: "## Goal\\nFlowchart for project X in flowchart.md\\n\\n## Sources (8 total)\\n- [x] /Users/me/notes/a.md (covered in §1)\\n- [x] /Users/me/notes/b.md (covered in §2)\\n- [ ] /Users/me/notes/c.md\\n- [ ] /Users/me/notes/d.md\\n…\\n\\n## Output sections written\\n- §1 Background ✓\\n- §2 Inputs ✓\\n- §3 Decision points (in progress)\\n- §4 Outputs (placeholder)\\n\\n## Open questions\\n- Does Y depend on Z or vice-versa? (check c.md)" }).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'Full new scratchpad content. Replaces previous. Max 8000 chars.' },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'scratchpad_clear',
+    description: 'Empty your scratchpad. Use when the task it was tracking is complete and the outline is no longer relevant. Scratchpad also auto-clears on session reset, so manual clear is mostly for "I finished, but the session keeps going" cases.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
   },
   {
     name: 'file_list',
@@ -982,7 +1015,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'tracker_update_status',
-    description: 'Update the status of a task in the tracker. Call this when starting work (in_progress), finishing (complete), getting stuck (blocked), or failing (failed). Always update task status as you work — don\'t leave tasks stale. For recurring tasks: if you completed all iterations in a single run, set complete_all_runs=true to stop the schedule entirely.',
+    description: 'Update the status of a task in the tracker. **Call this AT the moments of transition** — the instant you start a task (status=in_progress), the instant you finish it (status=complete), the instant you hit a blocker (status=blocked), and when you intentionally pause (status=paused). The single biggest tracker hygiene failure is doing the work and forgetting to mark the task complete — the engine will detect this at end-of-turn and inject a system nudge asking you to close out, then the PM agent will poke you 30 minutes later if you ignore the nudge. Skip both by updating status the moment a transition happens. **Don\'t end a turn with in_progress tasks you\'ve actually finished.** If you\'re moving from task A → task B in the same turn, mark A complete BEFORE starting B. For recurring tasks: if you completed all iterations in a single run, set complete_all_runs=true to stop the schedule entirely.\n\n**For multi-step projects, prefer `tracker_complete_step` over this tool** — it auto-advances to the next step so you don\'t accidentally leave the project with no task in_progress.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1105,7 +1138,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'tracker_complete_step',
-    description: 'Complete the current step in a multi-step project and automatically start the next one. Marks this task as "complete" and moves the next step (by step_number) to "in_progress". Also checks if the entire project is now complete. Use this instead of tracker_update_status when working through ordered project steps.',
+    description: 'Complete the current step in a multi-step project and automatically start the next one. Marks this task as "complete" and moves the next step (by step_number) to "in_progress". Also checks if the entire project is now complete. **Strongly preferred over `tracker_update_status(status="complete")` for multi-step projects** — using update_status to mark a step complete leaves the project with no in_progress task and is the most common cause of "agent finished a batch but the next batch never started." This tool advances the project pointer atomically: one call closes the current step and opens the next. Call it the moment you finish a step — don\'t batch up multiple completions.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2363,6 +2396,55 @@ async function executeFileWrite(agentId: string, args: Record<string, unknown>):
   }
 }
 
+async function executeFileAppend(agentId: string, args: Record<string, unknown>): Promise<string> {
+  const filePath = resolvePath(args.path as string);
+  const content = (args.content as string) ?? '';
+  const ensureNewline = args.ensure_newline !== false; // default true
+
+  if (!path.isAbsolute(filePath)) {
+    auditLog(agentId, 'file_write', filePath, 'error', 'Path must be absolute (use ~ for home directory)');
+    return 'Error: Path must be absolute. Use ~ for home directory or provide a full path.';
+  }
+
+  try {
+    const dir = path.dirname(filePath);
+    await fs.promises.mkdir(dir, { recursive: true });
+
+    let leading = '';
+    if (ensureNewline) {
+      // Peek at the existing trailing byte (if any) to decide whether we
+      // need a separator. fs.stat is cheaper than reading the file.
+      let existingSize = 0;
+      try {
+        const stat = await fs.promises.stat(filePath);
+        existingSize = stat.size;
+      } catch { /* file doesn't exist — append creates it, no leading newline needed */ }
+      if (existingSize > 0) {
+        const fh = await fs.promises.open(filePath, 'r');
+        try {
+          const buf = Buffer.alloc(1);
+          await fh.read(buf, 0, 1, existingSize - 1);
+          if (buf[0] !== 0x0a) leading = '\n'; // not LF — add one
+        } finally {
+          await fh.close();
+        }
+      }
+    }
+
+    const payload = leading + content;
+    await fs.promises.appendFile(filePath, payload, 'utf-8');
+    const stat = await fs.promises.stat(filePath);
+    auditLog(agentId, 'file_write', filePath, 'success', `${payload.length} bytes appended (total ${stat.size})`);
+
+    const downloadUrl = registerSharedFile(agentId, filePath);
+    return `Appended ${payload.length} bytes to ${filePath}. Total size: ${stat.size} bytes.${downloadUrl ? `\nDownload: ${downloadUrl}` : ''}`;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    auditLog(agentId, 'file_write', filePath, 'error', msg);
+    return `Error appending to file: ${msg}`;
+  }
+}
+
 // ── file_patch ──
 //
 // Surgical in-place edit. Reads the file, applies every patch in sequence
@@ -2666,7 +2748,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
     }
   }
 
-  if (name === 'file_write' || name === 'file_patch') {
+  if (name === 'file_write' || name === 'file_append' || name === 'file_patch') {
     const filePath = args.path as string | undefined;
     if (filePath) {
       const perm = checkPermission(agentId, { type: 'file_write', path: filePath });
@@ -2892,6 +2974,53 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         if (writeErr) { content = writeErr; isError = true; break; }
         content = await executeFileWrite(agentId, args);
         isError = content.startsWith('Error');
+        break;
+      }
+      case 'file_append': {
+        const appendErr = checkRequired([
+          { name: 'path', value: args.path, type: 'string' },
+          { name: 'content', value: args.content, type: 'string', allowEmpty: true },
+        ]);
+        if (appendErr) { content = appendErr; isError = true; break; }
+        content = await executeFileAppend(agentId, args);
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'scratchpad_set': {
+        const spErr = checkRequired([{ name: 'content', value: args.content, type: 'string', allowEmpty: true }]);
+        if (spErr) { content = spErr; isError = true; break; }
+        const SCRATCHPAD_MAX_CHARS = 8000;
+        const newContent = args.content as string;
+        if (newContent.length > SCRATCHPAD_MAX_CHARS) {
+          content = `Error: scratchpad content is ${newContent.length} chars; cap is ${SCRATCHPAD_MAX_CHARS}. Move detail into a real file and keep the scratchpad as a high-level index.`;
+          isError = true;
+          break;
+        }
+        try {
+          const scratchDb = getDb();
+          const row = scratchDb.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
+          const cfg = row?.config ? JSON.parse(row.config) as Record<string, unknown> : {};
+          cfg.scratchpad = newContent;
+          scratchDb.prepare("UPDATE agents SET config = ? WHERE id = ?").run(JSON.stringify(cfg), agentId);
+          content = `Scratchpad updated (${newContent.length} chars). It will be re-injected at the top of your context on every turn until you clear it or your session resets.`;
+        } catch (err) {
+          content = `Error setting scratchpad: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
+        break;
+      }
+      case 'scratchpad_clear': {
+        try {
+          const scratchDb = getDb();
+          const row = scratchDb.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
+          const cfg = row?.config ? JSON.parse(row.config) as Record<string, unknown> : {};
+          delete cfg.scratchpad;
+          scratchDb.prepare("UPDATE agents SET config = ? WHERE id = ?").run(JSON.stringify(cfg), agentId);
+          content = 'Scratchpad cleared.';
+        } catch (err) {
+          content = `Error clearing scratchpad: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
         break;
       }
       case 'file_patch': {

@@ -116,6 +116,29 @@ export interface AgentTurnState {
    * Set to null at turn start; updated when the enforcer fires.
    */
   nudgedForMissedReplyOnAssignId: string | null;
+  /**
+   * v2.5.40 — fire-once flag for the tracker nudge. Set to true after the
+   * runtime nudge ("you've made N tool calls without an active tracker
+   * task") is injected so it doesn't fire again in the same turn even if
+   * the agent keeps adding tool calls without creating a project.
+   */
+  nudgedForTrackerThisTurn: boolean;
+  /**
+   * v2.5.40 — set when the agent calls tracker_update_status or
+   * tracker_complete_step in this turn. Different from
+   * trackerToolCalledThisTurn (which fires on ANY tracker_* call,
+   * including tracker_create_project). Used by the end-of-turn close-out
+   * check to distinguish "agent is engaging with tracker" (broad) from
+   * "agent advanced or closed a task in this turn" (specific).
+   */
+  trackerStatusUpdatedThisTurn: boolean;
+  /**
+   * v2.5.40 — fire-once flag for the end-of-turn close-out nudge ("you
+   * have in_progress tasks but didn't update any status this turn"). The
+   * nudge fires when the agent is about to end the turn with dangling
+   * tasks; the hardcap ends the turn cleanly if the agent ignores it.
+   */
+  nudgedForTrackerCloseThisTurn: boolean;
 
   // ── Pre-flight enforcement decisions ──
   readonly shouldNudgeTracker: boolean;
@@ -190,6 +213,9 @@ export function initState(params: InitStateParams): AgentTurnState {
     trackerToolCalledThisTurn: false,
     nonTrackerToolCalls: 0,
     nudgedForMissedReplyOnAssignId: null,
+    nudgedForTrackerThisTurn: false,
+    trackerStatusUpdatedThisTurn: false,
+    nudgedForTrackerCloseThisTurn: false,
 
     shouldNudgeTracker: params.shouldNudgeTracker,
 

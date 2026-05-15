@@ -1406,6 +1406,83 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // Continue loop so the agent reads the nudge and retries
           continue;
         }
+
+        // ── End-of-turn tracker close-out check (v2.5.40) ──
+        // Common failure: agent opens a project, marks task 1 in_progress,
+        // does the work, never marks it complete (or any subsequent task).
+        // Stella's poke chain eventually catches it but costs a 30-min
+        // wait. Detect at the moment of failure: agent is ending the turn
+        // with text, has at least one in_progress task assigned, AND made
+        // no tracker_update_status / tracker_complete_step call this turn.
+        //
+        // Hardcap mirrors the A2A enforcer: if the agent already saw the
+        // nudge once this turn and STILL produces text without updating
+        // tracker status, end the turn cleanly. Don't loop forever.
+        const agentProducedText = !!(persistedContent && persistedContent.trim().length > 0);
+        if (agentProducedText) {
+          if (
+            state.nudgedForTrackerCloseThisTurn &&
+            !state.trackerStatusUpdatedThisTurn
+          ) {
+            // Hardcap: nudge fired once and was ignored. End the turn.
+            // Stella will catch the dangling tasks on her next poke pass.
+            logger.warn('v2: tracker close-out nudge ignored — ending turn anyway', {
+              agentId,
+            }, agentId);
+            break;
+          }
+
+          if (
+            !state.nudgedForTrackerCloseThisTurn &&
+            !state.trackerStatusUpdatedThisTurn &&
+            state.nonTrackerToolCalls > 0
+          ) {
+            let openTasks: Array<{ id: string; title: string }> = [];
+            try {
+              const { listTasks } = await import('../../tracker/schema.js');
+              const inProgress = listTasks({ status: 'in_progress', assignedTo: agentId });
+              openTasks = inProgress.map((t) => ({ id: t.id, title: t.title }));
+            } catch (err) {
+              logger.warn('Tracker close-out nudge: listTasks failed', {
+                agentId, err: err instanceof Error ? err.message : String(err),
+              }, agentId);
+            }
+            if (openTasks.length > 0) {
+              const taskList = openTasks
+                .map((t) => `  - "${t.title}" (${t.id.slice(0, 8)})`)
+                .join('\n');
+              const nudgeText = (
+                `[System: you're about to end your turn with ${openTasks.length} task(s) in_progress assigned to you:\n` +
+                `${taskList}\n` +
+                `You did real work this turn (${state.nonTrackerToolCalls} non-tracker tool call${state.nonTrackerToolCalls === 1 ? '' : 's'}) but never called tracker_update_status or tracker_complete_step. ` +
+                `Close them out NOW before ending the turn — mark complete if done, blocked if stuck, paused if intentionally on hold. ` +
+                `Leaving tasks in_progress after the work is done is the single biggest tracker hygiene failure: the PM agent will eventually poke you, but that costs a turn the user is waiting on. ` +
+                `For multi-step projects, prefer tracker_complete_step (auto-advances to the next step). If you genuinely haven't finished the work on a task yet, it's fine to leave it in_progress — just end your turn without responding to this message and the engine will let you continue next turn.]`
+              );
+              const nudgeId = uuidv4();
+              db.prepare(`
+                INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+                VALUES (?, ?, 'system', ?, ?, datetime('now'))
+              `).run(nudgeId, agentId, nudgeText, turnNumber);
+              broadcast({
+                type: 'chat:message',
+                agentId,
+                message: {
+                  id: nudgeId, agentId, role: 'system' as const,
+                  content: nudgeText,
+                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                  createdAt: new Date().toISOString(),
+                },
+              });
+              state = advance(state, { nudgedForTrackerCloseThisTurn: true });
+              logger.info('v2: tracker close-out nudge fired', {
+                agentId, openTaskCount: openTasks.length,
+              }, agentId);
+              continue;
+            }
+          }
+        }
+
         break;
       }
 
@@ -1688,6 +1765,90 @@ export async function runV2Turn(agentId: string): Promise<void> {
       if (stoppedMidBatch) {
         setAgentStatus(agentId, 'idle');
         break;
+      }
+
+      // ── Runtime tracker nudge (v2.5.40) ──
+      // Detect "agent is doing real multi-step work but never opened a
+      // tracker entry" mid-turn and inject a one-shot system reminder.
+      // Multi-step work without a tracker task drifts and stalls — the PM
+      // agent can't intervene because there's nothing to monitor — and on
+      // the user's most recent test, an agent ran for tens of minutes,
+      // hit compaction, and started re-reading sources it had already
+      // lost from context. The reflex in the tool index header tells
+      // agents to do this; this nudge is the runtime safety net for
+      // agents that ignored it.
+      const trackerInThisIter = result.toolCalls.filter(
+        (tc) => tc.name.startsWith('tracker_'),
+      ).length;
+      const nonTrackerInThisIter = result.toolCalls.length - trackerInThisIter;
+      // tracker_update_status / tracker_complete_step are the status-mutation
+      // tools — they're the signal "agent advanced or closed a task this
+      // turn", distinct from broad tracker engagement (which includes
+      // tracker_create_project / tracker_list_active / tracker_get_status).
+      const trackerStatusInThisIter = result.toolCalls.some(
+        (tc) => tc.name === 'tracker_update_status' || tc.name === 'tracker_complete_step',
+      );
+      if (nonTrackerInThisIter > 0 || trackerInThisIter > 0) {
+        state = advance(state, {
+          nonTrackerToolCalls: state.nonTrackerToolCalls + nonTrackerInThisIter,
+          trackerToolCalledThisTurn: state.trackerToolCalledThisTurn || trackerInThisIter > 0,
+          trackerStatusUpdatedThisTurn: state.trackerStatusUpdatedThisTurn || trackerStatusInThisIter,
+        });
+      }
+      const TRACKER_NUDGE_THRESHOLD = 8;
+      if (
+        !state.nudgedForTrackerThisTurn &&
+        !state.trackerToolCalledThisTurn &&
+        state.nonTrackerToolCalls > TRACKER_NUDGE_THRESHOLD
+      ) {
+        // Secondary check: agent may have an active task from a previous
+        // turn that they're just continuing. Don't nudge them either.
+        // Widened to include on_deck (queued) — the user said the v2.5.40
+        // test fired a nudge right after Kevin cleanly completed a 3-task
+        // project, because by the moment the check ran every task was
+        // already `complete`. The fix is the trackerToolCalledThisTurn
+        // gate above, but keep this as belt+suspenders for cross-turn
+        // continuations and widen status so a queued task counts.
+        let hasActiveTask = false;
+        try {
+          const { listTasks } = await import('../../tracker/schema.js');
+          const candidates = listTasks({ assignedTo: agentId });
+          hasActiveTask = candidates.some(
+            (t) => t.status === 'in_progress' || t.status === 'on_deck',
+          );
+        } catch (err) {
+          logger.warn('Tracker nudge: listTasks failed (treating as no active task)', {
+            agentId, err: err instanceof Error ? err.message : String(err),
+          }, agentId);
+        }
+        if (!hasActiveTask) {
+          const nudgeText = (
+            `[System: you've made ${state.nonTrackerToolCalls} non-tracker tool calls this turn without an active tracker task assigned to you. ` +
+            `This is the failure shape we want to catch — multi-step work without a tracker entry drifts and stalls (the PM agent can't intervene because there's nothing to monitor) and your context is filling up which means compaction is coming and you'll lose source detail you've already read. ` +
+            `STOP what you're doing right now and call tracker_create_project(title="<short name>", level=2, tasks=[…one task per discrete batch…]) describing the steps for what you've been doing and what's left. ` +
+            `Then update each task as you complete it via tracker_update_status, and use scratchpad_set to keep a running outline that survives compaction. ` +
+            `Resume the work after the project is opened.]`
+          );
+          const nudgeId = uuidv4();
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+            VALUES (?, ?, 'system', ?, ?, datetime('now'))
+          `).run(nudgeId, agentId, nudgeText, turnNumber);
+          broadcast({
+            type: 'chat:message',
+            agentId,
+            message: {
+              id: nudgeId, agentId, role: 'system' as const,
+              content: nudgeText,
+              tokenCount: null, modelId: null, cost: null, latencyMs: null,
+              createdAt: new Date().toISOString(),
+            },
+          });
+          state = advance(state, { nudgedForTrackerThisTurn: true });
+          logger.info('v2: tracker nudge fired', {
+            agentId, nonTrackerToolCalls: state.nonTrackerToolCalls,
+          }, agentId);
+        }
       }
 
       // ── complete_task / image_create exit conditions (Part XIX) ──

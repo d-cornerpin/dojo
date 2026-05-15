@@ -387,10 +387,13 @@ agentsRouter.post('/:id/reset-session', async (c) => {
     const { archiveAgentConversation } = await import('../../vault/archive.js');
     try { archiveAgentConversation(id, true); } catch { /* */ }
 
-    // 2. Set session boundary + clear continuity brief.
+    // 2. Set session boundary + clear continuity brief + clear scratchpad.
+    //    (Scratchpad is session-scoped: the outline an agent built for the
+    //    prior task isn't relevant once the session resets.)
     const boundary = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
     db.prepare(
-      "UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief') WHERE id = ?",
+      "UPDATE agents SET session_started_at = ?, updated_at = ?, " +
+      "config = json_remove(COALESCE(config, '{}'), '$.continuityBrief', '$.scratchpad') WHERE id = ?",
     ).run(boundary, boundary, id);
 
     // 3. Insert UI divider + broadcast.
