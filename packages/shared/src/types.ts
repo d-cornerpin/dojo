@@ -302,6 +302,14 @@ export interface Task {
   repeatEndType: string;
   repeatEndValue: string | null;
   repeatDaysOfWeek: string | null;
+  /**
+   * v2.5.45 — full ISO timestamp anchoring this recurring task's wall-
+   * clock time. After each run, next_run_at is computed from the anchor
+   * (not from completion time) so a task that takes 5 minutes doesn't
+   * drift the schedule by 5 minutes every cycle. Editable via UI/tools;
+   * default = scheduled_start at creation. Null for non-recurring tasks.
+   */
+  anchorTime: string | null;
   nextRunAt: string | null;
   runCount: number;
   isPaused: boolean;

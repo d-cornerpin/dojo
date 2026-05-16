@@ -14,6 +14,131 @@ import { getPrimaryAgentId, getPMAgentId } from '../config/platform.js';
 
 const logger = createLogger('scheduler');
 
+// ── Anchor-time / missed-runs helpers (v2.5.45) ──
+
+/**
+ * Convert a (repeat_interval, repeat_unit) pair to approximate milliseconds.
+ * Used by the missed-runs detector. Month/year are approximate by design —
+ * the detector just needs to distinguish "slightly behind scheduler tick"
+ * (normal) from "way past the slot" (server-was-down scenario).
+ */
+function intervalApproxMs(unit: string | null, interval: number | null): number | null {
+  if (!interval || !unit) return null;
+  const DAY = 86_400_000;
+  switch (unit) {
+    case 'minutes': return interval * 60_000;
+    case 'hours': return interval * 3_600_000;
+    case 'days': return interval * DAY;
+    case 'weeks': return interval * 7 * DAY;
+    case 'months': return interval * 30 * DAY;
+    case 'years': return interval * 365 * DAY;
+    case 'weekdays': return DAY;
+    case 'specific_days': return DAY;
+    default: return null;
+  }
+}
+
+/**
+ * Pause the task and wake the assigned (or primary) agent with a system
+ * message describing the missed-runs situation and the four resolution
+ * options. The agent decides via tracker_resolve_missed_runs.
+ *
+ * Per user spec: when many slots have gone by while the daemon was down
+ * (or the task was paused), the engine doesn't get to silently decide
+ * whether to backfill or skip — the agent does, because the right
+ * answer depends on the task semantics. Daily-summary task that missed
+ * 3 days probably wants skip. Daily-housekeeping that missed 3 days
+ * might want backfill_all.
+ */
+function alertMissedRuns(taskRow: Record<string, unknown>, missedSlots: number): void {
+  const db = getDb();
+  const taskId = taskRow.id as string;
+  const taskTitle = taskRow.title as string;
+  const nextRunAt = taskRow.next_run_at as string;
+  const lastRunAt = taskRow.last_run_at as string | null;
+  const anchorTime = taskRow.anchor_time as string | null;
+  const repeatInterval = taskRow.repeat_interval as number | null;
+  const repeatUnit = taskRow.repeat_unit as string | null;
+
+  let assignedAgent = (taskRow.assigned_to as string | null) ?? null;
+  if (!assignedAgent) {
+    const groupId = taskRow.assigned_to_group as string | null;
+    if (groupId) assignedAgent = pickAvailableAgentFromGroup(groupId);
+  }
+  if (!assignedAgent) assignedAgent = getPrimaryAgentId();
+
+  // Pause the task while the agent decides — prevents re-firing on every
+  // scheduler tick. The agent's resolve call will unpause + apply the
+  // chosen action.
+  db.prepare(`
+    UPDATE tasks
+    SET is_paused = 1, schedule_status = 'paused', status = 'paused',
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(taskId);
+
+  const cadence = repeatInterval && repeatUnit
+    ? (repeatInterval === 1 ? `every ${repeatUnit.replace(/s$/, '')}` : `every ${repeatInterval} ${repeatUnit}`)
+    : 'recurring';
+
+  const alertText = (
+    `[System: scheduled task "${taskTitle}" (${taskId.slice(0, 8)}) has MISSED ${missedSlots} scheduled run${missedSlots === 1 ? '' : 's'}.\n` +
+    `  - Cadence: ${cadence}\n` +
+    `  - Anchor time: ${anchorTime ?? '(none)'}\n` +
+    `  - Most recent slot that was supposed to fire: ${nextRunAt}\n` +
+    `  - Last successful run: ${lastRunAt ?? 'never'}\n` +
+    `  - Current time: ${new Date().toISOString()}\n\n` +
+    `Likely cause: the platform was offline, or the task was paused longer than expected.\n` +
+    `The task has been auto-paused so it doesn't fire repeatedly. Decide what to do — ` +
+    `call tracker_resolve_missed_runs(task_id="${taskId}", action="<one of>"):\n` +
+    `  - run_now: unpause, fire ONE catch-up run right now, then resume the normal schedule from the next anchor.\n` +
+    `             Use this when the task's work is cumulative (e.g. "summarize what happened since last run") and one consolidated run will cover all the missed slots.\n` +
+    `  - skip:    unpause, skip every missed slot, resume from the NEXT future anchor.\n` +
+    `             Use this when each scheduled run is independent and stale (e.g. "post today's reminder") — there's nothing meaningful to do for the missed days.\n` +
+    `  - pause:   leave the task paused. No runs. The user will resume manually via the dashboard.\n` +
+    `             Use this when you're unsure or the situation needs a human decision.\n` +
+    `Default if you do nothing within a few minutes: the task stays paused (option "pause").]`
+  );
+
+  const msgId = uuidv4();
+  try {
+    db.prepare(`
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+      VALUES (?, ?, 'system', ?, datetime('now'))
+    `).run(msgId, assignedAgent, alertText);
+    broadcast({
+      type: 'chat:message',
+      agentId: assignedAgent,
+      message: {
+        id: msgId, agentId: assignedAgent, role: 'system' as const,
+        content: alertText,
+        tokenCount: null, modelId: null, cost: null, latencyMs: null,
+        createdAt: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    logger.warn('alertMissedRuns: failed to persist alert message', {
+      taskId, error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Wake the agent so it sees the alert. handleMessage with a thin
+  // synthetic trigger is enough — the actual alert lives in the messages
+  // table and will be included in the next assembled context.
+  try {
+    const runtime = getAgentRuntime();
+    runtime.handleMessage(assignedAgent, '[scheduler: missed-runs alert pending]').catch((err) => {
+      logger.warn('alertMissedRuns: agent wake failed', {
+        taskId, assignedAgent, error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  } catch { /* runtime not ready — alert is in the table, will be read next time */ }
+
+  logger.warn('Scheduler: missed-runs alert sent, task paused', {
+    taskId, taskTitle, missedSlots, assignedAgent,
+  });
+}
+
 // ── Pick available agent from group ──
 
 export function pickAvailableAgentFromGroup(groupId: string): string | null {
@@ -57,6 +182,28 @@ export async function checkScheduledTasks(): Promise<void> {
     const taskId = taskRow.id as string;
     const runCount = (taskRow.run_count as number) ?? 0;
     const runNumber = runCount + 1;
+
+    // ── v2.5.45: missed-runs detection ──
+    // If a recurring task is overdue by more than 1 interval, multiple
+    // anchor slots have passed without firing — almost always because the
+    // platform was offline or the task was paused longer than expected.
+    // Per user spec, the engine doesn't get to silently backfill or skip:
+    // wake the assigned agent and let them decide via
+    // tracker_resolve_missed_runs.
+    const repeatInterval = taskRow.repeat_interval as number | null;
+    const repeatUnit = taskRow.repeat_unit as string | null;
+    if (repeatInterval && repeatUnit) {
+      const nextRunIso = taskRow.next_run_at as string | null;
+      const intervalMs = intervalApproxMs(repeatUnit, repeatInterval);
+      if (nextRunIso && intervalMs) {
+        const overdueMs = Date.now() - new Date(nextRunIso).getTime();
+        if (overdueMs > intervalMs * 1.5) {
+          const missedSlots = Math.max(1, Math.floor(overdueMs / intervalMs));
+          alertMissedRuns(taskRow, missedSlots);
+          continue;
+        }
+      }
+    }
 
     // Check dependencies — skip if any dependency isn't complete
     const dependsOnRaw = taskRow.depends_on as string | null;
@@ -209,6 +356,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
     next_run_at: task.next_run_at as string | null,
     schedule_status: task.schedule_status as string,
     repeat_days_of_week: task.repeat_days_of_week as string | null,
+    anchor_time: task.anchor_time as string | null,
   };
 
   const nextRun = calculateNextRun(scheduledTask);
@@ -412,6 +560,7 @@ function forceResetStuckRecurringTask(taskId: string): void {
     next_run_at: task.next_run_at as string | null,
     schedule_status: task.schedule_status as string,
     repeat_days_of_week: task.repeat_days_of_week as string | null,
+    anchor_time: task.anchor_time as string | null,
   };
 
   const nextRun = calculateNextRun(scheduledTask);

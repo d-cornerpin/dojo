@@ -241,11 +241,27 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
     }
   }, []);
 
+  // v2.5.45 — auto-scroll fires on (a) new message and (b) the last
+  // message growing during streaming. Streaming chunks only follow if
+  // the user is already near the bottom, so reading older history isn't
+  // disturbed.
+  const lastMessageSigRef = useRef<string | null>(null);
   useEffect(() => {
-    const lastId = messages.length > 0 ? messages[messages.length - 1].id : null;
-    if (lastId && lastId !== lastMessageIdRef.current) {
-      lastMessageIdRef.current = lastId;
+    const last = messages.length > 0 ? messages[messages.length - 1] : null;
+    if (!last) return;
+    const sig = `${last.id}:${last.content?.length ?? 0}`;
+    if (sig === lastMessageSigRef.current) return;
+    const isNewMessage = last.id !== lastMessageIdRef.current;
+    lastMessageIdRef.current = last.id;
+    lastMessageSigRef.current = sig;
+    if (isNewMessage) {
       scrollToBottom();
+    } else {
+      const container = messagesContainerRef.current;
+      if (container) {
+        const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+        if (nearBottom) scrollToBottom(true);
+      }
     }
   }, [messages, scrollToBottom]);
 

@@ -18,6 +18,12 @@ export interface ScheduledTask {
   // v2.5.2 — comma-separated day numbers (0=Sun..6=Sat) used when
   // repeat_unit='specific_days'. e.g. '1,3' = Mon+Wed. Nullable.
   repeat_days_of_week?: string | null;
+  // v2.5.45 — full ISO timestamp that anchors all future runs of a
+  // recurring task. Computed forward from anchor instead of from
+  // last_run_at, so a run that takes 5 minutes to complete doesn't
+  // drift the schedule by 5 minutes every cycle. Nullable for
+  // backwards compatibility; when null, falls back to scheduled_start.
+  anchor_time?: string | null;
 }
 
 export function calculateNextRun(task: ScheduledTask): string | null {
@@ -44,16 +50,17 @@ export function calculateNextRun(task: ScheduledTask): string | null {
     return task.scheduled_start;
   }
 
-  // Calculate next run from last run (or from scheduled_start if never run)
-  const baseTime = task.last_run_at
-    ? new Date(task.last_run_at)
-    : new Date(task.scheduled_start);
+  // v2.5.45 — base every recurring run on anchor_time, not on the
+  // completion timestamp. Falls back to scheduled_start when anchor is
+  // unset (pre-migration tasks). The "advance until future" loop below
+  // then walks the anchor forward by whole intervals, so the wall-clock
+  // alignment (e.g. "Monday at 06:00") is preserved even if past runs
+  // took variable time to complete.
+  const anchorIso = task.anchor_time ?? task.scheduled_start;
+  const baseTime = new Date(anchorIso);
 
   if (isNaN(baseTime.getTime())) return null;
 
-  const next = new Date(baseTime);
-
-  advanceByUnit(next, task.repeat_interval, task.repeat_unit, task.repeat_days_of_week ?? null);
   if (task.repeat_unit !== 'minutes' && task.repeat_unit !== 'hours' &&
       task.repeat_unit !== 'days' && task.repeat_unit !== 'weeks' &&
       task.repeat_unit !== 'months' && task.repeat_unit !== 'years' &&
@@ -62,11 +69,26 @@ export function calculateNextRun(task: ScheduledTask): string | null {
     return null;
   }
 
-  // If the computed next run is in the past (e.g., server was down), advance until future
+  const next = new Date(baseTime);
+
+  // Walk the anchor forward by whole intervals until we land strictly
+  // after now. The previous run's slot also has to be passed (we don't
+  // re-fire the same slot the agent just finished).
   const now = new Date();
-  while (next <= now && task.repeat_interval && task.repeat_unit) {
+  const lastSlot = task.last_run_at ? new Date(task.last_run_at) : null;
+  // Bound the loop — prevents infinite spin on a misconfigured interval.
+  // For specific_days the inner advancer is already bounded; for other
+  // units one decade of catch-up runs is far more than any real scenario.
+  const MAX_ADVANCE_STEPS = 10_000;
+  let steps = 0;
+  while (
+    steps < MAX_ADVANCE_STEPS &&
+    (next <= now || (lastSlot && next <= lastSlot))
+  ) {
     advanceByUnit(next, task.repeat_interval, task.repeat_unit, task.repeat_days_of_week ?? null);
+    steps++;
   }
+  if (steps >= MAX_ADVANCE_STEPS) return null;
 
   return next.toISOString();
 }

@@ -1005,6 +1005,10 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'string',
           description: 'For after_count: the number of runs (e.g., "5"). For on_date: an ISO8601 date (e.g., "2026-04-01"). Required when repeat_end_type is not "never".',
         },
+        anchor_time: {
+          type: 'string',
+          description: 'For recurring tasks: ISO 8601 timestamp that anchors all future runs (only the time-of-day matters — date components reflect when the anchor was set). DEFAULTS to scheduled_start; pass explicitly only if you want a different wall-clock time. Use this when the task should ALWAYS fire at a specific time-of-day regardless of how long each run takes — e.g. "every Monday at 06:00", not "every Monday whenever the previous run happened to finish." Without this, a 5-minute completion drifts the schedule by 5 minutes every cycle.',
+        },
         assigned_to_group: {
           type: 'string',
           description: 'Assign this task to a group instead of a specific agent. The PM will pick an available agent from the group at run time.',
@@ -1096,10 +1100,23 @@ export const toolDefinitions: ToolDefinition[] = [
           description: 'How the recurrence ends: "never" | "after_count" | "on_date".',
         },
         repeat_end_value: { type: 'string', description: 'Value for repeat_end_type ("after_count" → count of runs as string, "on_date" → ISO date).' },
+        anchor_time: { type: 'string', description: 'For recurring tasks: ISO 8601 timestamp that anchors all future runs (only the time-of-day matters for the drift fix — date components reflect when the anchor was set). Defaults to scheduled_start at task creation. Use this to change WHEN a recurring task fires without recreating it (e.g. "the weekly Monday task should run at 06:00 instead of 06:05"). Pass null or empty string to clear (next run will fall back to scheduled_start).' },
         priority: { type: 'string', description: 'Priority: "high" | "normal" | "low"' },
         notes: { type: 'string', description: 'Replace the notes field. To append rather than replace, use tracker_add_notes.' },
       },
       required: ['task_id'],
+    },
+  },
+  {
+    name: 'tracker_resolve_missed_runs',
+    description: 'Resolve a "missed runs" alert from the scheduler. When a recurring task is overdue by more than one full interval (typically because the platform was offline or the task was paused longer than expected), the scheduler auto-pauses the task and asks the assigned agent how to proceed. Call this with one of three actions: "run_now" (fire ONE catch-up run now, then resume normal anchor schedule — best when work is cumulative like "summarize what happened since last run"), "skip" (skip all missed slots, resume from the NEXT future anchor — best when each scheduled run is independent and stale, like "post today\'s reminder"), or "pause" (leave paused; the human user will resume via the dashboard). Only valid when the task is currently in the missed-runs paused state.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'The task ID the missed-runs alert was about.' },
+        action: { type: 'string', enum: ['run_now', 'skip', 'pause'], description: 'How to resolve. See the tool description for guidance on which to pick.' },
+      },
+      required: ['task_id', 'action'],
     },
   },
   {
@@ -3761,6 +3778,17 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         const trsErr = checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
         if (trsErr) { content = trsErr; isError = true; break; }
         content = trackerResumeSchedule(agentId, { taskId: args.task_id as string });
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'tracker_resolve_missed_runs': {
+        const trmrErr = checkRequired([
+          { name: 'task_id', value: args.task_id, type: 'string' },
+          { name: 'action', value: args.action, type: 'string' },
+        ]);
+        if (trmrErr) { content = trmrErr; isError = true; break; }
+        const { trackerResolveMissedRuns } = await import('../tracker/tools.js');
+        content = trackerResolveMissedRuns(agentId, args);
         isError = content.startsWith('Error');
         break;
       }

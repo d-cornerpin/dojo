@@ -374,13 +374,16 @@ export const Chat = () => {
   const { subscribe } = useWebSocket();
   const currentToolCallsRef = useRef<ToolCallData[]>([]);
 
-  // Auto-scroll — only when the last message changes (new message appended),
-  // not when older messages are prepended at the top
+  // Auto-scroll — fires on (a) new message appended and (b) the last
+  // message growing during streaming. Streaming-chunk scrolls only fire
+  // when the user is already near the bottom, so we don't yank them
+  // down if they scrolled up to read history. v2.5.45.
   const lastMessageIdRef = useRef<string | null>(null);
+  const lastMessageSigRef = useRef<string | null>(null);
   const scrollToBottom = useCallback((instant?: boolean) => {
     if (instant) {
-      // Instant scroll — used on initial load where smooth animation
-      // is distracting and scrollIntoView sometimes undershoots.
+      // Instant scroll — used on initial load and during streaming chunks
+      // (smooth-animating every chunk would queue jank).
       const container = messagesContainerRef.current;
       if (container) container.scrollTop = container.scrollHeight;
     } else {
@@ -389,10 +392,26 @@ export const Chat = () => {
   }, []);
 
   useEffect(() => {
-    const lastId = messages.length > 0 ? messages[messages.length - 1].id : null;
-    if (lastId && lastId !== lastMessageIdRef.current) {
-      lastMessageIdRef.current = lastId;
+    const last = messages.length > 0 ? messages[messages.length - 1] : null;
+    if (!last) return;
+    // Signature combines id + content length, so a streaming bubble whose
+    // id stays the same but whose content grows still triggers a re-scroll.
+    const sig = `${last.id}:${last.content?.length ?? 0}`;
+    if (sig === lastMessageSigRef.current) return;
+    const isNewMessage = last.id !== lastMessageIdRef.current;
+    lastMessageIdRef.current = last.id;
+    lastMessageSigRef.current = sig;
+    if (isNewMessage) {
       scrollToBottom();
+    } else {
+      // Same message growing (streaming chunk): only follow if user is
+      // near the bottom. ~80px slack so a slight scroll-up doesn't break
+      // the follow behavior, but reading older history isn't disturbed.
+      const container = messagesContainerRef.current;
+      if (container) {
+        const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+        if (nearBottom) scrollToBottom(true);
+      }
     }
   }, [messages, scrollToBottom]);
 

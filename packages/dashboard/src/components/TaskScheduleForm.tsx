@@ -18,6 +18,14 @@ export interface ScheduleConfig {
   repeatEndValue: string | null;
   /** v2.5.2 — CSV of day-of-week ints (0=Sun..6=Sat) for repeatUnit='specific_days'. */
   repeatDaysOfWeek: string | null;
+  /**
+   * v2.5.45 — Full ISO timestamp that anchors every future run of a
+   * recurring task. Only the time-of-day matters for the drift fix.
+   * Auto-populated from scheduledStart when the user enables repeat;
+   * editable via the "Runs at" field to change WHEN a recurring task
+   * fires without recreating it. Null = falls back to scheduledStart.
+   */
+  anchorTime: string | null;
 }
 
 const DAY_PILLS: Array<{ value: number; label: string }> = [
@@ -52,7 +60,29 @@ export const DEFAULT_SCHEDULE: ScheduleConfig = {
   repeatEndType: 'never',
   repeatEndValue: null,
   repeatDaysOfWeek: null,
+  anchorTime: null,
 };
+
+// Helpers for the "Runs at" time picker. The anchor is stored as a full
+// ISO timestamp (only the time-of-day is load-bearing) but the UI shows
+// just an HH:MM picker. On every edit we keep the anchor's date portion
+// stable and only mutate hours/minutes.
+function anchorTimeOfDay(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function applyTimeOfDayToAnchor(currentAnchorIso: string | null, fallbackIso: string | null, hhmm: string): string | null {
+  if (!hhmm) return null;
+  const [h, m] = hhmm.split(':').map((p) => parseInt(p, 10));
+  if (isNaN(h) || isNaN(m)) return null;
+  const base = currentAnchorIso ? new Date(currentAnchorIso) : (fallbackIso ? new Date(fallbackIso) : new Date());
+  if (isNaN(base.getTime())) return null;
+  base.setHours(h, m, 0, 0);
+  return base.toISOString();
+}
 
 export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => {
   const [enabled, setEnabled] = useState(!!value.scheduledStart);
@@ -123,8 +153,18 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
             <button
               onClick={() => {
                 setRepeatEnabled(!repeatEnabled);
-                if (repeatEnabled) update({ repeatInterval: null, repeatUnit: null, repeatEndType: 'never', repeatEndValue: null });
-                else update({ repeatInterval: 1, repeatUnit: 'days' });
+                if (repeatEnabled) {
+                  update({ repeatInterval: null, repeatUnit: null, repeatEndType: 'never', repeatEndValue: null, anchorTime: null });
+                } else {
+                  // v2.5.45 — auto-populate anchorTime from scheduledStart so
+                  // the recurring schedule preserves the user's chosen
+                  // time-of-day on every future run (no completion-drift).
+                  update({
+                    repeatInterval: 1,
+                    repeatUnit: 'days',
+                    anchorTime: value.anchorTime ?? value.scheduledStart ?? null,
+                  });
+                }
               }}
               className={`toggle-switch ${repeatEnabled ? 'toggle-on' : ''}`}
             >
@@ -134,6 +174,23 @@ export const TaskScheduleForm = ({ value, onChange }: TaskScheduleFormProps) => 
 
           {repeatEnabled && (
             <div className="space-y-2">
+              {/* v2.5.45 — Runs at (anchor time of day). Auto-populates from
+                  start time. Edit it later to change WHEN the recurring task
+                  fires without recreating the task. */}
+              <div>
+                <label className="text-xs text-ui/40 block mb-1">
+                  Runs at
+                  <span className="ml-2 text-ui/30 font-normal">— wall-clock anchor; ignores how long each run takes</span>
+                </label>
+                <input
+                  type="time"
+                  value={anchorTimeOfDay(value.anchorTime ?? value.scheduledStart)}
+                  onChange={(e) => update({
+                    anchorTime: applyTimeOfDayToAnchor(value.anchorTime, value.scheduledStart, e.target.value),
+                  })}
+                  className="glass-input text-sm"
+                />
+              </div>
               <div className="flex items-center gap-2">
                 {value.repeatUnit !== 'specific_days' && (
                   <>

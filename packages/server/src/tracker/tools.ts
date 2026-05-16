@@ -15,7 +15,7 @@ import {
 } from './schema.js';
 import { ensurePMAgentRunning } from './pm-agent.js';
 import { injectTaskAssignmentNotification } from './notify.js';
-import { calculateNextRun } from '../scheduler/engine.js';
+import { calculateNextRun, type ScheduledTask } from '../scheduler/engine.js';
 import { onTaskRunComplete } from '../scheduler/runner.js';
 import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../gateway/ws.js';
@@ -268,6 +268,19 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       // v2.5.2 — specific_days uses an explicit day-of-week allowlist.
       // Already normalized to CSV-of-ints by the tool dispatcher.
       const repeatDaysOfWeek = args.repeat_days_of_week as string | undefined;
+      // v2.5.45 — anchor_time defaults to scheduled_start, normalizing
+      // wall-clock alignment for all future recurring runs. Caller can
+      // override (e.g. agent setting "anchor at 06:00 even though I'm
+      // creating this at 14:23").
+      let anchorTime = args.anchor_time as string | undefined;
+      if (anchorTime) {
+        try {
+          const parsed = new Date(anchorTime);
+          if (!isNaN(parsed.getTime())) anchorTime = parsed.toISOString();
+        } catch { /* keep original */ }
+      } else if (repeatInterval) {
+        anchorTime = scheduledStart;
+      }
 
       const taskForCalc = {
         id: taskId,
@@ -282,6 +295,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
         next_run_at: null,
         schedule_status: 'waiting',
         repeat_days_of_week: repeatDaysOfWeek ?? null,
+        anchor_time: anchorTime ?? null,
       };
       const nextRun = calculateNextRun(taskForCalc) ?? scheduledStart;
 
@@ -289,11 +303,11 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
         UPDATE tasks SET
           scheduled_start = ?, repeat_interval = ?, repeat_unit = ?,
           repeat_end_type = ?, repeat_end_value = ?,
-          repeat_days_of_week = ?,
+          repeat_days_of_week = ?, anchor_time = ?,
           next_run_at = ?, schedule_status = 'waiting',
           updated_at = datetime('now')
         WHERE id = ?
-      `).run(scheduledStart, repeatInterval ?? null, repeatUnit ?? null, repeatEndType, repeatEndValue ?? null, repeatDaysOfWeek ?? null, nextRun, taskId);
+      `).run(scheduledStart, repeatInterval ?? null, repeatUnit ?? null, repeatEndType, repeatEndValue ?? null, repeatDaysOfWeek ?? null, anchorTime ?? null, nextRun, taskId);
     }
 
     // Handle group assignment
@@ -533,17 +547,18 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     const repeatEndType = (args.repeatEndType ?? args.repeat_end_type) as string | null | undefined;
     const repeatEndValue = (args.repeatEndValue ?? args.repeat_end_value) as string | null | undefined;
     const repeatDaysOfWeek = (args.repeatDaysOfWeek ?? args.repeat_days_of_week) as string | null | undefined;
+    const anchorTime = (args.anchorTime ?? args.anchor_time) as string | null | undefined;
     const priority = args.priority as string | undefined;
     const notes = args.notes as string | undefined;
 
     const editableKeys = [
       title, description, dependsOn, stepNumber, phase,
       scheduledStart, repeatInterval, repeatUnit, repeatEndType, repeatEndValue,
-      repeatDaysOfWeek,
+      repeatDaysOfWeek, anchorTime,
       priority, notes,
     ];
     if (editableKeys.every(v => v === undefined)) {
-      return 'Error: at least one editable field must be provided. Editable: title, description, depends_on, step_number, phase, scheduled_start, repeat_interval, repeat_unit, repeat_end_type, repeat_end_value, repeat_days_of_week, priority, notes. (For status changes use tracker_update_status; for assignee changes use tracker_reassign_task; for pause/resume use tracker_pause_schedule.)';
+      return 'Error: at least one editable field must be provided. Editable: title, description, depends_on, step_number, phase, scheduled_start, repeat_interval, repeat_unit, repeat_end_type, repeat_end_value, repeat_days_of_week, anchor_time, priority, notes. (For status changes use tracker_update_status; for assignee changes use tracker_reassign_task; for pause/resume use tracker_pause_schedule.)';
     }
 
     const updates: Parameters<typeof updateTask>[1] = {};
@@ -579,6 +594,18 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     if (repeatEndType !== undefined) updates.repeatEndType = repeatEndType;
     if (repeatEndValue !== undefined) updates.repeatEndValue = repeatEndValue;
     if (repeatDaysOfWeek !== undefined) updates.repeatDaysOfWeek = repeatDaysOfWeek;
+    if (anchorTime !== undefined) {
+      if (anchorTime === null || anchorTime === '') {
+        updates.anchorTime = null;
+      } else {
+        try {
+          const parsed = new Date(anchorTime);
+          updates.anchorTime = isNaN(parsed.getTime()) ? anchorTime : parsed.toISOString();
+        } catch {
+          updates.anchorTime = anchorTime;
+        }
+      }
+    }
     if (priority !== undefined) updates.priority = priority;
     if (notes !== undefined) updates.notes = notes;
 
@@ -597,7 +624,8 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       repeatUnit !== undefined ||
       repeatEndType !== undefined ||
       repeatEndValue !== undefined ||
-      repeatDaysOfWeek !== undefined
+      repeatDaysOfWeek !== undefined ||
+      anchorTime !== undefined
     );
     if (scheduleChanged) {
       try {
@@ -605,6 +633,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
         const row = db.prepare(`
           SELECT id, scheduled_start, repeat_interval, repeat_unit,
                  repeat_end_type, repeat_end_value, repeat_days_of_week,
+                 anchor_time,
                  run_count, is_paused, last_run_at, next_run_at, schedule_status
           FROM tasks WHERE id = ?
         `).get(taskId) as {
@@ -615,6 +644,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
           repeat_end_type: string | null;
           repeat_end_value: string | null;
           repeat_days_of_week: string | null;
+          anchor_time: string | null;
           run_count: number;
           is_paused: number;
           last_run_at: string | null;
@@ -1003,6 +1033,7 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
     last_run_at: task.last_run_at as string | null,
     next_run_at: null,
     schedule_status: 'waiting',
+    anchor_time: task.anchor_time as string | null,
   };
 
   const nextRun = calculateNextRun(scheduledTask);
@@ -1010,4 +1041,82 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
 
   logger.info('Schedule resumed', { taskId, nextRun }, agentId);
   return `Schedule resumed for "${task.title as string}". Next run: ${nextRun ?? 'none'}`;
+}
+
+// ── trackerResolveMissedRuns (v2.5.45) ──
+// Called by the assigned agent after the scheduler fires a "missed runs"
+// alert. Three actions: run_now, skip, pause. See the alert text in
+// runner.ts / alertMissedRuns for the semantics.
+
+export function trackerResolveMissedRuns(agentId: string, args: Record<string, unknown>): string {
+  const rawTaskId = (args.task_id ?? args.taskId) as string | undefined;
+  if (!rawTaskId) return 'Error: task_id is required.';
+  const action = args.action as string | undefined;
+  if (!action || !['run_now', 'skip', 'pause'].includes(action)) {
+    return 'Error: action must be one of: "run_now", "skip", "pause".';
+  }
+
+  const resolved = resolveTaskId(rawTaskId);
+  if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+  const taskId = resolved.id;
+
+  const db = getDb();
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as Record<string, unknown> | undefined;
+  if (!task) return `Error: Task ${taskId} no longer exists.`;
+  const title = (task.title as string) ?? '(untitled)';
+
+  if (action === 'pause') {
+    // Already paused by the alert handler; just confirm and exit. No
+    // state change needed beyond what alertMissedRuns already did.
+    logger.info('Missed-runs resolved: pause', { taskId }, agentId);
+    return `OK: task "${title}" stays paused. The user can resume it from the dashboard, or you can later call tracker_resume_schedule.`;
+  }
+
+  if (action === 'skip') {
+    // Compute next future anchor (strictly > now). calculateNextRun
+    // already does this when fed an unpaused snapshot — its inner loop
+    // walks the anchor forward until it lands in the future.
+    const scheduledTask: ScheduledTask = {
+      id: task.id as string,
+      scheduled_start: task.scheduled_start as string | null,
+      repeat_interval: task.repeat_interval as number | null,
+      repeat_unit: task.repeat_unit as string | null,
+      repeat_end_type: task.repeat_end_type as string | null,
+      repeat_end_value: task.repeat_end_value as string | null,
+      run_count: (task.run_count as number) ?? 0,
+      is_paused: 0,
+      last_run_at: new Date().toISOString(), // pretend a run just happened, so the loop skips current slot
+      next_run_at: null,
+      schedule_status: 'waiting',
+      repeat_days_of_week: task.repeat_days_of_week as string | null,
+      anchor_time: task.anchor_time as string | null,
+    };
+    const nextRun = calculateNextRun(scheduledTask);
+    if (!nextRun) {
+      // End conditions reached or anchor unset — leave paused.
+      return `Could not compute a next-run for "${title}" (likely past repeat_end_value or anchor missing). Task stays paused; investigate manually.`;
+    }
+    db.prepare(`
+      UPDATE tasks
+      SET is_paused = 0, schedule_status = 'waiting', status = 'on_deck',
+          next_run_at = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(nextRun, taskId);
+    logger.info('Missed-runs resolved: skip', { taskId, nextRun }, agentId);
+    return `OK: task "${title}" unpaused. All missed slots skipped. Next run: ${nextRun}.`;
+  }
+
+  // action === 'run_now': fire one catch-up run immediately. Set
+  // next_run_at to now so the next scheduler tick picks it up. After
+  // that run completes, onTaskRunComplete will compute the natural
+  // next anchor and the task resumes its normal cadence.
+  const nowIso = new Date().toISOString();
+  db.prepare(`
+    UPDATE tasks
+    SET is_paused = 0, schedule_status = 'waiting', status = 'on_deck',
+        next_run_at = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(nowIso, taskId);
+  logger.info('Missed-runs resolved: run_now', { taskId }, agentId);
+  return `OK: task "${title}" unpaused and scheduled to fire on the next scheduler tick (within ~1 minute). Schedule resumes on its normal anchor after this run completes.`;
 }
