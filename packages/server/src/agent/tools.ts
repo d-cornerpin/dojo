@@ -1692,7 +1692,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'use_technique',
-    description: 'Load a technique\'s full instructions into your context so you can follow them. All agents can use published techniques.',
+    description: 'Activate and load a technique. Prefer technique_read for browsing/searching — use_technique now returns an outline (sections + supporting files + sizes), and you call technique_read action="section" to read specific parts. Big techniques no longer truncate.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1700,6 +1700,24 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['name'],
     },
+  },
+  {
+    name: 'technique_read',
+    description: 'Read a technique with surgical precision instead of slurping the whole thing. Five actions: (1) outline [default] — returns headings, line ranges, char counts, and supporting files; never truncates; ALWAYS your first call when consulting a technique. (2) section — read one section by section_name="<title>" (case-insensitive substring match) or lines="start-end"; oversize sections require explicit line ranges. (3) search — query="<term>" greps TECHNIQUE.md AND all supporting files, returns matches with file + line number + surrounding context; best path through a huge technique. (4) list_files — list the technique\'s supporting files. (5) read_file — read one supporting file by file="<path>", optional lines="start-end". DOCUMENT > MEMORY: when in doubt about what a technique says, call this — your conversation memory is compacted and often wrong; the technique file on disk is the source of truth.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Technique ID, slug, or display name.' },
+        action: { type: 'string', enum: ['outline', 'section', 'search', 'list_files', 'read_file'], description: 'Which read to perform. Default: outline.' },
+        section_name: { type: 'string', description: 'For action="section": the heading title (case-insensitive substring match, e.g. "Stage 1" matches "## Stage 1 — Brief").' },
+        lines: { type: 'string', description: 'For action="section" or action="read_file": line range like "100-200" (inclusive, 1-indexed).' },
+        query: { type: 'string', description: 'For action="search": text to find (case-insensitive substring).' },
+        include_files: { type: 'boolean', description: 'For action="search": include supporting files in the search. Default true.' },
+        file: { type: 'string', description: 'For action="read_file": relative path inside the technique directory (e.g. "templates/brief.md").' },
+      },
+      required: ['name'],
+    },
+    concurrency: 'safe',
   },
   {
     name: 'list_techniques',
@@ -5506,11 +5524,36 @@ Thread is closed — respond to the user, not Imaginer.`;
         break;
       }
       case 'use_technique': {
+        // v2.5.44 — use_technique now redirects to technique_read(outline).
+        // Old behavior dumped the entire TECHNIQUE.md into the result and
+        // truncated past 72K chars, which caused agents to either flounder
+        // on huge techniques or fall back to memory. New behavior returns
+        // the outline + a hint to call technique_read for specific parts.
+        // Existing callers keep working with safer semantics.
         const utErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
         if (utErr) { content = utErr; isError = true; break; }
-        const { executeUseTechnique } = await import('../techniques/tools.js');
+        const { executeTechniqueRead } = await import('../techniques/tools.js');
         const agentRow2 = getDb().prepare('SELECT name, group_id FROM agents WHERE id = ?').get(agentId) as { name: string; group_id: string | null } | undefined;
-        content = executeUseTechnique(agentId, agentRow2?.name ?? agentId, agentRow2?.group_id ?? null, args);
+        content = executeTechniqueRead(
+          agentId,
+          agentRow2?.name ?? agentId,
+          agentRow2?.group_id ?? null,
+          { name: args.name, action: 'outline' },
+        );
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'technique_read': {
+        const trErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
+        if (trErr) { content = trErr; isError = true; break; }
+        const { executeTechniqueRead } = await import('../techniques/tools.js');
+        const trRow = getDb().prepare('SELECT name, group_id FROM agents WHERE id = ?').get(agentId) as { name: string; group_id: string | null } | undefined;
+        content = executeTechniqueRead(
+          agentId,
+          trRow?.name ?? agentId,
+          trRow?.group_id ?? null,
+          args,
+        );
         isError = content.startsWith('Error');
         break;
       }

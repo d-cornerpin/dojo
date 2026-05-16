@@ -54,6 +54,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   list_groups: 'safe',
   list_techniques: 'safe',
   technique_list_versions: 'safe',
+  technique_read: 'safe',
   get_agent_profile: 'safe',
   // Google read-only
   gmail_search: 'safe',

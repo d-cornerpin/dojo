@@ -57,8 +57,9 @@ const LOADING_TOOLS = new Set<string>([
   // Agent introspection
   'get_agent_profile',
   'list_agents',
-  // Techniques (use_technique loads a full doc into context)
+  // Techniques (use_technique + technique_read pull content into context)
   'use_technique',
+  'technique_read',
   'list_techniques',
   'technique_list_versions',
   // Google reads

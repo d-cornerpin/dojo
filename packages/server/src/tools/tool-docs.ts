@@ -46,6 +46,7 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'show_to_user',
   'recall_recent_thread',
   'scratchpad_set',
+  'technique_read',
 ];
 
 // PM agent: tracker-focused, monitors tasks and sends messages to other agents.
@@ -120,6 +121,7 @@ export const SUB_AGENT_ALWAYS_LOADED = [
   'image_create',
   'show_to_user',
   'recall_recent_thread',
+  'technique_read',
 ];
 
 // ── Per-session tool loading state ──
