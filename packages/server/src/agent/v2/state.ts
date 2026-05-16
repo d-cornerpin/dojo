@@ -139,6 +139,30 @@ export interface AgentTurnState {
    * tasks; the hardcap ends the turn cleanly if the agent ignores it.
    */
   nudgedForTrackerCloseThisTurn: boolean;
+  /**
+   * v2.5.43 — running count of loading-tool calls (file_read, exec,
+   * vault_search, get_agent_profile, web_fetch, use_technique, etc.)
+   * executed THIS turn. Used by the anti-hoarding gate to refuse the
+   * (LOADING_GATE_THRESHOLD + 1)th loading call when no structuring
+   * has happened. Per-turn only; resets each turn.
+   */
+  loadingToolCallsThisTurn: number;
+  /**
+   * v2.5.43 — flips true the moment the agent calls any structuring
+   * tool (tracker_create_project, file_write, file_append, file_patch,
+   * scratchpad_set, tracker_create_task, tracker_update_status,
+   * tracker_complete_step, tracker_add_notes, tracker_edit_task) THIS
+   * turn. Once true, the anti-hoarding gate is permanently satisfied
+   * for the remainder of this turn.
+   */
+  structuringToolCalledThisTurn: boolean;
+  /**
+   * v2.5.43 — fire-once flag for the loud system message that
+   * accompanies the first hoarding-gate refusal in a turn. The
+   * synthetic tool-result refusal happens on every blocked call; the
+   * system message only fires once per turn.
+   */
+  nudgedForHoardingThisTurn: boolean;
 
   // ── Pre-flight enforcement decisions ──
   readonly shouldNudgeTracker: boolean;
@@ -216,6 +240,9 @@ export function initState(params: InitStateParams): AgentTurnState {
     nudgedForTrackerThisTurn: false,
     trackerStatusUpdatedThisTurn: false,
     nudgedForTrackerCloseThisTurn: false,
+    loadingToolCallsThisTurn: 0,
+    structuringToolCalledThisTurn: false,
+    nudgedForHoardingThisTurn: false,
 
     shouldNudgeTracker: params.shouldNudgeTracker,
 

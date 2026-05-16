@@ -82,6 +82,12 @@ import {
 
 import { partitionTools, type ToolBatch } from './classifiers/concurrency.js';
 import { loopDetector, RECENT_TOOL_WINDOW } from './classifiers/loop.js';
+import {
+  isLoadingTool,
+  isStructuringTool,
+  buildHoardingRefusal,
+  LOADING_GATE_THRESHOLD,
+} from './classifiers/hoarding.js';
 // ackInjector intentionally NOT imported — engine ack disabled per invariant
 // review (see "Engine-injected ack — DISABLED" comment below).
 import { trackerEnforcer } from './classifiers/tracker.js';
@@ -1569,6 +1575,69 @@ export async function runV2Turn(agentId: string): Promise<void> {
               isError: true,
             };
           }
+          // ── Anti-hoarding gate (v2.5.43) ──
+          // Refuse loading-tool calls past LOADING_GATE_THRESHOLD when no
+          // structuring (tracker_create_*, file_write/append/patch,
+          // scratchpad_set, tracker_update_status, etc.) has happened
+          // this turn. Engine enforcement of the corpus-synthesis pattern
+          // — prompt-level guidance was being ignored on prod by
+          // DeepSeek V4 Pro. See classifiers/hoarding.ts for full
+          // rationale. The structuring call itself is NEVER refused
+          // (we check loading-only), and once any structuring happens
+          // the gate is permanently off for the rest of the turn.
+          if (
+            !state.structuringToolCalledThisTurn &&
+            isLoadingTool(tc.name) &&
+            state.loadingToolCallsThisTurn >= LOADING_GATE_THRESHOLD
+          ) {
+            const refusalText = buildHoardingRefusal(tc.name, state.loadingToolCallsThisTurn);
+            // Broadcast refused call so it shows in the UI as a tool result
+            try {
+              broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
+              broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusalText.slice(0, 500) });
+            } catch { /* best effort */ }
+            // Loud one-shot system message on first fire of the turn
+            if (!state.nudgedForHoardingThisTurn) {
+              const sysMsg = (
+                `[System: anti-hoarding gate engaged. The ${tc.name} call you just made was refused because you've ` +
+                `loaded ${state.loadingToolCallsThisTurn} sources this turn without scaffolding. Read the refusal ` +
+                `text in your next tool result for the qualifying actions. The engine will continue refusing ` +
+                `loading calls until you call one of: tracker_create_project, tracker_create_task, file_write, ` +
+                `file_append, file_patch, or scratchpad_set.]`
+              );
+              const sysMsgId = uuidv4();
+              try {
+                db.prepare(`
+                  INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+                  VALUES (?, ?, 'system', ?, ?, datetime('now'))
+                `).run(sysMsgId, agentId, sysMsg, turnNumber);
+                broadcast({
+                  type: 'chat:message',
+                  agentId,
+                  message: {
+                    id: sysMsgId, agentId, role: 'system' as const,
+                    content: sysMsg,
+                    tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                    createdAt: new Date().toISOString(),
+                  },
+                });
+              } catch (sysErr) {
+                logger.warn('v2: hoarding-gate sys-message insert failed', {
+                  agentId, err: sysErr instanceof Error ? sysErr.message : String(sysErr),
+                }, agentId);
+              }
+              state = advance(state, { nudgedForHoardingThisTurn: true });
+              logger.info('v2: hoarding gate fired', {
+                agentId, tool: tc.name, loadingCount: state.loadingToolCallsThisTurn,
+              }, agentId);
+            }
+            return {
+              toolCallId: tc.id,
+              name: tc.name,
+              content: refusalText,
+              isError: true,
+            };
+          }
           // Broadcast tool call
           try {
             broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
@@ -1576,6 +1645,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // Track sentToAgentThisTurn for downstream classifiers
           if (tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group') {
             state = advance(state, { sentToAgentThisTurn: true });
+          }
+          // ── Anti-hoarding accounting (v2.5.43) ──
+          // Flip structuring flag the moment the call is dispatched (not
+          // after — we want sibling parallel loading calls in the SAME
+          // batch to also satisfy the gate if they're paired with a
+          // structuring sibling). Increment loading count on dispatch
+          // so the next batch's gate check sees the right number even
+          // if the executor below still has work to do.
+          if (isStructuringTool(tc.name)) {
+            state = advance(state, { structuringToolCalledThisTurn: true });
+          } else if (isLoadingTool(tc.name)) {
+            state = advance(state, { loadingToolCallsThisTurn: state.loadingToolCallsThisTurn + 1 });
           }
           // Execute (with safety wrapper)
           let toolResult;
