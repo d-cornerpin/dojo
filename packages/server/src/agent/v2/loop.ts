@@ -256,6 +256,79 @@ export async function runV2Turn(agentId: string): Promise<void> {
     shouldNudgeTracker: false, // Phase 2.1 may compute this; baseline disabled
   });
 
+  // ── v2.5.46: pre-turn close-out gate detection ──
+  // Look up in_progress tasks assigned to this agent that were NOT
+  // touched since the start of this turn (i.e. they're stale carry-
+  // overs from a prior turn the agent never closed). These will be
+  // surfaced to the agent at the top of the assembled context and the
+  // tool dispatcher will refuse non-tracker calls until at least one
+  // is resolved.
+  //
+  // Per user spec ("if we default to agents creating tasks, they MUST
+  // also close them out"): tracker hygiene is no longer a soft nudge,
+  // it's a hard precondition for new work.
+  try {
+    const danglingRows = db.prepare(`
+      SELECT id, title FROM tasks
+      WHERE assigned_to = ?
+        AND status = 'in_progress'
+        AND is_paused = 0
+        AND updated_at < ?
+      ORDER BY updated_at ASC
+      LIMIT 10
+    `).all(agentId, turnStartedAt) as Array<{ id: string; title: string }>;
+    if (danglingRows.length > 0) {
+      state = advance(state, {
+        danglingTaskIds: danglingRows.map((r) => r.id),
+        nudgedForCloseOutThisTurn: true,
+      });
+      const taskList = danglingRows
+        .map((r) => `  - "${r.title}" (${r.id.slice(0, 8)})`)
+        .join('\n');
+      const gateMsg = (
+        `[System: REQUIRED close-out — you have ${danglingRows.length} in_progress task${danglingRows.length === 1 ? '' : 's'} ` +
+        `assigned to you from a previous turn that you never closed:\n` +
+        `${taskList}\n` +
+        `Before doing ANYTHING else this turn, call tracker_complete_step (for multi-step projects) or ` +
+        `tracker_update_status (with status="complete" | "blocked" | "paused") on each one. The engine will REFUSE ` +
+        `all non-tracker tool calls until at least one is resolved; the refusal disengages for the rest of the ` +
+        `turn after that, so you can keep resolving the others at your own pace alongside other work.\n\n` +
+        `If a task is genuinely still in flight (you're working on it across turns), call tracker_add_notes on ` +
+        `it with a brief progress note — that signals "still working" and disengages the gate without forcing ` +
+        `you to close prematurely.]`
+      );
+      const gateMsgId = uuidv4();
+      try {
+        db.prepare(`
+          INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+          VALUES (?, ?, 'system', ?, datetime('now'))
+        `).run(gateMsgId, agentId, gateMsg);
+        broadcast({
+          type: 'chat:message',
+          agentId,
+          message: {
+            id: gateMsgId, agentId, role: 'system' as const,
+            content: gateMsg,
+            tokenCount: null, modelId: null, cost: null, latencyMs: null,
+            createdAt: new Date().toISOString(),
+          },
+        });
+      } catch (msgErr) {
+        logger.warn('v2: close-out gate system message insert failed', {
+          agentId, error: msgErr instanceof Error ? msgErr.message : String(msgErr),
+        }, agentId);
+      }
+      logger.info('v2: pre-turn close-out gate armed', {
+        agentId, danglingCount: danglingRows.length,
+        sample: danglingRows.slice(0, 3).map((r) => `${r.id.slice(0, 8)}:${r.title}`),
+      }, agentId);
+    }
+  } catch (err) {
+    logger.warn('v2: dangling-task lookup failed; close-out gate disarmed for this turn', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+
   try {
     // ── Main loop ──
     while (state.phase !== 'done' && state.loopCount < MAX_TOOL_LOOPS) {
@@ -1426,6 +1499,81 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // tracker status, end the turn cleanly. Don't loop forever.
         const agentProducedText = !!(persistedContent && persistedContent.trim().length > 0);
         if (agentProducedText) {
+          // ── v2.5.46: pre-turn close-out gate — one-shot enforcement ──
+          // The pre-turn system message already gave the agent a chance
+          // to engage with the tracker BEFORE generating any response.
+          // If they produced text instead of calling a tracker tool,
+          // they've forfeited the chance. Auto-pause the danglers
+          // immediately and end the turn.
+          //
+          // No "second chance" hard nudge: the prior implementation
+          // streamed a second response to the user before the duplicate
+          // detector could suppress it — the user saw two responses.
+          // One shot, then engine takeover.
+          if (
+            state.danglingTaskIds.length > 0 &&
+            !state.closeOutGateSatisfied
+          ) {
+            try {
+              const noteTemplate = `[${new Date().toISOString()}] Auto-paused by engine: agent "${agentId}" ignored the pre-turn close-out gate (produced a user-facing response without calling tracker_update_status / tracker_complete_step / tracker_add_notes). User: reassign or resolve manually from the dashboard.`;
+              const updateStmt = db.prepare(`
+                UPDATE tasks
+                SET status = 'paused', is_paused = 1, status_before_pause = 'in_progress',
+                    notes = COALESCE(notes, '') || ? || char(10),
+                    updated_at = datetime('now')
+                WHERE id = ? AND status = 'in_progress'
+              `);
+              let pausedCount = 0;
+              for (const tid of state.danglingTaskIds) {
+                const res = updateStmt.run(noteTemplate, tid);
+                if (res.changes > 0) pausedCount++;
+              }
+              if (pausedCount > 0) {
+                const closeOutMsg = (
+                  `[System: ${pausedCount} dangling task${pausedCount === 1 ? '' : 's'} that you refused to close was auto-paused by the engine. ` +
+                  `Task IDs: ${state.danglingTaskIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ')}${state.danglingTaskIds.length > 5 ? '...' : ''}. ` +
+                  `The user sees these as "paused" in the kanban and can reassign or wake you on them manually. ` +
+                  `This is the final escalation after you ignored the pre-turn gate. Next time the gate fires, ` +
+                  `call tracker_update_status / tracker_complete_step / tracker_add_notes — even just to signal "still working."]`
+                );
+                const closeOutMsgId = uuidv4();
+                try {
+                  db.prepare(`
+                    INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+                    VALUES (?, ?, 'system', ?, ?, datetime('now'))
+                  `).run(closeOutMsgId, agentId, closeOutMsg, turnNumber);
+                  broadcast({
+                    type: 'chat:message',
+                    agentId,
+                    message: {
+                      id: closeOutMsgId, agentId, role: 'system' as const,
+                      content: closeOutMsg,
+                      tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                      createdAt: new Date().toISOString(),
+                    },
+                  });
+                } catch { /* best effort */ }
+                try {
+                  const { getTask } = await import('../../tracker/schema.js');
+                  for (const tid of state.danglingTaskIds) {
+                    const updatedTask = getTask(tid);
+                    if (updatedTask) {
+                      broadcast({ type: 'tracker:task_updated', data: updatedTask } as never);
+                    }
+                  }
+                } catch { /* best effort */ }
+                logger.warn('v2: close-out one-shot escalation — auto-paused dangling tasks', {
+                  agentId, pausedCount, totalDangling: state.danglingTaskIds.length,
+                }, agentId);
+              }
+            } catch (escErr) {
+              logger.error('v2: close-out one-shot escalation failed', {
+                agentId, error: escErr instanceof Error ? escErr.message : String(escErr),
+              }, agentId);
+            }
+            break;
+          }
+
           if (
             state.nudgedForTrackerCloseThisTurn &&
             !state.trackerStatusUpdatedThisTurn
@@ -1638,6 +1786,53 @@ export async function runV2Turn(agentId: string): Promise<void> {
               isError: true,
             };
           }
+          // ── Pre-turn close-out gate (v2.5.46) ──
+          // Refuse non-tracker tool calls when the agent has dangling
+          // in_progress tasks from a previous turn. The agent MUST
+          // engage with the tracker (status update, complete_step, or
+          // add_notes for "still working") before doing other work.
+          // Once any qualifying tracker call lands, the gate disengages
+          // for the rest of the turn (re-arms next turn if there are
+          // still danglers).
+          const CLOSE_OUT_TRACKER_TOOLS = new Set([
+            'tracker_update_status',
+            'tracker_complete_step',
+            'tracker_add_notes',
+            'tracker_get_status',         // read-only allowed (investigate before resolving)
+            'tracker_list_active',        // ditto
+            'tracker_edit_task',           // editing the task counts as engagement
+            'tracker_pause_schedule',
+            'tracker_resume_schedule',
+            'tracker_resolve_missed_runs',
+          ]);
+          if (
+            state.danglingTaskIds.length > 0 &&
+            !state.closeOutGateSatisfied &&
+            !CLOSE_OUT_TRACKER_TOOLS.has(tc.name)
+          ) {
+            const taskListShort = state.danglingTaskIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ');
+            const refusalText = (
+              `Refused: engine close-out gate. You have ${state.danglingTaskIds.length} in_progress ` +
+              `task(s) from a previous turn that you never closed (ids: ${taskListShort}${state.danglingTaskIds.length > 5 ? '...' : ''}). ` +
+              `Before any other tool call, resolve at least one with tracker_complete_step, ` +
+              `tracker_update_status (complete | blocked | paused), or — if you're genuinely still working ` +
+              `on it across turns — tracker_add_notes to signal "in flight." After ANY one of those, the gate ` +
+              `disengages for the rest of this turn and "${tc.name}" will work normally.`
+            );
+            try {
+              broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
+              broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusalText.slice(0, 500) });
+            } catch { /* best effort */ }
+            logger.info('v2: close-out gate refused call', {
+              agentId, tool: tc.name, danglingCount: state.danglingTaskIds.length,
+            }, agentId);
+            return {
+              toolCallId: tc.id,
+              name: tc.name,
+              content: refusalText,
+              isError: true,
+            };
+          }
           // Broadcast tool call
           try {
             broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
@@ -1645,6 +1840,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // Track sentToAgentThisTurn for downstream classifiers
           if (tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group') {
             state = advance(state, { sentToAgentThisTurn: true });
+          }
+          // ── Close-out gate satisfaction (v2.5.46) ──
+          // If the agent is taking a qualifying tracker action this
+          // turn (status update, complete_step, add_notes), disengage
+          // the close-out gate for the remainder of the turn. They can
+          // keep resolving the other dangling tasks but they're no
+          // longer forced to.
+          if (
+            state.danglingTaskIds.length > 0 &&
+            !state.closeOutGateSatisfied &&
+            (tc.name === 'tracker_update_status' || tc.name === 'tracker_complete_step' || tc.name === 'tracker_add_notes')
+          ) {
+            state = advance(state, { closeOutGateSatisfied: true });
+            logger.info('v2: close-out gate satisfied', { agentId, tool: tc.name }, agentId);
           }
           // ── Anti-hoarding accounting (v2.5.43) ──
           // Flip structuring flag the moment the call is dispatched (not

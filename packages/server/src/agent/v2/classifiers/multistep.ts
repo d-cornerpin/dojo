@@ -243,6 +243,36 @@ export async function multistepLLMClassify(
   }
 }
 
+// ── User explicitly requesting project creation ──
+//
+// v2.5.46 — Audit found that the multistep auto-create fires on prompts
+// like "Start a project called X with step 1 and step 2." The classifier
+// sees 3+ action verbs and creates an umbrella task. Then the agent
+// (correctly) builds its OWN multi-step project structure. The
+// auto-created umbrella becomes a redundant dangler that never gets
+// closed — triggering the close-out gate next turn for no good reason.
+//
+// Fix: when the user explicitly asks the agent to create a tracker
+// entity ("start a project", "create a task", "add to the tracker"),
+// skip auto-create and let the agent do it themselves. The new v2.5.46
+// reflex bullet defaults agents toward tracker_create_project for any
+// non-trivial work, so we can trust the agent to follow through.
+
+const EXPLICIT_CREATION_PATTERNS: readonly RegExp[] = [
+  // "start/create/make/set up/open/build a project"
+  /\b(start|create|make|set ?up|open|build|spin ?up)\s+(a |an |the |another )?(new\s+)?(tracker\s+)?project\b/i,
+  // "start/create/add a task" / "create a tracker task"
+  /\b(start|create|make|add|put|register)\s+(a |an |the |another )?(new\s+)?(tracker\s+)?task\b/i,
+  // "(track|log|put|add) this/it/that in/into the tracker"
+  /\b(track|log|put|add)\s+(this|it|that|these|them)\s+(in|into|on|to)\s+(the\s+)?tracker\b/i,
+  // "tracker entry for X"
+  /\b(open|create|make|start)\s+(a |an |the )?(tracker\s+entry|tracker\s+item|tracker\s+record)\b/i,
+];
+
+export function userExplicitlyAsksToCreateTracker(query: string): boolean {
+  return EXPLICIT_CREATION_PATTERNS.some((re) => re.test(query));
+}
+
 // ── Top-level decision ──
 
 export interface MultistepDecision {
@@ -250,7 +280,7 @@ export interface MultistepDecision {
   /** Suggested project name, or null. Caller may fall back to first 50 chars. */
   name: string | null;
   /** How we decided — for logging. */
-  source: 'heuristic_single' | 'heuristic_multi' | 'llm_single' | 'llm_multi' | 'fallback_multi' | 'disabled';
+  source: 'heuristic_single' | 'heuristic_multi' | 'llm_single' | 'llm_multi' | 'fallback_multi' | 'disabled' | 'user_creating_explicitly';
   heuristic: MultistepHeuristic;
 }
 
@@ -262,6 +292,14 @@ export async function detectMultistep(
 
   if (!config.enabled) {
     return { multistep: false, name: null, source: 'disabled', heuristic };
+  }
+
+  // v2.5.46 — explicit project-creation request → skip auto-create.
+  // The user wants the agent to build the structure themselves; an
+  // auto-created umbrella task would be redundant and would orphan
+  // when the agent finishes their own structure.
+  if (userExplicitlyAsksToCreateTracker(query)) {
+    return { multistep: false, name: null, source: 'user_creating_explicitly', heuristic };
   }
 
   if (heuristic.decision === 'definitely_single') {

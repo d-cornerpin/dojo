@@ -98,6 +98,13 @@ const LOADING_TOOLS = new Set<string>([
  * "Structuring" tools: calling any of these in a turn proves the agent
  * has somewhere for the loading work to land. Satisfies the gate for
  * the rest of the turn.
+ *
+ * v2.5.46 — scratchpad_set REMOVED from the structuring set. Per the
+ * tracker-adoption audit, agents were satisfying the gate with a
+ * one-liner scratchpad call (the cheapest escape) and never opening a
+ * tracker project. Scratchpad is for in-flight memory INSIDE a tracker
+ * step, not a substitute for the durable plan. Now requires a real
+ * tracker action or a real file write.
  */
 const STRUCTURING_TOOLS = new Set<string>([
   'tracker_create_project',
@@ -109,7 +116,6 @@ const STRUCTURING_TOOLS = new Set<string>([
   'file_write',
   'file_append',
   'file_patch',
-  'scratchpad_set',
 ]);
 
 export function isLoadingTool(name: string): boolean {
@@ -129,14 +135,18 @@ export function isStructuringTool(name: string): boolean {
 export function buildHoardingRefusal(toolName: string, loadingCount: number): string {
   return (
     `Refused: engine anti-hoarding gate. You've made ${loadingCount} source-loading tool calls this turn ` +
-    `(file_read, get_agent_profile, exec, vault_search, web_fetch, etc.) without structuring any of the work. ` +
-    `Loading more sources without a place for them to land causes summarization confabulation: when context fills, ` +
-    `older sources get summarized and you write the deliverable from your own summarized memory instead of source.\n\n` +
-    `Before another loading call, do ONE of:\n` +
-    `  - tracker_create_project (with a sub-task per batch you plan to load), or tracker_create_task on an existing project\n` +
+    `(file_read, get_agent_profile, exec, vault_search, web_fetch, etc.) without opening a durable plan for the work.\n\n` +
+    `**\`tracker_create_project\` is the right answer here.** Loading more sources without a tracker entry causes ` +
+    `summarization confabulation: when context fills, older sources get summarized and you write the deliverable ` +
+    `from your own summarized memory instead of source. Tracker rows survive compaction; context does not.\n\n` +
+    `Open one with just a title — you don't need to know every task upfront. Add tasks with tracker_create_task ` +
+    `as you discover the shape of the work. If you're not sure whether to open a tracker, open one — the cost is zero.\n\n` +
+    `Acceptable alternatives (only if this work will genuinely finish in THIS turn and produce no deliverable):\n` +
     `  - file_write to scaffold the deliverable now (section headers + placeholders)\n` +
-    `  - scratchpad_set to capture what you've extracted so far\n` +
     `  - file_append / file_patch if you're building on a file you already started\n\n` +
-    `After ANY one of those, loading tools (including the refused "${toolName}" call) work normally for the rest of this turn.`
+    `NOTE: scratchpad_set does NOT satisfy this gate. Scratchpad is for in-flight working memory INSIDE a ` +
+    `tracker step, not a substitute for the durable plan. After you open a tracker, scratchpad becomes useful.\n\n` +
+    `After ANY one of the qualifying actions above, loading tools (including the refused "${toolName}" call) ` +
+    `work normally for the rest of this turn.`
   );
 }

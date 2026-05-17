@@ -149,11 +149,16 @@ export interface AgentTurnState {
   loadingToolCallsThisTurn: number;
   /**
    * v2.5.43 — flips true the moment the agent calls any structuring
-   * tool (tracker_create_project, file_write, file_append, file_patch,
-   * scratchpad_set, tracker_create_task, tracker_update_status,
-   * tracker_complete_step, tracker_add_notes, tracker_edit_task) THIS
-   * turn. Once true, the anti-hoarding gate is permanently satisfied
-   * for the remainder of this turn.
+   * tool (tracker_create_project, tracker_create_task, tracker_update_
+   * status, tracker_complete_step, tracker_add_notes, tracker_edit_task,
+   * file_write, file_append, file_patch) THIS turn. Once true, the
+   * anti-hoarding gate is permanently satisfied for the remainder of
+   * this turn.
+   *
+   * v2.5.46 — scratchpad_set was REMOVED from this set after a tracker-
+   * adoption audit showed it was the cheapest escape and being used as
+   * a substitute for the durable plan. Scratchpad is now only an
+   * in-flight helper inside tracker steps.
    */
   structuringToolCalledThisTurn: boolean;
   /**
@@ -163,6 +168,28 @@ export interface AgentTurnState {
    * system message only fires once per turn.
    */
   nudgedForHoardingThisTurn: boolean;
+  /**
+   * v2.5.46 — pre-turn close-out gate. At preflight we look up the
+   * agent's in_progress tasks that were NOT touched in the previous
+   * turn. If any exist, this list is populated. Until at least one of
+   * them is resolved (tracker_update_status / tracker_complete_step),
+   * the tool dispatcher refuses non-tracker tool calls.
+   */
+  danglingTaskIds: readonly string[];
+  /**
+   * v2.5.46 — flips true the moment the agent closes (status updated)
+   * any in_progress task this turn. Disengages the close-out gate for
+   * the remainder of the turn (further close-outs encouraged but not
+   * forced; the gate fires fresh next turn if there are still danglers).
+   */
+  closeOutGateSatisfied: boolean;
+  /**
+   * v2.5.46 — fire-once flag for the loud system message that
+   * accompanies the first close-out gate refusal in a turn. Set true
+   * in preflight when the gate is armed; used by enforcement code to
+   * tell "gate is armed for this turn" from "no danglers."
+   */
+  nudgedForCloseOutThisTurn: boolean;
 
   // ── Pre-flight enforcement decisions ──
   readonly shouldNudgeTracker: boolean;
@@ -243,6 +270,9 @@ export function initState(params: InitStateParams): AgentTurnState {
     loadingToolCallsThisTurn: 0,
     structuringToolCalledThisTurn: false,
     nudgedForHoardingThisTurn: false,
+    danglingTaskIds: [],
+    closeOutGateSatisfied: false,
+    nudgedForCloseOutThisTurn: false,
 
     shouldNudgeTracker: params.shouldNudgeTracker,
 

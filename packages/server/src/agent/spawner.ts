@@ -420,6 +420,38 @@ export function terminateAgent(agentId: string, reason?: string): void {
     UPDATE agents SET status = 'terminated', updated_at = datetime('now') WHERE id = ?
   `).run(agentId);
 
+  // v2.5.46 Layer 2 — auto-pause in_progress tasks owned by the
+  // terminated agent. Without this they sit as zombies (the agent
+  // can never close them; PM keeps poking; user sees stale tasks
+  // forever). Pause (not complete) so the user can decide whether
+  // to reassign or close them.
+  try {
+    const danglers = db.prepare(`
+      SELECT id, title FROM tasks
+      WHERE assigned_to = ? AND status = 'in_progress' AND is_paused = 0
+    `).all(agentId) as Array<{ id: string; title: string }>;
+    if (danglers.length > 0) {
+      const note = `[${new Date().toISOString()}] Auto-paused: assigned agent "${agent.name}" was terminated (reason: ${reason ?? 'manual'}). Reassign or close from the dashboard.`;
+      for (const dt of danglers) {
+        db.prepare(`
+          UPDATE tasks
+          SET status = 'paused', is_paused = 1, status_before_pause = 'in_progress',
+              notes = COALESCE(notes, '') || ? || char(10),
+              updated_at = datetime('now')
+          WHERE id = ?
+        `).run(note, dt.id);
+      }
+      logger.info('terminateAgent: auto-paused in_progress tasks', {
+        agentId, count: danglers.length,
+        sample: danglers.slice(0, 3).map((t) => t.id.slice(0, 8)),
+      }, agentId);
+    }
+  } catch (autopauseErr) {
+    logger.warn('terminateAgent: task auto-pause failed (non-fatal)', {
+      agentId, error: autopauseErr instanceof Error ? autopauseErr.message : String(autopauseErr),
+    }, agentId);
+  }
+
   // Clear timeout timer
   const timer = timeoutTimers.get(agentId);
   if (timer) {
@@ -626,7 +658,52 @@ export async function completeAgent(
         error: err instanceof Error ? err.message : String(err),
       });
     }
-  } else if (agent.parent_agent && status === 'complete') {
+  }
+
+  // ── v2.5.46 Layer 2: auto-close any OTHER in_progress tasks ──
+  // The agent may have had multiple tasks assigned (parent created
+  // several, or agent edited their plan mid-run). complete_task means
+  // "I'm done as an agent" — any other in_progress tasks owned by them
+  // would otherwise be orphaned. Auto-close all of them with the same
+  // final status as the primary, plus a clear audit note.
+  //
+  // Skips the primary task (resolvedTaskId) — it was just handled above.
+  // Skips paused tasks — those were intentionally set aside.
+  try {
+    const bulkStatus = status === 'complete' ? 'complete' : status === 'fallen' ? 'fallen' : 'blocked';
+    const otherDanglers = db.prepare(`
+      SELECT id, title FROM tasks
+      WHERE assigned_to = ?
+        AND status = 'in_progress'
+        AND is_paused = 0
+        AND id != COALESCE(?, '')
+    `).all(agentId, resolvedTaskId ?? null) as Array<{ id: string; title: string }>;
+    for (const dt of otherDanglers) {
+      db.prepare(`
+        UPDATE tasks SET status = ?, updated_at = datetime('now'),
+          completed_at = CASE WHEN ? = 'complete' THEN datetime('now') ELSE completed_at END,
+          notes = COALESCE(notes, '') || ? || char(10)
+        WHERE id = ?
+      `).run(
+        bulkStatus,
+        bulkStatus,
+        `[${new Date().toISOString()}] Auto-closed by engine: agent "${agent.name}" called complete_task with status="${status}" but never explicitly closed this task. If it should not have been closed, reopen via dashboard or tracker_update_status.`,
+        dt.id,
+      );
+    }
+    if (otherDanglers.length > 0) {
+      logger.info('completeAgent: auto-closed dangling in_progress tasks', {
+        agentId, count: otherDanglers.length, status: bulkStatus,
+        sample: otherDanglers.slice(0, 3).map((t) => t.id.slice(0, 8)),
+      }, agentId);
+    }
+  } catch (autocloseErr) {
+    logger.warn('completeAgent: bulk auto-close failed (non-fatal)', {
+      agentId, error: autocloseErr instanceof Error ? autocloseErr.message : String(autocloseErr),
+    }, agentId);
+  }
+
+  if (!resolvedTaskId && agent.parent_agent && status === 'complete') {
     // Apprentice completed but no task was linked. Common pattern: parent
     // spawned the apprentice and created tasks separately, but defaulted
     // assigned_to to themselves. The work happened, but no tracker row got
