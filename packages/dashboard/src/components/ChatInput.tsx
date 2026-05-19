@@ -38,7 +38,7 @@ type VoiceUiState =
   | 'idle' | 'connecting' | 'listening' | 'capturing'
   | 'transcribing' | 'waiting' | 'speaking' | 'error' | 'passive';
 
-function voiceTooltip(state: VoiceUiState, wakePhrase?: string): string {
+function voiceTooltip(state: VoiceUiState, wakePhrase?: string, bargeInEnabled?: boolean): string {
   switch (state) {
     case 'idle': return 'Voice mode: OFF (click to enable)';
     case 'connecting': return 'Voice mode: connecting...';
@@ -47,7 +47,7 @@ function voiceTooltip(state: VoiceUiState, wakePhrase?: string): string {
     case 'capturing': return 'Voice mode: hearing you';
     case 'transcribing': return 'Voice mode: transcribing';
     case 'waiting': return 'Voice mode: waiting for reply';
-    case 'speaking': return 'Voice mode: agent speaking (interrupt by talking)';
+    case 'speaking': return bargeInEnabled ? 'Voice mode: agent speaking (interrupt by talking)' : 'Voice mode: agent speaking';
     case 'error': return 'Voice mode: error — click to retry';
   }
 }
@@ -74,7 +74,7 @@ function voiceButtonClasses(state: VoiceUiState): string {
   }
 }
 
-function voiceStatusLabel(state: VoiceUiState, wakePhrase?: string): string {
+function voiceStatusLabel(state: VoiceUiState, wakePhrase?: string, bargeInEnabled?: boolean): string {
   switch (state) {
     case 'connecting': return 'Connecting…';
     case 'passive': return wakePhrase ? `Standing by — say "${wakePhrase}"` : 'Standing by for wake phrase';
@@ -82,7 +82,7 @@ function voiceStatusLabel(state: VoiceUiState, wakePhrase?: string): string {
     case 'capturing': return 'Hearing you';
     case 'transcribing': return 'Transcribing…';
     case 'waiting': return 'Waiting for reply…';
-    case 'speaking': return 'Agent speaking (interrupt by talking)';
+    case 'speaking': return bargeInEnabled ? 'Agent speaking (interrupt by talking)' : 'Agent speaking';
     case 'error': return 'Voice error';
     default: return '';
   }
@@ -379,7 +379,7 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
           type="button"
           onPointerDown={(e) => e.preventDefault()}
           onClick={() => { void voice.toggle(); }}
-          title={voiceTooltip(voice.state, voice.wakePhrase)}
+          title={voiceTooltip(voice.state, voice.wakePhrase, voice.bargeInEnabled)}
           className={`shrink-0 flex items-center justify-center w-9 h-9 rounded-full transition-all ${voiceButtonClasses(voice.state)}`}
         >
           {voice.state === 'idle' || voice.state === 'error' ? (
@@ -452,7 +452,7 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
           <span className={`inline-block w-2 h-2 rounded-full ${
             voice.state === 'capturing' || voice.state === 'speaking' ? 'bg-current animate-pulse' : 'bg-current'
           }`} />
-          <span>{voiceStatusLabel(voice.state, voice.wakePhrase)}</span>
+          <span>{voiceStatusLabel(voice.state, voice.wakePhrase, voice.bargeInEnabled)}</span>
           {/* Live volume meter — 5 bars that bounce with mic input level. Only shown
               while we're listening/capturing (it's misleading during transcribe/speaking). */}
           {(voice.state === 'listening' || voice.state === 'capturing') && (

@@ -27,6 +27,8 @@ export interface UseVoiceModeResult {
   wakeWordEnabled: boolean;
   /** Configured wake phrase (lowercased). */
   wakePhrase: string;
+  /** Whether voice-driven barge-in is allowed during agent TTS playback. */
+  bargeInEnabled: boolean;
   /** 0..1 live audio level from the VAD frame processor (updates ~30ms). */
   audioLevel: number;
   toggle: () => Promise<void>;
@@ -100,6 +102,7 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
   const [audioLevel, setAudioLevel] = useState(0);
   const [partialTranscript, setPartialTranscript] = useState<string | null>(null);
   const [resolvedWakeWordEnabled, setResolvedWakeWordEnabled] = useState(false);
+  const [resolvedBargeInEnabled, setResolvedBargeInEnabled] = useState(false);
   // Empty until ensureClient() resolves saved settings; ChatInput already
   // falls back to a generic "Standing by" label when this is empty.
   const [resolvedWakePhrase, setResolvedWakePhrase] = useState('');
@@ -134,8 +137,10 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
       const saved = await loadSavedVoiceSettings();
       const effectiveWakeWordEnabled = wakeWordEnabled ?? saved.wakeWordEnabled;
       const effectiveWakePhrase = wakePhrase ?? saved.wakePhrase;
+      const effectiveBargeInEnabled = bargeInEnabled ?? saved.bargeInEnabled;
       setResolvedWakeWordEnabled(effectiveWakeWordEnabled);
       setResolvedWakePhrase(effectiveWakePhrase);
+      setResolvedBargeInEnabled(effectiveBargeInEnabled);
       const client = new VoiceClient({
         agentId,
         voice: voice ?? saved.voice,
@@ -145,7 +150,7 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
         wakeWordEnabled: effectiveWakeWordEnabled,
         wakePhrase: effectiveWakePhrase,
         sleepPhrase: sleepPhrase ?? saved.sleepPhrase,
-        bargeInEnabled: bargeInEnabled ?? saved.bargeInEnabled,
+        bargeInEnabled: effectiveBargeInEnabled,
       });
       client.on('state-change', (s) => {
         setState(s);
@@ -216,6 +221,7 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
     enabled, state, error, lastTranscript, partialTranscript, audioLevel,
     wakeWordEnabled: resolvedWakeWordEnabled,
     wakePhrase: resolvedWakePhrase,
+    bargeInEnabled: resolvedBargeInEnabled,
     toggle, stop, setupNeeded, completeSetup, cancelSetup,
   };
 }

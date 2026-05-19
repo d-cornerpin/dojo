@@ -140,6 +140,15 @@ export class VoiceClient {
   // be suppressed — otherwise we'd send utterance_end to the server and
   // flip the UI to "transcribing" mid-reply for nothing.
   private suppressedCurrentUtterance = false;
+  // The server fires `voice:tts_end` the moment it finishes SENDING WAV
+  // chunks, but the browser is still PLAYING the buffered audio for several
+  // seconds afterwards. If we transition to 'listening' immediately, the
+  // mic activates while Kevin's still talking through the speaker, the echo
+  // gets through (suppression is keyed on state==='speaking'), and we kick
+  // off a phantom utterance. So we defer the transition: set this flag on
+  // tts_end and actually flip to 'listening' from source.onended once the
+  // last scheduled chunk finishes.
+  private ttsEndPendingPlayback = false;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private listeners: { [K in keyof VoiceClientEvents]?: Set<any> } = {};
@@ -429,7 +438,10 @@ export class VoiceClient {
         break;
       case 'voice:state':
         if (typeof msg.state === 'string' && this.state !== 'capturing') {
-          // Only follow server-driven state hints when we're not actively capturing.
+          // Don't let a server-side "listening" hint kick us out of
+          // 'speaking' before client-side playback has drained — that's
+          // what the tts_end handler is for (deferred via onended).
+          if (msg.state === 'listening' && this.state === 'speaking' && this.scheduledSources.length > 0) break;
           this.setState(msg.state as VoiceState);
         }
         break;
@@ -458,12 +470,24 @@ export class VoiceClient {
       case 'voice:tts_start':
         // New agent reply — re-open the playback gate that barge-in shut.
         this.discardIncomingAudio = false;
+        this.ttsEndPendingPlayback = false;
         this.setState('speaking');
         this.emit('tts-start');
         break;
       case 'voice:tts_end':
         this.emit('tts-end', { interrupted: msg.interrupted === true });
-        if (this.state !== 'capturing') this.setState('listening');
+        // Stay in 'speaking' until playback actually drains — the mic-echo
+        // suppression in handleSpeechStart is keyed on state==='speaking',
+        // and the server emits tts_end the moment it stops SENDING chunks,
+        // not when the browser finishes PLAYING them. Drain handled in the
+        // source.onended path inside enqueuePlayback (or fire now if no
+        // chunks are outstanding).
+        if (this.state === 'capturing') break;
+        if (this.scheduledSources.length === 0) {
+          this.setState('listening');
+        } else {
+          this.ttsEndPendingPlayback = true;
+        }
         break;
       default:
         break;
@@ -559,6 +583,15 @@ export class VoiceClient {
     source.onended = () => {
       const idx = this.scheduledSources.indexOf(source);
       if (idx >= 0) this.scheduledSources.splice(idx, 1);
+      // Last chunk drained AND server already said tts_end — NOW flip to
+      // listening. Doing it any earlier and we'd activate the mic while
+      // Kevin is still audibly speaking, the echo would slip through (no
+      // longer guarded by state==='speaking'), and we'd start an echo
+      // utterance instead of waiting for the user.
+      if (this.scheduledSources.length === 0 && this.ttsEndPendingPlayback) {
+        this.ttsEndPendingPlayback = false;
+        if (this.state === 'speaking') this.setState('listening');
+      }
     };
 
     if (this.state === 'transcribing' || this.state === 'waiting' || this.state === 'listening') {
@@ -571,6 +604,7 @@ export class VoiceClient {
       try { src.onended = null; src.stop(); } catch { /* ignore */ }
     }
     this.scheduledSources = [];
+    this.ttsEndPendingPlayback = false;
     if (this.audioContext) this.nextStartTime = this.audioContext.currentTime;
   }
 }
