@@ -37,6 +37,7 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'tracker_create_task',
   'tracker_create_project',
   'tracker_update_status',
+  'reminder_create',
   'vault_search',
   'vault_remember',
   'send_to_agent',

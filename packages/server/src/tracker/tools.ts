@@ -218,6 +218,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       stepNumber,
       dependsOn,
       phase,
+      kind: args.kind as string | undefined,
     });
 
     // Status reconciliation against the schema default (createTask sets a
@@ -348,6 +349,50 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     logger.error('trackerCreateTask failed', { error: msg }, agentId);
     return `Error creating task: ${msg}`;
   }
+}
+
+// ── reminderCreate ──
+//
+// Thin wrapper around trackerCreateTask that handles the "user asked for
+// a reminder" intent. The agent calls this with `what` (required) and
+// `when` (optional). If `when` is missing, returns an ASK_USER
+// instruction so the agent loops back, asks the user, and re-fires with
+// the resolved ISO time. Otherwise creates a tracker task with
+// kind='reminder' and the supplied schedule — the scheduler then fires
+// it with the reminder-flavored template (see scheduler/runner.ts).
+
+export function reminderCreate(agentId: string, args: Record<string, unknown>): string {
+  const what = (args.what as string | undefined)?.trim();
+  if (!what) return 'Error: `what` is required (the reminder text).';
+
+  const when = (args.when as string | undefined)?.trim();
+  if (!when) {
+    return (
+      'ASK_USER: This reminder needs a time. Ask the user when they would like to be ' +
+      'reminded ("in 5 minutes", "tomorrow at 8am", "every Monday at 9am"). ' +
+      'Once they answer, call get_current_time to anchor relative times, then re-call ' +
+      'reminder_create with `when` set to the resolved ISO 8601 datetime. ' +
+      'Do NOT create the reminder yet.'
+    );
+  }
+
+  // Title is for the kanban — keep short and recognizable.
+  const titleSnippet = what.length > 60 ? what.slice(0, 57).trimEnd() + '…' : what;
+
+  return trackerCreateTask(agentId, {
+    title: `Reminder: ${titleSnippet}`,
+    description: what,
+    kind: 'reminder',
+    scheduled_start: when,
+    // Caller may pass repeat params through for recurring reminders
+    // ("every Monday at 9am"). Same shape as tracker_create_task.
+    repeat_interval: args.repeat_interval,
+    repeat_unit: args.repeat_unit,
+    repeat_end_type: args.repeat_end_type,
+    repeat_end_value: args.repeat_end_value,
+    repeat_days_of_week: args.repeat_days_of_week,
+    anchor_time: args.anchor_time,
+  });
 }
 
 // ── trackerUpdateStatus ──

@@ -24,6 +24,7 @@ import { sendIMessage, getDefaultSender, isAwaitingIMResponse, clearIMResponseFl
 import {
   trackerCreateProject,
   trackerCreateTask,
+  reminderCreate,
   trackerUpdateStatus,
   trackerEditTask,
   trackerAddNotes,
@@ -1015,6 +1016,51 @@ export const toolDefinitions: ToolDefinition[] = [
         },
       },
       required: ['title'],
+    },
+  },
+  {
+    name: 'reminder_create',
+    description: 'Set a reminder for the user. When the scheduled time arrives, you (the agent) will be woken with the reminder text and should deliver it to the user as a single short chat message in your normal voice — no preamble like "Reminder:" or "Here\'s your reminder", just say the thing.\n\n**If the user did not specify a time, call this WITHOUT `when`.** The tool will return an instruction telling you to ask the user. Get their answer, then call `get_current_time` to resolve relative phrases ("in 5 minutes", "tomorrow at 8am"), and re-call this tool with `when` set to the resolved ISO 8601 datetime. Do not invent a time — always ask.\n\nFor recurring reminders ("remind me every Monday at 9am"), pass `repeat_interval`/`repeat_unit` the same way as `tracker_create_task`.\n\nUse this tool whenever the user asks to be reminded of something. Do NOT use `tracker_create_task` for reminders — reminders get a lighter scheduler prompt that produces a natural one-line message instead of the generic "[Scheduled Task — Run #1]" boilerplate.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        what: {
+          type: 'string',
+          description: 'What to remind the user about, in their own words. ("go get coffee", "call mom", "stand up and stretch")',
+        },
+        when: {
+          type: 'string',
+          description: 'ISO 8601 datetime for when the reminder should fire (e.g. "2026-05-19T14:35:00Z"). Omit if the user did not specify a time — the tool will tell you to ask them. Call get_current_time first to resolve relative phrases like "in 5 minutes".',
+        },
+        repeat_interval: {
+          type: 'number',
+          description: 'For recurring reminders. e.g. 1 with repeat_unit="weeks" for weekly.',
+        },
+        repeat_unit: {
+          type: 'string',
+          enum: ['minutes', 'hours', 'days', 'weekdays', 'specific_days', 'weeks', 'months', 'years'],
+          description: 'Unit for repeat_interval. Same semantics as tracker_create_task.',
+        },
+        repeat_end_type: {
+          type: 'string',
+          enum: ['never', 'after_count', 'on_date'],
+          description: 'When to stop a recurring reminder. Defaults to "never".',
+        },
+        repeat_end_value: {
+          type: 'string',
+          description: 'For after_count: the number of runs (e.g. "5"). For on_date: an ISO date (e.g. "2026-06-01").',
+        },
+        repeat_days_of_week: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Required when repeat_unit="specific_days". List of weekday names, e.g. ["mon","wed","fri"].',
+        },
+        anchor_time: {
+          type: 'string',
+          description: 'For recurring reminders that should fire at a fixed wall-clock time each cycle. Defaults to `when`. Same semantics as tracker_create_task.',
+        },
+      },
+      required: ['what'],
     },
   },
   {
@@ -3637,6 +3683,47 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         } catch (err) {
           content = friendlyDbError(err, 'tracker_create_task');
         }
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'reminder_create': {
+        const remErr = checkRequired([
+          { name: 'what', value: args.what, type: 'string' },
+        ]);
+        if (remErr) { content = remErr; isError = true; break; }
+
+        // Mirror tracker_create_task's day-of-week normalization for the
+        // recurring reminder case so callers can pass ["mon","wed"] and
+        // get the canonical CSV-of-ints the scheduler expects.
+        const normalizedDays = normalizeRepeatDaysOfWeek(args.repeat_days_of_week);
+        if (normalizedDays === '__INVALID__') {
+          content = 'Error: repeat_days_of_week contained no valid days. Accepted: sun/mon/tue/wed/thu/fri/sat or 0-6.';
+          isError = true;
+          break;
+        }
+        const repeatDaysOfWeek: string | undefined = normalizedDays ?? undefined;
+        if (args.repeat_unit === 'specific_days' && !repeatDaysOfWeek) {
+          content = 'Error: repeat_unit="specific_days" requires repeat_days_of_week (e.g. ["mon","wed"]).';
+          isError = true;
+          break;
+        }
+
+        try {
+          content = reminderCreate(agentId, {
+            what: args.what,
+            when: args.when,
+            repeat_interval: (args.repeat_interval as number | undefined)
+              ?? (args.repeat_unit === 'specific_days' ? 1 : undefined),
+            repeat_unit: args.repeat_unit,
+            repeat_end_type: args.repeat_end_type,
+            repeat_end_value: args.repeat_end_value,
+            repeat_days_of_week: repeatDaysOfWeek,
+            anchor_time: args.anchor_time,
+          });
+        } catch (err) {
+          content = friendlyDbError(err, 'reminder_create');
+        }
+        // ASK_USER is an instruction to the agent, not an error.
         isError = content.startsWith('Error');
         break;
       }

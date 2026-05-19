@@ -51,6 +51,7 @@ interface TaskRow {
   last_run_at: string | null;
   schedule_status: string;
   assigned_to_group: string | null;
+  kind: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -132,6 +133,7 @@ function mapTaskRow(row: TaskRow): Task {
     statusBeforePause: row.status_before_pause ?? null,
     scheduleStatus: row.schedule_status ?? 'unscheduled',
     assignedToGroup: row.assigned_to_group ?? null,
+    kind: row.kind ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
@@ -341,11 +343,12 @@ export function createTask(params: {
   stepNumber?: number;
   dependsOn?: string[];
   phase?: number;
+  kind?: string;
 }): string {
   const db = getDb();
   const taskId = uuidv4();
 
-  const { projectId, title, description, assignedTo, createdBy, priority, stepNumber, dependsOn, phase } = params;
+  const { projectId, title, description, assignedTo, createdBy, priority, stepNumber, dependsOn, phase, kind } = params;
 
   // If the creator is also the assignee, start as in_progress (they're about to work on it)
   const initialStatus = (assignedTo && assignedTo === createdBy) ? 'in_progress' : 'on_deck';
@@ -355,8 +358,8 @@ export function createTask(params: {
   // parent agent at completion time even if the description was edited.
   db.prepare(`
     INSERT INTO tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, priority,
-                       step_number, total_steps, phase, depends_on, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, datetime('now'), datetime('now'))
+                       step_number, total_steps, phase, depends_on, kind, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, datetime('now'), datetime('now'))
   `).run(
     taskId,
     projectId ?? null,
@@ -370,6 +373,7 @@ export function createTask(params: {
     stepNumber ?? null,
     phase ?? 1,
     JSON.stringify(dependsOn ?? []),
+    kind ?? null,
   );
 
   logger.info('Task created', { taskId, title, projectId, assignedTo }, createdBy);
