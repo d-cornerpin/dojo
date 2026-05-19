@@ -81,67 +81,61 @@ voiceRouter.get('/models', async (c) => {
 
 // ── Download / install ──
 
-voiceRouter.post('/models/:kind/:id', async (c) => {
+// Fire-and-forget install. Whisper-large can take ~2 minutes on a typical home
+// connection; Cloudflare's free-tier proxy returns 524 at 100s if we hold the
+// HTTP response open. So we kick off the download in the background and let
+// the dashboard track completion via the `voice:model_download` WS broadcasts
+// (a final tick with bytesDownloaded === bytesTotal signals done; a separate
+// `voice:model_install_error` event surfaces failures).
+voiceRouter.post('/models/:kind/:id', (c) => {
   const kind = c.req.param('kind');
   const id = c.req.param('id');
   if (kind === 'whisper') {
     if (!(id in WHISPER_MODELS)) {
       return c.json({ ok: false, error: `unknown whisper model: ${id}` }, 400);
     }
-    try {
-      await ensureWhisperModel(id as WhisperSize, (p) => {
-        // Broadcast download progress so the dashboard's Voice tab can
-        // render a live progress bar against the model row.
+    void (async () => {
+      try {
+        await ensureWhisperModel(id as WhisperSize, (p) => {
+          broadcast({
+            type: 'voice:model_download',
+            data: { kind: 'whisper', modelId: id, bytesDownloaded: p.bytesDownloaded, bytesTotal: p.bytesTotal },
+          });
+        });
         broadcast({
           type: 'voice:model_download',
-          data: {
-            kind: 'whisper',
-            modelId: id,
-            bytesDownloaded: p.bytesDownloaded,
-            bytesTotal: p.bytesTotal,
-          },
+          data: { kind: 'whisper', modelId: id, bytesDownloaded: 1, bytesTotal: 1 },
         });
-      });
-      // Final 100% tick so the bar finishes cleanly.
-      broadcast({
-        type: 'voice:model_download',
-        data: { kind: 'whisper', modelId: id, bytesDownloaded: 1, bytesTotal: 1 },
-      });
-      return c.json({ ok: true, data: { kind, id, installed: true } });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.error('whisper download failed', { id, error: msg });
-      return c.json({ ok: false, error: msg }, 500);
-    }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error('whisper download failed', { id, error: msg });
+        broadcast({ type: 'voice:model_install_error', data: { kind: 'whisper', modelId: id, error: msg } });
+      }
+    })();
+    return c.json({ ok: true, data: { kind, id, started: true } }, 202);
   }
   if (kind === 'kokoro') {
-    try {
-      // Direct-download path (bypasses transformers.js's broken cache layer).
-      // ensureKokoroFiles fetches every required file straight into
-      // ~/.dojo/voice/kokoro/onnx-community/Kokoro-82M-v1.0-ONNX/ and reports
-      // real-byte progress. Then loadKokoro() reads them locally — no
-      // re-download, no cache.put/match dance.
-      await ensureKokoroFiles((p) => {
+    void (async () => {
+      try {
+        await ensureKokoroFiles((p) => {
+          broadcast({
+            type: 'voice:model_download',
+            data: { kind: 'kokoro', modelId: id, bytesDownloaded: p.bytesDownloaded, bytesTotal: p.bytesTotal },
+          });
+        });
+        await loadKokoro();
         broadcast({
           type: 'voice:model_download',
-          data: {
-            kind: 'kokoro',
-            modelId: id,
-            bytesDownloaded: p.bytesDownloaded,
-            bytesTotal: p.bytesTotal,
-          },
+          data: { kind: 'kokoro', modelId: id, bytesDownloaded: 1, bytesTotal: 1 },
         });
-      });
-      // Now that files are on disk, warm up the in-memory model instance so
-      // the next voice session doesn't pay the load cost.
-      await loadKokoro();
-      return c.json({ ok: true, data: { kind, id, loaded: true } });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const stack = err instanceof Error ? err.stack : undefined;
-      logger.error('kokoro install failed', { error: msg, stack });
-      return c.json({ ok: false, error: msg }, 500);
-    }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack : undefined;
+        logger.error('kokoro install failed', { error: msg, stack });
+        broadcast({ type: 'voice:model_install_error', data: { kind: 'kokoro', modelId: id, error: msg } });
+      }
+    })();
+    return c.json({ ok: true, data: { kind, id, started: true } }, 202);
   }
   return c.json({ ok: false, error: `unknown model kind: ${kind}` }, 400);
 });

@@ -435,12 +435,24 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
   let transcript: string;
   let durationMs: number;
   try {
-    const result = await transcribeBuffer(wav, { modelSize: session.sttModel });
+    // Hard 30s cap. Without this, a stuck whisper-server boot (or a model
+    // that's still in the middle of download/warmup) leaves the client in
+    // "transcribing" forever with no error feedback.
+    const result = await Promise.race([
+      transcribeBuffer(wav, { modelSize: session.sttModel }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('transcribe_timeout (30s) — STT engine not ready')), 30_000),
+      ),
+    ]);
     transcript = result.text.trim();
     durationMs = result.durationMs;
   } catch (err) {
-    logger.error('Transcription failed', { error: err instanceof Error ? err.message : String(err) }, session.agentId);
-    sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'error', detail: 'transcription_failed' });
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Transcription failed', { error: msg }, session.agentId);
+    sendJson(session.ws, {
+      type: 'voice:state', agentId: session.agentId,
+      state: 'error', detail: msg.includes('timeout') ? 'transcription_timeout' : 'transcription_failed',
+    });
     return;
   }
 

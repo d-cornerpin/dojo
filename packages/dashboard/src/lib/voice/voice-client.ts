@@ -205,7 +205,13 @@ export class VoiceClient {
     // Letting the browser pick the native rate (usually 48 kHz) avoids the
     // case where construction failed silently and TTS playback never started.
     try {
-      this.audioContext = new AudioContext();
+      // Reuse the existing AudioContext if we have one (mic toggle off→on).
+      // Creating a fresh context on iOS Safari sometimes leaves it permanently
+      // unable to produce audio output even with the silent-buffer unlock;
+      // resuming the original context sidesteps that entire class of bug.
+      if (!this.audioContext || (this.audioContext as AudioContext & { state: AudioContextState }).state === 'closed') {
+        this.audioContext = new AudioContext();
+      }
       if (this.audioContext.state === 'suspended') await this.audioContext.resume();
       // iOS unlock: an AudioContext created in `running` state still won't
       // produce audible output until a buffer has actually been played from
@@ -329,8 +335,11 @@ export class VoiceClient {
     }
     try { this.ws?.close(); } catch { /* ignore */ }
     this.ws = null;
-    try { await this.audioContext?.close(); } catch { /* ignore */ }
-    this.audioContext = null;
+    // iOS Safari: SUSPEND, don't close. Creating a second AudioContext later
+    // in the same page sometimes refuses to ever play audio even with a fresh
+    // silent-buffer unlock. Suspending and resuming the original context
+    // keeps the audio-output "permission" intact across mic toggles.
+    try { await this.audioContext?.suspend(); } catch { /* ignore */ }
     if (this.visibilityHandler) {
       document.removeEventListener('visibilitychange', this.visibilityHandler);
       this.visibilityHandler = null;
@@ -487,6 +496,12 @@ export class VoiceClient {
     // Fast-path: barge-in is in effect — drop the chunk without decoding.
     // (Re-checked AFTER decodeAudioData too, since decode is async.)
     if (this.discardIncomingAudio) return;
+    // iOS Safari aggressively suspends AudioContext (screen lock, switching
+    // apps, sometimes after a long pause). Resume before we try to decode +
+    // schedule, otherwise the chunk goes into a silent queue.
+    if (this.audioContext.state === 'suspended') {
+      try { await this.audioContext.resume(); } catch { /* ignore */ }
+    }
     let audioBuffer: AudioBuffer;
     try {
       audioBuffer = await this.audioContext.decodeAudioData(buf.slice(0));

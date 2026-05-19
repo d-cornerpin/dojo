@@ -214,6 +214,7 @@ export type WsEvent =
   | MigrationProgressEvent
   | MigrationChecksEvent
   | VoiceModelDownloadEvent
+  | VoiceModelInstallErrorEvent
   | VoiceSttPartialEvent
   | VoiceSttFinalEvent
   | VoiceTtsStartEvent
@@ -279,6 +280,15 @@ export interface VoiceModelDownloadEvent {
     modelId: string;
     bytesDownloaded: number;
     bytesTotal: number;
+  };
+}
+
+export interface VoiceModelInstallErrorEvent {
+  type: 'voice:model_install_error';
+  data: {
+    kind: 'whisper' | 'kokoro';
+    modelId: string;
+    error: string;
   };
 }
 
