@@ -3428,6 +3428,7 @@ const VoiceTab = () => {
   const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
   const [wakePhrase, setWakePhrase] = useState('');
   const [sleepPhrase, setSleepPhrase] = useState('stop listening');
+  const [bargeInEnabled, setBargeInEnabled] = useState(false);
   // Primary agent name drives both the "Voice for X" header and the default
   // wake phrase ("hey <name>") so neither hardcodes "Kevin".
   const [primaryAgentName, setPrimaryAgentName] = useState('Agent');
@@ -3450,7 +3451,7 @@ const VoiceTab = () => {
   useEffect(() => {
     let mounted = true;
     const load = async () => {
-      const [presets, modelsRes, vSetting, sSetting, vadSetting, sttSetting, wakeEnabled, wakeP, sleepP, primaryName] = await Promise.all([
+      const [presets, modelsRes, vSetting, sSetting, vadSetting, sttSetting, wakeEnabled, wakeP, sleepP, primaryName, bargeIn] = await Promise.all([
         api.getVoicePresets(),
         api.getVoiceModels(),
         api.getSetting('voice.preferred_voice'),
@@ -3461,6 +3462,7 @@ const VoiceTab = () => {
         api.getSetting('voice.wake_phrase'),
         api.getSetting('voice.sleep_phrase'),
         api.getSetting('primary_agent_name'),
+        api.getSetting('voice.barge_in_enabled'),
       ]);
       if (!mounted) return;
       if (presets.ok) {
@@ -3486,6 +3488,7 @@ const VoiceTab = () => {
       if (primaryName.ok && primaryName.data.value && primaryName.data.value.trim()) {
         setPrimaryAgentName(primaryName.data.value.trim());
       }
+      if (bargeIn.ok && bargeIn.data.value === 'true') setBargeInEnabled(true);
       setLoading(false);
     };
     void load();
@@ -3641,6 +3644,34 @@ const VoiceTab = () => {
           ))}
           {savedKey === 'vad' && <span className="text-xs text-cp-teal">Saved!</span>}
         </div>
+      </div>
+
+      {/* Voice interruption (barge-in) */}
+      <div className="glass-card p-4 space-y-3">
+        <div className="flex items-baseline justify-between gap-3">
+          <h3 className="card-header">Voice interruption</h3>
+          {savedKey === 'barge' && <span className="text-xs text-cp-teal">Saved!</span>}
+        </div>
+        <p className="text-xs text-ui/40">
+          When on, talking while {primaryAgentName} is speaking interrupts the reply so you can
+          jump in mid-sentence. Heads up: on phone speakers (and some laptops), the mic picks up
+          {' '}{primaryAgentName}'s own voice and false-triggers the interrupt within a word or
+          two. Works reliably on headphones or with good speaker isolation. Off by default.
+        </p>
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={bargeInEnabled}
+            onChange={(e) => {
+              const next = e.target.checked;
+              setBargeInEnabled(next);
+              void saveSetting('voice.barge_in_enabled', String(next), 'barge');
+              invalidateSavedVoiceSettings();
+            }}
+            className="accent-cp-teal"
+          />
+          <span className="text-sm text-ui">Allow voice to interrupt {primaryAgentName}</span>
+        </label>
       </div>
 
       {/* Hands-free wake word */}

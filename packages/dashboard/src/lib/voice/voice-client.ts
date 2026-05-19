@@ -45,6 +45,10 @@ export interface VoiceClientOptions {
   wakeWordEnabled?: boolean;
   wakePhrase?: string;
   sleepPhrase?: string;
+  /** When true, detected speech while Kevin is speaking cancels TTS and
+   *  starts a new utterance. Off by default — phone speakers echo TTS into
+   *  the mic and false-trigger interruption every time. */
+  bargeInEnabled?: boolean;
 }
 
 const VAD_REDEMPTION_MS: Record<'quick' | 'normal' | 'patient', number> = {
@@ -107,6 +111,7 @@ export class VoiceClient {
   wakeWordEnabled: boolean;
   wakePhrase: string;
   sleepPhrase: string;
+  bargeInEnabled: boolean;
   private wsUrl: string;
 
   state: VoiceState = 'idle';
@@ -130,6 +135,11 @@ export class VoiceClient {
   // transcriptions. Without this the server only sees a single big PCM
   // frame at end-of-speech and can never emit a partial.
   private isCapturing = false;
+  // When true, the current speech-start was suppressed (echo while Kevin
+  // was speaking, barge-in disabled). The matching speech-end must also
+  // be suppressed — otherwise we'd send utterance_end to the server and
+  // flip the UI to "transcribing" mid-reply for nothing.
+  private suppressedCurrentUtterance = false;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private listeners: { [K in keyof VoiceClientEvents]?: Set<any> } = {};
@@ -144,6 +154,7 @@ export class VoiceClient {
     this.wakeWordEnabled = opts.wakeWordEnabled ?? false;
     this.wakePhrase = opts.wakePhrase ?? 'hey kevin';
     this.sleepPhrase = opts.sleepPhrase ?? 'stop listening';
+    this.bargeInEnabled = opts.bargeInEnabled ?? false;
     this.wsUrl = opts.wsUrl ?? '/api/ws/voice';
   }
 
@@ -461,17 +472,39 @@ export class VoiceClient {
 
   private handleSpeechStart(): void {
     if (this.state === 'speaking') {
+      if (!this.bargeInEnabled) {
+        // Phone speakers feed Kevin's TTS back into the mic. iOS's hardware
+        // AEC can't cancel browser-played audio reliably, so the VAD reads
+        // the echo as user speech and false-triggers barge-in within a word
+        // or two of TTS starting. Half-duplex while Kevin speaks: suppress
+        // this speech-start AND mark the utterance as suppressed so the
+        // matching onSpeechEnd also no-ops (otherwise we'd flip the client
+        // to 'transcribing' mid-reply with no actual audio to transcribe).
+        // Toggle this on in Settings → Voice if you're on headphones or a
+        // device with strong AEC and want voice-driven interruption back.
+        this.suppressedCurrentUtterance = true;
+        this.isCapturing = false;
+        return;
+      }
       // Barge-in: cancel local playback + tell server + start dropping
       // any in-flight WAV chunks the server hasn't stopped sending yet.
       this.discardIncomingAudio = true;
       this.cancelPlayback();
       try { this.ws?.send(JSON.stringify({ type: 'barge_in' })); } catch { /* ignore */ }
     }
+    this.suppressedCurrentUtterance = false;
     this.setState('capturing');
     try { this.ws?.send(JSON.stringify({ type: 'utterance_start' })); } catch { /* ignore */ }
   }
 
   private handleSpeechEnd(_audio: Float32Array): void {
+    if (this.suppressedCurrentUtterance) {
+      // The matching speech-start was suppressed (echo while Kevin was
+      // speaking). Don't send utterance_end — there's nothing to transcribe
+      // and we don't want to flip UI state away from 'speaking'.
+      this.suppressedCurrentUtterance = false;
+      return;
+    }
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     // The server already has every PCM frame — we streamed them live via
     // onFrameProcessed while `isCapturing` was true. So we ONLY need to

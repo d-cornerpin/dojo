@@ -12,6 +12,7 @@ interface UseVoiceModeOptions {
   wakeWordEnabled?: boolean;
   wakePhrase?: string;
   sleepPhrase?: string;
+  bargeInEnabled?: boolean;
 }
 
 export interface UseVoiceModeResult {
@@ -50,6 +51,7 @@ interface SavedVoiceSettings {
   wakeWordEnabled: boolean;
   wakePhrase: string;
   sleepPhrase: string;
+  bargeInEnabled: boolean;
 }
 
 /** Pull voice settings from the config table. Cached for the page lifetime. */
@@ -58,7 +60,7 @@ export function invalidateSavedVoiceSettings(): void { savedPromise = null; }
 async function loadSavedVoiceSettings(): Promise<SavedVoiceSettings> {
   if (savedPromise) return savedPromise;
   savedPromise = (async () => {
-    const [v, s, vad, stt, wake, wp, sp, primaryName] = await Promise.all([
+    const [v, s, vad, stt, wake, wp, sp, primaryName, bargeIn] = await Promise.all([
       api.getSetting('voice.preferred_voice'),
       api.getSetting('voice.playback_speed'),
       api.getSetting('voice.vad_sensitivity'),
@@ -67,6 +69,7 @@ async function loadSavedVoiceSettings(): Promise<SavedVoiceSettings> {
       api.getSetting('voice.wake_phrase'),
       api.getSetting('voice.sleep_phrase'),
       api.getSetting('primary_agent_name'),
+      api.getSetting('voice.barge_in_enabled'),
     ]);
     const speedNum = s.ok && s.data.value ? Number(s.data.value) : NaN;
     const vadVal = vad.ok && vad.data.value;
@@ -80,12 +83,16 @@ async function loadSavedVoiceSettings(): Promise<SavedVoiceSettings> {
       wakeWordEnabled: wake.ok && wake.data.value === 'true',
       wakePhrase: (wp.ok && wp.data.value && wp.data.value.trim()) || defaultWakePhrase,
       sleepPhrase: (sp.ok && sp.data.value && sp.data.value.trim()) || 'stop listening',
+      // Off by default — phone speakers echo Kevin's TTS into the mic and
+      // make voice-based barge-in unreliable. Users on headphones (or
+      // desktop with good speaker separation) can enable it in Settings.
+      bargeInEnabled: bargeIn.ok && bargeIn.data.value === 'true',
     };
   })();
   return savedPromise;
 }
 
-export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, wakeWordEnabled, wakePhrase, sleepPhrase }: UseVoiceModeOptions): UseVoiceModeResult {
+export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, wakeWordEnabled, wakePhrase, sleepPhrase, bargeInEnabled }: UseVoiceModeOptions): UseVoiceModeResult {
   const [state, setState] = useState<VoiceState>('idle');
   const [error, setError] = useState<string | null>(null);
   const [lastTranscript, setLastTranscript] = useState<string | null>(null);
@@ -138,6 +145,7 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
         wakeWordEnabled: effectiveWakeWordEnabled,
         wakePhrase: effectiveWakePhrase,
         sleepPhrase: sleepPhrase ?? saved.sleepPhrase,
+        bargeInEnabled: bargeInEnabled ?? saved.bargeInEnabled,
       });
       client.on('state-change', (s) => {
         setState(s);
@@ -156,7 +164,7 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
       clientRef.current = client;
     }
     return clientRef.current;
-  }, [agentId, voice, speed, sttModel, vadSensitivity, wakeWordEnabled, wakePhrase, sleepPhrase]);
+  }, [agentId, voice, speed, sttModel, vadSensitivity, wakeWordEnabled, wakePhrase, sleepPhrase, bargeInEnabled]);
 
   const startVoice = useCallback(async () => {
     const client = await ensureClient();
