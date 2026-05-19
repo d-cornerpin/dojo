@@ -585,6 +585,21 @@ function startTtsForAgent(session: VoiceSession): void {
           });
           sendJson(session.ws, { type: 'voice:tts_end', agentId: session.agentId, messageId });
           sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
+          // Cloudflare named tunnels sometimes buffer trailing small WS text
+          // frames waiting for more bytes. Audio chunks (binary) get through
+          // fine but the tiny tts_end JSON can stall, leaving the client
+          // stuck on 'agent speaking'. Push 4 redundant copies over the next
+          // ~500ms — the increased traffic volume forces the tunnel to flush
+          // its buffer, and the client handler is idempotent (setState to a
+          // state it's already in is a no-op). Cheap insurance.
+          for (let i = 1; i <= 4; i++) {
+            setTimeout(() => {
+              if (abort.signal.aborted) return;
+              try {
+                sendJson(session.ws, { type: 'voice:tts_end', agentId: session.agentId, messageId });
+              } catch { /* ignore */ }
+            }, i * 120);
+          }
         }
       } catch (err) {
         logger.error('TTS stream failed', { error: err instanceof Error ? err.message : String(err) }, session.agentId);

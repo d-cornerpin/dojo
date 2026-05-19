@@ -149,6 +149,12 @@ export class VoiceClient {
   // tts_end and actually flip to 'listening' from source.onended once the
   // last scheduled chunk finishes.
   private ttsEndPendingPlayback = false;
+  // Handle to the setTimeout that force-transitions to 'listening' once the
+  // last expected chunk should have finished. Reschedulable — if a new chunk
+  // arrives AFTER tts_end (decodeAudioData races with the JSON event), we
+  // bump the timer out to the new nextStartTime so we don't transition
+  // mid-playback.
+  private ttsEndTimeout: number | null = null;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private listeners: { [K in keyof VoiceClientEvents]?: Set<any> } = {};
@@ -476,34 +482,17 @@ export class VoiceClient {
         break;
       case 'voice:tts_end':
         this.emit('tts-end', { interrupted: msg.interrupted === true });
-        // Stay in 'speaking' until playback actually drains — the mic-echo
-        // suppression in handleSpeechStart is keyed on state==='speaking',
-        // and the server emits tts_end the moment it stops SENDING chunks,
-        // not when the browser finishes PLAYING them. Drain handled in the
-        // source.onended path inside enqueuePlayback (or fire now if no
-        // chunks are outstanding).
         if (this.state === 'capturing') break;
-        if (this.scheduledSources.length === 0) {
-          this.setState('listening');
-        } else {
-          this.ttsEndPendingPlayback = true;
-          // Belt + suspenders: iOS Safari's AudioBufferSourceNode.onended
-          // is documented unreliable (sometimes never fires for the last
-          // scheduled source). Schedule a hard timeout based on when the
-          // last queued chunk should finish playing — if onended ever runs
-          // before this, the timer no-ops because ttsEndPendingPlayback
-          // will already be false.
-          if (this.audioContext) {
-            const remainingSec = Math.max(0, this.nextStartTime - this.audioContext.currentTime);
-            const graceMs = 500;
-            window.setTimeout(() => {
-              if (!this.ttsEndPendingPlayback) return;
-              this.ttsEndPendingPlayback = false;
-              this.scheduledSources = [];
-              if (this.state === 'speaking') this.setState('listening');
-            }, remainingSec * 1000 + graceMs);
-          }
-        }
+        // ALWAYS defer the transition, even if scheduledSources is empty
+        // right now. Reason: decodeAudioData is async, and a tts_end JSON
+        // event can race ahead of the WAV chunks that arrived just before
+        // it on the same WS. If we transition to 'listening' immediately,
+        // the just-decoded chunks would push us BACK to 'speaking' (in
+        // enqueuePlayback) and we'd have no signal to ever return — voice
+        // mode wedges on 'agent speaking' for the rest of the session.
+        // (Desktop regression introduced in v2.6.4 — race-condition bug.)
+        this.ttsEndPendingPlayback = true;
+        this.scheduleTtsEndTransition();
         break;
       default:
         break;
@@ -613,6 +602,12 @@ export class VoiceClient {
     if (this.state === 'transcribing' || this.state === 'waiting' || this.state === 'listening') {
       this.setState('speaking');
     }
+    // A chunk that lands AFTER tts_end has been processed (decode race)
+    // pushes nextStartTime out. Rearm the timer for the new deadline,
+    // otherwise the force-transition could fire mid-playback.
+    if (this.ttsEndPendingPlayback) {
+      this.scheduleTtsEndTransition();
+    }
   }
 
   private cancelPlayback(): void {
@@ -621,6 +616,36 @@ export class VoiceClient {
     }
     this.scheduledSources = [];
     this.ttsEndPendingPlayback = false;
+    if (this.ttsEndTimeout !== null) {
+      clearTimeout(this.ttsEndTimeout);
+      this.ttsEndTimeout = null;
+    }
     if (this.audioContext) this.nextStartTime = this.audioContext.currentTime;
+  }
+
+  /**
+   * Arm (or rearm) the force-transition timer used to flip out of 'speaking'
+   * after the last queued chunk should have finished playing. Idempotent —
+   * cancel + reschedule each time it's called so late-arriving chunks (which
+   * advance nextStartTime) push the deadline out instead of triggering early.
+   */
+  private scheduleTtsEndTransition(): void {
+    if (!this.ttsEndPendingPlayback) return;
+    if (!this.audioContext) {
+      // No audio context to time against — just transition.
+      if (this.state === 'speaking') this.setState('listening');
+      this.ttsEndPendingPlayback = false;
+      return;
+    }
+    if (this.ttsEndTimeout !== null) clearTimeout(this.ttsEndTimeout);
+    const remainingSec = Math.max(0, this.nextStartTime - this.audioContext.currentTime);
+    const graceMs = 500;
+    this.ttsEndTimeout = window.setTimeout(() => {
+      this.ttsEndTimeout = null;
+      if (!this.ttsEndPendingPlayback) return;
+      this.ttsEndPendingPlayback = false;
+      this.scheduledSources = [];
+      if (this.state === 'speaking') this.setState('listening');
+    }, remainingSec * 1000 + graceMs);
   }
 }
