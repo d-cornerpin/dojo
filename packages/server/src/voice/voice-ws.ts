@@ -580,6 +580,9 @@ function startTtsForAgent(session: VoiceSession): void {
           sendBinary(session.ws, wavBuf);
         }
         if (!abort.signal.aborted) {
+          logger.info('Voice TTS: sending tts_end after splitter drained', {
+            agentId: session.agentId, messageId, sentences: sentenceCount,
+          });
           sendJson(session.ws, { type: 'voice:tts_end', agentId: session.agentId, messageId });
           sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
         }
@@ -587,7 +590,7 @@ function startTtsForAgent(session: VoiceSession): void {
         logger.error('TTS stream failed', { error: err instanceof Error ? err.message : String(err) }, session.agentId);
         sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'error', detail: 'tts_failed' });
       } finally {
-        clearInterval(idlePoll);
+        cancelQuietTimer();
         if (session.activeTts && session.activeTts.abort === abort) {
           session.activeTts = null;
         }
@@ -612,36 +615,39 @@ function startTtsForAgent(session: VoiceSession): void {
   //     of waiting for the whole multi-turn run to finish.
   //   - agent:status idle  → close the splitter for good (end of full run).
   //
-  // We also poll the agent's DB status as a safety net. The broadcast can
-  // race with subscription setup, get dropped, or silently mis-route in
-  // edge cases — and when it does, synthesizeStream's `for await` waits
-  // forever for the next sentence that's never coming, tts_end never
-  // fires, and the client sits at 'agent speaking' indefinitely.
+  // Safety net: also close the splitter after 4 seconds of NO chat:chunk
+  // events. Doesn't depend on agent:status broadcasts (which we've seen
+  // get dropped or mis-route in production), doesn't depend on DB status
+  // polling matching. Pure "the data stopped flowing" detector. The 4s
+  // window is generous enough for typical inter-bubble pauses; if a tool
+  // call takes longer than that, the user loses TTS on the second bubble
+  // but the text still renders and voice mode doesn't wedge forever.
   let bubbleCount = 0;
   let bubbleChars = 0;
-  let lastChatChunkAt = Date.now();
-  const idlePoll = setInterval(() => {
-    if (abort.signal.aborted) { clearInterval(idlePoll); return; }
-    try {
-      const row = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(session.agentId) as { status?: string } | undefined;
-      const terminal = row?.status === 'idle' || row?.status === 'error' || row?.status === 'terminated';
-      // Require 1s of quiet (no fresh chat:chunk events) before trusting
-      // the DB state — guards against catching a status flicker mid-turn.
-      if (terminal && Date.now() - lastChatChunkAt > 1000) {
-        clearInterval(idlePoll);
-        const tail = sanitizer.flushUnsafe();
-        if (tail) splitter.push(tail);
-        try { splitter.close(); } catch { /* ignore */ }
-      }
-    } catch { /* best effort */ }
-  }, 800);
-  // Make sure the poll dies if the TTS stream tears down for any reason.
-  abort.signal.addEventListener('abort', () => clearInterval(idlePoll), { once: true });
+  const QUIET_CLOSE_MS = 4000;
+  let quietTimer: ReturnType<typeof setTimeout> | null = null;
+  const armQuietTimer = () => {
+    if (quietTimer) clearTimeout(quietTimer);
+    quietTimer = setTimeout(() => {
+      if (abort.signal.aborted) return;
+      logger.info('Voice TTS: closing splitter after 4s of chat-chunk quiet', {
+        agentId: session.agentId, messageId,
+      });
+      const tail = sanitizer.flushUnsafe();
+      if (tail) splitter.push(tail);
+      try { splitter.close(); } catch { /* ignore */ }
+    }, QUIET_CLOSE_MS);
+  };
+  const cancelQuietTimer = () => {
+    if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; }
+  };
+  abort.signal.addEventListener('abort', cancelQuietTimer, { once: true });
   const unsubscribe = onBroadcast((event: WsEvent) => {
     if (abort.signal.aborted) return;
     if (event.type === 'chat:chunk') {
       if (event.agentId !== session.agentId) return;
-      lastChatChunkAt = Date.now();
+      // Every fresh chunk resets the quiet timer.
+      cancelQuietTimer();
       if (event.content) {
         bubbleChars += event.content.length;
         const safe = sanitizer.push(event.content);
@@ -668,12 +674,19 @@ function startTtsForAgent(session: VoiceSession): void {
           textChars: bubbleChars,
         });
         bubbleChars = 0;
+        // Arm the quiet timer: if no new chat:chunk arrives in the next
+        // QUIET_CLOSE_MS, assume the turn is over and close the splitter.
+        armQuietTimer();
       }
       return;
     }
     if (event.type === 'agent:status') {
       if (event.agentId !== session.agentId) return;
       if (event.status === 'idle') {
+        logger.info('Voice TTS: closing splitter on agent:status idle', {
+          agentId: session.agentId, messageId,
+        });
+        cancelQuietTimer();
         const tail = sanitizer.flushUnsafe();
         if (tail) splitter.push(tail);
         try { splitter.close(); } catch { /* ignore */ }
