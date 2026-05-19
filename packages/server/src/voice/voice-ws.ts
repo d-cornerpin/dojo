@@ -65,6 +65,12 @@ interface VoiceSession {
   // socket during silent periods (no audio frames mean the connection looks
   // idle to intermediaries even though both ends are still active).
   pingInterval: ReturnType<typeof setInterval> | null;
+  // Always-on listener that catches proactive agent messages (the ones
+  // not in response to a voice prompt — e.g. a watcher firing, the agent
+  // sending an unsolicited update). When it sees agent chat:chunk content
+  // and there's no active TTS, it triggers a TTS burst so voice users
+  // hear those too. Reset between bursts.
+  unsubscribeProactive: (() => void) | null;
 }
 
 /**
@@ -179,6 +185,7 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
       // to active behavior (same as before this feature existed).
       passive: saved.wakeWordEnabled,
       pingInterval: null,
+      unsubscribeProactive: null,
     };
     sessions.set(ws, session);
     // Heartbeat every 25s — under Cloudflare Tunnel's default WS idle timeout
@@ -213,6 +220,9 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
         logger.warn('Kokoro preload failed', { error: err instanceof Error ? err.message : String(err) });
       });
     }
+    // Subscribe the proactive watcher so unsolicited agent messages
+    // (watchers firing, A2A pokes, scheduled triggers, etc.) also get TTS.
+    session.unsubscribeProactive = subscribeProactiveWatcher(session);
     return true;
   } catch (err) {
     logger.warn('Voice WS rejected: bad token', { error: err instanceof Error ? err.message : String(err) });
@@ -225,6 +235,7 @@ export function closeVoiceSession(ws: WSContext): void {
   const session = sessions.get(ws);
   if (!session) return;
   if (session.unsubscribeChunk) session.unsubscribeChunk();
+  if (session.unsubscribeProactive) session.unsubscribeProactive();
   if (session.activeTts) session.activeTts.abort.abort();
   if (session.splitter) { try { session.splitter.close(); } catch { /* ignore */ } }
   if (session.pingInterval) clearInterval(session.pingInterval);
@@ -532,7 +543,25 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
   startTtsForAgent(session);
 }
 
-function startTtsForAgent(session: VoiceSession): void {
+/**
+ * Open a fresh TTS burst — splitter + Kokoro stream + chat:chunk listener.
+ *
+ * Called from two places:
+ *  1. handleUtteranceEnd, right after submitting a transcribed voice prompt.
+ *  2. subscribeProactiveWatcher, when the agent emits chat:chunk content
+ *     without a corresponding voice prompt (proactive messages). In that
+ *     case the watcher passes the FIRST chunk via `initialContent` so it
+ *     isn't lost — the burst listener subscribes after this function
+ *     returns and only catches subsequent broadcasts.
+ */
+function startTtsForAgent(session: VoiceSession, initialContent?: string): void {
+  // Pause the proactive watcher for the duration of this burst — the
+  // burst's own chat:chunk listener will handle every event from here.
+  // The IIFE finally below re-subscribes the watcher.
+  if (session.unsubscribeProactive) {
+    session.unsubscribeProactive();
+    session.unsubscribeProactive = null;
+  }
   // Tear down any prior subscription, splitter, and TTS stream before
   // opening a new one. Without closing the prior splitter, its consumer
   // generator would never exit (we'd no longer be listening for the idle
@@ -614,6 +643,11 @@ function startTtsForAgent(session: VoiceSession): void {
           session.unsubscribeChunk();
           session.unsubscribeChunk = null;
         }
+        // Re-arm the proactive watcher for the next unsolicited message.
+        // Skipped if the WS already closed (sessions.delete handled it).
+        if (sessions.has(session.ws) && !session.unsubscribeProactive) {
+          session.unsubscribeProactive = subscribeProactiveWatcher(session);
+        }
       }
     })();
   };
@@ -666,6 +700,19 @@ function startTtsForAgent(session: VoiceSession): void {
     if (bubbleDoneSeen && toolsInFlight === 0) armQuietTimer();
   };
   abort.signal.addEventListener('abort', cancelQuietTimer, { once: true });
+  // Proactive watcher path: the watcher captures the FIRST chat:chunk
+  // content and hands it to us as `initialContent`. We push it through
+  // sanitizer+splitter here BEFORE subscribing the burst listener, so
+  // the burst's listener doesn't double-process it (the live broadcast
+  // already fired before we got here).
+  if (initialContent) {
+    bubbleChars += initialContent.length;
+    const safe = sanitizer.push(initialContent);
+    if (safe) {
+      splitter.push(safe);
+      startStreaming();
+    }
+  }
   const unsubscribe = onBroadcast((event: WsEvent) => {
     if (abort.signal.aborted) return;
     if (event.type === 'chat:chunk') {
@@ -742,6 +789,35 @@ function startTtsForAgent(session: VoiceSession): void {
     }
   });
   session.unsubscribeChunk = unsubscribe;
+}
+
+/**
+ * Catch proactive agent messages (the ones not in response to a voice
+ * prompt — watchers firing, A2A pokes, scheduled triggers) and route them
+ * into a TTS burst so voice-mode users hear them too.
+ *
+ * Self-unsubscribes the moment it triggers a burst, to avoid double-
+ * processing the same event (the burst's own listener will be subscribed
+ * during the same Set iteration and would otherwise also fire for it).
+ * Re-subscribed by startTtsForAgent's finally block when the burst ends.
+ */
+function subscribeProactiveWatcher(session: VoiceSession): () => void {
+  const unsubscribe = onBroadcast((event: WsEvent) => {
+    if (event.type !== 'chat:chunk') return;
+    if (event.agentId !== session.agentId) return;
+    if (!event.content) return;        // ignore done-only / empty events
+    if (session.activeTts) return;     // burst in flight; its listener handles it
+    // Snap off self before kicking off the burst so we don't double-fire.
+    unsubscribe();
+    if (session.unsubscribeProactive === unsubscribe) {
+      session.unsubscribeProactive = null;
+    }
+    logger.info('Voice TTS: starting burst for proactive agent message', {
+      agentId: session.agentId, chars: event.content.length,
+    });
+    startTtsForAgent(session, event.content);
+  });
+  return unsubscribe;
 }
 
 function bargeIn(session: VoiceSession): void {
