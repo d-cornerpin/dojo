@@ -43,7 +43,7 @@ const cases: Array<[string, string]> = [
   ['Check kevin.com later', 'Check kevin dot com later'],
   ['Domain is example.org', 'Domain is example dot org'],
   ['Hosted on model.ai', 'Hosted on model dot A I'],
-  ['Meeting Tue at 3pm', 'Meeting Tuesday at 3pm'],
+  ['Meeting Tue at 3pm', 'Meeting Tuesday at 3 p m'],
   ['Due by Fri', 'Due by Friday'],
   ['Scheduled for Feb 14', 'Scheduled for February 14th'],
   ['Released Oct 2026', 'Released October 2026'],
@@ -53,6 +53,41 @@ const cases: Array<[string, string]> = [
   ['Due July 3rd', 'Due July 3rd'],                 // already ordinal — leave alone
   ['Conference June 11', 'Conference June 11th'],   // 11/12/13 → "th" not "st/nd/rd"
   ['March 21 deadline', 'March 21st deadline'],
+  // Compass directions
+  ['Wind from the WNW', 'Wind from the west-north-west'],
+  ['NE corner of the lot', 'north-east corner of the lot'],
+  ['Heading SSE on I-95', 'Heading south-south-east on I-95'],
+  ['NW to SE diagonal', 'north-west to south-east diagonal'],
+  // Single letters NOT expanded (too ambiguous)
+  ['the N letter', 'the N letter'],
+  ['point W on the map', 'point W on the map'],
+  // Email
+  ['Email me at david@example.com', 'Email me at david at example dot com'],
+  ['Send to alex.smith+work@company.org', 'Send to alex.smith+work at company dot org'],
+  // AM/PM
+  ['Meeting at 3pm', 'Meeting at 3 p m'],
+  ['Wake up at 7AM', 'Wake up at 7 a m'],
+  ['Lunch at 12:30 PM', 'Lunch at 12:30 p m'],
+  ['I am 25 years old', 'I am 25 years old'],          // "am" verb, not meridian
+  // Math
+  ['5 + 3 = 8', '5 plus 3 equals 8'],
+  ['10 × 4 = 40', '10 times 4 equals 40'],
+  ['12 ÷ 3 = 4', '12 divided by 3 equals 4'],
+  // Plus-or-minus
+  ['Result: 5 ± 2', 'Result: 5 plus or minus 2'],
+  ['Tolerance +/-5', 'Tolerance plus or minus 5'],
+  // Number ranges
+  ['Read pages 5-10', 'Read pages 5 to 10'],
+  ['Years 2026-2030', 'Years 2026 to 2030'],
+  ['Call 555-555-1234', 'Call 555-555-1234'],          // phone — leave alone
+  // Street abbreviations
+  ['123 Main Ave.', '123 Main Avenue.'],
+  ['Live on Sunset Blvd', 'Live on Sunset Boulevard'],
+  ['Unit 4 Apt B', 'Unit 4 Apartment B'],
+  ['I love Aptitude tests', 'I love Aptitude tests'],   // word boundary keeps Apt safe
+  // #N
+  ['Task #5 is done', 'Task number 5 is done'],
+  ['Follow #trending', 'Follow #trending'],            // no digit → no change
   ['Dr. Smith called', 'Doctor Smith called'],
   ['Foo vs. bar', 'Foo versus bar'],
   ['Apples, oranges, etc.', 'Apples, oranges, et cetera'],

@@ -82,6 +82,12 @@ const PATTERNS: Array<[RegExp, Replacer]> = [
   [/(\d+(?:\.\d+)?)\s*hrs?\b/g, '$1 hours'],
   [/(\d+(?:\.\d+)?)\s*yrs?\b/g, '$1 years'],
 
+  // ── AM/PM (digit-prefixed so "I am 25" doesn't get caught) ─────────
+  // Number-then-meridian only: "3pm", "10AM", "8:30 PM". Kokoro otherwise
+  // mushes "pm" into one syllable. Space-separated letters read correctly.
+  [/(\d+(?::\d+)?)\s*[Pp][Mm]\b/g, '$1 p m'],
+  [/(\d+(?::\d+)?)\s*[Aa][Mm]\b/g, '$1 a m'],
+
   // ── Storage / data ──────────────────────────────────────────────────
   [/(\d+(?:\.\d+)?)\s*GB\b/g, '$1 gigabytes'],
   [/(\d+(?:\.\d+)?)\s*MB\b/g, '$1 megabytes'],
@@ -97,6 +103,32 @@ const PATTERNS: Array<[RegExp, Replacer]> = [
 
   // ── Dimensions (e.g. "1920x1080", "4x6") ────────────────────────────
   [/(\d+)\s*x\s*(\d+)\b/g, '$1 by $2'],
+
+  // ── Email addresses ────────────────────────────────────────────────
+  // Run BEFORE TLD rules so "david@example.com" first becomes
+  // "david at example.com", then the .com rule turns it into
+  // "david at example dot com".
+  [/([A-Za-z0-9._+-]+)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b/g, '$1 at $2'],
+
+  // ── Plus-or-minus (before the math + rule below) ───────────────────
+  [/±/g, 'plus or minus '],
+  [/\+\/-/g, 'plus or minus '],
+
+  // ── Math operators (only when sandwiched between numbers) ──────────
+  // Subtraction is intentionally NOT included — same symbol as a hyphen
+  // in number ranges below, which are far more common in agent chat.
+  [/(\d+(?:\.\d+)?)\s*\+\s*(\d+(?:\.\d+)?)/g, '$1 plus $2'],
+  [/(\d+(?:\.\d+)?)\s*=\s*(\d+(?:\.\d+)?)/g, '$1 equals $2'],
+  [/(\d+(?:\.\d+)?)\s*×\s*(\d+(?:\.\d+)?)/g, '$1 times $2'],
+  [/(\d+(?:\.\d+)?)\s*÷\s*(\d+(?:\.\d+)?)/g, '$1 divided by $2'],
+
+  // ── Number ranges ──────────────────────────────────────────────────
+  // "pages 5-10" → "pages 5 to 10". Two patterns: year-pair (1900s/2000s)
+  // and small numbers (1-3 digits each). Lookarounds guard against phone
+  // numbers — "555-555-1234" stays as-is because of the trailing -1234
+  // segment. Em/en-dash variants included.
+  [/\b((?:19|20)\d{2})\s*[-–]\s*((?:19|20)\d{2})\b(?!-\d)/g, '$1 to $2'],
+  [/(?<!\d-)\b(\d{1,3})\s*[-–]\s*(\d{1,3})\b(?!-\d)/g, '$1 to $2'],
 
   // ── Domain TLDs (after URL stripping has already handled http URLs) ─
   // Catches bare-domain refs like "kevin.com", "example.org", "model.ai".
@@ -159,6 +191,35 @@ const PATTERNS: Array<[RegExp, Replacer]> = [
     },
   ],
 
+  // ── Compass directions (uppercase only, 2-3 letter forms) ──────────
+  // Single letters N/E/S/W are intentionally NOT expanded — far too
+  // ambiguous in English prose ("the N word", initials, etc). Two- and
+  // three-letter forms in uppercase essentially only appear as compass
+  // directions. Longest first so the alternation matches NNE before NE.
+  [/\bNNE\b/g, 'north-north-east'],
+  [/\bENE\b/g, 'east-north-east'],
+  [/\bESE\b/g, 'east-south-east'],
+  [/\bSSE\b/g, 'south-south-east'],
+  [/\bSSW\b/g, 'south-south-west'],
+  [/\bWSW\b/g, 'west-south-west'],
+  [/\bWNW\b/g, 'west-north-west'],
+  [/\bNNW\b/g, 'north-north-west'],
+  [/\bNE\b/g, 'north-east'],
+  [/\bSE\b/g, 'south-east'],
+  [/\bSW\b/g, 'south-west'],
+  [/\bNW\b/g, 'north-west'],
+
+  // ── Street abbreviations (skip St. — collides with Saint) ──────────
+  // "St." stays as-is because "St. Louis Ave." would otherwise become
+  // "Street Louis Avenue". Word boundary keeps "Average", "Aptitude" safe.
+  // No trailing-period consumption so sentence-final "...on Main Ave."
+  // keeps its terminating period.
+  [/\bAve\b/g, 'Avenue'],
+  [/\bBlvd\b/g, 'Boulevard'],
+  [/\bRd\b/g, 'Road'],
+  [/\bApt\b/g, 'Apartment'],
+  [/\bSte\b/g, 'Suite'],
+
   // ── Titles ──────────────────────────────────────────────────────────
   [/\bMr\.\s*/g, 'Mister '],
   [/\bMrs\.\s*/g, 'Missus '],
@@ -176,6 +237,9 @@ const PATTERNS: Array<[RegExp, Replacer]> = [
   [/\bw\/\s/gi, 'with '],
 
   // ── Misc symbols ────────────────────────────────────────────────────
+  // "#5" → "number 5". Only fires when a digit follows so hashtags
+  // ("#trending") and code-style refs ("#main") stay intact.
+  [/#(\d+)/g, 'number $1'],
   [/\s+&\s+/g, ' and '],
   // Clean up doubled spaces a normalization left behind.
   [/  +/g, ' '],
