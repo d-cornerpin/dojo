@@ -33,6 +33,7 @@ const settingsSubItems = [
   { tab: 'security', label: 'Security' },
   { tab: 'sensei', label: 'Sensei' },
   { tab: 'integrations', label: 'Integrations' },
+  { tab: 'voice', label: 'Voice' },
   { tab: 'update', label: 'Update' },
 ];
 
