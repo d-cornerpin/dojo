@@ -103,31 +103,58 @@ const ACTION_VERBS = new Set([
 
 const CONJUNCTIONS = new Set(['and', 'then', 'also', 'plus', 'after', 'next']);
 
+// v2.5.46 — words that, when they immediately precede a candidate "verb",
+// strongly suggest the candidate is actually being used as a noun. "Email"
+// is an action verb in "email the team" but a noun in "any new emails".
+// "Message", "text", "post", "list", "report" have the same ambiguity.
+// Without this guard the heuristic falsely fires multistep for short
+// lookup questions ("do you have any new emails today?") which then
+// auto-creates a tracker project and triggers the close-out loop.
+const NOUNIFYING_PREDECESSORS = new Set([
+  'any', 'the', 'a', 'an',
+  'my', 'your', 'his', 'her', 'its', 'our', 'their',
+  'some', 'this', 'that', 'these', 'those',
+  'few', 'several', 'many', 'all', 'no', 'every',
+  'each', 'another', 'such',
+  'new', 'old', 'recent', 'latest', 'pending', 'unread',
+]);
+
 /**
  * Try the token against ACTION_VERBS in a few morphological forms.
  * Catches "pulling" / "pulled" / "summarizing" / "summarised" without
  * requiring every conjugation in the set.
+ *
+ * `prevToken` is the immediately preceding word in the input (or null at
+ * the start). When `prevToken` is a determiner / quantifier / adjective
+ * that almost always introduces a noun phrase, we treat the candidate as
+ * a noun and refuse to count it as an action verb.
  */
-function matchesActionVerb(token: string): boolean {
-  if (ACTION_VERBS.has(token)) return true;
+function matchesActionVerb(token: string, prevToken: string | null): boolean {
+  const candidateIsVerbLike =
+    ACTION_VERBS.has(token) ||
+    (token.endsWith('s') && ACTION_VERBS.has(token.slice(0, -1))) ||
+    (token.endsWith('ed') && (ACTION_VERBS.has(token.slice(0, -2)) || ACTION_VERBS.has(token.slice(0, -2) + 'e'))) ||
+    (token.endsWith('ing') && (ACTION_VERBS.has(token.slice(0, -3)) || ACTION_VERBS.has(token.slice(0, -3) + 'e')));
 
-  // -s plural / 3rd-person singular: "pulls" → "pull"
-  if (token.endsWith('s') && ACTION_VERBS.has(token.slice(0, -1))) return true;
+  if (!candidateIsVerbLike) return false;
 
-  // -ed past tense: "pulled" → "pull"; "summarized" → "summariz" + "e"
-  if (token.endsWith('ed')) {
-    const stem = token.slice(0, -2);
-    if (ACTION_VERBS.has(stem)) return true;
-    if (ACTION_VERBS.has(stem + 'e')) return true;
-  }
+  // Determiner / adjective directly before this token → noun usage.
+  if (prevToken && NOUNIFYING_PREDECESSORS.has(prevToken)) return false;
 
-  // -ing present participle: "pulling" → "pull"; "summarizing" → "summarize"
-  if (token.endsWith('ing')) {
-    const stem = token.slice(0, -3);
-    if (ACTION_VERBS.has(stem)) return true;
-    if (ACTION_VERBS.has(stem + 'e')) return true;
-  }
+  return true;
+}
 
+// v2.5.46 — Question detection. Prompts that ask the agent for information
+// (rather than directing it to do work) are almost always single-step
+// lookups. We use this as a tiebreaker for ambiguous heuristic cases and
+// as the fallback bias when no local-LLM classifier is configured.
+const INTERROGATIVE_LEAD =
+  /^\s*(do|does|did|is|are|am|was|were|will|would|can|could|should|shall|may|might|have|has|had|what|whats|where|wheres|when|whens|why|whys|who|whos|whom|whose|which|how|hows)\b/i;
+
+export function looksLikeQuestion(query: string): boolean {
+  const trimmed = query.trim();
+  if (trimmed.endsWith('?')) return true;
+  if (INTERROGATIVE_LEAD.test(trimmed)) return true;
   return false;
 }
 
@@ -146,8 +173,10 @@ export function multistepHeuristic(query: string): MultistepHeuristic {
 
   let actionVerbs = 0;
   let conjunctions = 0;
-  for (const t of tokens) {
-    if (matchesActionVerb(t)) actionVerbs++;
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    const prev = i > 0 ? tokens[i - 1] : null;
+    if (matchesActionVerb(t, prev)) actionVerbs++;
     if (CONJUNCTIONS.has(t)) conjunctions++;
   }
 
@@ -157,6 +186,7 @@ export function multistepHeuristic(query: string): MultistepHeuristic {
   }
 
   const chars = query.length;
+  const isQuestion = looksLikeQuestion(query);
 
   // Scoring: weight action verbs heaviest. Two distinct action verbs
   // joined by a conjunction is the canonical multi-step signal.
@@ -166,7 +196,21 @@ export function multistepHeuristic(query: string): MultistepHeuristic {
   if (chars < 20 && actionVerbs <= 1) {
     decision = 'definitely_single';
   } else if (actionVerbs >= 3 || (actionVerbs >= 2 && conjunctions >= 1)) {
+    // Genuinely multi-step even if phrased as a question
+    // ("can you find X, summarize it, and email it?")
     decision = 'definitely_multi';
+  } else if (isQuestion && actionVerbs <= 1 && conjunctions === 0) {
+    // Short/medium question with at most one action verb and no
+    // conjunction — almost certainly a lookup, not a project.
+    decision = 'definitely_single';
+  } else if (actionVerbs <= 1 && conjunctions === 0) {
+    // v2.5.46 — Single imperative: "Send an email saying hi", "Schedule a
+    // meeting for Tuesday", "Delete the test files". One action, no
+    // "and/then" joining additional work — it's one task, not a project.
+    // Without this, the fallback path was auto-creating trackers for simple
+    // commands and the close-out gate then looped the agent (observed
+    // 2026-05-19: "Send an email" → 3 replies for one voice prompt).
+    decision = 'definitely_single';
   } else if (actionVerbs === 0 && deliverables === 0) {
     decision = 'definitely_single';
   } else {
@@ -280,7 +324,11 @@ export interface MultistepDecision {
   /** Suggested project name, or null. Caller may fall back to first 50 chars. */
   name: string | null;
   /** How we decided — for logging. */
-  source: 'heuristic_single' | 'heuristic_multi' | 'llm_single' | 'llm_multi' | 'fallback_multi' | 'disabled' | 'user_creating_explicitly';
+  source:
+    | 'heuristic_single' | 'heuristic_multi'
+    | 'llm_single' | 'llm_multi'
+    | 'fallback_multi' | 'fallback_single_question' | 'fallback_single_default'
+    | 'disabled' | 'user_creating_explicitly';
   heuristic: MultistepHeuristic;
 }
 
@@ -315,10 +363,18 @@ export async function detectMultistep(
   // Ambiguous — try LLM if configured.
   const llm = await multistepLLMClassify(query, config);
   if (llm === null) {
-    // No LLM available or call failed. Fool-proof bias: lean toward
-    // creating the project. Over-creation is annoying; missing the
-    // multi-step case is the failure mode the user actually cares about.
-    return { multistep: true, name: null, source: 'fallback_multi', heuristic };
+    // v2.5.46 (revised) — When the heuristic is genuinely uncertain AND no
+    // local-LLM classifier is wired up, default to SINGLE. Earlier we
+    // defaulted to multi ("over-creation is annoying but missing multi-step
+    // is worse"), but in practice over-creation triggers the close-out gate
+    // loop and produces 2-3 replies for one user prompt. The v2.5.46 reflex
+    // bullets + close-out gate already direct agents to call
+    // tracker_create_project themselves when work is genuinely multi-step —
+    // trust the agent rather than preempting.
+    if (looksLikeQuestion(query)) {
+      return { multistep: false, name: null, source: 'fallback_single_question', heuristic };
+    }
+    return { multistep: false, name: null, source: 'fallback_single_default', heuristic };
   }
 
   return {

@@ -472,6 +472,70 @@ export const getAllSettings = async (): Promise<ApiResponse<Record<string, strin
   return request<Record<string, string>>('/config/settings');
 };
 
+// ── Voice ──
+
+export interface VoicePreset {
+  id: string;
+  name: string;
+  language: string;
+  gender: string;
+}
+
+export interface VoiceModelInfo {
+  kind: 'whisper' | 'kokoro';
+  id: string;
+  filename: string;
+  bytes: number;
+  installed: boolean;
+  label?: string;
+  approxBytes?: number | null;
+}
+
+export interface VoiceModelsResponse {
+  whisper: VoiceModelInfo[];
+  kokoro: VoiceModelInfo | null;
+  defaultWhisper: string;
+  kokoroLoaded: boolean;
+  totalDiskBytes: number;
+  freeDiskMb: number;
+}
+
+export const getVoicePresets = async (): Promise<ApiResponse<{ voices: VoicePreset[]; defaultVoice: string }>> => {
+  return request('/voice/voices');
+};
+
+export const getVoiceModels = async (): Promise<ApiResponse<VoiceModelsResponse>> => {
+  return request('/voice/models');
+};
+
+export const installVoiceModel = async (kind: 'whisper' | 'kokoro', id: string): Promise<ApiResponse<{ kind: string; id: string }>> => {
+  return request(`/voice/models/${kind}/${encodeURIComponent(id)}`, { method: 'POST' });
+};
+
+export const deleteVoiceModel = async (kind: 'whisper' | 'kokoro', id: string): Promise<ApiResponse<{ kind: string; id: string; deleted: boolean }>> => {
+  return request(`/voice/models/${kind}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+};
+
+/** Fetch a synthesized preview clip as a Blob (audio/wav) for inline <audio> playback. */
+export const fetchVoicePreview = async (voice: string, speed = 1, text?: string): Promise<Blob> => {
+  const token = getToken();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const csrf = getCsrfToken();
+  if (csrf) headers['X-CSRF-Token'] = csrf;
+  const res = await fetch(`${BASE_URL}/voice/preview`, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: JSON.stringify({ voice, speed, text }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`preview failed: ${res.status} ${body}`);
+  }
+  return res.blob();
+};
+
 // ── Memory ──
 
 export const getMemoryDag = async (

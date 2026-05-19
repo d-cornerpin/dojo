@@ -17,6 +17,7 @@ const PUBLIC_PATHS = [
 const PUBLIC_PREFIXES = [
   '/api/setup/',  // All setup routes are public (only useful during first run)
   '/api/upload/download/',  // File downloads use unguessable UUIDs as auth
+  '/api/voice/assets/',  // Voice-mode runtime assets (VAD model, ORT wasm) — static files
 ];
 
 export interface JwtPayload {

@@ -29,6 +29,9 @@ import { microsoftRouter } from './routes/microsoft.js';
 import { migrationRouter } from './routes/migration.js';
 import { healerRouter } from './routes/healer.js';
 import { verifyAndTrackClient, removeClient, handleClientMessage } from './ws.js';
+import { verifyAndOpenVoiceSession, closeVoiceSession, handleVoiceMessage } from '../voice/voice-ws.js';
+import { voiceAssetsRouter } from '../voice/voice-assets.js';
+import { voiceRouter } from '../voice/voice-routes.js';
 import { getPrimaryAgentId, getPMAgentId } from '../config/platform.js';
 import { createLogger } from '../logger.js';
 
@@ -141,6 +144,28 @@ export function createServer() {
     };
   }));
 
+  // Voice mode WebSocket — separate endpoint because it carries binary audio
+  // frames in both directions and runs its own per-session state machine.
+  app.get('/api/ws/voice', upgradeWebSocket((c) => {
+    return {
+      onOpen: (_event, ws) => {
+        verifyAndOpenVoiceSession(ws, c.req.url);
+      },
+      onMessage: (event, ws) => {
+        void handleVoiceMessage(ws, event.data as string | ArrayBuffer | Buffer);
+      },
+      onClose: (_event, ws) => {
+        closeVoiceSession(ws);
+      },
+      onError: (error, ws) => {
+        logger.error('Voice WebSocket error', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        closeVoiceSession(ws);
+      },
+    };
+  }));
+
   // Rewrite "primary" and "pm" agent ID aliases to actual configured IDs
   // This lets the dashboard use 'primary' as a default before loading the real ID
   app.use('/api/*', async (c, next) => {
@@ -192,6 +217,8 @@ export function createServer() {
   app.route('/api/migration', migrationRouter); // /api/migration/export, /api/migration/import, etc.
   app.route('/api/setup/migration', migrationRouter); // Same routes, public for OOBE import
   app.route('/api/healer', healerRouter);   // /api/healer/config, /api/healer/proposals, etc.
+  app.route('/api/voice/assets', voiceAssetsRouter); // VAD/ORT static runtime assets
+  app.route('/api/voice', voiceRouter);              // voice settings + models + preview
   app.route('/api', taskRunsRouter);        // /api/tasks/:taskId/runs
   app.route('/api', systemRouter);        // /api/health, /api/system/logs
 

@@ -129,6 +129,12 @@ export interface Message {
     path: string;
     category: 'image' | 'pdf' | 'text' | 'office' | 'unknown';
   }>;
+  /**
+   * Where this message came from. Currently only set for user messages
+   * dictated via voice mode (so the dashboard can render a small mic icon).
+   * Typed messages and legacy messages leave this null.
+   */
+  source?: 'voice' | null;
 }
 
 export interface AuditEntry {

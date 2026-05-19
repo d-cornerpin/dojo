@@ -1,6 +1,6 @@
 {
   "name": "@dojo/server",
-  "version": "2.5.46",
+  "version": "2.6.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -24,6 +24,7 @@
     "docx": "^9.6.1",
     "hono": "^4.7.4",
     "jsonwebtoken": "^9.0.2",
+    "kokoro-js": "^1.2.1",
     "openai": "^6.32.0",
     "pdfjs-dist": "^5.6.205",
     "pptxgenjs": "^4.0.1",

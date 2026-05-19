@@ -1,4 +1,5 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, useRef, type FormEvent } from 'react';
+import { useWebSocket } from '../hooks/useWebSocket';
 import { useSearchParams } from 'react-router-dom';
 import type { Provider, Model } from '@dojo/shared';
 import * as api from '../lib/api';
@@ -11,8 +12,9 @@ import { formatDate } from '../lib/dates';
 import { MigrationExport } from '../components/MigrationExport';
 import { MigrationImport } from '../components/MigrationImport';
 import { useTheme } from '../themes';
+import { invalidateSavedVoiceSettings } from '../hooks/useVoiceMode';
 
-type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'sensei' | 'integrations' | 'update';
+type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'sensei' | 'integrations' | 'voice' | 'update';
 
 export const Settings = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -41,6 +43,7 @@ export const Settings = () => {
     { key: 'security', label: 'Security' },
     { key: 'sensei', label: 'Sensei' },
     { key: 'integrations', label: 'Integrations' },
+    { key: 'voice', label: 'Voice' },
     { key: 'update', label: 'Update' },
   ];
 
@@ -92,6 +95,7 @@ export const Settings = () => {
           <MicrosoftWorkspaceSettings />
         </div>
       )}
+      {activeTab === 'voice' && <VoiceTab />}
       {activeTab === 'update' && <UpdateTab />}
     </div>
   );
@@ -3382,6 +3386,494 @@ const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) 
           </div>
         ))}
       </div>
+    </div>
+  );
+};
+
+// ── Voice Tab ──
+
+const VAD_OPTIONS: Array<{ id: 'quick' | 'normal' | 'patient'; label: string; hint: string }> = [
+  { id: 'quick',   label: 'Quick',   hint: '200ms — picks up on short pauses, may interrupt' },
+  { id: 'normal',  label: 'Normal',  hint: '500ms — balanced (default)' },
+  { id: 'patient', label: 'Patient', hint: '1s — waits longer, better for long thoughts' },
+];
+
+const STT_LABELS: Record<string, string> = {
+  'base.en':         'Base · English only · fastest, lower quality',
+  'small.en':        'Small · English only',
+  'medium.en':       'Medium · English only',
+  'large-v3-turbo':  'Large v3 Turbo · multilingual, best quality (default)',
+};
+
+function formatBytes(b: number): string {
+  if (!b) return '0 B';
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
+  if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(0)} MB`;
+  return `${(b / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+const VoiceTab = () => {
+  const ws = useWebSocket();
+  const [voices, setVoices] = useState<api.VoicePreset[]>([]);
+  const [defaultVoice, setDefaultVoice] = useState('am_michael');
+  const [models, setModels] = useState<api.VoiceModelsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // Settings (loaded from config table)
+  const [voice, setVoice] = useState('am_michael');
+  const [speed, setSpeed] = useState(1.0);
+  const [vad, setVad] = useState<'quick' | 'normal' | 'patient'>('normal');
+  const [sttModel, setSttModel] = useState('large-v3-turbo');
+  const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
+  const [wakePhrase, setWakePhrase] = useState('');
+  const [sleepPhrase, setSleepPhrase] = useState('stop listening');
+  // Primary agent name drives both the "Voice for X" header and the default
+  // wake phrase ("hey <name>") so neither hardcodes "Kevin".
+  const [primaryAgentName, setPrimaryAgentName] = useState('Agent');
+  const defaultWakePhrase = `hey ${primaryAgentName.toLowerCase()}`;
+
+  const [savedKey, setSavedKey] = useState<string | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [installing, setInstalling] = useState<string | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
+  // key = `${kind}/${id}` → fraction 0..1 (null means no active download)
+  const [downloads, setDownloads] = useState<Record<string, { downloaded: number; total: number }>>({});
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const refreshModels = async () => {
+    const m = await api.getVoiceModels();
+    if (m.ok) setModels(m.data);
+  };
+
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      const [presets, modelsRes, vSetting, sSetting, vadSetting, sttSetting, wakeEnabled, wakeP, sleepP, primaryName] = await Promise.all([
+        api.getVoicePresets(),
+        api.getVoiceModels(),
+        api.getSetting('voice.preferred_voice'),
+        api.getSetting('voice.playback_speed'),
+        api.getSetting('voice.vad_sensitivity'),
+        api.getSetting('voice.stt_model'),
+        api.getSetting('voice.wake_word_enabled'),
+        api.getSetting('voice.wake_phrase'),
+        api.getSetting('voice.sleep_phrase'),
+        api.getSetting('primary_agent_name'),
+      ]);
+      if (!mounted) return;
+      if (presets.ok) {
+        setVoices(presets.data.voices);
+        setDefaultVoice(presets.data.defaultVoice);
+        if (!vSetting.ok || !vSetting.data.value) setVoice(presets.data.defaultVoice);
+      }
+      if (modelsRes.ok) {
+        setModels(modelsRes.data);
+        if (!sttSetting.ok || !sttSetting.data.value) setSttModel(modelsRes.data.defaultWhisper);
+      }
+      if (vSetting.ok && vSetting.data.value) setVoice(vSetting.data.value);
+      if (sSetting.ok && sSetting.data.value) {
+        const n = Number(sSetting.data.value);
+        if (Number.isFinite(n)) setSpeed(n);
+      }
+      if (vadSetting.ok && vadSetting.data.value === 'quick') setVad('quick');
+      if (vadSetting.ok && vadSetting.data.value === 'patient') setVad('patient');
+      if (sttSetting.ok && sttSetting.data.value) setSttModel(sttSetting.data.value);
+      if (wakeEnabled.ok && wakeEnabled.data.value === 'true') setWakeWordEnabled(true);
+      if (wakeP.ok && wakeP.data.value) setWakePhrase(wakeP.data.value);
+      if (sleepP.ok && sleepP.data.value) setSleepPhrase(sleepP.data.value);
+      if (primaryName.ok && primaryName.data.value && primaryName.data.value.trim()) {
+        setPrimaryAgentName(primaryName.data.value.trim());
+      }
+      setLoading(false);
+    };
+    void load();
+    return () => { mounted = false; };
+  }, []);
+
+  // Subscribe to download progress broadcasts. Multiple downloads can be
+  // in flight (e.g. user picks a new STT model AND clicks Download on a
+  // different one) — we key by `kind/id` so each row renders independently.
+  useEffect(() => {
+    const unsub = ws.subscribe('voice:model_download', (event) => {
+      if (event.type !== 'voice:model_download') return;
+      const { kind, modelId, bytesDownloaded, bytesTotal } = event.data;
+      const key = `${kind}/${modelId}`;
+      setDownloads((prev) => ({ ...prev, [key]: { downloaded: bytesDownloaded, total: bytesTotal } }));
+      // Once complete, drop from active downloads after a short delay so the
+      // "Saved!"-style fade happens, and refresh the on-disk list.
+      if (bytesTotal > 0 && bytesDownloaded >= bytesTotal) {
+        void refreshModels();
+        setTimeout(() => {
+          setDownloads((prev) => {
+            const next = { ...prev };
+            delete next[key];
+            return next;
+          });
+        }, 1500);
+      }
+    });
+    return unsub;
+  }, [ws]);
+
+  const flashSaved = (key: string) => {
+    setSavedKey(key);
+    setTimeout(() => setSavedKey((cur) => (cur === key ? null : cur)), 1500);
+  };
+
+  const saveSetting = async (key: string, value: string, uiKey: string) => {
+    const res = await api.setSetting(key, value);
+    if (res.ok) flashSaved(uiKey);
+  };
+
+  const handlePreview = async (previewVoice: string) => {
+    setPreviewError(null);
+    setPreviewing(true);
+    try {
+      const blob = await api.fetchVoicePreview(previewVoice, speed);
+      if (previewAudioRef.current) {
+        try { previewAudioRef.current.pause(); } catch { /* ignore */ }
+      }
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      previewAudioRef.current = audio;
+      audio.onended = () => URL.revokeObjectURL(url);
+      await audio.play();
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const handleInstall = async (kind: 'whisper' | 'kokoro', id: string) => {
+    setInstallError(null);
+    setInstalling(`${kind}/${id}`);
+    const res = await api.installVoiceModel(kind, id);
+    if (!res.ok) setInstallError(res.error);
+    await refreshModels();
+    setInstalling(null);
+  };
+
+  const handleDelete = async (kind: 'whisper' | 'kokoro', id: string) => {
+    if (!confirm(`Delete ${kind}/${id}? You can re-download it from this page.`)) return;
+    const res = await api.deleteVoiceModel(kind, id);
+    if (!res.ok) setInstallError(res.error);
+    await refreshModels();
+  };
+
+  if (loading) return <div className="loading-state">Loading voice settings...</div>;
+
+  return (
+    <div className="space-y-6 max-w-4xl">
+      {/* Voice picker */}
+      <div className="glass-card p-4 space-y-3">
+        <h3 className="card-header">Voice for {primaryAgentName}</h3>
+        <p className="text-xs text-ui/40">
+          The voice your primary agent uses when reading replies back to you in voice mode.
+        </p>
+        <div className="flex items-center gap-2">
+          <select
+            value={voice}
+            onChange={(e) => { setVoice(e.target.value); void saveSetting('voice.preferred_voice', e.target.value, 'voice'); }}
+            className="glass-select flex-1"
+          >
+            {voices.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name} · {v.gender === 'Female' ? 'F' : 'M'} · {v.language}{v.id === defaultVoice ? ' (default)' : ''}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={() => void handlePreview(voice)}
+            disabled={previewing}
+            className="px-3 py-2 glass-btn-primary text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
+          >
+            {previewing ? 'Synthesizing…' : 'Preview'}
+          </button>
+          {savedKey === 'voice' && <span className="text-xs text-cp-teal">Saved!</span>}
+        </div>
+        {previewError && <p className="text-xs text-cp-coral">{previewError}</p>}
+      </div>
+
+      {/* Playback speed */}
+      <div className="glass-card p-4 space-y-3">
+        <h3 className="card-header">Playback speed</h3>
+        <p className="text-xs text-ui/40">How fast Kevin's voice plays back. 1.0 is the natural Kokoro rate.</p>
+        <div className="flex items-center gap-3">
+          <input
+            type="range"
+            min={0.8} max={1.4} step={0.05}
+            value={speed}
+            onChange={(e) => setSpeed(Number(e.target.value))}
+            onMouseUp={() => void saveSetting('voice.playback_speed', String(speed), 'speed')}
+            onTouchEnd={() => void saveSetting('voice.playback_speed', String(speed), 'speed')}
+            className="flex-1 accent-cp-teal"
+          />
+          <span className="text-sm font-mono text-ui w-12 text-right">{speed.toFixed(2)}x</span>
+          {savedKey === 'speed' && <span className="text-xs text-cp-teal">Saved!</span>}
+        </div>
+      </div>
+
+      {/* VAD sensitivity */}
+      <div className="glass-card p-4 space-y-3">
+        <h3 className="card-header">Voice activity sensitivity</h3>
+        <p className="text-xs text-ui/40">
+          How quickly Kevin decides you've finished speaking after you pause.
+        </p>
+        <div className="flex flex-col gap-2">
+          {VAD_OPTIONS.map((opt) => (
+            <label key={opt.id} className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="radio"
+                name="vad"
+                value={opt.id}
+                checked={vad === opt.id}
+                onChange={() => { setVad(opt.id); void saveSetting('voice.vad_sensitivity', opt.id, 'vad'); }}
+                className="mt-1 accent-cp-teal"
+              />
+              <div>
+                <div className="text-sm text-ui">{opt.label}</div>
+                <div className="text-xs text-ui/40">{opt.hint}</div>
+              </div>
+            </label>
+          ))}
+          {savedKey === 'vad' && <span className="text-xs text-cp-teal">Saved!</span>}
+        </div>
+      </div>
+
+      {/* Hands-free wake word */}
+      <div className="glass-card p-4 space-y-3">
+        <div className="flex items-baseline justify-between gap-3">
+          <h3 className="card-header">Hands-free wake word</h3>
+          {savedKey === 'wake' && <span className="text-xs text-cp-teal">Saved!</span>}
+        </div>
+        <p className="text-xs text-ui/40">
+          When enabled, voice mode stays in a passive listening state and only routes your speech
+          to Kevin after it hears the wake phrase. Say the sleep phrase to put it back to sleep.
+          Phrase match is case-insensitive. Heads up: passive mode runs STT continuously, so it
+          uses noticeably more CPU than push-to-talk voice mode.
+        </p>
+
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={wakeWordEnabled}
+            onChange={(e) => {
+              const next = e.target.checked;
+              setWakeWordEnabled(next);
+              void saveSetting('voice.wake_word_enabled', String(next), 'wake');
+              invalidateSavedVoiceSettings();
+            }}
+            className="accent-cp-teal"
+          />
+          <span className="text-sm text-ui">Enable wake word</span>
+        </label>
+
+        <div className={`space-y-3 ${wakeWordEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
+          <div className="space-y-1">
+            <label className="text-xs text-ui/60">Wake phrase</label>
+            <input
+              type="text"
+              value={wakePhrase}
+              onChange={(e) => setWakePhrase(e.target.value)}
+              onBlur={() => {
+                const trimmed = wakePhrase.trim() || defaultWakePhrase;
+                if (trimmed !== wakePhrase) setWakePhrase(trimmed);
+                void saveSetting('voice.wake_phrase', trimmed, 'wake');
+                invalidateSavedVoiceSettings();
+              }}
+              placeholder={defaultWakePhrase}
+              className="glass-input w-full text-sm"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-ui/60">Sleep phrase</label>
+            <input
+              type="text"
+              value={sleepPhrase}
+              onChange={(e) => setSleepPhrase(e.target.value)}
+              onBlur={() => {
+                const trimmed = sleepPhrase.trim() || 'stop listening';
+                if (trimmed !== sleepPhrase) setSleepPhrase(trimmed);
+                void saveSetting('voice.sleep_phrase', trimmed, 'wake');
+                invalidateSavedVoiceSettings();
+              }}
+              placeholder="stop listening"
+              className="glass-input w-full text-sm"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Speech-to-text model (unified — pick active, download, delete, see disk) */}
+      <div className="glass-card p-4 space-y-3">
+        <div className="flex items-baseline justify-between">
+          <h3 className="card-header">Speech-to-text model</h3>
+          {models && (
+            <span className="text-xs text-ui/40">
+              {models.freeDiskMb >= 0 ? `${(models.freeDiskMb / 1024).toFixed(1)} GB free` : ''}
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-ui/40">
+          Whisper transcribes your voice when voice mode is on. Larger models are more accurate
+          but use more disk and CPU. The model marked Default is what the dojo uses right now.
+        </p>
+
+        {models?.whisper.map((m) => {
+          const dl = downloads[`whisper/${m.id}`];
+          const pct = dl && dl.total > 0 ? Math.min(100, (dl.downloaded / dl.total) * 100) : 0;
+          const isActive = m.id === sttModel;
+          const setAsDefault = () => {
+            setSttModel(m.id);
+            void saveSetting('voice.stt_model', m.id, 'stt');
+            if (!m.installed && !dl) {
+              setDownloads((prev) => ({ ...prev, [`whisper/${m.id}`]: { downloaded: 0, total: m.approxBytes ?? 0 } }));
+              void handleInstall('whisper', m.id);
+            }
+          };
+          return (
+            <div
+              key={m.id}
+              className={`glass-nested px-3 py-2.5 rounded-lg space-y-2 transition-colors ${
+                isActive ? 'ring-1 ring-cp-teal/40' : ''
+              }`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                {/* Default radio + label */}
+                <label className="flex items-start gap-3 cursor-pointer flex-1 min-w-0">
+                  <input
+                    type="radio"
+                    name="stt-model"
+                    checked={isActive}
+                    onChange={setAsDefault}
+                    className="mt-1 accent-cp-teal shrink-0"
+                  />
+                  <div className="min-w-0">
+                    <div className="text-sm text-ui flex items-center gap-2">
+                      <span className="truncate">{STT_LABELS[m.id] ?? m.id}</span>
+                      {isActive && <span className="text-[10px] uppercase tracking-wide text-cp-teal shrink-0">Default</span>}
+                    </div>
+                    <div className="text-xs text-ui/40">
+                      {m.installed
+                        ? `${formatBytes(m.bytes)} on disk`
+                        : m.approxBytes ? `~${formatBytes(m.approxBytes)} to download` : 'Not installed'}
+                    </div>
+                  </div>
+                </label>
+
+                {/* Action buttons */}
+                <div className="flex gap-2 shrink-0">
+                  {!m.installed && !dl && (
+                    <button
+                      onClick={() => {
+                        setDownloads((prev) => ({ ...prev, [`whisper/${m.id}`]: { downloaded: 0, total: m.approxBytes ?? 0 } }));
+                        void handleInstall('whisper', m.id);
+                      }}
+                      disabled={installing === `whisper/${m.id}`}
+                      className="px-3 py-1.5 glass-btn-primary text-xs font-medium rounded-lg disabled:opacity-50"
+                    >
+                      Download
+                    </button>
+                  )}
+                  {m.installed && !isActive && (
+                    <button
+                      onClick={() => void handleDelete('whisper', m.id)}
+                      className="px-3 py-1.5 text-xs text-cp-coral hover:bg-cp-coral/10 rounded-lg"
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {dl && (
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] text-ui/40">
+                    <span>{formatBytes(dl.downloaded)} / {formatBytes(dl.total)}</span>
+                    <span>{pct.toFixed(0)}%</span>
+                  </div>
+                  <div className="h-1.5 bg-ui/[0.08] rounded-full overflow-hidden">
+                    <div className="h-full bg-cp-teal transition-all" style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {savedKey === 'stt' && <span className="text-xs text-cp-teal">Saved!</span>}
+        <p className="text-xs text-ui/40">
+          The Default model can't be deleted. Switch defaults first if you want to free its space.
+        </p>
+      </div>
+
+      {/* Text-to-speech model (Kokoro lives by itself — one model, on/off) */}
+      {models?.kokoro && (
+        <div className="glass-card p-4 space-y-3">
+          <div className="flex items-baseline justify-between">
+            <h3 className="card-header">Text-to-speech model</h3>
+            {models.totalDiskBytes > 0 && (
+              <span className="text-xs text-ui/40">All voice models: {formatBytes(models.totalDiskBytes)}</span>
+            )}
+          </div>
+          <p className="text-xs text-ui/40">
+            Kokoro generates Kevin's spoken replies. One model, ~330&nbsp;MB.
+          </p>
+
+          <div className="glass-nested px-3 py-2.5 rounded-lg space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm text-ui">Kokoro 82M</div>
+                <div className="text-xs text-ui/40">
+                  {models.kokoro.installed
+                    ? `${formatBytes(models.kokoro.bytes)} on disk${models.kokoroLoaded ? ' · loaded in memory' : ''}`
+                    : 'Not installed — will download on first voice session'}
+                </div>
+              </div>
+              <div className="flex gap-2">
+                {!models.kokoro.installed && (
+                  <button
+                    onClick={() => {
+                      const id = models.kokoro!.id;
+                      setDownloads((prev) => ({ ...prev, [`kokoro/${id}`]: { downloaded: 0, total: 100 } }));
+                      void handleInstall('kokoro', id);
+                    }}
+                    disabled={installing === `kokoro/${models.kokoro.id}`}
+                    className="px-3 py-1.5 glass-btn-primary text-xs font-medium rounded-lg disabled:opacity-50"
+                  >
+                    {installing === `kokoro/${models.kokoro.id}` ? 'Downloading…' : 'Download'}
+                  </button>
+                )}
+                {models.kokoro.installed && (
+                  <button
+                    onClick={() => void handleDelete('kokoro', models.kokoro!.id)}
+                    className="px-3 py-1.5 text-xs text-cp-coral hover:bg-cp-coral/10 rounded-lg"
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
+            </div>
+            {(() => {
+              const dl = downloads[`kokoro/${models.kokoro.id}`];
+              if (!dl) return null;
+              const pct = dl.total > 0 ? Math.min(100, (dl.downloaded / dl.total) * 100) : 0;
+              return (
+                <div className="space-y-1">
+                  <div className="h-1.5 bg-ui/[0.08] rounded-full overflow-hidden">
+                    <div className="h-full bg-cp-teal transition-all" style={{ width: `${pct}%` }} />
+                  </div>
+                  <div className="text-[10px] text-ui/40 text-right">{pct.toFixed(0)}%</div>
+                </div>
+              );
+            })()}
+          </div>
+
+          {installError && <p className="text-xs text-cp-coral">{installError}</p>}
+        </div>
+      )}
     </div>
   );
 };

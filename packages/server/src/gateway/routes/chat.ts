@@ -13,7 +13,7 @@ import type { Message } from '@dojo/shared';
 
 const logger = createLogger('chat-routes');
 
-function buildContentWithAttachments(text: string, attachments: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: string }>): string {
+function buildContentWithAttachments(text: string, attachments: Array<{ filename: string; size: number; path: string; category: string }>): string {
   const parts: string[] = [text];
 
   for (const att of attachments) {
@@ -33,49 +33,51 @@ function buildContentWithAttachments(text: string, attachments: Array<{ fileId: 
 
 const chatRouter = new Hono();
 
-// POST /:agentId/messages
-chatRouter.post('/:agentId/messages', async (c) => {
-  const agentId = c.req.param('agentId');
-  const body = await c.req.json().catch(() => null);
+export interface SubmitUserMessageResult {
+  ok: boolean;
+  error?: string;
+  messageId?: string;
+  status?: number;
+}
 
-  if (!body?.content || typeof body.content !== 'string' || body.content.trim().length === 0) {
-    return c.json({ ok: false, error: 'Message content is required' }, 400);
+/**
+ * Core path for posting a user message to an agent. Used by the chat HTTP route
+ * and by the voice session (transcript → message). Persists, broadcasts, preempts
+ * any inflight model call, and triggers the runtime. Does not block on the agent's
+ * response — chat:chunk events will fire as the response streams.
+ */
+type AttachmentCategory = 'unknown' | 'text' | 'image' | 'pdf' | 'office';
+type ChatAttachment = { fileId: string; filename: string; mimeType: string; size: number; path: string; category: AttachmentCategory };
+
+export async function submitUserMessage(
+  agentId: string,
+  content: string,
+  attachments?: ChatAttachment[],
+  source?: 'voice' | null,
+): Promise<SubmitUserMessageResult> {
+  if (!content || typeof content !== 'string' || content.trim().length === 0) {
+    return { ok: false, error: 'Message content is required', status: 400 };
   }
 
   const db = getDb();
   const agent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(agentId) as { id: string; status: string } | undefined;
 
-  if (!agent) {
-    return c.json({ ok: false, error: 'Agent not found' }, 404);
-  }
+  if (!agent) return { ok: false, error: 'Agent not found', status: 404 };
+  if (agent.status === 'terminated') return { ok: false, error: 'Agent is terminated', status: 400 };
 
-  if (agent.status === 'terminated') {
-    return c.json({ ok: false, error: 'Agent is terminated' }, 400);
-  }
-
-  const content = body.content as string;
-  const attachments = Array.isArray(body.attachments) ? body.attachments : null;
   const messageId = uuidv4();
-
-  // Build content for the model — includes attachment data
   let modelContent = content;
   if (attachments && attachments.length > 0) {
     modelContent = buildContentWithAttachments(content, attachments);
   }
 
-  // Always persist user message immediately
   db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)
-    VALUES (?, ?, 'user', ?, ?, datetime('now'))
-  `).run(messageId, agentId, modelContent, attachments ? JSON.stringify(attachments) : null);
+    INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, source, created_at)
+    VALUES (?, ?, 'user', ?, ?, ?, datetime('now'))
+  `).run(messageId, agentId, modelContent, attachments ? JSON.stringify(attachments) : null, source ?? null);
 
   logger.info('User message persisted', { agentId, messageId, attachmentCount: attachments?.length ?? 0 }, agentId);
 
-  // Broadcast so connected dashboards render the message in real time.
-  // Without this, the user message only appears after a page reload pulls
-  // it from GET /messages — fine for users typing in the dashboard (the
-  // optimistic UI handles it locally), but invisible for messages sent via
-  // any other client (dev-test-tools, mobile, scripts).
   const createdAtRow = db
     .prepare('SELECT created_at FROM messages WHERE id = ?')
     .get(messageId) as { created_at: string } | undefined;
@@ -93,25 +95,17 @@ chatRouter.post('/:agentId/messages', async (c) => {
       cost: null,
       latencyMs: null,
       createdAt: createdAtRow?.created_at ?? new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, ''),
+      source: source ?? null,
     },
   });
 
   queueEmbedding('message', messageId, agentId, content);
 
-  // Urgent preempt — direct user messages count as urgent. If the agent
-  // is mid-turn on something else, abort the in-flight model call so the
-  // user's message is processed immediately instead of queued behind a
-  // potentially-15-minute model call.
   try {
     const { preemptAgentForUrgentMessage } = await import('../../agent/runtime.js');
     preemptAgentForUrgentMessage(agentId);
   } catch { /* best effort */ }
 
-  // ALWAYS call handleMessage — let the runtime's own activeRuns check
-  // decide whether to process immediately or queue a wakeup. Previously
-  // this checked agent.status === 'working' from the DB, but DB status
-  // can be stale (e.g., a crashed run that didn't clean up). The runtime's
-  // in-memory activeRuns set is the authoritative busy check.
   const runtime = getAgentRuntime();
   runtime.handleMessage(agentId, modelContent).catch((err) => {
     logger.error('Agent runtime error', {
@@ -120,7 +114,22 @@ chatRouter.post('/:agentId/messages', async (c) => {
     }, agentId);
   });
 
-  return c.json({ ok: true, data: { messageId } });
+  return { ok: true, messageId };
+}
+
+// POST /:agentId/messages
+chatRouter.post('/:agentId/messages', async (c) => {
+  const agentId = c.req.param('agentId');
+  const body = await c.req.json().catch(() => null);
+
+  const content = (body?.content ?? '') as string;
+  const attachments = Array.isArray(body?.attachments) ? body.attachments : undefined;
+
+  const result = await submitUserMessage(agentId, content, attachments);
+  if (!result.ok) {
+    return c.json({ ok: false, error: result.error }, (result.status ?? 400) as 400 | 404);
+  }
+  return c.json({ ok: true, data: { messageId: result.messageId } });
 });
 
 // GET /:agentId/messages
@@ -188,6 +197,7 @@ function rowToMessage(row: Record<string, unknown>): Message {
     createdAt: row.created_at as string,
     reasoningContent: (row.reasoning_content as string | null) ?? null,
     attachments: row.attachments ? JSON.parse(row.attachments as string) : undefined,
+    source: (row.source as 'voice' | null | undefined) ?? null,
   };
 }
 

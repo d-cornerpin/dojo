@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import type { Model, Provider } from '@dojo/shared';
 import * as api from '../lib/api';
 import { SetupDeps, SetupPermissions } from '../components/SetupDeps';
+import { VoiceSetupStep } from '../components/VoiceSetupStep';
 
 // FENG-SHUI EXEMPTION: setup wizard uses standard Tailwind status colors
 // (text-red-500, text-green-500, text-blue-400, text-yellow-400) for
@@ -11,9 +12,9 @@ import { SetupDeps, SetupPermissions } from '../components/SetupDeps';
 // var(--btn-primary-text) / var(--btn-success-text)).
 import { MigrationImport } from '../components/MigrationImport';
 
-type Step = 'welcome' | 'dependencies' | 'permissions' | 'provider' | 'models' | 'your-profile' | 'primary-agent' | 'pm-agent' | 'trainer-agent' | 'dreamer' | 'imessage' | 'workspace' | 'web-search' | 'complete';
+type Step = 'welcome' | 'dependencies' | 'permissions' | 'provider' | 'models' | 'your-profile' | 'primary-agent' | 'pm-agent' | 'trainer-agent' | 'dreamer' | 'imessage' | 'workspace' | 'web-search' | 'voice' | 'complete';
 
-const STEPS: Step[] = ['welcome', 'dependencies', 'permissions', 'provider', 'models', 'your-profile', 'primary-agent', 'pm-agent', 'trainer-agent', 'dreamer', 'imessage', 'web-search', 'workspace', 'complete'];
+const STEPS: Step[] = ['welcome', 'dependencies', 'permissions', 'provider', 'models', 'your-profile', 'primary-agent', 'pm-agent', 'trainer-agent', 'dreamer', 'imessage', 'web-search', 'workspace', 'voice', 'complete'];
 
 const STEP_LABELS: Record<Step, string> = {
   welcome: 'Welcome',
@@ -29,6 +30,7 @@ const STEP_LABELS: Record<Step, string> = {
   imessage: 'iMessage',
   workspace: 'Google Workspace',
   'web-search': 'Web Search',
+  voice: 'Voice Mode',
   complete: 'Enter the Dojo',
 };
 
@@ -185,6 +187,9 @@ export const Setup = () => {
           </div>
           <div style={{ display: currentStep === 'web-search' ? 'block' : 'none' }}>
             {visitedSteps.has('web-search') && <WebSearchStep onReady={onWebSearchReady} />}
+          </div>
+          <div style={{ display: currentStep === 'voice' ? 'block' : 'none' }}>
+            {visitedSteps.has('voice') && <VoiceSetupStep />}
           </div>
           <div style={{ display: currentStep === 'complete' ? 'block' : 'none' }}>
             {visitedSteps.has('complete') && <CompleteStep />}

@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, useEffect, type KeyboardEvent, type DragEvent } from 'react';
 import * as api from '../lib/api';
 import type { AttachmentInfo } from '../lib/api';
+import { useVoiceMode } from '../hooks/useVoiceMode';
+import { VoiceFirstRunModal } from './VoiceFirstRunModal';
 
 const ACCEPTED_EXTENSIONS = '.png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md,.csv,.json,.xml,.doc,.docx,.xls,.xlsx,.pptx,.js,.ts,.tsx,.jsx,.py,.html,.css,.sh,.yaml,.yml,.toml,.env,.sql,.rs,.go,.java,.rb,.php,.swift,.kt,.c,.cpp,.h';
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB per file
@@ -32,6 +34,60 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
+type VoiceUiState =
+  | 'idle' | 'connecting' | 'listening' | 'capturing'
+  | 'transcribing' | 'waiting' | 'speaking' | 'error' | 'passive';
+
+function voiceTooltip(state: VoiceUiState, wakePhrase?: string): string {
+  switch (state) {
+    case 'idle': return 'Voice mode: OFF (click to enable)';
+    case 'connecting': return 'Voice mode: connecting...';
+    case 'passive': return wakePhrase ? `Standing by — say "${wakePhrase}"` : 'Standing by';
+    case 'listening': return 'Voice mode: listening — start talking';
+    case 'capturing': return 'Voice mode: hearing you';
+    case 'transcribing': return 'Voice mode: transcribing';
+    case 'waiting': return 'Voice mode: waiting for reply';
+    case 'speaking': return 'Voice mode: agent speaking (interrupt by talking)';
+    case 'error': return 'Voice mode: error — click to retry';
+  }
+}
+
+function voiceButtonClasses(state: VoiceUiState): string {
+  switch (state) {
+    case 'idle':
+      return 'bg-ui/[0.08] text-ui/25 hover:text-ui/55 hover:bg-ui/[0.12]';
+    case 'error':
+      return 'bg-cp-coral/20 text-cp-coral hover:bg-cp-coral/30';
+    case 'connecting':
+    case 'transcribing':
+    case 'waiting':
+      return 'bg-cp-teal/20 text-cp-teal/80 animate-pulse';
+    case 'passive':
+      // Dimmer than 'listening' to signal "not actively listening for a prompt"
+      return 'bg-cp-teal/10 text-cp-teal/70';
+    case 'listening':
+      return 'bg-cp-teal/20 text-cp-teal';
+    case 'capturing':
+      return 'bg-cp-teal/40 text-cp-teal';
+    case 'speaking':
+      return 'bg-cp-coral/20 text-cp-coral animate-pulse';
+  }
+}
+
+function voiceStatusLabel(state: VoiceUiState, wakePhrase?: string): string {
+  switch (state) {
+    case 'connecting': return 'Connecting…';
+    case 'passive': return wakePhrase ? `Standing by — say "${wakePhrase}"` : 'Standing by for wake phrase';
+    case 'listening': return 'Listening — start talking';
+    case 'capturing': return 'Hearing you';
+    case 'transcribing': return 'Transcribing…';
+    case 'waiting': return 'Waiting for reply…';
+    case 'speaking': return 'Agent speaking (interrupt by talking)';
+    case 'error': return 'Voice error';
+    default: return '';
+  }
+}
+
 export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'primary', wordyMode, onToggleWordyMode, onNewSession, isWorking, onStop }: ChatInputProps) => {
   const [input, setInput] = useState('');
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
@@ -40,6 +96,8 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
   const [dragOver, setDragOver] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const voice = useVoiceMode({ agentId });
 
   // Auto-resize textarea
   useEffect(() => {
@@ -195,7 +253,7 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`shrink-0 ${isPrimary ? 'glass-input-bar' : 'glass-input-bar-subtle'} ${dragOver ? 'ring-2 ring-cp-amber/40' : ''}`}
+      className={`relative shrink-0 ${isPrimary ? 'glass-input-bar' : 'glass-input-bar-subtle'} ${dragOver ? 'ring-2 ring-cp-amber/40' : ''}`}
       style={{
         padding: isPrimary
           ? (window.innerWidth < 640 ? '8px 10px' : '16px 24px')
@@ -316,6 +374,32 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
           </button>
         )}
 
+        {/* Voice Mode toggle */}
+        <button
+          type="button"
+          onPointerDown={(e) => e.preventDefault()}
+          onClick={() => { void voice.toggle(); }}
+          title={voiceTooltip(voice.state, voice.wakePhrase)}
+          className={`shrink-0 flex items-center justify-center w-9 h-9 rounded-full transition-all ${voiceButtonClasses(voice.state)}`}
+        >
+          {voice.state === 'idle' || voice.state === 'error' ? (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+              <line x1="12" y1="19" x2="12" y2="23" />
+              <line x1="8" y1="23" x2="16" y2="23" />
+            </svg>
+          ) : (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+              <line x1="12" y1="19" x2="12" y2="23" />
+              <line x1="8" y1="23" x2="16" y2="23" />
+              <circle cx="20" cy="4" r="2" fill="currentColor" />
+            </svg>
+          )}
+        </button>
+
         {/* Wordy Mode toggle */}
         {onToggleWordyMode && (
           <button
@@ -356,11 +440,66 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
         )}
       </div>
 
+      {/* Voice mode status banner */}
+      {voice.enabled && voice.state !== 'idle' && (
+        <div className={`mt-2 flex items-center gap-2 text-xs px-3 py-1.5 rounded-full ${
+          voice.state === 'error'
+            ? 'bg-cp-coral/15 text-cp-coral'
+            : voice.state === 'speaking'
+              ? 'bg-cp-coral/15 text-cp-coral'
+              : 'bg-cp-teal/15 text-cp-teal'
+        }`}>
+          <span className={`inline-block w-2 h-2 rounded-full ${
+            voice.state === 'capturing' || voice.state === 'speaking' ? 'bg-current animate-pulse' : 'bg-current'
+          }`} />
+          <span>{voiceStatusLabel(voice.state, voice.wakePhrase)}</span>
+          {/* Live volume meter — 5 bars that bounce with mic input level. Only shown
+              while we're listening/capturing (it's misleading during transcribe/speaking). */}
+          {(voice.state === 'listening' || voice.state === 'capturing') && (
+            <span className="inline-flex items-end gap-0.5 h-3 ml-1">
+              {[0.2, 0.45, 0.65, 0.85, 1.0].map((threshold, i) => {
+                const active = voice.audioLevel >= threshold * 0.6; // give it some life — peak at 0.6 lights everything
+                const h = active ? `${Math.max(20, Math.min(100, (voice.audioLevel / (threshold + 0.05)) * 100))}%` : '20%';
+                return (
+                  <span
+                    key={i}
+                    className={`w-0.5 rounded-full transition-all duration-75 ${active ? 'bg-current' : 'bg-current/30'}`}
+                    style={{ height: h }}
+                  />
+                );
+              })}
+            </span>
+          )}
+          {/* Live partial transcript while user is mid-utterance (italic to
+              distinguish from a settled final transcript). Falls back to the
+              last finalized transcript once speech ends. */}
+          {voice.partialTranscript ? (
+            <span className="text-ui/70 truncate italic">— "{voice.partialTranscript}…"</span>
+          ) : voice.lastTranscript ? (
+            <span className="text-ui/55 truncate">— "{voice.lastTranscript}"</span>
+          ) : null}
+        </div>
+      )}
+      {voice.state === 'error' && voice.error && (
+        <div className="mt-2 text-xs px-3 py-1.5 rounded-full bg-cp-coral/15 text-cp-coral">
+          {voice.error}
+        </div>
+      )}
+
       {/* Drag overlay hint */}
       {dragOver && (
         <div className="absolute inset-0 bg-cp-amber/5 border-2 border-dashed border-cp-amber/30 rounded-xl flex items-center justify-center pointer-events-none z-10">
           <span className="text-cp-amber text-sm font-medium">Drop files here</span>
         </div>
+      )}
+
+      {/* First-run voice setup modal */}
+      {voice.setupNeeded && (
+        <VoiceFirstRunModal
+          whisperModelId={voice.setupNeeded.whisperModelId}
+          onComplete={() => { void voice.completeSetup(); }}
+          onCancel={voice.cancelSetup}
+        />
       )}
     </div>
   );

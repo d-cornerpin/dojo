@@ -3,6 +3,12 @@ import react from '@vitejs/plugin-react';
 import type { IncomingMessage } from 'http';
 import type { Socket } from 'net';
 
+// Voice-mode runtime assets (silero VAD + onnxruntime-web wasm) are served
+// by the dojo backend at /api/voice/assets/. That path is proxied through
+// vite to the backend in dev and served by the node process in prod —
+// either way it never goes through vite's source-module resolver, which
+// is what trips ORT's dynamic .mjs import.
+
 export default defineConfig({
   plugins: [
     react(),

@@ -107,8 +107,28 @@ function sendToAll(event: WsEvent): void {
   }
 }
 
+// ── In-process listeners (used by voice sessions to subscribe to chat:chunk) ──
+type EventListener = (e: WsEvent) => void;
+const internalListeners = new Set<EventListener>();
+
+export function onBroadcast(fn: EventListener): () => void {
+  internalListeners.add(fn);
+  return () => internalListeners.delete(fn);
+}
+
+function notifyInternalListeners(event: WsEvent): void {
+  if (internalListeners.size === 0) return;
+  for (const fn of internalListeners) {
+    try { fn(event); } catch { /* listener errors must not break broadcast */ }
+  }
+}
+
 export function broadcast(event: WsEvent): void {
-  if (clients.size === 0) return; // No clients, skip serialization
+  // In-process listeners fire even with zero connected clients (e.g. voice sessions
+  // that piggyback on chat:chunk events to drive TTS).
+  notifyInternalListeners(event);
+
+  if (clients.size === 0) return; // No browser clients, skip serialization
 
   // Non-batchable events (errors, completions) send immediately
   if (!BATCHABLE_EVENTS.has(event.type)) {

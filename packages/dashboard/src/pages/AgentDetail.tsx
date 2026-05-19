@@ -45,6 +45,7 @@ interface ChatMessage {
   toolCalls?: ToolCallData[];
   isStreaming?: boolean;
   attachments?: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: string }>;
+  source?: 'voice' | null;
 }
 
 type Tab = 'chat' | 'config' | 'history' | 'inter-agent';
@@ -133,6 +134,7 @@ function stripAttachmentTags(content: string): string {
 
 const UserBubble = ({ msg }: { msg: ChatMessage }) => {
   const fromIMessage = IMESSAGE_SOURCE_RE.test(msg.content);
+  const fromVoice = msg.source === 'voice';
   const stripped = fromIMessage ? msg.content.replace(IMESSAGE_SOURCE_RE, '') : msg.content;
   const displayContent = msg.attachments?.length ? stripAttachmentTags(stripped) : stripped;
 
@@ -142,6 +144,17 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
         <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono mb-1 mr-1">
           <span className="text-ui/40">{'\u{1F4AC}'}</span>
           <span>via iMessage</span>
+        </div>
+      )}
+      {fromVoice && !fromIMessage && (
+        <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-cp-teal/10 text-cp-teal text-[10px] font-mono mb-1 mr-1">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+            <line x1="12" y1="19" x2="12" y2="23" />
+            <line x1="8" y1="23" x2="16" y2="23" />
+          </svg>
+          <span>via voice</span>
         </div>
       )}
       <div className="bubble-user max-w-[75%] px-4 py-3 text-ui">
@@ -276,6 +289,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             content: m.content,
             createdAt: m.createdAt,
             attachments: m.attachments,
+            source: m.source ?? null,
           })),
         );
         setHasMore(result.data.length >= 50);
@@ -310,6 +324,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
         content: m.content,
         createdAt: m.createdAt,
         attachments: m.attachments,
+        source: m.source ?? null,
       }));
       setMessages(prev => [...older, ...prev]);
       setHasMore(result.data.length >= 50);
@@ -496,6 +511,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             content: e.message.content,
             createdAt: e.message.createdAt,
             attachments: e.message.attachments,
+            source: e.message.source ?? null,
           },
         ];
       });
@@ -556,7 +572,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
     if (res.ok) {
       const result = await api.getAgentHistory(agentId, 200);
       if (result.ok) {
-        setMessages(result.data.map((m: Message) => ({ id: m.id, role: m.role, content: m.content, createdAt: m.createdAt, attachments: m.attachments })));
+        setMessages(result.data.map((m: Message) => ({ id: m.id, role: m.role, content: m.content, createdAt: m.createdAt, attachments: m.attachments, source: m.source ?? null })));
       }
       toast.success('Session reset — conversation archived to vault.');
     }

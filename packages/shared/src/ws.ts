@@ -212,7 +212,15 @@ export type WsEvent =
   | TechniqueUsedEvent
   | TechniqueStateChangedEvent
   | MigrationProgressEvent
-  | MigrationChecksEvent;
+  | MigrationChecksEvent
+  | VoiceModelDownloadEvent
+  | VoiceSttPartialEvent
+  | VoiceSttFinalEvent
+  | VoiceTtsStartEvent
+  | VoiceTtsEndEvent
+  | VoiceStateEvent
+  | VoiceWakeDetectedEvent
+  | VoiceSleepDetectedEvent;
 
 export interface OllamaStatusEvent {
   type: 'ollama:status';
@@ -260,4 +268,62 @@ export interface MigrationProgressEvent {
 export interface MigrationChecksEvent {
   type: 'migration:checks';
   data: { checks: Array<{ id: string; label: string; status: string; action?: string; detail?: string }>; dismissed: boolean };
+}
+
+// ── Voice mode events ──
+
+export interface VoiceModelDownloadEvent {
+  type: 'voice:model_download';
+  data: {
+    kind: 'whisper' | 'kokoro';
+    modelId: string;
+    bytesDownloaded: number;
+    bytesTotal: number;
+  };
+}
+
+export interface VoiceSttPartialEvent {
+  type: 'voice:stt_partial';
+  agentId: string;
+  text: string;
+}
+
+export interface VoiceSttFinalEvent {
+  type: 'voice:stt_final';
+  agentId: string;
+  text: string;
+  durationMs: number;
+}
+
+export interface VoiceTtsStartEvent {
+  type: 'voice:tts_start';
+  agentId: string;
+  messageId: string;
+}
+
+export interface VoiceTtsEndEvent {
+  type: 'voice:tts_end';
+  agentId: string;
+  messageId: string;
+}
+
+export interface VoiceStateEvent {
+  type: 'voice:state';
+  agentId: string;
+  state: 'idle' | 'listening' | 'capturing' | 'transcribing' | 'waiting' | 'speaking' | 'error' | 'passive';
+  detail?: string;
+}
+
+export interface VoiceWakeDetectedEvent {
+  type: 'voice:wake_detected';
+  agentId: string;
+  phrase: string;
+  /** Text that came AFTER the wake phrase in the same utterance, if any. */
+  remainder: string | null;
+}
+
+export interface VoiceSleepDetectedEvent {
+  type: 'voice:sleep_detected';
+  agentId: string;
+  phrase: string;
 }

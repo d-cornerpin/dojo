@@ -38,3 +38,7 @@ deploy/dist/
 # Temporary files
 /tmp/
 *.tmp
+
+# Voice mode runtime assets (copied from node_modules at dev/build time)
+packages/dashboard/public/vad/
+packages/dashboard/public/ort/
