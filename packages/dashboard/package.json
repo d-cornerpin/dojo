@@ -1,6 +1,6 @@
 {
   "name": "@dojo/dashboard",
-  "version": "2.6.9",
+  "version": "2.6.10",
   "private": true,
   "type": "module",
   "scripts": {
