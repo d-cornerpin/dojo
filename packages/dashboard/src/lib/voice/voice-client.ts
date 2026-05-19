@@ -49,6 +49,8 @@ export interface VoiceClientOptions {
    *  starts a new utterance. Off by default — phone speakers echo TTS into
    *  the mic and false-trigger interruption every time. */
   bargeInEnabled?: boolean;
+  /** When true, play the wake / sleep / prompt-sent chimes. On by default. */
+  soundEffectsEnabled?: boolean;
 }
 
 const VAD_REDEMPTION_MS: Record<'quick' | 'normal' | 'patient', number> = {
@@ -112,6 +114,7 @@ export class VoiceClient {
   wakePhrase: string;
   sleepPhrase: string;
   bargeInEnabled: boolean;
+  soundEffectsEnabled: boolean;
   private wsUrl: string;
 
   state: VoiceState = 'idle';
@@ -170,6 +173,7 @@ export class VoiceClient {
     this.wakePhrase = opts.wakePhrase ?? 'hey kevin';
     this.sleepPhrase = opts.sleepPhrase ?? 'stop listening';
     this.bargeInEnabled = opts.bargeInEnabled ?? false;
+    this.soundEffectsEnabled = opts.soundEffectsEnabled ?? true;
     this.wsUrl = opts.wsUrl ?? '/api/ws/voice';
   }
 
@@ -454,12 +458,19 @@ export class VoiceClient {
       case 'voice:stt_partial':
         if (typeof msg.text === 'string') this.emit('partial-transcript', msg.text);
         break;
-      case 'voice:wake_detected':
+      case 'voice:wake_detected': {
+        const remainder = typeof msg.remainder === 'string' ? msg.remainder : null;
         this.emit('wake', {
           phrase: typeof msg.phrase === 'string' ? msg.phrase : this.wakePhrase,
-          remainder: typeof msg.remainder === 'string' ? msg.remainder : null,
+          remainder,
         });
+        // Bare wake call — play a soft "I'm listening" chime so the user
+        // knows it's safe to speak the actual prompt. Skip when remainder
+        // is present (one-breath "Hey Kevin, remind me..." — the agent
+        // will respond directly so a chime would just be noise).
+        if (!remainder) this.playChime('/wake-chime.wav');
         break;
+      }
       case 'voice:sleep_detected':
         this.emit('sleep', {
           phrase: typeof msg.phrase === 'string' ? msg.phrase : this.sleepPhrase,
@@ -468,6 +479,13 @@ export class VoiceClient {
         // any chunks already in flight should be dropped (same gate as barge-in).
         this.discardIncomingAudio = true;
         this.cancelPlayback();
+        this.playChime('/sleep-chime.wav');
+        break;
+      case 'voice:prompt_submitted':
+        // Server submitted the transcript to the agent. Confirm with a chime
+        // so the user knows their message is on its way (and not a backchannel
+        // we silently dropped).
+        this.playChime('/prompt-sent.wav');
         break;
       case 'voice:stt_final':
         if (typeof msg.text === 'string') this.emit('final-transcript', msg.text);
@@ -551,6 +569,60 @@ export class VoiceClient {
       return;
     }
     this.setState('transcribing');
+  }
+
+  /**
+   * Plays one of the short feedback chimes (wake / sleep / prompt-sent) by
+   * fetching the WAV on first use, caching the decoded AudioBuffer per URL,
+   * and routing subsequent plays through the existing audioContext (which
+   * is already unlocked because mic capture is active). Suppressed when
+   * soundEffectsEnabled is false.
+   */
+  private chimeBuffers = new Map<string, AudioBuffer>();
+  private chimeLoading = new Map<string, Promise<AudioBuffer | null>>();
+
+  private async loadChime(url: string): Promise<AudioBuffer | null> {
+    const cached = this.chimeBuffers.get(url);
+    if (cached) return cached;
+    const inflight = this.chimeLoading.get(url);
+    if (inflight) return inflight;
+    if (!this.audioContext) return null;
+    const ctx = this.audioContext;
+    const loading = (async () => {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) return null;
+        const buf = await res.arrayBuffer();
+        const decoded = await ctx.decodeAudioData(buf);
+        this.chimeBuffers.set(url, decoded);
+        return decoded;
+      } catch {
+        return null;
+      } finally {
+        this.chimeLoading.delete(url);
+      }
+    })();
+    this.chimeLoading.set(url, loading);
+    return loading;
+  }
+
+  private playChime(url: string): void {
+    if (!this.soundEffectsEnabled) return;
+    if (!this.audioContext) return;
+    const ctx = this.audioContext;
+    if (ctx.state === 'suspended') {
+      void ctx.resume().catch(() => { /* ignore */ });
+    }
+    void (async () => {
+      const buffer = await this.loadChime(url);
+      if (!buffer) return;
+      try {
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        source.start(ctx.currentTime);
+      } catch { /* chime is best-effort, never block on it */ }
+    })();
   }
 
   private async enqueuePlayback(buf: ArrayBuffer): Promise<void> {

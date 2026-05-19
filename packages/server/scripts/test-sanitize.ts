@@ -45,8 +45,14 @@ const cases: Array<[string, string]> = [
   ['Hosted on model.ai', 'Hosted on model dot A I'],
   ['Meeting Tue at 3pm', 'Meeting Tuesday at 3pm'],
   ['Due by Fri', 'Due by Friday'],
-  ['Scheduled for Feb 14', 'Scheduled for February 14'],
+  ['Scheduled for Feb 14', 'Scheduled for February 14th'],
   ['Released Oct 2026', 'Released October 2026'],
+  // Date ordinals — also covers the months that month-abbreviation skips
+  ['Meeting on May 22', 'Meeting on May 22nd'],
+  ['Born August 1, 2026', 'Born August 1st, 2026'],
+  ['Due July 3rd', 'Due July 3rd'],                 // already ordinal — leave alone
+  ['Conference June 11', 'Conference June 11th'],   // 11/12/13 → "th" not "st/nd/rd"
+  ['March 21 deadline', 'March 21st deadline'],
   ['Dr. Smith called', 'Doctor Smith called'],
   ['Foo vs. bar', 'Foo versus bar'],
   ['Apples, oranges, etc.', 'Apples, oranges, et cetera'],

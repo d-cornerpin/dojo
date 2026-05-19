@@ -237,6 +237,13 @@ export function createServer() {
       // to the SPA fallback below, which returns index.html — the browser
       // then tries to parse HTML as CSS and silently no-ops the theme switch.
       app.use('/themes/*', serveStatic({ root: './packages/dashboard/dist' }));
+      // Voice mode chimes — same trap as the theme.css note above. Without
+      // these explicit handlers, /wake-chime.wav etc. fall through to the SPA
+      // fallback, which returns index.html, and the browser silently fails to
+      // decode HTML as audio. Affects every prod user (tunnel or local).
+      app.use('/wake-chime.wav', serveStatic({ root: './packages/dashboard/dist', path: '/wake-chime.wav' }));
+      app.use('/sleep-chime.wav', serveStatic({ root: './packages/dashboard/dist', path: '/sleep-chime.wav' }));
+      app.use('/prompt-sent.wav', serveStatic({ root: './packages/dashboard/dist', path: '/prompt-sent.wav' }));
 
       // SPA fallback: serve index.html for all non-API routes
       app.get('*', (c) => {

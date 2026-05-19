@@ -137,6 +137,28 @@ const PATTERNS: Array<[RegExp, Replacer]> = [
   [/\bNov\b\.?/g, 'November'],
   [/\bDec\b\.?/g, 'December'],
 
+  // ── Date ordinals ───────────────────────────────────────────────────
+  // "May 22" → "May 22nd", "August 1, 2026" → "August 1st, 2026". Runs AFTER
+  // month-abbreviation expansion so "Feb 14" becomes "February 14th" via two
+  // passes. Includes the abbreviation-skipped months (Jan/May/Jun/etc.) since
+  // the trailing day number disambiguates them from people's names.
+  // Negative lookaheads: skip when the day is already ordinal-suffixed ("May
+  // 1st" stays as-is) and when more digits follow ("May 222" isn't a date).
+  [/\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})(?!\d)(?!\s*(?:st|nd|rd|th)\b)\b/g,
+    (match: string, month: string, day: string) => {
+      const n = parseInt(day, 10);
+      if (n < 1 || n > 31) return match;
+      const lastTwo = n % 100;
+      let suffix: string;
+      if (lastTwo >= 11 && lastTwo <= 13) suffix = 'th';
+      else if (n % 10 === 1) suffix = 'st';
+      else if (n % 10 === 2) suffix = 'nd';
+      else if (n % 10 === 3) suffix = 'rd';
+      else suffix = 'th';
+      return `${month} ${n}${suffix}`;
+    },
+  ],
+
   // ── Titles ──────────────────────────────────────────────────────────
   [/\bMr\.\s*/g, 'Mister '],
   [/\bMrs\.\s*/g, 'Missus '],

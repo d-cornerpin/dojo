@@ -51,8 +51,10 @@ export const Settings = () => {
     <div className="flex-1 p-3 sm:p-6 overflow-y-auto">
       <h1 className="text-lg sm:text-xl font-bold text-ui mb-4 sm:mb-6">Settings</h1>
 
-      {/* Tabs — hidden on mobile (handled by hamburger sub-menu instead) */}
-      <div className="hidden md:flex gap-1 mb-6 bg-ui/[0.05] rounded-lg p-1 w-fit">
+      {/* Tabs — hidden on mobile (handled by hamburger sub-menu instead).
+          flex-wrap lets tabs spill onto a second row as the viewport narrows
+          instead of running off the right edge. */}
+      <div className="hidden md:flex md:flex-wrap gap-1 mb-6 bg-ui/[0.05] rounded-lg p-1 w-fit max-w-full">
         {tabs.map((tab) => (
           <button
             key={tab.key}
@@ -3429,6 +3431,7 @@ const VoiceTab = () => {
   const [wakePhrase, setWakePhrase] = useState('');
   const [sleepPhrase, setSleepPhrase] = useState('stop listening');
   const [bargeInEnabled, setBargeInEnabled] = useState(false);
+  const [soundEffectsEnabled, setSoundEffectsEnabled] = useState(true);
   // Primary agent name drives both the "Voice for X" header and the default
   // wake phrase ("hey <name>") so neither hardcodes "Kevin".
   const [primaryAgentName, setPrimaryAgentName] = useState('Agent');
@@ -3451,7 +3454,7 @@ const VoiceTab = () => {
   useEffect(() => {
     let mounted = true;
     const load = async () => {
-      const [presets, modelsRes, vSetting, sSetting, vadSetting, sttSetting, wakeEnabled, wakeP, sleepP, primaryName, bargeIn] = await Promise.all([
+      const [presets, modelsRes, vSetting, sSetting, vadSetting, sttSetting, wakeEnabled, wakeP, sleepP, primaryName, bargeIn, sfx] = await Promise.all([
         api.getVoicePresets(),
         api.getVoiceModels(),
         api.getSetting('voice.preferred_voice'),
@@ -3463,6 +3466,7 @@ const VoiceTab = () => {
         api.getSetting('voice.sleep_phrase'),
         api.getSetting('primary_agent_name'),
         api.getSetting('voice.barge_in_enabled'),
+        api.getSetting('voice.sound_effects_enabled'),
       ]);
       if (!mounted) return;
       if (presets.ok) {
@@ -3489,6 +3493,8 @@ const VoiceTab = () => {
         setPrimaryAgentName(primaryName.data.value.trim());
       }
       if (bargeIn.ok && bargeIn.data.value === 'true') setBargeInEnabled(true);
+      // sound effects default ON — only flip off when explicitly stored as 'false'
+      if (sfx.ok && sfx.data.value === 'false') setSoundEffectsEnabled(false);
       setLoading(false);
     };
     void load();
@@ -3570,6 +3576,9 @@ const VoiceTab = () => {
 
   return (
     <div className="space-y-6 max-w-4xl">
+      {/* Two-column grid for the short config cards. STT and TTS model cards
+          stay full-width below because they hold per-model rows + progress bars. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
       {/* Voice picker */}
       <div className="glass-card p-4 space-y-3">
         <h3 className="card-header">Voice for {primaryAgentName}</h3>
@@ -3674,6 +3683,34 @@ const VoiceTab = () => {
         </label>
       </div>
 
+      {/* Sound effects */}
+      <div className="glass-card p-4 space-y-3">
+        <div className="flex items-baseline justify-between gap-3">
+          <h3 className="card-header">Sound effects</h3>
+          {savedKey === 'sfx' && <span className="text-xs text-cp-teal">Saved!</span>}
+        </div>
+        <p className="text-xs text-ui/40">
+          Subtle chimes give you audible feedback during voice mode: a wake chime when the
+          wake phrase is heard, a sleep chime when the sleep phrase is heard, and a
+          message-sent chime once your prompt has been submitted to {primaryAgentName}.
+          Turn off if you'd rather have silent voice mode.
+        </p>
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={soundEffectsEnabled}
+            onChange={(e) => {
+              const next = e.target.checked;
+              setSoundEffectsEnabled(next);
+              void saveSetting('voice.sound_effects_enabled', String(next), 'sfx');
+              invalidateSavedVoiceSettings();
+            }}
+            className="accent-cp-teal"
+          />
+          <span className="text-sm text-ui">Play voice mode sound effects</span>
+        </label>
+      </div>
+
       {/* Hands-free wake word */}
       <div className="glass-card p-4 space-y-3">
         <div className="flex items-baseline justify-between gap-3">
@@ -3736,6 +3773,8 @@ const VoiceTab = () => {
             />
           </div>
         </div>
+      </div>
+
       </div>
 
       {/* Speech-to-text model (unified — pick active, download, delete, see disk) */}

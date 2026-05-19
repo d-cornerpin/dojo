@@ -539,6 +539,11 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
     return;
   }
 
+  // Confirm to the client that the prompt was actually submitted (not
+  // dropped as a backchannel / sleep / wake-only utterance). The client
+  // plays a "message sent" chime on this event.
+  sendJson(session.ws, { type: 'voice:prompt_submitted', agentId: session.agentId });
+
   // Subscribe to assistant chunks for this agent; pipe into TTS.
   startTtsForAgent(session);
 }
