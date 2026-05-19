@@ -615,17 +615,21 @@ function startTtsForAgent(session: VoiceSession): void {
   //     of waiting for the whole multi-turn run to finish.
   //   - agent:status idle  → close the splitter for good (end of full run).
   //
-  // Safety net: also close the splitter after 4 seconds of NO chat:chunk
-  // events. Doesn't depend on agent:status broadcasts (which we've seen
-  // get dropped or mis-route in production), doesn't depend on DB status
-  // polling matching. Pure "the data stopped flowing" detector. The 4s
-  // window is generous enough for typical inter-bubble pauses; if a tool
-  // call takes longer than that, the user loses TTS on the second bubble
-  // but the text still renders and voice mode doesn't wedge forever.
+  // Safety net: close the splitter after 4 seconds of post-bubble-done
+  // quiet WITH no tools in flight. The 'no tools in flight' guard is what
+  // keeps this safe for tool-using turns: a tool that takes 30s to run
+  // doesn't false-trigger the timer because the timer is cancelled the
+  // moment chat:tool_call fires and only re-arms after chat:tool_result
+  // brings the in-flight count back to zero AND chat:chunk done has been
+  // seen. So desktop's existing happy path (agent:status idle always
+  // fires) is unaffected; this only kicks in when agent:status is dropped
+  // AND there's genuinely no activity left.
   let bubbleCount = 0;
   let bubbleChars = 0;
   const QUIET_CLOSE_MS = 4000;
   let quietTimer: ReturnType<typeof setTimeout> | null = null;
+  let toolsInFlight = 0;
+  let bubbleDoneSeen = false;
   const armQuietTimer = () => {
     if (quietTimer) clearTimeout(quietTimer);
     quietTimer = setTimeout(() => {
@@ -641,15 +645,22 @@ function startTtsForAgent(session: VoiceSession): void {
   const cancelQuietTimer = () => {
     if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; }
   };
+  const maybeArmQuietTimer = () => {
+    // Only arm when the bubble is done AND no tools are still running.
+    // Either condition flipping back cancels the timer.
+    if (bubbleDoneSeen && toolsInFlight === 0) armQuietTimer();
+  };
   abort.signal.addEventListener('abort', cancelQuietTimer, { once: true });
   const unsubscribe = onBroadcast((event: WsEvent) => {
     if (abort.signal.aborted) return;
     if (event.type === 'chat:chunk') {
       if (event.agentId !== session.agentId) return;
-      // Every fresh chunk resets the quiet timer.
+      // New content from the model = activity. Cancel any pending close;
+      // we'll re-evaluate when the next done arrives.
       cancelQuietTimer();
       if (event.content) {
         bubbleChars += event.content.length;
+        bubbleDoneSeen = false;  // new content means this bubble isn't done anymore
         const safe = sanitizer.push(event.content);
         if (safe) {
           splitter.push(safe);
@@ -674,10 +685,26 @@ function startTtsForAgent(session: VoiceSession): void {
           textChars: bubbleChars,
         });
         bubbleChars = 0;
-        // Arm the quiet timer: if no new chat:chunk arrives in the next
-        // QUIET_CLOSE_MS, assume the turn is over and close the splitter.
-        armQuietTimer();
+        bubbleDoneSeen = true;
+        maybeArmQuietTimer();
       }
+      return;
+    }
+    if (event.type === 'chat:tool_call') {
+      if (event.agentId !== session.agentId) return;
+      // Tool started — don't close while we wait for the result, even if
+      // the tool takes 30+ seconds.
+      toolsInFlight++;
+      cancelQuietTimer();
+      return;
+    }
+    if (event.type === 'chat:tool_result') {
+      if (event.agentId !== session.agentId) return;
+      toolsInFlight = Math.max(0, toolsInFlight - 1);
+      // If everything's settled (no tools running, bubble was done),
+      // re-arm the timer to catch the case where the post-tool model call
+      // never produces a second bubble (server crash / silent exit).
+      maybeArmQuietTimer();
       return;
     }
     if (event.type === 'agent:status') {
