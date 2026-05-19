@@ -587,6 +587,7 @@ function startTtsForAgent(session: VoiceSession): void {
         logger.error('TTS stream failed', { error: err instanceof Error ? err.message : String(err) }, session.agentId);
         sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'error', detail: 'tts_failed' });
       } finally {
+        clearInterval(idlePoll);
         if (session.activeTts && session.activeTts.abort === abort) {
           session.activeTts = null;
         }
@@ -610,12 +611,37 @@ function startTtsForAgent(session: VoiceSession): void {
   //     This is what makes audio start AS SOON AS a bubble is complete instead
   //     of waiting for the whole multi-turn run to finish.
   //   - agent:status idle  → close the splitter for good (end of full run).
+  //
+  // We also poll the agent's DB status as a safety net. The broadcast can
+  // race with subscription setup, get dropped, or silently mis-route in
+  // edge cases — and when it does, synthesizeStream's `for await` waits
+  // forever for the next sentence that's never coming, tts_end never
+  // fires, and the client sits at 'agent speaking' indefinitely.
   let bubbleCount = 0;
   let bubbleChars = 0;
+  let lastChatChunkAt = Date.now();
+  const idlePoll = setInterval(() => {
+    if (abort.signal.aborted) { clearInterval(idlePoll); return; }
+    try {
+      const row = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(session.agentId) as { status?: string } | undefined;
+      const terminal = row?.status === 'idle' || row?.status === 'error' || row?.status === 'terminated';
+      // Require 1s of quiet (no fresh chat:chunk events) before trusting
+      // the DB state — guards against catching a status flicker mid-turn.
+      if (terminal && Date.now() - lastChatChunkAt > 1000) {
+        clearInterval(idlePoll);
+        const tail = sanitizer.flushUnsafe();
+        if (tail) splitter.push(tail);
+        try { splitter.close(); } catch { /* ignore */ }
+      }
+    } catch { /* best effort */ }
+  }, 800);
+  // Make sure the poll dies if the TTS stream tears down for any reason.
+  abort.signal.addEventListener('abort', () => clearInterval(idlePoll), { once: true });
   const unsubscribe = onBroadcast((event: WsEvent) => {
     if (abort.signal.aborted) return;
     if (event.type === 'chat:chunk') {
       if (event.agentId !== session.agentId) return;
+      lastChatChunkAt = Date.now();
       if (event.content) {
         bubbleChars += event.content.length;
         const safe = sanitizer.push(event.content);

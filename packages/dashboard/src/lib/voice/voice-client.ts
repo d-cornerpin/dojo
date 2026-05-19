@@ -487,6 +487,22 @@ export class VoiceClient {
           this.setState('listening');
         } else {
           this.ttsEndPendingPlayback = true;
+          // Belt + suspenders: iOS Safari's AudioBufferSourceNode.onended
+          // is documented unreliable (sometimes never fires for the last
+          // scheduled source). Schedule a hard timeout based on when the
+          // last queued chunk should finish playing — if onended ever runs
+          // before this, the timer no-ops because ttsEndPendingPlayback
+          // will already be false.
+          if (this.audioContext) {
+            const remainingSec = Math.max(0, this.nextStartTime - this.audioContext.currentTime);
+            const graceMs = 500;
+            window.setTimeout(() => {
+              if (!this.ttsEndPendingPlayback) return;
+              this.ttsEndPendingPlayback = false;
+              this.scheduledSources = [];
+              if (this.state === 'speaking') this.setState('listening');
+            }, remainingSec * 1000 + graceMs);
+          }
         }
         break;
       default:
