@@ -120,14 +120,112 @@ function normalizeForPhrase(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * Compact American Soundex implementation. Phonetic equivalence catches
+ * the homophone class of whisper misfires for unusual proper nouns:
+ *   Jain → J500, Jane → J500, Jayne → J500   (all match)
+ *   Kevin → K150, Kevyn → K150               (all match)
+ *
+ * Hand-rolled rather than pulling in `natural` for one tiny function.
+ */
+function soundex(word: string): string {
+  const w = word.toUpperCase().replace(/[^A-Z]/g, '');
+  if (!w) return '';
+  const codes: Record<string, string> = {
+    B: '1', F: '1', P: '1', V: '1',
+    C: '2', G: '2', J: '2', K: '2', Q: '2', S: '2', X: '2', Z: '2',
+    D: '3', T: '3',
+    L: '4',
+    M: '5', N: '5',
+    R: '6',
+  };
+  let result = w[0];
+  let prevCode = codes[w[0]] ?? '';
+  for (let i = 1; i < w.length; i++) {
+    const c = w[i];
+    const code = codes[c];
+    if (code) {
+      if (code !== prevCode) result += code;
+      prevCode = code;
+    } else if (c !== 'H' && c !== 'W') {
+      // Vowels (and Y) separate consonants so the same code can repeat.
+      // H and W are transparent — they don't reset.
+      prevCode = '';
+    }
+  }
+  return (result + '0000').slice(0, 4);
+}
+
+function soundexPhrase(phrase: string): string {
+  return phrase.split(' ').filter(Boolean).map(soundex).join(' ');
+}
+
+// Words that commonly prefix a wake phrase. When the configured wake phrase
+// starts with one of these AND whisper drops it (which happens often for
+// quiet leading words on iPad/laptop mics), we still wake on the core word
+// alone — but ONLY for short utterances, so "Jain is at the store" said to
+// another human doesn't false-trigger.
+const WAKE_INTRO_WORDS = new Set(['hey', 'hi', 'yo', 'ok', 'okay', 'hello']);
+const SHORT_UTTERANCE_MAX_WORDS = 3;
+
+/**
+ * Fuzzy wake/sleep phrase matcher. Three layers of tolerance, applied in
+ * order from cheapest to loosest:
+ *   1. Exact substring after normalization (fast path — preserves prior behavior).
+ *   2. Phonetic equivalence: Soundex on each word, then substring match. Catches
+ *      Jain/Jane/Jayne and similar whisper proper-noun drift.
+ *   3. Intro-word drop: if the phrase is "hey <core>" and whisper transcribed
+ *      just <core> (or a homophone), still match — but only when the
+ *      utterance is ≤3 words, to avoid waking on incidental name mentions.
+ */
 function findPhrase(transcript: string, phrase: string): { matched: boolean; remainder: string } {
   const normT = normalizeForPhrase(transcript);
   const normP = normalizeForPhrase(phrase);
   if (!normP) return { matched: false, remainder: '' };
+
+  // 1. Exact substring (fast path)
   const idx = normT.indexOf(normP);
-  if (idx === -1) return { matched: false, remainder: '' };
-  const remainder = normT.slice(idx + normP.length).trim();
-  return { matched: true, remainder };
+  if (idx !== -1) {
+    return { matched: true, remainder: normT.slice(idx + normP.length).trim() };
+  }
+
+  const transcriptWords = normT.split(' ').filter(Boolean);
+  const phraseWords = normP.split(' ').filter(Boolean);
+  if (transcriptWords.length === 0 || phraseWords.length === 0) {
+    return { matched: false, remainder: '' };
+  }
+
+  // Word-by-word soundex with space separation so we can search the phrase
+  // as a contiguous substring without false-matching across word boundaries.
+  const transcriptSx = transcriptWords.map(soundex).join(' ');
+  const phraseSx = phraseWords.map(soundex).join(' ');
+
+  // 2. Phonetic substring match on the full phrase
+  const sxIdx = transcriptSx.indexOf(phraseSx);
+  if (sxIdx !== -1) {
+    const wordsBefore = transcriptSx.slice(0, sxIdx).trim().split(' ').filter(Boolean).length;
+    const remainder = transcriptWords.slice(wordsBefore + phraseWords.length).join(' ');
+    return { matched: true, remainder };
+  }
+
+  // 3. Intro-word drop. Only when phrase starts with a known intro word
+  // AND has at least one core word after it AND the utterance is short.
+  if (
+    phraseWords.length >= 2 &&
+    WAKE_INTRO_WORDS.has(phraseWords[0]) &&
+    transcriptWords.length <= SHORT_UTTERANCE_MAX_WORDS
+  ) {
+    const coreWords = phraseWords.slice(1);
+    const coreSx = coreWords.map(soundex).join(' ');
+    const cIdx = transcriptSx.indexOf(coreSx);
+    if (cIdx !== -1) {
+      const wordsBefore = transcriptSx.slice(0, cIdx).trim().split(' ').filter(Boolean).length;
+      const remainder = transcriptWords.slice(wordsBefore + coreWords.length).join(' ');
+      return { matched: true, remainder };
+    }
+  }
+
+  return { matched: false, remainder: '' };
 }
 
 const sessions = new Map<WSContext, VoiceSession>();
