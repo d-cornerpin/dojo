@@ -93,6 +93,16 @@ else
     echo "✅ Node.js v${NODE_VERSION} installed"
 fi
 
+# ── Install system dependencies (whisper-cpp etc.) ──
+# Single source of truth lives in scripts/ensure-system-deps.sh so the
+# self-update path (update.ts) can reuse it.
+
+if [[ -f "$SCRIPT_DIR/scripts/ensure-system-deps.sh" ]]; then
+    echo ""
+    echo "📦 Checking system dependencies..."
+    bash "$SCRIPT_DIR/scripts/ensure-system-deps.sh"
+fi
+
 # ── Install imsg (iMessage CLI for text + image attachments) ──
 
 if command -v imsg &>/dev/null; then

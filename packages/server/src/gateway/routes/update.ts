@@ -335,6 +335,44 @@ updateRouter.post('/apply', async (c) => {
     // 7. Install production dependencies (no build needed -- zip includes pre-compiled dist/)
     await execAsync('npm install --omit=dev', { cwd: PLATFORM_DIR, timeout: 120000, env });
 
+    // 7b. Sync helper scripts (~/.dojo/scripts/) from the zip and run the
+    // system-dependency installer. The zip ships a top-level scripts/
+    // directory alongside platform/ — without this step, scripts at
+    // ~/.dojo/scripts/ never get updated by self-update (only by the
+    // initial install.sh run), so new deps added in later releases
+    // wouldn't reach users. This is what bit v2.6.13: whisper-cpp was
+    // required by voice mode but had no install hook for self-update.
+    try {
+      const zipScriptsDir = path.join(tmpDir, 'dojo-platform', 'scripts');
+      const userScriptsDir = path.join(os.homedir(), '.dojo', 'scripts');
+      if (fs.existsSync(zipScriptsDir)) {
+        fs.mkdirSync(userScriptsDir, { recursive: true });
+        await execAsync(`rsync -a "${zipScriptsDir}/" "${userScriptsDir}/"`, { timeout: 30000, env });
+        await execAsync(`chmod +x "${userScriptsDir}"/*.sh`, { timeout: 5000, env });
+        logger.info('Helper scripts synced from update zip');
+
+        const depsScript = path.join(userScriptsDir, 'ensure-system-deps.sh');
+        if (fs.existsSync(depsScript)) {
+          logger.info('Running system-deps installer');
+          try {
+            const { stdout: depsOut } = await execAsync(`bash "${depsScript}"`, { timeout: 300000, env });
+            logger.info('System-deps installer output', { output: depsOut.trim() });
+          } catch (depsErr) {
+            // Don't fail the update if a brew install hiccups — the feature
+            // surfaces its own error at runtime, and the user still has a
+            // working updated platform.
+            logger.warn('System-deps installer reported an issue', {
+              error: depsErr instanceof Error ? depsErr.message : String(depsErr),
+            });
+          }
+        }
+      }
+    } catch (scriptsErr) {
+      logger.warn('Scripts sync failed (non-fatal)', {
+        error: scriptsErr instanceof Error ? scriptsErr.message : String(scriptsErr),
+      });
+    }
+
     // 8. Clean up temp files
     fs.rmSync(tmpDir, { recursive: true });
 
