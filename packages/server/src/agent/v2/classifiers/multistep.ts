@@ -287,6 +287,18 @@ export async function multistepLLMClassify(
   }
 }
 
+// Engine-auto-created projects carry this prefix in their description.
+// Used by:
+//  - The tracker dup-guard, to detect "the engine just opened this for
+//    you on this same user turn" and steer the agent toward
+//    tracker_edit_task rather than spinning a parallel project.
+//  - The post-create rename handoff, which fires an A2A-style message
+//    at the PM agent asking it to rename the project and first task
+//    using its local model (gemma4:31b). Naming runs async on the PM's
+//    turn rather than on the user-facing agent's turn — keeps the chat
+//    reply latency clean.
+export const ENGINE_AUTO_MARKER = '[engine:multistep] ';
+
 // ── User explicitly requesting project creation ──
 //
 // v2.5.46 — Audit found that the multistep auto-create fires on prompts
@@ -301,6 +313,27 @@ export async function multistepLLMClassify(
 // skip auto-create and let the agent do it themselves. The new v2.5.46
 // reflex bullet defaults agents toward tracker_create_project for any
 // non-trivial work, so we can trust the agent to follow through.
+
+// Engine-generated user-role messages — never trigger auto-create on these.
+// Discovered the hard way: the PM rename-request handoff was being
+// re-classified as a multi-step user prompt on PM's turn, causing PM to
+// auto-create a second project where the title was the rename request
+// text itself. Same shape of bug for any engine-injected "user" message
+// that happens to contain action verbs (A2A pokes, scheduler payloads,
+// assignment notifications, system source tags).
+const ENGINE_MESSAGE_PREFIXES: readonly string[] = [
+  '[ENGINE RENAME REQUEST]',
+  '[SOURCE: ',
+  '[A2A:',
+  '[scheduler:',
+  '[System:',
+  '[SYSTEM ',
+];
+
+export function looksLikeEngineMessage(query: string): boolean {
+  const trimmed = query.trimStart();
+  return ENGINE_MESSAGE_PREFIXES.some(prefix => trimmed.startsWith(prefix));
+}
 
 const EXPLICIT_CREATION_PATTERNS: readonly RegExp[] = [
   // "start/create/make/set up/open/build a project"
@@ -328,7 +361,7 @@ export interface MultistepDecision {
     | 'heuristic_single' | 'heuristic_multi'
     | 'llm_single' | 'llm_multi'
     | 'fallback_multi' | 'fallback_single_question' | 'fallback_single_default'
-    | 'disabled' | 'user_creating_explicitly';
+    | 'disabled' | 'user_creating_explicitly' | 'engine_message';
   heuristic: MultistepHeuristic;
 }
 
@@ -340,6 +373,15 @@ export async function detectMultistep(
 
   if (!config.enabled) {
     return { multistep: false, name: null, source: 'disabled', heuristic };
+  }
+
+  // Engine-generated user-role messages (rename requests, A2A pokes,
+  // scheduler payloads, source-tagged notifications) are never user
+  // intent. Skip auto-create — otherwise PM/sensei agents would
+  // recursively auto-create projects FROM the rename requests we send
+  // them.
+  if (looksLikeEngineMessage(query)) {
+    return { multistep: false, name: null, source: 'engine_message', heuristic };
   }
 
   // v2.5.46 — explicit project-creation request → skip auto-create.

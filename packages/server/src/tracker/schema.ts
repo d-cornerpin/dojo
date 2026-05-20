@@ -297,7 +297,94 @@ export function listProjects(filter?: { status?: string }): Project[] {
   return rows.map(mapProjectRow);
 }
 
-export function updateProject(id: string, updates: Partial<{ status: string; currentPhase: number }>): void {
+/**
+ * Bulk-close a project AND every still-open task on it. "Open" = anything
+ * not already in a terminal state (complete/fallen). Tasks get the chosen
+ * status and a note explaining who closed them and why. The project itself
+ * moves to the matching terminal status.
+ *
+ * Returns counts so callers can render a useful result string.
+ */
+export function closeProjectAndOpenTasks(params: {
+  projectId: string;
+  closingAgentId: string;
+  /** User-facing intent: did the work actually finish, or are we abandoning it? */
+  taskStatus: 'complete' | 'cancelled';
+  projectStatus: 'complete' | 'cancelled';
+  reason: string;
+}): { projectId: string; tasksClosed: number; alreadyClosed: number } {
+  const db = getDb();
+  const { projectId, closingAgentId, taskStatus, projectStatus, reason } = params;
+
+  // Kanban DB-status mapping. The board only renders the six legacy task
+  // statuses (on_deck/in_progress/paused/complete/blocked/fallen); storing
+  // a literal "cancelled" on a task would make it disappear from the board.
+  // So a user-facing "cancelled" task is stored as "fallen" (the existing
+  // "didn't make it" terminal column) with a clear note. The project row
+  // itself stores the literal user-facing status — it isn't column-rendered.
+  const dbTaskStatus = taskStatus === 'cancelled' ? 'fallen' : 'complete';
+  const noteMarker = taskStatus === 'cancelled' ? '[CANCELLED]' : '[Completed via bulk close]';
+
+  const tasks = db
+    .prepare('SELECT id, status FROM tasks WHERE project_id = ?')
+    .all(projectId) as Array<{ id: string; status: string }>;
+
+  let tasksClosed = 0;
+  let alreadyClosed = 0;
+  const TERMINAL = new Set(['complete', 'fallen', 'cancelled']);
+
+  const noteLine = `[${new Date().toISOString()}] ${noteMarker} Bulk-closed by ${closingAgentId} via tracker_close_project: ${reason}`;
+
+  const closeStmt = db.prepare(`
+    UPDATE tasks
+    SET status = ?,
+        is_paused = 0,
+        completed_at = datetime('now'),
+        notes = COALESCE(notes, '') || ? || char(10),
+        updated_at = datetime('now')
+    WHERE id = ?
+  `);
+
+  const txn = db.transaction(() => {
+    for (const t of tasks) {
+      if (TERMINAL.has(t.status)) {
+        alreadyClosed++;
+        continue;
+      }
+      closeStmt.run(dbTaskStatus, noteLine, t.id);
+      tasksClosed++;
+    }
+    db.prepare(`
+      UPDATE projects
+      SET status = ?,
+          completed_at = datetime('now'),
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(projectStatus, projectId);
+  });
+  txn();
+
+  logger.info('Project bulk-closed', { projectId, tasksClosed, alreadyClosed, taskStatus, projectStatus, closingAgentId });
+
+  // Broadcast updated tasks + project so the dashboard repaints.
+  for (const t of tasks) {
+    const updated = getTask(t.id);
+    if (updated) {
+      broadcast({ type: 'tracker:task_updated', data: updated });
+    }
+  }
+  const project = getProject(projectId);
+  if (project) {
+    broadcast({ type: 'tracker:project_updated', data: project });
+  }
+
+  return { projectId, tasksClosed, alreadyClosed };
+}
+
+export function updateProject(
+  id: string,
+  updates: Partial<{ status: string; currentPhase: number; title: string; description: string | null }>,
+): void {
   const db = getDb();
 
   const setClauses: string[] = ["updated_at = datetime('now')"];
@@ -314,6 +401,16 @@ export function updateProject(id: string, updates: Partial<{ status: string; cur
   if (updates.currentPhase !== undefined) {
     setClauses.push('current_phase = ?');
     params.push(updates.currentPhase);
+  }
+
+  if (updates.title !== undefined) {
+    setClauses.push('title = ?');
+    params.push(updates.title);
+  }
+
+  if (updates.description !== undefined) {
+    setClauses.push('description = ?');
+    params.push(updates.description);
   }
 
   params.push(id);

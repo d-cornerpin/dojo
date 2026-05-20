@@ -190,6 +190,20 @@ export interface AgentTurnState {
    * tell "gate is armed for this turn" from "no danglers."
    */
   nudgedForCloseOutThisTurn: boolean;
+  /**
+   * Set true at preflight when there is an unacknowledged compaction
+   * recall nudge in the message log (i.e. compaction fired and the
+   * agent has not yet called recall_recent_thread since). Used by the
+   * tool dispatcher to inject a one-shot warning on the first
+   * non-recall / non-tracker tool call, then cleared.
+   *
+   * Catches the failure shape from the Presenton run: agent gets
+   * compacted, ignores the recall hint, and unknowingly recreates a
+   * project that fell out of the fresh tail.
+   */
+  awaitingPostCompactRecall: boolean;
+  /** Fire-once flag for the post-compaction recall warning. */
+  nudgedForPostCompactRecall: boolean;
 
   // ── Pre-flight enforcement decisions ──
   readonly shouldNudgeTracker: boolean;
@@ -273,6 +287,8 @@ export function initState(params: InitStateParams): AgentTurnState {
     danglingTaskIds: [],
     closeOutGateSatisfied: false,
     nudgedForCloseOutThisTurn: false,
+    awaitingPostCompactRecall: false,
+    nudgedForPostCompactRecall: false,
 
     shouldNudgeTracker: params.shouldNudgeTracker,
 

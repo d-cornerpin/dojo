@@ -595,9 +595,17 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
     // because each injury IS a separate event the Healer should
     // diagnose freshly. Recovery notices below still get a fresh
     // thread too (they're informational, not part of the conversation).
+    // Use QUESTION (not ASSIGN) so the A2A transport does NOT auto-create
+    // a tracker task. Injury alerts wake the Healer to act once; the
+    // audit trail lives in healer_log_action, not the kanban. Pre-fix
+    // (intent='ASSIGN') every injury left an on_deck task on the Healer's
+    // tracker view that nothing ever closed — they piled up forever and
+    // polluted the user's tracker (until we also hid Healer's tasks from
+    // the dashboard). QUESTION wakes the receiver identically (see
+    // a2a-transport.ts open-thread branch) but skips the auto-task.
     const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
     const result = await deliverA2AMessage({
-      intent: 'ASSIGN',
+      intent: 'QUESTION',
       threadId: `injury-${agentId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       requiresResponse: true,
       payload: content,

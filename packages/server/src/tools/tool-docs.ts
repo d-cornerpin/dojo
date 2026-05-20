@@ -52,12 +52,18 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
 ];
 
 // PM agent: tracker-focused, monitors tasks and sends messages to other agents.
+// Edit tools are pre-loaded because the engine fires rename requests at PM on
+// every multistep auto-create — making PM round-trip through load_tool_docs
+// each time would burn a turn for what should be a single-call rename.
 export const PM_AGENT_ALWAYS_LOADED = [
   ...DEFAULT_ALWAYS_LOADED_TOOLS,
   'tracker_list_active',
   'tracker_get_status',
   'tracker_update_status',
   'tracker_add_notes',
+  'tracker_edit_task',
+  'tracker_edit_project',
+  'tracker_close_project',
   'send_to_agent',
   'list_agents',
 ];

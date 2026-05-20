@@ -268,34 +268,83 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // also close them out"): tracker hygiene is no longer a soft nudge,
   // it's a hard precondition for new work.
   try {
-    const danglingRows = db.prepare(`
-      SELECT id, title FROM tasks
+    // (1) Tasks the agent is actively in_progress on but never closed last turn.
+    const inProgressDanglers = db.prepare(`
+      SELECT id, title, 'in_progress' AS kind FROM tasks
       WHERE assigned_to = ?
         AND status = 'in_progress'
         AND is_paused = 0
         AND updated_at < ?
       ORDER BY updated_at ASC
       LIMIT 10
-    `).all(agentId, turnStartedAt) as Array<{ id: string; title: string }>;
+    `).all(agentId, turnStartedAt) as Array<{ id: string; title: string; kind: string }>;
+
+    // (2) Stranded on_deck tasks. Catches the Presenton-shaped failure:
+    // agent created a project, did some of it, then abandoned it (often
+    // because compaction made them forget the project existed and they
+    // spun up a duplicate). The orphans sit in on_deck forever because
+    // the existing in_progress-only gate never sees them and the PM's
+    // STALE check only chats, doesn't auto-resolve.
+    //
+    // Criteria: on_deck task assigned to this agent, in a project this
+    // agent created, the project has zero in_progress tasks, and the
+    // task hasn't been touched in 30+ minutes. The 30-minute floor
+    // prevents this from firing inside the same conversation as the
+    // creation — only catches genuinely abandoned work between sessions.
+    const strandedRows = db.prepare(`
+      SELECT t.id, t.title, 'stranded' AS kind FROM tasks t
+      INNER JOIN projects p ON p.id = t.project_id
+      WHERE t.assigned_to = ?
+        AND t.status = 'on_deck'
+        AND t.is_paused = 0
+        AND (t.scheduled_start IS NULL OR datetime(t.scheduled_start) <= datetime('now'))
+        AND t.schedule_status != 'waiting'
+        AND p.created_by = ?
+        AND p.status = 'active'
+        AND datetime(t.updated_at) < datetime('now', '-30 minutes')
+        AND NOT EXISTS (
+          SELECT 1 FROM tasks sib
+          WHERE sib.project_id = p.id AND sib.status = 'in_progress'
+        )
+      ORDER BY t.updated_at ASC
+      LIMIT 10
+    `).all(agentId, agentId) as Array<{ id: string; title: string; kind: string }>;
+
+    const danglingRows = [...inProgressDanglers, ...strandedRows];
     if (danglingRows.length > 0) {
       state = advance(state, {
         danglingTaskIds: danglingRows.map((r) => r.id),
         nudgedForCloseOutThisTurn: true,
       });
-      const taskList = danglingRows
+      const inProgressList = inProgressDanglers
         .map((r) => `  - "${r.title}" (${r.id.slice(0, 8)})`)
         .join('\n');
+      const strandedList = strandedRows
+        .map((r) => `  - "${r.title}" (${r.id.slice(0, 8)})`)
+        .join('\n');
+
+      const sections: string[] = [];
+      if (inProgressDanglers.length > 0) {
+        sections.push(
+          `${inProgressDanglers.length} in_progress task${inProgressDanglers.length === 1 ? '' : 's'} from a previous turn you never closed:\n${inProgressList}`
+        );
+      }
+      if (strandedRows.length > 0) {
+        sections.push(
+          `${strandedRows.length} stranded on_deck task${strandedRows.length === 1 ? '' : 's'} (queued steps on a project you created but stopped working on more than 30 minutes ago, with no in_progress sibling):\n${strandedList}`
+        );
+      }
+
       const gateMsg = (
-        `[System: REQUIRED close-out — you have ${danglingRows.length} in_progress task${danglingRows.length === 1 ? '' : 's'} ` +
-        `assigned to you from a previous turn that you never closed:\n` +
-        `${taskList}\n` +
-        `Before doing ANYTHING else this turn, call tracker_complete_step (for multi-step projects) or ` +
-        `tracker_update_status (with status="complete" | "blocked" | "paused") on each one. The engine will REFUSE ` +
-        `all non-tracker tool calls until at least one is resolved; the refusal disengages for the rest of the ` +
-        `turn after that, so you can keep resolving the others at your own pace alongside other work.\n\n` +
-        `If a task is genuinely still in flight (you're working on it across turns), call tracker_add_notes on ` +
-        `it with a brief progress note — that signals "still working" and disengages the gate without forcing ` +
-        `you to close prematurely.]`
+        `[System: REQUIRED close-out — you have abandoned work on the tracker.\n\n` +
+        `${sections.join('\n\n')}\n\n` +
+        `**This turn must start with a tracker tool call, not a user-facing reply.** ` +
+        `Resolve at least one item before doing anything else — call tracker_complete_step (multi-step projects), ` +
+        `tracker_update_status (status="complete" | "blocked" | "paused" with resume_at), ` +
+        `tracker_add_notes (if you're genuinely still working it across turns — that disengages the gate too), ` +
+        `or — if the whole project was abandoned/duplicated/superseded — tracker_close_project(project_id, status="cancelled", reason="..."). ` +
+        `The engine will REFUSE every non-tracker tool call until one of those lands; after that the gate releases for the rest of the turn so you can keep resolving the others alongside other work. ` +
+        `Do NOT generate a user-facing response on this turn until the gate is satisfied — the user does not expect a reply yet; they expect the tracker to come back in sync.]`
       );
       const gateMsgId = uuidv4();
       try {
@@ -325,6 +374,42 @@ export async function runV2Turn(agentId: string): Promise<void> {
     }
   } catch (err) {
     logger.warn('v2: dangling-task lookup failed; close-out gate disarmed for this turn', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+
+  // ── Post-compaction recall flag (soft enforcement) ──
+  // If compaction fired an unacknowledged recall nudge (no
+  // recall_recent_thread call since), arm a one-shot warning that will
+  // fire on the agent's first significant tool call this turn. Soft, not
+  // refuse-based — the duplicate-project guard is the hard backstop.
+  try {
+    const lastNudge = db.prepare(`
+      SELECT created_at FROM messages
+      WHERE agent_id = ? AND role = 'system'
+        AND content LIKE '[System: Memory was just compacted%'
+      ORDER BY created_at DESC, rowid DESC
+      LIMIT 1
+    `).get(agentId) as { created_at: string } | undefined;
+    if (lastNudge) {
+      const lastRecall = db.prepare(`
+        SELECT created_at FROM messages
+        WHERE agent_id = ? AND role = 'assistant'
+          AND content LIKE '%"name":"recall_recent_thread"%'
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT 1
+      `).get(agentId) as { created_at: string } | undefined;
+      const nudgeTs = new Date((lastNudge.created_at.includes('Z') ? lastNudge.created_at : lastNudge.created_at + 'Z')).getTime();
+      const recallTs = lastRecall
+        ? new Date((lastRecall.created_at.includes('Z') ? lastRecall.created_at : lastRecall.created_at + 'Z')).getTime()
+        : 0;
+      if (nudgeTs > recallTs) {
+        state = advance(state, { awaitingPostCompactRecall: true });
+        logger.info('v2: post-compaction recall flag armed', { agentId }, agentId);
+      }
+    }
+  } catch (err) {
+    logger.warn('v2: post-compaction recall check failed (non-fatal)', {
       agentId, error: err instanceof Error ? err.message : String(err),
     }, agentId);
   }
@@ -751,7 +836,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
               if (decision.multistep) {
                 const { createProject } = await import('../../tracker/schema.js');
+                const { ENGINE_AUTO_MARKER } = await import('./classifiers/multistep.js');
 
+                // Engine names projects/tasks with a slice of the user's
+                // prompt. This is intentionally ugly — the PM agent gets
+                // dispatched immediately after creation to rename both
+                // via its local model (see the rename handoff below).
+                // Async naming keeps the user-facing turn latency clean.
                 const fallbackName = lastUserMessageContent
                   .split('\n')[0]
                   .slice(0, 50)
@@ -767,9 +858,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   // in on_deck and waits for someone to pull it forward.
                   // Matches the pattern when an agent calls
                   // tracker_create_project on itself.
+                  //
+                  // Description carries the ENGINE_AUTO_MARKER prefix so
+                  // tracker_create_project's dup guard can detect this
+                  // project as engine-auto-created and steer the agent
+                  // toward tracker_edit_task instead of refusing them into
+                  // a parallel project.
                   const created = createProject({
                     title: projectTitle,
-                    description: lastUserMessageContent.slice(0, 2000),
+                    description: ENGINE_AUTO_MARKER + lastUserMessageContent.slice(0, 2000),
                     level: 1,
                     createdBy: agentId,
                     tasks: [{
@@ -814,6 +911,69 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   // "the engine assigned you a task for it."
                   if (notif.ok && notif.content) {
                     messages.push({ role: 'user', content: notif.content });
+                  }
+
+                  // ── PM rename handoff (async) ──
+                  // The project + first task were named from a slice of the
+                  // user prompt — that's ugly on the kanban. Fire a request
+                  // at the PM agent to rename both via its local model.
+                  // Fire-and-forget: the user-facing agent doesn't wait,
+                  // and a failed PM call just leaves the slice-named rows
+                  // in place (no worse than before). Async means the
+                  // kanban shows the ugly name briefly (~seconds) until
+                  // the PM rewrite lands.
+                  try {
+                    const { getPMAgentId, getPMAgentName, getPrimaryAgentName } = await import('../../config/platform.js');
+                    const pmId = getPMAgentId();
+                    const pmName = getPMAgentName();
+                    const primaryName = getPrimaryAgentName();
+                    if (pmId && pmName) {
+                      const renameRequest = (
+                        `[ENGINE RENAME REQUEST] An auto-created project needs better names. ` +
+                        `The multi-step classifier just opened this from a user prompt and named both the project ` +
+                        `and the first task with a slice of that prompt — looks bad on the kanban.\n\n` +
+                        `Project id: ${created.projectId}\n` +
+                        `Current project title: ${projectTitle}\n` +
+                        `First task id: ${taskId}\n` +
+                        `Current first-task title: ${taskTitle}\n\n` +
+                        `Original user prompt:\n${lastUserMessageContent.slice(0, 1500)}\n\n` +
+                        `Please call tracker_edit_project(project_id="${created.projectId}", title="<short 3-6 word umbrella name>") ` +
+                        `and tracker_edit_task(task_id="${taskId}", title="<short 3-6 word first-step name>"). ` +
+                        `The project name describes the WHOLE effort; the first-task name is the first concrete thing to do. ` +
+                        `Make them distinct — don't reuse the same string for both. After both edits land, send NO message ` +
+                        `back to anyone — this is a silent rename. Do not contact ${primaryName}.`
+                      );
+                      const renameMsgId = uuidv4();
+                      db.prepare(`
+                        INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+                        VALUES (?, ?, 'user', ?, datetime('now'))
+                      `).run(renameMsgId, pmId, renameRequest);
+                      broadcast({
+                        type: 'chat:message',
+                        agentId: pmId,
+                        message: {
+                          id: renameMsgId, agentId: pmId, role: 'user' as const,
+                          content: renameRequest,
+                          tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                          createdAt: new Date().toISOString(),
+                        },
+                      });
+                      // Fire-and-forget wake. handleMessage queues itself
+                      // if PM is busy.
+                      void getAgentRuntime().handleMessage(pmId, renameRequest).catch(err => {
+                        logger.warn('v2 multistep: PM rename wake failed (non-fatal)', {
+                          error: err instanceof Error ? err.message : String(err),
+                        }, agentId);
+                      });
+                      logger.info('v2 multistep: dispatched PM rename request', {
+                        agentId, pmId, projectId: created.projectId, taskId,
+                      }, agentId);
+                    }
+                  } catch (renameErr) {
+                    logger.warn('v2 multistep: PM rename dispatch failed (non-fatal)', {
+                      agentId,
+                      error: renameErr instanceof Error ? renameErr.message : String(renameErr),
+                    }, agentId);
                   }
                 } catch (createErr) {
                   logger.warn('v2 multistep: createProject failed (non-fatal)', {
@@ -1514,8 +1674,59 @@ export async function runV2Turn(agentId: string): Promise<void> {
             state.danglingTaskIds.length > 0 &&
             !state.closeOutGateSatisfied
           ) {
+            // ── Suppress the duplicate user-facing summary ──
+            // The agent just streamed a response that the user has seen in
+            // real-time. Without this block, that text remained in the DB
+            // and on screen as a second reply — the failure shape the user
+            // reported on the Presenton run (May 2026). The gate already
+            // told the agent "do NOT generate a user-facing response on
+            // this turn"; if they did anyway, we erase the bubble.
+            //
+            // Steps:
+            //   1. Delete the just-persisted assistant message so the next
+            //      turn's assembled context doesn't include it (the agent
+            //      can't reference work that the user never saw).
+            //   2. Broadcast chat:chunk done:true content:'' to close out
+            //      the streaming bubble in the dashboard.
+            //   3. Broadcast chat:message with empty content to make the
+            //      bubble disappear from the chat (matches the [no-reply]
+            //      sentinel handling at the top of this same block).
             try {
-              const noteTemplate = `[${new Date().toISOString()}] Auto-paused by engine: agent "${agentId}" ignored the pre-turn close-out gate (produced a user-facing response without calling tracker_update_status / tracker_complete_step / tracker_add_notes). User: reassign or resolve manually from the dashboard.`;
+              db.prepare('DELETE FROM messages WHERE id = ?').run(messageId);
+            } catch (delErr) {
+              logger.warn('v2: close-out — failed to delete suppressed assistant message', {
+                agentId, messageId, error: delErr instanceof Error ? delErr.message : String(delErr),
+              }, agentId);
+            }
+            try {
+              broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
+              broadcast({
+                type: 'chat:message',
+                agentId,
+                message: {
+                  id: messageId, agentId, role: 'assistant' as const,
+                  content: '',
+                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                  createdAt: new Date().toISOString(),
+                },
+              });
+            } catch { /* best effort */ }
+
+            try {
+              // Distinguish the two kinds of danglers so the auto-pause
+              // logic only touches in_progress rows (paused makes sense
+              // there); on_deck stragglers stay on_deck — the user can
+              // decide whether to reassign or close the project.
+              const inProgressIds = db
+                .prepare(
+                  `SELECT id FROM tasks WHERE id IN (${state.danglingTaskIds.map(() => '?').join(',')}) AND status = 'in_progress'`,
+                )
+                .all(...state.danglingTaskIds) as Array<{ id: string }>;
+              const onDeckIds = state.danglingTaskIds.filter(
+                (id) => !inProgressIds.some((r) => r.id === id),
+              );
+
+              const noteTemplate = `[${new Date().toISOString()}] Auto-paused by engine: agent "${agentId}" ignored the pre-turn close-out gate (produced a user-facing response without calling tracker_update_status / tracker_complete_step / tracker_add_notes / tracker_close_project). User: reassign or resolve manually from the dashboard.`;
               const updateStmt = db.prepare(`
                 UPDATE tasks
                 SET status = 'paused', is_paused = 1, status_before_pause = 'in_progress',
@@ -1524,17 +1735,26 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 WHERE id = ? AND status = 'in_progress'
               `);
               let pausedCount = 0;
-              for (const tid of state.danglingTaskIds) {
+              for (const tid of inProgressIds.map((r) => r.id)) {
                 const res = updateStmt.run(noteTemplate, tid);
                 if (res.changes > 0) pausedCount++;
               }
-              if (pausedCount > 0) {
+
+              if (pausedCount > 0 || onDeckIds.length > 0) {
+                const parts: string[] = [];
+                if (pausedCount > 0) {
+                  parts.push(
+                    `${pausedCount} in_progress dangler${pausedCount === 1 ? '' : 's'} auto-paused (ids: ${inProgressIds.slice(0, 5).map((r) => r.id.slice(0, 8)).join(', ')}${inProgressIds.length > 5 ? '...' : ''})`,
+                  );
+                }
+                if (onDeckIds.length > 0) {
+                  parts.push(
+                    `${onDeckIds.length} stranded on_deck task${onDeckIds.length === 1 ? '' : 's'} left in place for you to resolve next turn (ids: ${onDeckIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ')}${onDeckIds.length > 5 ? '...' : ''}) — call tracker_close_project on the parent project, or reassign the tasks`,
+                  );
+                }
                 const closeOutMsg = (
-                  `[System: ${pausedCount} dangling task${pausedCount === 1 ? '' : 's'} that you refused to close was auto-paused by the engine. ` +
-                  `Task IDs: ${state.danglingTaskIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ')}${state.danglingTaskIds.length > 5 ? '...' : ''}. ` +
-                  `The user sees these as "paused" in the kanban and can reassign or wake you on them manually. ` +
-                  `This is the final escalation after you ignored the pre-turn gate. Next time the gate fires, ` +
-                  `call tracker_update_status / tracker_complete_step / tracker_add_notes — even just to signal "still working."]`
+                  `[System: pre-turn close-out gate was unsatisfied AND you produced user-facing text — your reply was suppressed (the bubble was removed from the user\'s view) and the danglers were resolved by the engine: ${parts.join('; ')}. ` +
+                  `Next time the gate fires, the FIRST thing you do this turn must be a tracker tool call. The user sent NO new prompt to read — there is nothing to reply to until the tracker is in sync.]`
                 );
                 const closeOutMsgId = uuidv4();
                 try {
@@ -1562,8 +1782,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
                     }
                   }
                 } catch { /* best effort */ }
-                logger.warn('v2: close-out one-shot escalation — auto-paused dangling tasks', {
-                  agentId, pausedCount, totalDangling: state.danglingTaskIds.length,
+                logger.warn('v2: close-out one-shot escalation — auto-paused + suppressed reply', {
+                  agentId, pausedCount, onDeckCount: onDeckIds.length, totalDangling: state.danglingTaskIds.length,
                 }, agentId);
               }
             } catch (escErr) {
@@ -1798,12 +2018,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
             'tracker_update_status',
             'tracker_complete_step',
             'tracker_add_notes',
+            'tracker_close_project',      // bulk-resolve a whole stranded project
             'tracker_get_status',         // read-only allowed (investigate before resolving)
             'tracker_list_active',        // ditto
             'tracker_edit_task',           // editing the task counts as engagement
             'tracker_pause_schedule',
             'tracker_resume_schedule',
             'tracker_resolve_missed_runs',
+            'load_tool_docs',              // schema lookup must work — agents may need to fetch
+                                           // schemas for the close-out tools above before calling them
           ]);
           if (
             state.danglingTaskIds.length > 0 &&
@@ -1843,17 +2066,66 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }
           // ── Close-out gate satisfaction (v2.5.46) ──
           // If the agent is taking a qualifying tracker action this
-          // turn (status update, complete_step, add_notes), disengage
-          // the close-out gate for the remainder of the turn. They can
-          // keep resolving the other dangling tasks but they're no
-          // longer forced to.
+          // turn (status update, complete_step, add_notes, close_project),
+          // disengage the close-out gate for the remainder of the turn.
+          // They can keep resolving the other dangling tasks but they're
+          // no longer forced to.
           if (
             state.danglingTaskIds.length > 0 &&
             !state.closeOutGateSatisfied &&
-            (tc.name === 'tracker_update_status' || tc.name === 'tracker_complete_step' || tc.name === 'tracker_add_notes')
+            (tc.name === 'tracker_update_status' || tc.name === 'tracker_complete_step' || tc.name === 'tracker_add_notes' || tc.name === 'tracker_close_project')
           ) {
             state = advance(state, { closeOutGateSatisfied: true });
             logger.info('v2: close-out gate satisfied', { agentId, tool: tc.name }, agentId);
+          }
+          // ── Post-compaction recall warning (soft, one-shot) ──
+          // Compaction left an unacknowledged "call recall_recent_thread"
+          // nudge in the message log. If the first significant tool this
+          // turn is anything other than recall / tracker / trivial meta,
+          // warn the agent that they're about to act on possibly-stale
+          // memory. Doesn't refuse — the duplicate-project guard catches
+          // the most expensive failure shape (recreating a project).
+          if (
+            state.awaitingPostCompactRecall &&
+            !state.nudgedForPostCompactRecall &&
+            tc.name !== 'recall_recent_thread' &&
+            !tc.name.startsWith('tracker_') &&
+            tc.name !== 'get_current_time' &&
+            tc.name !== 'convert_time' &&
+            tc.name !== 'load_tool_docs'
+          ) {
+            const warnText = (
+              `[System: compaction fired and you have not called recall_recent_thread since. The "Memory Compacted" nudge above is still unacknowledged. ` +
+              `You are about to call "${tc.name}" — if this work depends on anything that happened earlier in this conversation (a project you opened, a file you read, a decision you made), pause and call recall_recent_thread(include_tool_results: true) FIRST. ` +
+              `The Presenton failure shape: agent gets compacted, forgets it already opened a tracker project, and creates a duplicate. recall_recent_thread is the cheapest defense (one call, ~3K tokens). ` +
+              `This warning fires once per turn; the engine won't block "${tc.name}" — but if you go on to call tracker_create_project, the duplicate guard will refuse it.]`
+            );
+            const warnId = uuidv4();
+            try {
+              db.prepare(`
+                INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+                VALUES (?, ?, 'system', ?, ?, datetime('now'))
+              `).run(warnId, agentId, warnText, turnNumber);
+              broadcast({
+                type: 'chat:message',
+                agentId,
+                message: {
+                  id: warnId, agentId, role: 'system' as const,
+                  content: warnText,
+                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                  createdAt: new Date().toISOString(),
+                },
+              });
+            } catch { /* best effort */ }
+            state = advance(state, { nudgedForPostCompactRecall: true });
+            logger.info('v2: post-compaction recall warning fired', { agentId, tool: tc.name }, agentId);
+          } else if (
+            state.awaitingPostCompactRecall &&
+            tc.name === 'recall_recent_thread'
+          ) {
+            // Agent did the right thing — clear both flags.
+            state = advance(state, { awaitingPostCompactRecall: false, nudgedForPostCompactRecall: true });
+            logger.info('v2: post-compaction recall flag cleared (recall called)', { agentId }, agentId);
           }
           // ── Anti-hoarding accounting (v2.5.43) ──
           // Flip structuring flag the moment the call is dispatched (not
@@ -2082,7 +2354,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // turn", distinct from broad tracker engagement (which includes
       // tracker_create_project / tracker_list_active / tracker_get_status).
       const trackerStatusInThisIter = result.toolCalls.some(
-        (tc) => tc.name === 'tracker_update_status' || tc.name === 'tracker_complete_step',
+        (tc) => tc.name === 'tracker_update_status' || tc.name === 'tracker_complete_step' || tc.name === 'tracker_close_project',
       );
       if (nonTrackerInThisIter > 0 || trackerInThisIter > 0) {
         state = advance(state, {

@@ -113,6 +113,7 @@ export function ensurePMAgentRunning(): void {
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
         'tracker_add_notes', 'tracker_complete_step',
         'tracker_pause_schedule', 'tracker_resume_schedule',
+        'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
         'vault_search', 'vault_remember', 'memory_grep',
         'load_tool_docs', 'get_current_time',
@@ -150,6 +151,7 @@ export function ensurePMAgentRunning(): void {
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
         'tracker_add_notes', 'tracker_complete_step',
         'tracker_pause_schedule', 'tracker_resume_schedule',
+        'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
         'vault_search', 'vault_remember', 'memory_grep',
         'load_tool_docs', 'get_current_time',
@@ -190,6 +192,7 @@ export function ensurePMAgentRunning(): void {
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
         'tracker_add_notes', 'tracker_complete_step',
         'tracker_pause_schedule', 'tracker_resume_schedule',
+        'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
         'vault_search', 'vault_remember', 'memory_grep',
         'load_tool_docs', 'get_current_time',
@@ -566,6 +569,76 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
 
 function runPokeCheck(): void {
   const db = getDb();
+
+  // ── A2A auto-task sweeper ──
+  // Closes stale on_deck tasks that were auto-created by the engine
+  // when an agent sent intent=ASSIGN (autoCreateAssignTask in
+  // tracker/schema.ts). The receiver was already woken via A2A and
+  // typically handles the work in their reply rather than by updating
+  // the tracker row — so without this sweep, every A2A assignment that
+  // doesn't get an explicit close leaves an on_deck task forever.
+  //
+  // Conservative criteria — only touches tasks where ALL of:
+  //   - a2a_thread_id IS NOT NULL (engine-injected, not user/agent-made)
+  //   - status = 'on_deck'  (not in_progress / not yet handled)
+  //   - no schedule (scheduled tasks legitimately wait on_deck)
+  //   - updated_at older than 30 min  (give the receiver time to act)
+  //   - the receiver has SENT a message since the task was created
+  //     (proves they were active — they just didn't update the tracker)
+  //
+  // Marks 'fallen' with an audit note so the row stays queryable but
+  // drops off the active kanban. Never touches agent-created or user-
+  // created tasks.
+  try {
+    const STALE_A2A_GRACE_MS = 30 * 60 * 1000;
+    const sweepCutoff = new Date(Date.now() - STALE_A2A_GRACE_MS).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+    const candidates = db.prepare(`
+      SELECT t.id, t.title, t.assigned_to, t.created_at
+      FROM tasks t
+      WHERE t.status = 'on_deck'
+        AND t.a2a_thread_id IS NOT NULL
+        AND (t.scheduled_start IS NULL OR t.schedule_status = 'unscheduled')
+        AND t.is_paused = 0
+        AND datetime(t.updated_at) < ?
+      LIMIT 50
+    `).all(sweepCutoff) as Array<{ id: string; title: string; assigned_to: string; created_at: string }>;
+
+    if (candidates.length > 0) {
+      const closeStmt = db.prepare(`
+        UPDATE tasks
+        SET status = 'fallen', completed_at = datetime('now'), updated_at = datetime('now'),
+            notes = COALESCE(notes, '') || ? || char(10)
+        WHERE id = ?
+      `);
+      const activeCheck = db.prepare(`
+        SELECT 1 FROM messages
+        WHERE agent_id = ? AND role = 'assistant' AND created_at > ?
+        LIMIT 1
+      `);
+      let swept = 0;
+      for (const t of candidates) {
+        // Only close if the receiver was active (sent any assistant
+        // message) after the task was created. If they were silent the
+        // whole time, the proper failure path is the in_progress poke
+        // chain — leave it for that, don't sweep silently.
+        const wasActive = activeCheck.get(t.assigned_to, t.created_at) as { 1: number } | undefined;
+        if (!wasActive) continue;
+        const note = `[${new Date().toISOString()}] Auto-swept by engine: A2A-assigned on_deck task untouched for ≥ 30 min while receiver ("${t.assigned_to}") was otherwise active — they handled the message via reply, not via tracker. Closed to prevent kanban buildup.`;
+        closeStmt.run(note, t.id);
+        swept++;
+      }
+      if (swept > 0) {
+        logger.info('A2A auto-task sweeper closed stale on_deck rows', {
+          swept, candidates: candidates.length,
+          sample: candidates.slice(0, 3).map(t => `${t.id.slice(0, 8)}:${t.title.slice(0, 40)}`),
+        });
+      }
+    }
+  } catch (err) {
+    logger.warn('A2A auto-task sweeper failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   // ── Engine-level quick checks (still needed for immediate alerts) ──
   const allActiveTasks = listTasks({}).filter(t => !['complete', 'fallen', 'paused'].includes(t.status));

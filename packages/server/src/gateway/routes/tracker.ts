@@ -8,19 +8,77 @@ import {
   listTasks,
   updateTask,
   addTaskNotes,
+  closeProjectAndOpenTasks,
 } from '../../tracker/schema.js';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
+import { getPrimaryAgentId } from '../../config/platform.js';
 
 const logger = createLogger('tracker-routes');
 const trackerRouter = new Hono();
 
+// ── Dashboard-only system-agent filter ──
+//
+// Projects/tasks owned by internal sensei agents (Dreamer's nightly
+// vault cycles, the PM's bookkeeping, Healer's injury triage) are
+// engine artifacts the user never asked for and shouldn't see in
+// their kanban. Filtered out of the dashboard list endpoints by
+// default; agent-side tools (tracker_list_active, the PM agent's
+// monitor loops) still see them — internal agents need to keep
+// coordinating with each other for the platform to work.
+//
+// Resolution strategy is two-pronged because system-agent identity is
+// fuzzy across installs and time:
+//   (1) Config-table keys (pm_agent_id, healer_agent_id, dreamer_agent_id)
+//       — stable per install, portable across renames, the right
+//       source of truth for "who's the current PM."
+//   (2) Legacy name match (HIDDEN_AGENT_NAMES) — catches stale agents
+//       from prior sessions whose IDs aren't current but whose
+//       projects still exist (the DB shows ~5 historical Dreamer rows
+//       across reincarnations). Names are stable defaults from the
+//       platform spec.
+//
+// Override with ?includeSystem=true for debugging.
+const HIDDEN_AGENT_NAMES = ['Dreamer', 'Healer'];
+const HIDDEN_SYSTEM_CONFIG_KEYS = ['pm_agent_id', 'healer_agent_id', 'dreamer_agent_id'];
+
+function hiddenAgentIdSet(): Set<string> {
+  const ids = new Set<string>();
+  try {
+    const db = getDb();
+    // (1) Config-driven system IDs — present-tense source of truth.
+    const configPlaceholders = HIDDEN_SYSTEM_CONFIG_KEYS.map(() => '?').join(',');
+    const configRows = db.prepare(
+      `SELECT value FROM config WHERE key IN (${configPlaceholders})`,
+    ).all(...HIDDEN_SYSTEM_CONFIG_KEYS) as Array<{ value: string }>;
+    for (const r of configRows) {
+      if (r.value) ids.add(r.value);
+    }
+    // (2) Legacy name match — catches historical agents whose IDs
+    // aren't current but whose projects/tasks still exist.
+    const namePlaceholders = HIDDEN_AGENT_NAMES.map(() => '?').join(',');
+    const nameRows = db.prepare(
+      `SELECT id FROM agents WHERE name IN (${namePlaceholders})`,
+    ).all(...HIDDEN_AGENT_NAMES) as Array<{ id: string }>;
+    for (const r of nameRows) ids.add(r.id);
+  } catch (err) {
+    logger.warn('hiddenAgentIdSet lookup failed; not hiding anything', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return ids;
+}
+
 // ── Projects ──
 
-// GET /projects — list all projects
+// GET /projects — list all projects (filtered to user-facing only)
 trackerRouter.get('/projects', (c) => {
   const status = c.req.query('status');
-  const projects = listProjects(status ? { status } : undefined);
+  const includeSystem = c.req.query('includeSystem') === 'true';
+  const all = listProjects(status ? { status } : undefined);
+  if (includeSystem) return c.json({ ok: true, data: all });
+  const hidden = hiddenAgentIdSet();
+  const projects = all.filter(p => !hidden.has(p.createdBy));
   return c.json({ ok: true, data: projects });
 });
 
@@ -61,11 +119,17 @@ trackerRouter.post('/projects', async (c) => {
         }))
       : undefined;
 
+    // createdBy must be a real agent id — tasks.assigned_to has a FK to
+    // agents(id), and schema.createProject defaults task.assignedTo to
+    // createdBy when a task has none. Hardcoding the literal string
+    // 'dashboard' triggered FOREIGN KEY constraint failed on every
+    // dashboard-initiated project. Use the primary agent (the user's
+    // surrogate) as the default actor for dashboard mutations.
     const result = createProject({
       title: body.title,
       description: body.description ?? undefined,
       level: body.level,
-      createdBy: 'dashboard',
+      createdBy: getPrimaryAgentId(),
       tasks: tasksInput,
     });
 
@@ -79,12 +143,13 @@ trackerRouter.post('/projects', async (c) => {
 
 // ── Tasks ──
 
-// GET /tasks — list tasks with filters
+// GET /tasks — list tasks with filters (hides internal sensei tasks)
 trackerRouter.get('/tasks', (c) => {
   const status = c.req.query('status') ?? undefined;
   const assignedTo = c.req.query('assignedTo') ?? undefined;
   const priority = c.req.query('priority') ?? undefined;
   const projectId = c.req.query('projectId') ?? undefined;
+  const includeSystem = c.req.query('includeSystem') === 'true';
 
   const filter: Record<string, string | undefined> = {};
   if (status) filter.status = status;
@@ -92,7 +157,14 @@ trackerRouter.get('/tasks', (c) => {
   if (priority) filter.priority = priority;
   if (projectId) filter.projectId = projectId;
 
-  const tasks = listTasks(Object.keys(filter).length > 0 ? filter : undefined);
+  const all = listTasks(Object.keys(filter).length > 0 ? filter : undefined);
+  if (includeSystem) return c.json({ ok: true, data: all });
+  const hidden = hiddenAgentIdSet();
+  const tasks = all.filter(t => {
+    if (t.assignedTo && hidden.has(t.assignedTo)) return false;
+    if (t.createdBy && hidden.has(t.createdBy)) return false;
+    return true;
+  });
   return c.json({ ok: true, data: tasks });
 });
 
@@ -122,7 +194,8 @@ trackerRouter.post('/tasks', async (c) => {
       title: body.title,
       description: body.description ?? undefined,
       assignedTo: body.assignedTo ?? undefined,
-      createdBy: 'dashboard',
+      // Same FK reason as POST /projects above — 'dashboard' isn't an agent.
+      createdBy: getPrimaryAgentId(),
       priority: body.priority ?? undefined,
       stepNumber: body.stepNumber ?? undefined,
       dependsOn: body.dependsOn ?? undefined,
@@ -286,6 +359,48 @@ trackerRouter.put('/tasks/:id', async (c) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Failed to update task', { error: msg, taskId: id });
+    return c.json({ ok: false, error: msg }, 500);
+  }
+});
+
+// POST /projects/:id/close — bulk-close project and every open task on it
+trackerRouter.post('/projects/:id/close', async (c) => {
+  const id = c.req.param('id');
+  const db = getDb();
+
+  const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(id);
+  if (!project) {
+    return c.json({ ok: false, error: 'Project not found' }, 404);
+  }
+
+  let body: { status?: string; reason?: string } = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, error: 'Body must be JSON: { status?: "complete"|"cancelled", reason: "…" }' }, 400);
+  }
+
+  const status = (body.status ?? 'cancelled').toLowerCase();
+  if (status !== 'complete' && status !== 'cancelled') {
+    return c.json({ ok: false, error: 'status must be "complete" or "cancelled"' }, 400);
+  }
+  const reason = (body.reason ?? '').trim();
+  if (reason.length < 4) {
+    return c.json({ ok: false, error: 'reason is required (short sentence; written to every closed task)' }, 400);
+  }
+
+  try {
+    const result = closeProjectAndOpenTasks({
+      projectId: id,
+      closingAgentId: 'dashboard',
+      taskStatus: status as 'complete' | 'cancelled',
+      projectStatus: status as 'complete' | 'cancelled',
+      reason,
+    });
+    return c.json({ ok: true, data: result });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Failed to close project', { error: msg, projectId: id });
     return c.json({ ok: false, error: msg }, 500);
   }
 });

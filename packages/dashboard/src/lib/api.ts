@@ -698,6 +698,16 @@ export const deleteProject = async (id: string): Promise<ApiResponse<void>> => {
   return request<void>(`/tracker/projects/${id}`, { method: 'DELETE' });
 };
 
+export const closeProject = async (
+  id: string,
+  body: { status: 'complete' | 'cancelled'; reason: string },
+): Promise<ApiResponse<{ projectId: string; tasksClosed: number; alreadyClosed: number }>> => {
+  return request<{ projectId: string; tasksClosed: number; alreadyClosed: number }>(
+    `/tracker/projects/${id}/close`,
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+};
+
 export const deleteTask = async (id: string): Promise<ApiResponse<void>> => {
   return request<void>(`/tracker/tasks/${id}`, { method: 'DELETE' });
 };

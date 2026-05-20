@@ -437,6 +437,7 @@ export const Tracker = () => {
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [showCreateTask, setShowCreateTask] = useState(false);
   const [confirmDeleteProject, setConfirmDeleteProject] = useState(false);
+  const [closeProjectModalOpen, setCloseProjectModalOpen] = useState(false);
   const { subscribe } = useWebSocket();
 
   const loadData = useCallback(async () => {
@@ -520,6 +521,13 @@ export const Tracker = () => {
 
   const selectedTask = selectedTaskId ? tasks.find((t) => t.id === selectedTaskId) : null;
 
+  // Project selector only lists active projects — completed/cancelled
+  // clutter is filtered out so the dropdown reflects "what am I working on,"
+  // not project history. Selected-project lookup falls back to the full
+  // project list so the action bar still resolves the name even when the
+  // selected project transitions out of 'active' (e.g. just got closed).
+  const activeProjects = projects.filter(p => p.status === 'active');
+
   if (loading) return <div className="flex-1 loading-state">Loading...</div>;
 
   return (
@@ -530,17 +538,22 @@ export const Tracker = () => {
           <div className="flex items-center gap-4">
             <h1 className="text-lg sm:text-xl font-bold text-ui">Tracker</h1>
 
-            {/* Project selector */}
-            <select
-              value={selectedProjectId}
-              onChange={(e) => { setSelectedProjectId(e.target.value); setConfirmDeleteProject(false); }}
-              className="glass-select"
-            >
-              <option value="all">All Tasks</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>{p.title}</option>
-              ))}
-            </select>
+            {/* Project filter — narrows the kanban to one project. Dropdown
+                lists active projects only; closed/cancelled ones live in
+                history, not in the working view. */}
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide">View project:</label>
+              <select
+                value={selectedProjectId}
+                onChange={(e) => { setSelectedProjectId(e.target.value); setConfirmDeleteProject(false); }}
+                className="glass-select"
+              >
+                <option value="all">All active projects</option>
+                {activeProjects.map((p) => (
+                  <option key={p.id} value={p.id}>{p.title}</option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -557,37 +570,48 @@ export const Tracker = () => {
               <span className="text-ui/40 ml-3">{tasks.length} task{tasks.length !== 1 ? 's' : ''}</span>
             </div>
 
-            {confirmDeleteProject ? (
-              <div className="flex items-center gap-3">
-                <span className="text-sm text-cp-coral">Delete this project and all its tasks?</span>
-                <button
-                  onClick={async () => {
-                    await api.deleteProject(selectedProjectId);
-                    setSelectedProjectId('all');
-                    setConfirmDeleteProject(false);
-                    loadData();
-                  }}
-                  className="px-3 py-1 text-sm bg-cp-coral hover:bg-cp-coral/80 text-[var(--btn-primary-text)] rounded-lg transition-colors"
-                >
-                  Yes, delete
-                </button>
-                <button
-                  onClick={() => setConfirmDeleteProject(false)}
-                  className="px-3 py-1 text-sm text-ui/55 hover:text-ui/90 transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-            ) : (
+            <div className="flex items-center gap-2">
               <button
-                onClick={() => setConfirmDeleteProject(true)}
-                className="px-3 py-1 text-sm text-cp-coral hover:text-cp-coral/80 border border-cp-coral/30 rounded-lg hover:border-cp-coral/50 transition-colors"
+                onClick={() => setCloseProjectModalOpen(true)}
+                className="px-3 py-1 text-sm text-cp-amber hover:text-cp-amber/80 border border-cp-amber/30 hover:border-cp-amber/50 rounded-lg transition-colors"
+                title="Mark the project and every open task as resolved in one call — leaves an audit note on each task. Use when the project was abandoned, duplicated, or finished but never closed out."
               >
-                Delete Project
+                Close + Resolve Open Tasks
               </button>
-            )}
+
+              {confirmDeleteProject ? (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-cp-coral">Delete this project and all its tasks?</span>
+                  <button
+                    onClick={async () => {
+                      await api.deleteProject(selectedProjectId);
+                      setSelectedProjectId('all');
+                      setConfirmDeleteProject(false);
+                      loadData();
+                    }}
+                    className="px-3 py-1 text-sm bg-cp-coral hover:bg-cp-coral/80 text-[var(--btn-primary-text)] rounded-lg transition-colors"
+                  >
+                    Yes, delete
+                  </button>
+                  <button
+                    onClick={() => setConfirmDeleteProject(false)}
+                    className="px-3 py-1 text-sm text-ui/55 hover:text-ui/90 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirmDeleteProject(true)}
+                  className="px-3 py-1 text-sm text-cp-coral hover:text-cp-coral/80 border border-cp-coral/30 rounded-lg hover:border-cp-coral/50 transition-colors"
+                >
+                  Delete Project
+                </button>
+              )}
+            </div>
           </div>
         )}
+
       </div>
 
       {/* Kanban Board */}
@@ -630,6 +654,111 @@ export const Tracker = () => {
           projects={projects}
         />
       )}
+
+      {/* Close Project Modal */}
+      {closeProjectModalOpen && selectedProjectId !== 'all' && (
+        <CloseProjectModal
+          projectId={selectedProjectId}
+          projectTitle={projects.find(p => p.id === selectedProjectId)?.title ?? 'this project'}
+          openTaskCount={tasks.filter(t => !['complete', 'fallen', 'cancelled'].includes(t.status)).length}
+          onClose={() => setCloseProjectModalOpen(false)}
+          onClosed={() => {
+            setCloseProjectModalOpen(false);
+            loadData();
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+// ── Close Project Modal ──
+
+const CloseProjectModal = ({
+  projectId,
+  projectTitle,
+  openTaskCount,
+  onClose,
+  onClosed,
+}: {
+  projectId: string;
+  projectTitle: string;
+  openTaskCount: number;
+  onClose: () => void;
+  onClosed: () => void;
+}) => {
+  const [status, setStatus] = useState<'complete' | 'cancelled'>('cancelled');
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleClose = async () => {
+    if (reason.trim().length < 4) {
+      setError('Reason is required (≥ 4 characters).');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    const result = await api.closeProject(projectId, { status, reason: reason.trim() });
+    if (result.ok) {
+      onClosed();
+    } else {
+      setError(result.error);
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="glass-modal-backdrop">
+      <div className="glass-modal p-6 max-w-md w-full mx-4">
+        <h3 className="text-lg font-semibold text-ui mb-4">Close project: {projectTitle}</h3>
+
+        {error && (
+          <div className="alert-banner alert-error mb-4">{error}</div>
+        )}
+
+        <div className="text-sm text-ui/70 mb-4">
+          This closes the project AND every still-open task on it ({openTaskCount} open). Each task gets an audit note explaining who closed it and why.
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Resolution</label>
+            <select
+              value={status}
+              onChange={e => setStatus(e.target.value as 'complete' | 'cancelled')}
+              className="glass-select w-full"
+            >
+              <option value="cancelled">Cancelled — abandoned, duplicated, or scope changed</option>
+              <option value="complete">Complete — all work was actually done</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide block mb-1">Reason (required)</label>
+            <textarea
+              value={reason}
+              onChange={e => setReason(e.target.value)}
+              placeholder='e.g. "Duplicate of project xyz" or "Scope shifted to project abc"'
+              rows={3}
+              className="glass-textarea w-full resize-none"
+            />
+          </div>
+        </div>
+
+        <div className="flex gap-3 justify-end mt-6">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-ui/55 hover:text-ui/90 transition-colors">
+            Cancel
+          </button>
+          <button
+            onClick={handleClose}
+            disabled={saving || reason.trim().length < 4}
+            className="px-4 py-2 text-sm glass-btn-primary rounded-lg transition-colors"
+          >
+            {saving ? 'Closing...' : `Close & resolve ${openTaskCount} task${openTaskCount === 1 ? '' : 's'}`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 };

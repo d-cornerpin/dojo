@@ -33,6 +33,8 @@ import {
   trackerCompleteStep,
   trackerPauseSchedule,
   trackerResumeSchedule,
+  trackerCloseProject,
+  trackerEditProject,
 } from '../tracker/tools.js';
 import { webSearch, webFetch } from './web-tools.js';
 import { mouseClick, mouseMove, keyboardType, screenRead, applescriptRun } from './system-control.js';
@@ -935,6 +937,10 @@ export const toolDefinitions: ToolDefinition[] = [
             required: ['title'],
           },
         },
+        allow_duplicate: {
+          type: 'boolean',
+          description: 'Set true to bypass the near-duplicate guard. The engine refuses creation if you already opened a similarly-titled project in the last 60 minutes (catches the post-compaction "I forgot I already opened this" failure mode). Only override when the new project is genuinely unrelated work that happens to share keywords.',
+        },
       },
       required: ['title', 'level'],
     },
@@ -1217,10 +1223,36 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['task_id'],
     },
   },
+  {
+    name: 'tracker_edit_project',
+    description: 'Rename a project or change its description. Use this when a project was auto-named badly (the engine\'s multi-step classifier names projects with a slice of the user prompt, which often reads poorly on the kanban) or when scope shifts and the title no longer describes the work. For task-level edits use tracker_edit_task; for status changes use tracker_update_status or tracker_close_project.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string', description: 'The project ID (full UUID or 8-char prefix).' },
+        title: { type: 'string', description: 'New project title. Optional.' },
+        description: { type: 'string', description: 'New project description. Optional. Pass empty string to clear.' },
+      },
+      required: ['project_id'],
+    },
+  },
+  {
+    name: 'tracker_close_project',
+    description: 'Close an entire project AND every open task on it in one call. Use this when you want to abandon a project, when you discover a duplicate project, when scope changed and the work is no longer relevant, or when every remaining task has genuinely been completed but is still showing as open. Pass status="cancelled" for abandoned/duplicate/scope-change cases (the default — leaves a "cancelled" marker on each task) and status="complete" only when all the work was actually done. The reason string is required and gets appended as a note on every task closed — this is the audit trail for whoever sees the kanban next. Far better than looping tracker_update_status one task at a time, and the only correct response when the engine tells you a project of yours is stranded (open tasks left behind on an abandoned project).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string', description: 'The project ID to close (full UUID or 8-char prefix from tracker_list_active).' },
+        status: { type: 'string', enum: ['complete', 'cancelled'], description: 'Terminal status to set on the project and every open task. Default "cancelled". Use "complete" ONLY when all the work actually finished — otherwise "cancelled".' },
+        reason: { type: 'string', description: 'Required. A short sentence on why you are closing the project. Gets appended as a note on every closed task — this is the audit trail for the user.' },
+      },
+      required: ['project_id', 'reason'],
+    },
+  },
   // ── Schedule Tools (Phase 6) ──
   {
     name: 'tracker_pause_schedule',
-    description: 'Pause a recurring task\'s schedule. If the work is already done, set mark_complete=true to stop the schedule AND mark the task as complete (terminal state). Without mark_complete, the task stays in on_deck.',
+    description: '**Scheduled/recurring tasks ONLY.** Pause a recurring task\'s schedule so it stops firing. **DO NOT use this to "finish" a non-recurring task** — for a one-shot task you completed, call `tracker_update_status(status="complete")` instead. Pausing a one-shot task strands it forever (it sits in the Paused column, cannot be completed without unpausing, and PM monitoring ignores it). If the recurring task\'s remaining runs are no longer needed, set mark_complete=true to stop the schedule AND mark the task complete in one call.',
     input_schema: {
       type: 'object',
       properties: {
@@ -3648,6 +3680,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
             description: args.description as string | undefined,
             level: args.level as number,
             tasks: taskInputs,
+            allow_duplicate: args.allow_duplicate as boolean | undefined,
           });
         } catch (err) {
           content = friendlyDbError(err, 'tracker_create_project');
@@ -3870,6 +3903,31 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         content = trackerCompleteStep(agentId, {
           taskId: args.task_id as string,
           notes: args.notes as string | undefined,
+        });
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'tracker_edit_project': {
+        const tepErr = checkRequired([{ name: 'project_id', value: args.project_id, type: 'string' }]);
+        if (tepErr) { content = tepErr; isError = true; break; }
+        content = trackerEditProject(agentId, {
+          project_id: args.project_id as string,
+          title: args.title as string | undefined,
+          description: args.description as string | null | undefined,
+        });
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'tracker_close_project': {
+        const tcpErr = checkRequired([
+          { name: 'project_id', value: args.project_id, type: 'string' },
+          { name: 'reason', value: args.reason, type: 'string' },
+        ]);
+        if (tcpErr) { content = tcpErr; isError = true; break; }
+        content = trackerCloseProject(agentId, {
+          project_id: args.project_id as string,
+          status: args.status as string | undefined,
+          reason: args.reason as string,
         });
         isError = content.startsWith('Error');
         break;

@@ -8,10 +8,12 @@ import {
   listTasks,
   listProjects,
   updateTask,
+  updateProject,
   addTaskNotes,
   resolveTaskId,
   resolveProjectId,
   formatResolveError,
+  closeProjectAndOpenTasks,
 } from './schema.js';
 import { ensurePMAgentRunning } from './pm-agent.js';
 import { injectTaskAssignmentNotification } from './notify.js';
@@ -111,6 +113,139 @@ function checkProjectCompletion(projectId: string | null, callingAgentId: string
 
 // ── trackerCreateProject ──
 
+// Stop-words used by the near-duplicate detector. Common low-information
+// words that should not drive a duplicate match by themselves.
+const STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'of', 'for', 'to', 'in', 'on', 'with',
+  'by', 'from', 'is', 'as', 'at', 'be', 'this', 'that', 'these', 'those',
+  'project', 'task', 'work', 'plan', 'review', 'new',
+]);
+
+function normalizeTitle(t: string): string[] {
+  return t
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .map(w => w.trim())
+    .filter(w => w.length > 2 && !STOPWORDS.has(w));
+}
+
+// Mirror of ENGINE_AUTO_MARKER in classifiers/multistep.ts. Duplicated
+// here rather than imported to avoid a cross-package import path through
+// the v2 classifier dir for a one-string constant.
+const ENGINE_AUTO_MARKER = '[engine:multistep] ';
+
+interface DuplicateMatch {
+  id: string;
+  title: string;
+  createdMinutesAgo: number;
+  /** True when the existing project was opened by the engine's multistep
+   * classifier on the agent's most recent user turn (not by the agent
+   * calling tracker_create_project themselves). */
+  engineAutoCreated: boolean;
+  /** First in_progress / on_deck task on the existing project, if any —
+   * the natural target for tracker_edit_task. */
+  firstOpenTask: { id: string; title: string } | null;
+}
+
+/**
+ * Near-duplicate guard with two prongs:
+ *
+ *   (a) Engine-auto-created override: if the creator has ANY active
+ *       project with the ENGINE_AUTO_MARKER in its description created
+ *       in the last 5 minutes, treat that as a duplicate of whatever
+ *       the agent is now trying to create — regardless of title
+ *       similarity. The engine just opened a project for this turn;
+ *       the agent should edit it, not parallel it. (Without this, the
+ *       agent's better name often diverges enough from the engine's
+ *       slice-of-prompt name to clear the Jaccard threshold.)
+ *
+ *   (b) Token-Jaccard fallback for agent-vs-agent dups: ≥ 0.6 overlap,
+ *       ≥ 2 shared content tokens, last 60 minutes. Catches the
+ *       post-compaction "I forgot I made this project" failure shape.
+ */
+function findRecentNearDuplicateProject(
+  creatorId: string,
+  title: string,
+): DuplicateMatch | null {
+  const db = getDb();
+
+  // (a) Engine-auto-created in the last 5 minutes — short window so we
+  //     only catch the same-turn case, not a stale auto-project from
+  //     half an hour ago that the agent has already moved past.
+  const engineAuto = db.prepare(`
+    SELECT id, title, created_at FROM projects
+    WHERE created_by = ?
+      AND status = 'active'
+      AND description LIKE ? || '%'
+      AND datetime(created_at) >= datetime('now', '-5 minutes')
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(creatorId, ENGINE_AUTO_MARKER) as { id: string; title: string; created_at: string } | undefined;
+
+  if (engineAuto) {
+    const createdMs = new Date(engineAuto.created_at.includes('Z') ? engineAuto.created_at : engineAuto.created_at + 'Z').getTime();
+    const firstOpen = db.prepare(`
+      SELECT id, title FROM tasks
+      WHERE project_id = ? AND status IN ('in_progress', 'on_deck')
+      ORDER BY step_number ASC NULLS LAST, created_at ASC
+      LIMIT 1
+    `).get(engineAuto.id) as { id: string; title: string } | undefined;
+    return {
+      id: engineAuto.id,
+      title: engineAuto.title,
+      createdMinutesAgo: Math.max(1, Math.round((Date.now() - createdMs) / 60000)),
+      engineAutoCreated: true,
+      firstOpenTask: firstOpen ?? null,
+    };
+  }
+
+  // (b) Jaccard fallback for agent-created near-dups.
+  const recent = db.prepare(`
+    SELECT id, title, created_at FROM projects
+    WHERE created_by = ?
+      AND status = 'active'
+      AND datetime(created_at) >= datetime('now', '-60 minutes')
+    ORDER BY created_at DESC
+    LIMIT 20
+  `).all(creatorId) as Array<{ id: string; title: string; created_at: string }>;
+
+  if (recent.length === 0) return null;
+
+  const newTokens = normalizeTitle(title);
+  if (newTokens.length === 0) return null;
+  const newSet = new Set(newTokens);
+
+  for (const row of recent) {
+    const oldTokens = normalizeTitle(row.title);
+    if (oldTokens.length === 0) continue;
+    const oldSet = new Set(oldTokens);
+
+    const intersection = new Set([...newSet].filter(w => oldSet.has(w)));
+    if (intersection.size < 2) continue;
+
+    const union = new Set([...newSet, ...oldSet]);
+    const jaccard = intersection.size / union.size;
+    if (jaccard >= 0.6) {
+      const createdMs = new Date(row.created_at.includes('Z') ? row.created_at : row.created_at + 'Z').getTime();
+      const firstOpen = db.prepare(`
+        SELECT id, title FROM tasks
+        WHERE project_id = ? AND status IN ('in_progress', 'on_deck')
+        ORDER BY step_number ASC NULLS LAST, created_at ASC
+        LIMIT 1
+      `).get(row.id) as { id: string; title: string } | undefined;
+      return {
+        id: row.id,
+        title: row.title,
+        createdMinutesAgo: Math.max(1, Math.round((Date.now() - createdMs) / 60000)),
+        engineAutoCreated: false,
+        firstOpenTask: firstOpen ?? null,
+      };
+    }
+  }
+  return null;
+}
+
 export function trackerCreateProject(agentId: string, args: Record<string, unknown>): string {
   try {
     const title = args.title as string;
@@ -128,6 +263,39 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       dependsOn?: string[];
       phase?: number;
     }> | undefined;
+
+    // Duplicate guard. Catches the most common failure shape: agent gets
+    // compacted mid-task, loses the project it already opened, and creates
+    // a near-identical one. Agents can override by setting allow_duplicate=true
+    // (rare — usually only valid for genuinely independent re-runs).
+    const allowDuplicate = args.allow_duplicate === true;
+    if (!allowDuplicate) {
+      const dup = findRecentNearDuplicateProject(agentId, title);
+      if (dup) {
+        const shortPid = dup.id.slice(0, 8);
+        const firstTaskHint = dup.firstOpenTask
+          ? ` First open task: "${dup.firstOpenTask.title}" (id=${dup.firstOpenTask.id.slice(0, 8)}).`
+          : '';
+        if (dup.engineAutoCreated) {
+          // Engine just auto-opened this project for the user's current
+          // turn. Steer the agent toward editing/extending it rather than
+          // building a parallel project.
+          return (
+            `Refused: the engine already auto-opened project "${dup.title}" (id=${shortPid}) for this user turn — that's what the multi-step classifier does when a prompt looks like multi-step work, so you don't have to remember to call tracker_create_project yourself.${firstTaskHint} ` +
+            `Work WITHIN that project instead of creating a parallel one:\n` +
+            `  • tracker_edit_task(task_id=<id>, title=..., description=...) — rename / re-scope the auto-created first task to fit what you'd actually do first.\n` +
+            `  • tracker_create_task(project_id="${shortPid}", title=..., step_number=..., assigned_to=...) — add the additional steps.\n` +
+            `  • tracker_close_project(project_id="${shortPid}", status="cancelled", reason="...") — only if the classifier got it wrong and there's no useful project to do.\n` +
+            `If you genuinely need a separate, unrelated project right now, retry with allow_duplicate=true.`
+          );
+        }
+        return (
+          `Refused: project "${dup.title}" (id=${shortPid}) was already created by you ${dup.createdMinutesAgo} minute(s) ago and is still active — the new title "${title}" looks like a near-duplicate.${firstTaskHint} ` +
+          `Use the existing project: tracker_get_status(id="${shortPid}") to see current tasks, tracker_edit_task to rename/rescope a task, tracker_create_task(project_id="${shortPid}", ...) to add new steps, or tracker_close_project(project_id="${shortPid}", status="cancelled", reason="...") if it was a mistake. ` +
+          `If this really is unrelated work that happens to share keywords, retry with allow_duplicate=true.`
+        );
+      }
+    }
 
     const result = createProject({
       title,
@@ -1022,6 +1190,113 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
   }
 }
 
+// ── trackerEditProject ──
+//
+// Rename / re-describe a project. Until now, projects literally had no
+// editable title — only status and currentPhase could be changed. Added
+// so the PM agent can rename engine-auto-created projects (the multistep
+// classifier names them with a slice of the user prompt; PM rewrites
+// both project and first task to clean names on its next turn).
+
+export function trackerEditProject(agentId: string, args: Record<string, unknown>): string {
+  const rawProjectId = (args.project_id ?? args.projectId) as string | undefined;
+  if (!rawProjectId) return 'Error: project_id is required.';
+
+  const resolved = resolveProjectId(rawProjectId);
+  if (!resolved.ok) return formatResolveError('project', rawProjectId, resolved);
+  const projectId = resolved.id;
+
+  const title = args.title as string | undefined;
+  const description = args.description as string | null | undefined;
+
+  if (title === undefined && description === undefined) {
+    return 'Error: at least one of title or description must be provided.';
+  }
+
+  const project = getProject(projectId);
+  if (!project) return `Error: Project ${projectId} was deleted before edit could be applied.`;
+
+  const updates: Parameters<typeof updateProject>[1] = {};
+  if (title !== undefined) {
+    const trimmed = title.trim();
+    if (trimmed.length === 0) return 'Error: title cannot be empty.';
+    updates.title = trimmed.slice(0, 200);
+  }
+  if (description !== undefined) {
+    updates.description = description === null || description === '' ? null : String(description);
+  }
+
+  try {
+    updateProject(projectId, updates);
+    const fields = Object.keys(updates).join(', ');
+    return `[OK] project_id=${projectId}\n\nProject updated. Fields changed: ${fields}.`;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('trackerEditProject failed', { projectId, error: msg }, agentId);
+    return `Error editing project: ${msg}`;
+  }
+}
+
+// ── trackerCloseProject ──
+//
+// One call to close a whole project AND every open task on it. The use case
+// is "I abandoned this project / it duplicates something else / scope
+// changed, just close it out cleanly." Without this tool, agents either
+// leave tasks stranded forever in on_deck or have to loop calling
+// tracker_update_status one task at a time.
+
+export function trackerCloseProject(agentId: string, args: Record<string, unknown>): string {
+  const rawProjectId = (args.project_id ?? args.projectId) as string | undefined;
+  if (!rawProjectId) return 'Error: project_id is required.';
+
+  const resolved = resolveProjectId(rawProjectId);
+  if (!resolved.ok) return formatResolveError('project', rawProjectId, resolved);
+  const projectId = resolved.id;
+
+  // Default to status='cancelled' — most calls to this tool are clean-up of
+  // abandoned/duplicated projects rather than "we actually finished it."
+  // Agents who really did finish all the work should pass status='complete'.
+  const rawStatus = (args.status as string | undefined)?.toLowerCase() ?? 'cancelled';
+  if (rawStatus !== 'complete' && rawStatus !== 'cancelled') {
+    return 'Error: status must be either "complete" (all work was actually done) or "cancelled" (abandoned / duplicated / scope changed).';
+  }
+  const status = rawStatus as 'complete' | 'cancelled';
+
+  const reason = (args.reason as string | undefined)?.trim();
+  if (!reason || reason.length < 4) {
+    return 'Error: reason is required (a short sentence on why this project is being closed — will be appended to every task as a note for the audit trail).';
+  }
+
+  const project = getProject(projectId);
+  if (!project) return `Error: Project ${projectId} was deleted before close could be applied.`;
+
+  try {
+    const result = closeProjectAndOpenTasks({
+      projectId,
+      closingAgentId: agentId,
+      taskStatus: status,
+      projectStatus: status,
+      reason,
+    });
+    notifyPrimaryAgent(
+      `Project "${project.title}" was bulk-closed by ${agentId} (status=${status}). ${result.tasksClosed} open task(s) closed; ${result.alreadyClosed} were already terminal. Reason: ${reason}`,
+      agentId,
+    );
+    return [
+      `[OK] project_id=${projectId} | status=${status}`,
+      ``,
+      `Project "${project.title}" closed.`,
+      `Tasks closed by this call: ${result.tasksClosed}`,
+      `Tasks already in a terminal state (skipped): ${result.alreadyClosed}`,
+      `Reason recorded on each closed task: ${reason}`,
+    ].join('\n');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('trackerCloseProject failed', { projectId, error: msg }, agentId);
+    return `Error closing project: ${msg}`;
+  }
+}
+
 // ── trackerPauseSchedule ──
 
 export function trackerPauseSchedule(agentId: string, args: Record<string, unknown>): string {
@@ -1037,7 +1312,15 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
   const db = getDb();
   const task = db.prepare('SELECT id, title, schedule_status, project_id FROM tasks WHERE id = ?').get(taskId) as { id: string; title: string; schedule_status: string; project_id: string } | undefined;
   if (!task) return `Error: Task ${taskId} was deleted before pause could be applied.`;
-  if (task.schedule_status === 'unscheduled') return `Error: Task "${task.title}" is not scheduled`;
+  if (task.schedule_status === 'unscheduled') {
+    return (
+      `Refused: tracker_pause_schedule is for recurring/scheduled tasks only — "${task.title}" has no schedule. ` +
+      `For a one-shot task: if the work is DONE, call tracker_update_status(task_id="${task.id}", status="complete"). ` +
+      `If you're stuck, call tracker_update_status(..., status="blocked", notes="why"). ` +
+      `If the task is no longer needed, call tracker_update_status(..., status="paused", resume_at="<ISO datetime>") to pause until a specific time, or — if you want it cleanly off the active board — tracker_close_project for whole-project cleanup. ` +
+      `Pausing a one-shot task without a resume_at strands it: it sits in the Paused column, can\'t be completed without unpausing, and the PM stops watching it.`
+    );
+  }
 
   if (markComplete) {
     // Stop the schedule AND mark the task as complete (terminal state)

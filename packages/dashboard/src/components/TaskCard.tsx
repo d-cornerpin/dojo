@@ -105,6 +105,15 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
               : 'Paused indefinitely'
             }</span>
           </div>
+          {!task.pausedUntil && !task.repeatInterval && (
+            <div
+              className="text-[10px] text-cp-amber flex items-center gap-1"
+              title="Paused with no auto-resume and no recurring schedule. Agents sometimes pause as a sloppy substitute for complete/blocked — open the task to resolve it."
+            >
+              <span>{'⚠'}</span>
+              <span>Needs resolution</span>
+            </div>
+          )}
         </div>
       )}
 
