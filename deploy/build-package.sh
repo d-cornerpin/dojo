@@ -52,6 +52,11 @@ cp "$PROJECT_ROOT/packages/server/package.json" "$DEST/platform/packages/server/
 # Copy migrations to where the compiled code expects them (dist/db/migrations)
 mkdir -p "$DEST/platform/packages/server/dist/db"
 cp -r "$PROJECT_ROOT/packages/server/src/db/migrations" "$DEST/platform/packages/server/dist/db/migrations"
+# Copy startup scripts (ensure-system-deps.sh runs on every server boot
+# from the platform tree, so it ships with every update).
+mkdir -p "$DEST/platform/packages/server/scripts"
+cp "$PROJECT_ROOT/packages/server/scripts/ensure-system-deps.sh" "$DEST/platform/packages/server/scripts/"
+chmod +x "$DEST/platform/packages/server/scripts/ensure-system-deps.sh"
 cp -r "$PROJECT_ROOT/packages/dashboard/dist" "$DEST/platform/packages/dashboard/"
 cp "$PROJECT_ROOT/packages/dashboard/package.json" "$DEST/platform/packages/dashboard/"
 cp -r "$PROJECT_ROOT/packages/shared/dist" "$DEST/platform/packages/shared/"

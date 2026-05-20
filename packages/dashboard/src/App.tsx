@@ -176,7 +176,19 @@ const GlobalAlerts = () => {
       toast.warning(`Low memory: ${(e.data.freeMb / 1024).toFixed(1)}GB free`);
     });
 
-    return () => { unsub(); unsub2(); };
+    // System dep installed at server startup (typically post-update).
+    // Lets the user know a brew package was just added so they don't get
+    // a surprise "feature X works now" or have to read server logs.
+    const unsub3 = subscribe('system:dep_installed', (event: WsEvent) => {
+      const e = event as { type: string; data: { pkg: string; status: 'installed' | 'failed' } };
+      if (e.data.status === 'installed') {
+        toast.success(`System dependency installed: ${e.data.pkg}`);
+      } else {
+        toast.error(`Failed to install system dependency: ${e.data.pkg}`);
+      }
+    });
+
+    return () => { unsub(); unsub2(); unsub3(); };
   }, [subscribe, toast]);
 
   return null; // rendering is handled by ToastContainer

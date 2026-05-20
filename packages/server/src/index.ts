@@ -71,6 +71,23 @@ function ensurePrimaryAgent(): void {
 async function main(): Promise<void> {
   logger.info('Starting Dojo Agent Platform...');
 
+  // System-dependency check (brew packages like whisper-cpp). Runs in the
+  // background — we don't block server startup on a `brew install` that
+  // could take 30+ seconds. By the time the install completes and the
+  // toast broadcasts, the dashboard has reconnected to the restarted
+  // server and the user sees the "whisper-cpp installed" notification.
+  // Idempotent: a no-op when all deps are already present (~200ms).
+  void (async () => {
+    try {
+      const { ensureSystemDeps } = await import('./services/ensure-system-deps.js');
+      await ensureSystemDeps();
+    } catch (err) {
+      logger.warn('System-deps check failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  })();
+
   // 1. Create required directories
   ensureDirectories();
 

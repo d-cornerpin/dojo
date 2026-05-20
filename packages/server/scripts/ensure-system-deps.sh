@@ -4,11 +4,19 @@
 # ════════════════════════════════════════
 #
 # Single source of truth for the brew packages DOJO needs but can't
-# install via npm. Called from install.sh (fresh installs / .pkg
-# reinstalls) AND from update.ts (self-update path) so new system deps
-# get picked up automatically when a release adds them.
+# install via npm. Called from:
+#   - install.sh (fresh installs / .pkg reinstalls)
+#   - ensure-system-deps.ts at server STARTUP (so updates self-heal on
+#     the next launchd reboot, regardless of which version's update.ts
+#     shipped the files)
 #
 # Idempotent: skips anything already installed. Safe to run repeatedly.
+#
+# Output contract — the TS wrapper parses two machine-readable markers:
+#   INSTALLED:<pkg>  emitted once per freshly-installed package
+#   FAILED:<pkg>     emitted once per package that failed to install
+# Don't change these markers without updating the parser in
+# services/ensure-system-deps.ts.
 
 # Note: intentionally NOT using set -e. brew exits non-zero in many
 # normal cases (e.g. already-installed), which would kill the script.
@@ -48,9 +56,11 @@ for pkg in "${REQUIRED_BREW_PACKAGES[@]}"; do
     echo "📦 Installing $pkg..."
     if brew install "$pkg"; then
         echo "✅ $pkg installed"
+        echo "INSTALLED:$pkg"
         ((INSTALLED_COUNT++))
     else
         echo "⚠️  Failed to install $pkg — feature relying on it will be unavailable"
+        echo "FAILED:$pkg"
         ((FAILED_COUNT++))
     fi
 done

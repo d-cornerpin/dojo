@@ -182,6 +182,20 @@ export interface WatchdogAlertEvent {
   };
 }
 
+/**
+ * Emitted at server startup when the dep installer freshly installs a brew
+ * package. The dashboard toasts each one so the user knows what changed.
+ * Status 'failed' fires if brew couldn't install the package — usually a
+ * homebrew issue worth surfacing to the user.
+ */
+export interface SystemDepInstalledEvent {
+  type: 'system:dep_installed';
+  data: {
+    pkg: string;
+    status: 'installed' | 'failed';
+  };
+}
+
 export type WsEvent =
   | AgentStatusEvent
   | ChatChunkEvent
@@ -205,6 +219,7 @@ export type WsEvent =
   | ProviderStatusEvent
   | ResourceWarningEvent
   | WatchdogAlertEvent
+  | SystemDepInstalledEvent
   | OllamaStatusEvent
   | TechniqueCreatedEvent
   | TechniquePublishedEvent

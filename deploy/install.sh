@@ -94,13 +94,15 @@ else
 fi
 
 # ── Install system dependencies (whisper-cpp etc.) ──
-# Single source of truth lives in scripts/ensure-system-deps.sh so the
-# self-update path (update.ts) can reuse it.
+# The same script is also invoked at server startup, so any deps added
+# in future releases get picked up on the next reboot. Running it here
+# too means fresh installs don't have to wait for first server boot.
 
-if [[ -f "$SCRIPT_DIR/scripts/ensure-system-deps.sh" ]]; then
+SYSTEM_DEPS_SCRIPT="$SCRIPT_DIR/platform/packages/server/scripts/ensure-system-deps.sh"
+if [[ -f "$SYSTEM_DEPS_SCRIPT" ]]; then
     echo ""
     echo "📦 Checking system dependencies..."
-    bash "$SCRIPT_DIR/scripts/ensure-system-deps.sh"
+    bash "$SYSTEM_DEPS_SCRIPT"
 fi
 
 # ── Install imsg (iMessage CLI for text + image attachments) ──
