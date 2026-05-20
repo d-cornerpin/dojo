@@ -20,6 +20,7 @@ export const DEFAULT_ALWAYS_LOADED_TOOLS = [
   'load_tool_docs',
   'complete_task',
   'get_current_time',
+  'convert_time',
 ];
 
 // Primary agent: needs file/exec + tracker + vault + communication basics.

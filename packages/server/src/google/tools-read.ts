@@ -6,6 +6,20 @@
 
 import type { ToolDefinition } from '../agent/tools.js';
 import { googleRead } from './client.js';
+import { formatTimeForAgent, parseFlexibleTime } from '../services/format-time.js';
+
+/**
+ * Format an email Date header for agent consumption. RFC 2822 headers
+ * like "Wed, 20 May 2026 19:00:00 +0000" have an offset, so parsing is
+ * unambiguous — but the format differs from every other tool. Route
+ * through formatTimeForAgent so the agent sees the same dual-format
+ * string everywhere. Empty input passes through as empty.
+ */
+function fmtEmailDate(rfc2822: string): string {
+  if (!rfc2822) return '';
+  const parsed = parseFlexibleTime(rfc2822);
+  return parsed ? formatTimeForAgent(parsed) : rfc2822;
+}
 
 const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const CALENDAR_BASE = 'https://www.googleapis.com/calendar/v3';
@@ -232,12 +246,13 @@ export async function executeGoogleReadTool(
           const subject = headers.find(h => h.name === 'Subject')?.value ?? '(no subject)';
           const date = headers.find(h => h.name === 'Date')?.value ?? '';
           const snippet = msgData?.snippet ?? '';
+          const fmtDate = fmtEmailDate(date);
           if (verbose) {
-            details.push(`ID: ${msg.id}\nFrom: ${from}\nTo: ${to}\nSubject: ${subject}\nDate: ${date}\nSnippet: ${snippet}\n`);
+            details.push(`ID: ${msg.id}\nFrom: ${from}\nTo: ${to}\nSubject: ${subject}\nDate: ${fmtDate}\nSnippet: ${snippet}\n`);
           } else {
             // Compact: one line per email — drop To, keep snippet capped to 200ch.
             const shortSnippet = snippet.length > 200 ? snippet.slice(0, 200) + '…' : snippet;
-            details.push(`- ${date} | ${from} — ${subject}\n  ID: ${msg.id} | ${shortSnippet}`);
+            details.push(`- ${fmtDate} | ${from} — ${subject}\n  ID: ${msg.id} | ${shortSnippet}`);
           }
         }
       }
@@ -302,7 +317,7 @@ export async function executeGoogleReadTool(
         12_000,
       );
 
-      let output = `From: ${from}\nTo: ${to}${cc ? `\nCc: ${cc}` : ''}\nSubject: ${subject}\nDate: ${date}\n\n${pagedBody}`;
+      let output = `From: ${from}\nTo: ${to}${cc ? `\nCc: ${cc}` : ''}\nSubject: ${subject}\nDate: ${fmtEmailDate(date)}\n\n${pagedBody}`;
       if (attachments.length > 0) {
         const lines = attachments.map(a => {
           const name = a.filename || '(unnamed)';
@@ -362,7 +377,7 @@ export async function executeGoogleReadTool(
           const subject = headers.find(h => h.name === 'Subject')?.value ?? '(no subject)';
           const date = headers.find(h => h.name === 'Date')?.value ?? '';
           const unread = msgData?.labelIds?.includes('UNREAD') ? ' [UNREAD]' : '';
-          details.push(`${unread}ID: ${msg.id} | From: ${from} | Subject: ${subject} | Date: ${date}`);
+          details.push(`${unread}ID: ${msg.id} | From: ${from} | Subject: ${subject} | Date: ${fmtEmailDate(date)}`);
         }
       }
       return `Inbox (${data.messages.length} messages):\n\n${details.join('\n')}`;
@@ -387,13 +402,27 @@ export async function executeGoogleReadTool(
       const result = await googleRead(url, agentId, agentName, 'calendar_agenda', { days, timezone: tz, startDate, anchored: window.anchored, calendarId });
       if (!result.ok) return `Error fetching calendar: ${result.error}`;
 
-      const data = result.data as { items?: Array<{ summary: string; start: { dateTime?: string; date?: string }; end: { dateTime?: string; date?: string }; location?: string; description?: string }> };
+      const data = result.data as { items?: Array<{ summary: string; start: { dateTime?: string; date?: string; timeZone?: string }; end: { dateTime?: string; date?: string; timeZone?: string }; location?: string; description?: string }> };
       if (!data?.items || data.items.length === 0) return `No events in the next ${days} day(s).`;
 
+      // Google returns dateTime with an embedded offset (good) OR date for
+      // all-day events. Either way, formatTimeRangeForAgent gives the
+      // agent an unambiguous dual-format string so it doesn't misread the
+      // ISO as its own local time.
+      const { parseFlexibleTime, formatTimeRangeForAgent } = await import('../services/format-time.js');
       const events = data.items.map(e => {
-        const start = e.start.dateTime ?? e.start.date ?? '';
-        const eEnd = e.end.dateTime ?? e.end.date ?? '';
-        let line = `- ${e.summary} (${start} to ${eEnd})`;
+        const isAllDay = !!(e.start.date && !e.start.dateTime);
+        // dateTime already has an offset → parseFlexibleTime handles it.
+        // date is a calendar date → parse as a plain Date (UTC midnight is fine
+        // since formatTimeRangeForAgent renders all-day in UTC to preserve the date).
+        const rawStart = e.start.dateTime ?? e.start.date ?? '';
+        const rawEnd = e.end.dateTime ?? e.end.date ?? '';
+        const startDate = parseFlexibleTime(rawStart);
+        const endDate = parseFlexibleTime(rawEnd);
+        const when = startDate && endDate
+          ? formatTimeRangeForAgent(startDate, endDate, { timezone: tz, allDay: isAllDay })
+          : `${rawStart} to ${rawEnd} (could not parse)`;
+        let line = `- ${e.summary}\n  ${when}`;
         if (e.location) line += `\n  Location: ${e.location}`;
         if (e.description) line += `\n  Notes: ${e.description.slice(0, 200)}`;
         return line;
@@ -423,9 +452,16 @@ export async function executeGoogleReadTool(
       const data = result.data as { items?: Array<{ summary: string; start: { dateTime?: string; date?: string }; id: string }> };
       if (!data?.items || data.items.length === 0) return `No events matching "${searchQuery}" in the next ${daysAhead} days.`;
 
+      const requestedTz = args.timezone as string | undefined;
+      const { parseFlexibleTime, formatTimeForAgent } = await import('../services/format-time.js');
       const events = data.items.map(e => {
-        const start = e.start.dateTime ?? e.start.date ?? '';
-        return `- ${e.summary} (${start}) [ID: ${e.id}]`;
+        const isAllDay = !!(e.start.date && !e.start.dateTime);
+        const raw = e.start.dateTime ?? e.start.date ?? '';
+        const parsed = parseFlexibleTime(raw);
+        const when = parsed
+          ? formatTimeForAgent(parsed, { timezone: requestedTz, allDay: isAllDay })
+          : `${raw} (could not parse)`;
+        return `- ${e.summary}\n  ${when}\n  [ID: ${e.id}]`;
       });
       return `Found ${data.items.length} event(s) matching "${searchQuery}":\n\n${events.join('\n')}`;
     }

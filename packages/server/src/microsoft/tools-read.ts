@@ -331,15 +331,17 @@ export async function executeMicrosoftReadTool(
       const data = result.data as { value?: Array<{ id: string; from: { emailAddress: { name: string; address: string } }; subject: string; receivedDateTime: string; bodyPreview: string; isRead: boolean }> };
       if (!data?.value || data.value.length === 0) return 'No emails found matching that query.';
 
+      const { formatTimeForAgent } = await import('../services/format-time.js');
       const emails = data.value.map(m => {
         const unread = m.isRead ? ' [UNREAD]' : '';
         const fromName = m.from?.emailAddress?.name ?? '';
         const fromAddr = m.from?.emailAddress?.address ?? '';
+        const when = formatTimeForAgent(m.receivedDateTime);
         if (verbose) {
-          return `${unread.trim()}ID: ${m.id}\nFrom: ${fromName} <${fromAddr}>\nSubject: ${m.subject}\nDate: ${m.receivedDateTime}\nPreview: ${m.bodyPreview}`;
+          return `${unread.trim()}ID: ${m.id}\nFrom: ${fromName} <${fromAddr}>\nSubject: ${m.subject}\nDate: ${when}\nPreview: ${m.bodyPreview}`;
         }
         // Compact: one line per email — drop preview body, keep date+sender+subject+unread.
-        return `-${unread} ${m.receivedDateTime} | ${fromName} <${fromAddr}> — ${m.subject}\n  ID: ${m.id}`;
+        return `-${unread} ${when} | ${fromName} <${fromAddr}> — ${m.subject}\n  ID: ${m.id}`;
       });
 
       const header = `Found ${data.value.length} email(s):\n\n${emails.join(verbose ? '\n\n---\n\n' : '\n')}`;
@@ -385,7 +387,8 @@ export async function executeMicrosoftReadTool(
         12_000,
       );
 
-      let output = `From: ${m.from?.emailAddress?.name} <${m.from?.emailAddress?.address}>\nTo: ${to}${cc ? `\nCc: ${cc}` : ''}\nSubject: ${m.subject}\nDate: ${m.receivedDateTime}\n\n${pagedBody}`;
+      const { formatTimeForAgent: fmtTime1 } = await import('../services/format-time.js');
+      let output = `From: ${m.from?.emailAddress?.name} <${m.from?.emailAddress?.address}>\nTo: ${to}${cc ? `\nCc: ${cc}` : ''}\nSubject: ${m.subject}\nDate: ${fmtTime1(m.receivedDateTime)}\n\n${pagedBody}`;
       if (m.hasAttachments) output += '\n\nAttachments: yes';
       return output;
     }
@@ -403,9 +406,10 @@ export async function executeMicrosoftReadTool(
       const data = result.data as { value?: Array<{ id: string; from: { emailAddress: { name: string; address: string } }; subject: string; receivedDateTime: string; bodyPreview: string; isRead: boolean }> };
       if (!data?.value || data.value.length === 0) return unreadOnly ? 'No unread messages in inbox.' : 'Inbox is empty.';
 
+      const { formatTimeForAgent: fmtTime2 } = await import('../services/format-time.js');
       const emails = data.value.map(m => {
         const unread = m.isRead ? '' : ' [UNREAD]';
-        return `${unread}ID: ${m.id} | From: ${m.from?.emailAddress?.name} <${m.from?.emailAddress?.address}> | Subject: ${m.subject} | Date: ${m.receivedDateTime}`;
+        return `${unread}ID: ${m.id} | From: ${m.from?.emailAddress?.name} <${m.from?.emailAddress?.address}> | Subject: ${m.subject} | Date: ${fmtTime2(m.receivedDateTime)}`;
       });
 
       return `Inbox (${data.value.length} messages):\n\n${emails.join('\n')}`;
@@ -415,19 +419,33 @@ export async function executeMicrosoftReadTool(
       const days = (args.days as number) ?? 1;
       const calendarId = args.calendar_id as string | undefined;
       const startDate = args.start_date as string | undefined;
+      const requestedTz = (args.timezone as string | undefined);
       const { computeCalendarWindow } = await import('../services/calendar-window.js');
-      const window = computeCalendarWindow({ days, timezone: args.timezone as string | undefined, start_date: startDate });
+      const window = computeCalendarWindow({ days, timezone: requestedTz, start_date: startDate });
       const result = await msGraphRead(
-        `${calendarPrefix(calendarId)}calendarView?startDateTime=${window.startISO}&endDateTime=${window.endISO}&$orderby=start/dateTime&$select=id,subject,start,end,location,bodyPreview`,
+        `${calendarPrefix(calendarId)}calendarView?startDateTime=${window.startISO}&endDateTime=${window.endISO}&$orderby=start/dateTime&$select=id,subject,start,end,location,bodyPreview,isAllDay`,
         agentId, agentName, 'calendar_agenda_ms', { days, calendarId, startDate, anchored: window.anchored },
       );
       if (!result.ok) return `Error fetching calendar: ${result.error}`;
 
-      const data = result.data as { value?: Array<{ id: string; subject: string; start: { dateTime: string }; end: { dateTime: string }; location?: { displayName?: string }; bodyPreview?: string }> };
+      const data = result.data as { value?: Array<{ id: string; subject: string; start: { dateTime: string; timeZone?: string }; end: { dateTime: string; timeZone?: string }; location?: { displayName?: string }; bodyPreview?: string; isAllDay?: boolean }> };
       if (!data?.value || data.value.length === 0) return `No events in the next ${days} day(s).`;
 
+      // Microsoft Graph returns start/end as naked ISO ("2026-05-20T19:00:00.0000000")
+      // with no timezone suffix. The timeZone field on each side tells us
+      // what zone to interpret it as (defaults to UTC). Without conversion
+      // the agent reads the raw string as its own local time and gets
+      // every event wrong. Route everything through formatTimeRangeForAgent.
+      const { parseFlexibleTime, formatTimeRangeForAgent } = await import('../services/format-time.js');
       const events = data.value.map(e => {
-        let line = `- ${e.subject} (${e.start.dateTime} to ${e.end.dateTime})`;
+        const startTz = e.start.timeZone || 'UTC';
+        const endTz = e.end.timeZone || 'UTC';
+        const startDate = parseFlexibleTime(e.start.dateTime, startTz);
+        const endDate = parseFlexibleTime(e.end.dateTime, endTz);
+        const when = startDate && endDate
+          ? formatTimeRangeForAgent(startDate, endDate, { timezone: requestedTz, allDay: e.isAllDay === true })
+          : `${e.start.dateTime} to ${e.end.dateTime} (could not parse)`;
+        let line = `- ${e.subject}\n  ${when}`;
         if (e.location?.displayName) line += `\n  Location: ${e.location.displayName}`;
         if (e.bodyPreview) line += `\n  Notes: ${e.bodyPreview.slice(0, 200)}`;
         line += `\n  ID: ${e.id}`;
@@ -442,18 +460,27 @@ export async function executeMicrosoftReadTool(
       const daysAhead = (args.days_ahead as number) ?? 30;
       const calendarId = args.calendar_id as string | undefined;
       const startDate = args.start_date as string | undefined;
+      const requestedTz = (args.timezone as string | undefined);
       const { computeCalendarWindow } = await import('../services/calendar-window.js');
-      const window = computeCalendarWindow({ days: daysAhead, timezone: args.timezone as string | undefined, start_date: startDate });
+      const window = computeCalendarWindow({ days: daysAhead, timezone: requestedTz, start_date: startDate });
       const result = await msGraphRead(
-        `${calendarPrefix(calendarId)}calendarView?startDateTime=${window.startISO}&endDateTime=${window.endISO}&$filter=contains(subject,'${encodeURIComponent(query)}')&$select=id,subject,start,end`,
+        `${calendarPrefix(calendarId)}calendarView?startDateTime=${window.startISO}&endDateTime=${window.endISO}&$filter=contains(subject,'${encodeURIComponent(query)}')&$select=id,subject,start,end,isAllDay`,
         agentId, agentName, 'calendar_search_ms', { query, daysAhead, calendarId, startDate, anchored: window.anchored },
       );
       if (!result.ok) return `Error searching calendar: ${result.error}`;
 
-      const data = result.data as { value?: Array<{ id: string; subject: string; start: { dateTime: string } }> };
+      const data = result.data as { value?: Array<{ id: string; subject: string; start: { dateTime: string; timeZone?: string }; end?: { dateTime: string; timeZone?: string }; isAllDay?: boolean }> };
       if (!data?.value || data.value.length === 0) return `No events matching "${query}" in the next ${daysAhead} days.`;
 
-      const events = data.value.map(e => `- ${e.subject} (${e.start.dateTime}) [ID: ${e.id}]`);
+      const { parseFlexibleTime, formatTimeForAgent } = await import('../services/format-time.js');
+      const events = data.value.map(e => {
+        const tz = e.start.timeZone || 'UTC';
+        const startDate = parseFlexibleTime(e.start.dateTime, tz);
+        const when = startDate
+          ? formatTimeForAgent(startDate, { timezone: requestedTz, allDay: e.isAllDay === true })
+          : `${e.start.dateTime} (could not parse)`;
+        return `- ${e.subject}\n  ${when}\n  [ID: ${e.id}]`;
+      });
       return `Found ${data.value.length} event(s) matching "${query}":\n\n${events.join('\n')}`;
     }
 
@@ -489,9 +516,10 @@ export async function executeMicrosoftReadTool(
       if (!result.ok) return `Error listing share invites: ${result.error}`;
       const data = result.data as { value?: Array<{ id: string; subject: string; from?: { emailAddress?: { name?: string; address?: string } }; receivedDateTime: string; bodyPreview?: string }> };
       if (!data?.value || data.value.length === 0) return 'No pending calendar share invitations in inbox.';
+      const { formatTimeForAgent: fmtTime3 } = await import('../services/format-time.js');
       const lines = data.value.map(m => {
         const sender = m.from?.emailAddress?.name ?? m.from?.emailAddress?.address ?? 'unknown';
-        return `- ${m.subject}\n  From: ${sender} (${m.from?.emailAddress?.address ?? '?'})\n  Received: ${m.receivedDateTime}\n  Message ID: ${m.id}${m.bodyPreview ? `\n  Preview: ${m.bodyPreview.slice(0, 200)}` : ''}`;
+        return `- ${m.subject}\n  From: ${sender} (${m.from?.emailAddress?.address ?? '?'})\n  Received: ${fmtTime3(m.receivedDateTime)}\n  Message ID: ${m.id}${m.bodyPreview ? `\n  Preview: ${m.bodyPreview.slice(0, 200)}` : ''}`;
       });
       return `${data.value.length} pending calendar share invitation(s):\n\n${lines.join('\n\n')}\n\nAccept one with calendar_accept_share_ms(message_id="<id from above>").`;
     }
@@ -512,15 +540,17 @@ export async function executeMicrosoftReadTool(
       const data = result.data as { value?: Array<{ id: string; name: string; size?: number; lastModifiedDateTime: string; file?: { mimeType: string }; folder?: { childCount: number }; webUrl?: string }> };
       if (!data?.value || data.value.length === 0) return 'No files found.';
 
+      const { formatTimeForAgent: fmtTime4 } = await import('../services/format-time.js');
       const files = data.value.map(f => {
         const size = f.size ? ` (${Math.round(f.size / 1024)}KB)` : '';
         if (verbose) {
           const type = f.folder ? `Folder (${f.folder.childCount} items)` : (f.file?.mimeType ?? 'File');
-          let line = `- ${f.name}${size}\n  ID: ${f.id}\n  Type: ${type}\n  Modified: ${f.lastModifiedDateTime}`;
+          let line = `- ${f.name}${size}\n  ID: ${f.id}\n  Type: ${type}\n  Modified: ${fmtTime4(f.lastModifiedDateTime)}`;
           if (f.webUrl) line += `\n  URL: ${f.webUrl}`;
           return line;
         }
-        // Compact: one line per item.
+        // Compact: one line per item. Date-only is fine in compact mode —
+        // there's no time-of-day ambiguity to misread.
         const shortType = f.folder ? `folder (${f.folder.childCount})`
           : (f.file?.mimeType?.includes('word') ? 'doc'
           : f.file?.mimeType?.includes('sheet') ? 'sheet'
@@ -591,8 +621,9 @@ export async function executeMicrosoftReadTool(
         const data = result.data as { value?: Array<{ id: string; topic: string | null; chatType: string; lastUpdatedDateTime: string }> };
         if (!data?.value || data.value.length === 0) return 'No Teams chats found.';
 
+        const { formatTimeForAgent: fmtTime5 } = await import('../services/format-time.js');
         const chats = data.value.map(c =>
-          `- ${c.topic ?? '(untitled)'} [${c.chatType}]\n  ID: ${c.id}\n  Last updated: ${c.lastUpdatedDateTime}`
+          `- ${c.topic ?? '(untitled)'} [${c.chatType}]\n  ID: ${c.id}\n  Last updated: ${fmtTime5(c.lastUpdatedDateTime)}`
         );
         return `Teams chats:\n\n${chats.join('\n\n')}\n\nUse teams_read_messages with a chat_id to read messages.`;
       }
@@ -606,11 +637,12 @@ export async function executeMicrosoftReadTool(
       const data = result.data as { value?: Array<{ id: string; from?: { user?: { displayName: string } }; body: { content: string; contentType: string }; createdDateTime: string }> };
       if (!data?.value || data.value.length === 0) return 'No messages in this chat.';
 
+      const { formatTimeForAgent: fmtTime6 } = await import('../services/format-time.js');
       const messages = data.value.map(m => {
         const sender = m.from?.user?.displayName ?? 'Unknown';
         let body = m.body?.content ?? '';
         if (m.body?.contentType === 'html') body = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-        return `[${m.createdDateTime}] ${sender}: ${body.slice(0, 500)}`;
+        return `[${fmtTime6(m.createdDateTime)}] ${sender}: ${body.slice(0, 500)}`;
       });
 
       return `Teams messages:\n\n${messages.join('\n\n')}`;

@@ -21,6 +21,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, isPrimaryAgent, getOwnerName } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
+import { formatTimeForAgent } from '../services/format-time.js';
 
 const logger = createLogger('tracker-tools');
 
@@ -458,8 +459,9 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       onTaskRunComplete(taskId, 'complete', notes ?? '');
       const updatedTask = getTask(taskId)!;
 
+      const nextRunFmt = updatedTask.nextRunAt ? formatTimeForAgent(updatedTask.nextRunAt) : null;
       notifyPrimaryAgent(
-        `Task "${updatedTask.title}" run completed by ${updatedTask.assignedToName ?? updatedTask.assignedTo ?? agentId}. Run ${updatedTask.runCount}${updatedTask.nextRunAt ? `, next run: ${new Date(updatedTask.nextRunAt).toLocaleString()}` : ' (no more runs)'}.${notes ? ` Notes: ${notes}` : ''}`,
+        `Task "${updatedTask.title}" run completed by ${updatedTask.assignedToName ?? updatedTask.assignedTo ?? agentId}. Run ${updatedTask.runCount}${nextRunFmt ? `, next run: ${nextRunFmt}` : ' (no more runs)'}.${notes ? ` Notes: ${notes}` : ''}`,
         agentId,
       );
 
@@ -472,7 +474,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         `Run completed for recurring task.`,
         `Task: ${updatedTask.title} (${updatedTask.id})`,
         `Runs completed: ${updatedTask.runCount}`,
-        updatedTask.nextRunAt ? `Next run: ${new Date(updatedTask.nextRunAt).toLocaleString()}` : 'All runs finished — task complete.',
+        nextRunFmt ? `Next run: ${nextRunFmt}` : 'All runs finished — task complete.',
       ];
       return parts.join('\n');
     }
@@ -510,7 +512,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     if (task.assignedTo) parts.push(`Assigned to: ${task.assignedToName ?? task.assignedTo}`);
     parts.push(`Priority: ${task.priority}`);
     if (task.status === 'paused' && task.pausedUntil) {
-      parts.push(`Auto-resumes: ${new Date(task.pausedUntil).toLocaleString()} (will restore to "${task.statusBeforePause ?? 'on_deck'}")`);
+      parts.push(`Auto-resumes: ${formatTimeForAgent(task.pausedUntil)} (will restore to "${task.statusBeforePause ?? 'on_deck'}")`);
     } else if (task.status === 'paused') {
       parts.push('Paused indefinitely — must be resumed manually.');
     }

@@ -1317,6 +1317,28 @@ export const toolDefinitions: ToolDefinition[] = [
       required: [],
     },
   },
+  {
+    name: 'convert_time',
+    description: '**Disambiguate a timestamp from any source.** Whenever you encounter a time and the format does NOT include both a timezone abbreviation (PT, ET, UTC, etc.) AND a UTC ISO string, call this tool first instead of guessing. Misreading timezones is the #1 cause of agent errors in emails, briefs, reminders, and scheduled tasks.\n\nUse this for: times from web pages, email bodies, scraped content, calendar tools whose output you find ambiguous, raw unix epoch values, or any timestamp where you want to be 100% sure what moment you\'re talking about.\n\nReturns the dual-format string "<weekday>, <month day, year>, <h:mm AM/PM> <TZ> (<UTC ISO>)". The local part is the time-of-day in `to_tz` (defaults to the agent host\'s system timezone); the UTC ISO is the absolute moment in time. Both refer to the same instant — pick whichever the user needs.\n\nAccepts these input formats:\n  - ISO 8601 with offset/Z: "2026-05-20T19:00:00Z", "2026-05-20T12:00:00-07:00"\n  - ISO 8601 without offset: "2026-05-20T19:00:00" → set `from_tz` so the tool knows how to interpret it (Microsoft Graph returns this format as UTC; many email/web sources are local)\n  - Unix epoch milliseconds: "1747681200000" or 1747681200000 (Plaud uses this)\n  - Unix epoch seconds: 1747681200\n  - RFC 2822: "Wed, 20 May 2026 19:00:00 +0000"\n  - Other formats JS Date can parse',
+    input_schema: {
+      type: 'object',
+      properties: {
+        input: {
+          type: 'string',
+          description: 'The timestamp to convert. Any of the formats listed above.',
+        },
+        from_tz: {
+          type: 'string',
+          description: 'IANA timezone (e.g. "UTC", "America/Los_Angeles") to interpret the input as IF the input has no explicit offset and you know the source\'s convention. Use "UTC" for raw Microsoft Graph datetimes. Ignored when the input already carries an explicit offset.',
+        },
+        to_tz: {
+          type: 'string',
+          description: 'IANA timezone to render the local part in (e.g. "America/Los_Angeles", "America/New_York", "Europe/London"). Defaults to the agent host\'s system timezone.',
+        },
+      },
+      required: ['input'],
+    },
+  },
   // ── Presence ──
   // ── Tunnel (Remote Access) ──
   {
@@ -4124,6 +4146,26 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
           conversion: conversionHint,
           note: 'ALWAYS use the utc value when setting scheduled_start on tasks. All scheduling is UTC.',
         });
+        break;
+      }
+      case 'convert_time': {
+        const timeErr = checkRequired([
+          { name: 'input', value: args.input, type: 'string' },
+        ]);
+        if (timeErr) { content = timeErr; isError = true; break; }
+        try {
+          const { parseFlexibleTime, formatTimeForAgent } = await import('../services/format-time.js');
+          const parsed = parseFlexibleTime(args.input as string, args.from_tz as string | undefined);
+          if (!parsed) {
+            content = `Error: could not parse "${args.input}" as a timestamp. Supported formats: ISO 8601 (with or without offset), unix epoch (seconds or ms), RFC 2822. If the input has no offset, pass from_tz so the tool knows how to interpret it.`;
+            isError = true;
+            break;
+          }
+          content = formatTimeForAgent(parsed, { timezone: args.to_tz as string | undefined });
+        } catch (err) {
+          content = `Error: ${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+        }
         break;
       }
 
