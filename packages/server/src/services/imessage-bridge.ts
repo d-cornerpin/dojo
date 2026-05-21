@@ -718,6 +718,36 @@ export function stopIMBridge(): void {
   }
 }
 
+/**
+ * Re-read imessage_approved_senders from the config table into the bridge's
+ * in-memory list. The poll loop matches only against this list, so adding a
+ * second sender via the dashboard would otherwise sit in the DB while the
+ * bridge keeps querying for the original sender only — incoming messages
+ * from the new sender arrive in Messages but never reach the agent.
+ *
+ * Called from PUT /settings/:key whenever imessage_approved_senders changes.
+ * No-op if the bridge isn't currently running (startIMBridge will load the
+ * fresh list on its own when iMessage is re-enabled).
+ */
+export function reloadApprovedSenders(): void {
+  if (!pollTimer) return;
+  const db = getDb();
+  const sendersRow = db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
+  if (sendersRow?.value) {
+    try {
+      const parsed = JSON.parse(sendersRow.value);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        approvedSenders = parsed;
+        logger.info('Reloaded approved senders from config', { approvedSenders });
+        return;
+      }
+    } catch {
+      // fall through to leave list unchanged
+    }
+  }
+  logger.warn('reloadApprovedSenders called but config key empty/invalid — leaving in-memory list unchanged');
+}
+
 // ── iMessage sending via imsg CLI ──────────────────────────────────────
 //
 // All iMessage sending uses the `imsg` CLI (github.com/steipete/imsg).

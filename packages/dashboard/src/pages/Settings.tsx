@@ -92,9 +92,22 @@ export const Settings = () => {
       {activeTab === 'security' && <SecurityTab />}
       {activeTab === 'sensei' && <DreamingTab />}
       {activeTab === 'integrations' && (
-        <div className="columns-1 lg:columns-2 gap-6 max-w-4xl [&>*]:mb-6 [&>*]:break-inside-avoid">
-          <GoogleWorkspaceSettings />
-          <MicrosoftWorkspaceSettings />
+        <div className="max-w-4xl">
+          {/* OAuth callbacks land on http://localhost:3001 — connecting from
+              a Cloudflare-tunneled URL (or any remote host) breaks the
+              redirect roundtrip. Surface this once at the top of the page
+              so users don't get cryptic "session expired" errors after the
+              Google/Microsoft sign-in popup closes. */}
+          <div className="alert-banner alert-info mb-6">
+            <p className="text-sm font-medium">Connect accounts from your local Mac, not via a tunnel.</p>
+            <p className="text-xs text-ui/70 mt-1">
+              Google and Microsoft sign-in redirects land on <code className="px-1 rounded bg-ui/[0.06]">http://localhost:3001</code> — that only resolves when this dashboard is open on the same machine running the Dojo. If you're hitting the dashboard through a Cloudflare tunnel or named host from another device, the OAuth callback won't reach the server and the connection will silently fail. Sit at the host machine and use <code className="px-1 rounded bg-ui/[0.06]">http://localhost:3000</code> for the connect flow; once connected, the credentials work regardless of how you access the dashboard.
+            </p>
+          </div>
+          <div className="columns-1 lg:columns-2 gap-6 [&>*]:mb-6 [&>*]:break-inside-avoid">
+            <GoogleWorkspaceSettings />
+            <MicrosoftWorkspaceSettings />
+          </div>
         </div>
       )}
       {activeTab === 'voice' && <VoiceTab />}

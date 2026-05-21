@@ -4,7 +4,7 @@
 // ════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
-import { getValidAccessToken } from './auth.js';
+import { getValidAccessToken, type AccountSlot } from './auth.js';
 import { logMicrosoftActivity } from './activity-log.js';
 import { broadcast } from '../gateway/ws.js';
 
@@ -53,12 +53,14 @@ async function graphFetch(
   method: string,
   endpoint: string,
   body?: unknown,
+  slot: AccountSlot = 'agent',
 ): Promise<MsGraphResult> {
   const url = endpoint.startsWith('http') ? endpoint : `${GRAPH_BASE}/${endpoint}`;
-  const token = await getValidAccessToken();
+  const token = await getValidAccessToken(slot);
 
   if (!token) {
-    return { ok: false, data: null, error: 'Not authenticated with Microsoft', apiEndpoint: url };
+    const slotLabel = slot === 'user' ? "user's" : "agent's";
+    return { ok: false, data: null, error: `Not authenticated with Microsoft (${slotLabel} account). Connect in Settings > Microsoft.`, apiEndpoint: url };
   }
 
   const headers: Record<string, string> = {
@@ -112,11 +114,12 @@ export function msGraphRead(
   agentName: string,
   action: string,
   details: Record<string, unknown>,
+  slot: AccountSlot = 'agent',
 ): Promise<MsGraphResult> {
-  return graphFetch('GET', endpoint).then(result => {
+  return graphFetch('GET', endpoint, undefined, slot).then(result => {
     logMicrosoftActivity({
       agentId, agentName, action, actionType: 'read',
-      details: JSON.stringify(details),
+      details: JSON.stringify({ ...details, slot }),
       apiEndpoint: result.apiEndpoint,
       success: result.ok,
       error: result.error,
@@ -133,11 +136,12 @@ export function msGraphWrite(
   agentName: string,
   action: string,
   details: Record<string, unknown>,
+  slot: AccountSlot = 'agent',
 ): Promise<MsGraphResult> {
-  return graphFetch(method, endpoint, body).then(result => {
+  return graphFetch(method, endpoint, body, slot).then(result => {
     logMicrosoftActivity({
       agentId, agentName, action, actionType: 'write',
-      details: JSON.stringify(details),
+      details: JSON.stringify({ ...details, slot }),
       apiEndpoint: result.apiEndpoint,
       success: result.ok,
       error: result.error,
@@ -146,7 +150,7 @@ export function msGraphWrite(
     // Broadcast write actions to dashboard
     broadcast({
       type: 'microsoft:activity',
-      data: { agentId, agentName, action, actionType: 'write', details },
+      data: { agentId, agentName, action, actionType: 'write', details: { ...details, slot } },
     } as never);
 
     return result;

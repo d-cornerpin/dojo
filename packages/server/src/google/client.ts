@@ -5,7 +5,7 @@
 // ════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
-import { getValidAccessToken } from './auth.js';
+import { getValidAccessToken, type AccountSlot } from './auth.js';
 import { logGoogleActivity } from './activity-log.js';
 import { broadcast } from '../gateway/ws.js';
 
@@ -25,11 +25,13 @@ async function googleFetch(
   url: string,
   body?: unknown,
   contentType?: string,
+  slot: AccountSlot = 'agent',
 ): Promise<GoogleApiResult> {
-  const token = await getValidAccessToken();
+  const token = await getValidAccessToken(slot);
 
   if (!token) {
-    return { ok: false, data: null, error: 'Not authenticated with Google. Connect in Settings > Google.', apiEndpoint: url };
+    const slotLabel = slot === 'user' ? "user's" : "agent's";
+    return { ok: false, data: null, error: `Not authenticated with Google (${slotLabel} account). Connect in Settings > Google.`, apiEndpoint: url };
   }
 
   const headers: Record<string, string> = {
@@ -103,11 +105,12 @@ export function googleRead(
   agentName: string,
   action: string,
   details: Record<string, unknown>,
+  slot: AccountSlot = 'agent',
 ): Promise<GoogleApiResult> {
-  return googleFetch('GET', url).then(result => {
+  return googleFetch('GET', url, undefined, undefined, slot).then(result => {
     logGoogleActivity({
       agentId, agentName, action, actionType: 'read',
-      details: JSON.stringify(details),
+      details: JSON.stringify({ ...details, slot }),
       gwsCommand: result.apiEndpoint,
       success: result.ok,
       error: result.error,
@@ -125,11 +128,12 @@ export function googleWrite(
   action: string,
   details: Record<string, unknown>,
   contentType?: string,
+  slot: AccountSlot = 'agent',
 ): Promise<GoogleApiResult> {
-  return googleFetch(method, url, body, contentType).then(result => {
+  return googleFetch(method, url, body, contentType, slot).then(result => {
     logGoogleActivity({
       agentId, agentName, action, actionType: 'write',
-      details: JSON.stringify(details),
+      details: JSON.stringify({ ...details, slot }),
       gwsCommand: result.apiEndpoint,
       success: result.ok,
       error: result.error,
@@ -137,7 +141,7 @@ export function googleWrite(
 
     broadcast({
       type: 'google:activity',
-      data: { agentId, agentName, action, actionType: 'write', details },
+      data: { agentId, agentName, action, actionType: 'write', details: { ...details, slot } },
     } as never);
 
     return result;
@@ -157,6 +161,7 @@ export function googleSilentFetch(
   url: string,
   body?: unknown,
   contentType?: string,
+  slot: AccountSlot = 'agent',
 ): Promise<GoogleApiResult> {
-  return googleFetch(method, url, body, contentType);
+  return googleFetch(method, url, body, contentType, slot);
 }

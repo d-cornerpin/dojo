@@ -197,6 +197,33 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   },
 ];
 
+// ── v2.7.0 multi-account: user_* tool variants ──
+//
+// For each tool name in USER_SLOT_READ_TOOLS, generate a `user_*`
+// counterpart that points at the same executor with slot='user'. The
+// agent gets BOTH `gmail_inbox` (agent's mailbox) and `user_gmail_inbox`
+// (user's mailbox) in their tool index so the choice is explicit at
+// tool-selection time rather than parameter-fill time.
+//
+// Always emitted — even if the user slot isn't connected — because the
+// exported array is consumed statically at startup. If the agent calls
+// a user_* tool while the slot isn't connected, the client returns a
+// clean "Not authenticated" message naming the slot.
+const USER_SLOT_READ_TOOLS: readonly string[] = [
+  'gmail_search', 'gmail_read', 'gmail_list_attachments', 'gmail_inbox',
+  'calendar_agenda', 'calendar_search', 'calendar_list',
+  'drive_list', 'drive_read',
+];
+for (const canonical of USER_SLOT_READ_TOOLS) {
+  const baseDef = googleReadToolDefinitions.find(d => d.name === canonical);
+  if (!baseDef) continue;
+  googleReadToolDefinitions.push({
+    ...baseDef,
+    name: `user_${canonical}`,
+    description: `[USER'S Google account variant of \`${canonical}\`] ${baseDef.description}\n\nThis variant reads from the user's connected Google account (configured in Settings → Google as the User slot). The agent's own account is read by the unprefixed \`${canonical}\` tool. If the user has not connected a User account, this tool returns a friendly error pointing them at Settings.`,
+  });
+}
+
 // Phase 3.5 (2026-05-04) — register concurrency + maxResultTokens overrides
 // with the v2 partitioner / cap registry. Defs without these fields fall
 // through to the hardcoded TOOL_CATEGORY map (concurrency) or get no cap.
@@ -216,19 +243,28 @@ export async function executeGoogleReadTool(
   agentId: string,
   agentName: string,
 ): Promise<string> {
+  // Strip user_ prefix → resolve account slot. Canonical name drives
+  // validation + dispatch; `slot` is threaded into googleRead/googleWrite.
+  let slot: import('./auth.js').AccountSlot = 'agent';
+  let canonicalName = name;
+  if (name.startsWith('user_')) {
+    slot = 'user';
+    canonicalName = name.slice('user_'.length);
+  }
+
   const { validateAgainstSchema } = await import('../agent/tool-helpers.js');
-  const def = googleReadToolDefByName.get(name);
-  const schemaErr = validateAgainstSchema(name, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
+  const def = googleReadToolDefByName.get(canonicalName);
+  const schemaErr = validateAgainstSchema(canonicalName, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
   if (schemaErr) return schemaErr;
 
-  switch (name) {
+  switch (canonicalName) {
     case 'gmail_search': {
       const query = args.query as string;
       const maxResults = (args.max_results as number) ?? 10;
       const verbose = args.verbose as boolean | undefined;
 
       const listUrl = `${GMAIL_BASE}/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
-      const result = await googleRead(listUrl, agentId, agentName, 'gmail_search', { query, maxResults });
+      const result = await googleRead(listUrl, agentId, agentName, 'gmail_search', { query, maxResults }, slot);
       if (!result.ok) return `Error searching Gmail: ${result.error}`;
 
       const data = result.data as { messages?: Array<{ id: string; threadId: string }> };
@@ -237,7 +273,7 @@ export async function executeGoogleReadTool(
       const details: string[] = [];
       for (const msg of data.messages.slice(0, maxResults)) {
         const detailUrl = `${GMAIL_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`;
-        const detail = await googleRead(detailUrl, agentId, agentName, 'gmail_read', { messageId: msg.id });
+        const detail = await googleRead(detailUrl, agentId, agentName, 'gmail_read', { messageId: msg.id }, slot);
         if (detail.ok) {
           const msgData = detail.data as { id: string; snippet: string; payload?: { headers?: Array<{ name: string; value: string }> } };
           const headers = msgData?.payload?.headers ?? [];
@@ -266,7 +302,7 @@ export async function executeGoogleReadTool(
     case 'gmail_read': {
       const messageId = args.message_id as string;
       const url = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}?format=full`;
-      const result = await googleRead(url, agentId, agentName, 'gmail_read', { messageId });
+      const result = await googleRead(url, agentId, agentName, 'gmail_read', { messageId }, slot);
       if (!result.ok) return `Error reading email: ${result.error}`;
 
       const data = result.data as {
@@ -332,7 +368,7 @@ export async function executeGoogleReadTool(
     case 'gmail_list_attachments': {
       const messageId = args.message_id as string;
       const url = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}?format=full`;
-      const result = await googleRead(url, agentId, agentName, 'gmail_list_attachments', { messageId });
+      const result = await googleRead(url, agentId, agentName, 'gmail_list_attachments', { messageId }, slot);
       if (!result.ok) return `Error fetching message: ${result.error}`;
       const data = result.data as {
         payload?: {
@@ -360,7 +396,7 @@ export async function executeGoogleReadTool(
       const query = unreadOnly ? 'in:inbox is:unread' : 'in:inbox';
 
       const listUrl = `${GMAIL_BASE}/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
-      const result = await googleRead(listUrl, agentId, agentName, 'gmail_inbox', { maxResults, unreadOnly });
+      const result = await googleRead(listUrl, agentId, agentName, 'gmail_inbox', { maxResults, unreadOnly }, slot);
       if (!result.ok) return `Error fetching inbox: ${result.error}`;
 
       const data = result.data as { messages?: Array<{ id: string }> };
@@ -369,7 +405,7 @@ export async function executeGoogleReadTool(
       const details: string[] = [];
       for (const msg of data.messages.slice(0, maxResults)) {
         const detailUrl = `${GMAIL_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`;
-        const detail = await googleRead(detailUrl, agentId, agentName, 'gmail_read', { messageId: msg.id });
+        const detail = await googleRead(detailUrl, agentId, agentName, 'gmail_read', { messageId: msg.id }, slot);
         if (detail.ok) {
           const msgData = detail.data as { id: string; snippet: string; labelIds?: string[]; payload?: { headers?: Array<{ name: string; value: string }> } };
           const headers = msgData?.payload?.headers ?? [];
@@ -399,7 +435,7 @@ export async function executeGoogleReadTool(
         timeZone: tz,
       });
       const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`;
-      const result = await googleRead(url, agentId, agentName, 'calendar_agenda', { days, timezone: tz, startDate, anchored: window.anchored, calendarId });
+      const result = await googleRead(url, agentId, agentName, 'calendar_agenda', { days, timezone: tz, startDate, anchored: window.anchored, calendarId }, slot);
       if (!result.ok) return `Error fetching calendar: ${result.error}`;
 
       const data = result.data as { items?: Array<{ summary: string; start: { dateTime?: string; date?: string; timeZone?: string }; end: { dateTime?: string; date?: string; timeZone?: string }; location?: string; description?: string }> };
@@ -446,7 +482,7 @@ export async function executeGoogleReadTool(
         q: searchQuery,
       });
       const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`;
-      const result = await googleRead(url, agentId, agentName, 'calendar_search', { query: searchQuery, daysAhead, startDate, anchored: window.anchored, calendarId });
+      const result = await googleRead(url, agentId, agentName, 'calendar_search', { query: searchQuery, daysAhead, startDate, anchored: window.anchored, calendarId }, slot);
       if (!result.ok) return `Error searching calendar: ${result.error}`;
 
       const data = result.data as { items?: Array<{ summary: string; start: { dateTime?: string; date?: string }; id: string }> };
@@ -468,7 +504,7 @@ export async function executeGoogleReadTool(
 
     case 'calendar_list': {
       const url = `${CALENDAR_BASE}/users/me/calendarList`;
-      const result = await googleRead(url, agentId, agentName, 'calendar_list', {});
+      const result = await googleRead(url, agentId, agentName, 'calendar_list', {}, slot);
       if (!result.ok) return `Error listing calendars: ${result.error}`;
       const data = result.data as { items?: Array<{ id: string; summary: string; summaryOverride?: string; accessRole: string; primary?: boolean; selected?: boolean; description?: string }> };
       if (!data?.items || data.items.length === 0) return 'No calendars accessible.';
@@ -501,7 +537,7 @@ export async function executeGoogleReadTool(
         fields: 'files(id, name, mimeType, modifiedTime, size)',
       });
       const url = `${DRIVE_BASE}/files?${params.toString()}`;
-      const result = await googleRead(url, agentId, agentName, 'drive_list', { query: driveQuery, folderId, maxResults });
+      const result = await googleRead(url, agentId, agentName, 'drive_list', { query: driveQuery, folderId, maxResults }, slot);
       if (!result.ok) return `Error listing Drive files: ${result.error}`;
 
       const data = result.data as { files?: Array<{ id: string; name: string; mimeType: string; modifiedTime: string; size?: string }> };
@@ -534,7 +570,7 @@ export async function executeGoogleReadTool(
 
       // Get file metadata to determine type
       const metaUrl = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType`;
-      const meta = await googleRead(metaUrl, agentId, agentName, 'drive_read', { fileId });
+      const meta = await googleRead(metaUrl, agentId, agentName, 'drive_read', { fileId }, slot);
       if (!meta.ok) return `Error reading file metadata: ${meta.error}`;
 
       const metaData = meta.data as { mimeType: string; name: string };
@@ -553,10 +589,10 @@ export async function executeGoogleReadTool(
       // Other files: export as text and paginate.
       let body = '';
       const exportUrl = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}/export?mimeType=text/plain`;
-      const result = await googleRead(exportUrl, agentId, agentName, 'drive_read', { fileId, name: metaData?.name });
+      const result = await googleRead(exportUrl, agentId, agentName, 'drive_read', { fileId, name: metaData?.name }, slot);
       if (!result.ok) {
         const downloadUrl = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}?alt=media`;
-        const dlResult = await googleRead(downloadUrl, agentId, agentName, 'drive_read', { fileId, name: metaData?.name });
+        const dlResult = await googleRead(downloadUrl, agentId, agentName, 'drive_read', { fileId, name: metaData?.name }, slot);
         if (!dlResult.ok) return `Error reading file content: ${dlResult.error}`;
         body = typeof dlResult.data === 'string' ? dlResult.data : JSON.stringify(dlResult.data, null, 2);
       } else {
@@ -577,7 +613,7 @@ export async function executeGoogleReadTool(
     case 'docs_read': {
       const docId = args.document_id as string;
       const url = `${DOCS_BASE}/${encodeURIComponent(docId)}`;
-      const result = await googleRead(url, agentId, agentName, 'docs_read', { documentId: docId });
+      const result = await googleRead(url, agentId, agentName, 'docs_read', { documentId: docId }, slot);
       if (!result.ok) return `Error reading Google Doc: ${result.error}`;
 
       const data = result.data as { title?: string; body?: { content?: Array<{ paragraph?: { elements?: Array<{ textRun?: { content: string } }> } }> } };
@@ -610,7 +646,7 @@ export async function executeGoogleReadTool(
       const spreadsheetId = args.spreadsheet_id as string;
       const range = (args.range as string) ?? 'Sheet1';
       const url = `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`;
-      const result = await googleRead(url, agentId, agentName, 'sheets_read', { spreadsheetId, range });
+      const result = await googleRead(url, agentId, agentName, 'sheets_read', { spreadsheetId, range }, slot);
       if (!result.ok) return `Error reading spreadsheet: ${result.error}`;
 
       const data = result.data as { values?: string[][]; range?: string };

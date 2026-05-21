@@ -4,11 +4,21 @@
 // ════════════════════════════════════════
 
 import { exec } from 'node:child_process';
-import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { createRequire } from 'node:module';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
+
+// Resolver anchored to THIS module so Node's standard
+// node_modules-walk-upward finds packages regardless of process.cwd().
+// In dev (npm workspaces) cwd is packages/server/ but the hoisted
+// install lives at the monorepo root — the old cwd-relative check
+// looked in the wrong place and reported "not installed" even when
+// the packages were sitting one directory up. In production cwd is
+// the install dir and resolution finds the local node_modules just
+// as before. Either way: stop guessing, ask Node.
+const moduleRequire = createRequire(import.meta.url);
 
 const logger = createLogger('office-packages');
 
@@ -24,10 +34,20 @@ let packagesVerified = false;
 export function areOfficePackagesInstalled(): boolean {
   if (packagesVerified) return true;
 
-  // Check if the packages exist in node_modules by looking for their package.json
+  // Use Node's resolver (createRequire anchored to this file) so the
+  // check works under npm workspaces (hoisted root node_modules) AND
+  // single-package production installs. Resolve the package's MAIN
+  // entry rather than ./package.json: modern packages like `docx` and
+  // `pptxgenjs` use the "exports" field to restrict subpaths, and
+  // ./package.json isn't exposed — resolving that throws even when
+  // the package is fully installed. Main entry is always defined and
+  // is the right "is this installed" signal.
   for (const pkg of REQUIRED_PACKAGES) {
-    const pkgPath = path.resolve(process.cwd(), 'node_modules', pkg, 'package.json');
-    if (!fs.existsSync(pkgPath)) return false;
+    try {
+      moduleRequire.resolve(pkg);
+    } catch {
+      return false;
+    }
   }
 
   packagesVerified = true;

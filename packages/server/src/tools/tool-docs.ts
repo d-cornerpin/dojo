@@ -78,7 +78,10 @@ export const DREAMER_AGENT_ALWAYS_LOADED = [
   'send_to_agent',
 ];
 
-// Trainer agent: technique-focused.
+// Trainer agent: technique-focused. Tracker tools are pre-loaded because the
+// trainer drives multi-step technique builds (test, refine, publish) and gets
+// stuck mid-flow if it can't create or close its own tasks without a
+// round-trip through load_tool_docs.
 export const TRAINER_AGENT_ALWAYS_LOADED = [
   ...DEFAULT_ALWAYS_LOADED_TOOLS,
   'list_techniques',
@@ -90,6 +93,14 @@ export const TRAINER_AGENT_ALWAYS_LOADED = [
   'file_read',
   'file_write',
   'show_to_user',
+  'tracker_list_active',
+  'tracker_create_task',
+  'tracker_create_project',
+  'tracker_update_status',
+  'tracker_add_notes',
+  'tracker_edit_task',
+  'tracker_edit_project',
+  'tracker_close_project',
 ];
 
 // Healer agent: diagnostic + agent management for injury recovery.

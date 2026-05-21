@@ -1424,6 +1424,23 @@ configRouter.put('/settings/:key', async (c) => {
     clearPlatformConfigCache();
   }
 
+  // iMessage bridge holds approvedSenders in module-local state, populated
+  // only at startIMBridge(). When the dashboard adds a new approved sender,
+  // the DB row updates but the bridge keeps matching against the original
+  // list — messages from the new sender arrive in Messages.app but never
+  // reach the agent. Hot-reload the in-memory list on config save.
+  if (key === 'imessage_approved_senders') {
+    try {
+      const { reloadApprovedSenders } = await import('../../services/imessage-bridge.js');
+      reloadApprovedSenders();
+    } catch (err) {
+      const { createLogger } = await import('../../logger.js');
+      createLogger('config').error('Failed to reload iMessage approved senders', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // iMessage bridge runs from in-memory state. Just writing imessage_enabled
   // to the config table does nothing — the bridge keeps polling until the
   // server restarts. Toggle the actual bridge in lockstep with the setting.

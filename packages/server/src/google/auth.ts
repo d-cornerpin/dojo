@@ -2,6 +2,19 @@
 // Google Workspace Auth — Native OAuth 2.0
 // No gws CLI dependency. Direct REST API with auto-refresh.
 // Mirrors the Microsoft auth.ts pattern.
+//
+// v2.7.0 — multi-account support. A dojo can connect TWO Google
+// accounts: the "agent" slot (the agent's own identity, default) and
+// the "user" slot (the human user's account, used for reads on their
+// behalf). All public functions accept an optional `slot` parameter
+// that defaults to 'agent' — every existing caller keeps working
+// unchanged.
+//
+// Storage strategy: the agent slot uses the legacy unprefixed config
+// keys (gws_access_token, etc.) — no migration needed for existing
+// installs. The user slot uses '_user_' infixed keys
+// (gws_user_access_token). New installs get the user slot only if
+// they explicitly connect a second account.
 // ════════════════════════════════════════
 
 import crypto from 'node:crypto';
@@ -40,6 +53,22 @@ const SCOPES = [
 // token's granted scopes (e.g. detecting "user is connected but missing the
 // new Forms scopes — needs to reconnect").
 export const REQUIRED_SCOPES: readonly string[] = SCOPES.split(' ');
+
+// ── Slot abstraction ──
+
+export type AccountSlot = 'agent' | 'user';
+export const ACCOUNT_SLOTS: readonly AccountSlot[] = ['agent', 'user'];
+
+/**
+ * Map a (slot, field) pair to the canonical config-table key.
+ * - Agent slot uses the legacy unprefixed keys so existing installs
+ *   migrate to v2.7 with zero data movement.
+ * - User slot uses '_user_' infixed keys.
+ */
+function slotKey(slot: AccountSlot, field: string): string {
+  if (slot === 'agent') return `gws_${field}`;
+  return `gws_user_${field}`;
+}
 
 /**
  * v2.5.5 — Normalize scope IDs to a canonical form for set comparison.
@@ -106,73 +135,73 @@ function deleteConfigValue(key: string): void {
 
 // ── Config Getters ──
 
-export function getGoogleWorkspaceConfig(): GoogleWorkspaceConfig {
-  const servicesRaw = getConfigValue('gws_enabled_services');
+export function getGoogleWorkspaceConfig(slot: AccountSlot = 'agent'): GoogleWorkspaceConfig {
+  const servicesRaw = getConfigValue(slotKey(slot, 'enabled_services'));
   let services = { ...DEFAULT_SERVICES };
   if (servicesRaw) {
     try { services = { ...DEFAULT_SERVICES, ...JSON.parse(servicesRaw) }; } catch { /* defaults */ }
   }
 
   return {
-    enabled: getConfigValue('gws_enabled') === 'true',
-    connected: getConfigValue('gws_connected') === 'true',
-    accountEmail: getConfigValue('gws_account_email'),
+    enabled: getConfigValue(slotKey(slot, 'enabled')) === 'true',
+    connected: getConfigValue(slotKey(slot, 'connected')) === 'true',
+    accountEmail: getConfigValue(slotKey(slot, 'account_email')),
     enabledServices: services,
-    lastVerifiedAt: getConfigValue('gws_last_verified_at'),
+    lastVerifiedAt: getConfigValue(slotKey(slot, 'last_verified_at')),
   };
 }
 
-export function isGoogleEnabled(): boolean {
-  return getConfigValue('gws_enabled') === 'true';
+export function isGoogleEnabled(slot: AccountSlot = 'agent'): boolean {
+  return getConfigValue(slotKey(slot, 'enabled')) === 'true';
 }
 
-export function isGoogleConnected(): boolean {
-  return getConfigValue('gws_connected') === 'true';
+export function isGoogleConnected(slot: AccountSlot = 'agent'): boolean {
+  return getConfigValue(slotKey(slot, 'connected')) === 'true';
 }
 
-export function getEnabledServices(): GoogleWorkspaceConfig['enabledServices'] {
-  return getGoogleWorkspaceConfig().enabledServices;
+export function getEnabledServices(slot: AccountSlot = 'agent'): GoogleWorkspaceConfig['enabledServices'] {
+  return getGoogleWorkspaceConfig(slot).enabledServices;
 }
 
 // ── Config Setters ──
 
-export function setGoogleEnabled(enabled: boolean): void {
-  setConfigValue('gws_enabled', String(enabled));
+export function setGoogleEnabled(enabled: boolean, slot: AccountSlot = 'agent'): void {
+  setConfigValue(slotKey(slot, 'enabled'), String(enabled));
 }
 
-export function setGoogleConnected(connected: boolean, email?: string): void {
-  setConfigValue('gws_connected', String(connected));
+export function setGoogleConnected(connected: boolean, email?: string, slot: AccountSlot = 'agent'): void {
+  setConfigValue(slotKey(slot, 'connected'), String(connected));
   if (email) {
-    setConfigValue('gws_account_email', email);
+    setConfigValue(slotKey(slot, 'account_email'), email);
   }
   if (connected) {
-    setConfigValue('gws_last_verified_at', new Date().toISOString());
-    broadcast({ type: 'google:connected', data: { email: email ?? '' } } as never);
+    setConfigValue(slotKey(slot, 'last_verified_at'), new Date().toISOString());
+    broadcast({ type: 'google:connected', data: { email: email ?? '', slot } } as never);
   } else {
-    broadcast({ type: 'google:disconnected' } as never);
+    broadcast({ type: 'google:disconnected', data: { slot } } as never);
   }
 }
 
-export function setEnabledServices(services: Partial<GoogleWorkspaceConfig['enabledServices']>): void {
-  const current = getEnabledServices();
-  setConfigValue('gws_enabled_services', JSON.stringify({ ...current, ...services }));
+export function setEnabledServices(services: Partial<GoogleWorkspaceConfig['enabledServices']>, slot: AccountSlot = 'agent'): void {
+  const current = getEnabledServices(slot);
+  setConfigValue(slotKey(slot, 'enabled_services'), JSON.stringify({ ...current, ...services }));
 }
 
 // ── Token Management ──
 
-function getAccessToken(): string | null { return getConfigValue('gws_access_token'); }
-function getRefreshToken(): string | null { return getConfigValue('gws_refresh_token'); }
-function getTokenExpiresAt(): number { const v = getConfigValue('gws_token_expires_at'); return v ? parseInt(v, 10) : 0; }
+function getAccessToken(slot: AccountSlot): string | null { return getConfigValue(slotKey(slot, 'access_token')); }
+function getRefreshToken(slot: AccountSlot): string | null { return getConfigValue(slotKey(slot, 'refresh_token')); }
+function getTokenExpiresAt(slot: AccountSlot): number { const v = getConfigValue(slotKey(slot, 'token_expires_at')); return v ? parseInt(v, 10) : 0; }
 
-function storeTokens(accessToken: string, refreshToken: string | null, expiresIn: number, grantedScopes?: string): void {
-  setConfigValue('gws_access_token', accessToken);
-  if (refreshToken) setConfigValue('gws_refresh_token', refreshToken);
-  setConfigValue('gws_token_expires_at', String(Date.now() + expiresIn * 1000));
+function storeTokens(slot: AccountSlot, accessToken: string, refreshToken: string | null, expiresIn: number, grantedScopes?: string): void {
+  setConfigValue(slotKey(slot, 'access_token'), accessToken);
+  if (refreshToken) setConfigValue(slotKey(slot, 'refresh_token'), refreshToken);
+  setConfigValue(slotKey(slot, 'token_expires_at'), String(Date.now() + expiresIn * 1000));
   // v2.5.5 — track which scopes Google actually granted, so we can detect
   // when an existing user is missing scopes that were added in a later
   // release (e.g. Forms scopes added after user already connected).
   // refresh_token responses don't always include `scope`; only update when present.
-  if (grantedScopes) setConfigValue('gws_granted_scopes', grantedScopes);
+  if (grantedScopes) setConfigValue(slotKey(slot, 'granted_scopes'), grantedScopes);
 }
 
 /**
@@ -181,41 +210,25 @@ function storeTokens(accessToken: string, refreshToken: string | null, expiresIn
  * user connected before the scope list was extended and needs to re-consent.
  *
  * Returns empty array if the user is not connected at all (different problem).
- *
- * Sync function — for the lazy-discovery path that probes Google's tokeninfo
- * endpoint when granted_scopes isn't yet stored, use `discoverGrantedScopes`
- * separately (callable from the gateway route ahead of getMissingScopes).
  */
-export function getMissingScopes(): string[] {
-  if (!isGoogleConnected()) return [];
-  const granted = getConfigValue('gws_granted_scopes');
+export function getMissingScopes(slot: AccountSlot = 'agent'): string[] {
+  if (!isGoogleConnected(slot)) return [];
+  const granted = getConfigValue(slotKey(slot, 'granted_scopes'));
   if (!granted) {
-    // No granted_scopes recorded — discoverGrantedScopes() didn't run yet
-    // or failed. We genuinely don't know what the user has. Conservative
-    // default: assume nothing extra is granted, so EVERY scope shows as
-    // missing — this surfaces the reconnect prompt and re-grants the
-    // entire current set, which is the safe outcome.
     return [...REQUIRED_SCOPES];
   }
-  // Canonicalize both sides so shorthand-vs-fullurl pairs (e.g. "email" vs
-  // "https://www.googleapis.com/auth/userinfo.email") compare correctly.
   const grantedSet = new Set(granted.split(' ').map(canonicalizeScope));
   return REQUIRED_SCOPES.filter((s) => !grantedSet.has(canonicalizeScope(s)));
 }
 
 /**
  * v2.5.5 — Probe Google's tokeninfo endpoint with the current access token
- * to learn which scopes were actually granted, then persist them. Lets us
- * detect "missing scopes" correctly for users who connected before scope
- * tracking was added.
- *
- * No-op if granted_scopes is already stored, or if the user isn't connected.
- * Idempotent and safe to call on every status request.
+ * to learn which scopes were actually granted, then persist them.
  */
-export async function discoverGrantedScopes(): Promise<void> {
-  if (!isGoogleConnected()) return;
-  if (getConfigValue('gws_granted_scopes')) return; // already known
-  const token = await getValidAccessToken();
+export async function discoverGrantedScopes(slot: AccountSlot = 'agent'): Promise<void> {
+  if (!isGoogleConnected(slot)) return;
+  if (getConfigValue(slotKey(slot, 'granted_scopes'))) return; // already known
+  const token = await getValidAccessToken(slot);
   if (!token) return;
   try {
     const resp = await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(token)}`, {
@@ -224,34 +237,34 @@ export async function discoverGrantedScopes(): Promise<void> {
     if (!resp.ok) return;
     const data = await resp.json() as { scope?: string };
     if (data.scope) {
-      setConfigValue('gws_granted_scopes', data.scope);
-      logger.info('Discovered granted Google scopes', { count: data.scope.split(' ').length });
+      setConfigValue(slotKey(slot, 'granted_scopes'), data.scope);
+      logger.info('Discovered granted Google scopes', { slot, count: data.scope.split(' ').length });
     }
   } catch (e) {
-    // Non-fatal — getMissingScopes will keep using its conservative default
-    // until a successful refresh stores the scope list.
-    logger.warn('discoverGrantedScopes failed', { error: e instanceof Error ? e.message : String(e) });
+    logger.warn('discoverGrantedScopes failed', { slot, error: e instanceof Error ? e.message : String(e) });
   }
 }
 
-// Mutex to prevent concurrent refresh
-let refreshPromise: Promise<string | null> | null = null;
+// Per-slot refresh mutex.
+const refreshPromises: Map<AccountSlot, Promise<string | null> | null> = new Map();
 
-export async function getValidAccessToken(): Promise<string | null> {
-  const token = getAccessToken();
-  const expiresAt = getTokenExpiresAt();
+export async function getValidAccessToken(slot: AccountSlot = 'agent'): Promise<string | null> {
+  const token = getAccessToken(slot);
+  const expiresAt = getTokenExpiresAt(slot);
   // Return current token if valid with 5-minute buffer
   if (token && Date.now() < expiresAt - 5 * 60 * 1000) return token;
-  // Deduplicate concurrent refresh calls
-  if (refreshPromise) return refreshPromise;
-  refreshPromise = refreshAccessToken().finally(() => { refreshPromise = null; });
-  return refreshPromise;
+  // Deduplicate concurrent refresh calls per slot
+  const existing = refreshPromises.get(slot);
+  if (existing) return existing;
+  const promise = refreshAccessToken(slot).finally(() => { refreshPromises.set(slot, null); });
+  refreshPromises.set(slot, promise);
+  return promise;
 }
 
-async function refreshAccessToken(): Promise<string | null> {
-  const refreshToken = getRefreshToken();
+async function refreshAccessToken(slot: AccountSlot): Promise<string | null> {
+  const refreshToken = getRefreshToken(slot);
   if (!refreshToken) {
-    logger.warn('No Google refresh token available');
+    logger.warn('No Google refresh token available', { slot });
     return null;
   }
 
@@ -271,39 +284,60 @@ async function refreshAccessToken(): Promise<string | null> {
 
     if (!resp.ok) {
       const err = await resp.text();
-      logger.error('Google token refresh failed', { status: resp.status, error: err });
+      logger.error('Google token refresh failed', { slot, status: resp.status, error: err });
       if (resp.status === 400 || resp.status === 401) {
-        setGoogleConnected(false);
-        // v2.3.19 — OAuth expiry is a true blocker (Gmail/Calendar/Drive
-        // tools can't function until the user re-auths). Critical.
-        try { sendAlert('Google Workspace connection expired. Re-authenticate in Settings > Google.', 'critical'); } catch {}
+        setGoogleConnected(false, undefined, slot);
+        // v2.3.19 — OAuth expiry is a true blocker. Critical.
+        const slotLabel = slot === 'user' ? "user's" : "agent's";
+        try { sendAlert(`Google Workspace (${slotLabel} account) connection expired. Re-authenticate in Settings > Google.`, 'critical'); } catch {}
       }
       return null;
     }
 
     const data = await resp.json() as { access_token: string; refresh_token?: string; expires_in: number; scope?: string };
-    storeTokens(data.access_token, data.refresh_token ?? null, data.expires_in, data.scope);
-    logger.debug('Google access token refreshed');
+    storeTokens(slot, data.access_token, data.refresh_token ?? null, data.expires_in, data.scope);
+    logger.debug('Google access token refreshed', { slot });
     return data.access_token;
   } catch (err) {
-    logger.error('Google token refresh error', { error: err instanceof Error ? err.message : String(err) });
+    logger.error('Google token refresh error', { slot, error: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }
 
 // ── OAuth Flow ──
 
-// Store state + redirect URI for the callback
-let storedState: string | null = null;
-let storedRedirectUri: string | null = null;
+// Per-slot OAuth state. Each slot can have an in-flight OAuth flow
+// independently — Crystal could be connecting her secondary account
+// while the agent's flow is also pending.
+interface OAuthState { state: string; redirectUri: string }
+const oauthStateBySlot: Map<AccountSlot, OAuthState | null> = new Map();
+// Reverse-lookup map: state-token → slot. Lets the callback recover
+// which slot the redirect belongs to without trusting query params.
+const slotByState: Map<string, AccountSlot> = new Map();
 
-export function getStoredState(): string | null { return storedState; }
-export function getStoredRedirectUri(): string | null { return storedRedirectUri; }
+export function getStoredState(slot: AccountSlot = 'agent'): string | null {
+  return oauthStateBySlot.get(slot)?.state ?? null;
+}
+export function getStoredRedirectUri(slot: AccountSlot = 'agent'): string | null {
+  return oauthStateBySlot.get(slot)?.redirectUri ?? null;
+}
 
-export function buildAuthUrl(redirectUri: string): { authUrl: string } {
+/** Reverse-lookup the slot for a given state token. Used by /callback
+ *  to recover the slot identity from the OAuth roundtrip. */
+export function getSlotForState(state: string): AccountSlot | null {
+  return slotByState.get(state) ?? null;
+}
+
+export function buildAuthUrl(redirectUri: string, slot: AccountSlot = 'agent'): { authUrl: string } {
+  // Evict any stale state from a previous abandoned OAuth attempt for
+  // this slot — keeps the reverse-lookup map from growing unboundedly
+  // when a user clicks "Sign in" multiple times without finishing.
+  const prior = oauthStateBySlot.get(slot);
+  if (prior) slotByState.delete(prior.state);
+
   const state = crypto.randomBytes(16).toString('hex');
-  storedState = state;
-  storedRedirectUri = redirectUri;
+  oauthStateBySlot.set(slot, { state, redirectUri });
+  slotByState.set(state, slot);
 
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
@@ -318,7 +352,7 @@ export function buildAuthUrl(redirectUri: string): { authUrl: string } {
   return { authUrl: `${AUTH_BASE}?${params.toString()}` };
 }
 
-export async function exchangeCodeForTokens(code: string, redirectUri: string): Promise<{
+export async function exchangeCodeForTokens(code: string, redirectUri: string, slot: AccountSlot = 'agent'): Promise<{
   success: boolean;
   email?: string;
   error?: string;
@@ -344,7 +378,7 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string): 
     }
 
     const data = await resp.json() as { access_token: string; refresh_token?: string; expires_in: number; id_token?: string; scope?: string };
-    storeTokens(data.access_token, data.refresh_token ?? null, data.expires_in, data.scope);
+    storeTokens(slot, data.access_token, data.refresh_token ?? null, data.expires_in, data.scope);
 
     // Get email from userinfo
     let email = '';
@@ -358,10 +392,30 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string): 
       }
     } catch {}
 
-    setGoogleConnected(true, email);
-    setGoogleEnabled(true);
+    setGoogleConnected(true, email, slot);
+    setGoogleEnabled(true, slot);
 
-    logger.info('Google Workspace connected', { email });
+    // Clean up the OAuth state for this slot now that it's complete.
+    const stored = oauthStateBySlot.get(slot);
+    if (stored) {
+      slotByState.delete(stored.state);
+      oauthStateBySlot.set(slot, null);
+    }
+
+    // Soft warning if the user connected the same email to both slots.
+    // Not a hard refusal — there are legitimate reasons (e.g. testing,
+    // recovering from misconfiguration) — but log it loudly so we have
+    // a breadcrumb if "why are agent and user accounts the same" comes
+    // up as a support question.
+    if (email) {
+      const otherSlot: AccountSlot = slot === 'agent' ? 'user' : 'agent';
+      const otherEmail = getConfigValue(slotKey(otherSlot, 'account_email'));
+      if (otherEmail && otherEmail.toLowerCase() === email.toLowerCase() && isGoogleConnected(otherSlot)) {
+        logger.warn('Google: same email connected to both slots', { slot, otherSlot, email });
+      }
+    }
+
+    logger.info('Google Workspace connected', { slot, email });
     return { success: true, email };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -370,8 +424,8 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string): 
 
 // ── Auth Verification ──
 
-export async function testGoogleAuth(): Promise<{ authenticated: boolean; email: string | null }> {
-  const token = await getValidAccessToken();
+export async function testGoogleAuth(slot: AccountSlot = 'agent'): Promise<{ authenticated: boolean; email: string | null }> {
+  const token = await getValidAccessToken(slot);
   if (!token) return { authenticated: false, email: null };
 
   try {
@@ -381,7 +435,7 @@ export async function testGoogleAuth(): Promise<{ authenticated: boolean; email:
     });
     if (!resp.ok) return { authenticated: false, email: null };
     const user = await resp.json() as { email?: string };
-    setConfigValue('gws_last_verified_at', new Date().toISOString());
+    setConfigValue(slotKey(slot, 'last_verified_at'), new Date().toISOString());
     return { authenticated: true, email: user.email ?? null };
   } catch {
     return { authenticated: false, email: null };
@@ -389,30 +443,40 @@ export async function testGoogleAuth(): Promise<{ authenticated: boolean; email:
 }
 
 export async function checkGoogleOnStartup(): Promise<void> {
-  if (!isGoogleConnected()) return;
-  const auth = await testGoogleAuth();
-  if (auth.authenticated) {
-    logger.info('Google Workspace auth verified', { email: auth.email });
-  } else {
-    logger.warn('Google Workspace auth expired, marking disconnected');
-    setGoogleConnected(false);
+  // Check both slots on startup. Each runs independently — failure on
+  // one slot doesn't disable the other.
+  for (const slot of ACCOUNT_SLOTS) {
+    if (!isGoogleConnected(slot)) continue;
+    const auth = await testGoogleAuth(slot);
+    if (auth.authenticated) {
+      logger.info('Google Workspace auth verified', { slot, email: auth.email });
+    } else {
+      logger.warn('Google Workspace auth expired, marking disconnected', { slot });
+      setGoogleConnected(false, undefined, slot);
+    }
   }
 }
 
 // ── Disconnect ──
 
-export function disconnectGoogle(): void {
-  for (const key of ['gws_enabled', 'gws_connected', 'gws_account_email', 'gws_access_token', 'gws_refresh_token', 'gws_token_expires_at', 'gws_last_verified_at', 'gws_enabled_services']) {
-    deleteConfigValue(key);
+export function disconnectGoogle(slot: AccountSlot = 'agent'): void {
+  const fields = ['enabled', 'connected', 'account_email', 'access_token', 'refresh_token', 'token_expires_at', 'last_verified_at', 'enabled_services', 'granted_scopes'];
+  for (const field of fields) {
+    deleteConfigValue(slotKey(slot, field));
   }
-  broadcast({ type: 'google:disconnected' } as never);
-  logger.info('Google Workspace disconnected');
+  broadcast({ type: 'google:disconnected', data: { slot } } as never);
+  logger.info('Google Workspace disconnected', { slot });
 }
 
 // ── Access Level ──
 
-export function getAgentGoogleAccessLevel(agentId: string, isPrimary: boolean, isPM: boolean): 'full' | 'read' | 'none' {
-  if (!isGoogleEnabled() || !isGoogleConnected()) return 'none';
+export function getAgentGoogleAccessLevel(_agentId: string, isPrimary: boolean, isPM: boolean): 'full' | 'read' | 'none' {
+  // Access level is computed per AGENT (primary/PM/etc.) not per slot.
+  // If EITHER slot is enabled+connected, the agent has some level of
+  // Google access. Slot routing happens at tool-call time.
+  const anyEnabled = isGoogleEnabled('agent') || isGoogleEnabled('user');
+  const anyConnected = isGoogleConnected('agent') || isGoogleConnected('user');
+  if (!anyEnabled || !anyConnected) return 'none';
   if (isPM) return 'none';
   if (isPrimary) return 'full';
   return 'read';

@@ -1,6 +1,12 @@
 // ════════════════════════════════════════
 // Microsoft 365 Auth — Public Client with PKCE
 // Single registered app, no client secret, works for personal + work/school
+//
+// v2.7.0 — multi-account support. Same pattern as google/auth.ts:
+// agent slot uses legacy unprefixed keys (zero migration); user slot
+// uses '_user_' infixed keys. Every public function takes an optional
+// `slot` parameter that defaults to 'agent' so existing callers are
+// unchanged.
 // ════════════════════════════════════════
 
 import crypto from 'node:crypto';
@@ -36,6 +42,16 @@ const SCOPES = [
   'Tasks.ReadWrite',
   'Contacts.ReadWrite',
 ].join(' ');
+
+// ── Slot abstraction ──
+
+export type AccountSlot = 'agent' | 'user';
+export const ACCOUNT_SLOTS: readonly AccountSlot[] = ['agent', 'user'];
+
+function slotKey(slot: AccountSlot, field: string): string {
+  if (slot === 'agent') return `ms_${field}`;
+  return `ms_user_${field}`;
+}
 
 export interface MicrosoftWorkspaceConfig {
   enabled: boolean;
@@ -82,75 +98,78 @@ function deleteConfigValue(key: string): void {
 
 // ── Config Getters ──
 
-export function getMicrosoftWorkspaceConfig(): MicrosoftWorkspaceConfig {
-  const servicesRaw = getConfigValue('ms_enabled_services');
+export function getMicrosoftWorkspaceConfig(slot: AccountSlot = 'agent'): MicrosoftWorkspaceConfig {
+  const servicesRaw = getConfigValue(slotKey(slot, 'enabled_services'));
   let services = { ...DEFAULT_SERVICES };
   if (servicesRaw) {
     try { services = { ...DEFAULT_SERVICES, ...JSON.parse(servicesRaw) }; } catch { /* defaults */ }
   }
   return {
-    enabled: getConfigValue('ms_enabled') === 'true',
-    connected: getConfigValue('ms_connected') === 'true',
-    accountEmail: getConfigValue('ms_account_email'),
-    accountType: (getConfigValue('ms_account_type') as 'msa' | 'entra') ?? null,
+    enabled: getConfigValue(slotKey(slot, 'enabled')) === 'true',
+    connected: getConfigValue(slotKey(slot, 'connected')) === 'true',
+    accountEmail: getConfigValue(slotKey(slot, 'account_email')),
+    accountType: (getConfigValue(slotKey(slot, 'account_type')) as 'msa' | 'entra') ?? null,
     enabledServices: services,
-    lastVerifiedAt: getConfigValue('ms_last_verified_at'),
+    lastVerifiedAt: getConfigValue(slotKey(slot, 'last_verified_at')),
   };
 }
 
-export function isMicrosoftEnabled(): boolean { return getConfigValue('ms_enabled') === 'true'; }
-export function isMicrosoftConnected(): boolean { return getConfigValue('ms_connected') === 'true'; }
-export function getEnabledMsServices(): MicrosoftWorkspaceConfig['enabledServices'] { return getMicrosoftWorkspaceConfig().enabledServices; }
-export function getMsAccountType(): 'msa' | 'entra' | null { return (getConfigValue('ms_account_type') as 'msa' | 'entra') ?? null; }
+export function isMicrosoftEnabled(slot: AccountSlot = 'agent'): boolean { return getConfigValue(slotKey(slot, 'enabled')) === 'true'; }
+export function isMicrosoftConnected(slot: AccountSlot = 'agent'): boolean { return getConfigValue(slotKey(slot, 'connected')) === 'true'; }
+export function getEnabledMsServices(slot: AccountSlot = 'agent'): MicrosoftWorkspaceConfig['enabledServices'] { return getMicrosoftWorkspaceConfig(slot).enabledServices; }
+export function getMsAccountType(slot: AccountSlot = 'agent'): 'msa' | 'entra' | null { return (getConfigValue(slotKey(slot, 'account_type')) as 'msa' | 'entra') ?? null; }
 export function getClientId(): string { return CLIENT_ID; }
 
 // ── Config Setters ──
 
-export function setMicrosoftConnected(connected: boolean, email?: string, accountType?: 'msa' | 'entra'): void {
-  setConfigValue('ms_connected', String(connected));
-  if (email) setConfigValue('ms_account_email', email);
-  if (accountType) setConfigValue('ms_account_type', accountType);
+export function setMicrosoftConnected(connected: boolean, email?: string, accountType?: 'msa' | 'entra', slot: AccountSlot = 'agent'): void {
+  setConfigValue(slotKey(slot, 'connected'), String(connected));
+  if (email) setConfigValue(slotKey(slot, 'account_email'), email);
+  if (accountType) setConfigValue(slotKey(slot, 'account_type'), accountType);
   if (connected) {
-    setConfigValue('ms_last_verified_at', new Date().toISOString());
-    broadcast({ type: 'microsoft:connected', data: { email: email ?? '' } } as never);
+    setConfigValue(slotKey(slot, 'last_verified_at'), new Date().toISOString());
+    broadcast({ type: 'microsoft:connected', data: { email: email ?? '', slot } } as never);
   } else {
-    broadcast({ type: 'microsoft:disconnected' } as never);
+    broadcast({ type: 'microsoft:disconnected', data: { slot } } as never);
   }
 }
 
-export function setMicrosoftEnabled(enabled: boolean): void { setConfigValue('ms_enabled', String(enabled)); }
+export function setMicrosoftEnabled(enabled: boolean, slot: AccountSlot = 'agent'): void { setConfigValue(slotKey(slot, 'enabled'), String(enabled)); }
 
-export function setEnabledMsServices(services: Partial<MicrosoftWorkspaceConfig['enabledServices']>): void {
-  const current = getEnabledMsServices();
-  setConfigValue('ms_enabled_services', JSON.stringify({ ...current, ...services }));
+export function setEnabledMsServices(services: Partial<MicrosoftWorkspaceConfig['enabledServices']>, slot: AccountSlot = 'agent'): void {
+  const current = getEnabledMsServices(slot);
+  setConfigValue(slotKey(slot, 'enabled_services'), JSON.stringify({ ...current, ...services }));
 }
 
 // ── Token Management ──
 
-export function getAccessToken(): string | null { return getConfigValue('ms_access_token'); }
-function getRefreshToken(): string | null { return getConfigValue('ms_refresh_token'); }
-function getTokenExpiresAt(): number { const v = getConfigValue('ms_token_expires_at'); return v ? parseInt(v, 10) : 0; }
+export function getAccessToken(slot: AccountSlot = 'agent'): string | null { return getConfigValue(slotKey(slot, 'access_token')); }
+function getRefreshToken(slot: AccountSlot): string | null { return getConfigValue(slotKey(slot, 'refresh_token')); }
+function getTokenExpiresAt(slot: AccountSlot): number { const v = getConfigValue(slotKey(slot, 'token_expires_at')); return v ? parseInt(v, 10) : 0; }
 
-function storeTokens(accessToken: string, refreshToken: string | null, expiresIn: number): void {
-  setConfigValue('ms_access_token', accessToken);
-  if (refreshToken) setConfigValue('ms_refresh_token', refreshToken);
-  setConfigValue('ms_token_expires_at', String(Date.now() + expiresIn * 1000));
+function storeTokens(slot: AccountSlot, accessToken: string, refreshToken: string | null, expiresIn: number): void {
+  setConfigValue(slotKey(slot, 'access_token'), accessToken);
+  if (refreshToken) setConfigValue(slotKey(slot, 'refresh_token'), refreshToken);
+  setConfigValue(slotKey(slot, 'token_expires_at'), String(Date.now() + expiresIn * 1000));
 }
 
-let refreshPromise: Promise<string | null> | null = null;
+// Per-slot refresh mutex.
+const refreshPromises: Map<AccountSlot, Promise<string | null> | null> = new Map();
 
-export async function getValidAccessToken(): Promise<string | null> {
-  const token = getAccessToken();
-  const expiresAt = getTokenExpiresAt();
+export async function getValidAccessToken(slot: AccountSlot = 'agent'): Promise<string | null> {
+  const token = getAccessToken(slot);
+  const expiresAt = getTokenExpiresAt(slot);
   if (token && Date.now() < expiresAt - 5 * 60 * 1000) return token;
-  if (refreshPromise) return refreshPromise;
-  refreshPromise = refreshAccessToken().finally(() => { refreshPromise = null; });
-  return refreshPromise;
+  const existing = refreshPromises.get(slot);
+  if (existing) return existing;
+  const promise = refreshAccessToken(slot).finally(() => { refreshPromises.set(slot, null); });
+  refreshPromises.set(slot, promise);
+  return promise;
 }
 
-async function refreshAccessToken(): Promise<string | null> {
-  const refreshToken = getRefreshToken();
-  if (!refreshToken) { logger.warn('No refresh token'); return null; }
+async function refreshAccessToken(slot: AccountSlot): Promise<string | null> {
+  const refreshToken = getRefreshToken(slot);
+  if (!refreshToken) { logger.warn('No refresh token', { slot }); return null; }
 
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
@@ -168,21 +187,20 @@ async function refreshAccessToken(): Promise<string | null> {
 
     if (!resp.ok) {
       const err = await resp.text();
-      logger.error('Token refresh failed', { status: resp.status, error: err });
+      logger.error('Token refresh failed', { slot, status: resp.status, error: err });
       if (resp.status === 400 || resp.status === 401) {
-        setMicrosoftConnected(false);
-        // v2.3.19 — OAuth expiry is a true blocker (Outlook/Calendar/
-        // OneDrive/Teams tools can't function until re-auth). Critical.
-        try { sendAlert('Microsoft 365 connection expired. Re-authenticate in Settings > Microsoft.', 'critical'); } catch {}
+        setMicrosoftConnected(false, undefined, undefined, slot);
+        const slotLabel = slot === 'user' ? "user's" : "agent's";
+        try { sendAlert(`Microsoft 365 (${slotLabel} account) connection expired. Re-authenticate in Settings > Microsoft.`, 'critical'); } catch {}
       }
       return null;
     }
 
     const data = await resp.json() as { access_token: string; refresh_token?: string; expires_in: number };
-    storeTokens(data.access_token, data.refresh_token ?? null, data.expires_in);
+    storeTokens(slot, data.access_token, data.refresh_token ?? null, data.expires_in);
     return data.access_token;
   } catch (err) {
-    logger.error('Token refresh error', { error: err instanceof Error ? err.message : String(err) });
+    logger.error('Token refresh error', { slot, error: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }
@@ -195,19 +213,33 @@ export function generatePKCE(): { verifier: string; challenge: string } {
   return { verifier, challenge };
 }
 
-// Store the PKCE verifier so the callback can use it
-let storedVerifier: string | null = null;
-let storedRedirectUri: string | null = null;
+// Per-slot PKCE state. Each slot has its own in-flight OAuth context.
+interface OAuthState { verifier: string; redirectUri: string; stateToken: string }
+const oauthStateBySlot: Map<AccountSlot, OAuthState | null> = new Map();
+const slotByStateToken: Map<string, AccountSlot> = new Map();
 
-export function getStoredVerifier(): string | null { return storedVerifier; }
-export function getStoredRedirectUri(): string | null { return storedRedirectUri; }
+export function getStoredVerifier(slot: AccountSlot = 'agent'): string | null {
+  return oauthStateBySlot.get(slot)?.verifier ?? null;
+}
+export function getStoredRedirectUri(slot: AccountSlot = 'agent'): string | null {
+  return oauthStateBySlot.get(slot)?.redirectUri ?? null;
+}
+/** Reverse-lookup slot for a state token recovered from /callback. */
+export function getSlotForState(state: string): AccountSlot | null {
+  return slotByStateToken.get(state) ?? null;
+}
 
 // ── OAuth Flow ──
 
-export function buildAuthUrl(redirectUri: string): { authUrl: string; verifier: string } {
+export function buildAuthUrl(redirectUri: string, slot: AccountSlot = 'agent'): { authUrl: string; verifier: string; state: string } {
+  // Evict stale state from a previous abandoned attempt for this slot.
+  const prior = oauthStateBySlot.get(slot);
+  if (prior) slotByStateToken.delete(prior.stateToken);
+
   const { verifier, challenge } = generatePKCE();
-  storedVerifier = verifier;
-  storedRedirectUri = redirectUri;
+  const stateToken = crypto.randomBytes(16).toString('hex');
+  oauthStateBySlot.set(slot, { verifier, redirectUri, stateToken });
+  slotByStateToken.set(stateToken, slot);
 
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
@@ -218,12 +250,13 @@ export function buildAuthUrl(redirectUri: string): { authUrl: string; verifier: 
     code_challenge_method: 'S256',
     prompt: 'select_account',
     response_mode: 'query',
+    state: stateToken,
   });
 
-  return { authUrl: `${AUTH_BASE}/authorize?${params.toString()}`, verifier };
+  return { authUrl: `${AUTH_BASE}/authorize?${params.toString()}`, verifier, state: stateToken };
 }
 
-export async function exchangeCodeForTokens(code: string, redirectUri: string, codeVerifier: string): Promise<{
+export async function exchangeCodeForTokens(code: string, redirectUri: string, codeVerifier: string, slot: AccountSlot = 'agent'): Promise<{
   success: boolean;
   email?: string;
   accountType?: 'msa' | 'entra';
@@ -251,7 +284,7 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
     }
 
     const data = await resp.json() as { access_token: string; refresh_token?: string; expires_in: number; id_token?: string };
-    storeTokens(data.access_token, data.refresh_token ?? null, data.expires_in);
+    storeTokens(slot, data.access_token, data.refresh_token ?? null, data.expires_in);
 
     // Detect account type from id_token
     let accountType: 'msa' | 'entra' = 'entra';
@@ -272,17 +305,36 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
       }
     } catch {}
 
-    setMicrosoftConnected(true, email, accountType);
-    setMicrosoftEnabled(true);
-    if (accountType === 'msa') setEnabledMsServices({ teams: false });
+    setMicrosoftConnected(true, email, accountType, slot);
+    setMicrosoftEnabled(true, slot);
+    if (accountType === 'msa') setEnabledMsServices({ teams: false }, slot);
 
-    logger.info('Microsoft 365 connected', { email, accountType });
+    // Clean up the OAuth state for this slot.
+    const stored = oauthStateBySlot.get(slot);
+    if (stored) {
+      slotByStateToken.delete(stored.stateToken);
+      oauthStateBySlot.set(slot, null);
+    }
 
-    // Install Office document packages in the background
-    try {
-      const { installOfficePackages } = await import('./office-packages.js');
-      installOfficePackages();
-    } catch { /* best effort */ }
+    // Same-email soft warning (see Google version for rationale).
+    if (email) {
+      const otherSlot: AccountSlot = slot === 'agent' ? 'user' : 'agent';
+      const otherEmail = getConfigValue(slotKey(otherSlot, 'account_email'));
+      if (otherEmail && otherEmail.toLowerCase() === email.toLowerCase() && isMicrosoftConnected(otherSlot)) {
+        logger.warn('Microsoft: same email connected to both slots', { slot, otherSlot, email });
+      }
+    }
+
+    logger.info('Microsoft 365 connected', { slot, email, accountType });
+
+    // Install Office document packages in the background (idempotent).
+    // Only fire when the agent slot connects to avoid double-install.
+    if (slot === 'agent') {
+      try {
+        const { installOfficePackages } = await import('./office-packages.js');
+        installOfficePackages();
+      } catch { /* best effort */ }
+    }
 
     return { success: true, email, accountType };
   } catch (err) {
@@ -292,39 +344,45 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
 
 // ── Auth Verification ──
 
-export async function testMicrosoftAuth(): Promise<{ authenticated: boolean; email: string | null }> {
-  const token = await getValidAccessToken();
+export async function testMicrosoftAuth(slot: AccountSlot = 'agent'): Promise<{ authenticated: boolean; email: string | null }> {
+  const token = await getValidAccessToken(slot);
   if (!token) return { authenticated: false, email: null };
   try {
     const resp = await fetch(`${GRAPH_BASE}/me`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) });
     if (!resp.ok) return { authenticated: false, email: null };
     const me = await resp.json() as { mail?: string; userPrincipalName?: string };
-    setConfigValue('ms_last_verified_at', new Date().toISOString());
+    setConfigValue(slotKey(slot, 'last_verified_at'), new Date().toISOString());
     return { authenticated: true, email: me.mail ?? me.userPrincipalName ?? null };
   } catch { return { authenticated: false, email: null }; }
 }
 
 export async function checkMicrosoftOnStartup(): Promise<void> {
-  if (!isMicrosoftConnected()) return;
-  const auth = await testMicrosoftAuth();
-  if (auth.authenticated) { logger.info('Microsoft 365 auth verified', { email: auth.email }); }
-  else { logger.warn('Microsoft 365 auth failed, marking disconnected'); setMicrosoftConnected(false); }
+  for (const slot of ACCOUNT_SLOTS) {
+    if (!isMicrosoftConnected(slot)) continue;
+    const auth = await testMicrosoftAuth(slot);
+    if (auth.authenticated) { logger.info('Microsoft 365 auth verified', { slot, email: auth.email }); }
+    else { logger.warn('Microsoft 365 auth failed, marking disconnected', { slot }); setMicrosoftConnected(false, undefined, undefined, slot); }
+  }
 }
 
 // ── Disconnect ──
 
-export function disconnectMicrosoft(): void {
-  for (const key of ['ms_enabled', 'ms_connected', 'ms_account_email', 'ms_account_type', 'ms_access_token', 'ms_refresh_token', 'ms_token_expires_at', 'ms_last_verified_at', 'ms_enabled_services']) {
-    deleteConfigValue(key);
+export function disconnectMicrosoft(slot: AccountSlot = 'agent'): void {
+  const fields = ['enabled', 'connected', 'account_email', 'account_type', 'access_token', 'refresh_token', 'token_expires_at', 'last_verified_at', 'enabled_services'];
+  for (const field of fields) {
+    deleteConfigValue(slotKey(slot, field));
   }
-  broadcast({ type: 'microsoft:disconnected' } as never);
-  logger.info('Microsoft 365 disconnected');
+  broadcast({ type: 'microsoft:disconnected', data: { slot } } as never);
+  logger.info('Microsoft 365 disconnected', { slot });
 }
 
 // ── Access Level ──
 
-export function getAgentMicrosoftAccessLevel(agentId: string, isPrimary: boolean, isPM: boolean): 'full' | 'read' | 'none' {
-  if (!isMicrosoftEnabled() || !isMicrosoftConnected()) return 'none';
+export function getAgentMicrosoftAccessLevel(_agentId: string, isPrimary: boolean, isPM: boolean): 'full' | 'read' | 'none' {
+  // Same any-slot-counts rule as Google.
+  const anyEnabled = isMicrosoftEnabled('agent') || isMicrosoftEnabled('user');
+  const anyConnected = isMicrosoftConnected('agent') || isMicrosoftConnected('user');
+  if (!anyEnabled || !anyConnected) return 'none';
   if (isPM) return 'none';
   if (isPrimary) return 'full';
   return 'read';

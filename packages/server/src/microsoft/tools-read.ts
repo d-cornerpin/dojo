@@ -292,6 +292,25 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
 ];
 
 // Phase 3.5 (2026-05-04) — register concurrency + maxResultTokens overrides
+// v2.7.0 multi-account: user_* tool variants. Same shape as the Google
+// generator in tools-read.ts — for each canonical tool name, emit a
+// `user_*` counterpart wired to the User slot. Always emitted so static
+// importers (agent/tools.ts) get the full surface at startup.
+const USER_SLOT_READ_TOOLS: readonly string[] = [
+  'outlook_search', 'outlook_read', 'outlook_inbox', 'outlook_list_attachments',
+  'calendar_agenda_ms', 'calendar_search_ms', 'calendar_list_ms',
+  'onedrive_list', 'onedrive_read', 'onedrive_search',
+];
+for (const canonical of USER_SLOT_READ_TOOLS) {
+  const baseDef = microsoftReadToolDefinitions.find(d => d.name === canonical);
+  if (!baseDef) continue;
+  microsoftReadToolDefinitions.push({
+    ...baseDef,
+    name: `user_${canonical}`,
+    description: `[USER'S Microsoft account variant of \`${canonical}\`] ${baseDef.description}\n\nThis variant reads from the user's connected Microsoft account (configured in Settings → Microsoft as the User slot). The agent's own account is read by the unprefixed \`${canonical}\` tool. If the user has not connected a User account, this tool returns a friendly error pointing them at Settings.`,
+  });
+}
+
 // with the v2 partitioner / cap registry. tools.ts imports this module
 // statically, so registration happens at app startup.
 import { registerConcurrency, registerMaxResultTokens } from '../agent/v2/classifiers/concurrency.js';
@@ -310,21 +329,30 @@ export async function executeMicrosoftReadTool(
   agentId: string,
   agentName: string,
 ): Promise<string> {
+  // Strip user_ prefix → resolve account slot. Canonical name drives
+  // validation + dispatch; `slot` is threaded into msGraphRead/Write.
+  let slot: import('./auth.js').AccountSlot = 'agent';
+  let canonicalName = name;
+  if (name.startsWith('user_')) {
+    slot = 'user';
+    canonicalName = name.slice('user_'.length);
+  }
+
   // Schema-driven required-field validation. Same approach as Slides — keeps
   // validation co-located with the tool definitions.
   const { validateAgainstSchema } = await import('../agent/tool-helpers.js');
-  const def = microsoftReadToolDefByName.get(name);
-  const schemaErr = validateAgainstSchema(name, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
+  const def = microsoftReadToolDefByName.get(canonicalName);
+  const schemaErr = validateAgainstSchema(canonicalName, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
   if (schemaErr) return schemaErr;
 
-  switch (name) {
+  switch (canonicalName) {
     case 'outlook_search': {
       const query = args.query as string;
       const maxResults = (args.max_results as number) ?? 10;
       const verbose = args.verbose as boolean | undefined;
       const result = await msGraphRead(
         `me/messages?$search="${encodeURIComponent(query)}"&$top=${maxResults}&$select=id,from,subject,receivedDateTime,bodyPreview,isRead`,
-        agentId, agentName, 'outlook_search', { query, maxResults },
+        agentId, agentName, 'outlook_search', { query, maxResults }, slot,
       );
       if (!result.ok) return `Error searching Outlook: ${result.error}`;
 
@@ -353,7 +381,7 @@ export async function executeMicrosoftReadTool(
       const messageId = encodeURIComponent(args.message_id as string);
       const result = await msGraphRead(
         `me/messages/${messageId}?$select=id,from,toRecipients,ccRecipients,subject,receivedDateTime,body,hasAttachments`,
-        agentId, agentName, 'outlook_read', { messageId: args.message_id },
+        agentId, agentName, 'outlook_read', { messageId: args.message_id }, slot,
       );
       if (!result.ok) return `Error reading email: ${result.error}`;
 
@@ -399,7 +427,7 @@ export async function executeMicrosoftReadTool(
       const filter = unreadOnly ? "&$filter=isRead eq false" : '';
       const result = await msGraphRead(
         `me/mailFolders/inbox/messages?$top=${maxResults}${filter}&$orderby=receivedDateTime desc&$select=id,from,subject,receivedDateTime,bodyPreview,isRead`,
-        agentId, agentName, 'outlook_inbox', { maxResults, unreadOnly },
+        agentId, agentName, 'outlook_inbox', { maxResults, unreadOnly }, slot,
       );
       if (!result.ok) return `Error fetching inbox: ${result.error}`;
 
@@ -424,7 +452,7 @@ export async function executeMicrosoftReadTool(
       const window = computeCalendarWindow({ days, timezone: requestedTz, start_date: startDate });
       const result = await msGraphRead(
         `${calendarPrefix(calendarId)}calendarView?startDateTime=${window.startISO}&endDateTime=${window.endISO}&$orderby=start/dateTime&$select=id,subject,start,end,location,bodyPreview,isAllDay`,
-        agentId, agentName, 'calendar_agenda_ms', { days, calendarId, startDate, anchored: window.anchored },
+        agentId, agentName, 'calendar_agenda_ms', { days, calendarId, startDate, anchored: window.anchored }, slot,
       );
       if (!result.ok) return `Error fetching calendar: ${result.error}`;
 
@@ -487,7 +515,7 @@ export async function executeMicrosoftReadTool(
     case 'calendar_list_ms': {
       const result = await msGraphRead(
         'me/calendars?$select=id,name,owner,canEdit,canShare,canViewPrivateItems,isDefaultCalendar,color',
-        agentId, agentName, 'calendar_list_ms', {},
+        agentId, agentName, 'calendar_list_ms', {}, slot,
       );
       if (!result.ok) return `Error listing calendars: ${result.error}`;
       const data = result.data as { value?: Array<{ id: string; name: string; owner?: { name?: string; address?: string }; canEdit?: boolean; canShare?: boolean; canViewPrivateItems?: boolean; isDefaultCalendar?: boolean }> };
@@ -511,7 +539,7 @@ export async function executeMicrosoftReadTool(
       // accept them via calendar_accept_share_ms.
       const result = await msGraphRead(
         `me/messages?$top=${max}&$filter=startswith(itemClass,'IPM.Sharing')&$select=id,subject,from,receivedDateTime,bodyPreview,itemClass`,
-        agentId, agentName, 'calendar_share_invites_ms', { max },
+        agentId, agentName, 'calendar_share_invites_ms', { max }, slot,
       );
       if (!result.ok) return `Error listing share invites: ${result.error}`;
       const data = result.data as { value?: Array<{ id: string; subject: string; from?: { emailAddress?: { name?: string; address?: string } }; receivedDateTime: string; bodyPreview?: string }> };
@@ -573,7 +601,7 @@ export async function executeMicrosoftReadTool(
       // First get metadata
       const meta = await msGraphRead(
         `${prefix}items/${fileId}?$select=id,name,size,file,webUrl`,
-        agentId, agentName, 'onedrive_read', { fileId: args.file_id, driveId },
+        agentId, agentName, 'onedrive_read', { fileId: args.file_id, driveId }, slot,
       );
       if (!meta.ok) return `Error reading file: ${meta.error}`;
 
@@ -614,7 +642,7 @@ export async function executeMicrosoftReadTool(
       if (!chatId) {
         const result = await msGraphRead(
           `me/chats?$top=20&$select=id,topic,chatType,lastUpdatedDateTime`,
-          agentId, agentName, 'teams_list_chats', {},
+          agentId, agentName, 'teams_list_chats', {}, slot,
         );
         if (!result.ok) return `Error listing Teams chats: ${result.error}`;
 
@@ -630,7 +658,7 @@ export async function executeMicrosoftReadTool(
 
       const result = await msGraphRead(
         `chats/${encodeURIComponent(chatId)}/messages?$top=${maxResults}&$orderby=createdDateTime desc`,
-        agentId, agentName, 'teams_read_messages', { chatId, maxResults },
+        agentId, agentName, 'teams_read_messages', { chatId, maxResults }, slot,
       );
       if (!result.ok) return `Error reading Teams messages: ${result.error}`;
 
@@ -652,7 +680,7 @@ export async function executeMicrosoftReadTool(
       const messageId = encodeURIComponent(args.message_id as string);
       const result = await msGraphRead(
         `me/messages/${messageId}/attachments?$select=id,name,contentType,size,isInline`,
-        agentId, agentName, 'outlook_list_attachments', { messageId: args.message_id },
+        agentId, agentName, 'outlook_list_attachments', { messageId: args.message_id }, slot,
       );
       if (!result.ok) return `Error listing attachments: ${result.error}`;
 
@@ -697,7 +725,7 @@ export async function executeMicrosoftReadTool(
       const max = (args.max_results as number) ?? 30;
       const result = await msGraphRead(
         `me/drive/sharedWithMe?$top=${max}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl,remoteItem`,
-        agentId, agentName, 'onedrive_list_shared', { max },
+        agentId, agentName, 'onedrive_list_shared', { max }, slot,
       );
       if (!result.ok) return `Error listing shared files: ${result.error}`;
       const data = result.data as { value?: Array<{ id: string; name: string; size?: number; lastModifiedDateTime: string; file?: { mimeType: string }; folder?: object; webUrl?: string; remoteItem?: { id: string; parentReference?: { driveId?: string; driveType?: string } } }> };
@@ -715,7 +743,7 @@ export async function executeMicrosoftReadTool(
     case 'onedrive_list_drives': {
       const result = await msGraphRead(
         'me/drives?$select=id,name,driveType,owner',
-        agentId, agentName, 'onedrive_list_drives', {},
+        agentId, agentName, 'onedrive_list_drives', {}, slot,
       );
       if (!result.ok) return `Error listing drives: ${result.error}`;
       const data = result.data as { value?: Array<{ id: string; name: string; driveType: string; owner?: { user?: { displayName?: string; email?: string } } }> };
@@ -749,7 +777,7 @@ export async function executeMicrosoftReadTool(
       const siteId = args.site_id as string;
       const result = await msGraphRead(
         `sites/${encodeURIComponent(siteId)}/drives?$select=id,name,driveType,description`,
-        agentId, agentName, 'sharepoint_list_drives', { siteId },
+        agentId, agentName, 'sharepoint_list_drives', { siteId }, slot,
       );
       if (!result.ok) return `Error listing site drives: ${result.error}`;
       const data = result.data as { value?: Array<{ id: string; name: string; driveType: string; description?: string }> };
@@ -765,7 +793,7 @@ export async function executeMicrosoftReadTool(
       const meetingId = args.meeting_id as string;
       const result = await msGraphRead(
         `me/onlineMeetings/${encodeURIComponent(meetingId)}?$select=id,subject,joinUrl,joinWebUrl,startDateTime,endDateTime,videoTeleconferenceId`,
-        agentId, agentName, 'online_meeting_get', { meetingId },
+        agentId, agentName, 'online_meeting_get', { meetingId }, slot,
       );
       if (!result.ok) return `Error getting online meeting: ${result.error}`;
       const m = result.data as { id: string; subject?: string; joinUrl?: string; joinWebUrl?: string; startDateTime?: string; endDateTime?: string; videoTeleconferenceId?: string };
@@ -784,7 +812,7 @@ export async function executeMicrosoftReadTool(
     case 'teams_list_teams': {
       const result = await msGraphRead(
         'me/joinedTeams?$select=id,displayName,description',
-        agentId, agentName, 'teams_list_teams', {},
+        agentId, agentName, 'teams_list_teams', {}, slot,
       );
       if (!result.ok) return `Error listing Teams: ${result.error}`;
 
@@ -804,7 +832,7 @@ export async function executeMicrosoftReadTool(
 
       const result = await msGraphRead(
         `teams/${teamId}/channels?$select=id,displayName,description`,
-        agentId, agentName, 'teams_list_channels', { teamId: args.team_id },
+        agentId, agentName, 'teams_list_channels', { teamId: args.team_id }, slot,
       );
       if (!result.ok) return `Error listing channels: ${result.error}`;
 
@@ -824,7 +852,7 @@ export async function executeMicrosoftReadTool(
 
       const result = await msGraphRead(
         `teams/${teamId}/channels/${channelId}/messages?$top=${maxResults}`,
-        agentId, agentName, 'teams_read_channel_messages', { teamId: args.team_id, channelId: args.channel_id, maxResults },
+        agentId, agentName, 'teams_read_channel_messages', { teamId: args.team_id, channelId: args.channel_id, maxResults }, slot,
       );
       if (!result.ok) return `Error reading channel messages: ${result.error}`;
 

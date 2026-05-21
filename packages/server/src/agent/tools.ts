@@ -45,11 +45,11 @@ import { googleReadToolDefinitions, executeGoogleReadTool } from '../google/tool
 import { googleWriteToolDefinitions, executeGoogleWriteTool } from '../google/tools-write.js';
 import { slidesToolDefinitions, slidesToolNames, executeGoogleSlidesTool } from '../google/tools-slides.js';
 import { formsToolDefinitions, formsToolNames, executeGoogleFormsTool } from '../google/tools-forms.js';
-import { getAgentGoogleAccessLevel, getEnabledServices } from '../google/auth.js';
+import { getAgentGoogleAccessLevel, getEnabledServices, isGoogleConnected, getGoogleWorkspaceConfig } from '../google/auth.js';
 import { microsoftReadToolDefinitions, executeMicrosoftReadTool } from '../microsoft/tools-read.js';
 import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../microsoft/tools-write.js';
 import { officeToolDefinitions, executeOfficeTool } from '../microsoft/tools-office.js';
-import { getAgentMicrosoftAccessLevel, getEnabledMsServices } from '../microsoft/auth.js';
+import { getAgentMicrosoftAccessLevel, getEnabledMsServices, isMicrosoftConnected, getMicrosoftWorkspaceConfig } from '../microsoft/auth.js';
 import { areOfficePackagesInstalled } from '../microsoft/office-packages.js';
 import { getTunnelStatus } from '../services/tunnel.js';
 import type { ToolCall, ToolResult } from '@dojo/shared';
@@ -231,9 +231,17 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   const isPM = isPMAgent(agentId);
 
   const googleAccess = getAgentGoogleAccessLevel(agentId, isPrimary, isPM);
-  const enabledSvc = getEnabledServices();
+  const enabledSvcAgent = getEnabledServices('agent');
+  const enabledSvcUser = getEnabledServices('user');
+  // v2.7.0 — per-slot connection state. Determines whether agent_* /
+  // user_* tool variants belong in the index at all. Without this,
+  // disconnecting one slot leaves a half-broken tool surface visible
+  // to the agent (calls return "Not authenticated"); the agent burns
+  // tokens trying the wrong tool, then has to recover.
+  const agentSlotConnected = isGoogleConnected('agent');
+  const userSlotConnected = isGoogleConnected('user');
 
-  // Service-to-tool-prefix mapping for filtering by enabled service
+  // Service-to-tool-prefix mapping for filtering by enabled service.
   const serviceToolPrefixes: Record<string, string[]> = {
     gmail: ['gmail_'],
     calendar: ['calendar_'],
@@ -244,17 +252,31 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
     forms: ['forms_'],
   };
 
+  /**
+   * Two filters in one: (1) is this tool's slot connected? (2) is the
+   * underlying service enabled on that slot? Both must pass.
+   *
+   * `user_*` tools route through the user slot; everything else routes
+   * through the agent slot. The check strips `user_` to find the
+   * service prefix so `user_gmail_inbox` correctly maps to the Gmail
+   * service (not the catch-all "always allowed" branch).
+   */
   function isToolEnabledByService(toolName: string): boolean {
+    const isUserSlot = toolName.startsWith('user_');
+    const canonical = isUserSlot ? toolName.slice('user_'.length) : toolName;
+    const slotConnected = isUserSlot ? userSlotConnected : agentSlotConnected;
+    if (!slotConnected) return false;
+    const enabledForSlot = isUserSlot ? enabledSvcUser : enabledSvcAgent;
     for (const [service, prefixes] of Object.entries(serviceToolPrefixes)) {
-      if (prefixes.some(p => toolName.startsWith(p))) {
-        return enabledSvc[service as keyof typeof enabledSvc] === true;
+      if (prefixes.some(p => canonical.startsWith(p))) {
+        return enabledForSlot[service as keyof typeof enabledForSlot] === true;
       }
     }
-    return true; // tools not matching any service are always enabled
+    return true; // tools not matching any service are always enabled when the slot is connected
   }
 
   if (googleAccess === 'full') {
-    // Primary agent: all read + write tools, filtered by enabled services
+    // Primary agent: all read + write tools, filtered by per-slot connection AND enabled services.
     const allGoogleTools = [...googleReadToolDefinitions, ...googleWriteToolDefinitions, ...slidesToolDefinitions, ...formsToolDefinitions];
     filtered.push(...allGoogleTools.filter(t => isToolEnabledByService(t.name)));
   } else if (googleAccess === 'read') {
@@ -289,7 +311,10 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
 
   // ── Microsoft 365 tools (access-level gated) ──
   const msAccess = getAgentMicrosoftAccessLevel(agentId, isPrimary, isPM);
-  const enabledMsSvc = getEnabledMsServices();
+  const enabledMsSvcAgent = getEnabledMsServices('agent');
+  const enabledMsSvcUser = getEnabledMsServices('user');
+  const agentSlotMsConnected = isMicrosoftConnected('agent');
+  const userSlotMsConnected = isMicrosoftConnected('user');
 
   const msServiceToolPrefixes: Record<string, string[]> = {
     outlook: ['outlook_'],
@@ -298,10 +323,16 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
     teams: ['teams_', 'online_meeting_'],
   };
 
+  /** Same two-stage gate as the Google version: slot connected AND service enabled on that slot. */
   function isMsToolEnabledByService(toolName: string): boolean {
+    const isUserSlot = toolName.startsWith('user_');
+    const canonical = isUserSlot ? toolName.slice('user_'.length) : toolName;
+    const slotConnected = isUserSlot ? userSlotMsConnected : agentSlotMsConnected;
+    if (!slotConnected) return false;
+    const enabledForSlot = isUserSlot ? enabledMsSvcUser : enabledMsSvcAgent;
     for (const [service, patterns] of Object.entries(msServiceToolPrefixes)) {
-      if (patterns.some(p => toolName.startsWith(p) || toolName === p)) {
-        return enabledMsSvc[service as keyof typeof enabledMsSvc] === true;
+      if (patterns.some(p => canonical.startsWith(p) || canonical === p)) {
+        return enabledForSlot[service as keyof typeof enabledForSlot] === true;
       }
     }
     return true;
@@ -320,7 +351,53 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
     filtered.push(...officeToolDefinitions);
   }
 
-  return filtered;
+  // ── Multi-account description annotation ──
+  // Every Google/Microsoft tool gets its description prefixed with
+  // "[Routes to <email> — <slot> <provider>]" so the agent never has
+  // to guess which account a tool hits. Without this the agent reads
+  // descriptions like "the user's connected account" generically and
+  // can't name the email in chat without a tool call. Office document
+  // tools and pure-utility tools (slides/forms when not user-facing)
+  // aren't annotated — they don't have a slot to disambiguate.
+  //
+  // Pull fresh emails from config here (not at module load) so a
+  // reconnect to a different account updates the annotations on the
+  // very next agent turn — no server restart needed.
+  const agentGoogleEmail = agentSlotConnected ? getGoogleWorkspaceConfig('agent').accountEmail : null;
+  const userGoogleEmail = userSlotConnected ? getGoogleWorkspaceConfig('user').accountEmail : null;
+  const agentMsEmail = agentSlotMsConnected ? getMicrosoftWorkspaceConfig('agent').accountEmail : null;
+  const userMsEmail = userSlotMsConnected ? getMicrosoftWorkspaceConfig('user').accountEmail : null;
+
+  const googleToolNames = new Set([
+    ...googleReadToolDefinitions.map(t => t.name),
+    ...googleWriteToolDefinitions.map(t => t.name),
+    ...slidesToolDefinitions.map(t => t.name),
+    ...formsToolDefinitions.map(t => t.name),
+  ]);
+  const microsoftToolNames = new Set([
+    ...microsoftReadToolDefinitions.map(t => t.name),
+    ...microsoftWriteToolDefinitions.map(t => t.name),
+  ]);
+
+  const annotated = filtered.map(t => {
+    const isUserSlot = t.name.startsWith('user_');
+    let routesTo: string | null = null;
+    let label: string = '';
+    if (googleToolNames.has(t.name)) {
+      routesTo = isUserSlot ? userGoogleEmail : agentGoogleEmail;
+      label = isUserSlot ? "user's Google" : "agent's Google";
+    } else if (microsoftToolNames.has(t.name)) {
+      routesTo = isUserSlot ? userMsEmail : agentMsEmail;
+      label = isUserSlot ? "user's Microsoft" : "agent's Microsoft";
+    }
+    if (!routesTo) return t;
+    return {
+      ...t,
+      description: `[Routes to ${routesTo} — ${label} account] ${t.description}`,
+    };
+  });
+
+  return annotated;
 }
 
 // ── Tool Schemas for Anthropic API ──
@@ -6160,8 +6237,22 @@ Thread is closed — respond to the user, not Imaginer.`;
       case 'drive_list':
       case 'drive_read':
       case 'docs_read':
-      case 'sheets_read': {
+      case 'sheets_read':
+      // v2.7.0 — user-slot variants of Google reads (multi-account).
+      // executeGoogleReadTool strips the prefix and routes to the
+      // user slot's credentials.
+      case 'user_gmail_search':
+      case 'user_gmail_read':
+      case 'user_gmail_list_attachments':
+      case 'user_gmail_inbox':
+      case 'user_calendar_agenda':
+      case 'user_calendar_search':
+      case 'user_calendar_list':
+      case 'user_drive_list':
+      case 'user_drive_read': {
         // Per-tool required-field validation for Google read tools.
+        // Lookup by canonical name so user_* variants share validation.
+        const canonicalName = name.startsWith('user_') ? name.slice('user_'.length) : name;
         const readReqs: Record<string, FieldSpec[]> = {
           gmail_search: [{ name: 'query', value: args.query, type: 'string' }],
           gmail_read: [{ name: 'message_id', value: args.message_id, type: 'string' }],
@@ -6175,7 +6266,7 @@ Thread is closed — respond to the user, not Imaginer.`;
           docs_read: [{ name: 'document_id', value: args.document_id, type: 'string' }],
           sheets_read: [{ name: 'spreadsheet_id', value: args.spreadsheet_id, type: 'string' }],
         };
-        const readErr = checkRequired(readReqs[name] ?? []);
+        const readErr = checkRequired(readReqs[canonicalName] ?? []);
         if (readErr) { content = readErr; isError = true; break; }
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         content = await executeGoogleReadTool(name, args, agentId, agentRow?.name ?? agentId);
@@ -6284,7 +6375,20 @@ Thread is closed — respond to the user, not Imaginer.`;
       case 'teams_read_messages':
       case 'teams_list_teams':
       case 'teams_list_channels':
-      case 'teams_read_channel_messages': {
+      case 'teams_read_channel_messages':
+      // v2.7.0 — user-slot variants of Microsoft reads (multi-account).
+      // executeMicrosoftReadTool strips the prefix and routes to the
+      // user slot's credentials.
+      case 'user_outlook_search':
+      case 'user_outlook_read':
+      case 'user_outlook_inbox':
+      case 'user_outlook_list_attachments':
+      case 'user_calendar_agenda_ms':
+      case 'user_calendar_search_ms':
+      case 'user_calendar_list_ms':
+      case 'user_onedrive_list':
+      case 'user_onedrive_read':
+      case 'user_onedrive_search': {
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         content = await executeMicrosoftReadTool(name, args, agentId, agentRow?.name ?? agentId);
         isError = content.startsWith('Error');

@@ -1,6 +1,6 @@
 // ════════════════════════════════════════
 // Google Workspace API Routes — Native OAuth 2.0
-// No gws CLI dependency.
+// Multi-account (agent + user slots) as of v2.7.0.
 // ════════════════════════════════════════
 
 import { Hono } from 'hono';
@@ -14,11 +14,13 @@ import {
   setEnabledServices,
   buildAuthUrl,
   exchangeCodeForTokens,
-  getStoredState,
   getStoredRedirectUri,
+  getSlotForState,
   disconnectGoogle,
   getMissingScopes,
   discoverGrantedScopes,
+  ACCOUNT_SLOTS,
+  type AccountSlot,
 } from '../../google/auth.js';
 import { queryGoogleActivity, getTodayActivityCounts, getLastActivityTimestamp } from '../../google/activity-log.js';
 
@@ -26,54 +28,77 @@ const logger = createLogger('google-routes');
 
 export const googleRouter = new Hono<AppEnv>();
 
-// GET /api/google/status
-googleRouter.get('/status', async (c) => {
-  // v2.5.5 — for users who connected before scope tracking landed, probe
-  // tokeninfo lazily on first /status call so getMissingScopes can return
-  // accurate data. No-op when scopes are already stored.
-  await discoverGrantedScopes();
+/** Parse and validate the `slot` query param. Defaults to 'agent'. */
+function parseSlot(value: string | undefined): AccountSlot {
+  return value === 'user' ? 'user' : 'agent';
+}
 
-  const config = getGoogleWorkspaceConfig();
+// GET /api/google/status — returns both slots' state in one payload
+googleRouter.get('/status', async (c) => {
+  // Probe granted scopes for each connected slot (no-op when already known).
+  for (const slot of ACCOUNT_SLOTS) {
+    await discoverGrantedScopes(slot);
+  }
+
   const todayCounts = getTodayActivityCounts();
   const lastActivity = getLastActivityTimestamp();
 
-  // v2.5.5 — when missingScopes is non-empty, the user is connected but
-  // hasn't granted some scopes that the current build needs (typically
-  // because the scope list grew between releases). UI surfaces a
-  // "Reconnect to enable new permissions" banner.
-  const missingScopes = getMissingScopes();
+  const slots: Record<AccountSlot, ReturnType<typeof buildSlotPayload>> = {
+    agent: buildSlotPayload('agent'),
+    user: buildSlotPayload('user'),
+  };
 
+  // Backward-compat top-level fields mirror the agent slot — existing
+  // dashboards and integrations that read `enabled`/`connected`/`email`
+  // directly keep working without modification.
   return c.json({
     ok: true,
     data: {
-      enabled: config.enabled,
-      connected: config.connected,
-      email: config.accountEmail,
-      services: config.enabledServices,
-      lastVerified: config.lastVerifiedAt,
+      // Per-slot detail
+      slots,
+      // Aggregate counters (not slot-specific)
       lastActivity,
       todayActivity: todayCounts,
-      missingScopes,
+      // Legacy single-account fields (= agent slot)
+      enabled: slots.agent.enabled,
+      connected: slots.agent.connected,
+      email: slots.agent.email,
+      services: slots.agent.services,
+      lastVerified: slots.agent.lastVerified,
+      missingScopes: slots.agent.missingScopes,
     },
   });
 });
 
-// POST /api/google/connect — start OAuth flow
+function buildSlotPayload(slot: AccountSlot) {
+  const config = getGoogleWorkspaceConfig(slot);
+  return {
+    slot,
+    enabled: config.enabled,
+    connected: config.connected,
+    email: config.accountEmail,
+    services: config.enabledServices,
+    lastVerified: config.lastVerifiedAt,
+    missingScopes: getMissingScopes(slot),
+  };
+}
+
+// POST /api/google/connect?slot=agent|user — start OAuth flow for a slot
 googleRouter.post('/connect', (c) => {
   try {
-    // Build redirect URI from the request's origin
+    const slot = parseSlot(c.req.query('slot'));
     const url = new URL(c.req.url);
     const redirectUri = `${url.protocol}//${url.host}/api/google/callback`;
-    const { authUrl } = buildAuthUrl(redirectUri);
+    const { authUrl } = buildAuthUrl(redirectUri, slot);
 
-    logger.info('Google OAuth flow started', { redirectUri });
-    return c.json({ ok: true, data: { authUrl } });
+    logger.info('Google OAuth flow started', { slot, redirectUri });
+    return c.json({ ok: true, data: { authUrl, slot } });
   } catch (err) {
     return c.json({ ok: false, error: `Failed to start auth: ${err instanceof Error ? err.message : String(err)}` }, 500);
   }
 });
 
-// GET /api/google/callback — OAuth redirect handler
+// GET /api/google/callback — OAuth redirect handler (recovers slot from state)
 googleRouter.get('/callback', async (c) => {
   const code = c.req.query('code');
   const state = c.req.query('state');
@@ -84,59 +109,62 @@ googleRouter.get('/callback', async (c) => {
     return c.html(`<html><body><h2>Google connection failed</h2><p>${error}</p><p>You can close this tab.</p><script>window.close()</script></body></html>`);
   }
 
-  if (!code) {
-    return c.html('<html><body><h2>Missing authorization code</h2><p>You can close this tab.</p></body></html>');
+  if (!code || !state) {
+    return c.html('<html><body><h2>Missing authorization code or state</h2><p>You can close this tab.</p></body></html>');
   }
 
-  // Validate state parameter
-  const storedState = getStoredState();
-  if (state !== storedState) {
-    logger.warn('Google OAuth state mismatch', { expected: storedState, received: state });
+  // Recover slot from the state token. Each in-flight OAuth flow has its
+  // own state, so the state→slot map is the authoritative source of
+  // truth for "which slot is this callback completing."
+  const slot = getSlotForState(state);
+  if (!slot) {
+    logger.warn('Google OAuth callback with unknown state', { state });
     return c.html('<html><body><h2>Invalid state parameter</h2><p>Please try connecting again from Settings.</p></body></html>');
   }
 
-  const redirectUri = getStoredRedirectUri();
+  const redirectUri = getStoredRedirectUri(slot);
   if (!redirectUri) {
     return c.html('<html><body><h2>Session expired</h2><p>Please try connecting again from Settings.</p></body></html>');
   }
 
-  const result = await exchangeCodeForTokens(code, redirectUri);
+  const result = await exchangeCodeForTokens(code, redirectUri, slot);
 
   if (result.success) {
-    logger.info('Google OAuth completed', { email: result.email });
-    return c.html(`<html><body><h2>Google Workspace connected!</h2><p>Connected as ${result.email}.</p><p>You can close this tab and return to the Dojo.</p><script>window.close()</script></body></html>`);
+    logger.info('Google OAuth completed', { slot, email: result.email });
+    const slotLabel = slot === 'user' ? "user's" : "agent's";
+    return c.html(`<html><body><h2>Google Workspace connected!</h2><p>${slotLabel.charAt(0).toUpperCase() + slotLabel.slice(1)} account connected as ${result.email}.</p><p>You can close this tab and return to the Dojo.</p><script>window.close()</script></body></html>`);
   }
 
-  logger.error('Google OAuth token exchange failed', { error: result.error });
+  logger.error('Google OAuth token exchange failed', { slot, error: result.error });
   return c.html(`<html><body><h2>Connection failed</h2><p>${result.error}</p><p>You can close this tab and try again from Settings.</p></body></html>`);
 });
 
-// POST /api/google/disconnect
+// POST /api/google/disconnect?slot=agent|user
 googleRouter.post('/disconnect', (c) => {
-  disconnectGoogle();
-  return c.json({ ok: true });
+  const slot = parseSlot(c.req.query('slot'));
+  disconnectGoogle(slot);
+  return c.json({ ok: true, data: { slot } });
 });
 
-// POST /api/google/test — test current connection
+// POST /api/google/test?slot=agent|user — test a slot's connection
 googleRouter.post('/test', async (c) => {
-  const auth = await testGoogleAuth();
+  const slot = parseSlot(c.req.query('slot'));
+  const auth = await testGoogleAuth(slot);
   if (auth.authenticated) {
-    setGoogleConnected(true, auth.email ?? undefined);
-    setGoogleEnabled(true);
+    setGoogleConnected(true, auth.email ?? undefined, slot);
+    setGoogleEnabled(true, slot);
   }
 
   return c.json({
     ok: true,
-    data: {
-      working: auth.authenticated,
-      email: auth.email,
-    },
+    data: { working: auth.authenticated, email: auth.email, slot },
   });
 });
 
-// PUT /api/google/services — enable/disable individual services
+// PUT /api/google/services?slot=agent|user — enable/disable services per slot
 googleRouter.put('/services', async (c) => {
   try {
+    const slot = parseSlot(c.req.query('slot'));
     const body = await c.req.json() as Partial<{
       gmail: boolean;
       calendar: boolean;
@@ -144,11 +172,12 @@ googleRouter.put('/services', async (c) => {
       docs: boolean;
       sheets: boolean;
       slides: boolean;
+      forms: boolean;
     }>;
 
-    setEnabledServices(body);
-    logger.info('Google Workspace services updated', body);
-    return c.json({ ok: true });
+    setEnabledServices(body, slot);
+    logger.info('Google Workspace services updated', { slot, ...body });
+    return c.json({ ok: true, data: { slot } });
   } catch {
     return c.json({ ok: false, error: 'Invalid request body' }, 400);
   }
