@@ -120,6 +120,38 @@ export function getEnabledMsServices(slot: AccountSlot = 'agent'): MicrosoftWork
 export function getMsAccountType(slot: AccountSlot = 'agent'): 'msa' | 'entra' | null { return (getConfigValue(slotKey(slot, 'account_type')) as 'msa' | 'entra') ?? null; }
 export function getClientId(): string { return CLIENT_ID; }
 
+/**
+ * Whether the Outlook watcher should poll this slot's inbox for new mail and
+ * forward notifications to the primary agent. Agent slot defaults true to
+ * preserve single-account v2.6 behavior; user slot defaults false so adding
+ * a personal Microsoft account doesn't surprise the user with forwarded
+ * personal mail. Migration runs on first boot via seedDefaultEmailMonitoring().
+ */
+export function isMsEmailMonitoringEnabled(slot: AccountSlot = 'agent'): boolean {
+  const v = getConfigValue(slotKey(slot, 'watch_email'));
+  if (v !== null) return v === 'true';
+  return slot === 'agent';
+}
+
+export function setMsEmailMonitoringEnabled(enabled: boolean, slot: AccountSlot = 'agent'): void {
+  setConfigValue(slotKey(slot, 'watch_email'), String(enabled));
+}
+
+/**
+ * Per-slot send permission. Agent slot defaults true (preserves prior
+ * behavior); user slot defaults false (explicit opt-in for personal
+ * accounts). See isEmailSendingEnabled in google/auth.ts.
+ */
+export function isMsEmailSendingEnabled(slot: AccountSlot = 'agent'): boolean {
+  const v = getConfigValue(slotKey(slot, 'send_email'));
+  if (v !== null) return v === 'true';
+  return slot === 'agent';
+}
+
+export function setMsEmailSendingEnabled(enabled: boolean, slot: AccountSlot = 'agent'): void {
+  setConfigValue(slotKey(slot, 'send_email'), String(enabled));
+}
+
 // ── Config Setters ──
 
 export function setMicrosoftConnected(connected: boolean, email?: string, accountType?: 'msa' | 'entra', slot: AccountSlot = 'agent'): void {

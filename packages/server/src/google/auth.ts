@@ -163,6 +163,42 @@ export function getEnabledServices(slot: AccountSlot = 'agent'): GoogleWorkspace
   return getGoogleWorkspaceConfig(slot).enabledServices;
 }
 
+/**
+ * Whether the Gmail watcher should poll this slot's inbox for new mail and
+ * forward notifications to the primary agent. Defaults true for the agent
+ * slot (preserves single-account v2.6 behavior) and false for the user slot
+ * (a personal inbox connected as "user" shouldn't auto-forward without an
+ * explicit opt-in). Migration in seedDefaultEmailMonitoring() sets the agent
+ * key on first boot for installs upgrading from v2.6.
+ */
+export function isEmailMonitoringEnabled(slot: AccountSlot = 'agent'): boolean {
+  const v = getConfigValue(slotKey(slot, 'watch_email'));
+  if (v !== null) return v === 'true';
+  return slot === 'agent';
+}
+
+export function setEmailMonitoringEnabled(enabled: boolean, slot: AccountSlot = 'agent'): void {
+  setConfigValue(slotKey(slot, 'watch_email'), String(enabled));
+}
+
+/**
+ * Whether the agent is allowed to send/reply/forward email from this slot.
+ * Defaults true for the agent slot (preserves v2.6/v2.7.0 behavior where
+ * the agent's own account could send) and false for the user slot (a
+ * personal account shouldn't grant outbound permission just by connecting —
+ * the user opts in explicitly). Send tools refuse with a structured message
+ * naming the toggle when this is off.
+ */
+export function isEmailSendingEnabled(slot: AccountSlot = 'agent'): boolean {
+  const v = getConfigValue(slotKey(slot, 'send_email'));
+  if (v !== null) return v === 'true';
+  return slot === 'agent';
+}
+
+export function setEmailSendingEnabled(enabled: boolean, slot: AccountSlot = 'agent'): void {
+  setConfigValue(slotKey(slot, 'send_email'), String(enabled));
+}
+
 // ── Config Setters ──
 
 export function setGoogleEnabled(enabled: boolean, slot: AccountSlot = 'agent'): void {

@@ -1,6 +1,14 @@
 // ════════════════════════════════════════
-// Gmail Watcher: Polls for new emails and notifies the primary agent
-// Similar to the iMessage bridge but for incoming email
+// Gmail Watcher: Polls each connected slot's inbox for new emails and
+// notifies the primary agent. Multi-slot (agent + user) as of v2.7.1 —
+// each slot has its own enable toggle (isEmailMonitoringEnabled), its own
+// cursor, its own notifiedIds dedup set, and its own failure-tracking
+// state so a flaky user-slot account doesn't suppress agent-slot alerts.
+//
+// The exposed WatcherStatus is an aggregate: `connected` and `enabled` are
+// true if ANY monitored slot satisfies them; lastPollAt/lastPollOk reflect
+// the most recent slot's poll; counters sum across slots. The dashboard
+// Health card stays a single row per service. Slot-level errors go to logs.
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
@@ -10,245 +18,297 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getOwnerName } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { googleRead } from '../google/client.js';
-import { isGoogleEnabled, isGoogleConnected, getEnabledServices } from '../google/auth.js';
+import {
+  isGoogleEnabled, isGoogleConnected, getEnabledServices,
+  isEmailMonitoringEnabled, ACCOUNT_SLOTS, type AccountSlot,
+} from '../google/auth.js';
 import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError } from './watcher-status.js';
 
 const logger = createLogger('gmail-watcher');
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-const POLL_INTERVAL_MS = 300_000; // Check every 5 minutes
-const MAX_RESULTS_PER_POLL = 50; // Was 10 — bumped so a weekend backlog or
-                                  // delayed-startup catchup doesn't drop emails.
-
-// v2.5.36 — Re-scan window. Each poll's `after:` cursor is set to
-// (lastCheckedAt - LOOKBACK_MARGIN_MS) instead of just lastCheckedAt, so
-// emails that were indexed by Gmail's messages.list API AFTER they
-// arrived (well-known 1-3 minute indexing lag) still get caught by a
-// later poll. The existing notifiedIds dedup prevents the wider window
-// from re-notifying on emails we already processed. 15 min = 3x the
-// poll interval, comfortable headroom over the worst-case indexing
-// delay we've observed.
-//
-// Without this margin, the failure mode is silent: email arrives at T,
-// watcher polls at T+30s but Gmail's API hasn't indexed it yet so the
-// query returns nothing, watcher advances cursor to T+30s. Email is
-// indexed at T+90s. Next poll at T+5m30s queries `after:T+30s` — the
-// email's internalDate (T) is BEFORE the cursor, so it's excluded
-// forever. User sees the email in the inbox; agent never gets notified.
+const POLL_INTERVAL_MS = 300_000;
+const MAX_RESULTS_PER_POLL = 50;
 const LOOKBACK_MARGIN_MS = 15 * 60 * 1000;
 
-// ── Status state ──
+// ── Per-slot transient state ──
 //
-// Every poll updates this. Surfaced via getStatus() to the dashboard
-// Health page and the GET /api/system/watchers route. Pre-2026-04-30
-// the watcher had no surface signal at all — silent failures meant the
-// user couldn't tell whether new emails were being delivered.
-const status: WatcherStatus = {
-  name: 'gmail',
-  running: false,
-  enabled: false,
-  connected: false,
-  pollIntervalMs: POLL_INTERVAL_MS,
-  lastPollAt: null,
-  lastPollOk: null,
-  lastPollError: null,
-  consecutiveFailures: 0,
-  firstFailureAt: null,
-  lastCheckedAt: null,
-  totalPolls: 0,
-  totalNotifications: 0,
-  lastNotifiedAt: null,
-  recentNotifications: [],
-};
-let alreadyAlerted = false;
-let notificationsSinceFailureAlert = 0;
-
-export function getGmailWatcherStatus(): WatcherStatus {
-  // Refresh enabled/connected on every read so the panel reflects current
-  // config without waiting for the next poll cycle.
-  status.enabled = isGoogleEnabled() && getEnabledServices().gmail;
-  status.connected = isGoogleConnected();
-  status.running = pollTimer !== null;
-  return { ...status, recentNotifications: [...status.recentNotifications] };
+// One block per slot so a stuck user-slot token doesn't suppress alerting
+// for the agent slot and vice versa. lastCheckedAt is mirrored from the DB
+// (gmail_last_checked_at_${slot}) on startup; in-memory copy is the source
+// of truth during runtime.
+interface SlotState {
+  lastCheckedAt: string | null;
+  lastPollAt: string | null;
+  lastPollOk: boolean | null;
+  lastPollError: string | null;
+  consecutiveFailures: number;
+  firstFailureAt: string | null;
+  totalPolls: number;
+  totalNotifications: number;
+  lastNotifiedAt: string | null;
+  recentNotifications: RecentNotification[];
+  alreadyAlerted: boolean;
+  notificationsSinceFailureAlert: number;
 }
 
-// ── Persistence ──
+const slotState: Record<AccountSlot, SlotState> = {
+  agent: makeEmptyState(),
+  user: makeEmptyState(),
+};
 
-function loadLastCheckedAt(): string | null {
+function makeEmptyState(): SlotState {
+  return {
+    lastCheckedAt: null,
+    lastPollAt: null,
+    lastPollOk: null,
+    lastPollError: null,
+    consecutiveFailures: 0,
+    firstFailureAt: null,
+    totalPolls: 0,
+    totalNotifications: 0,
+    lastNotifiedAt: null,
+    recentNotifications: [],
+    alreadyAlerted: false,
+    notificationsSinceFailureAlert: 0,
+  };
+}
+
+// ── Aggregated status (single-row view for dashboard Health panel) ──
+
+export function getGmailWatcherStatus(): WatcherStatus {
+  const slots = ACCOUNT_SLOTS.map(s => ({ slot: s, state: slotState[s] }));
+  const monitored = slots.filter(({ slot }) =>
+    isGoogleEnabled(slot) && isGoogleConnected(slot) && isEmailMonitoringEnabled(slot) && getEnabledServices(slot).gmail,
+  );
+
+  const enabled = monitored.length > 0;
+  const connected = ACCOUNT_SLOTS.some(s => isGoogleConnected(s));
+  const lastPollAt = pickLatest(slots.map(s => s.state.lastPollAt));
+  const lastNotifiedAt = pickLatest(slots.map(s => s.state.lastNotifiedAt));
+  const totalPolls = slots.reduce((a, s) => a + s.state.totalPolls, 0);
+  const totalNotifications = slots.reduce((a, s) => a + s.state.totalNotifications, 0);
+  const lastCheckedAt = pickLatest(slots.map(s => s.state.lastCheckedAt));
+
+  // lastPollOk: false if any slot's last poll failed; true if all succeeded;
+  // null if no slot has polled yet OR all latest polls were skips.
+  const ok = slots.map(s => s.state.lastPollOk).filter((v): v is boolean => v !== null);
+  const lastPollOk: boolean | null = ok.length === 0 ? null : ok.every(v => v);
+  const lastPollError = slots.find(s => s.state.lastPollOk === false)?.state.lastPollError ?? null;
+  const consecutiveFailures = slots.reduce((a, s) => Math.max(a, s.state.consecutiveFailures), 0);
+  const firstFailureAt = pickEarliest(slots.map(s => s.state.firstFailureAt).filter((v): v is string => v !== null));
+
+  // Merge and re-sort recent notifications across slots
+  const merged: RecentNotification[] = slots
+    .flatMap(s => s.state.recentNotifications)
+    .sort((a, b) => (a.at < b.at ? 1 : -1))
+    .slice(0, 10);
+
+  return {
+    name: 'gmail',
+    running: pollTimer !== null,
+    enabled,
+    connected,
+    pollIntervalMs: POLL_INTERVAL_MS,
+    lastPollAt,
+    lastPollOk,
+    lastPollError,
+    consecutiveFailures,
+    firstFailureAt,
+    lastCheckedAt,
+    totalPolls,
+    totalNotifications,
+    lastNotifiedAt,
+    recentNotifications: merged,
+  };
+}
+
+function pickLatest(times: Array<string | null>): string | null {
+  const valid = times.filter((v): v is string => v !== null);
+  if (valid.length === 0) return null;
+  return valid.sort().slice(-1)[0];
+}
+
+function pickEarliest(times: string[]): string | null {
+  if (times.length === 0) return null;
+  return times.sort()[0];
+}
+
+// ── Per-slot persistence ──
+
+function lastCheckedKey(slot: AccountSlot): string {
+  return slot === 'agent' ? 'gmail_last_checked_at' : `gmail_last_checked_at_${slot}`;
+}
+
+function notifiedKey(slot: AccountSlot): string {
+  return slot === 'agent' ? 'gmail_notified_ids' : `gmail_notified_ids_${slot}`;
+}
+
+function loadLastCheckedAt(slot: AccountSlot): string | null {
   try {
     const db = getDb();
-    const row = db.prepare("SELECT value FROM config WHERE key = 'gmail_last_checked_at'").get() as { value: string } | undefined;
+    const row = db.prepare('SELECT value FROM config WHERE key = ?').get(lastCheckedKey(slot)) as { value: string } | undefined;
     return row?.value ?? null;
   } catch {
     return null;
   }
 }
 
-function saveLastCheckedAt(timestamp: string): void {
+function saveLastCheckedAt(slot: AccountSlot, timestamp: string): void {
   try {
     const db = getDb();
     db.prepare(`
-      INSERT INTO config (key, value, updated_at) VALUES ('gmail_last_checked_at', ?, datetime('now'))
+      INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
       ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-    `).run(timestamp, timestamp);
+    `).run(lastCheckedKey(slot), timestamp, timestamp);
   } catch (err) {
     logger.error('Failed to save gmail_last_checked_at', {
-      error: err instanceof Error ? err.message : String(err),
+      slot, error: err instanceof Error ? err.message : String(err),
     });
   }
 }
 
-// ── Polling ──
+// ── Per-slot polling ──
 
-async function pollForNewEmails(): Promise<void> {
-  status.totalPolls++;
-  // Capture the poll-start time BEFORE the API call so an email arriving
-  // during the poll isn't lost. The next poll's floor is set from this,
-  // not from "now" after processing finishes.
+async function pollSlot(slot: AccountSlot): Promise<void> {
+  const s = slotState[slot];
+  s.totalPolls++;
   const pollStartIso = new Date().toISOString();
 
   const recordSuccess = (): void => {
-    status.lastPollAt = new Date().toISOString();
-    status.lastPollOk = true;
-    status.lastPollError = null;
-    status.consecutiveFailures = 0;
-    status.firstFailureAt = null;
-    if (alreadyAlerted) {
-      // Recovered after a failure alert was sent — close the loop with a
-      // recovery iMessage so the user doesn't stare at a green panel
-      // wondering whether the failure alert was current.
-      logger.info('Gmail watcher recovered — sending recovery alert');
-      alreadyAlerted = maybeAlertOnRecovery({
-        name: 'gmail', alreadyAlerted, totalNotificationsSinceFailure: notificationsSinceFailureAlert,
+    s.lastPollAt = new Date().toISOString();
+    s.lastPollOk = true;
+    s.lastPollError = null;
+    s.consecutiveFailures = 0;
+    s.firstFailureAt = null;
+    if (s.alreadyAlerted) {
+      logger.info('Gmail watcher recovered — sending recovery alert', { slot });
+      s.alreadyAlerted = maybeAlertOnRecovery({
+        name: 'gmail', alreadyAlerted: s.alreadyAlerted, totalNotificationsSinceFailure: s.notificationsSinceFailureAlert,
       });
-      notificationsSinceFailureAlert = 0;
+      s.notificationsSinceFailureAlert = 0;
     }
   };
   const recordFailure = (rawMsg: string): void => {
     const msg = normalizeError(rawMsg);
     const nowIso = new Date().toISOString();
-    status.lastPollAt = nowIso;
-    status.lastPollOk = false;
-    status.lastPollError = msg;
-    status.consecutiveFailures++;
-    if (!status.firstFailureAt) status.firstFailureAt = nowIso;
-    alreadyAlerted = maybeAlertOnFailure({
+    s.lastPollAt = nowIso;
+    s.lastPollOk = false;
+    s.lastPollError = msg;
+    s.consecutiveFailures++;
+    if (!s.firstFailureAt) s.firstFailureAt = nowIso;
+    s.alreadyAlerted = maybeAlertOnFailure({
       name: 'gmail',
-      consecutiveFailures: status.consecutiveFailures,
-      firstFailureAt: status.firstFailureAt,
+      consecutiveFailures: s.consecutiveFailures,
+      firstFailureAt: s.firstFailureAt,
       lastError: msg,
-      alreadyAlerted,
+      alreadyAlerted: s.alreadyAlerted,
     });
   };
 
-  if (!isGoogleEnabled() || !isGoogleConnected()) {
-    // Not a "failure" per se — the user has Google off or hasn't auth'd.
-    // Record as a non-error skip so the panel shows why nothing's happening.
-    status.lastPollAt = new Date().toISOString();
-    status.lastPollOk = null;
-    status.lastPollError = !isGoogleEnabled() ? 'Google integration disabled in Settings' : 'Google not connected — re-auth in Settings';
+  // Per-slot skip checks. Recorded as non-error skips so getGmailWatcherStatus
+  // can still surface "why is nothing happening" through the existing
+  // lastPollError field on the aggregated view.
+  if (!isGoogleEnabled(slot) || !isGoogleConnected(slot)) {
+    s.lastPollAt = new Date().toISOString();
+    s.lastPollOk = null;
+    s.lastPollError = !isGoogleEnabled(slot)
+      ? `${slot} slot: Google integration disabled`
+      : `${slot} slot: not connected`;
     return;
   }
-
-  const services = getEnabledServices();
+  if (!isEmailMonitoringEnabled(slot)) {
+    s.lastPollAt = new Date().toISOString();
+    s.lastPollOk = null;
+    s.lastPollError = `${slot} slot: email monitoring disabled`;
+    return;
+  }
+  const services = getEnabledServices(slot);
   if (!services.gmail) {
-    status.lastPollAt = new Date().toISOString();
-    status.lastPollOk = null;
-    status.lastPollError = 'Gmail service disabled in Settings → Google';
+    s.lastPollAt = new Date().toISOString();
+    s.lastPollOk = null;
+    s.lastPollError = `${slot} slot: Gmail service disabled`;
     return;
   }
 
   try {
-    // Build query: all inbox emails since lastCheckedAt. Pre-2026-04-30
-    // we filtered by is:unread, but that meant any email the user opened
-    // on their phone before the next poll fired was silently lost. Now
-    // we include all inbox messages and rely on notifiedIds dedup to
-    // avoid re-notifying.
     let query = 'in:inbox';
-    if (status.lastCheckedAt) {
-      // Gmail accepts epoch seconds in after: for second-precision filter.
-      // Pre-2026-04-30 we used YYYY/MM/DD which was day-precision and
-      // forced re-listing the entire day's emails on every poll.
-      // v2.5.36 — Subtract LOOKBACK_MARGIN_MS so emails indexed late by
-      // Gmail's API (1-3 min typical lag) still get picked up on the
-      // next poll. notifiedIds dedup makes the wider window safe.
-      const cursorMs = new Date(status.lastCheckedAt).getTime() - LOOKBACK_MARGIN_MS;
+    if (s.lastCheckedAt) {
+      const cursorMs = new Date(s.lastCheckedAt).getTime() - LOOKBACK_MARGIN_MS;
       const afterEpoch = Math.floor(Math.max(0, cursorMs) / 1000);
       query += ` after:${afterEpoch}`;
     }
 
     const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
     const listUrl = `${GMAIL_BASE}/messages?q=${encodeURIComponent(query)}&maxResults=${MAX_RESULTS_PER_POLL}`;
-    const result = await googleRead(listUrl, 'system', 'Gmail Watcher', 'gmail_inbox_poll', { query });
+    const result = await googleRead(listUrl, 'system', 'Gmail Watcher', 'gmail_inbox_poll', { query, slot }, slot);
 
     if (!result.ok) {
-      // Pre-2026-04-30 this was logger.debug, so 401s and connection
-      // failures were invisible. Now they're warn-level AND surfaced
-      // through getStatus() so the user can see them on the Health page.
-      logger.warn('Gmail poll failed', { error: result.error, query });
+      logger.warn('Gmail poll failed', { slot, error: result.error, query });
       recordFailure(result.error ?? 'Unknown poll error');
       return;
     }
 
     const data = result.data as { messages?: Array<{ id: string; threadId: string }> };
 
-    // Track which message IDs we've already notified about (avoid duplicates across polls)
     const db = getDb();
-    const notifiedKey = 'gmail_notified_ids';
+    const nKey = notifiedKey(slot);
     let notifiedIds: Set<string>;
     try {
-      const row = db.prepare("SELECT value FROM config WHERE key = ?").get(notifiedKey) as { value: string } | undefined;
+      const row = db.prepare('SELECT value FROM config WHERE key = ?').get(nKey) as { value: string } | undefined;
       notifiedIds = new Set(row?.value ? JSON.parse(row.value) : []);
     } catch {
       notifiedIds = new Set();
     }
 
-    // v2.5.37 — diagnostic: log how many messages the list returned. If
-    // the user's "I see the email but agent never notified" complaint
-    // continues, this tells us whether the message even appeared in the
-    // list query (cursor / indexing issue) vs. appeared but got filtered
-    // downstream (label / dedup / detail-fetch failure).
     logger.info('Gmail poll: list returned', {
-      query, count: data?.messages?.length ?? 0,
-      lastCheckedAt: status.lastCheckedAt,
+      slot, query, count: data?.messages?.length ?? 0,
+      lastCheckedAt: s.lastCheckedAt,
     });
 
     if (!data?.messages || data.messages.length === 0) {
-      // No new messages, success — advance lastCheckedAt to poll-start time
-      // (NOT "now", which would skip any email that arrived during the poll).
-      status.lastCheckedAt = pollStartIso;
-      saveLastCheckedAt(pollStartIso);
+      s.lastCheckedAt = pollStartIso;
+      saveLastCheckedAt(slot, pollStartIso);
       recordSuccess();
       return;
     }
 
     const primaryId = getPrimaryAgentId();
     const ownerName = getOwnerName();
-    void ownerName; // currently unused; kept for future personalization
+    void ownerName;
 
-    // Get own email to filter out self-sent
-    const ownEmail = (() => {
+    // Per-slot own email — used in the notification body so Kevin knows
+    // which inbox to read from when calling user_gmail_read vs. gmail_read.
+    const accountEmailKey = slot === 'agent' ? 'gws_account_email' : 'gws_user_account_email';
+    const accountEmail = (() => {
       try {
-        const row = db.prepare("SELECT value FROM config WHERE key = 'gws_account_email'").get() as { value: string } | undefined;
+        const row = db.prepare('SELECT value FROM config WHERE key = ?').get(accountEmailKey) as { value: string } | undefined;
         return row?.value ?? null;
       } catch { return null; }
     })();
 
+    // The tool the agent should use to read the body. Agent slot uses
+    // gmail_read; user slot uses user_gmail_read (the v2.7.0 prefix-routed
+    // variant). Made explicit in the notification so the model can't pick
+    // wrong when both accounts are connected.
+    const toolHint = slot === 'agent' ? 'gmail_read' : 'user_gmail_read';
+
     let newCount = 0;
+    const notifyAccount = accountEmail ?? slot;
+    const accountSuffix = slot === 'user' ? "user's Google account" : "agent's Google account";
 
     for (const msg of data.messages) {
       if (notifiedIds.has(msg.id)) {
-        logger.info('Gmail poll: skipping already-notified', { messageId: msg.id });
+        logger.info('Gmail poll: skipping already-notified', { slot, messageId: msg.id });
         continue;
       }
 
-      // Fetch message metadata
       const detailUrl = `${GMAIL_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`;
-      const detail = await googleRead(detailUrl, 'system', 'Gmail Watcher', 'gmail_read', { messageId: msg.id });
+      const detail = await googleRead(detailUrl, 'system', 'Gmail Watcher', 'gmail_read', { messageId: msg.id, slot }, slot);
 
       if (!detail.ok) {
-        logger.warn('Gmail message detail fetch failed', { messageId: msg.id, error: detail.error });
+        logger.warn('Gmail message detail fetch failed', { slot, messageId: msg.id, error: detail.error });
         continue;
       }
 
@@ -266,41 +326,16 @@ async function pollForNewEmails(): Promise<void> {
       const snippet = msgData?.snippet ?? '';
       const labelIds = msgData?.labelIds ?? [];
 
-      // Self-sent filter via Gmail's SENT label (set server-side when the
-      // user actually composed and sent the email). Pre-2026-05-06 we
-      // matched on `from.includes(ownEmail)` which wrongly skipped Google
-      // Form responses, self-CC'd inbox copies, mailing-list confirmations,
-      // and any other inbound email whose From header happened to show the
-      // owner's own address. The SENT label is the authoritative "did this
-      // user actually send this" signal — ownEmail header matching is a
-      // header any sender can spoof; SENT is set by Gmail itself.
-      //
-      // v2.5.37 — narrowed the filter: we now require BOTH the SENT label
-      // AND the absence of INBOX. A message with both SENT and INBOX is a
-      // self-sent email that ALSO arrived in the inbox (sending to your
-      // own address; some scripted send paths). The user does want to be
-      // notified about those — they represent inbound traffic from the
-      // user's automation surface even if the original send was on the
-      // user's own behalf.
       const hasSent = labelIds.includes('SENT');
       const hasInbox = labelIds.includes('INBOX');
       if (hasSent && !hasInbox) {
-        logger.info('Gmail poll: skipping self-sent (SENT label, no INBOX)', {
-          messageId: msg.id, from, subject, labelIds,
-        });
+        logger.info('Gmail poll: skipping self-sent', { slot, messageId: msg.id, from, subject });
         notifiedIds.add(msg.id);
         continue;
       }
-      // v2.5.37 — log everything else so we can see exactly what's being
-      // notified and what filter (if any) caught a missing email.
-      logger.info('Gmail poll: notifying', {
-        messageId: msg.id, from, subject, labelIds, hasSent, hasInbox,
-      });
-      void ownEmail; // retained for future header-based heuristics if needed
+      logger.info('Gmail poll: notifying', { slot, messageId: msg.id, from, subject });
 
-      // Inject notification into primary agent's conversation
-      // IMPORTANT: This is NOT a message from the user. It's an automated notification.
-      const content = `[SOURCE: GMAIL NOTIFICATION — not a message from the user, this is an automated alert about a new email that arrived in the inbox]\n\nFrom: ${from}\nSubject: ${subject}\nDate: ${date}\nPreview: ${snippet}\nMessage ID: ${msg.id}`;
+      const content = `[SOURCE: GMAIL NOTIFICATION — ${notifyAccount} (${accountSuffix})]\n\nFrom: ${from}\nSubject: ${subject}\nDate: ${date}\nPreview: ${snippet}\nMessage ID: ${msg.id}\nUse \`${toolHint}\` to read the full body.`;
 
       const msgId = uuidv4();
       db.prepare(`
@@ -326,49 +361,54 @@ async function pollForNewEmails(): Promise<void> {
 
       notifiedIds.add(msg.id);
       newCount++;
-      status.totalNotifications++;
-      if (alreadyAlerted) notificationsSinceFailureAlert++;
-      status.lastNotifiedAt = new Date().toISOString();
-      const recent: RecentNotification = {
-        at: status.lastNotifiedAt,
-        from,
+      s.totalNotifications++;
+      if (s.alreadyAlerted) s.notificationsSinceFailureAlert++;
+      s.lastNotifiedAt = new Date().toISOString();
+      s.recentNotifications = pushRecent(s.recentNotifications, {
+        at: s.lastNotifiedAt,
+        from: `${from} → ${notifyAccount}`,
         subject,
-      };
-      status.recentNotifications = pushRecent(status.recentNotifications, recent);
-
-      logger.info('New email notification sent to primary agent', {
-        from, subject, messageId: msg.id,
       });
+      logger.info('New email notification sent to primary agent', { slot, from, subject, messageId: msg.id });
     }
 
-    // Trigger the agent runtime if we sent any notifications
     if (newCount > 0) {
       const runtime = getAgentRuntime();
       const summary = newCount === 1
-        ? `[SOURCE: GMAIL NOTIFICATION] A new email just arrived. Details are in the previous message.`
-        : `[SOURCE: GMAIL NOTIFICATION] ${newCount} new emails just arrived. Details are in the previous messages.`;
-
+        ? `[SOURCE: GMAIL NOTIFICATION] A new email just arrived in ${notifyAccount}. Details are in the previous message.`
+        : `[SOURCE: GMAIL NOTIFICATION] ${newCount} new emails just arrived in ${notifyAccount}. Details are in the previous messages.`;
       runtime.handleMessage(primaryId, summary).catch(err => {
         logger.error('Failed to trigger runtime for new email notification', {
-          error: err instanceof Error ? err.message : String(err),
+          slot, error: err instanceof Error ? err.message : String(err),
         });
       });
     }
 
-    // Persist notified IDs (keep last 200 to prevent unbounded growth)
     const recentIds = [...notifiedIds].slice(-200);
     db.prepare(`
       INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
       ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-    `).run(notifiedKey, JSON.stringify(recentIds), JSON.stringify(recentIds));
+    `).run(nKey, JSON.stringify(recentIds), JSON.stringify(recentIds));
 
-    status.lastCheckedAt = pollStartIso;
-    saveLastCheckedAt(pollStartIso);
+    s.lastCheckedAt = pollStartIso;
+    saveLastCheckedAt(slot, pollStartIso);
     recordSuccess();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error('Gmail poll threw', { error: msg });
+    logger.error('Gmail poll threw', { slot, error: msg });
     recordFailure(msg);
+  }
+}
+
+async function pollAllSlots(): Promise<void> {
+  for (const slot of ACCOUNT_SLOTS) {
+    try {
+      await pollSlot(slot);
+    } catch (err) {
+      logger.error('Gmail pollSlot threw outside catch', {
+        slot, error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }
 
@@ -380,41 +420,43 @@ export function startGmailWatcher(): void {
     return;
   }
 
-  if (!isGoogleEnabled() || !isGoogleConnected()) {
-    logger.info('Gmail watcher: Google not connected, skipping');
-    return;
+  // Hydrate per-slot lastCheckedAt from DB. Slots that have never polled
+  // get seeded to "now" so a freshly-connected user slot doesn't replay
+  // months of history. Slots that aren't currently connected/enabled also
+  // hydrate so reconnecting later picks up where the cursor left off.
+  for (const slot of ACCOUNT_SLOTS) {
+    slotState[slot].lastCheckedAt = loadLastCheckedAt(slot);
+    if (!slotState[slot].lastCheckedAt && isGoogleConnected(slot) && isEmailMonitoringEnabled(slot)) {
+      const now = new Date().toISOString();
+      slotState[slot].lastCheckedAt = now;
+      saveLastCheckedAt(slot, now);
+      logger.info('Gmail watcher: first run, seeded lastCheckedAt to now', { slot });
+    }
   }
 
-  const services = getEnabledServices();
-  if (!services.gmail) {
-    logger.info('Gmail watcher: Gmail service not enabled, skipping');
+  const monitoredSlots = ACCOUNT_SLOTS.filter(s =>
+    isGoogleConnected(s) && isEmailMonitoringEnabled(s) && getEnabledServices(s).gmail,
+  );
+  if (monitoredSlots.length === 0) {
+    logger.info('Gmail watcher: no slots have email monitoring enabled, skipping');
     return;
-  }
-
-  status.lastCheckedAt = loadLastCheckedAt();
-
-  // If first run, seed to now so we don't process the entire inbox
-  if (!status.lastCheckedAt) {
-    status.lastCheckedAt = new Date().toISOString();
-    saveLastCheckedAt(status.lastCheckedAt);
-    logger.info('Gmail watcher: first run, seeded lastCheckedAt to now');
   }
 
   logger.info('Starting Gmail watcher', {
-    pollInterval: POLL_INTERVAL_MS, lastCheckedAt: status.lastCheckedAt,
+    pollInterval: POLL_INTERVAL_MS,
+    monitoredSlots,
   });
 
   pollTimer = setInterval(() => {
-    pollForNewEmails().catch(err => {
+    pollAllSlots().catch(err => {
       logger.error('Gmail poll cycle failed', {
         error: err instanceof Error ? err.message : String(err),
       });
     });
   }, POLL_INTERVAL_MS);
 
-  // Initial poll after a short delay (let the server finish starting)
   setTimeout(() => {
-    pollForNewEmails().catch(() => { /* logged inside */ });
+    pollAllSlots().catch(() => { /* logged inside */ });
   }, 10_000);
 }
 

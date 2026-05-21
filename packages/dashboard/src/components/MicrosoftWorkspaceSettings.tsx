@@ -12,6 +12,8 @@ interface SlotInfo {
   accountType: 'msa' | 'entra' | null;
   services: Record<string, boolean>;
   lastVerified: string | null;
+  watchEmail: boolean;
+  sendEmail: boolean;
 }
 
 interface MsStatus {
@@ -113,6 +115,22 @@ export const MicrosoftWorkspaceSettings = () => {
     await loadStatus();
   };
 
+  const handleToggleWatchEmail = async (slot: Slot, enabled: boolean) => {
+    await api.request(`/microsoft/watch-email?slot=${slot}`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    });
+    await loadStatus();
+  };
+
+  const handleToggleSendEmail = async (slot: Slot, enabled: boolean) => {
+    await api.request(`/microsoft/send-email?slot=${slot}`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    });
+    await loadStatus();
+  };
+
   const handleInstallOffice = async () => {
     await api.request('/microsoft/install-office-tools', { method: 'POST' });
     setTimeout(loadStatus, 5000);
@@ -196,6 +214,42 @@ export const MicrosoftWorkspaceSettings = () => {
                     );
                   })}
                 </div>
+
+                <label className="flex items-center justify-between py-1.5 cursor-pointer">
+                  <div className="min-w-0 pr-3">
+                    <span className="text-sm text-ui/70">Monitor incoming email</span>
+                    <span className="text-xs text-ui/25 block mt-0.5">
+                      {info.services.outlook
+                        ? 'Notify the agent whenever new mail arrives in this inbox.'
+                        : 'Enable Outlook above first.'}
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={info.watchEmail && (info.services.outlook ?? true)}
+                    disabled={!(info.services.outlook ?? true)}
+                    onChange={(e) => handleToggleWatchEmail(slot, e.target.checked)}
+                    className="rounded border-ui/[0.15] bg-ui/[0.05] text-cp-amber focus:ring-cp-amber focus:ring-offset-0 disabled:opacity-30 disabled:cursor-not-allowed"
+                  />
+                </label>
+
+                <label className="flex items-center justify-between py-1.5 cursor-pointer">
+                  <div className="min-w-0 pr-3">
+                    <span className="text-sm text-ui/70">Allow sending email</span>
+                    <span className="text-xs text-ui/25 block mt-0.5">
+                      {info.services.outlook
+                        ? `Lets the agent send, reply, and forward from ${info.email ?? 'this account'}.`
+                        : 'Enable Outlook above first.'}
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={info.sendEmail && (info.services.outlook ?? true)}
+                    disabled={!(info.services.outlook ?? true)}
+                    onChange={(e) => handleToggleSendEmail(slot, e.target.checked)}
+                    className="rounded border-ui/[0.15] bg-ui/[0.05] text-cp-amber focus:ring-cp-amber focus:ring-offset-0 disabled:opacity-30 disabled:cursor-not-allowed"
+                  />
+                </label>
 
                 {/* Office Document Tools — agent slot only; the install is shared at machine level. */}
                 {slot === 'agent' && (

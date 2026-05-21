@@ -279,6 +279,24 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   // See packages/server/src/google/tools-slides.ts for the full slides toolkit.
 ];
 
+// ── v2.7.1 multi-account: user_* send tool variants ──
+//
+// Mirror of the read-side USER_SLOT_READ_TOOLS pattern. Send/reply/forward
+// from the user slot is gated by isEmailSendingEnabled('user') — see the
+// executor for the refusal path. The toggle defaults OFF so connecting a
+// personal Gmail doesn't silently grant the agent permission to send mail
+// from it; the user has to flip the switch in Settings → Google → User.
+const USER_SLOT_SEND_TOOLS: readonly string[] = ['gmail_send', 'gmail_reply', 'gmail_forward'];
+for (const canonical of USER_SLOT_SEND_TOOLS) {
+  const baseDef = googleWriteToolDefinitions.find(d => d.name === canonical);
+  if (!baseDef) continue;
+  googleWriteToolDefinitions.push({
+    ...baseDef,
+    name: `user_${canonical}`,
+    description: `[USER'S Google account variant of \`${canonical}\`] ${baseDef.description}\n\nSends from the user's connected Google account (Settings → Google → User slot). Disabled by default — the user must turn on "Allow sending email" on the User slot card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,
+  });
+}
+
 // ── Helpers ──
 
 function buildRfc2822Email(to: string, subject: string, body: string, options?: { cc?: string; bcc?: string; inReplyTo?: string; references?: string; threadId?: string }): string {
@@ -306,12 +324,35 @@ export async function executeGoogleWriteTool(
   agentId: string,
   agentName: string,
 ): Promise<string> {
+  // v2.7.1 — strip user_ prefix on user-slot send tools and route via slot.
+  // Only send/reply/forward currently have user_ variants (see
+  // USER_SLOT_SEND_TOOLS above); other write tools still operate solely on
+  // the agent slot.
+  let slot: import('./auth.js').AccountSlot = 'agent';
+  let canonicalName = name;
+  if (name.startsWith('user_')) {
+    slot = 'user';
+    canonicalName = name.slice('user_'.length);
+  }
+
   const { validateAgainstSchema } = await import('../agent/tool-helpers.js');
-  const def = googleWriteToolDefByName.get(name);
-  const schemaErr = validateAgainstSchema(name, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
+  const def = googleWriteToolDefByName.get(canonicalName);
+  const schemaErr = validateAgainstSchema(canonicalName, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
   if (schemaErr) return schemaErr;
 
-  switch (name) {
+  // Send-permission gate. Refuse with a structured message that tells the
+  // agent (and via logs, the user) exactly which switch to flip. Applies
+  // to send, reply, and forward — and to both slots, since the toggle
+  // defaults off everywhere.
+  if (canonicalName === 'gmail_send' || canonicalName === 'gmail_reply' || canonicalName === 'gmail_forward') {
+    const { isEmailSendingEnabled } = await import('./auth.js');
+    if (!isEmailSendingEnabled(slot)) {
+      const slotLabel = slot === 'user' ? "user's Google account" : "agent's Google account";
+      return `Error: sending email from the ${slotLabel} is disabled. Open Settings → Google and turn on "Allow sending email" for the ${slot === 'user' ? 'User' : 'Agent'} slot, then try again.`;
+    }
+  }
+
+  switch (canonicalName) {
     case 'gmail_send': {
       const to = args.to as string;
       const subject = args.subject as string;
@@ -322,7 +363,7 @@ export async function executeGoogleWriteTool(
         bcc: args.bcc as string | undefined,
       });
 
-      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw }, agentId, agentName, 'gmail_send', { to, subject });
+      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw }, agentId, agentName, 'gmail_send', { to, subject, slot }, undefined, slot);
       if (!result.ok) return `Error sending email: ${result.error}`;
       return `Email sent to ${to} with subject "${subject}"`;
     }
@@ -333,7 +374,7 @@ export async function executeGoogleWriteTool(
 
       // Fetch original message to get thread ID and headers
       const origUrl = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Message-ID`;
-      const orig = await googleRead(origUrl, agentId, agentName, 'gmail_reply_fetch', { messageId });
+      const orig = await googleRead(origUrl, agentId, agentName, 'gmail_reply_fetch', { messageId, slot }, slot);
       if (!orig.ok) return `Error fetching original message: ${orig.error}`;
 
       const origData = orig.data as { threadId: string; payload?: { headers?: Array<{ name: string; value: string }> } };
@@ -351,7 +392,7 @@ export async function executeGoogleWriteTool(
         references: msgIdHeader,
       });
 
-      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw, threadId: origData.threadId }, agentId, agentName, 'gmail_reply', { messageId, replyAll });
+      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw, threadId: origData.threadId }, agentId, agentName, 'gmail_reply', { messageId, replyAll, slot }, undefined, slot);
       if (!result.ok) return `Error replying to email: ${result.error}`;
       return `Reply sent${replyAll ? ' (to all)' : ''} to message ${messageId}`;
     }
@@ -363,7 +404,7 @@ export async function executeGoogleWriteTool(
 
       // Fetch original message
       const origUrl = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}?format=full`;
-      const orig = await googleRead(origUrl, agentId, agentName, 'gmail_forward_fetch', { messageId });
+      const orig = await googleRead(origUrl, agentId, agentName, 'gmail_forward_fetch', { messageId, slot }, slot);
       if (!orig.ok) return `Error fetching original message: ${orig.error}`;
 
       const origData = orig.data as { payload?: { headers?: Array<{ name: string; value: string }>; body?: { data?: string }; parts?: Array<{ mimeType: string; body?: { data?: string } }> } };
@@ -385,7 +426,7 @@ export async function executeGoogleWriteTool(
       const fwdSubject = origSubject.startsWith('Fwd:') ? origSubject : `Fwd: ${origSubject}`;
 
       const raw = buildRfc2822Email(to, fwdSubject, fwdBody);
-      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw }, agentId, agentName, 'gmail_forward', { messageId, to });
+      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw }, agentId, agentName, 'gmail_forward', { messageId, to, slot }, undefined, slot);
       if (!result.ok) return `Error forwarding email: ${result.error}`;
       return `Email forwarded to ${to}`;
     }

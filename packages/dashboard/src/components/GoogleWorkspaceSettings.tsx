@@ -12,6 +12,8 @@ interface SlotInfo {
   services: Record<string, boolean>;
   lastVerified: string | null;
   missingScopes?: string[];
+  watchEmail: boolean;
+  sendEmail: boolean;
 }
 
 interface GoogleStatus {
@@ -125,6 +127,22 @@ export const GoogleWorkspaceSettings = () => {
     await loadStatus();
   };
 
+  const handleToggleWatchEmail = async (slot: Slot, enabled: boolean) => {
+    await api.request(`/google/watch-email?slot=${slot}`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    });
+    await loadStatus();
+  };
+
+  const handleToggleSendEmail = async (slot: Slot, enabled: boolean) => {
+    await api.request(`/google/send-email?slot=${slot}`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    });
+    await loadStatus();
+  };
+
   if (!status) return <div className="loading-state">Loading...</div>;
 
   return (
@@ -217,6 +235,42 @@ export const GoogleWorkspaceSettings = () => {
                     </label>
                   ))}
                 </div>
+
+                <label className="flex items-center justify-between py-1.5 cursor-pointer">
+                  <div className="min-w-0 pr-3">
+                    <span className="text-sm text-ui/70">Monitor incoming email</span>
+                    <span className="text-xs text-ui/25 block mt-0.5">
+                      {info.services.gmail
+                        ? 'Notify the agent whenever new mail arrives in this inbox.'
+                        : 'Enable Gmail above first.'}
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={info.watchEmail && (info.services.gmail ?? true)}
+                    disabled={!(info.services.gmail ?? true)}
+                    onChange={(e) => handleToggleWatchEmail(slot, e.target.checked)}
+                    className="rounded border-ui/[0.15] bg-ui/[0.05] text-cp-amber focus:ring-cp-amber focus:ring-offset-0 disabled:opacity-30 disabled:cursor-not-allowed"
+                  />
+                </label>
+
+                <label className="flex items-center justify-between py-1.5 cursor-pointer">
+                  <div className="min-w-0 pr-3">
+                    <span className="text-sm text-ui/70">Allow sending email</span>
+                    <span className="text-xs text-ui/25 block mt-0.5">
+                      {info.services.gmail
+                        ? `Lets the agent send, reply, and forward from ${info.email ?? 'this account'}.`
+                        : 'Enable Gmail above first.'}
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={info.sendEmail && (info.services.gmail ?? true)}
+                    disabled={!(info.services.gmail ?? true)}
+                    onChange={(e) => handleToggleSendEmail(slot, e.target.checked)}
+                    className="rounded border-ui/[0.15] bg-ui/[0.05] text-cp-amber focus:ring-cp-amber focus:ring-offset-0 disabled:opacity-30 disabled:cursor-not-allowed"
+                  />
+                </label>
 
                 <div className="flex gap-2 pt-2 flex-wrap">
                   <button onClick={() => handleTest(slot)} disabled={isTesting}

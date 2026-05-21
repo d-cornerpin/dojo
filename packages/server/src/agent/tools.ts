@@ -6277,6 +6277,12 @@ Thread is closed — respond to the user, not Imaginer.`;
       case 'gmail_send':
       case 'gmail_reply':
       case 'gmail_forward':
+      // v2.7.1 — user-slot send variants. executeGoogleWriteTool strips the
+      // user_ prefix and routes via the user slot's credentials, with a
+      // send-permission gate that defaults off.
+      case 'user_gmail_send':
+      case 'user_gmail_reply':
+      case 'user_gmail_forward':
       case 'gmail_label':
       case 'gmail_read_attachment':
       case 'calendar_create':
@@ -6346,7 +6352,11 @@ Thread is closed — respond to the user, not Imaginer.`;
             { name: 'values', value: args.values, type: 'array' },
           ],
         };
-        const writeErr = checkRequired(writeReqs[name] ?? []);
+        // Validation map is keyed by canonical (unprefixed) tool name. Strip
+        // user_ here so a user_gmail_send call still validates against the
+        // gmail_send required-fields list.
+        const canonicalForValidation = name.startsWith('user_') ? name.slice('user_'.length) : name;
+        const writeErr = checkRequired(writeReqs[canonicalForValidation] ?? []);
         if (writeErr) { content = writeErr; isError = true; break; }
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         content = await executeGoogleWriteTool(name, args, agentId, agentRow?.name ?? agentId);
@@ -6398,6 +6408,11 @@ Thread is closed — respond to the user, not Imaginer.`;
       case 'outlook_send':
       case 'outlook_reply':
       case 'outlook_forward':
+      // v2.7.1 — user-slot send variants. executeMicrosoftWriteTool strips
+      // the user_ prefix and gates on isMsEmailSendingEnabled('user').
+      case 'user_outlook_send':
+      case 'user_outlook_reply':
+      case 'user_outlook_forward':
       case 'outlook_mark_read':
       case 'outlook_delete':
       case 'outlook_download_attachment':

@@ -324,6 +324,20 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
 ];
 
+// ── v2.7.1 multi-account: user_* send tool variants ──
+// Mirrors USER_SLOT_SEND_TOOLS in google/tools-write.ts. Gated by
+// isMsEmailSendingEnabled('user') in the executor below. Off by default.
+const USER_SLOT_SEND_TOOLS: readonly string[] = ['outlook_send', 'outlook_reply', 'outlook_forward'];
+for (const canonical of USER_SLOT_SEND_TOOLS) {
+  const baseDef = microsoftWriteToolDefinitions.find(d => d.name === canonical);
+  if (!baseDef) continue;
+  microsoftWriteToolDefinitions.push({
+    ...baseDef,
+    name: `user_${canonical}`,
+    description: `[USER'S Microsoft account variant of \`${canonical}\`] ${baseDef.description}\n\nSends from the user's connected Microsoft account (Settings → Microsoft → User slot). Disabled by default — the user must turn on "Allow sending email" on the User slot card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,
+  });
+}
+
 // ── Helpers ──
 
 function parseRecipients(str: string): Array<{ emailAddress: { address: string } }> {
@@ -342,12 +356,31 @@ export async function executeMicrosoftWriteTool(
   agentId: string,
   agentName: string,
 ): Promise<string> {
+  // v2.7.1 — same pattern as google/tools-write.ts. Only outlook_send/reply/
+  // forward have user_ variants today; other Microsoft writes still target
+  // the agent slot exclusively.
+  let slot: import('./auth.js').AccountSlot = 'agent';
+  let canonicalName = name;
+  if (name.startsWith('user_')) {
+    slot = 'user';
+    canonicalName = name.slice('user_'.length);
+  }
+
   const { validateAgainstSchema } = await import('../agent/tool-helpers.js');
-  const def = microsoftWriteToolDefByName.get(name);
-  const schemaErr = validateAgainstSchema(name, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
+  const def = microsoftWriteToolDefByName.get(canonicalName);
+  const schemaErr = validateAgainstSchema(canonicalName, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
   if (schemaErr) return schemaErr;
 
-  switch (name) {
+  // Send-permission gate. Default off → must opt in per slot.
+  if (canonicalName === 'outlook_send' || canonicalName === 'outlook_reply' || canonicalName === 'outlook_forward') {
+    const { isMsEmailSendingEnabled } = await import('./auth.js');
+    if (!isMsEmailSendingEnabled(slot)) {
+      const slotLabel = slot === 'user' ? "user's Microsoft account" : "agent's Microsoft account";
+      return `Error: sending email from the ${slotLabel} is disabled. Open Settings → Microsoft and turn on "Allow sending email" for the ${slot === 'user' ? 'User' : 'Agent'} slot, then try again.`;
+    }
+  }
+
+  switch (canonicalName) {
     case 'outlook_send': {
       const toRecipients = parseRecipients(args.to as string);
       const message: Record<string, unknown> = {
@@ -366,8 +399,8 @@ export async function executeMicrosoftWriteTool(
       }
 
       const result = await msGraphWrite('POST', 'me/sendMail', { message }, agentId, agentName, 'outlook_send', {
-        to: args.to, subject: args.subject,
-      });
+        to: args.to, subject: args.subject, slot,
+      }, slot);
       if (!result.ok) return `Error sending email: ${result.error}`;
       return `Email sent to ${args.to} with subject "${args.subject}"`;
     }
@@ -378,8 +411,8 @@ export async function executeMicrosoftWriteTool(
       const endpoint = `me/messages/${messageId}/${replyAll ? 'replyAll' : 'reply'}`;
 
       const result = await msGraphWrite('POST', endpoint, { comment: args.body }, agentId, agentName, 'outlook_reply', {
-        messageId: args.message_id, replyAll,
-      });
+        messageId: args.message_id, replyAll, slot,
+      }, slot);
       if (!result.ok) return `Error replying to email: ${result.error}`;
       return `Reply sent${replyAll ? ' (to all)' : ''} to message ${args.message_id}`;
     }
@@ -392,8 +425,8 @@ export async function executeMicrosoftWriteTool(
       if (args.body) body.comment = args.body;
 
       const result = await msGraphWrite('POST', `me/messages/${messageId}/forward`, body, agentId, agentName, 'outlook_forward', {
-        messageId: args.message_id, to: args.to,
-      });
+        messageId: args.message_id, to: args.to, slot,
+      }, slot);
       if (!result.ok) return `Error forwarding email: ${result.error}`;
       return `Email forwarded to ${args.to}`;
     }

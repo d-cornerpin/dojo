@@ -19,6 +19,10 @@ import {
   disconnectGoogle,
   getMissingScopes,
   discoverGrantedScopes,
+  isEmailMonitoringEnabled,
+  setEmailMonitoringEnabled,
+  isEmailSendingEnabled,
+  setEmailSendingEnabled,
   ACCOUNT_SLOTS,
   type AccountSlot,
 } from '../../google/auth.js';
@@ -80,6 +84,8 @@ function buildSlotPayload(slot: AccountSlot) {
     services: config.enabledServices,
     lastVerified: config.lastVerifiedAt,
     missingScopes: getMissingScopes(slot),
+    watchEmail: isEmailMonitoringEnabled(slot),
+    sendEmail: isEmailSendingEnabled(slot),
   };
 }
 
@@ -178,6 +184,58 @@ googleRouter.put('/services', async (c) => {
     setEnabledServices(body, slot);
     logger.info('Google Workspace services updated', { slot, ...body });
     return c.json({ ok: true, data: { slot } });
+  } catch {
+    return c.json({ ok: false, error: 'Invalid request body' }, 400);
+  }
+});
+
+// PUT /api/google/watch-email?slot=agent|user — toggle Gmail watcher per slot
+googleRouter.put('/watch-email', async (c) => {
+  try {
+    const slot = parseSlot(c.req.query('slot'));
+    const body = await c.req.json() as { enabled?: boolean };
+    if (typeof body.enabled !== 'boolean') {
+      return c.json({ ok: false, error: 'enabled boolean is required' }, 400);
+    }
+    setEmailMonitoringEnabled(body.enabled, slot);
+    logger.info('Gmail email-monitoring toggled', { slot, enabled: body.enabled });
+
+    // Bounce the watcher so the change takes effect immediately. The poll
+    // loop reads isEmailMonitoringEnabled on every tick, so this is mostly
+    // cosmetic for an enabled-true → enabled-false flip (next tick will
+    // skip the slot anyway), but for a disabled → enabled flip on a freshly
+    // connected slot the watcher needs the per-slot lastCheckedAt seeded —
+    // which only happens in startGmailWatcher().
+    try {
+      const { stopGmailWatcher, startGmailWatcher } = await import('../../services/gmail-watcher.js');
+      stopGmailWatcher();
+      startGmailWatcher();
+    } catch (err) {
+      logger.warn('Failed to bounce Gmail watcher after toggle', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    return c.json({ ok: true, data: { slot, enabled: body.enabled } });
+  } catch {
+    return c.json({ ok: false, error: 'Invalid request body' }, 400);
+  }
+});
+
+// PUT /api/google/send-email?slot=agent|user — toggle agent's permission to
+// send/reply/forward email from this slot. Pure config flip; enforcement
+// happens in the tool executor right before the Gmail API call. No watcher
+// to bounce.
+googleRouter.put('/send-email', async (c) => {
+  try {
+    const slot = parseSlot(c.req.query('slot'));
+    const body = await c.req.json() as { enabled?: boolean };
+    if (typeof body.enabled !== 'boolean') {
+      return c.json({ ok: false, error: 'enabled boolean is required' }, 400);
+    }
+    setEmailSendingEnabled(body.enabled, slot);
+    logger.info('Gmail email-sending toggled', { slot, enabled: body.enabled });
+    return c.json({ ok: true, data: { slot, enabled: body.enabled } });
   } catch {
     return c.json({ ok: false, error: 'Invalid request body' }, 400);
   }

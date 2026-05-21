@@ -18,6 +18,10 @@ import {
   testMicrosoftAuth,
   disconnectMicrosoft,
   setEnabledMsServices,
+  isMsEmailMonitoringEnabled,
+  setMsEmailMonitoringEnabled,
+  isMsEmailSendingEnabled,
+  setMsEmailSendingEnabled,
   ACCOUNT_SLOTS,
   type AccountSlot,
 } from '../../microsoft/auth.js';
@@ -42,6 +46,8 @@ function buildSlotPayload(slot: AccountSlot) {
     accountType: config.accountType,
     services: config.enabledServices,
     lastVerified: config.lastVerifiedAt,
+    watchEmail: isMsEmailMonitoringEnabled(slot),
+    sendEmail: isMsEmailSendingEnabled(slot),
   };
 }
 
@@ -172,6 +178,53 @@ microsoftRouter.put('/services', async (c) => {
     setEnabledMsServices(body, slot);
     return c.json({ ok: true, data: { slot } });
   } catch { return c.json({ ok: false, error: 'Invalid request body' }, 400); }
+});
+
+// PUT /api/microsoft/watch-email?slot=agent|user — toggle Outlook watcher per slot
+microsoftRouter.put('/watch-email', async (c) => {
+  try {
+    const slot = parseSlot(c.req.query('slot'));
+    const body = await c.req.json() as { enabled?: boolean };
+    if (typeof body.enabled !== 'boolean') {
+      return c.json({ ok: false, error: 'enabled boolean is required' }, 400);
+    }
+    setMsEmailMonitoringEnabled(body.enabled, slot);
+    logger.info('Outlook email-monitoring toggled', { slot, enabled: body.enabled });
+
+    // Bounce the watcher so a fresh enable picks up lastCheckedAt seeding.
+    // See google route for the same pattern + rationale.
+    try {
+      const { stopOutlookWatcher, startOutlookWatcher } = await import('../../services/outlook-watcher.js');
+      stopOutlookWatcher();
+      startOutlookWatcher();
+    } catch (err) {
+      logger.warn('Failed to bounce Outlook watcher after toggle', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    return c.json({ ok: true, data: { slot, enabled: body.enabled } });
+  } catch {
+    return c.json({ ok: false, error: 'Invalid request body' }, 400);
+  }
+});
+
+// PUT /api/microsoft/send-email?slot=agent|user — toggle agent's permission
+// to send/reply/forward email from this slot. Pure config flip; enforced
+// in the tool executor.
+microsoftRouter.put('/send-email', async (c) => {
+  try {
+    const slot = parseSlot(c.req.query('slot'));
+    const body = await c.req.json() as { enabled?: boolean };
+    if (typeof body.enabled !== 'boolean') {
+      return c.json({ ok: false, error: 'enabled boolean is required' }, 400);
+    }
+    setMsEmailSendingEnabled(body.enabled, slot);
+    logger.info('Outlook email-sending toggled', { slot, enabled: body.enabled });
+    return c.json({ ok: true, data: { slot, enabled: body.enabled } });
+  } catch {
+    return c.json({ ok: false, error: 'Invalid request body' }, 400);
+  }
 });
 
 // POST /api/microsoft/install-office-tools — retry Office package installation
