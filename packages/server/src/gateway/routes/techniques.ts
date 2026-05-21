@@ -19,7 +19,7 @@ import {
 } from '../../techniques/store.js';
 import { getVersions, getVersion, restoreVersion, getUsage } from '../../techniques/versioning.js';
 import { clearTrainerSession } from '../../techniques/trainer-agent.js';
-import { exportTechnique } from '../../techniques/share-export.js';
+import { exportTechnique, TechniqueExportValidationError } from '../../techniques/share-export.js';
 import { importTechnique } from '../../techniques/share-import.js';
 
 const logger = createLogger('technique-routes');
@@ -52,6 +52,10 @@ techniquesRouter.post('/', async (c) => {
   }
 
   try {
+    // Dashboard-initiated create: skip file-reference validation so the
+    // user can save an incomplete draft and fill in supporting files /
+    // dependencies later. The trainer-tool path keeps validation on;
+    // export-time validation is the hard backstop before sharing.
     const technique = createTechnique({
       name: body.name,
       displayName: body.displayName,
@@ -59,6 +63,7 @@ techniquesRouter.post('/', async (c) => {
       instructions: body.instructions,
       tags: body.tags ?? [],
       files: body.files,
+      validateReferences: false,
       publish: body.publish ?? false,
       authorAgentId: body.authorAgentId,
       authorAgentName: body.authorAgentName,
@@ -108,7 +113,10 @@ techniquesRouter.put('/:id/instructions', async (c) => {
   const technique = getTechnique(id);
   if (!technique) return c.json({ ok: false, error: 'Technique not found' }, 404);
 
-  const updated = updateTechniqueInstructions(id, body.content, body.changeSummary ?? 'Updated from dashboard', 'dashboard');
+  // Dashboard-initiated edit: skip file-reference validation (same
+  // rationale as POST / above — let users build incrementally; the
+  // export-time check is the hard backstop).
+  const updated = updateTechniqueInstructions(id, body.content, body.changeSummary ?? 'Updated from dashboard', 'dashboard', { validateReferences: false });
   return c.json({ ok: true, data: updated });
 });
 
@@ -249,6 +257,13 @@ techniquesRouter.post('/:id/export', async (c) => {
       },
     });
   } catch (err) {
+    // Validation refusal is a user-actionable problem (technique needs
+    // cleanup before it can be shared) — surface as 422 with the full
+    // structured refusal so the dashboard can render it readably.
+    if (err instanceof TechniqueExportValidationError) {
+      logger.info('Technique export refused by validator', { id });
+      return c.json({ ok: false, error: err.refusalText, code: 'EXPORT_VALIDATION_FAILED' }, 422);
+    }
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Technique export failed', { error: msg, id });
     return c.json({ ok: false, error: msg }, 400);

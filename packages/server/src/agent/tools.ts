@@ -1782,25 +1782,36 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Technique Tools ──
   {
     name: 'save_technique',
-    description: 'Save what you learned as a reusable technique for the dojo. Creates a new technique with instructions and optional supporting files. Only Sensei agents can create techniques.\n\nIMPORTANT: techniques are saved as DRAFT by default — drafts cannot be loaded by use_technique. If the user just said "save this technique and use it" or otherwise expects it to be usable right away, you MUST pass publish=true. Pass publish=false (or omit) only when the user explicitly wants to review/iterate before sharing.',
+    description: '**TRAINER AGENT ONLY.** Save a reusable technique to the dojo. Other agents calling this get refused with a redirect to the trainer.\n\nThe trainer owns techniques because techniques are SHAREABLE: when one user exports a technique to another user, every support file, dependency, and external resource has to travel with it. A technique whose TECHNIQUE.md references `~/Documents/random.py` (a file the main agent dropped somewhere arbitrary) is broken on every other machine. Centralizing creation in the trainer is what keeps techniques portable by construction.\n\nWhen you (as another agent) want a technique built, send the trainer a message describing what you want, with the contents of any custom files inline. They\'ll create the technique correctly.\n\n**File-reference validation runs at save time.** Every path TECHNIQUE.md references must EITHER exist inside the technique\'s support directory (pass it in `files`) OR be declared in `dependencies` as a repo / asset / manual step that the importing trainer will fetch. References that don\'t resolve cause a structured refusal.\n\n**Drafts vs publish:** techniques save as DRAFT by default. Drafts can\'t be loaded with `use_technique`. Pass publish=true whenever the user expects it usable right away.',
     input_schema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Short name (lowercase, hyphens ok, used as directory name)' },
         display_name: { type: 'string', description: 'Human-readable name' },
         description: { type: 'string', description: 'One-line description of what this technique does' },
-        instructions: { type: 'string', description: 'Full TECHNIQUE.md content — detailed step-by-step instructions for how to execute this technique, written for other agents to follow' },
+        instructions: { type: 'string', description: 'Full TECHNIQUE.md content — detailed step-by-step instructions for how to execute this technique, written for other agents to follow. Every file path referenced here must either exist in `files` or be declared in `dependencies`.' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Tags for categorization' },
         files: {
           type: 'array',
           items: {
             type: 'object',
             properties: {
-              path: { type: 'string', description: 'Relative path within the technique directory' },
+              path: { type: 'string', description: 'Relative path within the technique directory (e.g. "server.py", "templates/brief.md")' },
               content: { type: 'string', description: 'File content' },
             },
           },
-          description: 'Supporting files to include',
+          description: 'Supporting files to include in the technique directory. Every custom script, template, config, or data file the technique needs MUST be passed here — files referenced in TECHNIQUE.md that aren\'t included and aren\'t in dependencies will refuse the save.',
+        },
+        dependencies: {
+          type: 'object',
+          description: 'External dependencies that aren\'t support files. The importing trainer reads this to set up the technique on the receiving machine. Omit if the technique has none.',
+          properties: {
+            system_packages: { type: 'array', description: 'OS-level packages (brew, apt, etc.).', items: { type: 'object', properties: { manager: { type: 'string', description: 'e.g. "brew", "apt", "choco"' }, package: { type: 'string' }, version: { type: 'string' }, note: { type: 'string' } }, required: ['manager', 'package'] } },
+            language_packages: { type: 'array', description: 'Language-runtime packages (npm, pip, gem, etc.).', items: { type: 'object', properties: { manager: { type: 'string', description: 'e.g. "npm", "pip"' }, package: { type: 'string' }, version: { type: 'string' }, install_in: { type: 'string' }, note: { type: 'string' } }, required: ['manager', 'package'] } },
+            repos: { type: 'array', description: 'Git repos to clone.', items: { type: 'object', properties: { url: { type: 'string' }, ref: { type: 'string' }, install_to: { type: 'string', description: 'Relative path inside technique dir to clone into' }, note: { type: 'string' } }, required: ['url'] } },
+            models_or_assets: { type: 'array', description: 'Files to download (model weights, datasets, binaries).', items: { type: 'object', properties: { url: { type: 'string' }, destination: { type: 'string', description: 'Relative path inside technique dir to save to' }, sha256: { type: 'string' }, note: { type: 'string' } }, required: ['url', 'destination'] } },
+            manual_steps: { type: 'array', items: { type: 'string' }, description: 'Free-text steps the importing trainer must walk the user through (signups, hardware setup, etc.).' },
+          },
         },
         publish: { type: 'boolean', description: 'TRUE = save and publish immediately so other agents can use_technique it. FALSE (default) = save as draft, only usable after a separate publish_technique call. Pass TRUE whenever the user expects the technique to be usable now.' },
       },
@@ -1853,7 +1864,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'publish_technique',
-    description: 'Publish a draft technique, making it available to all agents. Sensei only.',
+    description: 'Publish a draft technique, making it available to all agents. **Trainer agent only** — non-trainer callers get refused with a redirect.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1864,15 +1875,26 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'update_technique',
-    description: 'Update a technique\'s display name, description, instructions, or files. Instruction changes create a version snapshot; metadata-only changes (display_name / description) do not. Sensei only.',
+    description: 'Update a technique\'s display name, description, instructions, files, or dependency manifest. Instruction changes create a version snapshot; metadata-only changes (display_name / description / dependencies) do not. **Trainer agent only** — non-trainer callers get refused with a redirect.\n\nFile-reference validation runs the same way as save_technique: if `instructions` references a path that isn\'t in the support dir AND isn\'t declared in dependencies, the update is refused.',
     input_schema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Technique ID (slug) to update — NOT the new display name. Use display_name to rename.' },
         display_name: { type: 'string', description: 'New human-readable name shown in the UI. Slug/ID does not change.' },
         description: { type: 'string', description: 'New description text.' },
-        instructions: { type: 'string', description: 'Updated TECHNIQUE.md content. Bumps the version.' },
-        files: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } } }, description: 'Files to add or update.' },
+        instructions: { type: 'string', description: 'Updated TECHNIQUE.md content. Bumps the version. Validated against the technique\'s support files + dependency manifest.' },
+        files: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } } }, description: 'Files to add or update inside the technique directory.' },
+        dependencies: {
+          type: 'object',
+          description: 'Replace the technique\'s dependency manifest. Pass the FULL manifest (read the existing one first with technique_read action="read_file" file="dependencies.json" if you only want to add an entry — this overwrites).',
+          properties: {
+            system_packages: { type: 'array', items: { type: 'object', properties: { manager: { type: 'string' }, package: { type: 'string' }, version: { type: 'string' }, note: { type: 'string' } }, required: ['manager', 'package'] } },
+            language_packages: { type: 'array', items: { type: 'object', properties: { manager: { type: 'string' }, package: { type: 'string' }, version: { type: 'string' }, install_in: { type: 'string' }, note: { type: 'string' } }, required: ['manager', 'package'] } },
+            repos: { type: 'array', items: { type: 'object', properties: { url: { type: 'string' }, ref: { type: 'string' }, install_to: { type: 'string' }, note: { type: 'string' } }, required: ['url'] } },
+            models_or_assets: { type: 'array', items: { type: 'object', properties: { url: { type: 'string' }, destination: { type: 'string' }, sha256: { type: 'string' }, note: { type: 'string' } }, required: ['url', 'destination'] } },
+            manual_steps: { type: 'array', items: { type: 'string' } },
+          },
+        },
         change_summary: { type: 'string', description: 'Brief description of what changed.' },
       },
       required: ['name', 'change_summary'],
@@ -1891,7 +1913,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'delete_technique',
-    description: 'Permanently delete a technique and all its files. Only use when the user explicitly asks to delete a technique. This cannot be undone.',
+    description: 'Permanently delete a technique and all its files. **Trainer agent only** — non-trainer callers get refused with a redirect. Only use when the user explicitly asks to delete. Cannot be undone.',
     input_schema: {
       type: 'object',
       properties: {
@@ -5808,6 +5830,36 @@ Thread is closed — respond to the user, not Imaginer.`;
       case 'delete_technique': {
         const dtErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
         if (dtErr) { content = dtErr; isError = true; break; }
+        // Trainer-only — same ownership rule as save/update/publish.
+        // Mirror the executor-side fallback in techniques/tools.ts so a
+        // trainer-disabled install doesn't lose delete capability.
+        const { isTrainerAgent: isTrainer, isTrainerEnabled, getTrainerAgentName, getTrainerAgentId } = await import('../config/platform.js');
+        if (!isTrainer(agentId)) {
+          const dtAgentRow = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
+          const dtAgentClass = dtAgentRow?.classification ?? 'apprentice';
+          const trainerLive = (() => {
+            try {
+              const r = getDb().prepare("SELECT status FROM agents WHERE id = ?").get(getTrainerAgentId()) as { status: string } | undefined;
+              return !!r && r.status !== 'terminated';
+            } catch { return false; }
+          })();
+          const fallback = !isTrainerEnabled() || !trainerLive;
+          if (fallback) {
+            if (dtAgentClass !== 'sensei') {
+              content = 'Refused: delete_technique is restricted to Sensei agents (no live trainer on this install).';
+              isError = true;
+              break;
+            }
+            // Allowed via fallback.
+          } else {
+            content = (
+              `Refused: delete_technique is reserved for the trainer agent (${getTrainerAgentName()}). ` +
+              `Ask ${getTrainerAgentName()} to delete it on your behalf.`
+            );
+            isError = true;
+            break;
+          }
+        }
         const techRef = args.name as string;
         const { deleteTechnique, resolveTechniqueRef: dtResolve } = await import('../techniques/store.js');
         const dtResolved = dtResolve(techRef);

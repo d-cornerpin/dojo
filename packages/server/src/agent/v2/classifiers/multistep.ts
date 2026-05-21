@@ -323,6 +323,8 @@ export const ENGINE_AUTO_MARKER = '[engine:multistep] ';
 // assignment notifications, system source tags).
 const ENGINE_MESSAGE_PREFIXES: readonly string[] = [
   '[ENGINE RENAME REQUEST]',
+  '[PLATFORM MIGRATION]',
+  '[TECHNIQUE IMPORT]',
   '[SOURCE: ',
   '[A2A:',
   '[scheduler:',

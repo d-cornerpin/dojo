@@ -20,6 +20,25 @@ import { getTechnique } from './store.js';
 import { scrubFiles, isBinaryFile, type Redaction } from './scrub.js';
 import { callModel } from '../agent/model.js';
 import { getTrainerAgentId } from '../config/platform.js';
+import {
+  readDependencyManifest,
+  validateTechniqueFileReferences,
+  formatValidationRefusal,
+} from './dependencies.js';
+
+/**
+ * Thrown when export-time validation finds TECHNIQUE.md references
+ * that aren't satisfied by the support dir or the dependency manifest.
+ * The HTTP route catches this and surfaces the refusal text as a 422
+ * to the dashboard so the user gets a clear "ask your trainer to fix
+ * technique X" message instead of a corrupt download.
+ */
+export class TechniqueExportValidationError extends Error {
+  constructor(public refusalText: string) {
+    super(refusalText);
+    this.name = 'TechniqueExportValidationError';
+  }
+}
 
 const logger = createLogger('technique-share-export');
 
@@ -297,6 +316,30 @@ export async function exportTechnique(techniqueId: string): Promise<{ stream: Re
   const technique = getTechnique(techniqueId);
   if (!technique) {
     throw new Error(`Technique "${techniqueId}" not found`);
+  }
+
+  // ── Belt-and-suspenders validation ──
+  // Save-time validation already runs whenever a trainer creates or
+  // updates a technique, so a well-behaved system should never have a
+  // technique on disk that fails. Re-validate here anyway to catch:
+  //   (1) Techniques created before this feature shipped (no dependency
+  //       manifest, possibly with orphan file references) that the
+  //       trainer's audit hasn't fixed yet.
+  //   (2) Hand edits to TECHNIQUE.md or dependencies.json outside the
+  //       save_technique / update_technique paths.
+  // Refuse the export rather than ship a broken package that will
+  // silently fail on the receiver.
+  const mdPath = path.join(technique.directoryPath, 'TECHNIQUE.md');
+  if (fs.existsSync(mdPath)) {
+    const md = fs.readFileSync(mdPath, 'utf-8');
+    const manifest = readDependencyManifest(technique.directoryPath);
+    const validation = validateTechniqueFileReferences(technique.directoryPath, md, manifest);
+    if (!validation.ok) {
+      const header =
+        `Cannot export technique "${technique.name}" — its TECHNIQUE.md references files that aren't bundled with the technique and aren't declared in dependencies.json. ` +
+        `Sharing this technique would produce a broken package on the receiver's machine.\n\n`;
+      throw new TechniqueExportValidationError(header + formatValidationRefusal(validation));
+    }
   }
 
   const entries = collectTechniqueFiles(technique.directoryPath);

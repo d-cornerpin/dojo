@@ -88,6 +88,26 @@ async function main(): Promise<void> {
     }
   })();
 
+  // One-shot technique-dependency audit. The first server boot after
+  // this feature ships drops a message in the trainer's chat asking
+  // them to walk every existing technique and (a) verify every file
+  // referenced in TECHNIQUE.md is in the support dir, (b) populate
+  // dependencies.json. Persists a config flag once dispatched so we
+  // only ever message the trainer once. Deferred well past server
+  // boot to give the trainer agent time to fully initialize.
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const { runTechniqueDependencyAuditOnce } = await import('./techniques/audit-migration.js');
+        await runTechniqueDependencyAuditOnce();
+      } catch (err) {
+        logger.warn('Technique dependency audit dispatch failed (non-fatal)', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+  }, 30_000);
+
   // 1. Create required directories
   ensureDirectories();
 

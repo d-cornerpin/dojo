@@ -13,9 +13,11 @@ import {
   listTechniques,
   updateTechnique,
   updateTechniqueInstructions,
+  updateTechniqueDependencies,
   publishTechnique,
   recordTechniqueUsage,
   resolveTechniqueRef,
+  TechniqueValidationError,
 } from './store.js';
 import {
   readImportManifest,
@@ -23,15 +25,75 @@ import {
   findRemainingPlaceholders,
   finalizeImportedTechnique,
 } from './share-import.js';
+import {
+  type DependencyManifest,
+  emptyDependencyManifest,
+} from './dependencies.js';
+import { getTrainerAgentId, getTrainerAgentName, isTrainerAgent, isTrainerEnabled } from '../config/platform.js';
+// (getDb is already imported above)
 
 const logger = createLogger('technique-tools');
+
+/**
+ * Authorization check for technique-mutating tools (save/update/publish/
+ * delete). Returns null when the caller is allowed, or a refusal string
+ * when they aren't.
+ *
+ * Policy:
+ *   - The trainer agent is always allowed.
+ *   - If the trainer is disabled in config OR the configured trainer
+ *     agent doesn't exist / has been terminated, fall back to allowing
+ *     any sensei-class caller. Without this fallback, installs that
+ *     disabled the trainer (or never set one up) would have ALL
+ *     technique mutation refused — bricking the feature.
+ *   - Otherwise, refuse with a redirect to the trainer.
+ */
+function authorizeTechniqueMutation(agentId: string, classification: string, verb: string): string | null {
+  if (isTrainerAgent(agentId)) return null;
+
+  // Fallback: trainer disabled per install config, OR no live trainer
+  // agent exists. Allow sensei-class callers (mirrors the pre-trainer-
+  // ownership behavior so the feature still works on a trainer-less
+  // install).
+  if (!isTrainerEnabled()) {
+    if (classification === 'sensei') return null;
+    return `Refused: ${verb} is restricted to Sensei agents (the trainer is disabled on this install).`;
+  }
+  try {
+    const trainerId = getTrainerAgentId();
+    const row = getDb()
+      .prepare("SELECT status FROM agents WHERE id = ?")
+      .get(trainerId) as { status: string } | undefined;
+    if (!row || row.status === 'terminated') {
+      if (classification === 'sensei') return null;
+      return `Refused: ${verb} is restricted to Sensei agents (no live trainer agent on this install).`;
+    }
+  } catch {
+    // DB hiccup — be permissive rather than block legitimate work.
+    if (classification === 'sensei') return null;
+  }
+
+  const trainerName = getTrainerAgentName();
+  return (
+    `Refused: ${verb} is reserved for the trainer agent (${trainerName}). ` +
+    `Techniques are owned by ${trainerName} so that support files, dependency manifests, and file-reference integrity all stay in one place — when techniques get shared, that ownership is what makes the package portable. ` +
+    `Send a message to ${trainerName} describing what you want built (include any custom scripts/files in the message body or via shared-files), and they'll create / edit the technique on your behalf.`
+  );
+}
+
+// Convert the structured TechniqueValidationError into something the
+// calling agent sees as a refusal rather than a generic platform error.
+function formatValidationError(err: unknown, fallbackPrefix: string): string {
+  if (err instanceof TechniqueValidationError) return err.refusalText;
+  const msg = err instanceof Error ? err.message : String(err);
+  return `${fallbackPrefix}: ${msg}`;
+}
 
 // ── save_technique ──
 
 export function executeSaveTechnique(agentId: string, agentName: string, classification: string, args: Record<string, unknown>): string {
-  if (classification !== 'sensei') {
-    return 'Only Sensei agents can create techniques. Ronin and Apprentice agents can use existing techniques with use_technique.';
-  }
+  const refusal = authorizeTechniqueMutation(agentId, classification, 'save_technique');
+  if (refusal) return refusal;
 
   const name = args.name as string;
   const displayName = args.display_name as string;
@@ -39,6 +101,7 @@ export function executeSaveTechnique(agentId: string, agentName: string, classif
   const instructions = args.instructions as string;
   const tags = (args.tags as string[]) ?? [];
   const files = args.files as Array<{ path: string; content: string }> | undefined;
+  const dependencies = (args.dependencies as DependencyManifest | undefined) ?? emptyDependencyManifest();
   const publish = args.publish as boolean ?? false;
 
   if (!name || !displayName || !description || !instructions) {
@@ -53,14 +116,20 @@ export function executeSaveTechnique(agentId: string, agentName: string, classif
       instructions,
       tags,
       files,
+      dependencies,
       publish,
       authorAgentId: agentId,
       authorAgentName: agentName,
     });
 
     const fileCount = files?.length ?? 0;
-    return `Technique "${technique.name}" saved successfully.\nID: ${technique.id}\nState: ${technique.state}\nDirectory: ${technique.directoryPath}\nVersion: ${technique.version}\nFiles: TECHNIQUE.md + ${fileCount} supporting file(s)${publish ? '\nPublished and available to all agents.' : '\nSaved as draft. Call publish_technique to make it available.'}`;
+    const depCount = dependencies.system_packages.length + dependencies.language_packages.length + dependencies.repos.length + dependencies.models_or_assets.length + dependencies.manual_steps.length;
+    return `Technique "${technique.name}" saved successfully.\nID: ${technique.id}\nState: ${technique.state}\nDirectory: ${technique.directoryPath}\nVersion: ${technique.version}\nFiles: TECHNIQUE.md + ${fileCount} supporting file(s)\nDependencies declared: ${depCount}${publish ? '\nPublished and available to all agents.' : '\nSaved as draft. Call publish_technique to make it available.'}`;
   } catch (err) {
+    if (err instanceof TechniqueValidationError) {
+      logger.info('save_technique refused by validator', { agentId }, agentId);
+      return err.refusalText;
+    }
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('save_technique failed', { error: msg }, agentId);
     return `Error saving technique: ${msg}`;
@@ -152,9 +221,8 @@ export function executeListTechniques(agentId: string, classification: string, a
 // ── publish_technique ──
 
 export function executePublishTechnique(agentId: string, classification: string, args: Record<string, unknown>): string {
-  if (classification !== 'sensei') {
-    return 'Only Sensei agents can publish techniques.';
-  }
+  const refusal = authorizeTechniqueMutation(agentId, classification, 'publish_technique');
+  if (refusal) return refusal;
 
   const name = args.name as string;
   if (!name) return 'Error: name is required.';
@@ -173,10 +241,9 @@ export function executePublishTechnique(agentId: string, classification: string,
 
 // ── update_technique ──
 
-export function executeUpdateTechnique(agentId: string, agentName: string, classification: string, args: Record<string, unknown>): string {
-  if (classification !== 'sensei') {
-    return 'Only Sensei agents can update techniques.';
-  }
+export function executeUpdateTechnique(agentId: string, _agentName: string, classification: string, args: Record<string, unknown>): string {
+  const refusal = authorizeTechniqueMutation(agentId, classification, 'update_technique');
+  if (refusal) return refusal;
 
   const name = args.name as string;
   if (!name) return 'Error: name is required.';
@@ -190,6 +257,7 @@ export function executeUpdateTechnique(agentId: string, agentName: string, class
   const files = args.files as Array<{ path: string; content: string }> | undefined;
   const displayName = args.display_name as string | undefined;
   const description = args.description as string | undefined;
+  const dependencies = args.dependencies as DependencyManifest | undefined;
   const changeSummary = args.change_summary as string || 'Updated by agent';
 
   // Metadata-only edits (rename, description) don't bump the version
@@ -207,15 +275,31 @@ export function executeUpdateTechnique(agentId: string, agentName: string, class
     }
   }
 
-  if (instructions) {
-    updateTechniqueInstructions(resolved.id, instructions, changeSummary, agentId);
-  }
-
+  // Write files FIRST so the validator on the instructions-update sees
+  // them on disk. Same ordering as createTechnique.
   if (files) {
     for (const file of files) {
       const filePath = path.join(technique.directoryPath, file.path);
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
       fs.writeFileSync(filePath, file.content, 'utf-8');
+    }
+  }
+
+  // Dependencies update is independent of the .md change. If both are
+  // provided, write deps first so the .md validator sees the new manifest.
+  if (dependencies !== undefined) {
+    try {
+      updateTechniqueDependencies(resolved.id, dependencies);
+    } catch (err) {
+      return formatValidationError(err, 'Error updating dependencies');
+    }
+  }
+
+  if (instructions) {
+    try {
+      updateTechniqueInstructions(resolved.id, instructions, changeSummary, agentId);
+    } catch (err) {
+      return formatValidationError(err, 'Error updating instructions');
     }
   }
 

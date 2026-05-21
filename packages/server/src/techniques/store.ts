@@ -10,8 +10,29 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { writeDiskVersionSnapshot } from './versioning.js';
+import {
+  type DependencyManifest,
+  emptyDependencyManifest,
+  readDependencyManifest,
+  writeDependencyManifest,
+  validateTechniqueFileReferences,
+  formatValidationRefusal,
+} from './dependencies.js';
 
 const logger = createLogger('technique-store');
+
+/**
+ * Thrown when TECHNIQUE.md references files that don't resolve inside
+ * the technique directory and aren't declared in dependencies.json.
+ * Callers (tools, share-export) catch this to return a structured
+ * refusal to the agent instead of a generic error.
+ */
+export class TechniqueValidationError extends Error {
+  constructor(public refusalText: string) {
+    super(refusalText);
+    this.name = 'TechniqueValidationError';
+  }
+}
 
 const TECHNIQUES_DIR = path.join(os.homedir(), '.dojo', 'techniques');
 
@@ -55,6 +76,23 @@ export interface CreateTechniqueParams {
   instructions: string;
   tags?: string[];
   files?: Array<{ path: string; content: string }>;
+  /**
+   * External dependencies (npm/pip/brew packages, git repos, downloaded
+   * assets, manual steps). Omitted = empty manifest. Validation will
+   * still run, but it can only catch references to files inside the
+   * technique dir; without a manifest, any external dep referenced in
+   * TECHNIQUE.md will be flagged as missing.
+   */
+  dependencies?: DependencyManifest;
+  /**
+   * If true (default), refuses the save when TECHNIQUE.md references
+   * files that don't resolve in the support dir or the dependency
+   * manifest. Passed false by the dashboard's create-from-UI route so
+   * users can build incrementally (the trainer / export-time check
+   * still catches the problem before a broken technique escapes the
+   * dojo). Always true for trainer-tool-initiated saves.
+   */
+  validateReferences?: boolean;
   publish?: boolean;
   authorAgentId?: string;
   authorAgentName?: string;
@@ -83,6 +121,39 @@ export function createTechnique(params: CreateTechniqueParams): TechniqueMetadat
   // Write TECHNIQUE.md
   fs.writeFileSync(path.join(dirPath, 'TECHNIQUE.md'), params.instructions, 'utf-8');
 
+  // Write supporting files BEFORE validation runs so the validator can
+  // resolve relative references against what will actually be on disk.
+  if (params.files) {
+    for (const file of params.files) {
+      const filePath = path.join(dirPath, file.path);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, file.content, 'utf-8');
+    }
+  }
+
+  // Write dependencies.json (always — even an empty manifest, so the
+  // file exists for downstream readers and the export bundle stays
+  // structurally consistent across techniques).
+  const manifest = params.dependencies ?? emptyDependencyManifest();
+  writeDependencyManifest(dirPath, manifest);
+
+  // ── File-reference validation ──
+  // Refuse to create the technique if TECHNIQUE.md references files
+  // that aren't in the support dir AND aren't declared in the manifest.
+  // Roll back the partial directory so a failed create leaves no trace.
+  // Skipped when validateReferences=false (dashboard create-from-UI
+  // path — users can build incrementally; the export-time check still
+  // catches the problem before sharing).
+  if (params.validateReferences !== false) {
+    const validation = validateTechniqueFileReferences(dirPath, params.instructions, manifest);
+    if (!validation.ok) {
+      try {
+        fs.rmSync(dirPath, { recursive: true, force: true });
+      } catch { /* best effort */ }
+      throw new TechniqueValidationError(formatValidationRefusal(validation));
+    }
+  }
+
   // Write metadata.json
   const metadata = {
     id,
@@ -104,14 +175,7 @@ export function createTechnique(params: CreateTechniqueParams): TechniqueMetadat
   };
   fs.writeFileSync(path.join(dirPath, 'metadata.json'), JSON.stringify(metadata, null, 2), 'utf-8');
 
-  // Write supporting files
-  if (params.files) {
-    for (const file of params.files) {
-      const filePath = path.join(dirPath, file.path);
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      fs.writeFileSync(filePath, file.content, 'utf-8');
-    }
-  }
+  // (supporting files were written above, before validation)
 
   // Insert into DB
   const state = params.publish ? 'published' : 'draft';
@@ -321,9 +385,27 @@ export function updateTechnique(id: string, updates: Partial<{
   return getTechnique(id);
 }
 
-export function updateTechniqueInstructions(id: string, content: string, changeSummary: string, changedBy?: string): TechniqueMetadata | null {
+export function updateTechniqueInstructions(
+  id: string,
+  content: string,
+  changeSummary: string,
+  changedBy?: string,
+  options?: { validateReferences?: boolean },
+): TechniqueMetadata | null {
   const technique = getTechnique(id);
   if (!technique) return null;
+
+  // Validate file references against the current state of the support
+  // dir + dependency manifest BEFORE writing — same rule as create.
+  // Skipped when validateReferences=false (dashboard manual-edit path —
+  // see CreateTechniqueParams.validateReferences for rationale).
+  if (options?.validateReferences !== false) {
+    const manifest = readDependencyManifest(technique.directoryPath);
+    const validation = validateTechniqueFileReferences(technique.directoryPath, content, manifest);
+    if (!validation.ok) {
+      throw new TechniqueValidationError(formatValidationRefusal(validation));
+    }
+  }
 
   // Write new TECHNIQUE.md
   const mdPath = path.join(technique.directoryPath, 'TECHNIQUE.md');
@@ -351,6 +433,33 @@ export function updateTechniqueInstructions(id: string, content: string, changeS
 
   broadcast({ type: 'technique:updated', data: { id, name: technique.name, version: newVersion } } as never);
 
+  return getTechnique(id);
+}
+
+/**
+ * Replace the technique's dependency manifest. Re-runs file-reference
+ * validation against the existing TECHNIQUE.md so a manifest edit that
+ * REMOVES a declared dep doesn't silently leave the .md referencing a
+ * now-missing path.
+ */
+export function updateTechniqueDependencies(id: string, manifest: DependencyManifest): TechniqueMetadata | null {
+  const technique = getTechnique(id);
+  if (!technique) return null;
+
+  const mdPath = path.join(technique.directoryPath, 'TECHNIQUE.md');
+  const content = fs.existsSync(mdPath) ? fs.readFileSync(mdPath, 'utf-8') : '';
+
+  const validation = validateTechniqueFileReferences(technique.directoryPath, content, manifest);
+  if (!validation.ok) {
+    throw new TechniqueValidationError(formatValidationRefusal(validation));
+  }
+
+  writeDependencyManifest(technique.directoryPath, manifest);
+  const db = getDb();
+  db.prepare("UPDATE techniques SET updated_at = datetime('now') WHERE id = ?").run(id);
+
+  logger.info('Technique dependency manifest updated', { id });
+  broadcast({ type: 'technique:updated', data: { id, name: technique.name, version: technique.version } } as never);
   return getTechnique(id);
 }
 
