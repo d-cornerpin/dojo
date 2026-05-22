@@ -204,6 +204,16 @@ export interface AgentTurnState {
   awaitingPostCompactRecall: boolean;
   /** Fire-once flag for the post-compaction recall warning. */
   nudgedForPostCompactRecall: boolean;
+  /**
+   * v2.7.2 — set true the first time an assistant block in this turn pairs
+   * non-trivial wrap-up text (≥ ~10 chars after trim) with a tracker
+   * close-out tool call (tracker_update_status complete/blocked/paused,
+   * tracker_complete_step, tracker_close_project). Suppresses any later
+   * text-only assistant block in the same turn — the model has already
+   * given the user their response, and any further "Done." / "Read it."
+   * follow-up is the duplicate-final-answer failure shape.
+   */
+  taskClosedWithTextThisTurn: boolean;
 
   // ── Pre-flight enforcement decisions ──
   readonly shouldNudgeTracker: boolean;
@@ -289,6 +299,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     nudgedForCloseOutThisTurn: false,
     awaitingPostCompactRecall: false,
     nudgedForPostCompactRecall: false,
+    taskClosedWithTextThisTurn: false,
 
     shouldNudgeTracker: params.shouldNudgeTracker,
 

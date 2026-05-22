@@ -90,13 +90,27 @@ function checkProjectCompletion(projectId: string | null, callingAgentId: string
 
         const summary = tasks.map(t => `- ${t.title}: ${t.status}${t.notes ? ` — ${t.notes.split('\n').pop()}` : ''}`).join('\n');
 
-        const ownerName = getOwnerName();
-        // Force-notify the primary agent even if they spawned the completing agent
-        notifyPrimaryAgent(
-          `Project "${project.title}" is complete! All ${tasks.length} tasks finished.\n\nResults:\n${summary}\n\nPlease review the results and let ${ownerName} know. If you spawned agent groups for this project, clean them up with delete_group(group_id, terminate_members=true).`,
-          callingAgentId,
-          true, // force notify even if primary agent triggered
-        );
+        // v2.7.2 — fixes the duplicate-final-answer failure shape:
+        //
+        //   1. forceNotify dropped from true → the default false. When the
+        //      PRIMARY agent itself completes the final task, they don't
+        //      need a separate "project complete!" message — they just made
+        //      the action that completed it and their own response wraps
+        //      up the work. The notification was firing mid-turn, getting
+        //      pulled into their next context iteration, and prompting a
+        //      duplicate tracker_update_status + redundant "Done" wrap-up.
+        //
+        //      Sub-agent completing the last task still notifies primary,
+        //      because callingAgentId != primaryId and the function's
+        //      built-in isPrimaryAgent check lets it through.
+        //
+        //   2. Text rewritten to be a pure status record, not an
+        //      instruction. The old text said "Please review the results
+        //      and let David know" which the model interpreted as a fresh
+        //      assignment and kept working. The new text contains no
+        //      verbs aimed at the reader — it's just the completion fact.
+        const completionLine = `[tracker:project_complete] "${project.title}" — ${tasks.length} task${tasks.length === 1 ? '' : 's'} closed.\n${summary}`;
+        notifyPrimaryAgent(completionLine, callingAgentId);
 
         logger.info('Project completed', { projectId, title: project.title, taskCount: tasks.length });
 

@@ -74,6 +74,7 @@ export const DREAMER_AGENT_ALWAYS_LOADED = [
   'vault_remember',
   'vault_search',
   'vault_forget',
+  'vault_update',
   'vault_describe',
   'send_to_agent',
 ];

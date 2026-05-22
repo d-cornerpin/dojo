@@ -5,7 +5,7 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { createEntry, semanticSearch, markObsolete, getEntry } from './store.js';
+import { createEntry, semanticSearch, markObsolete, getEntry, updateEntry, listEntries } from './store.js';
 
 const logger = createLogger('vault-tools');
 
@@ -149,20 +149,51 @@ export async function executeVaultSearch(
   // search results compact. The agent can still pass a higher limit when
   // they genuinely want more matches.
   const limit = (args.limit as number) ?? 5;
+  // v2.7.2 — explicit mode. 'semantic' (default) uses embedding similarity
+  // which is great for conceptual recall but blind to exact strings —
+  // searching for an unusual literal substring like "corp erp.in" against
+  // the user's actual domain "cornerp.in" returns nothing relevant because
+  // both embed to the same generic "email domain" cluster. 'exact' uses
+  // SQL LIKE on the content field — use it for debugging memory poisoning
+  // or finding entries that contain a specific phrase verbatim.
+  const mode = (args.mode as 'semantic' | 'exact' | undefined) ?? 'semantic';
 
   if (!query) return 'Error: query is required.';
 
   try {
+    const SNIPPET_CHARS = 200;
+
+    if (mode === 'exact') {
+      const rows = listEntries({ search: query, type, limit });
+      if (rows.length === 0) {
+        return `No vault entries contain the exact substring "${query}".`;
+      }
+      const lines = rows.map((r, i) => {
+        const flags: string[] = [];
+        if (r.isPinned) flags.push('pinned');
+        if (r.isPermanent) flags.push('permanent');
+        const flagStr = flags.length > 0 ? ` {${flags.join(',')}}` : '';
+        // Show a snippet anchored on the match so the agent can see context.
+        const idx = r.content.toLowerCase().indexOf(query.toLowerCase());
+        const start = idx === -1 ? 0 : Math.max(0, idx - 60);
+        const end = idx === -1 ? SNIPPET_CHARS : Math.min(r.content.length, idx + query.length + 140);
+        const prefix = start > 0 ? '…' : '';
+        const suffix = end < r.content.length ? '…' : '';
+        const snippet = prefix + r.content.slice(start, end) + suffix;
+        return `${i + 1}. [${r.type}]${flagStr} ${snippet}\n   ID: ${r.id} | Created: ${r.createdAt}`;
+      });
+      return `Found ${rows.length} vault entr${rows.length === 1 ? 'y' : 'ies'} containing "${query}" (exact match):\n\n${lines.join('\n\n')}\n\nUse vault_expand(entry_id="…") for full content, vault_update to correct, vault_forget to mark obsolete.`;
+    }
+
     const results = await semanticSearch(query, { limit, type });
 
     if (results.length === 0) {
-      return 'No matching memories found in the vault.';
+      return 'No matching memories found in the vault. If you are looking for a specific literal string (e.g. an exact name or typo), retry with mode: "exact".';
     }
 
     // Phase 3.5 — per-entry snippet cap at 200 chars. Full content is
     // available on demand via vault_expand(entry_id). Keeps search results
     // bounded so a 5-result query never blows past ~2K tokens.
-    const SNIPPET_CHARS = 200;
     const lines = results.map((r, i) => {
       const flags: string[] = [];
       if (r.isPinned) flags.push('pinned');
@@ -188,6 +219,38 @@ export async function executeVaultSearch(
     logger.error('vault_search failed', { error: msg }, agentId);
     return `Error searching vault: ${msg}`;
   }
+}
+
+// ── vault_update ──
+// v2.7.2 — atomic content replacement for an existing vault entry. Pre-
+// existing flow required vault_forget + vault_remember which (a) lost the
+// stable entry ID, (b) created a window where both old and new lived, and
+// (c) tempted the agent to skip the forget step. updateEntry already
+// existed in the store; this just exposes it as an agent tool with a
+// required reason for auditability.
+export async function executeVaultUpdate(
+  agentId: string,
+  args: Record<string, unknown>,
+): Promise<string> {
+  const entryId = args.entry_id as string;
+  const newContent = args.new_content as string;
+  const reason = args.reason as string;
+
+  if (!entryId) return 'Error: entry_id is required.';
+  if (!newContent) return 'Error: new_content is required.';
+  if (!reason) return 'Error: reason is required (explain what changed and why).';
+
+  const existing = getEntry(entryId);
+  if (!existing) return `Error: Vault entry "${entryId}" not found.`;
+  if (existing.isObsolete) {
+    return `Error: Entry "${entryId}" is already marked obsolete. Use vault_remember to create a fresh entry instead.`;
+  }
+
+  const updated = updateEntry(entryId, { content: newContent });
+  if (!updated) return `Error: Failed to update vault entry "${entryId}".`;
+
+  logger.info('Vault entry updated', { id: entryId, reason, agentId });
+  return `Updated [${updated.type}] entry ${entryId}.\nReason: ${reason}\nNew content (first 200 chars): "${updated.content.slice(0, 200)}${updated.content.length > 200 ? '…' : ''}"`;
 }
 
 // Phase 3.5 (2026-05-04) — vault_expand: return the full content of one

@@ -9,10 +9,11 @@ import { MemorySearch } from '../components/MemorySearch';
 import { BriefingView } from '../components/BriefingView';
 import { VaultEntryCard } from '../components/VaultEntryCard';
 import { VaultStats } from '../components/VaultStats';
+import { ForensicSearchPanel } from '../components/ForensicSearchPanel';
 import { formatDate } from '../lib/dates';
 
 type RightPanel = 'detail' | 'search' | 'briefing' | 'none';
-type MainTab = 'dag' | 'vault' | 'dreams';
+type MainTab = 'dag' | 'vault' | 'dreams' | 'forensic';
 
 export const Memory = () => {
   // Agent selection — default to 'primary' alias (server resolves to actual ID)
@@ -201,7 +202,7 @@ export const Memory = () => {
           <h2 className="text-lg font-semibold text-ui">Vault</h2>
           {/* Tabs */}
           <div className="flex items-center gap-1 bg-ui/[0.03] rounded-lg p-0.5">
-            {(['vault', 'dag', 'dreams'] as MainTab[]).map((tab) => (
+            {(['vault', 'dag', 'dreams', 'forensic'] as MainTab[]).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setMainTab(tab)}
@@ -211,7 +212,7 @@ export const Memory = () => {
                     : 'text-ui/40 hover:text-ui/70'
                 }`}
               >
-                {tab === 'vault' ? 'Entries' : tab === 'dag' ? 'DAG' : 'Dreams'}
+                {tab === 'vault' ? 'Entries' : tab === 'dag' ? 'DAG' : tab === 'dreams' ? 'Dreams' : 'Forensic'}
               </button>
             ))}
           </div>
@@ -349,6 +350,9 @@ export const Memory = () => {
             </div>
           </>
         )}
+
+        {/* Forensic Tab */}
+        {mainTab === 'forensic' && <ForensicSearchPanel />}
 
         {/* Dreams Tab */}
         {mainTab === 'dreams' && (

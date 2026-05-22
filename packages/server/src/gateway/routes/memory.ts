@@ -428,3 +428,200 @@ memoryRouter.get('/vector-search', async (c) => {
     return c.json({ ok: false, error: msg }, 500);
   }
 });
+
+// ── v2.7.2 — Forensic memory search + purge ──
+//
+// Operator-grade tools for cleaning up self-reinforcing memory loops. The
+// agent's vault_search uses semantic embeddings and is structurally blind
+// to exact substrings (a query for "corp erp.in" embeds to "email domain"
+// concepts and misses the literal string). These routes do plain SQL LIKE
+// across every place a stale or wrong string can hide in an agent's
+// persistent state, and let the operator bulk-delete the offending rows.
+
+interface ForensicHit {
+  kind: 'vault' | 'summary' | 'project' | 'task' | 'scratchpad';
+  id: string;
+  agentId: string | null;
+  title: string | null;
+  preview: string;
+  createdAt: string | null;
+}
+
+// GET /memory/forensic-search?q=...&limit=...
+// Returns matches across vault_entries, summaries, projects, tasks, and per-
+// agent scratchpads (stored as JSON in agents.config). Always exact LIKE
+// match — case-insensitive by default. Caller should pass distinctive
+// strings; a query of "the" will return thousands.
+memoryRouter.get('/forensic-search', (c) => {
+  const q = c.req.query('q')?.trim();
+  if (!q) return c.json({ ok: false, error: 'q is required' }, 400);
+  if (q.length < 2) return c.json({ ok: false, error: 'q must be at least 2 characters' }, 400);
+
+  const limit = Math.min(parseInt(c.req.query('limit') ?? '50', 10), 200);
+  const like = `%${q}%`;
+  const db = getDb();
+  const hits: ForensicHit[] = [];
+
+  // Vault entries — include obsolete so the operator can see what's been
+  // soft-deleted but is still in the table.
+  const vaultRows = db.prepare(
+    `SELECT id, agent_id, type, content, created_at FROM vault_entries
+     WHERE content LIKE ? ORDER BY created_at DESC LIMIT ?`,
+  ).all(like, limit) as Array<{ id: string; agent_id: string; type: string; content: string; created_at: string }>;
+  for (const r of vaultRows) {
+    hits.push({
+      kind: 'vault',
+      id: r.id,
+      agentId: r.agent_id,
+      title: `[${r.type}]`,
+      preview: snippetAround(r.content, q),
+      createdAt: r.created_at,
+    });
+  }
+
+  const summaryRows = db.prepare(
+    `SELECT id, agent_id, content, created_at FROM summaries
+     WHERE content LIKE ? ORDER BY created_at DESC LIMIT ?`,
+  ).all(like, limit) as Array<{ id: string; agent_id: string; content: string; created_at: string }>;
+  for (const r of summaryRows) {
+    hits.push({
+      kind: 'summary',
+      id: r.id,
+      agentId: r.agent_id,
+      title: null,
+      preview: snippetAround(r.content, q),
+      createdAt: r.created_at,
+    });
+  }
+
+  const projectRows = db.prepare(
+    `SELECT id, title, description, created_by, created_at FROM projects
+     WHERE title LIKE ? OR description LIKE ? ORDER BY created_at DESC LIMIT ?`,
+  ).all(like, like, limit) as Array<{ id: string; title: string; description: string | null; created_by: string; created_at: string }>;
+  for (const r of projectRows) {
+    const haystack = `${r.title}\n${r.description ?? ''}`;
+    hits.push({
+      kind: 'project',
+      id: r.id,
+      agentId: r.created_by,
+      title: r.title,
+      preview: snippetAround(haystack, q),
+      createdAt: r.created_at,
+    });
+  }
+
+  const taskRows = db.prepare(
+    `SELECT id, title, description, assigned_to, created_at FROM tasks
+     WHERE title LIKE ? OR description LIKE ? OR notes LIKE ? ORDER BY created_at DESC LIMIT ?`,
+  ).all(like, like, like, limit) as Array<{ id: string; title: string; description: string | null; assigned_to: string | null; created_at: string }>;
+  for (const r of taskRows) {
+    const haystack = `${r.title}\n${r.description ?? ''}`;
+    hits.push({
+      kind: 'task',
+      id: r.id,
+      agentId: r.assigned_to,
+      title: r.title,
+      preview: snippetAround(haystack, q),
+      createdAt: r.created_at,
+    });
+  }
+
+  // Scratchpad lives inside agents.config as JSON $.scratchpad. SQLite's
+  // json_extract returns NULL when missing or invalid, so the LIKE matches
+  // only agents whose scratchpad actually contains the substring.
+  const scratchRows = db.prepare(
+    `SELECT id, name, json_extract(config, '$.scratchpad') AS scratch
+     FROM agents
+     WHERE json_extract(config, '$.scratchpad') LIKE ?`,
+  ).all(like) as Array<{ id: string; name: string; scratch: string }>;
+  for (const r of scratchRows) {
+    hits.push({
+      kind: 'scratchpad',
+      id: r.id,
+      agentId: r.id,
+      title: `${r.name} scratchpad`,
+      preview: snippetAround(r.scratch, q),
+      createdAt: null,
+    });
+  }
+
+  return c.json({ ok: true, data: { query: q, total: hits.length, hits } });
+});
+
+// POST /memory/forensic-purge
+// Body: { items: [{ kind, id }, ...] }
+// Deletes (or in the case of scratchpad, clears) each item. Returns per-item
+// success/failure so the UI can report partial deletes.
+memoryRouter.post('/forensic-purge', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!body || !Array.isArray(body.items)) {
+    return c.json({ ok: false, error: 'items array is required' }, 400);
+  }
+  const items = body.items as Array<{ kind: ForensicHit['kind']; id: string }>;
+  const db = getDb();
+  const results: Array<{ kind: string; id: string; deleted: boolean; error?: string }> = [];
+
+  for (const item of items) {
+    try {
+      switch (item.kind) {
+        case 'vault':
+          db.prepare('DELETE FROM vault_entries WHERE id = ?').run(item.id);
+          break;
+        case 'summary':
+          // Drop summary + its leaf-message links + parent-of relationships
+          // so we don't leave dangling rows that fail FK joins later.
+          db.prepare('DELETE FROM summary_messages WHERE summary_id = ?').run(item.id);
+          db.prepare('DELETE FROM summary_parents WHERE summary_id = ? OR parent_id = ?').run(item.id, item.id);
+          db.prepare('DELETE FROM summaries WHERE id = ?').run(item.id);
+          break;
+        case 'project':
+          // Tasks reference projects via FK; null out the task linkage rather
+          // than cascade-delete tasks, so individual tasks remain visible
+          // even after their parent project is purged.
+          db.prepare('UPDATE tasks SET project_id = NULL WHERE project_id = ?').run(item.id);
+          db.prepare('DELETE FROM projects WHERE id = ?').run(item.id);
+          break;
+        case 'task':
+          db.prepare('DELETE FROM tasks WHERE id = ?').run(item.id);
+          break;
+        case 'scratchpad': {
+          // Scratchpad purge means "clear $.scratchpad", not "delete agent".
+          // SQLite's json_remove on a missing key is a no-op, so this is safe
+          // even if the field is already gone.
+          db.prepare("UPDATE agents SET config = json_remove(COALESCE(config, '{}'), '$.scratchpad') WHERE id = ?").run(item.id);
+          break;
+        }
+        default:
+          throw new Error(`unknown kind: ${item.kind}`);
+      }
+      results.push({ kind: item.kind, id: item.id, deleted: true });
+      logger.info('Forensic purge', { kind: item.kind, id: item.id });
+    } catch (err) {
+      results.push({
+        kind: item.kind,
+        id: item.id,
+        deleted: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const deleted = results.filter(r => r.deleted).length;
+  return c.json({ ok: true, data: { deleted, total: items.length, results } });
+});
+
+// Helper: return ~120 chars of content centered on the first match of `q`,
+// with ellipses to mark truncation. Falls back to the prefix if the query
+// isn't found case-sensitively (defensive — caller used LIKE so it should be).
+function snippetAround(content: string, q: string, radius = 80): string {
+  const lower = content.toLowerCase();
+  const idx = lower.indexOf(q.toLowerCase());
+  if (idx === -1) {
+    return content.length > radius * 2 ? content.slice(0, radius * 2) + '…' : content;
+  }
+  const start = Math.max(0, idx - radius);
+  const end = Math.min(content.length, idx + q.length + radius);
+  const prefix = start > 0 ? '…' : '';
+  const suffix = end < content.length ? '…' : '';
+  return prefix + content.slice(start, end) + suffix;
+}

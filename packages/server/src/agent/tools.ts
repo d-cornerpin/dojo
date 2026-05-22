@@ -40,7 +40,7 @@ import { webSearch, webFetch } from './web-tools.js';
 import { mouseClick, mouseMove, keyboardType, screenRead, applescriptRun } from './system-control.js';
 import { executeWebBrowse } from './browser.js';
 import { createGroup, assignAgentToGroup } from './groups.js';
-import { executeVaultRemember, executeVaultSearch, executeVaultForget, executeVaultExpand } from '../vault/tools.js';
+import { executeVaultRemember, executeVaultSearch, executeVaultForget, executeVaultExpand, executeVaultUpdate } from '../vault/tools.js';
 import { googleReadToolDefinitions, executeGoogleReadTool } from '../google/tools-read.js';
 import { googleWriteToolDefinitions, executeGoogleWriteTool } from '../google/tools-write.js';
 import { slidesToolDefinitions, slidesToolNames, executeGoogleSlidesTool } from '../google/tools-slides.js';
@@ -468,11 +468,16 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['command'],
     },
     concurrency: 'serial',
-    maxResultTokens: 4000,
+    // v2.7.2 — was 4000. Logs, grep output, and JSON dumps frequently
+    // exceed that, forcing the agent to re-run with `| head -N` workarounds
+    // that mask real signal. Modern models have 100K+ context; a 32K cap
+    // is "let the LLM see what actually came out of the command" without
+    // letting a pathological 10MB log dump nuke the context.
+    maxResultTokens: 32000,
   },
   {
     name: 'file_read',
-    description: 'Read the contents of a file at the given absolute path. For text files, returns line-numbered content. Use optional offset (line number, 0-indexed) and limit (line count, default 2000) to paginate through large files. For images (PNG, JPEG, GIF, WEBP) and PDFs, returns content for vision (paging not applicable). Example: file_read({ path: "/Users/me/foo.html", offset: 0, limit: 500 }).',
+    description: 'Read the contents of a file at the given absolute path. For text files, returns line-numbered content. Use optional offset (line number, 0-indexed) and limit (line count, default 5000) to paginate when a file is genuinely huge — for typical documents (code files, transcripts, briefs, reports) you should not need to paginate at all. Per-call cap is ~60K tokens, which covers ~120 pages of text. For images (PNG, JPEG, GIF, WEBP) and PDFs, returns content for vision (paging not applicable). Example: file_read({ path: "/Users/me/foo.html" }).',
     input_schema: {
       type: 'object',
       properties: {
@@ -482,17 +487,25 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         offset: {
           type: 'number',
-          description: 'Line number to start reading from (0-indexed). Default 0. Used for paginating large files.',
+          description: 'Line number to start reading from (0-indexed). Default 0. Only needed when paginating a file larger than the per-call cap.',
         },
         limit: {
           type: 'number',
-          description: 'Maximum number of lines to return. Default 2000. Combined with a per-call cap (~8K tokens) — large lines may produce fewer.',
+          description: 'Maximum number of lines to return. Default 5000. Combined with a per-call cap (~60K tokens) — large lines may produce fewer.',
         },
       },
       required: ['path'],
     },
     concurrency: 'safe',
-    maxResultTokens: 8000,
+    // v2.7.2 — was 8000 tokens (~30KB). Pushed to 60000 (~240KB, ~120
+    // pages of text). Rationale: model context windows are 128K–200K+
+    // routinely now. Holding file_read to a fraction of that meant agents
+    // got truncated mid-document on anything beyond a long blog post, then
+    // either gave up, started over, or tried to "summarize" what they'd
+    // half-read. The new cap lets a typical document land in one call.
+    // Pagination via offset/limit still exists for the genuinely
+    // outsized cases (whole books, sprawling logs).
+    maxResultTokens: 60000,
   },
   {
     name: 'file_write',
@@ -2057,13 +2070,14 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'vault_search',
-    description: 'Search the dojo\'s long-term memory vault for relevant knowledge. Returns the top matching memories with short snippets. Use vault_expand(entry_id) to get the full content of a specific entry when the snippet is not enough. Example: vault_search({ query: "user preferences" }).',
+    description: 'Search the dojo\'s long-term memory vault. Two modes: `semantic` (default) uses embedding similarity — great for conceptual recall like "what does the user prefer about commit messages?". `exact` does substring matching on entry content — use when you need to find a literal string, e.g. debugging memory poisoning, finding entries that mention a specific name/phrase/typo verbatim, or auditing what got saved. Semantic search is blind to exact spelling (a query for "corp erp" returns concepts about email domains, not the literal string), so reach for `exact` whenever the question is "is this specific text anywhere in my memory?". Use vault_expand(entry_id) for full content of a match, vault_update to fix incorrect entries in place, vault_forget to mark obsolete.',
     input_schema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'What to search for' },
+        mode: { type: 'string', enum: ['semantic', 'exact'], description: 'semantic (default): embedding similarity. exact: substring LIKE match on content.' },
         type: { type: 'string', enum: ['fact', 'preference', 'decision', 'procedure', 'relationship', 'event', 'note'], description: 'Filter by memory type (optional)' },
-        limit: { type: 'number', description: 'Max results (default 5; was 10 in v1)' },
+        limit: { type: 'number', description: 'Max results (default 5)' },
       },
       required: ['query'],
     },
@@ -2105,6 +2119,19 @@ export const toolDefinitions: ToolDefinition[] = [
         reason: { type: 'string', description: 'Why this is no longer accurate' },
       },
       required: ['entry_id', 'reason'],
+    },
+  },
+  {
+    name: 'vault_update',
+    description: 'Replace the content of an existing vault entry in place. Use this instead of vault_forget + vault_remember when you need to CORRECT an entry — the existing entry ID stays stable, embedding gets regenerated, and there is no window where two contradictory versions co-exist. Common case: an entry contains a factual error, an outdated fact, or a self-defeating "DON\'T do X" warning that is now reinforcing the bad behavior. Rewrite it as the positive correct form. Required `reason` is logged for audit.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        entry_id: { type: 'string', description: 'The vault entry ID to update (from vault_search results)' },
+        new_content: { type: 'string', description: 'The replacement content. Should be the corrected fact stated positively — do not include the wrong form as a "don\'t" reminder, because future you will re-read it and get poisoned again.' },
+        reason: { type: 'string', description: 'Brief audit note: what changed and why (e.g., "corrected misspelling that was causing the agent to reproduce the typo").' },
+      },
+      required: ['entry_id', 'new_content', 'reason'],
     },
   },
   {
@@ -2547,13 +2574,22 @@ async function executeFileRead(
     // Phase 9 Stage 2 — paginated read is now the only path.
     {
       const startLine = offset ?? 0;
-      const requestedCount = limit ?? 2000;
+      // v2.7.2 — default line count bumped 2000 → 5000 to match the
+      // expanded cap below. Most documents the agent reads (briefs,
+      // transcripts, code files) fit in a single call now.
+      const requestedCount = limit ?? 5000;
       const endLine = Math.min(startLine + requestedCount, totalLines);
 
-      // Cap at ~7.5K tokens via character estimate (rough heuristic). Leaves
-      // ~500 token margin so the friendly pagination trailer doesn't trip
-      // the generic applyMaxResultTokensCap (8000 tokens) and get re-truncated.
-      const MAX_CHARS = 30_000; // ~7.5K tokens, room for trailer
+      // v2.7.2 — cap raised from 30_000 chars (~7.5K tokens) to 240_000
+      // (~60K tokens). The old cap was 5-7% of a typical model's context
+      // window, so agents kept truncating mid-document, restarting the
+      // task, and giving up. Modern model contexts are 128K-200K+; a
+      // ~60K cap lets a 120-page document land in one call. The friendly
+      // pagination trailer still fires when the file is bigger than the
+      // cap, and the per-tool maxResultTokens (also 60000) keeps any
+      // edge cases from blowing the runtime cap. Leaves headroom for
+      // the trailer text itself.
+      const MAX_CHARS = 240_000;
       // Per-line cap: protects against files where a single line is huge —
       // e.g. an HTML file with embedded `<img src="data:image/png;base64,...">`.
       // Without this, the whole-file cap below was bypassed via the
@@ -2590,7 +2626,7 @@ async function executeFileRead(
       if (actualEnd < totalLines) {
         const remaining = totalLines - actualEnd;
         result += `\n\n[Read lines ${startLine}-${actualEnd - 1} of ${totalLines} total. ${remaining} more lines remain.\n` +
-          ` To continue: file_read(path="${filePath}", offset=${actualEnd}, limit=${Math.min(remaining, 2000)}).\n` +
+          ` To continue: file_read(path="${filePath}", offset=${actualEnd}, limit=${Math.min(remaining, 5000)}).\n` +
           ` To search for specific content: use grep instead.]`;
       } else if (startLine > 0) {
         result += `\n\n[End of file. Read lines ${startLine}-${actualEnd - 1} of ${totalLines} total.]`;
@@ -6068,6 +6104,17 @@ Thread is closed — respond to the user, not Imaginer.`;
         const vfErr = checkRequired([{ name: 'entry_id', value: args.entry_id, type: 'string' }]);
         if (vfErr) { content = vfErr; isError = true; break; }
         content = executeVaultForget(agentId, args);
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'vault_update': {
+        const vuErr = checkRequired([
+          { name: 'entry_id', value: args.entry_id, type: 'string' },
+          { name: 'new_content', value: args.new_content, type: 'string' },
+          { name: 'reason', value: args.reason, type: 'string' },
+        ]);
+        if (vuErr) { content = vuErr; isError = true; break; }
+        content = await executeVaultUpdate(agentId, args);
         isError = content.startsWith('Error');
         break;
       }

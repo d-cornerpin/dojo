@@ -378,27 +378,48 @@ export async function runV2Turn(agentId: string): Promise<void> {
     }, agentId);
   }
 
-  // ── Post-compaction recall flag (soft enforcement) ──
+  // ── Post-compaction recall flag (auto-injected via intercept, v2.7.2) ──
   // If compaction fired an unacknowledged recall nudge (no
-  // recall_recent_thread call since), arm a one-shot warning that will
-  // fire on the agent's first significant tool call this turn. Soft, not
-  // refuse-based — the duplicate-project guard is the hard backstop.
+  // recall_recent_thread call since), arm the one-shot auto-recall that
+  // fires on the agent's first significant tool call this turn.
+  //
+  // v2.7.2 — bounded by session_started_at. Previously this query swept
+  // ALL of an agent's history for "Memory was just compacted", which
+  // meant stale compaction nudges from prior sessions kept arming the
+  // flag after a session_reset. Symptom: agent post-reset gets the
+  // auto-recall on its very first tool call, recall replays a transcript
+  // from before the reset, and the agent gets confused into duplicate
+  // calls. The boundary makes the check session-local.
   try {
-    const lastNudge = db.prepare(`
-      SELECT created_at FROM messages
-      WHERE agent_id = ? AND role = 'system'
-        AND content LIKE '[System: Memory was just compacted%'
-      ORDER BY created_at DESC, rowid DESC
-      LIMIT 1
-    `).get(agentId) as { created_at: string } | undefined;
+    const sessionRow = db.prepare(
+      'SELECT session_started_at FROM agents WHERE id = ?',
+    ).get(agentId) as { session_started_at: string | null } | undefined;
+    const sessionBoundary = sessionRow?.session_started_at ?? null;
+    const nudgeQuery = sessionBoundary
+      ? `SELECT created_at FROM messages
+         WHERE agent_id = ? AND role = 'system'
+           AND content LIKE '[System: Memory was just compacted%'
+           AND created_at >= ?
+         ORDER BY created_at DESC, rowid DESC LIMIT 1`
+      : `SELECT created_at FROM messages
+         WHERE agent_id = ? AND role = 'system'
+           AND content LIKE '[System: Memory was just compacted%'
+         ORDER BY created_at DESC, rowid DESC LIMIT 1`;
+    const nudgeParams = sessionBoundary ? [agentId, sessionBoundary] : [agentId];
+    const lastNudge = db.prepare(nudgeQuery).get(...nudgeParams) as { created_at: string } | undefined;
     if (lastNudge) {
-      const lastRecall = db.prepare(`
-        SELECT created_at FROM messages
-        WHERE agent_id = ? AND role = 'assistant'
-          AND content LIKE '%"name":"recall_recent_thread"%'
-        ORDER BY created_at DESC, rowid DESC
-        LIMIT 1
-      `).get(agentId) as { created_at: string } | undefined;
+      const recallQuery = sessionBoundary
+        ? `SELECT created_at FROM messages
+           WHERE agent_id = ? AND role = 'assistant'
+             AND content LIKE '%"name":"recall_recent_thread"%'
+             AND created_at >= ?
+           ORDER BY created_at DESC, rowid DESC LIMIT 1`
+        : `SELECT created_at FROM messages
+           WHERE agent_id = ? AND role = 'assistant'
+             AND content LIKE '%"name":"recall_recent_thread"%'
+           ORDER BY created_at DESC, rowid DESC LIMIT 1`;
+      const recallParams = sessionBoundary ? [agentId, sessionBoundary] : [agentId];
+      const lastRecall = db.prepare(recallQuery).get(...recallParams) as { created_at: string } | undefined;
       const nudgeTs = new Date((lastNudge.created_at.includes('Z') ? lastNudge.created_at : lastNudge.created_at + 'Z')).getTime();
       const recallTs = lastRecall
         ? new Date((lastRecall.created_at.includes('Z') ? lastRecall.created_at : lastRecall.created_at + 'Z')).getTime()
@@ -416,7 +437,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
   try {
     // ── Main loop ──
-    while (state.phase !== 'done' && state.loopCount < MAX_TOOL_LOOPS) {
+    //
+    // v2.7.2 — `taskClosedWithTextThisTurn` is checked here at the
+    // boundary because internal phase transitions during the body
+    // (preCallGates → assemble → callLLM → postCallClassify → execute →
+    // postExecution) keep overwriting `phase`, so setting `phase: 'done'`
+    // mid-body never survives to the next boundary check. The flag, on
+    // the other hand, only gets set (never cleared) once the
+    // text-plus-close-out pattern is detected, so the next loop turn
+    // sees it and exits — after the current iteration's close-out tool
+    // has already run.
+    while (
+      state.phase !== 'done' &&
+      state.loopCount < MAX_TOOL_LOOPS &&
+      !state.taskClosedWithTextThisTurn
+    ) {
       state = advance(state, { loopCount: state.loopCount + 1, phase: 'preCallGates' });
 
       // Stop / preempt checks
@@ -1374,6 +1409,59 @@ export async function runV2Turn(agentId: string): Promise<void> {
         persistedContent = null;
       }
 
+      // ── Duplicate-final-answer prevention (v2.7.2) ──
+      //
+      // When the model's assistant block pairs wrap-up text (≥ 10 chars)
+      // with a task-closing tool call, the work is done and there's
+      // nothing left to say. Set phase='done' so the loop exits after
+      // this iteration's tool execution — preventing the model from
+      // being called a second time on the tool result, which is what
+      // produces the duplicate "Task complete." follow-up. This saves
+      // tokens at the source rather than suppressing the duplicate
+      // after the fact.
+      //
+      // Close-out detection is two-pronged:
+      //   - tracker_update_status with status in {complete, blocked,
+      //     paused, fallen} — these all mean "this task is done."
+      //     Status 'in_progress' is intentionally excluded since the
+      //     agent may still be working.
+      //   - tracker_complete_step / tracker_close_project / complete_task
+      //     — always semantically closing.
+      const TERMINAL_STATUSES = new Set(['complete', 'blocked', 'paused', 'fallen']);
+      // ToolCall args land in `.arguments`, not `.input` — the Anthropic-style
+      // `input` is the on-the-wire shape but the engine normalizes to
+      // `arguments` (see packages/shared/src/types.ts:180). Reading the
+      // wrong field silently returned `false` from every check, which is
+      // why an earlier version of this guard never fired in production.
+      const isClosingCall = (tc: { name: string; arguments?: Record<string, unknown> }): boolean => {
+        if (tc.name === 'tracker_complete_step' || tc.name === 'tracker_close_project' || tc.name === 'complete_task') {
+          return true;
+        }
+        if (tc.name === 'tracker_update_status') {
+          const status = typeof tc.arguments?.status === 'string' ? tc.arguments.status.toLowerCase() : '';
+          return TERMINAL_STATUSES.has(status);
+        }
+        return false;
+      };
+      if (
+        !state.taskClosedWithTextThisTurn &&
+        result.content &&
+        result.content.trim().length >= 10 &&
+        result.toolCalls.some(isClosingCall)
+      ) {
+        state = advance(state, {
+          taskClosedWithTextThisTurn: true,
+          // Force loop exit AFTER this iteration's tool execution. The
+          // close-out tool still runs (it's already in result.toolCalls
+          // and processed below this block). The next while-loop check
+          // sees phase==='done' and exits without calling the model again.
+          phase: 'done',
+        });
+        logger.info('v2: close-out + wrap-up text — phase set to done, no second model call', {
+          agentId,
+        }, agentId);
+      }
+
       // No-reply sentinel: the agent emits `[no-reply]` (case-insensitive,
       // possibly with surrounding whitespace) when the incoming message
       // closes the conversation (goodnight, that's all, etc.) and there's
@@ -2078,52 +2166,73 @@ export async function runV2Turn(agentId: string): Promise<void> {
             state = advance(state, { closeOutGateSatisfied: true });
             logger.info('v2: close-out gate satisfied', { agentId, tool: tc.name }, agentId);
           }
-          // ── Post-compaction recall warning (soft, one-shot) ──
-          // Compaction left an unacknowledged "call recall_recent_thread"
-          // nudge in the message log. If the first significant tool this
-          // turn is anything other than recall / tracker / trivial meta,
-          // warn the agent that they're about to act on possibly-stale
-          // memory. Doesn't refuse — the duplicate-project guard catches
-          // the most expensive failure shape (recreating a project).
+          // ── Post-compaction recall enforcement (hard intercept, v2.7.2) ──
+          //
+          // Previously this was a soft system-message warning that told the
+          // agent to call recall_recent_thread before proceeding. The model
+          // ignored it ~consistently — the warning text became 200 tokens
+          // of dead weight in every post-compaction context. New approach:
+          // when the agent tries to call any significant tool right after
+          // compaction, the engine TRANSPARENTLY runs recall_recent_thread
+          // first, injects the result as a system message in front of the
+          // agent's next iteration, clears the flag, and then proceeds
+          // with the agent's original call. The agent doesn't have to
+          // decide. Cost: one ~3K-token recall per compaction event.
+          //
+          // Whitelist of tools that don't trigger the intercept — these
+          // are either the recall itself, cheap engine-affordance calls,
+          // or tracker tools that have their own duplicate guard.
           if (
             state.awaitingPostCompactRecall &&
-            !state.nudgedForPostCompactRecall &&
             tc.name !== 'recall_recent_thread' &&
             !tc.name.startsWith('tracker_') &&
             tc.name !== 'get_current_time' &&
             tc.name !== 'convert_time' &&
             tc.name !== 'load_tool_docs'
           ) {
-            const warnText = (
-              `[System: compaction fired and you have not called recall_recent_thread since. The "Memory Compacted" nudge above is still unacknowledged. ` +
-              `You are about to call "${tc.name}" — if this work depends on anything that happened earlier in this conversation (a project you opened, a file you read, a decision you made), pause and call recall_recent_thread(include_tool_results: true) FIRST. ` +
-              `The Presenton failure shape: agent gets compacted, forgets it already opened a tracker project, and creates a duplicate. recall_recent_thread is the cheapest defense (one call, ~3K tokens). ` +
-              `This warning fires once per turn; the engine won't block "${tc.name}" — but if you go on to call tracker_create_project, the duplicate guard will refuse it.]`
-            );
-            const warnId = uuidv4();
             try {
+              const { recallRecentThread } = await import('../../memory/recall.js');
+              const recallContent = recallRecentThread(agentId, {
+                turnCount: 8,
+                includeToolCalls: true,
+                includeToolResults: true,
+                truncateToolResultChars: 1500,
+                truncateMessageChars: 1500,
+              });
+              const wrapped = (
+                `[engine:auto-recall — compaction just fired and you were about to call "${tc.name}". The engine ran recall_recent_thread for you so you can see what was happening before the compaction; your original tool call will proceed in the same turn.]\n\n${recallContent}`
+              );
+              const recId = uuidv4();
               db.prepare(`
                 INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
                 VALUES (?, ?, 'system', ?, ?, datetime('now'))
-              `).run(warnId, agentId, warnText, turnNumber);
+              `).run(recId, agentId, wrapped, turnNumber);
               broadcast({
                 type: 'chat:message',
                 agentId,
                 message: {
-                  id: warnId, agentId, role: 'system' as const,
-                  content: warnText,
+                  id: recId, agentId, role: 'system' as const,
+                  content: wrapped,
                   tokenCount: null, modelId: null, cost: null, latencyMs: null,
                   createdAt: new Date().toISOString(),
                 },
               });
-            } catch { /* best effort */ }
-            state = advance(state, { nudgedForPostCompactRecall: true });
-            logger.info('v2: post-compaction recall warning fired', { agentId, tool: tc.name }, agentId);
+              logger.info('v2: post-compaction recall auto-injected', { agentId, tool: tc.name }, agentId);
+            } catch (err) {
+              // Failure here is non-fatal — proceed with the tool call.
+              // The duplicate-project guard remains the safety net for
+              // the most expensive failure shape (recreating a project).
+              logger.warn('v2: post-compaction recall auto-inject failed', {
+                agentId, tool: tc.name, error: err instanceof Error ? err.message : String(err),
+              }, agentId);
+            }
+            // Clear the flag whether the inject succeeded or not — one-shot.
+            state = advance(state, { awaitingPostCompactRecall: false, nudgedForPostCompactRecall: true });
           } else if (
             state.awaitingPostCompactRecall &&
             tc.name === 'recall_recent_thread'
           ) {
-            // Agent did the right thing — clear both flags.
+            // Agent called recall themselves — clear flags, no auto-inject needed.
             state = advance(state, { awaitingPostCompactRecall: false, nudgedForPostCompactRecall: true });
             logger.info('v2: post-compaction recall flag cleared (recall called)', { agentId }, agentId);
           }
