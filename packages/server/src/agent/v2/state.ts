@@ -215,6 +215,28 @@ export interface AgentTurnState {
    */
   taskClosedWithTextThisTurn: boolean;
 
+  /**
+   * v2.7.6 — set when a successful technique_read / use_technique call
+   * lands. Acts as a gate: every subsequent tool call OTHER than the
+   * acknowledge-flow allowlist (more technique reads, technique_acknowledge,
+   * list_techniques) gets refused until the agent calls
+   * technique_acknowledge(name, summary). Persisted into agents.config
+   * so it survives across turns — if the agent ends its turn without
+   * acking, the next turn starts gated.
+   *
+   * The point: "the agent literally can't continue until it acknowledges
+   * that it has read the technique in its entirety." Reading the
+   * technique without processing it leads to skipped steps and the
+   * agent acting on cached / paraphrased memory. The acknowledge step
+   * forces engagement.
+   */
+  pendingTechniqueAck: {
+    techniqueId: string;
+    techniqueName: string;
+    loadedAtIso: string;
+    fromTurnNumber: number;
+  } | null;
+
   // ── Pre-flight enforcement decisions ──
   readonly shouldNudgeTracker: boolean;
 
@@ -235,6 +257,12 @@ export interface InitStateParams {
   imFlagSetAtRunStart: boolean;
   lastUserMessageContent: string | null;
   shouldNudgeTracker: boolean;
+  /**
+   * Hydrated from agents.config.pendingTechniqueAck. Null when the gate
+   * isn't currently set. The runtime is responsible for persisting
+   * changes back to the config column.
+   */
+  pendingTechniqueAck: AgentTurnState['pendingTechniqueAck'];
 }
 
 export function initState(params: InitStateParams): AgentTurnState {
@@ -300,6 +328,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     awaitingPostCompactRecall: false,
     nudgedForPostCompactRecall: false,
     taskClosedWithTextThisTurn: false,
+    pendingTechniqueAck: params.pendingTechniqueAck,
 
     shouldNudgeTracker: params.shouldNudgeTracker,
 

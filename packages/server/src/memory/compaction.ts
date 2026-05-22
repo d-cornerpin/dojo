@@ -103,6 +103,46 @@ export function estimateAssembledTokens(agentId: string, contextWindow: number):
 
 const logger = createLogger('memory-compaction');
 
+// ── Technique-content scrub for summarization (v2.7.6) ──
+//
+// Tool results from technique_read / use_technique all carry the
+// freshness sentinel (techniques/tools.ts:TECHNIQUE_FRESH_SENTINEL).
+// Before sending chunk text into the summarizer, replace any such
+// block with a one-line stub so the technique body NEVER appears in
+// the generated summary. Without this, the summary keeps a
+// paraphrased copy of the technique and the agent later reads the
+// summary as authoritative — defeating the v2.7.4 stub-after-1-turn
+// freshness enforcement on the raw tool_result side.
+const TECHNIQUE_FRESH_SENTINEL = '══ TECHNIQUE FRESH READ ══';
+const TECHNIQUE_SCRUB_STUB =
+  '[technique read withheld from summary by engine policy — call technique_read for the current on-disk content; do not paraphrase from this summary]';
+
+function scrubTechniqueContentForSummary(messageContent: string): string {
+  // Fast path: plain string content that starts with the sentinel
+  // (covers any flow where the runtime persists the raw tool string
+  // rather than a JSON tool_result block).
+  if (messageContent.startsWith(TECHNIQUE_FRESH_SENTINEL)) {
+    return TECHNIQUE_SCRUB_STUB;
+  }
+  // JSON path: walk tool_result blocks the way the assembler does.
+  try {
+    const parsed = JSON.parse(messageContent);
+    if (!Array.isArray(parsed)) return messageContent;
+    let changed = false;
+    const next = parsed.map((block: unknown) => {
+      const b = block as { type?: string; content?: unknown };
+      if (b.type !== 'tool_result') return block;
+      if (typeof b.content !== 'string') return block;
+      if (!b.content.startsWith(TECHNIQUE_FRESH_SENTINEL)) return block;
+      changed = true;
+      return { ...b, content: TECHNIQUE_SCRUB_STUB };
+    });
+    return changed ? JSON.stringify(next) : messageContent;
+  } catch {
+    return messageContent;
+  }
+}
+
 // ── Defaults ──
 //
 // v1: contextThreshold 0.75 — fires at 75% utilization (the "compaction is
@@ -582,10 +622,13 @@ export async function runLeafCompaction(
   for (const chunk of chunks) {
     if (chunk.length === 0) continue;
 
-    // Build content from chunk messages
+    // Build content from chunk messages. scrubTechniqueContentForSummary
+    // strips technique tool-result bodies so they don't leak into the
+    // summary the model writes next (and which the agent would later
+    // read as authoritative, bypassing freshness enforcement).
     const content = chunk.map(m => {
       const role = m.role.toUpperCase();
-      return `[${role}] ${m.content}`;
+      return `[${role}] ${scrubTechniqueContentForSummary(m.content)}`;
     }).join('\n\n---\n\n');
 
     const messageIds = chunk.map(m => m.id);
@@ -834,11 +877,13 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
     const allMessages = getRecentMessages(agentId, getFreshTailCount(contextWindow) * 2);
     if (allMessages.length < 5) return; // Not enough context to summarize
 
-    // Format messages for the summarizer
+    // Format messages for the summarizer. Scrub technique tool-result
+    // bodies first so they don't leak into the continuity brief.
     const formatted = allMessages.map(m => {
       const role = m.role === 'assistant' ? '[ASSISTANT]' : m.role === 'user' ? '[USER]' : `[${m.role.toUpperCase()}]`;
+      const scrubbed = scrubTechniqueContentForSummary(m.content);
       // Truncate very long messages (tool results) to keep the input manageable
-      const content = m.content.length > 2000 ? m.content.slice(0, 2000) + '...[truncated]' : m.content;
+      const content = scrubbed.length > 2000 ? scrubbed.slice(0, 2000) + '...[truncated]' : scrubbed;
       return `${role}\n${content}`;
     }).join('\n---\n');
 

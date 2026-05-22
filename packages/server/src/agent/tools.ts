@@ -1910,7 +1910,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'use_technique',
-    description: 'Activate and load a technique. Prefer technique_read for browsing/searching — use_technique now returns an outline (sections + supporting files + sizes), and you call technique_read action="section" to read specific parts. Big techniques no longer truncate.\n\n**Engine freshness enforcement (v2.7.4):** every technique tool result you receive carries a fresh-read banner. Prior reads in your conversation get STUBBED on the next turn — the content is gone, replaced with "re-call technique_read to see current". This is intentional: techniques mutate on disk and the only correct source of truth is a re-read. Do NOT rely on memory, vault, or scratchpad copies of any technique. vault_remember also refuses to store technique-tagged content. When you need to consult a technique you read earlier, just call this tool again.',
+    description: 'Activate and load a technique. Prefer technique_read for browsing/searching — use_technique now returns an outline (sections + supporting files + sizes), and you call technique_read action="section" to read specific parts. Big techniques no longer truncate.\n\n**Engine acknowledgement gate (v2.7.6) — IMPORTANT:** this call engages an acknowledgement gate. Until you call technique_acknowledge(name, summary) with a ≥100-char paraphrase of what the technique says, EVERY OTHER tool will be refused. Only technique_read, use_technique, list_techniques, and technique_acknowledge are allowed while the gate is on. The acknowledgement forces engagement so you don\'t skip past the technique into memory-driven work.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1920,8 +1920,20 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'technique_acknowledge',
+    description: 'Clear the engine\'s technique-acknowledgement gate after reading a technique. REQUIRED after every successful technique_read / use_technique call before any other tool can run. Pass the technique\'s slug (or display name) and a paraphrase summary of what the technique says (minimum 100 characters — engine policy, validated mechanically). The point is engagement, not a tutorial: a sentence or two on the workflow / key steps is fine. Once the engine accepts your acknowledgement, the gate clears and all tools work again. If you re-read the technique later, the gate re-engages and a fresh acknowledgement is required.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Technique slug/id or display name (must match the technique you just read).' },
+        summary: { type: 'string', description: 'Your own short paraphrase of the technique\'s key steps. Minimum 100 characters. Doesn\'t need to be exhaustive — just enough to demonstrate you processed the content.' },
+      },
+      required: ['name', 'summary'],
+    },
+  },
+  {
     name: 'technique_read',
-    description: 'Read a technique with surgical precision instead of slurping the whole thing. Five actions: (1) outline [default] — returns headings, line ranges, char counts, and supporting files; never truncates; ALWAYS your first call when consulting a technique. (2) section — read one section by section_name="<title>" (case-insensitive substring match) or lines="start-end"; oversize sections require explicit line ranges. (3) search — query="<term>" greps TECHNIQUE.md AND all supporting files, returns matches with file + line number + surrounding context; best path through a huge technique. (4) list_files — list the technique\'s supporting files. (5) read_file — read one supporting file by file="<path>", optional lines="start-end".\n\n**Engine freshness enforcement (v2.7.4):** every response carries a fresh-read banner. Prior technique reads in your conversation get STUBBED on the next turn — the content is replaced with "re-call technique_read to see current". Techniques mutate on disk; the on-disk file is the only source of truth. Do NOT rely on memory, vault, or scratchpad copies. vault_remember also refuses to store technique-tagged content. The right pattern is: call this tool every time you need a section, even if you "remember" reading it before. Re-calling is cheap; acting on stale technique text is expensive.',
+    description: 'Read a technique with surgical precision instead of slurping the whole thing. Five actions: (1) outline [default] — returns headings, line ranges, char counts, and supporting files; never truncates; ALWAYS your first call when consulting a technique. (2) section — read one section by section_name="<title>" (case-insensitive substring match) or lines="start-end"; oversize sections require explicit line ranges. (3) search — query="<term>" greps TECHNIQUE.md AND all supporting files, returns matches with file + line number + surrounding context; best path through a huge technique. (4) list_files — list the technique\'s supporting files. (5) read_file — read one supporting file by file="<path>", optional lines="start-end".\n\n**Engine acknowledgement gate (v2.7.6) — IMPORTANT:** every successful call to this tool engages an acknowledgement gate. Until you call technique_acknowledge(name, summary) with a ≥100-char paraphrase of what you read, EVERY OTHER tool (file_read, exec, tracker_*, send_to_agent, etc.) will be REFUSED. Only this tool, use_technique, list_techniques, and technique_acknowledge are allowed while the gate is on. Reason: agents kept reading techniques and then ignoring them in favor of cached memory. The gate forces engagement. So the right pattern is: technique_read (one or more times to load what you need) → technique_acknowledge → then do your work. The acknowledgement does NOT need to be exhaustive — just enough to show you processed the content.',
     input_schema: {
       type: 'object',
       properties: {
@@ -3263,6 +3275,19 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         const newContent = args.content as string;
         if (newContent.length > SCRATCHPAD_MAX_CHARS) {
           content = `Error: scratchpad content is ${newContent.length} chars; cap is ${SCRATCHPAD_MAX_CHARS}. Move detail into a real file and keep the scratchpad as a high-level index.`;
+          isError = true;
+          break;
+        }
+        // Refuse to stash technique content in the scratchpad.
+        // Scratchpad survives across turns and gets re-injected at
+        // every assembly — exactly the staleness the v2.7.4 freshness
+        // enforcement was built to prevent. If the agent wants to
+        // remember WHAT THEY DECIDED while following a technique
+        // (parameters chosen, paths produced, errors hit), they can
+        // — they just can't paste the technique body itself.
+        if (newContent.includes('══ TECHNIQUE FRESH READ ══')) {
+          content =
+            'Refused: scratchpad content contains a technique fresh-read banner — looks like a copy-paste of technique_read / use_technique output. Scratchpad is re-injected on every turn, which would re-introduce the staleness the engine prevents on the tool-result side. Vault decisions ("chose path X for reason Y") or step-state ("step 3: writing yaml") in the scratchpad — re-call technique_read whenever you need the actual technique body.';
           isError = true;
           break;
         }
@@ -5911,6 +5936,27 @@ Thread is closed — respond to the user, not Imaginer.`;
         const { executeListTechniques } = await import('../techniques/tools.js');
         const agentRow3 = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
         content = executeListTechniques(agentId, agentRow3?.classification ?? 'apprentice', args);
+        break;
+      }
+      case 'technique_acknowledge': {
+        // Pull the current pending-ack from agents.config and dispatch
+        // to the validator. On success, clear the persisted ack so the
+        // gate releases. The runtime in v2/loop.ts re-reads config at
+        // its gate check, so clearing here is sufficient — no need to
+        // mutate state.pendingTechniqueAck directly (we don't have
+        // that state in this scope).
+        const { executeTechniqueAcknowledge } = await import('../techniques/tools.js');
+        const taDb = getDb();
+        const taRow = taDb.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
+        const taCfg = taRow?.config ? JSON.parse(taRow.config) as Record<string, unknown> : {};
+        const pending = (taCfg.pendingTechniqueAck ?? null) as { techniqueId: string; techniqueName: string } | null;
+        const result = executeTechniqueAcknowledge(agentId, pending, args);
+        content = result.content;
+        isError = !result.ok;
+        if (result.ok && result.clearedAck) {
+          delete taCfg.pendingTechniqueAck;
+          taDb.prepare("UPDATE agents SET config = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(taCfg), agentId);
+        }
         break;
       }
       case 'publish_technique': {

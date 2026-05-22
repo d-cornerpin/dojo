@@ -242,6 +242,34 @@ export async function runV2Turn(agentId: string): Promise<void> {
   const turnStartedAt = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
   turnBoundary.set(agentId, turnStartedAt);
 
+  // v2.7.6 — hydrate the technique-acknowledgement gate from agents.config.
+  // If the agent ended their last turn with a pending ack, the gate stays
+  // engaged across turns until they call technique_acknowledge.
+  let initialPendingTechniqueAck: import('./state.js').AgentTurnState['pendingTechniqueAck'] = null;
+  try {
+    const cfgRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
+    if (cfgRow?.config) {
+      const cfg = JSON.parse(cfgRow.config) as Record<string, unknown>;
+      const pending = cfg.pendingTechniqueAck;
+      if (pending && typeof pending === 'object') {
+        const p = pending as { techniqueId?: unknown; techniqueName?: unknown; loadedAtIso?: unknown; fromTurnNumber?: unknown };
+        if (
+          typeof p.techniqueId === 'string' &&
+          typeof p.techniqueName === 'string' &&
+          typeof p.loadedAtIso === 'string' &&
+          typeof p.fromTurnNumber === 'number'
+        ) {
+          initialPendingTechniqueAck = {
+            techniqueId: p.techniqueId,
+            techniqueName: p.techniqueName,
+            loadedAtIso: p.loadedAtIso,
+            fromTurnNumber: p.fromTurnNumber,
+          };
+        }
+      }
+    }
+  } catch { /* malformed config — start fresh, agent can re-engage gate by re-reading */ }
+
   // Initial state
   let state = initState({
     agentId,
@@ -254,6 +282,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
     imFlagSetAtRunStart,
     lastUserMessageContent,
     shouldNudgeTracker: false, // Phase 2.1 may compute this; baseline disabled
+    pendingTechniqueAck: initialPendingTechniqueAck,
   });
 
   // ── v2.5.46: pre-turn close-out gate detection ──
@@ -2015,6 +2044,44 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
         // Per-call processing (used in both parallel and serial paths).
         const runOne = async (tc: ToolCall) => {
+          // ── Technique-acknowledgement gate (v2.7.6) ──
+          // If the agent recently called technique_read / use_technique
+          // and hasn't acknowledged yet, only allow the small allowlist
+          // of tools that can clear or extend the gate. Everything else
+          // gets a structured refusal. Mirrors the close-out gate
+          // pattern below — engine-enforced, not prompt-enforced.
+          const TECHNIQUE_GATE_ALLOWED = new Set([
+            'technique_read',
+            'use_technique',
+            'technique_acknowledge',
+            'list_techniques',
+            // recall/memory tools stay allowed so the agent can
+            // bootstrap context if it forgot the technique mid-flow.
+            'recall_recent_thread',
+            'memory_grep',
+            'memory_describe',
+          ]);
+          if (state.pendingTechniqueAck && !TECHNIQUE_GATE_ALLOWED.has(tc.name)) {
+            const p = state.pendingTechniqueAck;
+            const refusalText =
+              `🛑 BLOCKED by engine: technique-acknowledgement gate.\n\n` +
+              `You called technique_read / use_technique for "${p.techniqueName}" (turn ${p.fromTurnNumber}, ${p.loadedAtIso}) but haven't acknowledged reading it yet. ` +
+              `Engine policy: every fresh technique load requires a technique_acknowledge call before ANY other tool can run — otherwise agents keep skipping past the technique and acting on cached memory.\n\n` +
+              `Call this next, then your "${tc.name}" call will work on the following iteration:\n` +
+              `  technique_acknowledge(name="${p.techniqueId}", summary="<your-paraphrase-of-the-key-steps, at-least-100-chars>")\n\n` +
+              `Tools allowed while the gate is on: ${[...TECHNIQUE_GATE_ALLOWED].join(', ')}.`;
+            try {
+              broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
+              broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusalText.slice(0, 500) });
+            } catch { /* best effort */ }
+            return {
+              toolCallId: tc.id,
+              name: tc.name,
+              content: refusalText,
+              isError: true,
+            };
+          }
+
           // Loop-break check
           const loopCheck = loopDetector(tc, recentSigs);
           recentSigs = bumpLoopSignature(recentSigs, loopCheck.signature, RECENT_TOOL_WINDOW);
@@ -2279,6 +2346,105 @@ export async function runV2Turn(agentId: string): Promise<void> {
             };
           }
           state = advance(state, { toolCallsExecutedThisTurn: state.toolCallsExecutedThisTurn + 1 });
+
+          // ── Technique-acknowledgement gate state sync (v2.7.6) ──
+          // Engage the gate after a successful technique_read / use_technique
+          // — UNLESS the agent already has a pending or acknowledged ack
+          // for this same technique. The "first read of a new technique"
+          // is what needs forced engagement; subsequent reads of the same
+          // technique (navigating sections, re-reading after compaction,
+          // etc.) are part of working WITH the technique, not loading it
+          // fresh, and shouldn't force a re-ack.
+          //
+          // Match by techniqueId (the slug/id arg the agent passed). Display
+          // names can drift; the slug is canonical.
+          if (!toolResult.isError) {
+            if (tc.name === 'technique_read' || tc.name === 'use_technique') {
+              const reqName = typeof tc.arguments?.name === 'string' ? tc.arguments.name : null;
+              if (reqName) {
+                const alreadyEngaged =
+                  state.pendingTechniqueAck !== null &&
+                  state.pendingTechniqueAck.techniqueId === reqName;
+                if (alreadyEngaged) {
+                  // Same technique, gate already on — leave it alone.
+                  // Agent is still working through the load; one ack
+                  // covers all subsequent reads of this technique.
+                } else {
+                  // Check whether the agent has ALREADY acknowledged this
+                  // same technique recently (no pending ack, but this is
+                  // the same technique they engaged with earlier in the
+                  // session). We persist the last-acknowledged technique
+                  // alongside the pending one so re-reads while working
+                  // don't trigger re-engagement.
+                  let lastAckedId: string | null = null;
+                  try {
+                    const r = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
+                    const cfg = r?.config ? JSON.parse(r.config) as Record<string, unknown> : {};
+                    const last = cfg.lastAcknowledgedTechniqueId;
+                    if (typeof last === 'string') lastAckedId = last;
+                  } catch { /* config unreadable — treat as no prior ack */ }
+                  if (lastAckedId === reqName && state.pendingTechniqueAck === null) {
+                    // Same technique the agent already acked. Don't
+                    // re-engage the gate — they're navigating around
+                    // their working technique.
+                    logger.debug('v2: technique re-read after prior ack — gate NOT re-engaged', {
+                      agentId, tool: tc.name, techniqueId: reqName,
+                    }, agentId);
+                  } else {
+                    // First read of this technique in this work-stream.
+                    // Engage the gate.
+                    let displayName = reqName;
+                    const m = toolResult.content.match(/^══ TECHNIQUE FRESH READ ══ (.+?) \(/);
+                    if (m) displayName = m[1];
+                    const pending = {
+                      techniqueId: reqName,
+                      techniqueName: displayName,
+                      loadedAtIso: new Date().toISOString(),
+                      fromTurnNumber: turnNumber,
+                    };
+                    state = advance(state, { pendingTechniqueAck: pending });
+                    try {
+                      const r = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
+                      const cfg = r?.config ? JSON.parse(r.config) as Record<string, unknown> : {};
+                      cfg.pendingTechniqueAck = pending;
+                      db.prepare("UPDATE agents SET config = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(cfg), agentId);
+                    } catch (cfgErr) {
+                      logger.warn('v2: failed to persist pendingTechniqueAck — gate will still apply in-memory but won\'t survive turn boundary', {
+                        agentId, err: cfgErr instanceof Error ? cfgErr.message : String(cfgErr),
+                      }, agentId);
+                    }
+                    logger.info('v2: technique-ack gate engaged', {
+                      agentId, tool: tc.name, techniqueId: reqName,
+                    }, agentId);
+                  }
+                }
+              }
+            } else if (tc.name === 'technique_acknowledge') {
+              // Executor already cleared the persisted pending ack.
+              // Record this technique as the "last acknowledged" so
+              // future re-reads of the same technique don't re-engage
+              // the gate (option-a behavior). Sync in-memory state.
+              const ackedName = typeof tc.arguments?.name === 'string' ? tc.arguments.name : null;
+              if (ackedName) {
+                try {
+                  const r = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
+                  const cfg = r?.config ? JSON.parse(r.config) as Record<string, unknown> : {};
+                  // Use the techniqueId from the pendingAck if the ack
+                  // name resolved to a display name — keeps the
+                  // re-read match working regardless of which form the
+                  // agent passes.
+                  const canonicalId = state.pendingTechniqueAck?.techniqueId ?? ackedName;
+                  cfg.lastAcknowledgedTechniqueId = canonicalId;
+                  db.prepare("UPDATE agents SET config = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(cfg), agentId);
+                } catch { /* best effort */ }
+              }
+              if (state.pendingTechniqueAck) {
+                state = advance(state, { pendingTechniqueAck: null });
+                logger.info('v2: technique-ack gate cleared', { agentId, techniqueId: ackedName }, agentId);
+              }
+            }
+          }
+
           // Permission denial suggestion appendix
           if (toolResult.isError && toolResult.content.includes('[BLOCKED]')) {
             try {

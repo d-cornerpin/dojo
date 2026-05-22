@@ -81,39 +81,40 @@ function authorizeTechniqueMutation(agentId: string, classification: string, ver
   );
 }
 
-// ── Technique freshness enforcement (v2.7.4) ──
+// ── Technique freshness enforcement (v2.7.4, banner shortened v2.7.6) ──
 //
 // Single source of truth for the "this is a technique tool result"
 // sentinel. Every technique_read / use_technique response gets this
-// banner prepended. Two consumers downstream:
+// banner prepended. Four consumers downstream:
 //
 //   1. The assembler's stubOldToolResults() — looks for this sentinel
 //      and stubs the matching tool_result blocks after just 1 turn
 //      (vs 12 for normal tool results), so the agent literally cannot
-//      reference a prior read on the next turn. Forces a re-call.
-//
+//      reference a prior read on the next turn.
 //   2. vault_remember — refuses to store any entry whose content
-//      contains this sentinel, so agents can't sidestep the freshness
-//      enforcement by stashing technique text in the vault.
+//      contains this sentinel.
+//   3. scratchpad_set — refuses to write technique content into
+//      scratchpad (added v2.7.6).
+//   4. Compaction — replaces sentinel-wrapped blocks with a stub
+//      BEFORE summarizing, so technique content doesn't leak into
+//      summaries the model later reads as authoritative (added v2.7.6).
 //
-// The visible part of the banner also tells the model in plain English
-// that prior reads are stubbed and memory/vault copies are stale.
-// Don't change the sentinel string without grepping for every consumer
-// — it's a magic string by design.
+// v2.7.6 — banner shortened. The v2.7.4 banner spelled out the
+// enforcement policy in every response ("prior reads get stubbed",
+// "do not reference cached memory", etc.), which made the agent
+// second-guess whether the fresh response it was looking at was
+// actually fresh, and bail to exec/memory instead of trusting the
+// content. The policy now lives ONLY in the tool descriptions
+// (system prompt level); each result just identifies itself.
+//
+// Don't change the sentinel string without grepping for every consumer.
 export const TECHNIQUE_FRESH_SENTINEL = '══ TECHNIQUE FRESH READ ══';
 
 function wrapTechniqueResult(techniqueName: string, body: string): string {
-  const banner =
-    `${TECHNIQUE_FRESH_SENTINEL}\n` +
-    `Technique: ${techniqueName}\n` +
-    `Read at: ${new Date().toISOString()}\n` +
-    `This is the current on-disk content. Engine enforcement: prior\n` +
-    `technique reads in your conversation get stubbed on the NEXT turn.\n` +
-    `Do not reference cached memory, vault, or scratchpad copies of\n` +
-    `this technique — they may be stale. Re-call technique_read with\n` +
-    `the params you need whenever you want to look at it again.\n` +
-    `═══════════════════════════════════════════════════════════════\n\n`;
-  return banner + body;
+  return (
+    `${TECHNIQUE_FRESH_SENTINEL} ${techniqueName} (${new Date().toISOString()})\n` +
+    `${body}`
+  );
 }
 
 // Convert the structured TechniqueValidationError into something the
@@ -563,7 +564,19 @@ function formatSection(technique: { name: string; instructions: string | null },
       ?? sections.find((s) => s.title.toLowerCase().includes(needle));
     if (!match) {
       const available = sections.map((s) => `"${s.title}"`).join(', ') || '(none)';
-      return `Error: Section "${sectionName}" not found in "${technique.name}". Available: ${available}. Use action="outline" to see the full structure.`;
+      // The agent that hit this error in v2.7.5 testing bailed straight
+      // to exec/memory instead of trying a different action. The new
+      // text walks them through the alternatives explicitly so they
+      // stay inside the technique_read tool family.
+      return (
+        `Error: section "${sectionName}" not found in "${technique.name}".\n` +
+        `Available sections: ${available}.\n\n` +
+        `Try one of:\n` +
+        `  • technique_read(name="${technique.name}", action="search", query="${sectionName.toLowerCase()}") — greps TECHNIQUE.md + supporting files for that term\n` +
+        `  • technique_read(name="${technique.name}", action="section", section_name="<one of the available titles above>")\n` +
+        `  • technique_read(name="${technique.name}", action="outline") — full structure if the list above isn't enough\n\n` +
+        `Do NOT fall back to memory or exec the technique directory — the on-disk file is the source of truth and the actions above will reach it.`
+      );
     }
     startLine = match.startLine;
     endLine = match.endLine;
@@ -758,4 +771,75 @@ export function executeTechniqueRead(
       return `Error: unknown action "${action}". Valid actions: outline, section, search, list_files, read_file.`;
   }
   return wrapTechniqueResult(technique.name, body);
+}
+
+// ── technique_acknowledge ──
+//
+// Clears the engine's pendingTechniqueAck gate. Required after any
+// successful technique_read / use_technique call before the agent can
+// run any other (non-allowlisted) tool. The summary parameter forces
+// the agent to write SOMETHING in their own words about the technique
+// — engagement, not just reading. The runtime owns the actual gate
+// state (in agents.config.pendingTechniqueAck); this executor just
+// validates the ack payload and returns success/refusal. The runtime
+// clears the persisted state when this returns success.
+const TECHNIQUE_ACK_MIN_SUMMARY_CHARS = 100;
+
+export function executeTechniqueAcknowledge(
+  agentId: string,
+  pendingAck: { techniqueId: string; techniqueName: string } | null,
+  args: Record<string, unknown>,
+): { ok: true; content: string; clearedAck: true } | { ok: false; content: string } {
+  const name = typeof args.name === 'string' ? args.name : undefined;
+  const summary = typeof args.summary === 'string' ? args.summary : undefined;
+
+  if (!name) {
+    return { ok: false, content: 'Error: name (technique slug/id) is required.' };
+  }
+  if (!summary || summary.trim().length < TECHNIQUE_ACK_MIN_SUMMARY_CHARS) {
+    return {
+      ok: false,
+      content:
+        `Error: summary must be at least ${TECHNIQUE_ACK_MIN_SUMMARY_CHARS} characters. ` +
+        `Engine policy: the acknowledgement is what forces you to process what you read instead of skipping past it. ` +
+        `Briefly paraphrase the technique's key steps in your own words (no need to be exhaustive — just enough to show you engaged). ` +
+        `Current summary length: ${(summary?.trim().length ?? 0)} chars.`,
+    };
+  }
+  if (!pendingAck) {
+    return {
+      ok: false,
+      content:
+        `Error: no pending technique acknowledgement on file. ` +
+        `technique_acknowledge is only meaningful right after a technique_read or use_technique call. ` +
+        `If you meant to read a technique, call technique_read(name="${name}", action="outline") or use_technique(name="${name}") first.`,
+    };
+  }
+  // Match by slug (techniqueId) or display name (techniqueName). LLMs
+  // sometimes get the form wrong; accept either.
+  const matches = (
+    name === pendingAck.techniqueId ||
+    name.toLowerCase() === pendingAck.techniqueName.toLowerCase()
+  );
+  if (!matches) {
+    return {
+      ok: false,
+      content:
+        `Error: pending acknowledgement is for technique "${pendingAck.techniqueName}" (${pendingAck.techniqueId}), not "${name}". ` +
+        `Call technique_acknowledge(name="${pendingAck.techniqueId}", summary=...) to clear the current gate, ` +
+        `or re-read the technique you actually want to work with via technique_read.`,
+    };
+  }
+  logger.info('Technique acknowledgement accepted', {
+    techniqueId: pendingAck.techniqueId,
+    summaryChars: summary.trim().length,
+  }, agentId);
+  return {
+    ok: true,
+    clearedAck: true,
+    content:
+      `Acknowledgement accepted for "${pendingAck.techniqueName}" (${pendingAck.techniqueId}). ` +
+      `Engine gate cleared — you can now run any tool. ` +
+      `If the technique gets re-read (you call technique_read / use_technique again, or it ages out and you need to re-fetch), the gate will re-engage and a fresh acknowledgement will be required.`,
+  };
 }
