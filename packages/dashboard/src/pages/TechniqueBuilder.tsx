@@ -41,6 +41,11 @@ interface ChatMessage {
   toolCalls?: ToolCallData[];
   isStreaming?: boolean;
   attachments?: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: string }>;
+  // DeepSeek native thinking-mode / OpenRouter unified reasoning stream.
+  // Populated by the chat:reasoning_chunk subscription; rendered in the
+  // collapsible "Thinking…" panel inside AssistantBubble.
+  reasoningContent?: string;
+  isReasoningStreaming?: boolean;
 }
 
 interface CanvasState {
@@ -210,12 +215,56 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
 };
 
 const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMode?: boolean }) => {
-  const { text, blocks } = parseMessageContent(msg.content);
+  const { text: rawText, blocks } = parseMessageContent(msg.content);
+  const text = rawText?.trim() || '';
   const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
+  const hasReasoning = !!(msg.reasoningContent && msg.reasoningContent.length > 0);
+
+  // Auto-expand "Thinking…" while it's actively streaming OR while no
+  // answer text has arrived yet. Auto-collapse once the final answer
+  // text is rendering. Mirrors Chat.tsx:166-174.
+  const reasoningOpenDefault = hasReasoning && (msg.isReasoningStreaming || text.length === 0);
+  const [reasoningOpen, setReasoningOpen] = useState(reasoningOpenDefault);
+  useEffect(() => {
+    if (!msg.isReasoningStreaming && text.length > 0) setReasoningOpen(false);
+  }, [msg.isReasoningStreaming, text.length]);
 
   return (
     <div className="flex justify-start">
       <div className="max-w-[85%]">
+        {/* Reasoning / "Thinking…" panel — DeepSeek native thinking-mode
+            and OpenRouter unified reasoning stream arrive via
+            chat:reasoning_chunk. Without this the trainer mat showed
+            NOTHING for the model's pre-answer reasoning, even in wordy
+            mode. Live-streams, then collapses once the final answer
+            text starts arriving. */}
+        {hasReasoning && wordyMode && (
+          <div className="mb-1.5 rounded-lg border border-ui/[0.06] bg-ui/[0.03] overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setReasoningOpen((v) => !v)}
+              className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-[11px] text-ui/40 hover:text-ui/70 transition-colors"
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <span>{msg.isReasoningStreaming ? 'Thinking…' : 'Thought'}</span>
+                {msg.isReasoningStreaming && (
+                  <span className="inline-flex gap-0.5">
+                    <span className="w-1 h-1 rounded-full bg-ui/[0.12] animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1 h-1 rounded-full bg-ui/[0.12] animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-1 h-1 rounded-full bg-ui/[0.12] animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </span>
+                )}
+              </span>
+              <span className="text-ui/25">{reasoningOpen ? '▾' : '▸'}</span>
+            </button>
+            {reasoningOpen && (
+              <div className="px-3 pb-2.5 pt-0.5 text-xs text-ui/55 whitespace-pre-wrap font-mono leading-relaxed border-t border-ui/[0.06]">
+                {msg.reasoningContent}
+              </div>
+            )}
+          </div>
+        )}
+
         {text && (
           <div className="bubble-assistant px-4 py-3 whitespace-pre-wrap">
             <Markdown content={text} />
@@ -255,7 +304,7 @@ const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMod
 
         {/* v2.5.23 — removed msg.toolCalls render path. See Chat.tsx for rationale. */}
 
-        {!msg.isStreaming && (
+        {!msg.isStreaming && (text || hasToolUse || hasReasoning) && (
           <div className="text-[10px] mt-1 px-1 text-tertiary">
             {formatDate(msg.createdAt)}
           </div>
@@ -641,6 +690,9 @@ export const TechniqueBuilder = () => {
             content: m.content,
             createdAt: m.createdAt,
             attachments: m.attachments,
+            // Persisted reasoning_content is included so the "Thought"
+            // panel renders on resumed sessions, not just live streams.
+            reasoningContent: m.reasoningContent ?? undefined,
           })),
         );
         // Most recent message becomes the "trainer last saw the technique
@@ -743,28 +795,92 @@ export const TechniqueBuilder = () => {
       if (e.done) currentToolCallsRef.current = [];
 
       setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        if (last && last.isStreaming && last.id === e.messageId) {
-          const updated = { ...last, content: last.content + e.content };
+        // Find the streaming bubble for THIS messageId anywhere in the
+        // list, not just the tail. The old "only check last" rule broke
+        // whenever a non-streaming message (tool_result, system divider,
+        // an empty-content broadcast from the runtime's no-reply
+        // sentinel) landed at the tail between chunks — every subsequent
+        // chunk created a fresh empty bubble, producing the "long row of
+        // empty timestamps + the same line repeated 40 times" symptom in
+        // the trainer mat after a save_technique retry storm.
+        const matchIdx = prev.findIndex(
+          (m) => m.id === e.messageId && (m.role === 'assistant' || m.role === 'tool'),
+        );
+        if (matchIdx >= 0) {
+          const existing = prev[matchIdx];
+          const updated: ChatMessage = {
+            ...existing,
+            content: existing.content + e.content,
+          };
           if (e.done) {
             updated.isStreaming = false;
-            updated.toolCalls = toolCallsSnapshot ?? undefined;
+            updated.toolCalls = toolCallsSnapshot ?? existing.toolCalls;
             updated.createdAt = new Date().toISOString();
             setIsWorking(false);
+          } else if (existing.isStreaming === false) {
+            // Late chunk arriving for a bubble we already closed — keep
+            // it closed (avoid resurrecting a finalized message).
+            updated.isStreaming = false;
           }
-          return [...prev.slice(0, -1), updated];
-        } else {
-          return [
-            ...prev,
-            {
-              id: e.messageId,
-              role: 'assistant' as const,
-              content: e.content,
-              createdAt: new Date().toISOString(),
-              isStreaming: !e.done,
-            },
-          ];
+          const copy = [...prev];
+          copy[matchIdx] = updated;
+          return copy;
         }
+        // No bubble for this id yet — create one. If the chunk is
+        // already `done` with no content, drop it on the floor instead
+        // of spawning an empty-timestamp row.
+        if (e.done && !e.content) {
+          setIsWorking(false);
+          return prev;
+        }
+        return [
+          ...prev,
+          {
+            id: e.messageId,
+            role: 'assistant' as const,
+            content: e.content,
+            createdAt: new Date().toISOString(),
+            isStreaming: !e.done,
+          },
+        ];
+      });
+    });
+
+    // chat:reasoning_chunk — DeepSeek native thinking-mode / OpenRouter
+    // unified reasoning stream. Without this subscription the trainer mat
+    // shows NOTHING for the model's pre-answer reasoning, even in wordy
+    // mode (the user reported "I feel like the model is doing something
+    // but I am not seeing it"). Mirrors Chat.tsx:619-649.
+    const unsubReasoning = subscribe('chat:reasoning_chunk', (event: WsEvent) => {
+      const e = event as { type: 'chat:reasoning_chunk'; agentId: string; messageId: string; content: string; done: boolean };
+      if (e.agentId !== agentIdRef.current) return;
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === e.messageId);
+        if (idx >= 0) {
+          const existing = prev[idx];
+          const out = [...prev];
+          out[idx] = {
+            ...existing,
+            reasoningContent: (existing.reasoningContent ?? '') + e.content,
+            isReasoningStreaming: !e.done,
+          };
+          return out;
+        }
+        // Reasoning arrived before any chat:chunk — create the bubble
+        // shell with empty answer content. The answer chunks for this
+        // same messageId will populate `content` later.
+        return [
+          ...prev,
+          {
+            id: e.messageId,
+            role: 'assistant' as const,
+            content: '',
+            createdAt: new Date().toISOString(),
+            isStreaming: true,
+            reasoningContent: e.content,
+            isReasoningStreaming: !e.done,
+          },
+        ];
       });
     });
 
@@ -813,11 +929,29 @@ export const TechniqueBuilder = () => {
       setMessages((prev) => {
         const idx = prev.findIndex((m) => m.id === e.message.id);
         if (idx >= 0) {
+          // Empty-content broadcast is a "drop this bubble" signal from
+          // the runtime. Fires from at least two places: the [no-reply]
+          // sentinel (v2/loop.ts:1494) and the close-out gate suppression
+          // path (v2/loop.ts:1791) that deletes the agent's just-persisted
+          // assistant message when it generated user-facing text it
+          // wasn't supposed to. Without this filter every such broadcast
+          // left a bare-timestamp "5/22/2026, 11:51:01 AM" row in the
+          // trainer mat. Mirrors Chat.tsx:706-715.
+          if (
+            e.message.role === 'assistant' &&
+            (!e.message.content || e.message.content.length === 0)
+          ) {
+            return prev.filter((_, i) => i !== idx);
+          }
           const existing = prev[idx];
           const updated = [...prev];
           updated[idx] = {
             ...existing,
+            content: e.message.content,
+            attachments: e.message.attachments ?? existing.attachments,
             createdAt: e.message.createdAt ?? existing.createdAt,
+            // Clear the streaming-collected toolCalls — the canonical
+            // JSON content is now the source of truth.
             toolCalls: undefined,
             isStreaming: false,
           };
@@ -895,6 +1029,7 @@ export const TechniqueBuilder = () => {
     return () => {
       unsubStatus();
       unsubChunk();
+      unsubReasoning();
       unsubToolCall();
       unsubToolResult();
       unsubError();

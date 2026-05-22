@@ -20,16 +20,38 @@ const DEFAULTS = {
 };
 
 // ── Per-tool-result cap (Part V + Part XVIII §A) ──
-// Raw tool results stay capped at 3K tokens at assembly time so a single
-// file_read or web_fetch can't dominate context. Always enforced — the
-// runtime version flag was removed in Phase 9 Stage 2.
-const V2_MAX_TOOL_RESULT_TOKENS = 3000;
+// Raw tool results stay capped at assembly time so a single oversized
+// tool result can't dominate context. Always enforced — the runtime
+// version flag was removed in Phase 9 Stage 2.
+//
+// v2.7.3 — raised from 3000 → 15000 tokens. The v2.7.2 release bumped
+// file_read's execution cap from 8K → 60K tokens, but the assembler
+// re-truncated tool_result blocks back down to 3K (~12K chars, roughly
+// "8000 characters" by the user's eyeball estimate) on every subsequent
+// turn — so the bigger read at execution time was invisible from turn 2
+// onward, defeating the bump. 15K tokens (~60K chars, ~30 pages) lets a
+// typical document the agent just read stay intact through the rest of
+// the session, while still preventing one runaway result from blowing
+// the entire context budget on a 200K-window model.
+const V2_MAX_TOOL_RESULT_TOKENS = 15000;
 
 // ── v2 stub-and-store age (Part XVIII §E) ──
 // After this many turns, a tool_result message in the assembled context
 // gets replaced by a stub. Combined with the vault as long-term memory
 // (§C), the agent doesn't need the raw result kept around.
-const V2_STUB_AFTER_TURNS = 5;
+//
+// v2.7.3 — raised from 5 → 12. Paired with the V2_MAX_TOOL_RESULT_TOKENS
+// bump above: lifting the per-result cap didn't help if the result was
+// stubbed out 5 turns later. A "read doc → think → make changes" cycle
+// routinely spans 6-10 turns; under the old threshold the source doc
+// was already gone by the time the agent was acting on it, forcing a
+// re-read (and burning the assembler-cap retruncate cycle again). 12
+// covers the typical workflow without letting tool results accumulate
+// indefinitely on long-running agents. The fresh-tail count (80 on a
+// 200K model, 64 on 128K, 40 on 32K) still bounds how many turns are
+// ever visible to the assembler, so this number caps "alive within the
+// visible window" rather than total memory growth.
+const V2_STUB_AFTER_TURNS = 12;
 
 // Model-aware tail sizing: use more of the context window for fresh messages
 // instead of a fixed count. Larger models keep more raw conversation.

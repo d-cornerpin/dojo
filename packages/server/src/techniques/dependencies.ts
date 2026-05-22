@@ -173,7 +173,21 @@ const PATH_LIKE_RE = /(?:\.{1,2}\/)?(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_-]+\.[A-Za-
 
 const MARKDOWN_LINK_RE = /\[([^\]]*?)\]\(([^)\s]+)\)/g;
 const INLINE_CODE_RE = /`([^`]+?)`/g;
-const FENCED_BLOCK_RE = /```[a-zA-Z0-9_+-]*\n([\s\S]*?)\n```/g;
+// Capture the language tag too — shell-ish fences are full of argv tokens
+// that look pathy (`python3 foo.py`, `node bin/x.js`) but aren't file
+// declarations; we treat those tokens more strictly than tokens in
+// non-shell fences (json, yaml, etc., where path strings ARE references).
+const FENCED_BLOCK_RE = /```([a-zA-Z0-9_+-]*)\n([\s\S]*?)\n```/g;
+const SHELL_LANG_TAGS = new Set(['bash', 'sh', 'shell', 'zsh', 'console', 'terminal', 'cmd', 'powershell', 'ps1']);
+// Common shell-command first-tokens whose subsequent argv is NOT a file
+// declaration the technique is responsible for shipping. The same paths
+// in a markdown link, inline backticks, or non-shell fence still get
+// flagged — only suppressed when they're CLI argv inside a shell fence.
+const SHELL_COMMAND_PREFIXES = new Set([
+  'python', 'python3', 'python2', 'node', 'deno', 'bun', 'ruby', 'perl',
+  'bash', 'sh', 'zsh', 'fish', 'npx', 'yarn', 'pnpm', 'npm', 'pip', 'pip3',
+  'cargo', 'go', 'java', 'php',
+]);
 
 export interface FileReference {
   raw: string;
@@ -208,27 +222,73 @@ export function extractFileReferences(markdownContent: string): FileReference[] 
     refs.push({ raw: stripped, source, excerpt: excerpt.slice(0, 140) });
   };
 
+  // Decide whether a path-like token found inside a SHELL fence (bash,
+  // sh, zsh, console, etc.) is actually a file declaration the technique
+  // is responsible for shipping, or just incidental argv noise.
+  //
+  // Conservative rule: in shell fences, only accept tokens that either
+  //   (a) carry an explicit `./`, `../`, or `/` prefix (intentional path
+  //       reference written by the author), or
+  //   (b) contain a directory separator (`dir/foo.py`).
+  // Bare argv like `python3 send_email.py` no longer triggers refusals.
+  // If the trainer genuinely meant to ship `send_email.py`, they can
+  // declare it in a `Files Included` markdown list (which authors
+  // already use), an explicit `[label](send_email.py)` link, or in
+  // dependencies.json — any of those paths still flag it.
+  const looksLikeArgvToken = (token: string): boolean => {
+    if (token.startsWith('./') || token.startsWith('../') || token.startsWith('/')) return false;
+    if (token.includes('/')) return false;
+    return true;
+  };
+
+  const charJustBefore = (body: string, idx: number): string => {
+    return idx > 0 ? body[idx - 1] : '';
+  };
+
   // (1) Markdown links.
   for (const match of markdownContent.matchAll(MARKDOWN_LINK_RE)) {
     push(match[2], 'markdown_link', match[0]);
   }
 
   // (2) Fenced code blocks — scan the inner text for path-like tokens.
+  //     Shell-language fences are scanned with the argv heuristic so
+  //     `python3 foo.py` doesn't become a "missing file" refusal.
   for (const match of markdownContent.matchAll(FENCED_BLOCK_RE)) {
-    const body = match[1];
+    const lang = (match[1] ?? '').toLowerCase();
+    const body = match[2];
+    const isShellFence = SHELL_LANG_TAGS.has(lang);
     for (const m of body.matchAll(PATH_LIKE_RE)) {
-      // Find the line containing this token for the excerpt.
+      const token = m[0];
       const tokenStart = m.index ?? 0;
+      // Skip email-adjacent matches (`Serena@cornerp.in` → was matching
+      // `cornerp.in` as a path). Anything immediately preceded by `@` is
+      // almost certainly an email address, not a file path.
+      if (charJustBefore(body, tokenStart) === '@') continue;
+      if (isShellFence && looksLikeArgvToken(token)) continue;
+      // Find the line containing this token for the excerpt.
       const lineStart = body.lastIndexOf('\n', tokenStart) + 1;
       const lineEnd = body.indexOf('\n', tokenStart);
       const line = body.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
-      push(m[0], 'code_fence', line);
+      push(token, 'code_fence', line);
     }
   }
 
   // (3) Inline code references — only count ones that look like paths.
-  for (const match of markdownContent.matchAll(INLINE_CODE_RE)) {
-    push(match[1], 'inline_code', match[0]);
+  //     Bare basenames in inline code (`run.py` in prose) are usually
+  //     prose flourish, not authoritative path declarations. Require an
+  //     explicit directory marker, matching the shell-fence rule.
+  //
+  //     INLINE_CODE_RE is unaware of fence boundaries — it'll happily
+  //     pair the last ``` of an opening triple with the first ``` of the
+  //     closing triple and capture the whole fence body as one "inline"
+  //     match, which then corrupts every real single-backtick match
+  //     that follows. Strip fenced blocks before scanning so inline
+  //     extraction only sees the markdown between fences.
+  const inlineScanSource = markdownContent.replace(FENCED_BLOCK_RE, '');
+  for (const match of inlineScanSource.matchAll(INLINE_CODE_RE)) {
+    const token = match[1];
+    if (looksLikeArgvToken(token)) continue;
+    push(token, 'inline_code', match[0]);
   }
 
   // (4) "Files Included" bullet lists — already covered by (3) when
@@ -275,11 +335,16 @@ export function validateTechniqueFileReferences(
   // Build a set of acceptable references from the manifest: every
   // destination path declared in repos / assets is acceptable because
   // the importing trainer will populate it.
+  //
+  // Defensive null-coalesce: callers occasionally hand us partial
+  // manifests (LLMs love to omit fields). Iterating a missing array
+  // threw `TypeError: repos is not iterable` and the trainer interpreted
+  // it as an engine fault rather than its own bad payload.
   const manifestPaths = new Set<string>();
-  for (const r of manifest.repos) {
+  for (const r of manifest.repos ?? []) {
     if (r.install_to) manifestPaths.add(normalize(r.install_to));
   }
-  for (const a of manifest.models_or_assets) {
+  for (const a of manifest.models_or_assets ?? []) {
     if (a.destination) manifestPaths.add(normalize(a.destination));
   }
 

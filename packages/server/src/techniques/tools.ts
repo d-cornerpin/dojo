@@ -101,7 +101,21 @@ export function executeSaveTechnique(agentId: string, agentName: string, classif
   const instructions = args.instructions as string;
   const tags = (args.tags as string[]) ?? [];
   const files = args.files as Array<{ path: string; content: string }> | undefined;
-  const dependencies = (args.dependencies as DependencyManifest | undefined) ?? emptyDependencyManifest();
+  // Partial-manifest tolerance: LLMs routinely send `{ system_packages: [] }`
+  // and omit the rest. Pre-fix, the cast-and-fallback kept the partial as-is
+  // and the validator (`dependencies.ts:279` iterating `manifest.repos`)
+  // crashed with `TypeError: repos is not iterable`. Deep-merge into a fresh
+  // empty manifest so every bucket is guaranteed to be an array.
+  const rawDeps = (args.dependencies ?? {}) as Partial<DependencyManifest>;
+  const base = emptyDependencyManifest();
+  const dependencies: DependencyManifest = {
+    version: base.version,
+    system_packages: Array.isArray(rawDeps.system_packages) ? rawDeps.system_packages : base.system_packages,
+    language_packages: Array.isArray(rawDeps.language_packages) ? rawDeps.language_packages : base.language_packages,
+    repos: Array.isArray(rawDeps.repos) ? rawDeps.repos : base.repos,
+    models_or_assets: Array.isArray(rawDeps.models_or_assets) ? rawDeps.models_or_assets : base.models_or_assets,
+    manual_steps: Array.isArray(rawDeps.manual_steps) ? rawDeps.manual_steps : base.manual_steps,
+  };
   const publish = args.publish as boolean ?? false;
 
   if (!name || !displayName || !description || !instructions) {

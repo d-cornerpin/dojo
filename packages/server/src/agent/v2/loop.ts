@@ -1409,55 +1409,54 @@ export async function runV2Turn(agentId: string): Promise<void> {
         persistedContent = null;
       }
 
-      // ── Duplicate-final-answer prevention (v2.7.2) ──
+      // ── Duplicate-final-answer prevention (v2.7.2, scoped down v2.7.3) ──
       //
-      // When the model's assistant block pairs wrap-up text (≥ 10 chars)
-      // with a task-closing tool call, the work is done and there's
-      // nothing left to say. Set phase='done' so the loop exits after
-      // this iteration's tool execution — preventing the model from
-      // being called a second time on the tool result, which is what
-      // produces the duplicate "Task complete." follow-up. This saves
-      // tokens at the source rather than suppressing the duplicate
-      // after the fact.
+      // The v2.7.2 fix exited the loop whenever the agent paired wrap-up
+      // text with ANY task-closing tool call (tracker_close_project,
+      // tracker_complete_step, tracker_update_status with terminal
+      // status, complete_task). The intent was good (skip the duplicate
+      // "All set." follow-up turn) but the trigger was way too broad:
       //
-      // Close-out detection is two-pronged:
-      //   - tracker_update_status with status in {complete, blocked,
-      //     paused, fallen} — these all mean "this task is done."
-      //     Status 'in_progress' is intentionally excluded since the
-      //     agent may still be working.
-      //   - tracker_complete_step / tracker_close_project / complete_task
-      //     — always semantically closing.
-      const TERMINAL_STATUSES = new Set(['complete', 'blocked', 'paused', 'fallen']);
-      // ToolCall args land in `.arguments`, not `.input` — the Anthropic-style
-      // `input` is the on-the-wire shape but the engine normalizes to
-      // `arguments` (see packages/shared/src/types.ts:180). Reading the
-      // wrong field silently returned `false` from every check, which is
-      // why an earlier version of this guard never fired in production.
-      const isClosingCall = (tc: { name: string; arguments?: Record<string, unknown> }): boolean => {
-        if (tc.name === 'tracker_complete_step' || tc.name === 'tracker_close_project' || tc.name === 'complete_task') {
-          return true;
-        }
-        if (tc.name === 'tracker_update_status') {
-          const status = typeof tc.arguments?.status === 'string' ? tc.arguments.status.toLowerCase() : '';
-          return TERMINAL_STATUSES.has(status);
-        }
-        return false;
-      };
+      //   • Multi-step user asks where step 1 is a close-out got cut
+      //     off after step 1 and never reached step 2.
+      //   • Agents naturally mark intermediate task transitions with
+      //     "Step done, moving on to X" — that paired text+close-out
+      //     killed the loop mid-flow.
+      //   • The v2.7.3 DB-based "any remaining queued work?" check
+      //     helped for tracker-tracked workflows but still cut off
+      //     conversational multi-step asks where the next step lives
+      //     only in the user's prompt, not in the tracker.
+      //
+      // Narrowed in v2.7.3 to fire ONLY for `complete_task` — the
+      // sub-agent self-termination tool. Its semantics are unambiguous:
+      // "I am a sub-agent, my work is over, terminate me and report
+      // back to parent." Letting the loop run one more iteration after
+      // complete_task would only produce a wasted "all done" follow-up
+      // before the agent gets terminated anyway.
+      //
+      // Every tracker close-out path is now allowed to flow into the
+      // next loop iteration. The worst case is one extra model call
+      // that emits a brief duplicate "all set" line — minor polish
+      // issue. The previous trigger broke real multi-step work, which
+      // is a far worse failure mode.
+      const isSubAgentExit = (tc: { name: string }): boolean => tc.name === 'complete_task';
+      const hasSubAgentExit = result.toolCalls.some(isSubAgentExit);
+      const hasWrapUpText = !!(result.content && result.content.trim().length >= 10);
+
       if (
         !state.taskClosedWithTextThisTurn &&
-        result.content &&
-        result.content.trim().length >= 10 &&
-        result.toolCalls.some(isClosingCall)
+        hasSubAgentExit &&
+        hasWrapUpText
       ) {
         state = advance(state, {
           taskClosedWithTextThisTurn: true,
           // Force loop exit AFTER this iteration's tool execution. The
-          // close-out tool still runs (it's already in result.toolCalls
+          // complete_task tool still runs (it's already in result.toolCalls
           // and processed below this block). The next while-loop check
           // sees phase==='done' and exits without calling the model again.
           phase: 'done',
         });
-        logger.info('v2: close-out + wrap-up text — phase set to done, no second model call', {
+        logger.info('v2: sub-agent complete_task + wrap-up text — phase set to done, no second model call', {
           agentId,
         }, agentId);
       }

@@ -46,6 +46,11 @@ interface ChatMessage {
   isStreaming?: boolean;
   attachments?: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: string }>;
   source?: 'voice' | null;
+  // DeepSeek native thinking-mode / OpenRouter unified reasoning stream.
+  // Populated by the chat:reasoning_chunk subscription and from persisted
+  // reasoning_content on history reload.
+  reasoningContent?: string;
+  isReasoningStreaming?: boolean;
 }
 
 type Tab = 'chat' | 'config' | 'history' | 'inter-agent';
@@ -175,12 +180,49 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
 };
 
 const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMode?: boolean }) => {
-  const { text, blocks } = parseMessageContent(msg.content);
+  const { text: rawText, blocks } = parseMessageContent(msg.content);
+  const text = rawText?.trim() || '';
   const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
+  const hasReasoning = !!(msg.reasoningContent && msg.reasoningContent.length > 0);
+  const reasoningOpenDefault = hasReasoning && (msg.isReasoningStreaming || text.length === 0);
+  const [reasoningOpen, setReasoningOpen] = useState(reasoningOpenDefault);
+  useEffect(() => {
+    if (!msg.isReasoningStreaming && text.length > 0) setReasoningOpen(false);
+  }, [msg.isReasoningStreaming, text.length]);
 
   return (
     <div className="flex justify-start">
       <div className="max-w-[92%] sm:max-w-[75%]">
+        {/* Reasoning / "Thinking…" panel — DeepSeek native + OpenRouter
+            unified reasoning stream. Without this the chat showed nothing
+            for the model's pre-answer thinking. */}
+        {hasReasoning && wordyMode && (
+          <div className="mb-1.5 rounded-lg border border-ui/[0.06] bg-ui/[0.03] overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setReasoningOpen((v) => !v)}
+              className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-[10px] sm:text-[11px] text-ui/40 hover:text-ui/70 transition-colors"
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <span>{msg.isReasoningStreaming ? 'Thinking…' : 'Thought'}</span>
+                {msg.isReasoningStreaming && (
+                  <span className="inline-flex gap-0.5">
+                    <span className="w-1 h-1 rounded-full bg-ui/[0.12] animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1 h-1 rounded-full bg-ui/[0.12] animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-1 h-1 rounded-full bg-ui/[0.12] animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </span>
+                )}
+              </span>
+              <span className="text-ui/25">{reasoningOpen ? '▾' : '▸'}</span>
+            </button>
+            {reasoningOpen && (
+              <div className="px-3 pb-2.5 pt-0.5 text-[11px] sm:text-xs text-ui/55 whitespace-pre-wrap font-mono leading-relaxed border-t border-ui/[0.06]">
+                {msg.reasoningContent}
+              </div>
+            )}
+          </div>
+        )}
+
         {text && (
           <div className="bubble-assistant px-3 py-2 sm:px-4 sm:py-3 whitespace-pre-wrap text-xs sm:text-sm">
             <Markdown content={text} />
@@ -216,7 +258,7 @@ const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMod
           </div>
         )}
         {/* v2.5.23 — removed msg.toolCalls render path. See Chat.tsx for rationale. */}
-        {!msg.isStreaming && (
+        {!msg.isStreaming && (text || hasToolUse || hasReasoning) && (
           <div className="text-xs mt-1 text-ui/40 px-1">
             {formatDate(msg.createdAt)}
           </div>
@@ -290,6 +332,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             createdAt: m.createdAt,
             attachments: m.attachments,
             source: m.source ?? null,
+            reasoningContent: m.reasoningContent ?? undefined,
           })),
         );
         setHasMore(result.data.length >= 50);
@@ -380,21 +423,37 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
       if (e.done) currentToolCallsRef.current = [];
 
       setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        if (last && last.isStreaming && last.id === e.messageId) {
-          const updated = { ...last, content: last.content + e.content };
+        // Look up the streaming bubble by messageId anywhere in the
+        // list, not just the tail. The old "only check last" rule broke
+        // whenever a non-streaming message (tool_result, system divider,
+        // an empty-content runtime broadcast) landed between chunks —
+        // every subsequent chunk created a fresh bubble. Also makes the
+        // reasoning-before-answer flow work: a chat:reasoning_chunk
+        // creates the bubble shell first, then chat:chunk fills in the
+        // answer text on the same bubble. Mirrors Chat.tsx:569-611.
+        const idx = prev.findIndex((m) => m.id === e.messageId && m.isStreaming);
+        if (idx >= 0) {
+          const existing = prev[idx];
+          const updated = {
+            ...existing,
+            content: existing.content + e.content,
+            // Answer text arriving means reasoning is no longer streaming.
+            isReasoningStreaming: false,
+          };
           if (e.done) {
             updated.isStreaming = false;
             updated.toolCalls = toolCallsSnapshot ?? undefined;
             // Do NOT setIsWorking(false) — chat:chunk done fires mid-tool-loop.
             // Let agent:status idle/error clear isWorking.
           }
-          return [...prev.slice(0, -1), updated];
+          const out = [...prev];
+          out[idx] = updated;
+          return out;
         } else if (prev.some((m) => m.id === e.messageId)) {
-          // Already have this message -- skip duplicate from reconnect
+          // Already have this message (finalized) — skip duplicate from reconnect.
           return prev;
         } else {
-          // Skip empty done events (ghost bubbles)
+          // Skip empty done events (ghost bubbles).
           if (e.done && (!e.content || e.content.trim().length === 0)) {
             return prev;
           }
@@ -409,6 +468,41 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             },
           ];
         }
+      });
+    });
+
+    // Reasoning / thinking deltas (DeepSeek native, OpenRouter unified).
+    // Either updates the existing streaming bubble for this messageId or
+    // creates a fresh shell with reasoning but no answer text yet —
+    // chat:chunk for the same id will then populate the answer. Mirrors
+    // Chat.tsx:619-649.
+    const unsubReasoning = subscribe('chat:reasoning_chunk', (event: WsEvent) => {
+      const e = event as { type: 'chat:reasoning_chunk'; agentId: string; messageId: string; content: string; done: boolean };
+      if (e.agentId !== agentId) return;
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === e.messageId);
+        if (idx >= 0) {
+          const existing = prev[idx];
+          const out = [...prev];
+          out[idx] = {
+            ...existing,
+            reasoningContent: (existing.reasoningContent ?? '') + e.content,
+            isReasoningStreaming: !e.done,
+          };
+          return out;
+        }
+        return [
+          ...prev,
+          {
+            id: e.messageId,
+            role: 'assistant' as const,
+            content: '',
+            createdAt: new Date().toISOString(),
+            isStreaming: true,
+            reasoningContent: e.content,
+            isReasoningStreaming: !e.done,
+          },
+        ];
       });
     });
 
@@ -529,6 +623,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
 
     return () => {
       unsubChunk();
+      unsubReasoning();
       unsubToolCall();
       unsubToolResult();
       unsubError();
@@ -572,7 +667,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
     if (res.ok) {
       const result = await api.getAgentHistory(agentId, 200);
       if (result.ok) {
-        setMessages(result.data.map((m: Message) => ({ id: m.id, role: m.role, content: m.content, createdAt: m.createdAt, attachments: m.attachments, source: m.source ?? null })));
+        setMessages(result.data.map((m: Message) => ({ id: m.id, role: m.role, content: m.content, createdAt: m.createdAt, attachments: m.attachments, source: m.source ?? null, reasoningContent: m.reasoningContent ?? undefined })));
       }
       toast.success('Session reset — conversation archived to vault.');
     }
