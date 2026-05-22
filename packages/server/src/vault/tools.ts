@@ -69,6 +69,28 @@ export async function executeVaultRemember(
     return `Error: type must be one of: ${validTypes.join(', ')}`;
   }
 
+  // Refuse to stash technique content. Techniques are mutable on disk
+  // and the engine deliberately stubs prior technique reads after 1
+  // turn so agents always re-fetch the current version. Letting the
+  // agent vault_remember a chunk of technique text would re-introduce
+  // the staleness this enforcement was built to prevent. Detection is
+  // by sentinel — every technique_read / use_technique response carries
+  // it (techniques/tools.ts:wrapTechniqueResult). If the agent wants
+  // to capture WHY they made a decision while following a technique,
+  // they can vault the decision itself ("chose path A because the
+  // technique said X") rather than copy-pasting the technique body.
+  if (content.includes('══ TECHNIQUE FRESH READ ══')) {
+    return (
+      `Refused: this content looks like it came from a technique_read / use_technique ` +
+      `response (contains the fresh-read sentinel). Techniques mutate on disk and the ` +
+      `engine stubs prior reads after 1 turn so agents always work from the current ` +
+      `version. Vaulting technique text would re-introduce the staleness this is ` +
+      `built to prevent. If you need to remember something ABOUT applying the ` +
+      `technique (a decision, a parameter you chose, a result), vault that — not the ` +
+      `technique body. Re-call technique_read whenever you need the steps again.`
+    );
+  }
+
   // ── Verbatim mode ──
   // When the user explicitly says "remember that X", "always Y", "never Z",
   // etc., the agent passes verbatim: true so the engine preserves the

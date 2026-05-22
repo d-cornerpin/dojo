@@ -53,6 +53,23 @@ const V2_MAX_TOOL_RESULT_TOKENS = 15000;
 // visible window" rather than total memory growth.
 const V2_STUB_AFTER_TURNS = 12;
 
+// ── Technique freshness override (v2.7.4) ──
+// Tool results from technique_read / use_technique get stubbed after
+// just 1 turn — far more aggressive than the generic V2_STUB_AFTER_TURNS.
+// Reason: techniques mutate between calls (the trainer edits them
+// constantly), and the most common failure mode for technique-equipped
+// agents is reading the technique once and then acting on memory of it
+// for the rest of the session, after the on-disk version has changed.
+// One turn is enough for the agent to finish the iteration it called
+// technique_read in; the next turn the content is gone and the agent
+// must re-call to access current state.
+//
+// Detection: technique tool results all begin with the sentinel
+// string below (set in techniques/tools.ts:wrapTechniqueResult).
+// Don't change the literal without grepping for every consumer.
+const TECHNIQUE_STUB_AFTER_TURNS = 1;
+const TECHNIQUE_FRESH_SENTINEL = '══ TECHNIQUE FRESH READ ══';
+
 // Model-aware tail sizing: use more of the context window for fresh messages
 // instead of a fixed count. Larger models keep more raw conversation.
 function getFreshTailCount(contextWindow: number): number {
@@ -836,26 +853,43 @@ export function stubOldToolResults(messages: Message[], agentId: string): Messag
     // Treat NULL as -infinity so it's always older than the threshold.
     const msgTurn = msg.turnNumber ?? -Infinity;
     const turnAge = currentTurn - msgTurn;
-    if (turnAge < V2_STUB_AFTER_TURNS) return msg;
 
+    // Two-pass parse so we can decide PER BLOCK which threshold
+    // applies. A single tool message can carry results for a mix of
+    // tool types (one assistant turn batched a technique_read alongside
+    // a file_read, say), and we want the technique one stubbed
+    // aggressively while the file_read stays on the generic schedule.
+    let blocks: unknown;
     try {
-      const blocks = JSON.parse(msg.content);
-      if (!Array.isArray(blocks)) return msg;
-
-      const newBlocks = blocks.map((b: { type?: string; content?: unknown; tool_use_id?: string }) => {
-        if (b.type !== 'tool_result') return b;
-        const len = typeof b.content === 'string' ? b.content.length : 0;
-        const turnLabel = msg.turnNumber !== null && msg.turnNumber !== undefined ? `turn ${msg.turnNumber}` : 'pre-v2 history';
-        return {
-          ...b,
-          content: `[Tool result from ${turnLabel}, ${len} chars, cleared from context. Re-call the tool or check vault for findings.]`,
-        };
-      });
-      stubbedCount++;
-      return { ...msg, content: JSON.stringify(newBlocks) };
+      blocks = JSON.parse(msg.content);
     } catch {
+      // Plain-text content (no JSON tool_result blocks) — apply
+      // generic threshold only.
+      if (turnAge < V2_STUB_AFTER_TURNS) return msg;
       return msg;
     }
+    if (!Array.isArray(blocks)) return msg;
+
+    let messageChanged = false;
+    const newBlocks = blocks.map((b: { type?: string; content?: unknown; tool_use_id?: string }) => {
+      if (b.type !== 'tool_result') return b;
+      const contentStr = typeof b.content === 'string' ? b.content : '';
+      const isTechniqueResult = contentStr.startsWith(TECHNIQUE_FRESH_SENTINEL);
+      const threshold = isTechniqueResult ? TECHNIQUE_STUB_AFTER_TURNS : V2_STUB_AFTER_TURNS;
+      if (turnAge < threshold) return b;
+
+      const len = contentStr.length;
+      const turnLabel = msg.turnNumber !== null && msg.turnNumber !== undefined ? `turn ${msg.turnNumber}` : 'pre-v2 history';
+      const stub = isTechniqueResult
+        ? `[Technique read from ${turnLabel} (${len} chars) cleared from context. Engine policy: technique tool results are stubbed after 1 turn because techniques mutate between calls. Re-call technique_read or use_technique to see the CURRENT on-disk content — do NOT rely on memory, vault, or any prior summary you wrote.]`
+        : `[Tool result from ${turnLabel}, ${len} chars, cleared from context. Re-call the tool or check vault for findings.]`;
+      messageChanged = true;
+      return { ...b, content: stub };
+    });
+
+    if (!messageChanged) return msg;
+    stubbedCount++;
+    return { ...msg, content: JSON.stringify(newBlocks) };
   });
 
   if (stubbedCount > 0) {

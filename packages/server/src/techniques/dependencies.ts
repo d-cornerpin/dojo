@@ -177,17 +177,7 @@ const INLINE_CODE_RE = /`([^`]+?)`/g;
 // that look pathy (`python3 foo.py`, `node bin/x.js`) but aren't file
 // declarations; we treat those tokens more strictly than tokens in
 // non-shell fences (json, yaml, etc., where path strings ARE references).
-const FENCED_BLOCK_RE = /```([a-zA-Z0-9_+-]*)\n([\s\S]*?)\n```/g;
-const SHELL_LANG_TAGS = new Set(['bash', 'sh', 'shell', 'zsh', 'console', 'terminal', 'cmd', 'powershell', 'ps1']);
-// Common shell-command first-tokens whose subsequent argv is NOT a file
-// declaration the technique is responsible for shipping. The same paths
-// in a markdown link, inline backticks, or non-shell fence still get
-// flagged — only suppressed when they're CLI argv inside a shell fence.
-const SHELL_COMMAND_PREFIXES = new Set([
-  'python', 'python3', 'python2', 'node', 'deno', 'bun', 'ruby', 'perl',
-  'bash', 'sh', 'zsh', 'fish', 'npx', 'yarn', 'pnpm', 'npm', 'pip', 'pip3',
-  'cargo', 'go', 'java', 'php',
-]);
+const FENCED_BLOCK_RE = /```[a-zA-Z0-9_+-]*\n([\s\S]*?)\n```/g;
 
 export interface FileReference {
   raw: string;
@@ -222,27 +212,14 @@ export function extractFileReferences(markdownContent: string): FileReference[] 
     refs.push({ raw: stripped, source, excerpt: excerpt.slice(0, 140) });
   };
 
-  // Decide whether a path-like token found inside a SHELL fence (bash,
-  // sh, zsh, console, etc.) is actually a file declaration the technique
-  // is responsible for shipping, or just incidental argv noise.
-  //
-  // Conservative rule: in shell fences, only accept tokens that either
-  //   (a) carry an explicit `./`, `../`, or `/` prefix (intentional path
-  //       reference written by the author), or
-  //   (b) contain a directory separator (`dir/foo.py`).
-  // Bare argv like `python3 send_email.py` no longer triggers refusals.
-  // If the trainer genuinely meant to ship `send_email.py`, they can
-  // declare it in a `Files Included` markdown list (which authors
-  // already use), an explicit `[label](send_email.py)` link, or in
-  // dependencies.json — any of those paths still flag it.
+  // Bare basename-with-extension tokens (`send_email.py`, `config.json`)
+  // in inline backticks are usually prose flourish, not authoritative
+  // path declarations. Require an explicit directory marker (`./x.py`,
+  // `support/x.json`) for inline-code references to count.
   const looksLikeArgvToken = (token: string): boolean => {
     if (token.startsWith('./') || token.startsWith('../') || token.startsWith('/')) return false;
     if (token.includes('/')) return false;
     return true;
-  };
-
-  const charJustBefore = (body: string, idx: number): string => {
-    return idx > 0 ? body[idx - 1] : '';
   };
 
   // (1) Markdown links.
@@ -250,28 +227,33 @@ export function extractFileReferences(markdownContent: string): FileReference[] 
     push(match[2], 'markdown_link', match[0]);
   }
 
-  // (2) Fenced code blocks — scan the inner text for path-like tokens.
-  //     Shell-language fences are scanned with the argv heuristic so
-  //     `python3 foo.py` doesn't become a "missing file" refusal.
-  for (const match of markdownContent.matchAll(FENCED_BLOCK_RE)) {
-    const lang = (match[1] ?? '').toLowerCase();
-    const body = match[2];
-    const isShellFence = SHELL_LANG_TAGS.has(lang);
-    for (const m of body.matchAll(PATH_LIKE_RE)) {
-      const token = m[0];
-      const tokenStart = m.index ?? 0;
-      // Skip email-adjacent matches (`Serena@cornerp.in` → was matching
-      // `cornerp.in` as a path). Anything immediately preceded by `@` is
-      // almost certainly an email address, not a file path.
-      if (charJustBefore(body, tokenStart) === '@') continue;
-      if (isShellFence && looksLikeArgvToken(token)) continue;
-      // Find the line containing this token for the excerpt.
-      const lineStart = body.lastIndexOf('\n', tokenStart) + 1;
-      const lineEnd = body.indexOf('\n', tokenStart);
-      const line = body.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
-      push(token, 'code_fence', line);
-    }
-  }
+  // (2) Fenced code blocks — DELIBERATELY NOT SCANNED (v2.7.4).
+  //
+  //     Earlier versions tried to extract file references from inside
+  //     fences with progressively-tighter heuristics. They all failed
+  //     because fence contents are *code*, not *declarations*, and the
+  //     regex can't tell the difference between:
+  //
+  //       - `yaml.safe_load(f)` (Python attribute, .safe = "extension")
+  //       - `campaign.get('schedule', [])` (Python method)
+  //       - `date_parser.isoparse(x)` (Python method)
+  //       - `lines.append(...)` (Python method)
+  //       - `# e.g., "..."` (abbreviation in a comment)
+  //       - `cornerp.in` (a domain, not a file)
+  //       - `/tmp/campaign.yaml` (a path *used by the code*, not shipped)
+  //       - `"/Users/david/documents/proposal.pdf"` (literal in argv data)
+  //
+  //     Every one of those would get flagged as "missing file" on a
+  //     legitimate technique. The real M365 export failure was 14
+  //     violations and 13 of them were noise of this exact shape.
+  //
+  //     A trainer who actually wants to declare a file ships it via:
+  //       - a markdown link `[label](./path/to/file.py)` (section 1),
+  //       - an inline backtick path with directory marker `` `./x.py` ``
+  //         (section 3),
+  //       - or an entry in dependencies.json.
+  //
+  //     All three are explicit author intent. Code blocks are not.
 
   // (3) Inline code references — only count ones that look like paths.
   //     Bare basenames in inline code (`run.py` in prose) are usually

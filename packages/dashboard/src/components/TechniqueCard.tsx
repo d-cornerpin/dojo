@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatRelative } from '../lib/dates';
+import { useToast } from '../hooks/useToast';
 
 interface TechniqueData {
   id: string;
@@ -65,19 +66,22 @@ async function exportTechniqueToBrowser(id: string): Promise<void> {
 
 export const TechniqueCard = ({ technique, onToggle }: { technique: TechniqueData; onToggle?: (id: string, enabled: boolean) => void }) => {
   const navigate = useNavigate();
+  const toast = useToast();
   const badge = stateBadge[technique.state] ?? stateBadge.draft;
   const [sharing, setSharing] = useState(false);
-  const [shareError, setShareError] = useState<string | null>(null);
 
   const handleShare = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (sharing) return;
     setSharing(true);
-    setShareError(null);
     try {
       await exportTechniqueToBrowser(technique.id);
     } catch (err) {
-      setShareError(err instanceof Error ? err.message : String(err));
+      // Share-export refusals can be very long (one per violating file
+      // reference in TECHNIQUE.md). Render as a top-right error toast —
+      // the inline-on-card render turned the card into a wall of red
+      // text and pushed the rest of the grid around.
+      toast.error(err instanceof Error ? err.message : String(err));
     } finally {
       setSharing(false);
     }
@@ -119,12 +123,6 @@ export const TechniqueCard = ({ technique, onToggle }: { technique: TechniqueDat
           <span className={`glass-badge ${badge.cls}`}>{badge.label}</span>
         </div>
       </div>
-
-      {shareError && (
-        <div className="mb-3 text-xs text-cp-coral" onClick={(e) => e.stopPropagation()}>
-          {shareError}
-        </div>
-      )}
 
       {/* Tags */}
       {technique.tags.length > 0 && (

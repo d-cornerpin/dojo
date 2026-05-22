@@ -81,6 +81,41 @@ function authorizeTechniqueMutation(agentId: string, classification: string, ver
   );
 }
 
+// ── Technique freshness enforcement (v2.7.4) ──
+//
+// Single source of truth for the "this is a technique tool result"
+// sentinel. Every technique_read / use_technique response gets this
+// banner prepended. Two consumers downstream:
+//
+//   1. The assembler's stubOldToolResults() — looks for this sentinel
+//      and stubs the matching tool_result blocks after just 1 turn
+//      (vs 12 for normal tool results), so the agent literally cannot
+//      reference a prior read on the next turn. Forces a re-call.
+//
+//   2. vault_remember — refuses to store any entry whose content
+//      contains this sentinel, so agents can't sidestep the freshness
+//      enforcement by stashing technique text in the vault.
+//
+// The visible part of the banner also tells the model in plain English
+// that prior reads are stubbed and memory/vault copies are stale.
+// Don't change the sentinel string without grepping for every consumer
+// — it's a magic string by design.
+export const TECHNIQUE_FRESH_SENTINEL = '══ TECHNIQUE FRESH READ ══';
+
+function wrapTechniqueResult(techniqueName: string, body: string): string {
+  const banner =
+    `${TECHNIQUE_FRESH_SENTINEL}\n` +
+    `Technique: ${techniqueName}\n` +
+    `Read at: ${new Date().toISOString()}\n` +
+    `This is the current on-disk content. Engine enforcement: prior\n` +
+    `technique reads in your conversation get stubbed on the NEXT turn.\n` +
+    `Do not reference cached memory, vault, or scratchpad copies of\n` +
+    `this technique — they may be stale. Re-call technique_read with\n` +
+    `the params you need whenever you want to look at it again.\n` +
+    `═══════════════════════════════════════════════════════════════\n\n`;
+  return banner + body;
+}
+
 // Convert the structured TechniqueValidationError into something the
 // calling agent sees as a refusal rather than a generic platform error.
 function formatValidationError(err: unknown, fallbackPrefix: string): string {
@@ -195,7 +230,7 @@ export function executeUseTechnique(agentId: string, agentName: string, agentGro
   parts.push(`=== End Technique ===`);
 
   logger.info('Technique used', { techniqueId: technique.id, agentId }, agentId);
-  return parts.join('\n');
+  return wrapTechniqueResult(technique.name, parts.join('\n'));
 }
 
 // ── list_techniques ──
@@ -709,13 +744,18 @@ export function executeTechniqueRead(
     try { recordTechniqueUsage(technique.id, agentId, agentName); } catch { /* best effort */ }
   }
 
+  let body: string;
   switch (action) {
-    case 'outline': return formatOutline(technique);
-    case 'section': return formatSection(technique, args);
-    case 'search': return formatSearch(technique, args);
-    case 'list_files': return formatListFiles(technique);
-    case 'read_file': return formatReadFile(technique, args);
+    case 'outline':    body = formatOutline(technique); break;
+    case 'section':    body = formatSection(technique, args); break;
+    case 'search':     body = formatSearch(technique, args); break;
+    case 'list_files': body = formatListFiles(technique); break;
+    case 'read_file':  body = formatReadFile(technique, args); break;
     default:
+      // Don't wrap error responses — the sentinel only attaches to real
+      // technique content so the stubber doesn't trip on a bad-action
+      // refusal message.
       return `Error: unknown action "${action}". Valid actions: outline, section, search, list_files, read_file.`;
   }
+  return wrapTechniqueResult(technique.name, body);
 }
