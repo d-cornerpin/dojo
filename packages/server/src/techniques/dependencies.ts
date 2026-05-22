@@ -34,6 +34,7 @@
 //     reference and what to do about each.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 export const DEPENDENCY_MANIFEST_FILENAME = 'dependencies.json';
@@ -366,6 +367,201 @@ export function validateTechniqueFileReferences(
 
 function normalize(p: string): string {
   return p.replace(/^\.\//, '').replace(/\\/g, '/');
+}
+
+// ── Auto-resolution (v2.7.5) ──
+//
+// Take the validator's violation list and try to RESOLVE each one
+// instead of refusing the export. Three buckets:
+//
+//   1. The reference points to a real file on the author's disk
+//      (absolute path, ~/ home-relative, or `..`-escape). If we can
+//      safely read it, copy it into the export bundle and add an entry
+//      to the manifest declaring its destination. The receiver's
+//      trainer drops it back into the same destination at import.
+//
+//   2. The reference points to something that doesn't exist on the
+//      author's disk either (e.g. `/tmp/campaign.yaml` — a runtime
+//      file the technique tells the user to create). Add it to
+//      manual_steps so the receiver's trainer can explain to the
+//      importing user that they need to provide the file at runtime.
+//
+//   3. The reference is a relative path that's supposed to be inside
+//      the technique dir but isn't (missing_in_dir). The author
+//      intended to ship it; we can't fetch it from anywhere. Add to
+//      manual_steps with a clear "MISSING — author needs to
+//      re-export" note so the receiver knows the package is
+//      incomplete and the export caller knows to fix it.
+//
+// Sensitive files (~/.ssh keys, secrets.yaml, .env, cloud creds) are
+// never auto-bundled regardless of whether the reference resolves to
+// them. They get bucket-2 treatment (manual step describing what the
+// user must supply) so secrets never leak across the share boundary.
+// The same blocklist used at file_read time gates this.
+
+/** Max size of any single auto-bundled file (avoid bloating the zip). */
+const AUTO_BUNDLE_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+
+/** Directory inside the export package where auto-bundled files land. */
+const AUTO_BUNDLE_SUBDIR = 'bundled-assets';
+
+/** Per-violation log of what happened during auto-resolution. */
+export interface AutoResolution {
+  reference: FileReference;
+  action: 'bundled' | 'declared_as_manual_step';
+  detail: string;
+}
+
+export interface AutoResolveResult {
+  resolutions: AutoResolution[];
+  patchedManifest: DependencyManifest;
+  /** Files to copy into the export zip, in addition to the technique's own files. */
+  filesToBundle: Array<{ relPath: string; absSourcePath: string }>;
+}
+
+/**
+ * Minimal sensitive-path check duplicated here to avoid importing
+ * from agent/tools.ts (which has a heavy dependency graph). Keep in
+ * sync with isSensitivePath in that file. The cost of false negatives
+ * is high (leaked secrets); the cost of false positives is low (one
+ * extra manual_step entry).
+ */
+function isSensitiveForBundling(absPath: string): boolean {
+  const base = path.basename(absPath);
+  const SENSITIVE = new Set([
+    'secrets.yaml', 'secrets.yml', 'secrets.json',
+    '.env', '.env.local', '.env.production', '.env.development',
+    'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
+    'authorized_keys', 'known_hosts',
+    '.npmrc', '.pypirc', '.netrc', 'credentials',
+  ]);
+  if (SENSITIVE.has(base)) return true;
+  const home = os.homedir();
+  if (absPath.startsWith(path.join(home, '.ssh') + path.sep) && !base.endsWith('.pub')) return true;
+  if (absPath === path.join(home, '.aws', 'credentials')) return true;
+  if (absPath.startsWith(path.join(home, '.config', 'gcloud') + path.sep)) return true;
+  if (absPath === path.join(home, '.kube', 'config')) return true;
+  if (absPath.startsWith(path.join(home, '.dojo') + path.sep) && base.startsWith('secret')) return true;
+  return false;
+}
+
+/**
+ * Resolve a raw reference string into an absolute source path on disk,
+ * if possible. Returns null for references that don't point at a
+ * locatable filesystem path (e.g. URL-like strings the extractor lets
+ * through, or relative paths under the technique dir we already
+ * know don't exist).
+ */
+function resolveSourcePath(raw: string, dirPath: string): string | null {
+  if (raw.startsWith('~/')) return path.join(os.homedir(), raw.slice(2));
+  if (raw === '~') return os.homedir();
+  if (path.isAbsolute(raw)) return raw;
+  if (raw.split(/[\\/]/).includes('..')) return path.resolve(dirPath, raw);
+  return null;
+}
+
+export function autoResolveViolations(
+  dirPath: string,
+  violations: ValidationViolation[],
+  manifest: DependencyManifest,
+): AutoResolveResult {
+  // Deep-clone the manifest so callers' input stays untouched.
+  const patchedManifest: DependencyManifest = {
+    version: manifest.version,
+    system_packages: [...(manifest.system_packages ?? [])],
+    language_packages: [...(manifest.language_packages ?? [])],
+    repos: [...(manifest.repos ?? [])],
+    models_or_assets: [...(manifest.models_or_assets ?? [])],
+    manual_steps: [...(manifest.manual_steps ?? [])],
+  };
+  const resolutions: AutoResolution[] = [];
+  const filesToBundle: Array<{ relPath: string; absSourcePath: string }> = [];
+
+  // Dedupe by the normalized destination path so the same file
+  // mentioned three times in TECHNIQUE.md doesn't get three manifest
+  // rows and three zip copies.
+  const bundledDestinations = new Set<string>();
+  const declaredManualSteps = new Set<string>();
+
+  const addManualStep = (step: string): void => {
+    if (declaredManualSteps.has(step)) return;
+    declaredManualSteps.add(step);
+    patchedManifest.manual_steps.push(step);
+  };
+
+  for (const v of violations) {
+    const raw = v.reference.raw;
+    const sourcePath = resolveSourcePath(raw, dirPath);
+
+    // Try to bundle if we have a concrete source path.
+    if (sourcePath) {
+      if (isSensitiveForBundling(sourcePath)) {
+        const step = `Provide value for "${raw}" at import time — original was on the sensitive-files blocklist and was deliberately NOT bundled with this technique.`;
+        addManualStep(step);
+        resolutions.push({ reference: v.reference, action: 'declared_as_manual_step', detail: step });
+        continue;
+      }
+
+      try {
+        const stat = fs.statSync(sourcePath);
+        if (stat.isFile() && stat.size > 0 && stat.size <= AUTO_BUNDLE_MAX_BYTES) {
+          const basename = path.basename(sourcePath);
+          let destRel = `${AUTO_BUNDLE_SUBDIR}/${basename}`;
+          // Disambiguate when two source paths share a basename.
+          let n = 1;
+          while (bundledDestinations.has(destRel)) {
+            n++;
+            const parsed = path.parse(basename);
+            destRel = `${AUTO_BUNDLE_SUBDIR}/${parsed.name}-${n}${parsed.ext}`;
+          }
+          bundledDestinations.add(destRel);
+          filesToBundle.push({ relPath: destRel, absSourcePath: sourcePath });
+          patchedManifest.models_or_assets.push({
+            url: `file://${sourcePath}`,
+            destination: destRel,
+            note: `Auto-bundled by share-export from ${sourcePath} (${stat.size} bytes). TECHNIQUE.md references this file at "${raw}"; receiving trainer drops the bundled copy at ${destRel} and updates the reference if needed.`,
+          });
+          resolutions.push({
+            reference: v.reference,
+            action: 'bundled',
+            detail: `Bundled ${sourcePath} (${stat.size} bytes) → ${destRel}`,
+          });
+          continue;
+        }
+        if (stat.isFile() && stat.size > AUTO_BUNDLE_MAX_BYTES) {
+          const step = `Provide file at "${raw}" (${(stat.size / 1024 / 1024).toFixed(1)}MB, exceeds the ${AUTO_BUNDLE_MAX_BYTES / 1024 / 1024}MB auto-bundle cap) — receiving user must supply manually at runtime.`;
+          addManualStep(step);
+          resolutions.push({ reference: v.reference, action: 'declared_as_manual_step', detail: step });
+          continue;
+        }
+        // Directory or zero-byte file — describe rather than bundle.
+        const step = `Provide path at "${raw}" — author had ${stat.isDirectory() ? 'a directory' : 'an empty file'} here at export time; receiving user supplies real contents.`;
+        addManualStep(step);
+        resolutions.push({ reference: v.reference, action: 'declared_as_manual_step', detail: step });
+        continue;
+      } catch {
+        // ENOENT or perm issue — fall through to the "doesn't exist" path.
+      }
+
+      // Source path looked concrete but didn't exist (typical for
+      // runtime paths like /tmp/campaign.yaml that the user creates
+      // at use-time, not at author-time).
+      const step = `User must supply file at "${raw}" at runtime — the technique's instructions reference this path, but no file was present on the author's machine at export. (Common for /tmp paths and other runtime artifacts.)`;
+      addManualStep(step);
+      resolutions.push({ reference: v.reference, action: 'declared_as_manual_step', detail: step });
+      continue;
+    }
+
+    // No locatable source — typically a relative path the author meant
+    // to ship inside the technique dir but didn't. Receiver can't
+    // synthesize this; flag clearly so the original author knows to
+    // re-export with the file included.
+    const step = `MISSING file "${raw}" — the technique's TECHNIQUE.md references this path, but no such file exists in the technique directory and no source could be located on the author's machine. The original author should add the file and re-export.`;
+    addManualStep(step);
+    resolutions.push({ reference: v.reference, action: 'declared_as_manual_step', detail: step });
+  }
+
+  return { resolutions, patchedManifest, filesToBundle };
 }
 
 /**

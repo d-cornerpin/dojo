@@ -27,7 +27,14 @@ const stateBadge: Record<string, { cls: string; label: string }> = {
 
 const tagColors = ['glass-badge-purple', 'glass-badge-blue', 'glass-badge-teal', 'glass-badge-amber', 'glass-badge-coral'];
 
-async function exportTechniqueToBrowser(id: string): Promise<void> {
+interface ExportResolution {
+  ref: string;
+  source: string;
+  action: 'bundled' | 'declared_as_manual_step';
+  detail: string;
+}
+
+async function exportTechniqueToBrowser(id: string): Promise<{ resolutions: ExportResolution[] }> {
   const token = localStorage.getItem('dojo_token');
   const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
   const csrf = csrfMatch ? csrfMatch[1] : null;
@@ -49,6 +56,20 @@ async function exportTechniqueToBrowser(id: string): Promise<void> {
     throw new Error(message);
   }
 
+  // Pick up the auto-resolver's log before consuming the body. Server
+  // base64-encodes the JSON to keep the header value ASCII-safe (some
+  // detail strings contain non-Latin characters like the file-path
+  // arrows used in stub messages).
+  let resolutions: ExportResolution[] = [];
+  const resolutionsHeader = res.headers.get('X-Dojo-Export-Resolutions');
+  if (resolutionsHeader) {
+    try {
+      const json = atob(resolutionsHeader);
+      const parsed = JSON.parse(json);
+      if (Array.isArray(parsed)) resolutions = parsed as ExportResolution[];
+    } catch { /* malformed header — ignore, still deliver the zip */ }
+  }
+
   const blob = await res.blob();
   const disposition = res.headers.get('Content-Disposition') ?? '';
   const filenameMatch = disposition.match(/filename="?([^";]+)"?/);
@@ -62,6 +83,8 @@ async function exportTechniqueToBrowser(id: string): Promise<void> {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+
+  return { resolutions };
 }
 
 export const TechniqueCard = ({ technique, onToggle }: { technique: TechniqueData; onToggle?: (id: string, enabled: boolean) => void }) => {
@@ -75,12 +98,26 @@ export const TechniqueCard = ({ technique, onToggle }: { technique: TechniqueDat
     if (sharing) return;
     setSharing(true);
     try {
-      await exportTechniqueToBrowser(technique.id);
+      const { resolutions } = await exportTechniqueToBrowser(technique.id);
+      // Auto-resolver ran when TECHNIQUE.md referenced files we
+      // couldn't drop straight into the zip. Summarize: how many got
+      // bundled (we found the file and shipped it) vs how many got
+      // added as manual_steps (couldn't fetch — receiver's user
+      // supplies). Non-blocking toast; the zip already downloaded.
+      if (resolutions.length > 0) {
+        const bundled = resolutions.filter(r => r.action === 'bundled').length;
+        const manual = resolutions.filter(r => r.action === 'declared_as_manual_step').length;
+        const parts: string[] = [];
+        if (bundled > 0) parts.push(`${bundled} file${bundled === 1 ? '' : 's'} auto-bundled`);
+        if (manual > 0) parts.push(`${manual} reference${manual === 1 ? '' : 's'} added as manual setup steps`);
+        const summary = `Technique exported with ${parts.join(' and ')}. Receiving trainer will walk the user through any manual steps on import.`;
+        if (manual > 0) toast.warning(summary);
+        else toast.info(summary);
+      }
     } catch (err) {
-      // Share-export refusals can be very long (one per violating file
-      // reference in TECHNIQUE.md). Render as a top-right error toast —
-      // the inline-on-card render turned the card into a wall of red
-      // text and pushed the rest of the grid around.
+      // Hard failures (technique not found, IO error, etc.) — error
+      // toast. Validator refusals no longer reach this path; they're
+      // auto-resolved server-side and never throw.
       toast.error(err instanceof Error ? err.message : String(err));
     } finally {
       setSharing(false);

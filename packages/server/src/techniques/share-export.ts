@@ -23,7 +23,9 @@ import { getTrainerAgentId } from '../config/platform.js';
 import {
   readDependencyManifest,
   validateTechniqueFileReferences,
-  formatValidationRefusal,
+  autoResolveViolations,
+  type AutoResolution,
+  type DependencyManifest,
 } from './dependencies.js';
 
 /**
@@ -312,33 +314,52 @@ function buildFallbackReadme(
  *   TECHNIQUE.md           — the main instructions (scrubbed)
  *   <relative-paths>...   — every other supporting file (scrubbed if text)
  */
-export async function exportTechnique(techniqueId: string): Promise<{ stream: Readable; filename: string }> {
+export async function exportTechnique(
+  techniqueId: string,
+): Promise<{ stream: Readable; filename: string; autoResolutions: AutoResolution[] }> {
   const technique = getTechnique(techniqueId);
   if (!technique) {
     throw new Error(`Technique "${techniqueId}" not found`);
   }
 
-  // ── Belt-and-suspenders validation ──
-  // Save-time validation already runs whenever a trainer creates or
-  // updates a technique, so a well-behaved system should never have a
-  // technique on disk that fails. Re-validate here anyway to catch:
-  //   (1) Techniques created before this feature shipped (no dependency
-  //       manifest, possibly with orphan file references) that the
-  //       trainer's audit hasn't fixed yet.
-  //   (2) Hand edits to TECHNIQUE.md or dependencies.json outside the
-  //       save_technique / update_technique paths.
-  // Refuse the export rather than ship a broken package that will
-  // silently fail on the receiver.
+  // ── Auto-resolve file references (v2.7.5) ──
+  // Pre-v2.7.5 this path refused the export when TECHNIQUE.md
+  // referenced anything not on disk and not declared in
+  // dependencies.json. That was wrong: agents don't fix techniques,
+  // they author them — and the user shouldn't have to play
+  // dependency-manifest-whack-a-mole every time they want to share.
+  //
+  // Now: run validation, then try to RESOLVE each violation —
+  //   • Concrete source paths (absolute, ~/, ../) that exist on disk
+  //     and aren't sensitive get COPIED into the zip and declared in
+  //     the manifest as bundled assets.
+  //   • Concrete source paths that don't exist (runtime artifacts
+  //     like /tmp/foo.yaml) get added as manual_steps with a
+  //     "user supplies at runtime" note.
+  //   • References we can't locate at all get added as manual_steps
+  //     with a "MISSING — author should re-export" note.
+  // Whatever's left after auto-resolve is returned alongside the
+  // stream for the dashboard to surface via toast. Export ALWAYS
+  // produces a zip.
+  let workingManifest: DependencyManifest = readDependencyManifest(technique.directoryPath);
+  let autoResolutions: AutoResolution[] = [];
+  const extraBundledFiles: Array<{ relPath: string; absSourcePath: string }> = [];
+
   const mdPath = path.join(technique.directoryPath, 'TECHNIQUE.md');
   if (fs.existsSync(mdPath)) {
     const md = fs.readFileSync(mdPath, 'utf-8');
-    const manifest = readDependencyManifest(technique.directoryPath);
-    const validation = validateTechniqueFileReferences(technique.directoryPath, md, manifest);
+    const validation = validateTechniqueFileReferences(technique.directoryPath, md, workingManifest);
     if (!validation.ok) {
-      const header =
-        `Cannot export technique "${technique.name}" — its TECHNIQUE.md references files that aren't bundled with the technique and aren't declared in dependencies.json. ` +
-        `Sharing this technique would produce a broken package on the receiver's machine.\n\n`;
-      throw new TechniqueExportValidationError(header + formatValidationRefusal(validation));
+      const resolved = autoResolveViolations(technique.directoryPath, validation.violations, workingManifest);
+      workingManifest = resolved.patchedManifest;
+      autoResolutions = resolved.resolutions;
+      extraBundledFiles.push(...resolved.filesToBundle);
+      logger.info('Export auto-resolved file references', {
+        techniqueId,
+        violationCount: validation.violations.length,
+        bundledCount: resolved.filesToBundle.length,
+        manualStepCount: resolved.resolutions.filter(r => r.action === 'declared_as_manual_step').length,
+      });
     }
   }
 
@@ -407,16 +428,33 @@ export async function exportTechnique(techniqueId: string): Promise<{ stream: Re
   archive.append(JSON.stringify(manifest, null, 2), { name: 'manifest.json' });
   archive.append(readme, { name: 'README.md' });
 
+  // Substitute the auto-resolver's patched dependencies.json for
+  // whatever was in the technique directory. The on-disk version is
+  // untouched; the substitution only affects the zip.
+  const bundledFilePaths = new Set([
+    'dependencies.json',
+    ...extraBundledFiles.map(f => f.relPath),
+  ]);
   for (const entry of finalEntries) {
+    if (bundledFilePaths.has(entry.relPath)) continue; // handled below
     if (entry.isBinary) {
       archive.file(entry.absSourcePath, { name: entry.relPath });
     } else if (entry.content !== undefined) {
       archive.append(entry.content, { name: entry.relPath });
     }
   }
+  archive.append(JSON.stringify(workingManifest, null, 2) + '\n', { name: 'dependencies.json' });
+
+  // Auto-bundled assets (files the auto-resolver pulled from elsewhere
+  // on disk). These weren't part of the technique directory walk so
+  // we add them here. Streaming the absolute source path keeps memory
+  // flat regardless of file size.
+  for (const f of extraBundledFiles) {
+    archive.file(f.absSourcePath, { name: f.relPath });
+  }
 
   archive.finalize();
 
   const safeName = technique.id.replace(/[^a-z0-9-]/g, '-');
-  return { stream: passthrough, filename: `${safeName}.dojo.zip` };
+  return { stream: passthrough, filename: `${safeName}.dojo.zip`, autoResolutions };
 }

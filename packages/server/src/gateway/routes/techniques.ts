@@ -19,7 +19,7 @@ import {
 } from '../../techniques/store.js';
 import { getVersions, getVersion, restoreVersion, getUsage } from '../../techniques/versioning.js';
 import { clearTrainerSession } from '../../techniques/trainer-agent.js';
-import { exportTechnique, TechniqueExportValidationError } from '../../techniques/share-export.js';
+import { exportTechnique } from '../../techniques/share-export.js';
 import { importTechnique } from '../../techniques/share-import.js';
 
 const logger = createLogger('technique-routes');
@@ -244,26 +244,38 @@ techniquesRouter.post('/import', async (c) => {
 });
 
 // POST /:id/export — build a shareable .dojo.zip and stream it back.
+// Validation no longer refuses: missing references get auto-resolved
+// (bundled if locatable, declared as manual_steps otherwise). Any
+// resolutions are encoded in the X-Dojo-Export-Resolutions response
+// header for the dashboard to surface as a non-blocking toast.
 techniquesRouter.post('/:id/export', async (c) => {
   const id = c.req.param('id');
   try {
-    const { stream, filename } = await exportTechnique(id);
+    const { stream, filename, autoResolutions } = await exportTechnique(id);
     const { Readable } = await import('node:stream');
     const webStream = Readable.toWeb(stream) as ReadableStream;
-    return new Response(webStream, {
-      headers: {
-        'Content-Type': 'application/zip',
-        'Content-Disposition': `attachment; filename="${filename}"`,
-      },
-    });
-  } catch (err) {
-    // Validation refusal is a user-actionable problem (technique needs
-    // cleanup before it can be shared) — surface as 422 with the full
-    // structured refusal so the dashboard can render it readably.
-    if (err instanceof TechniqueExportValidationError) {
-      logger.info('Technique export refused by validator', { id });
-      return c.json({ ok: false, error: err.refusalText, code: 'EXPORT_VALIDATION_FAILED' }, 422);
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/zip',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+    };
+    if (autoResolutions.length > 0) {
+      // Compact representation — the dashboard summarizes it for the
+      // toast. Header values must stay ASCII-safe; base64 of UTF-8
+      // JSON sidesteps any non-Latin characters in detail strings.
+      const payload = autoResolutions.map((r) => ({
+        ref: r.reference.raw,
+        source: r.reference.source,
+        action: r.action,
+        detail: r.detail,
+      }));
+      headers['X-Dojo-Export-Resolutions'] = Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64');
+      // Expose for browser fetch (matters when this ever gets fetched
+      // cross-origin; harmless in same-origin).
+      headers['Access-Control-Expose-Headers'] = 'X-Dojo-Export-Resolutions, Content-Disposition';
     }
+    return new Response(webStream, { headers });
+  } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Technique export failed', { error: msg, id });
     return c.json({ ok: false, error: msg }, 400);
