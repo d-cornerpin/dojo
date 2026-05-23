@@ -5,6 +5,15 @@
 
 import type { ToolDefinition } from '../agent/tools.js';
 import { googleRead, googleWrite } from './client.js';
+import {
+  type LocalAttachment,
+  readLocalAttachments,
+  partitionForGmail,
+  formatSize,
+  currentMonthFolderName,
+  ATTACHMENTS_ROOT_FOLDER,
+} from '../services/email-attachments.js';
+import type { AccountSlot } from './auth.js';
 
 const GMAIL_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const CALENDAR_BASE = 'https://www.googleapis.com/calendar/v3';
@@ -18,7 +27,7 @@ const UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3';
 export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'gmail_send',
-    description: 'Send an email from the connected Google account.',
+    description: 'Send an email from the connected Google account. Supports attachments — pass an array of absolute local file paths. Files totalling up to 25MB go inline; anything over auto-uploads to your Google Drive (folder "DOJO Email Attachments/<YYYY-MM>") and the recipient gets a shareable link appended to the body.',
     input_schema: {
       type: 'object',
       properties: {
@@ -27,32 +36,35 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
         body: { type: 'string', description: 'Email body text' },
         cc: { type: 'string', description: 'CC recipients (comma-separated)' },
         bcc: { type: 'string', description: 'BCC recipients (comma-separated)' },
+        attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach (e.g., ["/Users/me/.dojo/uploads/<agent-id>/report.pdf"]). Combined cap of 25MB inline; larger spill to Drive automatically.' },
       },
       required: ['to', 'subject', 'body'],
     },
   },
   {
     name: 'gmail_reply',
-    description: 'Reply to an existing email thread.',
+    description: 'Reply to an existing email thread. Supports attachments — same rules as gmail_send (25MB inline cap, overflow to Drive link).',
     input_schema: {
       type: 'object',
       properties: {
         message_id: { type: 'string', description: 'Message ID to reply to' },
         body: { type: 'string', description: 'Reply body text' },
         reply_all: { type: 'boolean', description: 'Reply to all recipients (default: false)' },
+        attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach. Combined cap of 25MB inline; larger spill to Drive automatically.' },
       },
       required: ['message_id', 'body'],
     },
   },
   {
     name: 'gmail_forward',
-    description: 'Forward an email to new recipients.',
+    description: 'Forward an email to new recipients. The original message\'s attachments are preserved automatically. You can also add NEW attachments via the `attachments` parameter; same 25MB inline cap applies to the combined total (original + new), with Drive spillover for any overflow.',
     input_schema: {
       type: 'object',
       properties: {
         message_id: { type: 'string', description: 'Message ID to forward' },
         to: { type: 'string', description: 'Forward to this email address' },
         body: { type: 'string', description: 'Additional text to include' },
+        attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach ALONGSIDE the original message\'s attachments. Combined cap of 25MB inline; larger spill to Drive automatically.' },
       },
       required: ['message_id', 'to'],
     },
@@ -299,19 +311,271 @@ for (const canonical of USER_SLOT_SEND_TOOLS) {
 
 // ── Helpers ──
 
-function buildRfc2822Email(to: string, subject: string, body: string, options?: { cc?: string; bcc?: string; inReplyTo?: string; references?: string; threadId?: string }): string {
-  const lines: string[] = [];
-  lines.push(`To: ${to}`);
-  lines.push(`Subject: ${subject}`);
-  if (options?.cc) lines.push(`Cc: ${options.cc}`);
-  if (options?.bcc) lines.push(`Bcc: ${options.bcc}`);
-  if (options?.inReplyTo) lines.push(`In-Reply-To: ${options.inReplyTo}`);
-  if (options?.references) lines.push(`References: ${options.references}`);
-  lines.push('Content-Type: text/plain; charset=utf-8');
-  lines.push('');
-  lines.push(body);
+function sanitizeFilename(name: string): string {
+  // Strip quotes and CR/LF that would break the Content-Disposition header.
+  return name.replace(/["\r\n]/g, '_');
+}
 
-  return Buffer.from(lines.join('\r\n')).toString('base64url');
+// RFC 2047 encoded-word for non-ASCII header values (Subject, To, Cc names).
+// Without this, an em-dash in a subject line shows up as mojibake in the
+// recipient's inbox because RFC 2822 headers are ASCII-only by spec.
+function encodeHeaderValue(value: string): string {
+  if (/^[\x00-\x7F]*$/.test(value)) return value;
+  return `=?utf-8?B?${Buffer.from(value, 'utf-8').toString('base64')}?=`;
+}
+
+function chunkBase64(b64: string, width = 76): string {
+  return b64.match(new RegExp(`.{1,${width}}`, 'g'))?.join('\r\n') ?? b64;
+}
+
+function buildRfc2822Email(
+  to: string,
+  subject: string,
+  body: string,
+  options?: {
+    cc?: string;
+    bcc?: string;
+    inReplyTo?: string;
+    references?: string;
+    threadId?: string;
+    attachments?: readonly LocalAttachment[];
+  },
+): string {
+  const headers: string[] = [];
+  headers.push(`To: ${encodeHeaderValue(to)}`);
+  headers.push(`Subject: ${encodeHeaderValue(subject)}`);
+  if (options?.cc) headers.push(`Cc: ${encodeHeaderValue(options.cc)}`);
+  if (options?.bcc) headers.push(`Bcc: ${encodeHeaderValue(options.bcc)}`);
+  if (options?.inReplyTo) headers.push(`In-Reply-To: ${options.inReplyTo}`);
+  if (options?.references) headers.push(`References: ${options.references}`);
+
+  const attachments = options?.attachments ?? [];
+  if (attachments.length === 0) {
+    // Plain text — original behavior, kept identical for non-attachment sends.
+    headers.push('Content-Type: text/plain; charset=utf-8');
+    headers.push('');
+    return Buffer.from(headers.join('\r\n') + '\r\n' + body).toString('base64url');
+  }
+
+  // multipart/mixed: one text/plain body part + one base64-encoded part per
+  // attachment. Boundary is random per message — Gmail tolerates any boundary
+  // that doesn't collide with the parts' contents.
+  const boundary = `=_dojo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+  headers.push('MIME-Version: 1.0');
+  headers.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+  headers.push('');
+
+  const parts: string[] = [];
+  parts.push(`--${boundary}`);
+  parts.push('Content-Type: text/plain; charset=utf-8');
+  parts.push('Content-Transfer-Encoding: 7bit');
+  parts.push('');
+  parts.push(body);
+
+  for (const att of attachments) {
+    const safeName = sanitizeFilename(att.name);
+    parts.push(`--${boundary}`);
+    parts.push(`Content-Type: ${att.mimeType}; name="${safeName}"`);
+    parts.push('Content-Transfer-Encoding: base64');
+    parts.push(`Content-Disposition: attachment; filename="${safeName}"`);
+    parts.push('');
+    parts.push(chunkBase64(att.content.toString('base64')));
+  }
+  parts.push(`--${boundary}--`);
+
+  return Buffer.from(headers.join('\r\n') + '\r\n' + parts.join('\r\n')).toString('base64url');
+}
+
+// ── Drive overflow helpers ──
+//
+// When user-supplied attachments exceed Gmail's 25MB inline ceiling, upload
+// the overflow files to a stable folder in the agent's (or user's) Drive
+// and append a shareable "anyone with link" URL to the message body. Folder
+// layout: "DOJO Email Attachments/<YYYY-MM>/<filename>". Folders are
+// created on demand if they don't exist.
+
+type FolderResult = { ok: true; id: string } | { ok: false; error: string };
+
+async function getOrCreateDriveFolder(
+  name: string,
+  parentId: string | undefined,
+  agentId: string,
+  agentName: string,
+  slot: AccountSlot,
+): Promise<FolderResult> {
+  const escapedName = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const parentClause = parentId ? ` and '${parentId}' in parents` : " and 'root' in parents";
+  const q = `name='${escapedName}' and mimeType='application/vnd.google-apps.folder' and trashed=false${parentClause}`;
+  const searchUrl = `${DRIVE_BASE}/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=1`;
+  const lookup = await googleRead(
+    searchUrl, agentId, agentName, 'gmail_attachment_folder_lookup',
+    { name, parentId }, slot,
+  );
+  if (lookup.ok) {
+    const data = lookup.data as { files?: Array<{ id?: string }> } | null;
+    const existing = data?.files?.[0]?.id;
+    if (existing) return { ok: true, id: existing };
+  }
+
+  const metadata: Record<string, unknown> = {
+    name,
+    mimeType: 'application/vnd.google-apps.folder',
+  };
+  if (parentId) metadata.parents = [parentId];
+  const create = await googleWrite(
+    'POST', `${DRIVE_BASE}/files?fields=id,name`,
+    metadata,
+    agentId, agentName, 'gmail_attachment_folder_create',
+    { name, parentId },
+    undefined, slot,
+  );
+  if (!create.ok) return { ok: false, error: create.error ?? 'unknown error creating folder' };
+  const data = create.data as { id?: string } | null;
+  if (!data?.id) return { ok: false, error: 'folder created but Drive returned no ID' };
+  return { ok: true, id: data.id };
+}
+
+async function uploadAttachmentToDrive(
+  att: LocalAttachment,
+  agentId: string,
+  agentName: string,
+  slot: AccountSlot,
+): Promise<{ ok: true; url: string; name: string } | { ok: false; error: string }> {
+  const rootFolder = await getOrCreateDriveFolder(ATTACHMENTS_ROOT_FOLDER, undefined, agentId, agentName, slot);
+  if (!rootFolder.ok) return { ok: false, error: `couldn't prepare Drive folder: ${rootFolder.error}` };
+  const monthFolder = await getOrCreateDriveFolder(currentMonthFolderName(), rootFolder.id, agentId, agentName, slot);
+  if (!monthFolder.ok) return { ok: false, error: `couldn't prepare Drive month folder: ${monthFolder.error}` };
+
+  // Multipart upload: metadata JSON + raw bytes, mirrors drive_upload's pattern.
+  const boundary = `---dojo-attach-${Date.now().toString(36)}---`;
+  const metadata = { name: att.name, parents: [monthFolder.id] };
+  const headerBlock = [
+    `--${boundary}`,
+    'Content-Type: application/json; charset=UTF-8',
+    '',
+    JSON.stringify(metadata),
+    `--${boundary}`,
+    `Content-Type: ${att.mimeType}`,
+    '',
+  ].join('\r\n');
+
+  const bodyBuffer = Buffer.concat([
+    Buffer.from(headerBlock + '\r\n'),
+    att.content,
+    Buffer.from(`\r\n--${boundary}--`),
+  ]);
+
+  const upload = await googleWrite(
+    'POST',
+    `${UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,webViewLink`,
+    bodyBuffer,
+    agentId, agentName, 'gmail_attachment_drive_upload',
+    { fileName: att.name, size: att.size, folderId: monthFolder.id },
+    `multipart/related; boundary=${boundary}`,
+    slot,
+  );
+  if (!upload.ok) return { ok: false, error: upload.error ?? 'unknown upload error' };
+  const fileData = upload.data as { id?: string; name?: string; webViewLink?: string } | null;
+  if (!fileData?.id) return { ok: false, error: 'upload succeeded but Drive returned no file ID' };
+
+  // Create an "anyone with link, viewer" permission so the recipient can open
+  // the file without signing in. Matches the user's policy preference.
+  const share = await googleWrite(
+    'POST',
+    `${DRIVE_BASE}/files/${encodeURIComponent(fileData.id)}/permissions?supportsAllDrives=true&sendNotificationEmail=false`,
+    { role: 'reader', type: 'anyone', allowFileDiscovery: false },
+    agentId, agentName, 'gmail_attachment_drive_share',
+    { fileId: fileData.id },
+    undefined, slot,
+  );
+  if (!share.ok) return { ok: false, error: `uploaded but share failed: ${share.error}` };
+
+  const url = fileData.webViewLink ?? `https://drive.google.com/file/d/${fileData.id}/view`;
+  return { ok: true, url, name: fileData.name ?? att.name };
+}
+
+// ── Forward-attachment extraction ──
+//
+// Gmail's message payload is a tree of MIME parts. Attachment parts have a
+// non-empty `filename` and either inline data (small) or an `attachmentId`
+// that requires a separate fetch. Walk the tree, fetch each attachment's
+// bytes, and return as LocalAttachment so the forward path can re-encode
+// them into the outgoing multipart body.
+
+type GmailMessagePart = {
+  mimeType?: string;
+  filename?: string;
+  headers?: Array<{ name: string; value: string }>;
+  body?: { attachmentId?: string; size?: number; data?: string };
+  parts?: GmailMessagePart[];
+};
+
+function collectAttachmentParts(part: GmailMessagePart, out: GmailMessagePart[]): void {
+  if (part.filename && part.filename.length > 0 && (part.body?.attachmentId || part.body?.data)) {
+    out.push(part);
+  }
+  if (part.parts) {
+    for (const child of part.parts) collectAttachmentParts(child, out);
+  }
+}
+
+async function fetchOriginalAttachments(
+  messageId: string,
+  payload: GmailMessagePart,
+  agentId: string,
+  agentName: string,
+  slot: AccountSlot,
+): Promise<{ ok: true; attachments: LocalAttachment[] } | { ok: false; error: string }> {
+  const parts: GmailMessagePart[] = [];
+  collectAttachmentParts(payload, parts);
+
+  const out: LocalAttachment[] = [];
+  for (const part of parts) {
+    const filename = part.filename ?? `attachment-${Date.now()}.bin`;
+    const mimeType = part.mimeType ?? 'application/octet-stream';
+    let bytes: Buffer | null = null;
+
+    if (part.body?.data) {
+      bytes = Buffer.from(part.body.data, 'base64url');
+    } else if (part.body?.attachmentId) {
+      const url = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(part.body.attachmentId)}`;
+      const fetched = await googleRead(
+        url, agentId, agentName, 'gmail_forward_attachment_fetch',
+        { messageId, attachmentId: part.body.attachmentId, filename }, slot,
+      );
+      if (!fetched.ok) {
+        return { ok: false, error: `failed to fetch forwarded attachment "${filename}": ${fetched.error}` };
+      }
+      const data = fetched.data as { data?: string } | null;
+      if (!data?.data) {
+        return { ok: false, error: `forwarded attachment "${filename}" has no downloadable data` };
+      }
+      bytes = Buffer.from(data.data, 'base64url');
+    }
+
+    if (!bytes) continue;
+    out.push({
+      path: '<original-message-attachment>',
+      name: filename,
+      size: bytes.length,
+      mimeType,
+      content: bytes,
+    });
+  }
+  return { ok: true, attachments: out };
+}
+
+/**
+ * Read and partition user-provided attachment paths for Gmail. Returns the
+ * inline-eligible set and the overflow set that needs Drive upload. On any
+ * file-read error, returns the error string so the caller can return it as
+ * the tool result (fail-fast — no partial sends).
+ */
+function loadUserAttachmentsForGmail(
+  paths: readonly string[] | undefined,
+): { ok: true; attachments: LocalAttachment[] } | { ok: false; error: string } {
+  if (!paths || paths.length === 0) return { ok: true, attachments: [] };
+  return readLocalAttachments(paths);
 }
 
 // ── Tool Execution ──
@@ -356,21 +620,39 @@ export async function executeGoogleWriteTool(
     case 'gmail_send': {
       const to = args.to as string;
       const subject = args.subject as string;
-      const body = args.body as string;
+      let body = args.body as string;
+
+      const loaded = loadUserAttachmentsForGmail(args.attachments as string[] | undefined);
+      if (!loaded.ok) return loaded.error;
+
+      const { inline, overflow } = partitionForGmail(loaded.attachments);
+      const overflowLines: string[] = [];
+      for (const att of overflow) {
+        const up = await uploadAttachmentToDrive(att, agentId, agentName, slot);
+        if (!up.ok) return `Error uploading attachment "${att.name}" to Drive: ${up.error}`;
+        overflowLines.push(`  • ${up.name} (${formatSize(att.size)}) — ${up.url}`);
+      }
+      if (overflowLines.length > 0) {
+        body = `${body}\n\nAttached via Google Drive (file too large to inline):\n${overflowLines.join('\n')}`;
+      }
 
       const raw = buildRfc2822Email(to, subject, body, {
         cc: args.cc as string | undefined,
         bcc: args.bcc as string | undefined,
+        attachments: inline,
       });
 
-      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw }, agentId, agentName, 'gmail_send', { to, subject, slot }, undefined, slot);
+      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw }, agentId, agentName, 'gmail_send', { to, subject, slot, inlineAttachments: inline.length, driveAttachments: overflow.length }, undefined, slot);
       if (!result.ok) return `Error sending email: ${result.error}`;
-      return `Email sent to ${to} with subject "${subject}"`;
+
+      const attachSummary = (inline.length + overflow.length) === 0 ? '' :
+        ` with ${inline.length} inline attachment(s)${overflow.length > 0 ? ` and ${overflow.length} Drive link(s)` : ''}`;
+      return `Email sent to ${to} with subject "${subject}"${attachSummary}`;
     }
 
     case 'gmail_reply': {
       const messageId = args.message_id as string;
-      const body = args.body as string;
+      let body = args.body as string;
 
       // Fetch original message to get thread ID and headers
       const origUrl = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Message-ID`;
@@ -387,14 +669,32 @@ export async function executeGoogleWriteTool(
       const replyTo = replyAll ? [from, to].filter(Boolean).join(', ') : from;
       const replySubject = subject.startsWith('Re:') ? subject : `Re: ${subject}`;
 
+      const loaded = loadUserAttachmentsForGmail(args.attachments as string[] | undefined);
+      if (!loaded.ok) return loaded.error;
+
+      const { inline, overflow } = partitionForGmail(loaded.attachments);
+      const overflowLines: string[] = [];
+      for (const att of overflow) {
+        const up = await uploadAttachmentToDrive(att, agentId, agentName, slot);
+        if (!up.ok) return `Error uploading attachment "${att.name}" to Drive: ${up.error}`;
+        overflowLines.push(`  • ${up.name} (${formatSize(att.size)}) — ${up.url}`);
+      }
+      if (overflowLines.length > 0) {
+        body = `${body}\n\nAttached via Google Drive (file too large to inline):\n${overflowLines.join('\n')}`;
+      }
+
       const raw = buildRfc2822Email(replyTo, replySubject, body, {
         inReplyTo: msgIdHeader,
         references: msgIdHeader,
+        attachments: inline,
       });
 
-      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw, threadId: origData.threadId }, agentId, agentName, 'gmail_reply', { messageId, replyAll, slot }, undefined, slot);
+      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw, threadId: origData.threadId }, agentId, agentName, 'gmail_reply', { messageId, replyAll, slot, inlineAttachments: inline.length, driveAttachments: overflow.length }, undefined, slot);
       if (!result.ok) return `Error replying to email: ${result.error}`;
-      return `Reply sent${replyAll ? ' (to all)' : ''} to message ${messageId}`;
+
+      const attachSummary = (inline.length + overflow.length) === 0 ? '' :
+        ` with ${inline.length} inline attachment(s)${overflow.length > 0 ? ` and ${overflow.length} Drive link(s)` : ''}`;
+      return `Reply sent${replyAll ? ' (to all)' : ''} to message ${messageId}${attachSummary}`;
     }
 
     case 'gmail_forward': {
@@ -402,12 +702,12 @@ export async function executeGoogleWriteTool(
       const to = args.to as string;
       const additionalBody = (args.body as string) ?? '';
 
-      // Fetch original message
+      // Fetch original message in full so we can preserve attachments.
       const origUrl = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}?format=full`;
       const orig = await googleRead(origUrl, agentId, agentName, 'gmail_forward_fetch', { messageId, slot }, slot);
       if (!orig.ok) return `Error fetching original message: ${orig.error}`;
 
-      const origData = orig.data as { payload?: { headers?: Array<{ name: string; value: string }>; body?: { data?: string }; parts?: Array<{ mimeType: string; body?: { data?: string } }> } };
+      const origData = orig.data as { payload?: GmailMessagePart };
       const headers = origData?.payload?.headers ?? [];
       const origSubject = headers.find(h => h.name === 'Subject')?.value ?? '';
       const origFrom = headers.find(h => h.name === 'From')?.value ?? '';
@@ -422,13 +722,43 @@ export async function executeGoogleWriteTool(
         }
       }
 
-      const fwdBody = `${additionalBody}\n\n---------- Forwarded message ----------\nFrom: ${origFrom}\nSubject: ${origSubject}\n\n${origBody}`;
-      const fwdSubject = origSubject.startsWith('Fwd:') ? origSubject : `Fwd: ${origSubject}`;
+      // Pull the original message's attachments so the forward preserves them
+      // (Gmail web does this automatically; our prior implementation stripped
+      // them by rebuilding only the text/plain body).
+      let origAttachments: LocalAttachment[] = [];
+      if (origData?.payload) {
+        const fetched = await fetchOriginalAttachments(messageId, origData.payload, agentId, agentName, slot);
+        if (!fetched.ok) return `Error preserving original attachments: ${fetched.error}`;
+        origAttachments = fetched.attachments;
+      }
 
-      const raw = buildRfc2822Email(to, fwdSubject, fwdBody);
-      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw }, agentId, agentName, 'gmail_forward', { messageId, to, slot }, undefined, slot);
+      // Plus any new attachments the caller wants to add.
+      const loaded = loadUserAttachmentsForGmail(args.attachments as string[] | undefined);
+      if (!loaded.ok) return loaded.error;
+
+      const allAttachments = [...origAttachments, ...loaded.attachments];
+      const { inline, overflow } = partitionForGmail(allAttachments);
+
+      let fwdBody = `${additionalBody}\n\n---------- Forwarded message ----------\nFrom: ${origFrom}\nSubject: ${origSubject}\n\n${origBody}`;
+
+      const overflowLines: string[] = [];
+      for (const att of overflow) {
+        const up = await uploadAttachmentToDrive(att, agentId, agentName, slot);
+        if (!up.ok) return `Error uploading attachment "${att.name}" to Drive: ${up.error}`;
+        overflowLines.push(`  • ${up.name} (${formatSize(att.size)}) — ${up.url}`);
+      }
+      if (overflowLines.length > 0) {
+        fwdBody += `\n\nAttached via Google Drive (file too large to inline):\n${overflowLines.join('\n')}`;
+      }
+
+      const fwdSubject = origSubject.startsWith('Fwd:') ? origSubject : `Fwd: ${origSubject}`;
+      const raw = buildRfc2822Email(to, fwdSubject, fwdBody, { attachments: inline });
+      const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw }, agentId, agentName, 'gmail_forward', { messageId, to, slot, inlineAttachments: inline.length, driveAttachments: overflow.length, preservedFromOriginal: origAttachments.length }, undefined, slot);
       if (!result.ok) return `Error forwarding email: ${result.error}`;
-      return `Email forwarded to ${to}`;
+
+      const attachSummary = allAttachments.length === 0 ? '' :
+        ` (${inline.length} inline, ${overflow.length} via Drive link; ${origAttachments.length} preserved from original)`;
+      return `Email forwarded to ${to}${attachSummary}`;
     }
 
     case 'gmail_read_attachment': {

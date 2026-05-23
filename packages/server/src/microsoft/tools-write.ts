@@ -6,13 +6,22 @@
 import type { ToolDefinition } from '../agent/tools.js';
 import { msGraphRead, msGraphWrite, calendarPrefix, drivePrefix } from './client.js';
 import { getPrimaryAgentName } from '../config/platform.js';
+import {
+  type LocalAttachment,
+  readLocalAttachments,
+  partitionForOutlook,
+  formatSize,
+  currentMonthFolderName,
+  ATTACHMENTS_ROOT_FOLDER,
+} from '../services/email-attachments.js';
+import type { AccountSlot } from './auth.js';
 
 // ── Tool Definitions ──
 
 export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_send',
-    description: 'Send an email from the connected Microsoft account (Outlook).',
+    description: 'Send an email from the connected Microsoft account (Outlook). Supports attachments — pass an array of absolute local file paths. Files ≤3MB attach inline; anything larger auto-uploads to OneDrive (folder "DOJO Email Attachments/<YYYY-MM>") and the recipient gets a shareable link appended to the body.',
     input_schema: {
       type: 'object',
       properties: {
@@ -20,32 +29,35 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         subject: { type: 'string', description: 'Email subject line' },
         body: { type: 'string', description: 'Email body text' },
         cc: { type: 'string', description: 'CC recipients (comma-separated)' },
+        attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach. Files ≤3MB inline; larger spill to OneDrive link automatically.' },
       },
       required: ['to', 'subject', 'body'],
     },
   },
   {
     name: 'outlook_reply',
-    description: 'Reply to an existing Outlook email thread.',
+    description: 'Reply to an existing Outlook email thread. Supports attachments — same rules as outlook_send (3MB inline threshold per file, overflow to OneDrive link).',
     input_schema: {
       type: 'object',
       properties: {
         message_id: { type: 'string', description: 'Message ID to reply to' },
         body: { type: 'string', description: 'Reply body text' },
         reply_all: { type: 'boolean', description: 'Reply to all recipients (default: false)' },
+        attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach. Files ≤3MB inline; larger spill to OneDrive link automatically.' },
       },
       required: ['message_id', 'body'],
     },
   },
   {
     name: 'outlook_forward',
-    description: 'Forward an Outlook email to new recipients.',
+    description: 'Forward an Outlook email to new recipients. The original message\'s attachments are preserved automatically by Graph. You can also add NEW attachments via the `attachments` parameter; same 3MB per-file threshold applies (overflow → OneDrive link).',
     input_schema: {
       type: 'object',
       properties: {
         message_id: { type: 'string', description: 'Message ID to forward' },
         to: { type: 'string', description: 'Forward to this email address' },
         body: { type: 'string', description: 'Additional text to include' },
+        attachments: { type: 'array', items: { type: 'string' }, description: 'Optional array of absolute local file paths to attach IN ADDITION to the original message\'s attachments (which Graph preserves automatically). Files ≤3MB inline; larger spill to OneDrive link.' },
       },
       required: ['message_id', 'to'],
     },
@@ -346,6 +358,223 @@ function parseRecipients(str: string): Array<{ emailAddress: { address: string }
   }));
 }
 
+// ── Attachment helpers ──
+//
+// Graph's `attachments` array on a sendMail/reply/forward message accepts
+// fileAttachment items with base64-encoded `contentBytes`. Practical
+// per-message limit is around 4MB before the JSON payload itself becomes
+// unwieldy; project policy is 3MB per file. Anything larger uploads to
+// OneDrive and the share URL is appended to the body.
+
+interface GraphFileAttachment {
+  '@odata.type': '#microsoft.graph.fileAttachment';
+  name: string;
+  contentType: string;
+  contentBytes: string;
+}
+
+function toGraphAttachments(items: readonly LocalAttachment[]): GraphFileAttachment[] {
+  return items.map(att => ({
+    '@odata.type': '#microsoft.graph.fileAttachment',
+    name: att.name,
+    contentType: att.mimeType,
+    contentBytes: att.content.toString('base64'),
+  }));
+}
+
+function loadUserAttachmentsForOutlook(
+  paths: readonly string[] | undefined,
+): { ok: true; attachments: LocalAttachment[] } | { ok: false; error: string } {
+  if (!paths || paths.length === 0) return { ok: true, attachments: [] };
+  return readLocalAttachments(paths);
+}
+
+async function getOrCreateOneDriveFolder(
+  name: string,
+  parentId: string | 'root',
+  token: string,
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  // Use $filter to find an existing folder with this name. Children endpoint
+  // returns up to 200 items per page; for our well-defined attachments tree
+  // a single page is always enough.
+  const parentEndpoint = parentId === 'root'
+    ? 'me/drive/root/children'
+    : `me/drive/items/${encodeURIComponent(parentId)}/children`;
+  const filter = `?$filter=${encodeURIComponent(`name eq '${name.replace(/'/g, "''")}'`)}&$select=id,name,folder`;
+  try {
+    const lookup = await fetch(`https://graph.microsoft.com/v1.0/${parentEndpoint}${filter}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (lookup.ok) {
+      const data = await lookup.json() as { value?: Array<{ id?: string; name?: string; folder?: object }> };
+      const existing = (data.value ?? []).find(item => item.folder && item.name === name && item.id);
+      if (existing?.id) return { ok: true, id: existing.id };
+    }
+  } catch (err) {
+    // Fall through to create attempt — lookup is best-effort.
+    void err;
+  }
+
+  try {
+    const createResp = await fetch(`https://graph.microsoft.com/v1.0/${parentEndpoint}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        folder: {},
+        '@microsoft.graph.conflictBehavior': 'rename',
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!createResp.ok) {
+      const err = await createResp.text();
+      return { ok: false, error: `folder create failed: ${err.slice(0, 200)}` };
+    }
+    const data = await createResp.json() as { id?: string };
+    if (!data.id) return { ok: false, error: 'folder created but Graph returned no ID' };
+    return { ok: true, id: data.id };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function uploadAttachmentToOneDrive(
+  att: LocalAttachment,
+  slot: AccountSlot,
+): Promise<{ ok: true; url: string; name: string } | { ok: false; error: string }> {
+  const token = (await import('./auth.js')).getAccessToken(slot);
+  if (!token) return { ok: false, error: 'not authenticated with Microsoft' };
+
+  const root = await getOrCreateOneDriveFolder(ATTACHMENTS_ROOT_FOLDER, 'root', token);
+  if (!root.ok) return { ok: false, error: `couldn't prepare OneDrive folder: ${root.error}` };
+  const monthFolder = await getOrCreateOneDriveFolder(currentMonthFolderName(), root.id, token);
+  if (!monthFolder.ok) return { ok: false, error: `couldn't prepare OneDrive month folder: ${monthFolder.error}` };
+
+  // Upload. Files we route here are >3MB; some may be ≤4MB (the simple-PUT
+  // boundary) and some larger. Use the same branch logic as onedrive_upload.
+  const itemPath = `me/drive/items/${encodeURIComponent(monthFolder.id)}:/${encodeURIComponent(att.name)}`;
+  type DriveItem = { id?: string; name?: string; webUrl?: string };
+  let uploadedItem: DriveItem | null = null;
+
+  try {
+    if (att.size <= 4 * 1024 * 1024) {
+      const resp = await fetch(`https://graph.microsoft.com/v1.0/${itemPath}:/content`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': att.mimeType },
+        body: att.content,
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!resp.ok) {
+        const err = await resp.text();
+        return { ok: false, error: `upload failed: ${err.slice(0, 200)}` };
+      }
+      uploadedItem = await resp.json() as DriveItem;
+    } else {
+      const sessionResp = await fetch(`https://graph.microsoft.com/v1.0/${itemPath}:/createUploadSession`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace', name: att.name } }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!sessionResp.ok) {
+        const err = await sessionResp.text();
+        return { ok: false, error: `upload session error: ${err.slice(0, 200)}` };
+      }
+      const session = await sessionResp.json() as { uploadUrl?: string };
+      if (!session.uploadUrl) return { ok: false, error: 'OneDrive returned no upload URL' };
+
+      const CHUNK_SIZE = 4 * 1024 * 1024;
+      let offset = 0;
+      while (offset < att.size) {
+        const chunkSize = Math.min(CHUNK_SIZE, att.size - offset);
+        const chunk = att.content.subarray(offset, offset + chunkSize);
+        const chunkResp = await fetch(session.uploadUrl, {
+          method: 'PUT',
+          headers: {
+            'Content-Length': String(chunkSize),
+            'Content-Range': `bytes ${offset}-${offset + chunkSize - 1}/${att.size}`,
+          },
+          body: chunk,
+          signal: AbortSignal.timeout(120_000),
+        });
+        if (!chunkResp.ok && chunkResp.status !== 202) {
+          const err = await chunkResp.text();
+          return { ok: false, error: `chunk upload failed at offset ${offset}: ${err.slice(0, 200)}` };
+        }
+        if (chunkResp.status === 201 || chunkResp.status === 200) {
+          uploadedItem = await chunkResp.json() as DriveItem;
+        }
+        offset += chunkSize;
+      }
+    }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+
+  if (!uploadedItem?.id) return { ok: false, error: 'upload completed but Graph returned no item ID' };
+
+  // Create an anonymous view link.
+  try {
+    const linkResp = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(uploadedItem.id)}/createLink`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'view', scope: 'anonymous' }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!linkResp.ok) {
+      const err = await linkResp.text();
+      return { ok: false, error: `uploaded but share-link creation failed: ${err.slice(0, 200)}` };
+    }
+    const linkData = await linkResp.json() as { link?: { webUrl?: string } };
+    const url = linkData.link?.webUrl ?? uploadedItem.webUrl;
+    if (!url) return { ok: false, error: 'uploaded and shared but no URL returned' };
+    return { ok: true, url, name: uploadedItem.name ?? att.name };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Walk user-provided attachments, partition into inline (≤3MB) vs. overflow
+ * (>3MB), upload overflow to OneDrive, and return both the Graph-shaped
+ * inline-attachment array AND the body-appended link block. Fail-fast: any
+ * upload error aborts the whole send.
+ */
+async function prepareOutlookAttachments(
+  paths: readonly string[] | undefined,
+  slot: AccountSlot,
+): Promise<{
+  ok: true;
+  inline: GraphFileAttachment[];
+  inlineCount: number;
+  overflowCount: number;
+  bodySuffix: string;
+} | { ok: false; error: string }> {
+  const loaded = loadUserAttachmentsForOutlook(paths);
+  if (!loaded.ok) return loaded;
+
+  const { inline, overflow } = partitionForOutlook(loaded.attachments);
+  const overflowLines: string[] = [];
+  for (const att of overflow) {
+    const up = await uploadAttachmentToOneDrive(att, slot);
+    if (!up.ok) return { ok: false, error: `Error uploading attachment "${att.name}" to OneDrive: ${up.error}` };
+    overflowLines.push(`  • ${up.name} (${formatSize(att.size)}) — ${up.url}`);
+  }
+
+  const bodySuffix = overflowLines.length > 0
+    ? `\n\nAttached via OneDrive (file too large to inline):\n${overflowLines.join('\n')}`
+    : '';
+
+  return {
+    ok: true,
+    inline: toGraphAttachments(inline),
+    inlineCount: inline.length,
+    overflowCount: overflow.length,
+    bodySuffix,
+  };
+}
+
 // ── Tool Execution ──
 
 const microsoftWriteToolDefByName = new Map(microsoftWriteToolDefinitions.map(t => [t.name, t]));
@@ -383,12 +612,18 @@ export async function executeMicrosoftWriteTool(
   switch (canonicalName) {
     case 'outlook_send': {
       const toRecipients = parseRecipients(args.to as string);
+
+      const prepared = await prepareOutlookAttachments(args.attachments as string[] | undefined, slot);
+      if (!prepared.ok) return prepared.error;
+
+      const bodyText = (args.body as string) + prepared.bodySuffix;
       const message: Record<string, unknown> = {
         subject: args.subject,
-        body: { contentType: 'Text', content: args.body },
+        body: { contentType: 'Text', content: bodyText },
         toRecipients,
       };
       if (args.cc) message.ccRecipients = parseRecipients(args.cc as string);
+      if (prepared.inline.length > 0) message.attachments = prepared.inline;
 
       // Set display name from primary agent
       const displayName = getPrimaryAgentName();
@@ -399,10 +634,13 @@ export async function executeMicrosoftWriteTool(
       }
 
       const result = await msGraphWrite('POST', 'me/sendMail', { message }, agentId, agentName, 'outlook_send', {
-        to: args.to, subject: args.subject, slot,
+        to: args.to, subject: args.subject, slot, inlineAttachments: prepared.inlineCount, onedriveAttachments: prepared.overflowCount,
       }, slot);
       if (!result.ok) return `Error sending email: ${result.error}`;
-      return `Email sent to ${args.to} with subject "${args.subject}"`;
+
+      const attachSummary = (prepared.inlineCount + prepared.overflowCount) === 0 ? '' :
+        ` with ${prepared.inlineCount} inline attachment(s)${prepared.overflowCount > 0 ? ` and ${prepared.overflowCount} OneDrive link(s)` : ''}`;
+      return `Email sent to ${args.to} with subject "${args.subject}"${attachSummary}`;
     }
 
     case 'outlook_reply': {
@@ -410,25 +648,67 @@ export async function executeMicrosoftWriteTool(
       const replyAll = args.reply_all === true;
       const endpoint = `me/messages/${messageId}/${replyAll ? 'replyAll' : 'reply'}`;
 
-      const result = await msGraphWrite('POST', endpoint, { comment: args.body }, agentId, agentName, 'outlook_reply', {
-        messageId: args.message_id, replyAll, slot,
+      const prepared = await prepareOutlookAttachments(args.attachments as string[] | undefined, slot);
+      if (!prepared.ok) return prepared.error;
+
+      const bodyText = (args.body as string) + prepared.bodySuffix;
+
+      // Graph's reply endpoint accepts either { comment } (plain quote) or
+      // { message: { ... }, comment } when you need to attach files / set
+      // body content explicitly. Use the richer form when attachments
+      // are present so the inline files come through.
+      const requestBody: Record<string, unknown> = prepared.inline.length > 0
+        ? {
+            message: {
+              body: { contentType: 'Text', content: bodyText },
+              attachments: prepared.inline,
+            },
+          }
+        : { comment: bodyText };
+
+      const result = await msGraphWrite('POST', endpoint, requestBody, agentId, agentName, 'outlook_reply', {
+        messageId: args.message_id, replyAll, slot, inlineAttachments: prepared.inlineCount, onedriveAttachments: prepared.overflowCount,
       }, slot);
       if (!result.ok) return `Error replying to email: ${result.error}`;
-      return `Reply sent${replyAll ? ' (to all)' : ''} to message ${args.message_id}`;
+
+      const attachSummary = (prepared.inlineCount + prepared.overflowCount) === 0 ? '' :
+        ` with ${prepared.inlineCount} inline attachment(s)${prepared.overflowCount > 0 ? ` and ${prepared.overflowCount} OneDrive link(s)` : ''}`;
+      return `Reply sent${replyAll ? ' (to all)' : ''} to message ${args.message_id}${attachSummary}`;
     }
 
     case 'outlook_forward': {
       const messageId = encodeURIComponent(args.message_id as string);
       const toRecipients = parseRecipients(args.to as string);
 
-      const body: Record<string, unknown> = { toRecipients };
-      if (args.body) body.comment = args.body;
+      const prepared = await prepareOutlookAttachments(args.attachments as string[] | undefined, slot);
+      if (!prepared.ok) return prepared.error;
 
-      const result = await msGraphWrite('POST', `me/messages/${messageId}/forward`, body, agentId, agentName, 'outlook_forward', {
-        messageId: args.message_id, to: args.to, slot,
+      const additionalText = ((args.body as string) ?? '') + prepared.bodySuffix;
+
+      // Graph's /forward preserves the original message's attachments server-
+      // side. To add NEW attachments OR custom body text we have to use the
+      // richer `message` payload (with `comment` reduced to a no-op or
+      // omitted). Note: when `message` is provided, the recipient also
+      // gets the original message body Graph stitches in automatically.
+      const requestBody: Record<string, unknown> = { toRecipients };
+      if (prepared.inline.length > 0) {
+        requestBody.message = {
+          toRecipients,
+          body: { contentType: 'Text', content: additionalText },
+          attachments: prepared.inline,
+        };
+      } else if (additionalText.trim().length > 0) {
+        requestBody.comment = additionalText;
+      }
+
+      const result = await msGraphWrite('POST', `me/messages/${messageId}/forward`, requestBody, agentId, agentName, 'outlook_forward', {
+        messageId: args.message_id, to: args.to, slot, inlineAttachments: prepared.inlineCount, onedriveAttachments: prepared.overflowCount,
       }, slot);
       if (!result.ok) return `Error forwarding email: ${result.error}`;
-      return `Email forwarded to ${args.to}`;
+
+      const attachSummary = (prepared.inlineCount + prepared.overflowCount) === 0 ? '' :
+        ` with ${prepared.inlineCount} new inline attachment(s)${prepared.overflowCount > 0 ? ` and ${prepared.overflowCount} OneDrive link(s)` : ''} (original attachments preserved automatically)`;
+      return `Email forwarded to ${args.to}${attachSummary}`;
     }
 
     case 'calendar_create_ms': {

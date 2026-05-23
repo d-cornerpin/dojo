@@ -11,7 +11,18 @@ import { broadcast } from '../gateway/ws.js';
 
 const logger = createLogger('google-client');
 
-const TIMEOUT_MS = 30_000;
+const BASE_TIMEOUT_MS = 30_000;
+const MAX_TIMEOUT_MS = 5 * 60_000; // 5 min hard ceiling
+
+// Scale fetch timeout with body size so multi-MB uploads (e.g. gmail_send
+// with attachments, drive_upload multipart bodies) don't get killed by the
+// default 30s ceiling. 30s baseline plus 30s per MB; capped at 5 min.
+function timeoutForBody(body: string | Uint8Array | undefined): number {
+  if (!body) return BASE_TIMEOUT_MS;
+  const size = typeof body === 'string' ? body.length : body.byteLength;
+  const scaled = BASE_TIMEOUT_MS + Math.ceil(size / (1024 * 1024)) * 30_000;
+  return Math.min(scaled, MAX_TIMEOUT_MS);
+}
 
 export interface GoogleApiResult {
   ok: boolean;
@@ -69,7 +80,7 @@ async function googleFetch(
       method,
       headers,
       body: fetchBody as RequestInit['body'],
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutForBody(fetchBody)),
     });
 
     if (!resp.ok) {
