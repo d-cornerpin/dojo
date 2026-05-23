@@ -2268,75 +2268,30 @@ export async function runV2Turn(agentId: string): Promise<void> {
             state = advance(state, { closeOutGateSatisfied: true });
             logger.info('v2: close-out gate satisfied', { agentId, tool: tc.name }, agentId);
           }
-          // ── Post-compaction recall enforcement (hard intercept, v2.7.2) ──
+          // ── Post-compaction recall (v2.7.10 — auto-injection REMOVED) ──
           //
-          // Previously this was a soft system-message warning that told the
-          // agent to call recall_recent_thread before proceeding. The model
-          // ignored it ~consistently — the warning text became 200 tokens
-          // of dead weight in every post-compaction context. New approach:
-          // when the agent tries to call any significant tool right after
-          // compaction, the engine TRANSPARENTLY runs recall_recent_thread
-          // first, injects the result as a system message in front of the
-          // agent's next iteration, clears the flag, and then proceeds
-          // with the agent's original call. The agent doesn't have to
-          // decide. Cost: one ~3K-token recall per compaction event.
+          // The v2.7.2 hard-intercept that auto-ran recall_recent_thread
+          // and pasted ~15K chars of prior thread content as a system
+          // message on the next significant tool call has been removed.
+          // It was the root cause of context spirals on scheduled
+          // multi-task projects (real production failure: 17-email
+          // campaign agent kept double-sending and falsely-completing
+          // because each compaction triggered a re-injection that bloated
+          // the fresh tail, which triggered another compaction, which
+          // re-injected even more recent history).
           //
-          // Whitelist of tools that don't trigger the intercept — these
-          // are either the recall itself, cheap engine-affordance calls,
-          // or tracker tools that have their own duplicate guard.
-          if (
-            state.awaitingPostCompactRecall &&
-            tc.name !== 'recall_recent_thread' &&
-            !tc.name.startsWith('tracker_') &&
-            tc.name !== 'get_current_time' &&
-            tc.name !== 'convert_time' &&
-            tc.name !== 'load_tool_docs'
-          ) {
-            try {
-              const { recallRecentThread } = await import('../../memory/recall.js');
-              const recallContent = recallRecentThread(agentId, {
-                turnCount: 8,
-                includeToolCalls: true,
-                includeToolResults: true,
-                truncateToolResultChars: 1500,
-                truncateMessageChars: 1500,
-              });
-              const wrapped = (
-                `[engine:auto-recall — compaction just fired and you were about to call "${tc.name}". The engine ran recall_recent_thread for you so you can see what was happening before the compaction; your original tool call will proceed in the same turn.]\n\n${recallContent}`
-              );
-              const recId = uuidv4();
-              db.prepare(`
-                INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-                VALUES (?, ?, 'system', ?, ?, datetime('now'))
-              `).run(recId, agentId, wrapped, turnNumber);
-              broadcast({
-                type: 'chat:message',
-                agentId,
-                message: {
-                  id: recId, agentId, role: 'system' as const,
-                  content: wrapped,
-                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
-                  createdAt: new Date().toISOString(),
-                },
-              });
-              logger.info('v2: post-compaction recall auto-injected', { agentId, tool: tc.name }, agentId);
-            } catch (err) {
-              // Failure here is non-fatal — proceed with the tool call.
-              // The duplicate-project guard remains the safety net for
-              // the most expensive failure shape (recreating a project).
-              logger.warn('v2: post-compaction recall auto-inject failed', {
-                agentId, tool: tc.name, error: err instanceof Error ? err.message : String(err),
-              }, agentId);
-            }
-            // Clear the flag whether the inject succeeded or not — one-shot.
+          // recall_recent_thread remains available as a TOOL the agent
+          // calls on demand if it actually needs to look up earlier
+          // content. The "── Memory Compacted ──" divider still appears
+          // so the agent knows compaction happened. No system message
+          // gets injected into the message log on its behalf.
+          //
+          // The awaitingPostCompactRecall flag stays in state for now
+          // (dead-ended here) so the flag-arming logic doesn't fail; a
+          // later cleanup pass can delete it once we're sure nothing
+          // else reads it.
+          if (state.awaitingPostCompactRecall) {
             state = advance(state, { awaitingPostCompactRecall: false, nudgedForPostCompactRecall: true });
-          } else if (
-            state.awaitingPostCompactRecall &&
-            tc.name === 'recall_recent_thread'
-          ) {
-            // Agent called recall themselves — clear flags, no auto-inject needed.
-            state = advance(state, { awaitingPostCompactRecall: false, nudgedForPostCompactRecall: true });
-            logger.info('v2: post-compaction recall flag cleared (recall called)', { agentId }, agentId);
           }
           // ── Anti-hoarding accounting (v2.5.43) ──
           // Flip structuring flag the moment the call is dispatched (not

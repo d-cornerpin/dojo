@@ -215,41 +215,25 @@ function formatTokens(n: number): string {
 // v2.5.11 — After the divider, drop a separate, agent-facing system message
 // that nudges the agent toward recall_recent_thread if it needs detail from
 // the summarized portion. Sits in the messages table so it lands in the
-// fresh tail of the very next API call. Kept under 200 chars so
-// recall_recent_thread itself (which filters short system messages) can
-// surface it on later lookbacks.
-const RECALL_NUDGE_TEXT =
-  '[System: Memory was just compacted. If you need specific content from earlier (file contents, tool outputs, prior decisions), call recall_recent_thread(include_tool_results: true) BEFORE responding to the user.]';
-
-function insertRecallNudge(agentId: string): void {
-  try {
-    const db = getDb();
-    const id = uuidv4();
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'system', ?, datetime('now'))
-    `).run(id, agentId, RECALL_NUDGE_TEXT);
-    broadcast({
-      type: 'chat:message',
-      agentId,
-      message: {
-        id,
-        agentId,
-        role: 'system' as const,
-        content: RECALL_NUDGE_TEXT,
-        tokenCount: null,
-        modelId: null,
-        cost: null,
-        latencyMs: null,
-        createdAt: new Date().toISOString(),
-      },
-    });
-  } catch (err) {
-    logger.warn('Failed to insert recall nudge', {
-      error: err instanceof Error ? err.message : String(err),
-    }, agentId);
-  }
-}
+// v2.7.10 — insertRecallNudge / RECALL_NUDGE_TEXT removed.
+//
+// The nudge text told the agent to call recall_recent_thread before
+// responding. Paired with the v2/loop.ts hard intercept (also removed)
+// that AUTO-RAN that recall and pasted ~15K chars of prior thread
+// content back into the message log as a system message. Real
+// production failure: scheduled-task agent processing 17 emails in
+// sequence hit compaction → nudge inserted → auto-recall re-injected
+// 8 turns of fresh-tail content as a new system message → next turn's
+// fresh tail was bigger → compaction triggered again → another
+// re-injection → context spiraled. Agent started sending emails twice
+// and marking unsent emails complete because the re-injected log made
+// past work look pending.
+//
+// Recovery: recall_recent_thread is back to being a TOOL the agent
+// calls on demand. The "── Memory Compacted ──" divider still appears
+// (insertCompactionDivider, throttled to once per 10 min) so the
+// agent sees compaction happened, but nothing else is auto-injected
+// into the message log.
 
 /** Min interval between compaction dividers shown to the user, per agent. */
 const COMPACTION_DIVIDER_THROTTLE_MS = 10 * 60 * 1000;
@@ -521,7 +505,6 @@ export async function checkAndCompact(
       insertCompactionDivider(agentId, {
         label: `Memory Compacted${result.tokensReclaimed > 0 ? ` — reclaimed ~${formatTokens(result.tokensReclaimed)}` : ''}${result.leafCreated > 0 ? ` (${result.leafCreated} new summar${result.leafCreated === 1 ? 'y' : 'ies'})` : ''}`,
       });
-      insertRecallNudge(agentId);
     }
 
     logger.info('Compaction complete', result, agentId);
@@ -573,7 +556,6 @@ export async function checkAndCompact(
       insertCompactionDivider(agentId, {
         label: `Memory Compacted (proactive — ${leafCreated} summar${leafCreated === 1 ? 'y' : 'ies'})`,
       });
-      insertRecallNudge(agentId);
     }
 
     logger.info('Proactive compaction complete', result, agentId);
