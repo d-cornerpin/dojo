@@ -14,6 +14,10 @@ interface Technique {
   usageCount: number;
   lastUsedAt: string | null;
   version: number;
+  // v2.7.9 — included so the grid can sort newest-first. Already returned
+  // by the server (store.ts:rowToTechnique); just wiring it into the
+  // dashboard type so we can use it.
+  createdAt: string;
 }
 
 const STATE_FILTERS = ['All', 'Published', 'Drafts', 'Disabled'] as const;
@@ -91,7 +95,12 @@ export const Techniques = () => {
       tagFilter || undefined,
       search || undefined,
     );
-    setTechniques(data);
+    // v2.7.9 — newest-first by createdAt. Server sorts by usage_count
+    // for agent-tool consumers (most-used surfaces first), but the
+    // dashboard grid is for the human and they want the freshest
+    // techniques at the top.
+    const sorted = [...data].sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+    setTechniques(sorted);
     setLoading(false);
   };
 

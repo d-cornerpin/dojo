@@ -139,12 +139,52 @@ const DraggableTaskCard = ({
   );
 };
 
+// v2.7.9 — per-column chronological sort.
+//
+//   on_deck     → soonest-to-run at top (asc next_run_at, fallback scheduled_start, fallback created_at).
+//                 Nulls sink to the bottom in each tier so unscheduled tasks
+//                 don't shove scheduled ones around.
+//   in_progress → earliest-started at top (asc updated_at — updated_at flips
+//                 to the transition time when status becomes in_progress).
+//   paused      → earliest-paused at top (asc updated_at — same proxy, the
+//                 longest-sitting paused tasks surface first so they aren't
+//                 forgotten).
+//   complete    → latest-completed at top (desc completed_at, fallback updated_at).
+//   blocked /
+//   fallen      → not specified by user; left on the existing desc updated_at
+//                 default for visual consistency.
+type Cmp = (a: Task, b: Task) => number;
+
+const NULL_TAIL = '￿'; // any real ISO timestamp sorts BEFORE this string.
+const asc = (av: string | null, bv: string | null): number => {
+  const a = av ?? NULL_TAIL;
+  const b = bv ?? NULL_TAIL;
+  return a.localeCompare(b);
+};
+const desc = (av: string | null, bv: string | null): number => {
+  const a = av ?? '';
+  const b = bv ?? '';
+  return b.localeCompare(a);
+};
+
+const SORT_BY_COLUMN: Record<Task['status'], Cmp> = {
+  on_deck: (a, b) =>
+    asc(a.nextRunAt, b.nextRunAt) ||
+    asc(a.scheduledStart, b.scheduledStart) ||
+    asc(a.createdAt, b.createdAt),
+  in_progress: (a, b) => asc(a.updatedAt, b.updatedAt),
+  paused: (a, b) => asc(a.updatedAt, b.updatedAt),
+  complete: (a, b) => desc(a.completedAt, b.completedAt) || desc(a.updatedAt, b.updatedAt),
+  blocked: (a, b) => desc(a.updatedAt, b.updatedAt),
+  fallen: (a, b) => desc(a.updatedAt, b.updatedAt),
+};
+
 export const KanbanBoard = ({ tasks, workingAgentIds, onTaskClick, onStatusChange, onTaskDeleted }: KanbanBoardProps) => {
   const tasksByStatus = columns.reduce(
     (acc, col) => {
       acc[col.key] = tasks
         .filter((t) => t.status === col.key)
-        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        .sort(SORT_BY_COLUMN[col.key]);
       return acc;
     },
     {} as Record<Task['status'], Task[]>,
