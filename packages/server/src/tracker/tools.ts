@@ -10,6 +10,8 @@ import {
   updateTask,
   updateProject,
   addTaskNotes,
+  setTaskNotes,
+  clearTaskNotes,
   resolveTaskId,
   resolveProjectId,
   formatResolveError,
@@ -736,11 +738,67 @@ export function trackerAddNotes(agentId: string, args: Record<string, unknown>):
 
     addTaskNotes(taskId, notes);
 
-    return `[OK] task_id=${taskId}\n\nNotes added successfully.`;
+    return `[OK] task_id=${taskId}\n\nNotes appended successfully.`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('trackerAddNotes failed', { error: msg }, agentId);
     return `Error adding notes: ${msg}`;
+  }
+}
+
+// ── trackerEditNotes ──
+//
+// Replace the entire notes field on a task. Use when the existing
+// notes are stale or wrong and need to be rewritten wholesale —
+// e.g. you appended a note that turned out to be incorrect and want
+// the field to read cleanly without "[timestamp] correction:" cruft.
+// For incremental updates that preserve prior entries, use
+// tracker_add_notes (the appender). For wiping notes back to NULL,
+// use tracker_clear_notes.
+export function trackerEditNotes(agentId: string, args: Record<string, unknown>): string {
+  try {
+    const rawTaskId = args.taskId as string;
+    if (!rawTaskId) return 'Error: taskId is required';
+
+    const resolved = resolveTaskId(rawTaskId);
+    if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+    const taskId = resolved.id;
+
+    const notes = args.notes;
+    if (typeof notes !== 'string') {
+      return 'Error: notes is required (string). To wipe notes back to empty, use tracker_clear_notes instead.';
+    }
+
+    setTaskNotes(taskId, notes);
+
+    return `[OK] task_id=${taskId}\n\nNotes replaced (${notes.length} chars).`;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('trackerEditNotes failed', { error: msg }, agentId);
+    return `Error editing notes: ${msg}`;
+  }
+}
+
+// ── trackerClearNotes ──
+//
+// Wipe the notes field on a task back to NULL. Use when the existing
+// notes are obsolete and no replacement content is appropriate.
+export function trackerClearNotes(agentId: string, args: Record<string, unknown>): string {
+  try {
+    const rawTaskId = args.taskId as string;
+    if (!rawTaskId) return 'Error: taskId is required';
+
+    const resolved = resolveTaskId(rawTaskId);
+    if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+    const taskId = resolved.id;
+
+    clearTaskNotes(taskId);
+
+    return `[OK] task_id=${taskId}\n\nNotes cleared.`;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('trackerClearNotes failed', { error: msg }, agentId);
+    return `Error clearing notes: ${msg}`;
   }
 }
 

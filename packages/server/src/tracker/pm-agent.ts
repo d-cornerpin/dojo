@@ -111,7 +111,7 @@ export function ensurePMAgentRunning(): void {
     const syncToolsPolicy = JSON.stringify({
       allow: [
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
-        'tracker_add_notes', 'tracker_complete_step',
+        'tracker_add_notes', 'tracker_edit_notes', 'tracker_clear_notes', 'tracker_complete_step',
         'tracker_pause_schedule', 'tracker_resume_schedule',
         'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
@@ -149,7 +149,7 @@ export function ensurePMAgentRunning(): void {
     const reactivateToolsPolicy = JSON.stringify({
       allow: [
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
-        'tracker_add_notes', 'tracker_complete_step',
+        'tracker_add_notes', 'tracker_edit_notes', 'tracker_clear_notes', 'tracker_complete_step',
         'tracker_pause_schedule', 'tracker_resume_schedule',
         'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
@@ -190,7 +190,7 @@ export function ensurePMAgentRunning(): void {
     const pmToolsPolicy = JSON.stringify({
       allow: [
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
-        'tracker_add_notes', 'tracker_complete_step',
+        'tracker_add_notes', 'tracker_edit_notes', 'tracker_clear_notes', 'tracker_complete_step',
         'tracker_pause_schedule', 'tracker_resume_schedule',
         'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',

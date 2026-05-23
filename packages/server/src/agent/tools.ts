@@ -28,6 +28,8 @@ import {
   trackerUpdateStatus,
   trackerEditTask,
   trackerAddNotes,
+  trackerEditNotes,
+  trackerClearNotes,
   trackerGetStatus,
   trackerListActive,
   trackerCompleteStep,
@@ -1192,20 +1194,43 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'tracker_add_notes',
-    description: 'Add timestamped notes to a task. Useful for logging progress or issues.',
+    description: 'APPEND a timestamped note to a task. Preserves all prior notes — each call adds a new `[ISO timestamp] <your text>` line. Good for progress logs and issue trails. **Does NOT replace the existing notes.** To replace the entire notes field with new content, call tracker_edit_notes. To wipe notes back to empty, call tracker_clear_notes.',
     input_schema: {
       type: 'object',
       properties: {
         task_id: {
           type: 'string',
-          description: 'The task ID to add notes to',
+          description: 'The task ID to append notes to',
         },
         notes: {
           type: 'string',
-          description: 'The notes to append',
+          description: 'The note text to append (will be prefixed with a timestamp)',
         },
       },
       required: ['task_id', 'notes'],
+    },
+  },
+  {
+    name: 'tracker_edit_notes',
+    description: 'REPLACE the entire notes field on a task with new content. Use when the existing notes are wrong, stale, or need a clean rewrite — calling this with a fresh string discards all prior `[timestamp] …` entries. For appending without losing prior notes, use tracker_add_notes. For wiping notes back to empty, use tracker_clear_notes.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'The task ID whose notes you want to replace' },
+        notes: { type: 'string', description: 'New notes content. Replaces the entire notes field — prior entries are discarded.' },
+      },
+      required: ['task_id', 'notes'],
+    },
+  },
+  {
+    name: 'tracker_clear_notes',
+    description: 'Wipe the notes field on a task back to empty (NULL). Use when the existing notes are obsolete and no replacement is appropriate. For replacing notes with new content, use tracker_edit_notes. For appending, use tracker_add_notes.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'The task ID whose notes you want to clear' },
+      },
+      required: ['task_id'],
     },
   },
   {
@@ -3972,6 +3997,30 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         content = trackerAddNotes(agentId, {
           taskId: args.task_id as string,
           notes: args.notes as string,
+        });
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'tracker_edit_notes': {
+        const editNotesErr = checkRequired([
+          { name: 'task_id', value: args.task_id, type: 'string' },
+          { name: 'notes', value: args.notes, type: 'string', allowEmpty: true },
+        ]);
+        if (editNotesErr) { content = editNotesErr; isError = true; break; }
+        content = trackerEditNotes(agentId, {
+          taskId: args.task_id as string,
+          notes: args.notes as string,
+        });
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'tracker_clear_notes': {
+        const clearNotesErr = checkRequired([
+          { name: 'task_id', value: args.task_id, type: 'string' },
+        ]);
+        if (clearNotesErr) { content = clearNotesErr; isError = true; break; }
+        content = trackerClearNotes(agentId, {
+          taskId: args.task_id as string,
         });
         isError = content.startsWith('Error');
         break;

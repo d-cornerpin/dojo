@@ -68,6 +68,77 @@ const V2_STUB_AFTER_TURNS = 12;
 // attempt at the same goal. Technique reads now use the generic
 // V2_STUB_AFTER_TURNS like every other tool result.
 
+// ── Stale-summary scrub against fresh technique reads (v2.7.7) ──
+//
+// reset_session deliberately preserves summaries to keep project
+// context across resets, but pre-existing summaries describe the
+// PRIOR version of any technique the agent has freshly re-read this
+// session. Real failure mode reported on prod: agent reads the
+// current "M365 Campaign Demo Builder" technique, but its summaries
+// from the prior session still describe an OLD workflow with a
+// `campaign_runner.py` script that no longer exists in the current
+// technique. The agent reads the fresh technique correctly, but then
+// references the old script because the summary says they used it
+// "last time."
+//
+// Fix: at assembly time, find techniques that have been freshly read
+// recently (sentinel-bearing tool_results in the fresh tail). For
+// each such technique, replace any summary whose content mentions
+// the technique name with a stub. The fresh read is the source of
+// truth; summaries describing earlier versions are noise at best
+// and contradictions at worst.
+const TECHNIQUE_FRESH_SENTINEL = '══ TECHNIQUE FRESH READ ══';
+
+function extractFreshlyReadTechniques(messages: Message[]): Set<string> {
+  const names = new Set<string>();
+  for (const m of messages) {
+    if (m.role !== 'tool') continue;
+    let blocks: unknown;
+    try {
+      blocks = JSON.parse(m.content);
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(blocks)) continue;
+    for (const block of blocks) {
+      const b = block as { type?: string; content?: unknown };
+      if (b.type !== 'tool_result' || typeof b.content !== 'string') continue;
+      // wrapTechniqueResult emits exactly:
+      //   `══ TECHNIQUE FRESH READ ══ <name> (<timestamp>)\n...`
+      const m2 = b.content.match(/^══ TECHNIQUE FRESH READ ══ (.+?) \(/);
+      if (m2) names.add(m2[1]);
+    }
+  }
+  return names;
+}
+
+interface SummaryLike { id: string; content: string; tokenCount: number; }
+
+function scrubSummariesAgainstFreshTechniques<S extends SummaryLike>(
+  summaries: S[],
+  freshTechniqueNames: Set<string>,
+): S[] {
+  if (freshTechniqueNames.size === 0) return summaries;
+  const lowered = [...freshTechniqueNames].map((n) => n.toLowerCase());
+  return summaries.map((s) => {
+    const contentLower = s.content.toLowerCase();
+    const mentionedNames = lowered.filter((n) => contentLower.includes(n));
+    if (mentionedNames.length === 0) return s;
+    // Restore display-case version of the names for the stub message.
+    const displayNames = [...freshTechniqueNames].filter((n) =>
+      mentionedNames.includes(n.toLowerCase()),
+    );
+    const stub =
+      `[STALE SUMMARY CLEARED by engine] — this summary referenced technique${displayNames.length === 1 ? '' : 's'} ` +
+      `"${displayNames.join('", "')}" which you have just read freshly in this session. ` +
+      `Summaries describe a PRIOR version of the technique and may reference scripts, workflows, or steps ` +
+      `that no longer exist on disk. Use the current technique_read result as the source of truth — do NOT ` +
+      `paraphrase from this summary or assume "last time we did X" still applies. If you need detail from ` +
+      `the technique, call technique_read again. Original summary was ${s.content.length} chars.`;
+    return { ...s, content: stub, tokenCount: estimateTokens(stub) };
+  });
+}
+
 // Model-aware tail sizing: use more of the context window for fresh messages
 // instead of a fixed count. Larger models keep more raw conversation.
 function getFreshTailCount(contextWindow: number): number {
@@ -212,7 +283,19 @@ export async function assembleContext(
   }
 
   // 3. Summaries from context_items
-  const summaries = getContextSummaries(agentId);
+  const rawSummaries = getContextSummaries(agentId);
+
+  // v2.7.7 — scrub summaries that reference techniques the agent has
+  // freshly read in the current fresh tail. Pre-existing summaries
+  // describe earlier versions of the technique and are the path by
+  // which an agent ends up referencing scripts that no longer exist.
+  // Cheap recent-window scan: just enough to catch fresh reads.
+  let freshlyReadTechniques: Set<string> = new Set();
+  try {
+    const recentForScrub = getRecentMessages(agentId, 30);
+    freshlyReadTechniques = extractFreshlyReadTechniques(recentForScrub);
+  } catch { /* best effort — fall back to no scrub */ }
+  const summaries = scrubSummariesAgainstFreshTechniques(rawSummaries, freshlyReadTechniques);
 
   if (summaries.length > 0) {
     // Budget check: drop oldest summaries if they would overflow
