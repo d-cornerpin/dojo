@@ -54,7 +54,9 @@ import {
 } from '../../services/imessage-bridge.js';
 // recordCost intentionally NOT imported — callModel records cost internally.
 import { queueEmbedding } from '../../memory/embeddings.js';
-import { isPrimaryAgent } from '../../config/platform.js';
+import { isPrimaryAgent, isTrainerAgent } from '../../config/platform.js';
+import os from 'node:os';
+import path from 'node:path';
 import { turnBoundary } from '../turn-state.js';
 
 import {
@@ -121,6 +123,32 @@ const VISIBILITY_HINT = `\n\n[VISIBILITY: tool results are shown only to you, no
 // Conservative: only triggers on patterns that are typically things the
 // agent might want to surface, not generic mentions of paths/URLs.
 const VISIBILITY_TRIGGER_RE = /https?:\/\/\S+|[~/]\.dojo\/uploads\//;
+
+// v2.7.8 — anti-hoarding gate carve-out.
+//
+// Returns true when the trainer agent is reading a file or directory
+// INSIDE its own ~/.dojo/techniques tree. Those reads are the trainer's
+// core job — auditing scripts, cross-checking TECHNIQUE.md, reviewing
+// supporting files — and counting them against the hoarding-gate
+// budget produces nonsense like "open a tracker project before you can
+// look at your own technique's files." Other agents, other paths, and
+// trainer reads OUTSIDE the techniques tree still count normally.
+const TECHNIQUES_ROOT = path.join(os.homedir(), '.dojo', 'techniques');
+function isTrainerOwnTechniquesRead(
+  agentId: string,
+  toolName: string,
+  args: Record<string, unknown> | undefined,
+): boolean {
+  if (!isTrainerAgent(agentId)) return false;
+  if (toolName !== 'file_read' && toolName !== 'file_list') return false;
+  const rawPath = typeof args?.path === 'string' ? args.path : null;
+  if (!rawPath) return false;
+  // Resolve ~ before the prefix check — the trainer often passes
+  // ~/.dojo/techniques/... and a literal startsWith on the resolved
+  // root would miss it.
+  const resolved = rawPath.startsWith('~') ? path.join(os.homedir(), rawPath.slice(1)) : rawPath;
+  return resolved.startsWith(TECHNIQUES_ROOT + path.sep) || resolved === TECHNIQUES_ROOT;
+}
 
 function appendVisibilityHintIfRelevant<T extends { content?: string; isError?: boolean }>(toolResult: T): T {
   // Skip on errors — error messages aren't artifacts to share.
@@ -2107,9 +2135,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // rationale. The structuring call itself is NEVER refused
           // (we check loading-only), and once any structuring happens
           // the gate is permanently off for the rest of the turn.
+          //
+          // v2.7.8 — carve-out: trainer reading from its own techniques
+          // directory doesn't count. The trainer's job IS reading the
+          // technique files it manages; the gate fired on a trainer
+          // doing exactly that (reading the 4 scripts + TECHNIQUE.md
+          // of its own technique) and forced it to open a confused
+          // "Edit Technique" tracker for what was a one-shot ask.
           if (
             !state.structuringToolCalledThisTurn &&
             isLoadingTool(tc.name) &&
+            !isTrainerOwnTechniquesRead(agentId, tc.name, tc.arguments) &&
             state.loadingToolCallsThisTurn >= LOADING_GATE_THRESHOLD
           ) {
             const refusalText = buildHoardingRefusal(tc.name, state.loadingToolCallsThisTurn);
@@ -2311,7 +2347,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // if the executor below still has work to do.
           if (isStructuringTool(tc.name)) {
             state = advance(state, { structuringToolCalledThisTurn: true });
-          } else if (isLoadingTool(tc.name)) {
+          } else if (isLoadingTool(tc.name) && !isTrainerOwnTechniquesRead(agentId, tc.name, tc.arguments)) {
             state = advance(state, { loadingToolCallsThisTurn: state.loadingToolCallsThisTurn + 1 });
           }
           // Execute (with safety wrapper)

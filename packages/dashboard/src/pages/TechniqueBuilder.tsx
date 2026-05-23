@@ -73,16 +73,31 @@ Guide me through:
 Let's start — what kind of technique would you like to create?`;
 
 function getEditContext(name: string, description: string, instructions: string): string {
+  // v2.7.8 — the previous version embedded the FULL current TECHNIQUE.md
+  // inside this wrapper. For a 11K-char technique the wrapper alone was
+  // 11K+ chars, and the assembler's per-message cap (8K) was truncating
+  // the combined message INSIDE the embedded markdown — which meant the
+  // user's actual request (appended at the bottom) never reached the
+  // agent. Real failure: user said "replace these two files," wrapper
+  // pushed past the cap, agent received the wrapper sans user prompt
+  // and spent the whole turn searching memory_grep for the missing
+  // instructions while looping on its own tool-call echoes.
+  //
+  // The current TECHNIQUE.md is now referenced rather than embedded.
+  // The agent reads it on demand via technique_read / file_read — both
+  // tools they already have. The user's actual prompt always fits.
+  const lineCount = instructions ? instructions.split('\n').length : 0;
+  const charCount = instructions?.length ?? 0;
   return `I want to edit an existing technique in the dojo called "${name}".
 
-Current description: ${description || '(none)'}
+Description (currently): ${description || '(none)'}
 
-Current TECHNIQUE.md instructions:
-\`\`\`
-${instructions || '(empty)'}
-\`\`\`
+Current TECHNIQUE.md is loaded on disk (${charCount.toLocaleString()} chars, ${lineCount} lines). Read it the moment you need it:
+  • technique_read(name="${name}", action="outline") — section list + line ranges, never truncates
+  • technique_read(name="${name}", action="section", section_name="…") — read one section
+  • technique_read(name="${name}", action="search", query="…") — grep across TECHNIQUE.md and supporting files
 
-I can see the technique mat on my screen with the current content. Help me improve or modify this technique. When we're done, use update_technique to save the changes. What would you like to change?`;
+I can see the technique mat on my screen with the current content. When we're done, use update_technique to save the changes. What I'd like changed is below.`;
 }
 
 // Setup context — fired the first time the user opens the training mat for

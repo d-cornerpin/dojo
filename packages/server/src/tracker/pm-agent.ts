@@ -115,7 +115,7 @@ export function ensurePMAgentRunning(): void {
         'tracker_pause_schedule', 'tracker_resume_schedule',
         'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
-        'vault_search', 'vault_remember', 'memory_grep',
+        'vault_search', 'vault_remember', 'memory_grep', 'memory_describe',
         'load_tool_docs', 'get_current_time',
       ],
     });
@@ -153,7 +153,7 @@ export function ensurePMAgentRunning(): void {
         'tracker_pause_schedule', 'tracker_resume_schedule',
         'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
-        'vault_search', 'vault_remember', 'memory_grep',
+        'vault_search', 'vault_remember', 'memory_grep', 'memory_describe',
         'load_tool_docs', 'get_current_time',
       ],
     });
@@ -194,7 +194,7 @@ export function ensurePMAgentRunning(): void {
         'tracker_pause_schedule', 'tracker_resume_schedule',
         'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
-        'vault_search', 'vault_remember', 'memory_grep',
+        'vault_search', 'vault_remember', 'memory_grep', 'memory_describe',
         'load_tool_docs', 'get_current_time',
       ],
     });

@@ -100,7 +100,7 @@ export function ensureTrainerAgentRunning(): void {
       // Communication
       'send_to_agent', 'list_agents',
       // Memory
-      'vault_remember', 'vault_search', 'memory_grep',
+      'vault_remember', 'vault_search', 'memory_grep', 'memory_describe',
       // Tracker — trainer drives multi-step technique builds and needs to
       // manage its own tasks/projects without getting stuck.
       'tracker_create_project', 'tracker_create_task', 'tracker_list_active',

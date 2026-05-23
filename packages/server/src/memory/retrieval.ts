@@ -7,6 +7,35 @@ import { getLargeFile } from './large-files.js';
 
 const logger = createLogger('memory-retrieval');
 
+// v2.7.8 — self-echo filter for memory_grep.
+//
+// Pure tool-call assistant messages persist as JSON like
+// `[{"type":"tool_use","id":"...","name":"memory_grep","input":{"pattern":"replace the"}}]`.
+// FTS5 indexes that JSON. When the agent later searches for "replace
+// the", their OWN previous call shows up as a match, the agent reads
+// the snippet as a real conversation hit, refines their pattern, gets
+// the new call back, loops forever. Real production failure: trainer
+// agent burned 6 turns going in circles before the user typed STOP.
+//
+// Filter: a message whose parsed content is an array AND every block
+// is type:tool_use is treated as agent self-noise and excluded from
+// search results. Messages that mix text + tool_use still surface
+// (the text might be a real hit). tool_result messages still surface
+// (those are observations of the world, not the agent's own calls).
+function isPureToolCallMessage(content: string): boolean {
+  if (!content.startsWith('[')) return false;
+  try {
+    const parsed = JSON.parse(content);
+    if (!Array.isArray(parsed) || parsed.length === 0) return false;
+    return parsed.every((b: unknown) => {
+      const block = b as { type?: string };
+      return block?.type === 'tool_use';
+    });
+  } catch {
+    return false;
+  }
+}
+
 // ── memory_grep: FTS5 search on messages and summaries ──
 
 export function memoryGrep(
@@ -95,13 +124,23 @@ function searchMessages(
     `;
 
     try {
-      const rows = db.prepare(sql).all(pattern, ...params, limit ?? 20) as Array<{
+      // v2.7.8 — over-fetch then filter. The agent's own pure-tool-call
+      // messages (content is `[{"type":"tool_use",...}]`) match
+      // patterns like `"replace the"` because the JSON of the agent's
+      // previous memory_grep call literally contains the search args.
+      // Returning those triggers the self-echo loop where the agent
+      // grep-the-grep-the-grep until the user hits STOP. Over-fetch
+      // 3× the requested limit so post-filter still hits limit when
+      // possible.
+      const fetchLimit = (limit ?? 20) * 3;
+      const rawRows = db.prepare(sql).all(pattern, ...params, fetchLimit) as Array<{
         id: string;
         role: string;
         content: string;
         created_at: string;
         snippet: string;
       }>;
+      const rows = rawRows.filter((r) => !isPureToolCallMessage(r.content)).slice(0, limit ?? 20);
 
       // Phase 3.5 (2026-05-04) — hard cap per-match snippet at 300 chars
       // (Part XVIII §A). FTS5's snippet() defaults to ~64 tokens which can
@@ -159,17 +198,21 @@ function searchMessagesLike(
     params.push(before);
   }
 
-  const rows = db.prepare(`
+  // v2.7.8 — over-fetch then filter pure tool-call self-echoes (see
+  // isPureToolCallMessage rationale above).
+  const fetchLimit = (limit ?? 20) * 3;
+  const rawRows = db.prepare(`
     SELECT id, role, content, created_at FROM messages
     WHERE ${conditions.join(' AND ')}
     ORDER BY created_at DESC
     LIMIT ?
-  `).all(...params, limit ?? 20) as Array<{
+  `).all(...params, fetchLimit) as Array<{
     id: string;
     role: string;
     content: string;
     created_at: string;
   }>;
+  const rows = rawRows.filter((r) => !isPureToolCallMessage(r.content)).slice(0, limit ?? 20);
 
   return rows.map(row => {
     const isTruncated = row.content.length > 200;
