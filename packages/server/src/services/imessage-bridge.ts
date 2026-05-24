@@ -858,7 +858,28 @@ async function pollMessages(): Promise<void> {
           const policyLine = senderRecord
             ? buildSharingPolicyLine(senderRecord, approvedSenders)
             : `SHARING POLICY: Unknown sender - this address matched the bridge filter but isn't on the saved safe-sender list. Be cautious; share only what's directly asked. If in doubt, ask the primary user before responding.`;
-          const msgContent = `[SOURCE: IMESSAGE FROM ${senderLabel} - this person texted YOUR OWN iMessage account (the DOJO bridge - YOUR phone, not the user's). The text arrived via iMessage, not the dashboard chat. ${policyLine} ${replyHint} Respond to THIS topic only; do not pull in unrelated dashboard conversation context.] ${textForModel}`;
+          // Two discipline rules in the framing the agent reads every inbound:
+          //
+          //  - SHARING POLICY (above): governs what to share WITH the iMessage
+          //    sender. Built from their sharing_level.
+          //
+          //  - UPDATING THE PRIMARY USER (below): governs whether/how to send
+          //    a separate update to the primary user about this exchange
+          //    AFTER you finish replying to the sender. Applies to BOTH
+          //    channels - dashboard chat AND a separate imessage_send to
+          //    the primary user's address. Default is silent (no update);
+          //    only update if there's something specific the user must know
+          //    or be asked, and lead with full context when you do. Without
+          //    this, agents tend to drop cryptic one-liners like "Sent."
+          //    or "Just the schedule, nothing else." that confuse the user
+          //    because they don't see the iMessage thread on their end.
+          const primary = approvedSenders.find(s => s.is_primary);
+          const primaryName = primary?.name?.trim() || 'the primary user';
+          const exampleName = senderRecord?.name ?? 'Alex';
+          const exampleRelationship = senderRecord?.description ? ` (${senderRecord.description})` : '';
+          const updateDiscipline =
+            `UPDATING THE PRIMARY USER: After you finish texting ${senderRecord?.name ?? 'this person'} back, do NOT send a separate update to ${primaryName} - NOT in the dashboard, and NOT as a separate iMessage to ${primaryName}'s address - UNLESS one of these is true: (a) you need to ASK ${primaryName} something to handle this conversation, or (b) there's specific information ${primaryName} genuinely needs to know. ${primaryName} does NOT see the iMessage thread between you and ${senderRecord?.name ?? 'this person'}; an unprompted "Sent." or "Standing by." or "Just the schedule, nothing else." reads as meaningless and confusing because they have no idea what you're referring to. If you DO send an update, ALWAYS lead with full context: who you were texting (name + relationship), what they asked you, and what you did or are waiting on. GOOD: "${exampleName}${exampleRelationship} just asked for your schedule this week - I sent her the calendar entries, no other personal details, and I'll let you know when she replies." BAD: "Sent. Just the schedule." Most iMessage exchanges should resolve silently from ${primaryName}'s perspective; only break that silence with real signal and real context.`;
+          const msgContent = `[SOURCE: IMESSAGE FROM ${senderLabel} - this person texted YOUR OWN iMessage account (the DOJO bridge - YOUR phone, not the user's). The text arrived via iMessage, not the dashboard chat. ${policyLine} ${replyHint} ${updateDiscipline} Respond to THIS topic only; do not pull in unrelated dashboard conversation context.] ${textForModel}`;
 
           db.prepare(`
             INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)
