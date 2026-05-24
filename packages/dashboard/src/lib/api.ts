@@ -378,6 +378,18 @@ export const getHealth = async (): Promise<ApiResponse<HealthResponse>> => {
   return request<HealthResponse>('/health');
 };
 
+// Server restart: hits the system route that exits the process so launchd
+// brings it back. The response's `mode` distinguishes production (auto-
+// restart via launchd) from dev (manual `npm run dev` re-run required).
+export interface RestartServerResponse {
+  restarting: boolean;
+  mode: 'dev' | 'production';
+  message: string;
+}
+export const restartServer = async (): Promise<ApiResponse<RestartServerResponse>> => {
+  return request<RestartServerResponse>('/system/restart', { method: 'POST' });
+};
+
 // V2CutoverNotice (Part XI) — bulk-reset every idle agent's session.
 // Returns count breakdown { reset, busy, errors, total }.
 export interface ResetIdleSessionsResponse {

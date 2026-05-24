@@ -233,4 +233,46 @@ systemRouter.post('/debug-toast', async (c) => {
   return c.json({ ok: true, data: { agentId, severity, message } });
 });
 
+// POST /system/restart - exit the process so launchd brings it back. Useful
+// as a remote-admin escape valve when a setting that genuinely requires a
+// restart was changed, or when the server has gotten into a stuck/leaky
+// state and the user can't easily SSH to the host.
+//
+// In production the server runs under launchd with KeepAlive=true, so a
+// process exit triggers a fresh start within ~1-2s. In dev (tsx watch),
+// process.exit kills the dev server and the user has to re-run `npm run
+// dev` - the dashboard's confirm dialog warns about this.
+//
+// We return 200 first, then exit on a short delay so the response body
+// flushes before the socket closes.
+systemRouter.post('/system/restart', async (c) => {
+  const isDev = process.env.NODE_ENV !== 'production';
+  // Broadcast a system marker so the dashboard can show a "restarting…"
+  // overlay and stop spamming reconnection errors during the gap.
+  broadcast({
+    type: 'system:restart',
+    initiatedAt: new Date().toISOString(),
+    mode: isDev ? 'dev' : 'production',
+  } as never);
+
+  // Defer the exit so this response can flush. 300ms is plenty even on
+  // a loaded server.
+  setTimeout(() => {
+    // eslint-disable-next-line no-console
+    console.log('[system/restart] exiting on user request');
+    process.exit(0);
+  }, 300);
+
+  return c.json({
+    ok: true,
+    data: {
+      restarting: true,
+      mode: isDev ? 'dev' : 'production',
+      message: isDev
+        ? 'Server exiting. tsx watch will NOT restart it automatically - re-run `npm run dev` manually.'
+        : 'Server exiting. launchd will bring it back in 1-2 seconds.',
+    },
+  });
+});
+
 export { systemRouter };

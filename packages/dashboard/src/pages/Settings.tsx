@@ -563,7 +563,7 @@ const IMBridgeSettings = () => {
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
-        {saved && <span className="text-xs text-cp-teal">Saved! Restart server to apply.</span>}
+        {saved && <span className="text-xs text-cp-teal">Saved. Changes are live - no restart needed.</span>}
       </div>
 
       {enabled && (
@@ -589,6 +589,90 @@ const PlatformTab = () => {
       <SearchSettings />
       <MigrationSettings />
       <FengShuiSettings />
+      <ServerControlSettings />
+    </div>
+  );
+};
+
+// ── Server Control (restart) ──
+//
+// Remote-admin escape valve. In production the DOJO server runs under
+// launchd with KeepAlive=true, so exiting the process triggers a fresh
+// start within seconds. In dev (tsx watch), there's no auto-restart -
+// the confirm dialog warns about that case so the user doesn't end up
+// staring at a dead server.
+const ServerControlSettings = () => {
+  const [confirming, setConfirming] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+  const toast = useToast();
+
+  const doRestart = async () => {
+    setRestarting(true);
+    const result = await api.restartServer();
+    if (!result.ok) {
+      toast.error(`Restart failed: ${result.error}`);
+      setRestarting(false);
+      setConfirming(false);
+      return;
+    }
+    const mode = result.data?.mode ?? 'production';
+    toast.info(
+      mode === 'production'
+        ? 'Restarting server. Reconnecting in a few seconds…'
+        : 'Server exiting. Dev mode: re-run `npm run dev` to bring it back.',
+    );
+    // Leave the "restarting" overlay up; the WebSocket will drop and the
+    // dashboard's reconnect logic will pick the server back up (in prod).
+    // No setRestarting(false) — the page will reload itself on reconnect.
+  };
+
+  return (
+    <div className="glass-card p-4 space-y-3">
+      <h3 className="card-header">Server</h3>
+      <p className="text-xs text-ui/40">
+        Most settings on this tab hot-reload and do not need a restart. Use this if you've changed
+        something deeper (model registry, OAuth config) that asked for a restart, or if the server
+        looks stuck and you want to recycle it without SSHing to the host.
+      </p>
+
+      {!confirming && !restarting && (
+        <button
+          onClick={() => setConfirming(true)}
+          className="px-4 py-2 glass-btn text-sm font-medium rounded-lg transition-colors"
+        >
+          Restart server
+        </button>
+      )}
+
+      {confirming && !restarting && (
+        <div className="space-y-2">
+          <div className="alert-banner alert-warning text-xs">
+            This exits the server process immediately. In production it auto-restarts via launchd
+            within a few seconds. <strong>If you're running `npm run dev`</strong>, tsx watch will
+            NOT bring it back — you'll need to re-run the command in your terminal.
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={doRestart}
+              className="px-3 py-2 glass-btn-primary text-sm rounded-lg transition-colors"
+            >
+              Yes, restart now
+            </button>
+            <button
+              onClick={() => setConfirming(false)}
+              className="px-3 py-2 text-sm text-ui/55 hover:text-ui/90 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {restarting && (
+        <div className="alert-banner alert-info text-xs">
+          Restarting server… the dashboard will reconnect automatically once it's back up.
+        </div>
+      )}
     </div>
   );
 };
