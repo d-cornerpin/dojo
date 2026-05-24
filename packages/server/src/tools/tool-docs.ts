@@ -44,6 +44,7 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'send_to_agent',
   'list_agents',
   'imessage_send',
+  'imessage_list_contacts',
   'image_create',
   'show_to_user',
   'recall_recent_thread',

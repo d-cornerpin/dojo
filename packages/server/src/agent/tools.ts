@@ -1748,10 +1748,19 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['file_paths'],
     },
   },
-  // ── iMessage Tool ──
+  // ── iMessage Tools ──
+  {
+    name: 'imessage_list_contacts',
+    description: 'List ALL of YOUR iMessage contacts. The DOJO iMessage bridge is YOUR own iMessage account (not the user\'s phone) - these are the people YOU are authorized to text from your account. Call this whenever the user asks you to text, message, iMessage, or shoot a message to someone and you do not already know that person\'s address. Returns every contact with name, address, description (who they are), sharing_level, and whether they are the primary user. Pick the most likely match yourself based on the user\'s phrasing, your memory of who is who, and the description field. If two contacts plausibly fit (e.g. the user said "text Alex" and there are two Alexes), ask the user to clarify before sending.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
   {
     name: 'imessage_send',
-    description: 'Send an iMessage to one of the configured safe senders. CRITICAL recipient rule: when replying to an inbound iMessage, OMIT `recipient` - the tool will default to the person who actually sent you the inbound, not the starred contact. Only pass `recipient` explicitly when you are PROACTIVELY messaging someone (no inbound trigger), and the value MUST exactly match a safe-sender address shown in the [SOURCE: IMESSAGE FROM ...] inbound framing or in the allowlist. Passing an unknown address is refused. Supports text-only and text + file attachments (any local path, e.g. ~/.dojo/uploads/<agent-id>/photo.jpg) - files are sent via the imsg CLI; the message text rides with the first file. Use for proactive communication, status updates, or escalation.',
+    description: 'Send an iMessage from YOUR OWN iMessage account (the DOJO bridge). The bridge is YOUR phone, not the user\'s - when the user says "text X", "message X", "iMessage X", "shoot X a text", or any equivalent, that means use THIS tool to text X from your account. The user has their own phone; you have yours. CRITICAL recipient rule: when replying to an inbound iMessage, OMIT `recipient` - the tool will default to the person who actually sent you the inbound, not the starred contact. Only pass `recipient` explicitly when you are PROACTIVELY messaging someone (no inbound trigger), and the value MUST exactly match a safe-sender address. If you only know the person by name (e.g. the user said "text Kevin"), call `imessage_list_contacts` first to look up the address, then pass it here. Passing an unknown address is refused. Supports text-only and text + file attachments (any local path, e.g. ~/.dojo/uploads/<agent-id>/photo.jpg) - files are sent via the imsg CLI; the message text rides with the first file. Use for replying to inbound texts, proactive communication, status updates, or escalation.',
     input_schema: {
       type: 'object',
       properties: {
@@ -3114,10 +3123,10 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
     }
   }
 
-  if (name === 'imessage_send') {
+  if (name === 'imessage_send' || name === 'imessage_list_contacts') {
     if (!isPrimaryAgent(agentId)) {
-      auditLog(agentId, 'imessage_send', null, 'denied', 'imessage_send is restricted to the primary agent only');
-      return { toolCallId: id, name, content: 'Permission denied: only the primary agent can send iMessages. Escalate to the primary agent instead.', isError: true };
+      auditLog(agentId, name, null, 'denied', `${name} is restricted to the primary agent only`);
+      return { toolCallId: id, name, content: `Permission denied: only the primary agent can call ${name}. Escalate to the primary agent instead.`, isError: true };
     }
   }
 
@@ -5442,7 +5451,30 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         break;
       }
 
-      // ── iMessage Tool ──
+      // ── iMessage Tools ──
+      case 'imessage_list_contacts': {
+        const { getSafeSenders } = await import('../services/imessage-bridge.js');
+        const all = getSafeSenders();
+        if (all.length === 0) {
+          content = 'No iMessage safe senders are configured on this server. Tell the user to add contacts in Settings - iMessage if they want you to text someone.';
+          isError = false;
+          break;
+        }
+        const lines = all.map(s => {
+          const role = s.is_primary ? 'PRIMARY USER' : `sharing: ${s.sharing_level}`;
+          const desc = s.description ? ` - ${s.description}` : '';
+          return `  - ${s.name} <${s.address}>${desc} [${role}]`;
+        });
+        content =
+          `${all.length} safe sender(s) configured:\n${lines.join('\n')}\n\n` +
+          `Pick the contact that best matches what the user said. To iMessage them, ` +
+          `call imessage_send with recipient="<address>" (the angle-bracketed value above). ` +
+          `If two or more contacts plausibly fit, ask the user which one they meant before sending. ` +
+          `Honor each contact's sharing_level when deciding what to share.`;
+        isError = false;
+        break;
+      }
+
       case 'imessage_send': {
         const imErr = checkRequired([{ name: 'message', value: args.message, type: 'string' }]);
         if (imErr) { content = imErr; isError = true; break; }

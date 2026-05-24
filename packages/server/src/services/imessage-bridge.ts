@@ -858,7 +858,7 @@ async function pollMessages(): Promise<void> {
           const policyLine = senderRecord
             ? buildSharingPolicyLine(senderRecord, approvedSenders)
             : `SHARING POLICY: Unknown sender - this address matched the bridge filter but isn't on the saved safe-sender list. Be cautious; share only what's directly asked. If in doubt, ask the primary user before responding.`;
-          const msgContent = `[SOURCE: IMESSAGE FROM ${senderLabel} - this arrived via iMessage, not the dashboard chat. ${policyLine} ${replyHint} Respond to THIS topic only; do not pull in unrelated dashboard conversation context.] ${textForModel}`;
+          const msgContent = `[SOURCE: IMESSAGE FROM ${senderLabel} - this person texted YOUR OWN iMessage account (the DOJO bridge - YOUR phone, not the user's). The text arrived via iMessage, not the dashboard chat. ${policyLine} ${replyHint} Respond to THIS topic only; do not pull in unrelated dashboard conversation context.] ${textForModel}`;
 
           db.prepare(`
             INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)
