@@ -195,6 +195,41 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
     concurrency: 'safe',
     maxResultTokens: 5000,
   },
+  {
+    name: 'gmail_list_labels',
+    description: 'List all of the user\'s Gmail labels (system + custom). Use this before calling gmail_label so you know which labels actually exist on this account. Returns each label\'s ID and name; system labels (INBOX, STARRED, SPAM, etc.) are flagged.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+    concurrency: 'safe',
+    maxResultTokens: 1500,
+  },
+  {
+    name: 'drive_versions_list',
+    description: 'List the version history of a Google Drive file. Drive keeps automatic versions for ~30 days; pinned versions are kept indefinitely. Returns each version\'s ID, modified time, size, and whether it\'s pinned (keepForever).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'Drive file ID.' },
+      },
+      required: ['file_id'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
+  },
+  {
+    name: 'calendar_freebusy',
+    description: 'Check free/busy availability for one or more people across Google Calendars over a time window. Returns busy time blocks per attendee so you can pick a slot when everyone is free. Use this BEFORE proposing a meeting time - much cheaper than calendar_create + retry on conflicts.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        attendees: { type: 'array', items: { type: 'string' }, description: 'Email addresses to check (include the user themselves if you want their schedule too).' },
+        start: { type: 'string', description: "Window start datetime (ISO 8601, e.g., '2026-05-30T08:00:00')." },
+        end: { type: 'string', description: 'Window end datetime (ISO 8601).' },
+      },
+      required: ['attendees', 'start', 'end'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
+  },
 ];
 
 // ── v2.7.0 multi-account: user_* tool variants ──
@@ -666,6 +701,80 @@ export async function executeGoogleReadTool(
         16_000,
       );
       return `Spreadsheet data (${data.range ?? range}):\n\n${paged}`;
+    }
+
+    case 'drive_versions_list': {
+      const fileId = encodeURIComponent(args.file_id as string);
+      const result = await googleRead(
+        `https://www.googleapis.com/drive/v3/files/${fileId}/revisions?fields=revisions(id,modifiedTime,size,keepForever,lastModifyingUser/displayName)`,
+        agentId, agentName, 'drive_versions_list', { fileId: args.file_id }, slot,
+      );
+      if (!result.ok) return `Error listing versions: ${result.error}`;
+      const data = result.data as { revisions?: Array<{ id: string; modifiedTime: string; size?: string; keepForever?: boolean; lastModifyingUser?: { displayName?: string } }> };
+      const revs = data?.revisions ?? [];
+      if (revs.length === 0) return 'No version history available (file may be too new or version tracking disabled for this file type).';
+      const lines = revs.map(r => {
+        const pin = r.keepForever ? ' [PINNED]' : '';
+        const who = r.lastModifyingUser?.displayName ? ` by ${r.lastModifyingUser.displayName}` : '';
+        const size = r.size ? ` | ${Math.round(parseInt(r.size, 10) / 1024)}KB` : '';
+        return `- ${formatTimeForAgent(r.modifiedTime)}${who}${size}${pin}\n    ID: ${r.id}`;
+      });
+      return `${revs.length} version(s) (newest first):\n\n${lines.reverse().join('\n')}`;
+    }
+
+    case 'calendar_freebusy': {
+      const attendees = args.attendees as string[];
+      const start = args.start as string;
+      const end = args.end as string;
+      // Google's freeBusy endpoint is a POST that takes a body. googleRead
+      // only supports GET, so use googleWrite which threads body cleanly.
+      const { googleWrite } = await import('./client.js');
+      const body = {
+        timeMin: start,
+        timeMax: end,
+        items: attendees.map(email => ({ id: email })),
+      };
+      const result = await googleWrite('POST', 'https://www.googleapis.com/calendar/v3/freeBusy', body, agentId, agentName, 'calendar_freebusy', { attendees, start, end }, undefined, slot);
+      if (!result.ok) return `Error checking free/busy: ${result.error}`;
+      const data = result.data as { calendars?: Record<string, { busy?: Array<{ start: string; end: string }>; errors?: Array<{ domain: string; reason: string }> }> };
+      const calendars = data?.calendars ?? {};
+      const lines: string[] = [`Free/busy for ${start} to ${end}:`];
+      for (const email of attendees) {
+        const cal = calendars[email];
+        if (cal?.errors && cal.errors.length > 0) {
+          lines.push(`\n${email}: ERROR - ${cal.errors.map(e => e.reason).join(', ')} (calendar may be private or email may be wrong)`);
+          continue;
+        }
+        const busy = cal?.busy ?? [];
+        if (busy.length === 0) {
+          lines.push(`\n${email}: FREE the entire window.`);
+        } else {
+          lines.push(`\n${email}: ${busy.length} busy block(s):`);
+          busy.forEach(b => lines.push(`  ${formatTimeForAgent(b.start)} → ${formatTimeForAgent(b.end)}`));
+        }
+      }
+      return lines.join('\n');
+    }
+
+    case 'gmail_list_labels': {
+      const result = await googleRead('https://gmail.googleapis.com/gmail/v1/users/me/labels', agentId, agentName, 'gmail_list_labels', {}, slot);
+      if (!result.ok) return `Error listing labels: ${result.error}`;
+      const data = result.data as { labels?: Array<{ id: string; name: string; type?: string }> };
+      const labels = data?.labels ?? [];
+      if (labels.length === 0) return 'No labels found.';
+      const system = labels.filter(l => l.type === 'system');
+      const custom = labels.filter(l => l.type !== 'system');
+      const lines: string[] = [];
+      if (custom.length > 0) {
+        lines.push('Custom labels:');
+        custom.forEach(l => lines.push(`- ${l.name}\n    ID: ${l.id}`));
+      }
+      if (system.length > 0) {
+        if (lines.length > 0) lines.push('');
+        lines.push('System labels:');
+        system.forEach(l => lines.push(`- ${l.name} [system]\n    ID: ${l.id}`));
+      }
+      return `${labels.length} label(s) total (${custom.length} custom, ${system.length} system):\n\n${lines.join('\n')}\n\nPass the label NAME (not ID) to gmail_label add_labels / remove_labels - Gmail accepts either, but names are more readable.`;
     }
 
     default:

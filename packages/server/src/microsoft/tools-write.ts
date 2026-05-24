@@ -64,11 +64,13 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'calendar_create_ms',
-    description: 'Create a new Microsoft Calendar event. Defaults to your default calendar; pass calendar_id to add to a shared calendar where you have write access (use calendar_list_ms to find IDs and check canEdit).',
+    description: 'Create a new Microsoft Calendar event. Defaults to your default calendar; pass calendar_id to add to a shared calendar where you have write access (use calendar_list_ms to find IDs and check canEdit). Pass the event name as `title` (preferred) - `subject` (Microsoft API field name) and `summary` (Google API field name) are also accepted as aliases.',
     input_schema: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: 'Event title' },
+        title: { type: 'string', description: 'Event title (preferred). Aliases `subject` and `summary` also accepted.' },
+        subject: { type: 'string', description: 'Alias for `title` (matches Microsoft Graph field name).' },
+        summary: { type: 'string', description: 'Alias for `title` (matches Google Calendar field name; accepted for cross-provider portability).' },
         start: { type: 'string', description: "Start datetime (ISO 8601, e.g., '2026-03-25T10:00:00')" },
         end: { type: 'string', description: 'End datetime (ISO 8601)' },
         description: { type: 'string', description: 'Event description' },
@@ -76,17 +78,19 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         location: { type: 'string', description: 'Event location' },
         calendar_id: { type: 'string', description: 'Calendar to target. Two forms: (1) a calendar UUID from calendar_list_ms; (2) an email address for direct delegate access to a shared calendar (e.g., "owner@example.com"). Defaults to your default calendar.' },
       },
-      required: ['title', 'start', 'end'],
+      required: ['start', 'end'],
     },
   },
   {
     name: 'calendar_update_ms',
-    description: 'Update an existing Microsoft Calendar event. Pass calendar_id if the event lives on a shared calendar.',
+    description: 'Update an existing Microsoft Calendar event. Pass calendar_id if the event lives on a shared calendar. Pass the new event name as `title` (preferred); `subject` and `summary` are accepted aliases.',
     input_schema: {
       type: 'object',
       properties: {
         event_id: { type: 'string', description: 'Calendar event ID' },
-        title: { type: 'string', description: 'New event title' },
+        title: { type: 'string', description: 'New event title (preferred). Aliases `subject` and `summary` also accepted.' },
+        subject: { type: 'string', description: 'Alias for `title`.' },
+        summary: { type: 'string', description: 'Alias for `title`.' },
         start: { type: 'string', description: 'New start datetime' },
         end: { type: 'string', description: 'New end datetime' },
         description: { type: 'string', description: 'New description' },
@@ -332,6 +336,212 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
         message: { type: 'string', description: 'Message text to post' },
       },
       required: ['team_id', 'channel_id', 'message'],
+    },
+  },
+  // ── Outlook categories (colored tags) ──
+  {
+    name: 'outlook_categories_set',
+    description: 'Set the Outlook color categories on an email. Replaces all existing categories on the message with the list you provide; pass an empty array to clear all categories. Category names are user-defined; common defaults include "Red Category", "Yellow Category", etc. Categories work cross-Outlook (web, desktop, mobile).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        message_id: { type: 'string', description: 'Outlook message ID.' },
+        categories: { type: 'array', items: { type: 'string' }, description: 'Category names to set on the message. Empty array clears all categories.' },
+      },
+      required: ['message_id', 'categories'],
+    },
+  },
+  // ── OneDrive version history ──
+  {
+    name: 'onedrive_versions_restore',
+    description: 'Restore an old version of a OneDrive file. The current version is preserved as a new version, so this is non-destructive. Use onedrive_versions_list to find version IDs.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'OneDrive item ID.' },
+        version_id: { type: 'string', description: 'Version ID to restore (from onedrive_versions_list).' },
+      },
+      required: ['file_id', 'version_id'],
+    },
+  },
+  // ── Outlook mail folders ──
+  {
+    name: 'outlook_create_folder',
+    description: 'Create a new mail folder in Outlook. Pass `name` for the display name; optionally pass `parent_folder_id` to nest it inside an existing folder (otherwise it lives at the top level). Use outlook_list_folders to find parent IDs.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Folder display name (e.g., "Receipts").' },
+        parent_folder_id: { type: 'string', description: 'Optional parent folder ID. Omit to create at top level.' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'outlook_move_to_folder',
+    description: 'Move an Outlook email into a specific folder. Get folder IDs from outlook_list_folders. The original email ID becomes invalid; the response contains the new ID under the destination folder.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        message_id: { type: 'string', description: 'Outlook message ID to move.' },
+        folder_id: { type: 'string', description: 'Destination folder ID (from outlook_list_folders).' },
+      },
+      required: ['message_id', 'folder_id'],
+    },
+  },
+  // ── Microsoft To Do (Tasks) ──
+  {
+    name: 'tasks_create_list',
+    description: 'Create a new Microsoft To Do task list (e.g., "Groceries", "Project Foo"). Returns the new list ID for immediate use with tasks_create. Use sparingly: most users only need their default list plus a small number of named lists.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Display name for the new task list.' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'tasks_create',
+    description: 'Create a Microsoft To Do task. Defaults to the user\'s primary "Tasks" list; pass list_id to target a specific list (get IDs from tasks_list_lists). Title accepts aliases `title`, `summary`, `subject`. Optionally set body (description), due date (ISO 8601), and importance (low/normal/high).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Task title (preferred). Aliases `summary` and `subject` also accepted.' },
+        summary: { type: 'string', description: 'Alias for `title`.' },
+        subject: { type: 'string', description: 'Alias for `title`.' },
+        body: { type: 'string', description: 'Optional task body / description text.' },
+        due: { type: 'string', description: "Optional due datetime (ISO 8601, e.g., '2026-05-30T17:00:00')." },
+        importance: { type: 'string', enum: ['low', 'normal', 'high'], description: 'Optional priority (default: normal).' },
+        list_id: { type: 'string', description: 'Task list to create the task in. Omit to use the default list.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'tasks_update',
+    description: 'Update a Microsoft To Do task. Pass list_id (or omit to use the default list) plus task_id, then any fields you want to change. Title accepts aliases `title`/`summary`/`subject`. To set a status (notStarted/inProgress/completed/waitingOnOthers/deferred), use the `status` field; to mark complete from "open", tasks_complete is shorter.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'Task ID to update (from tasks_list).' },
+        list_id: { type: 'string', description: 'Task list the task lives on. Omit to use the default list.' },
+        title: { type: 'string', description: 'New title (preferred). Aliases `summary` and `subject` also accepted.' },
+        summary: { type: 'string', description: 'Alias for `title`.' },
+        subject: { type: 'string', description: 'Alias for `title`.' },
+        body: { type: 'string', description: 'New body / description text.' },
+        due: { type: 'string', description: 'New due datetime (ISO 8601). Pass empty string to clear the due date.' },
+        importance: { type: 'string', enum: ['low', 'normal', 'high'], description: 'New priority.' },
+        status: { type: 'string', enum: ['notStarted', 'inProgress', 'completed', 'waitingOnOthers', 'deferred'], description: 'New status.' },
+      },
+      required: ['task_id'],
+    },
+  },
+  {
+    name: 'tasks_complete',
+    description: 'Mark a Microsoft To Do task as completed. Pass task_id and (optionally) list_id. Convenience wrapper around tasks_update with status="completed".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'Task ID to complete (from tasks_list).' },
+        list_id: { type: 'string', description: 'Task list the task lives on. Omit to use the default list.' },
+      },
+      required: ['task_id'],
+    },
+  },
+  {
+    name: 'tasks_delete',
+    description: 'Delete a Microsoft To Do task. Pass task_id and (optionally) list_id. Deletion is permanent; if you might want it back, use tasks_complete instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'Task ID to delete (from tasks_list).' },
+        list_id: { type: 'string', description: 'Task list the task lives on. Omit to use the default list.' },
+      },
+      required: ['task_id'],
+    },
+  },
+  // ── Microsoft Contacts (Outlook address book) ──
+  {
+    name: 'contacts_create',
+    description: 'Create a contact in the user\'s Microsoft Outlook address book. Provide at minimum a name (use `name`, `display_name`, or first_name + last_name). Email and phone accept either a single string (most common - sets the primary entry) or an array for multiples. Company, job title, and notes optional.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Full display name. Alias: `display_name`. If omitted, the contact name is built from first_name + last_name.' },
+        display_name: { type: 'string', description: 'Alias for `name`.' },
+        first_name: { type: 'string', description: 'Given (first) name. Optional if `name` is set.' },
+        last_name: { type: 'string', description: 'Surname (last) name. Optional if `name` is set.' },
+        email: { type: 'string', description: 'Primary email address. For multiple, use `emails` instead.' },
+        emails: { type: 'array', items: { type: 'string' }, description: 'Multiple email addresses (alternative to single `email`).' },
+        phone: { type: 'string', description: 'Primary phone (saved as mobile). For multiple, use `phones` to set business phones.' },
+        phones: { type: 'array', items: { type: 'string' }, description: 'Multiple phone numbers (saved as business phones; primary `phone` is still saved as mobile if provided).' },
+        company: { type: 'string', description: 'Company name.' },
+        job_title: { type: 'string', description: 'Job title.' },
+        notes: { type: 'string', description: 'Personal notes about the contact.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'contacts_update',
+    description: 'Update an existing Microsoft contact by ID. Same field rules as contacts_create. Only pass the fields you want to change; everything else is left alone. Pass `email=""` (or similar empty) to CLEAR a field.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        contact_id: { type: 'string', description: 'Contact ID (from contacts_search or contacts_list).' },
+        name: { type: 'string', description: 'New display name. Alias: `display_name`.' },
+        display_name: { type: 'string', description: 'Alias for `name`.' },
+        first_name: { type: 'string', description: 'New given name.' },
+        last_name: { type: 'string', description: 'New surname.' },
+        email: { type: 'string', description: 'New primary email (or empty string to clear).' },
+        emails: { type: 'array', items: { type: 'string' }, description: 'Replace all email addresses with this list.' },
+        phone: { type: 'string', description: 'New mobile phone (or empty string to clear).' },
+        phones: { type: 'array', items: { type: 'string' }, description: 'Replace business phones with this list.' },
+        company: { type: 'string', description: 'New company name.' },
+        job_title: { type: 'string', description: 'New job title.' },
+        notes: { type: 'string', description: 'New personal notes.' },
+      },
+      required: ['contact_id'],
+    },
+  },
+  {
+    name: 'contacts_delete',
+    description: 'Delete a contact from the user\'s Microsoft Outlook address book. Permanent.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        contact_id: { type: 'string', description: 'Contact ID to delete (from contacts_search or contacts_list).' },
+      },
+      required: ['contact_id'],
+    },
+  },
+  // ── Microsoft OneNote (write side) ──
+  {
+    name: 'onenote_create_page',
+    description: 'Create a new page in a OneNote section. Pass section_id (from onenote_list_sections) plus a title and the body. Body can be either plain text (auto-wrapped as a paragraph) or raw HTML (use html=true to skip wrapping). OneNote stores pages as HTML; the title shows up as the page heading.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        section_id: { type: 'string', description: 'Section to create the page in (from onenote_list_sections).' },
+        title: { type: 'string', description: 'Page title (also becomes the visible H1 at the top of the page).' },
+        body: { type: 'string', description: 'Page body. Plain text is auto-wrapped in a paragraph; pass html=true to provide raw HTML instead.' },
+        html: { type: 'boolean', description: 'If true, `body` is treated as raw HTML (you control the markup). If false or omitted, body is wrapped as a plain-text paragraph.' },
+      },
+      required: ['section_id', 'title'],
+    },
+  },
+  {
+    name: 'onenote_append_page',
+    description: 'Append content to an existing OneNote page. OneNote uses a PATCH command pattern: pass the page_id and the content to append (plain text or HTML). Useful for journals, ongoing notes, status logs. Pass html=true to append raw HTML, otherwise body is wrapped as a plain-text paragraph.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        page_id: { type: 'string', description: 'Page ID to append to (from onenote_list_pages).' },
+        body: { type: 'string', description: 'Content to append. Plain text is auto-wrapped; pass html=true for raw HTML.' },
+        html: { type: 'boolean', description: 'If true, `body` is treated as raw HTML. Default false (text is wrapped as a paragraph).' },
+      },
+      required: ['page_id', 'body'],
     },
   },
 ];
@@ -714,8 +924,15 @@ export async function executeMicrosoftWriteTool(
     case 'calendar_create_ms': {
       const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
       const calendarId = args.calendar_id as string | undefined;
+      // Accept title under any of the three aliases. Pre-fix only `title`
+      // was honored, so a model that knew Graph used `subject` and passed
+      // that got the param silently dropped and created a no-title event.
+      const resolvedTitle = (args.title ?? args.subject ?? args.summary) as string | undefined;
+      if (!resolvedTitle || typeof resolvedTitle !== 'string' || !resolvedTitle.trim()) {
+        return 'Error: event title is required. Pass it as `title` (preferred), or as `subject` / `summary` (aliases).';
+      }
       const event: Record<string, unknown> = {
-        subject: args.title,
+        subject: resolvedTitle,
         start: { dateTime: args.start, timeZone: tz },
         end: { dateTime: args.end, timeZone: tz },
       };
@@ -730,20 +947,21 @@ export async function executeMicrosoftWriteTool(
 
       const endpoint = `${calendarPrefix(calendarId)}events`;
       const result = await msGraphWrite('POST', endpoint, event, agentId, agentName, 'calendar_create_ms', {
-        title: args.title, start: args.start, end: args.end, calendarId,
+        title: resolvedTitle, start: args.start, end: args.end, calendarId,
       });
       if (!result.ok) return `Error creating event: ${result.error}`;
 
       const data = result.data as { id?: string; webLink?: string };
-      return `Calendar event "${args.title}" created${data?.id ? ` (ID: ${data.id})` : ''}${data?.webLink ? `\nLink: ${data.webLink}` : ''}`;
+      return `Calendar event "${resolvedTitle}" created${data?.id ? ` (ID: ${data.id})` : ''}${data?.webLink ? `\nLink: ${data.webLink}` : ''}`;
     }
 
     case 'calendar_update_ms': {
       const eventId = encodeURIComponent(args.event_id as string);
       const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
       const calendarId = args.calendar_id as string | undefined;
+      const resolvedTitle = (args.title ?? args.subject ?? args.summary) as string | undefined;
       const patch: Record<string, unknown> = {};
-      if (args.title) patch.subject = args.title;
+      if (resolvedTitle) patch.subject = resolvedTitle;
       if (args.start) patch.start = { dateTime: args.start, timeZone: tz };
       if (args.end) patch.end = { dateTime: args.end, timeZone: tz };
       if (args.description) patch.body = { contentType: 'Text', content: args.description };
@@ -993,6 +1211,56 @@ export async function executeMicrosoftWriteTool(
       });
       if (!result.ok) return `Error deleting email: ${result.error}`;
       return `Email moved to Deleted Items`;
+    }
+
+    case 'outlook_categories_set': {
+      const messageId = encodeURIComponent(args.message_id as string);
+      const categories = (args.categories as string[]) ?? [];
+      const result = await msGraphWrite('PATCH', `me/messages/${messageId}`, { categories }, agentId, agentName, 'outlook_categories_set', {
+        messageId: args.message_id, categories,
+      });
+      if (!result.ok) return `Error setting categories: ${result.error}`;
+      return categories.length === 0
+        ? `All categories cleared from message ${args.message_id}.`
+        : `Categories set on message ${args.message_id}: ${categories.join(', ')}.`;
+    }
+
+    case 'onedrive_versions_restore': {
+      const fileId = encodeURIComponent(args.file_id as string);
+      const versionId = encodeURIComponent(args.version_id as string);
+      const result = await msGraphWrite(
+        'POST',
+        `me/drive/items/${fileId}/versions/${versionId}/restoreVersion`,
+        {},
+        agentId, agentName, 'onedrive_versions_restore',
+        { fileId: args.file_id, versionId: args.version_id },
+      );
+      if (!result.ok) return `Error restoring version: ${result.error}`;
+      return `Version ${args.version_id} restored as the current version of file ${args.file_id}. The previous current version is now in the version history.`;
+    }
+
+    case 'outlook_create_folder': {
+      const folderName = (args.name as string | undefined)?.trim();
+      if (!folderName) return 'Error: name is required.';
+      const parentFolderId = args.parent_folder_id as string | undefined;
+      const endpoint = parentFolderId
+        ? `me/mailFolders/${encodeURIComponent(parentFolderId)}/childFolders`
+        : 'me/mailFolders';
+      const result = await msGraphWrite('POST', endpoint, { displayName: folderName }, agentId, agentName, 'outlook_create_folder', { name: folderName, parentFolderId });
+      if (!result.ok) return `Error creating folder: ${result.error}`;
+      const data = result.data as { id?: string; displayName?: string };
+      return `Outlook folder "${data?.displayName ?? folderName}" created${data?.id ? ` (ID: ${data.id})` : ''}`;
+    }
+
+    case 'outlook_move_to_folder': {
+      const messageId = encodeURIComponent(args.message_id as string);
+      const folderId = args.folder_id as string;
+      const result = await msGraphWrite('POST', `me/messages/${messageId}/move`, { destinationId: folderId }, agentId, agentName, 'outlook_move_to_folder', {
+        messageId: args.message_id, folderId,
+      });
+      if (!result.ok) return `Error moving email: ${result.error}`;
+      const data = result.data as { id?: string };
+      return `Email moved to folder ${folderId}${data?.id ? ` (new message ID: ${data.id})` : ''}`;
     }
 
     case 'outlook_download_attachment': {
@@ -1291,7 +1559,259 @@ export async function executeMicrosoftWriteTool(
       return `Online meeting ${args.meeting_id} deleted. The join URL is now invalid.`;
     }
 
+    // ── Microsoft To Do (Tasks) ──
+    case 'tasks_create_list': {
+      const listName = (args.name as string | undefined)?.trim();
+      if (!listName) return 'Error: name is required for tasks_create_list.';
+      const result = await msGraphWrite('POST', 'me/todo/lists', { displayName: listName }, agentId, agentName, 'tasks_create_list', { name: listName });
+      if (!result.ok) return `Error creating task list: ${result.error}`;
+      const data = result.data as { id?: string; displayName?: string };
+      return `Task list "${data?.displayName ?? listName}" created${data?.id ? ` (ID: ${data.id})` : ''}`;
+    }
+
+    case 'tasks_create': {
+      // Resolve title under any of the three aliases. Same pattern as
+      // calendar_create_ms so a model that knows Graph's `subject` field
+      // gets through cleanly.
+      const resolvedTitle = (args.title ?? args.summary ?? args.subject) as string | undefined;
+      if (!resolvedTitle || typeof resolvedTitle !== 'string' || !resolvedTitle.trim()) {
+        return 'Error: task title is required. Pass it as `title` (preferred), or as `summary` / `subject` (aliases).';
+      }
+      let listId = args.list_id as string | undefined;
+      if (!listId) {
+        const lookup = await msGraphRead("me/todo/lists?$filter=wellknownListName eq 'defaultList'&$top=1", agentId, agentName, 'tasks_create:default-lookup', {});
+        if (!lookup.ok) return `Error resolving default task list: ${lookup.error}`;
+        const lookupData = lookup.data as { value?: Array<{ id: string }> };
+        listId = lookupData?.value?.[0]?.id;
+        if (!listId) return 'No default task list found. Call tasks_list_lists to see what lists exist and pass list_id explicitly.';
+      }
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const task: Record<string, unknown> = { title: resolvedTitle };
+      if (args.body) task.body = { contentType: 'text', content: args.body as string };
+      if (args.due) task.dueDateTime = { dateTime: args.due as string, timeZone: tz };
+      if (args.importance) task.importance = args.importance as string;
+
+      const result = await msGraphWrite('POST', `me/todo/lists/${encodeURIComponent(listId)}/tasks`, task, agentId, agentName, 'tasks_create', {
+        title: resolvedTitle, listId, due: args.due, importance: args.importance,
+      });
+      if (!result.ok) return `Error creating task: ${result.error}`;
+      const data = result.data as { id?: string };
+      return `Task "${resolvedTitle}" created${data?.id ? ` (ID: ${data.id})` : ''}`;
+    }
+
+    case 'tasks_update': {
+      const taskId = args.task_id as string;
+      let listId = args.list_id as string | undefined;
+      if (!listId) {
+        const lookup = await msGraphRead("me/todo/lists?$filter=wellknownListName eq 'defaultList'&$top=1", agentId, agentName, 'tasks_update:default-lookup', {});
+        if (!lookup.ok) return `Error resolving default task list: ${lookup.error}`;
+        const lookupData = lookup.data as { value?: Array<{ id: string }> };
+        listId = lookupData?.value?.[0]?.id;
+        if (!listId) return 'No default task list found. Call tasks_list_lists to see what lists exist and pass list_id explicitly.';
+      }
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const resolvedTitle = (args.title ?? args.summary ?? args.subject) as string | undefined;
+      const patch: Record<string, unknown> = {};
+      if (resolvedTitle) patch.title = resolvedTitle;
+      if (args.body !== undefined) patch.body = { contentType: 'text', content: args.body as string };
+      if (args.due !== undefined) {
+        // Empty string = clear due date. Graph requires explicit null.
+        patch.dueDateTime = (args.due as string).trim() === '' ? null : { dateTime: args.due as string, timeZone: tz };
+      }
+      if (args.importance) patch.importance = args.importance as string;
+      if (args.status) patch.status = args.status as string;
+      if (Object.keys(patch).length === 0) return 'Error: no updates provided. Pass at least one of title/body/due/importance/status.';
+
+      const result = await msGraphWrite('PATCH', `me/todo/lists/${encodeURIComponent(listId)}/tasks/${encodeURIComponent(taskId)}`, patch, agentId, agentName, 'tasks_update', {
+        taskId, listId, ...patch,
+      });
+      if (!result.ok) return `Error updating task: ${result.error}`;
+      return `Task ${taskId} updated`;
+    }
+
+    case 'tasks_complete': {
+      const taskId = args.task_id as string;
+      let listId = args.list_id as string | undefined;
+      if (!listId) {
+        const lookup = await msGraphRead("me/todo/lists?$filter=wellknownListName eq 'defaultList'&$top=1", agentId, agentName, 'tasks_complete:default-lookup', {});
+        if (!lookup.ok) return `Error resolving default task list: ${lookup.error}`;
+        const lookupData = lookup.data as { value?: Array<{ id: string }> };
+        listId = lookupData?.value?.[0]?.id;
+        if (!listId) return 'No default task list found. Call tasks_list_lists to see what lists exist and pass list_id explicitly.';
+      }
+      const result = await msGraphWrite('PATCH', `me/todo/lists/${encodeURIComponent(listId)}/tasks/${encodeURIComponent(taskId)}`, { status: 'completed' }, agentId, agentName, 'tasks_complete', { taskId, listId });
+      if (!result.ok) return `Error completing task: ${result.error}`;
+      return `Task ${taskId} marked complete`;
+    }
+
+    case 'tasks_delete': {
+      const taskId = args.task_id as string;
+      let listId = args.list_id as string | undefined;
+      if (!listId) {
+        const lookup = await msGraphRead("me/todo/lists?$filter=wellknownListName eq 'defaultList'&$top=1", agentId, agentName, 'tasks_delete:default-lookup', {});
+        if (!lookup.ok) return `Error resolving default task list: ${lookup.error}`;
+        const lookupData = lookup.data as { value?: Array<{ id: string }> };
+        listId = lookupData?.value?.[0]?.id;
+        if (!listId) return 'No default task list found. Call tasks_list_lists to see what lists exist and pass list_id explicitly.';
+      }
+      const result = await msGraphWrite('DELETE', `me/todo/lists/${encodeURIComponent(listId)}/tasks/${encodeURIComponent(taskId)}`, undefined, agentId, agentName, 'tasks_delete', { taskId, listId });
+      if (!result.ok) return `Error deleting task: ${result.error}`;
+      return `Task ${taskId} deleted`;
+    }
+
+    // ── Microsoft Contacts (Outlook address book) ──
+    case 'contacts_create': {
+      const body = buildContactBody(args);
+      if ('error' in body) return body.error;
+      if (Object.keys(body.payload).length === 0) {
+        return 'Error: provide at least a name (or first_name/last_name) plus optionally email/phone/company/etc.';
+      }
+      const result = await msGraphWrite('POST', 'me/contacts', body.payload, agentId, agentName, 'contacts_create', {
+        name: body.payload.displayName, hasEmail: Array.isArray(body.payload.emailAddresses),
+      });
+      if (!result.ok) return `Error creating contact: ${result.error}`;
+      const data = result.data as { id?: string; displayName?: string };
+      return `Contact "${data?.displayName ?? body.payload.displayName ?? 'new contact'}" created${data?.id ? ` (ID: ${data.id})` : ''}`;
+    }
+
+    case 'contacts_update': {
+      const contactId = encodeURIComponent(args.contact_id as string);
+      const body = buildContactBody(args);
+      if ('error' in body) return body.error;
+      if (Object.keys(body.payload).length === 0) {
+        return 'Error: no updates provided. Pass at least one of name/first_name/last_name/email/phone/company/job_title/notes.';
+      }
+      const result = await msGraphWrite('PATCH', `me/contacts/${contactId}`, body.payload, agentId, agentName, 'contacts_update', {
+        contactId: args.contact_id, fields: Object.keys(body.payload),
+      });
+      if (!result.ok) return `Error updating contact: ${result.error}`;
+      return `Contact ${args.contact_id} updated`;
+    }
+
+    case 'contacts_delete': {
+      const contactId = encodeURIComponent(args.contact_id as string);
+      const result = await msGraphWrite('DELETE', `me/contacts/${contactId}`, undefined, agentId, agentName, 'contacts_delete', { contactId: args.contact_id });
+      if (!result.ok) return `Error deleting contact: ${result.error}`;
+      return `Contact ${args.contact_id} deleted`;
+    }
+
+    // ── Microsoft OneNote ──
+    case 'onenote_create_page': {
+      const sectionId = encodeURIComponent(args.section_id as string);
+      const title = (args.title as string).trim();
+      const body = (args.body as string | undefined) ?? '';
+      const isHtml = args.html === true;
+      // OneNote pages are POSTed as raw HTML (Content-Type: text/html or
+      // application/xhtml+xml). The title becomes the H1 at the top of the
+      // page. If the caller passes plain text, wrap it in a paragraph so
+      // the page renders sensibly.
+      const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      const escapedTitle = escapeHtml(title);
+      const bodyHtml = isHtml ? body : `<p>${escapeHtml(body).replace(/\n/g, '<br>')}</p>`;
+      const html = `<!DOCTYPE html><html><head><title>${escapedTitle}</title></head><body>${bodyHtml}</body></html>`;
+
+      const token = (await import('./auth.js')).getAccessToken();
+      if (!token) return 'Error: not authenticated with Microsoft.';
+      try {
+        const resp = await fetch(`https://graph.microsoft.com/v1.0/me/onenote/sections/${sectionId}/pages`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/xhtml+xml' },
+          body: html,
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          return `Error creating OneNote page: ${errText.slice(0, 300)}`;
+        }
+        const data = await resp.json() as { id?: string; title?: string; links?: { oneNoteWebUrl?: { href: string } } };
+        const link = data.links?.oneNoteWebUrl?.href ? `\nLink: ${data.links.oneNoteWebUrl.href}` : '';
+        return `OneNote page "${data?.title ?? title}" created${data?.id ? ` (ID: ${data.id})` : ''}${link}`;
+      } catch (err) {
+        return `Error creating OneNote page: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    case 'onenote_append_page': {
+      const pageId = encodeURIComponent(args.page_id as string);
+      const body = args.body as string;
+      const isHtml = args.html === true;
+      // OneNote append uses the /content endpoint with a PATCH and a
+      // JSON command array. `target: 'body'` + `action: 'append'` appends
+      // the content at the end of the page body.
+      const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      const contentHtml = isHtml ? body : `<p>${escapeHtml(body).replace(/\n/g, '<br>')}</p>`;
+      const commands = [{ target: 'body', action: 'append', content: contentHtml }];
+
+      const token = (await import('./auth.js')).getAccessToken();
+      if (!token) return 'Error: not authenticated with Microsoft.';
+      try {
+        const resp = await fetch(`https://graph.microsoft.com/v1.0/me/onenote/pages/${pageId}/content`, {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(commands),
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          return `Error appending to OneNote page: ${errText.slice(0, 300)}`;
+        }
+        return `Content appended to OneNote page ${args.page_id}`;
+      } catch (err) {
+        return `Error appending to OneNote page: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
     default:
       return `Unknown Microsoft write tool: ${name}`;
   }
+}
+
+// Translate the friendly contacts_create/update args into a Microsoft Graph
+// contact payload. Accepts aliases (name vs display_name), single-string
+// shortcuts for email/phone, and the array forms for multiples. Returns
+// either { payload } for the body or { error } for a clean refusal.
+function buildContactBody(args: Record<string, unknown>): { payload: Record<string, unknown> } | { error: string } {
+  const payload: Record<string, unknown> = {};
+
+  // Display name resolution: explicit `name`/`display_name` wins; else
+  // assemble from first_name + last_name; else leave unset (caller checks
+  // whether anything was provided).
+  const displayName = (args.name ?? args.display_name) as string | undefined;
+  const firstName = args.first_name as string | undefined;
+  const lastName = args.last_name as string | undefined;
+  if (displayName !== undefined) payload.displayName = displayName;
+  else if (firstName || lastName) {
+    payload.displayName = [firstName, lastName].filter(Boolean).join(' ').trim();
+  }
+  if (firstName !== undefined) payload.givenName = firstName;
+  if (lastName !== undefined) payload.surname = lastName;
+
+  // Email: accept either single `email` or array `emails`. Empty string on
+  // single clears the field (Graph accepts emailAddresses: []).
+  if (Array.isArray(args.emails)) {
+    payload.emailAddresses = (args.emails as string[])
+      .filter(e => typeof e === 'string' && e.trim())
+      .map(address => ({ address }));
+  } else if (typeof args.email === 'string') {
+    if (args.email.trim() === '') {
+      payload.emailAddresses = [];
+    } else {
+      payload.emailAddresses = [{ address: args.email }];
+    }
+  }
+
+  // Phone: `phone` → mobilePhone; `phones` → businessPhones array. Empty
+  // string on `phone` clears mobilePhone.
+  if (typeof args.phone === 'string') {
+    payload.mobilePhone = args.phone.trim() === '' ? null : args.phone;
+  }
+  if (Array.isArray(args.phones)) {
+    payload.businessPhones = (args.phones as string[]).filter(p => typeof p === 'string' && p.trim());
+  }
+
+  if (typeof args.company === 'string') payload.companyName = args.company;
+  if (typeof args.job_title === 'string') payload.jobTitle = args.job_title;
+  if (typeof args.notes === 'string') payload.personalNotes = args.notes;
+
+  return { payload };
 }

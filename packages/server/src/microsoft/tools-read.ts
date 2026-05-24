@@ -289,6 +289,186 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
     concurrency: 'safe',
     maxResultTokens: 3000,
   },
+  // ── Microsoft To Do (Tasks) ──
+  {
+    name: 'tasks_list_lists',
+    description: 'List all of the user\'s Microsoft To Do task lists. Returns each list\'s ID, display name, and whether it\'s the default list. Most users have a single default list (often called "Tasks") plus any extra lists they created (e.g., "Groceries", "Work").',
+    input_schema: { type: 'object', properties: {}, required: [] },
+    concurrency: 'safe',
+    maxResultTokens: 1500,
+  },
+  {
+    name: 'tasks_list',
+    description: 'List tasks in a Microsoft To Do list. Defaults to the user\'s primary "Tasks" list; pass list_id to target a specific list (get IDs from tasks_list_lists). Filter by status to focus the result (e.g., status="notStarted" to see open tasks only).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        list_id: { type: 'string', description: 'Task list ID (from tasks_list_lists). Omit to use the default list.' },
+        status: { type: 'string', enum: ['notStarted', 'inProgress', 'completed', 'waitingOnOthers', 'deferred'], description: 'Optional status filter. Omit to show all tasks regardless of status.' },
+        max_results: { type: 'number', description: 'Maximum tasks to return (default: 25, max: 100).' },
+      },
+      required: [],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
+  },
+  // ── Teams / Online Meetings discovery ──
+  {
+    name: 'teams_list_chats',
+    description: 'List the user\'s Teams chats (1:1 and group). Returns each chat\'s display name (or member list), chat ID, and chat type. Use this to discover chats BEFORE teams_send_message - cleaner than calling teams_read_messages without a chat_id (which works as a workaround but reads weird).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        max_results: { type: 'number', description: 'Maximum chats to return (default: 25, max: 50).' },
+      },
+      required: [],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
+  },
+  {
+    name: 'online_meeting_list',
+    description: 'List the user\'s upcoming Teams online meetings (next 7 days by default). Useful when the agent needs to find an existing meeting to share or update. For one-off lookup by ID, use online_meeting_get.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        days_ahead: { type: 'number', description: 'How far ahead to search in days (default: 7).' },
+      },
+      required: [],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
+  },
+  // ── OneDrive version history ──
+  {
+    name: 'onedrive_versions_list',
+    description: 'List the version history of a OneDrive file. OneDrive auto-versions on every edit and keeps versions indefinitely (subject to admin policy). Returns each version\'s ID, modified time, size, and who modified it.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'OneDrive item (file) ID.' },
+      },
+      required: ['file_id'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
+  },
+  // ── Calendar free/busy ──
+  {
+    name: 'calendar_freebusy_ms',
+    description: 'Check free/busy availability for one or more people across Microsoft Calendars over a time window. Returns busy time blocks per attendee so you can pick a slot when everyone is free. Use this BEFORE proposing a meeting time - much cheaper than calendar_create_ms + retry on conflicts.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        attendees: { type: 'array', items: { type: 'string' }, description: 'Email addresses to check (include the user themselves if you want their schedule too).' },
+        start: { type: 'string', description: "Window start datetime (ISO 8601, e.g., '2026-05-30T08:00:00')." },
+        end: { type: 'string', description: 'Window end datetime (ISO 8601).' },
+        interval_minutes: { type: 'number', description: 'Granularity of the availability view in minutes (default: 30).' },
+      },
+      required: ['attendees', 'start', 'end'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
+  },
+  // ── Outlook mail folders ──
+  {
+    name: 'outlook_list_folders',
+    description: 'List all of the user\'s Outlook mail folders (Inbox, Sent Items, Drafts, plus any custom folders the user created). Returns each folder\'s display name, ID, total message count, and unread count. Use this before outlook_move_to_folder so you target an actual folder.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+    concurrency: 'safe',
+    maxResultTokens: 1500,
+  },
+  // ── Microsoft Contacts (People in the user's address book) ──
+  {
+    name: 'contacts_search',
+    description: 'Search the user\'s Microsoft contacts (Outlook address book) by name, email, company, job title, or notes. Returns each match\'s display name, primary email, primary phone, company, and contact ID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: "Search string (matches name, email, company, job title, notes). E.g., 'Alex', 'acme.com', 'CFO'." },
+        max_results: { type: 'number', description: 'Maximum results to return (default: 20, max: 100).' },
+      },
+      required: ['query'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 2500,
+  },
+  {
+    name: 'contacts_list',
+    description: 'List the user\'s Microsoft contacts, newest-first. Useful when you don\'t have a specific search term. For lookup by name/email/company, prefer contacts_search.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        max_results: { type: 'number', description: 'Maximum contacts to return (default: 25, max: 100).' },
+      },
+      required: [],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 3000,
+  },
+  {
+    name: 'contacts_get',
+    description: 'Get the full record for a single Microsoft contact by ID. Returns all fields the user has set: every email, every phone, addresses, birthday, notes, categories.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        contact_id: { type: 'string', description: 'Contact ID (from contacts_search or contacts_list).' },
+      },
+      required: ['contact_id'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
+  },
+  // ── Microsoft OneNote (notebooks > sections > pages) ──
+  {
+    name: 'onenote_list_notebooks',
+    description: 'List all of the user\'s OneNote notebooks. Returns each notebook\'s display name, ID, and whether it is the default notebook. OneNote organizes content as notebooks > sections > pages; start here to discover what notebooks exist, then onenote_list_sections to drill in.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+    concurrency: 'safe',
+    maxResultTokens: 1500,
+  },
+  {
+    name: 'onenote_list_sections',
+    description: 'List sections in a OneNote notebook. Pass notebook_id (from onenote_list_notebooks). Returns each section\'s display name and ID. Sections contain pages.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        notebook_id: { type: 'string', description: 'Notebook ID (from onenote_list_notebooks).' },
+      },
+      required: ['notebook_id'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 2000,
+  },
+  {
+    name: 'onenote_list_pages',
+    description: 'List pages in a OneNote section. Pass section_id (from onenote_list_sections). Returns each page\'s title, ID, and last-modified timestamp, newest-first. Use onenote_read_page to fetch full content.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        section_id: { type: 'string', description: 'Section ID (from onenote_list_sections).' },
+        max_results: { type: 'number', description: 'Maximum pages to return (default: 25, max: 100).' },
+      },
+      required: ['section_id'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 2500,
+  },
+  {
+    name: 'onenote_read_page',
+    description: 'Read the full HTML content of a OneNote page by ID. OneNote stores pages as HTML; the response is plain HTML with text content visible inside tags. For long pages, the result may be paginated by character offset.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        page_id: { type: 'string', description: 'Page ID (from onenote_list_pages).' },
+        offset: { type: 'number', description: 'Character offset for pagination (default: 0).' },
+        limit: { type: 'number', description: 'Max characters to return (default: 16000).' },
+      },
+      required: ['page_id'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 4000,
+  },
 ];
 
 // Phase 3.5 (2026-05-04) — register concurrency + maxResultTokens overrides
@@ -869,7 +1049,353 @@ export async function executeMicrosoftReadTool(
       return `Channel messages (newest first):\n\n${messages.join('\n\n')}`;
     }
 
+    case 'teams_list_chats': {
+      const maxResults = Math.min((args.max_results as number) ?? 25, 50);
+      const result = await msGraphRead(
+        `me/chats?$top=${maxResults}&$expand=members&$orderby=${encodeURIComponent('lastUpdatedDateTime desc')}`,
+        agentId, agentName, 'teams_list_chats', { maxResults }, slot,
+      );
+      if (!result.ok) return `Error listing chats: ${result.error}`;
+      const data = result.data as { value?: Array<{ id: string; chatType: string; topic?: string; lastUpdatedDateTime?: string; members?: Array<{ displayName?: string }> }> };
+      const chats = data?.value ?? [];
+      if (chats.length === 0) return 'No Teams chats found. Use teams_create_chat to start one.';
+      const { formatTimeForAgent } = await import('../services/format-time.js');
+      const lines = chats.map(c => {
+        const label = c.topic
+          ? `"${c.topic}"`
+          : (c.members ?? []).map(m => m.displayName).filter(Boolean).join(', ') || '(no members visible)';
+        const when = c.lastUpdatedDateTime ? ` | last activity ${formatTimeForAgent(c.lastUpdatedDateTime)}` : '';
+        return `- [${c.chatType}] ${label}${when}\n    ID: ${c.id}`;
+      });
+      return `${chats.length} chat(s):\n\n${lines.join('\n')}\n\nUse teams_send_message(chat_id, message) to send to one.`;
+    }
+
+    case 'online_meeting_list': {
+      const days = (args.days_ahead as number) ?? 7;
+      const now = new Date();
+      const future = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+      const filter = encodeURIComponent(`startDateTime ge ${now.toISOString()} and startDateTime le ${future.toISOString()}`);
+      const result = await msGraphRead(
+        `me/onlineMeetings?$filter=${filter}&$select=id,subject,startDateTime,endDateTime,joinUrl,joinWebUrl`,
+        agentId, agentName, 'online_meeting_list', { daysAhead: days }, slot,
+      );
+      if (!result.ok) return `Error listing online meetings: ${result.error}`;
+      const data = result.data as { value?: Array<{ id: string; subject: string; startDateTime: string; endDateTime: string; joinUrl?: string }> };
+      const meetings = data?.value ?? [];
+      if (meetings.length === 0) return `No online meetings scheduled in the next ${days} day(s).`;
+      const { formatTimeForAgent } = await import('../services/format-time.js');
+      const lines = meetings.map(m => {
+        const join = m.joinUrl ? `\n    Join: ${m.joinUrl}` : '';
+        return `- "${m.subject}" | ${formatTimeForAgent(m.startDateTime)} → ${formatTimeForAgent(m.endDateTime)}\n    ID: ${m.id}${join}`;
+      });
+      return `${meetings.length} online meeting(s) in the next ${days} day(s):\n\n${lines.join('\n')}`;
+    }
+
+    case 'onedrive_versions_list': {
+      const fileId = encodeURIComponent(args.file_id as string);
+      const result = await msGraphRead(
+        `me/drive/items/${fileId}/versions?$select=id,size,lastModifiedDateTime,lastModifiedBy`,
+        agentId, agentName, 'onedrive_versions_list', { fileId: args.file_id }, slot,
+      );
+      if (!result.ok) return `Error listing versions: ${result.error}`;
+      const data = result.data as { value?: Array<{ id: string; size: number; lastModifiedDateTime: string; lastModifiedBy?: { user?: { displayName?: string } } }> };
+      const versions = data?.value ?? [];
+      if (versions.length === 0) return 'No version history available for this file.';
+      const { formatTimeForAgent } = await import('../services/format-time.js');
+      const lines = versions.map(v => {
+        const who = v.lastModifiedBy?.user?.displayName ? ` by ${v.lastModifiedBy.user.displayName}` : '';
+        return `- ${formatTimeForAgent(v.lastModifiedDateTime)}${who} | ${Math.round(v.size / 1024)}KB\n    ID: ${v.id}`;
+      });
+      return `${versions.length} version(s):\n\n${lines.join('\n')}\n\nUse onedrive_versions_restore(file_id, version_id) to restore an old version (current version is also kept).`;
+    }
+
+    case 'calendar_freebusy_ms': {
+      const attendees = args.attendees as string[];
+      const start = args.start as string;
+      const end = args.end as string;
+      const interval = (args.interval_minutes as number) ?? 30;
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      // getSchedule is a POST that returns availability views. Use raw fetch
+      // because msGraphRead is GET-only.
+      const token = (await import('./auth.js')).getAccessToken(slot);
+      if (!token) return 'Error: not authenticated with Microsoft.';
+      try {
+        const resp = await fetch('https://graph.microsoft.com/v1.0/me/calendar/getSchedule', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            schedules: attendees,
+            startTime: { dateTime: start, timeZone: tz },
+            endTime: { dateTime: end, timeZone: tz },
+            availabilityViewInterval: interval,
+          }),
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          return `Error checking free/busy: ${errText.slice(0, 300)}`;
+        }
+        const data = await resp.json() as { value?: Array<{ scheduleId: string; availabilityView?: string; scheduleItems?: Array<{ start: { dateTime: string }; end: { dateTime: string }; status: string; subject?: string }>; error?: { responseCode: string; message: string } }> };
+        const results = data?.value ?? [];
+        const { formatTimeForAgent } = await import('../services/format-time.js');
+        const lines: string[] = [`Free/busy for ${start} to ${end} (${interval}min granularity):`];
+        for (const r of results) {
+          if (r.error) {
+            lines.push(`\n${r.scheduleId}: ERROR - ${r.error.message} (${r.error.responseCode})`);
+            continue;
+          }
+          const items = r.scheduleItems ?? [];
+          if (items.length === 0) {
+            lines.push(`\n${r.scheduleId}: FREE the entire window.`);
+          } else {
+            lines.push(`\n${r.scheduleId}: ${items.length} item(s):`);
+            items.forEach(it => {
+              const subj = it.subject ? ` "${it.subject}"` : '';
+              lines.push(`  [${it.status}] ${formatTimeForAgent(it.start.dateTime)} → ${formatTimeForAgent(it.end.dateTime)}${subj}`);
+            });
+          }
+          // The availabilityView string is a per-slot encoding: 0=free, 1=tentative, 2=busy, 3=oof, 4=workingElsewhere. Useful as a visual.
+          if (r.availabilityView) {
+            lines.push(`  view: ${r.availabilityView}  (0=free 1=tentative 2=busy 3=outOfOffice 4=workingElsewhere)`);
+          }
+        }
+        return lines.join('\n');
+      } catch (err) {
+        return `Error checking free/busy: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    case 'outlook_list_folders': {
+      // Top-level mail folders (no recursion into child folders by default;
+      // most users keep folders flat). Pass $expand to surface child counts.
+      const result = await msGraphRead(
+        'me/mailFolders?$top=100&$select=id,displayName,totalItemCount,unreadItemCount,childFolderCount',
+        agentId, agentName, 'outlook_list_folders', {}, slot,
+      );
+      if (!result.ok) return `Error listing folders: ${result.error}`;
+      const data = result.data as { value?: Array<{ id: string; displayName: string; totalItemCount: number; unreadItemCount: number; childFolderCount?: number }> };
+      const folders = data?.value ?? [];
+      if (folders.length === 0) return 'No mail folders found.';
+      const lines = folders.map(f => {
+        const unread = f.unreadItemCount > 0 ? ` | ${f.unreadItemCount} unread` : '';
+        const children = (f.childFolderCount ?? 0) > 0 ? ` | ${f.childFolderCount} subfolder(s)` : '';
+        return `- ${f.displayName} (${f.totalItemCount} items${unread}${children})\n    ID: ${f.id}`;
+      });
+      return `${folders.length} mail folder(s):\n\n${lines.join('\n')}\n\nUse outlook_move_to_folder(message_id, folder_id) to move email.`;
+    }
+
+    case 'tasks_list_lists': {
+      const result = await msGraphRead(
+        'me/todo/lists',
+        agentId, agentName, 'tasks_list_lists', {}, slot,
+      );
+      if (!result.ok) return `Error listing task lists: ${result.error}`;
+      const data = result.data as { value?: Array<{ id: string; displayName: string; wellknownListName?: string; isOwner?: boolean; isShared?: boolean }> };
+      const lists = data?.value ?? [];
+      if (lists.length === 0) return 'No task lists found. The default list is created automatically the first time you use Microsoft To Do.';
+      const lines = lists.map(l => {
+        const tags: string[] = [];
+        if (l.wellknownListName === 'defaultList') tags.push('DEFAULT');
+        if (l.isShared) tags.push('shared');
+        if (l.isOwner === false) tags.push('not-owner');
+        const tagStr = tags.length > 0 ? ` [${tags.join(', ')}]` : '';
+        return `- ${l.displayName}${tagStr}\n    ID: ${l.id}`;
+      });
+      return `${lists.length} task list(s):\n\n${lines.join('\n')}\n\nUse the list ID with tasks_list to see its contents.`;
+    }
+
+    case 'tasks_list': {
+      // Resolve list_id: use provided one, else find the well-known default list.
+      let listId = args.list_id as string | undefined;
+      if (!listId) {
+        const lookupUrl = "me/todo/lists?$filter=wellknownListName eq 'defaultList'&$top=1";
+        const lookup = await msGraphRead(lookupUrl, agentId, agentName, 'tasks_list:default-lookup', {}, slot);
+        if (!lookup.ok) return `Error resolving default task list: ${lookup.error}`;
+        const lookupData = lookup.data as { value?: Array<{ id: string }> };
+        listId = lookupData?.value?.[0]?.id;
+        if (!listId) return 'No default task list found. Call tasks_list_lists to see what lists exist and pass list_id explicitly.';
+      }
+      const maxResults = Math.min((args.max_results as number) ?? 25, 100);
+      const status = args.status as string | undefined;
+      const params: string[] = [`$top=${maxResults}`];
+      if (status) params.push(`$filter=${encodeURIComponent(`status eq '${status}'`)}`);
+      params.push('$orderby=' + encodeURIComponent('lastModifiedDateTime desc'));
+      const url = `me/todo/lists/${encodeURIComponent(listId)}/tasks?${params.join('&')}`;
+      const result = await msGraphRead(url, agentId, agentName, 'tasks_list', { listId, status, maxResults }, slot);
+      if (!result.ok) return `Error listing tasks: ${result.error}`;
+      const data = result.data as { value?: Array<{ id: string; title: string; status: string; importance?: string; dueDateTime?: { dateTime: string; timeZone: string }; body?: { content: string; contentType: string }; completedDateTime?: { dateTime: string } }> };
+      const tasks = data?.value ?? [];
+      if (tasks.length === 0) return status ? `No tasks with status="${status}" in this list.` : 'No tasks in this list.';
+
+      const { formatTimeForAgent } = await import('../services/format-time.js');
+      const lines = tasks.map(t => {
+        const flags: string[] = [t.status];
+        if (t.importance && t.importance !== 'normal') flags.push(`${t.importance} priority`);
+        const dueStr = t.dueDateTime?.dateTime ? ` | due ${formatTimeForAgent(t.dueDateTime.dateTime)}` : '';
+        const completedStr = t.completedDateTime?.dateTime ? ` | done ${formatTimeForAgent(t.completedDateTime.dateTime)}` : '';
+        const bodyPreview = t.body?.content
+          ? ` — ${t.body.content.replace(/\s+/g, ' ').trim().slice(0, 120)}${t.body.content.length > 120 ? '…' : ''}`
+          : '';
+        return `- [${flags.join(' | ')}] ${t.title}${dueStr}${completedStr}${bodyPreview}\n    ID: ${t.id}`;
+      });
+      const header = status ? `${tasks.length} ${status} task(s):` : `${tasks.length} task(s):`;
+      return `${header}\n\n${lines.join('\n')}`;
+    }
+
+    case 'contacts_search': {
+      const query = args.query as string;
+      const maxResults = Math.min((args.max_results as number) ?? 20, 100);
+      const url = `me/contacts?$search="${encodeURIComponent(query)}"&$top=${maxResults}&$select=id,displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones,homePhones,companyName,jobTitle`;
+      const result = await msGraphRead(url, agentId, agentName, 'contacts_search', { query, maxResults }, slot);
+      if (!result.ok) return `Error searching contacts: ${result.error}`;
+      const data = result.data as { value?: Array<MicrosoftContact> };
+      const contacts = data?.value ?? [];
+      if (contacts.length === 0) return `No contacts matched "${query}".`;
+      return `${contacts.length} contact(s) matching "${query}":\n\n${contacts.map(formatContactLine).join('\n')}\n\nUse contacts_get(contact_id) for the full record.`;
+    }
+
+    case 'contacts_list': {
+      const maxResults = Math.min((args.max_results as number) ?? 25, 100);
+      const url = `me/contacts?$top=${maxResults}&$orderby=${encodeURIComponent('lastModifiedDateTime desc')}&$select=id,displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones,homePhones,companyName,jobTitle`;
+      const result = await msGraphRead(url, agentId, agentName, 'contacts_list', { maxResults }, slot);
+      if (!result.ok) return `Error listing contacts: ${result.error}`;
+      const data = result.data as { value?: Array<MicrosoftContact> };
+      const contacts = data?.value ?? [];
+      if (contacts.length === 0) return 'No contacts found in your Microsoft address book.';
+      return `${contacts.length} contact(s):\n\n${contacts.map(formatContactLine).join('\n')}\n\nUse contacts_get(contact_id) for the full record, or contacts_search(query) for a targeted lookup.`;
+    }
+
+    case 'contacts_get': {
+      const contactId = encodeURIComponent(args.contact_id as string);
+      const result = await msGraphRead(`me/contacts/${contactId}`, agentId, agentName, 'contacts_get', { contactId: args.contact_id }, slot);
+      if (!result.ok) return `Error fetching contact: ${result.error}`;
+      const c = result.data as MicrosoftContact & { birthday?: string; personalNotes?: string; businessAddress?: { street?: string; city?: string; state?: string; postalCode?: string; countryOrRegion?: string }; homeAddress?: typeof c['businessAddress']; categories?: string[] };
+      const lines: string[] = [];
+      lines.push(`Name: ${c.displayName ?? `${c.givenName ?? ''} ${c.surname ?? ''}`.trim() ?? '(no name)'}`);
+      if (c.companyName) lines.push(`Company: ${c.companyName}${c.jobTitle ? ` — ${c.jobTitle}` : ''}`);
+      if (c.emailAddresses && c.emailAddresses.length > 0) {
+        lines.push(`Email(s): ${c.emailAddresses.map(e => e.address).filter(Boolean).join(', ')}`);
+      }
+      const phones: string[] = [];
+      if (c.mobilePhone) phones.push(`mobile ${c.mobilePhone}`);
+      if (c.businessPhones && c.businessPhones.length > 0) phones.push(...c.businessPhones.map(p => `work ${p}`));
+      if (c.homePhones && c.homePhones.length > 0) phones.push(...c.homePhones.map(p => `home ${p}`));
+      if (phones.length > 0) lines.push(`Phone(s): ${phones.join(', ')}`);
+      const formatAddr = (a?: { street?: string; city?: string; state?: string; postalCode?: string; countryOrRegion?: string }) => {
+        if (!a) return '';
+        return [a.street, a.city, a.state, a.postalCode, a.countryOrRegion].filter(Boolean).join(', ');
+      };
+      const business = formatAddr(c.businessAddress);
+      const home = formatAddr(c.homeAddress);
+      if (business) lines.push(`Business address: ${business}`);
+      if (home) lines.push(`Home address: ${home}`);
+      if (c.birthday) lines.push(`Birthday: ${c.birthday.slice(0, 10)}`);
+      if (c.categories && c.categories.length > 0) lines.push(`Categories: ${c.categories.join(', ')}`);
+      if (c.personalNotes) lines.push(`Notes: ${c.personalNotes}`);
+      lines.push(`ID: ${c.id}`);
+      return lines.join('\n');
+    }
+
+    case 'onenote_list_notebooks': {
+      const result = await msGraphRead(
+        'me/onenote/notebooks?$select=id,displayName,isDefault,isShared,createdDateTime,lastModifiedDateTime',
+        agentId, agentName, 'onenote_list_notebooks', {}, slot,
+      );
+      if (!result.ok) return `Error listing notebooks: ${result.error}`;
+      const data = result.data as { value?: Array<{ id: string; displayName: string; isDefault?: boolean; isShared?: boolean }> };
+      const books = data?.value ?? [];
+      if (books.length === 0) return 'No OneNote notebooks found.';
+      const lines = books.map(n => {
+        const tags: string[] = [];
+        if (n.isDefault) tags.push('DEFAULT');
+        if (n.isShared) tags.push('shared');
+        const tagStr = tags.length > 0 ? ` [${tags.join(', ')}]` : '';
+        return `- ${n.displayName}${tagStr}\n    ID: ${n.id}`;
+      });
+      return `${books.length} notebook(s):\n\n${lines.join('\n')}\n\nUse onenote_list_sections(notebook_id) to see what's inside.`;
+    }
+
+    case 'onenote_list_sections': {
+      const notebookId = encodeURIComponent(args.notebook_id as string);
+      const result = await msGraphRead(
+        `me/onenote/notebooks/${notebookId}/sections?$select=id,displayName,createdDateTime,lastModifiedDateTime`,
+        agentId, agentName, 'onenote_list_sections', { notebookId: args.notebook_id }, slot,
+      );
+      if (!result.ok) return `Error listing sections: ${result.error}`;
+      const data = result.data as { value?: Array<{ id: string; displayName: string }> };
+      const sections = data?.value ?? [];
+      if (sections.length === 0) return 'No sections in this notebook.';
+      return `${sections.length} section(s):\n\n${sections.map(s => `- ${s.displayName}\n    ID: ${s.id}`).join('\n')}\n\nUse onenote_list_pages(section_id) to see pages.`;
+    }
+
+    case 'onenote_list_pages': {
+      const sectionId = encodeURIComponent(args.section_id as string);
+      const maxResults = Math.min((args.max_results as number) ?? 25, 100);
+      const result = await msGraphRead(
+        `me/onenote/sections/${sectionId}/pages?$top=${maxResults}&$select=id,title,createdDateTime,lastModifiedDateTime&$orderby=${encodeURIComponent('lastModifiedDateTime desc')}`,
+        agentId, agentName, 'onenote_list_pages', { sectionId: args.section_id, maxResults }, slot,
+      );
+      if (!result.ok) return `Error listing pages: ${result.error}`;
+      const data = result.data as { value?: Array<{ id: string; title: string; lastModifiedDateTime: string }> };
+      const pages = data?.value ?? [];
+      if (pages.length === 0) return 'No pages in this section.';
+      const { formatTimeForAgent } = await import('../services/format-time.js');
+      const lines = pages.map(p => `- ${p.title || '(untitled)'} | modified ${formatTimeForAgent(p.lastModifiedDateTime)}\n    ID: ${p.id}`);
+      return `${pages.length} page(s):\n\n${lines.join('\n')}\n\nUse onenote_read_page(page_id) for content.`;
+    }
+
+    case 'onenote_read_page': {
+      const pageId = encodeURIComponent(args.page_id as string);
+      const offset = Math.max((args.offset as number) ?? 0, 0);
+      const limit = Math.min(Math.max((args.limit as number) ?? 16000, 100), 50000);
+      // OneNote returns raw HTML from the `/content` endpoint, NOT JSON.
+      // msGraphRead expects JSON, so use a raw fetch via the auth token here.
+      const token = (await import('./auth.js')).getAccessToken(slot);
+      if (!token) return 'Error: not authenticated with Microsoft.';
+      try {
+        const resp = await fetch(`https://graph.microsoft.com/v1.0/me/onenote/pages/${pageId}/content`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          return `Error reading OneNote page: ${errText.slice(0, 300)}`;
+        }
+        const fullHtml = await resp.text();
+        const total = fullHtml.length;
+        const slice = fullHtml.slice(offset, offset + limit);
+        const more = offset + limit < total
+          ? `\n\n[... truncated. ${total - (offset + limit)} more characters. Next page: onenote_read_page(page_id="${args.page_id}", offset=${offset + limit}, limit=${limit}) ...]`
+          : '';
+        return `Page content (chars ${offset}-${Math.min(offset + limit, total)} of ${total}):\n\n${slice}${more}`;
+      } catch (err) {
+        return `Error reading OneNote page: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
     default:
       return `Unknown Microsoft read tool: ${name}`;
   }
+}
+
+interface MicrosoftContact {
+  id: string;
+  displayName?: string;
+  givenName?: string;
+  surname?: string;
+  emailAddresses?: Array<{ address?: string; name?: string }>;
+  mobilePhone?: string;
+  businessPhones?: string[];
+  homePhones?: string[];
+  companyName?: string;
+  jobTitle?: string;
+}
+
+function formatContactLine(c: MicrosoftContact): string {
+  const name = c.displayName?.trim() || `${c.givenName ?? ''} ${c.surname ?? ''}`.trim() || '(no name)';
+  const email = c.emailAddresses?.[0]?.address ?? '';
+  const phone = c.mobilePhone ?? c.businessPhones?.[0] ?? c.homePhones?.[0] ?? '';
+  const company = c.companyName ? ` | ${c.companyName}${c.jobTitle ? ` (${c.jobTitle})` : ''}` : '';
+  const contact = [email, phone].filter(Boolean).join(' / ');
+  return `- ${name}${contact ? ` <${contact}>` : ''}${company}\n    ID: ${c.id}`;
 }

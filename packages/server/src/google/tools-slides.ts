@@ -928,6 +928,37 @@ export const slidesToolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'slides_update_text',
+    description: 'Replace the entire text content of an existing text box or shape on a slide. Deletes whatever was there and inserts the new text. For find/replace within text, use slides_find_replace instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        presentation_id: { type: 'string', description: 'Presentation ID.' },
+        element_id: { type: 'string', description: 'Element (text box / shape) ID from slides_get_elements.' },
+        text: { type: 'string', description: 'New text content.' },
+      },
+      required: ['presentation_id', 'element_id', 'text'],
+    },
+  },
+  {
+    name: 'slides_format_text',
+    description: 'Apply text formatting (bold/italic/underline/font size/color) to ALL text inside an existing text box or shape. Pass only the properties you want to change. For per-character styling, use the Slides API directly.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        presentation_id: { type: 'string', description: 'Presentation ID.' },
+        element_id: { type: 'string', description: 'Element ID from slides_get_elements.' },
+        bold: { type: 'boolean', description: 'Bold text.' },
+        italic: { type: 'boolean', description: 'Italic text.' },
+        underline: { type: 'boolean', description: 'Underline text.' },
+        font_size: { type: 'number', description: 'Font size in points (e.g., 18).' },
+        text_color: { type: 'string', description: 'Text color as hex (e.g., "#1A1A1A"). Accepts 3- or 6-digit hex.' },
+        font_family: { type: 'string', description: 'Font family name (e.g., "Roboto", "Arial").' },
+      },
+      required: ['presentation_id', 'element_id'],
+    },
+  },
+  {
     name: 'slides_find_replace',
     description: 'Global find-and-replace text across the entire presentation.',
     input_schema: {
@@ -2881,6 +2912,71 @@ export async function executeGoogleSlidesTool(
         const replies = (r.data as { replies?: Array<{ replaceAllText?: { occurrencesChanged?: number } }> }).replies ?? [];
         const count = replies[0]?.replaceAllText?.occurrencesChanged ?? 0;
         return ok({ occurrences_replaced: count });
+      }
+
+      case 'slides_update_text': {
+        const presentationId = args.presentation_id as string;
+        const elementId = args.element_id as string;
+        const text = args.text as string;
+        // Two requests: delete existing text, then insert the new text.
+        // deleteText with no range deletes everything; insertText at index 0
+        // adds the new content at the start.
+        const r = await batchUpdate(presentationId, [
+          { deleteText: { objectId: elementId, textRange: { type: 'ALL' } } },
+          { insertText: { objectId: elementId, insertionIndex: 0, text } },
+        ], agentId, agentName, 'slides_update_text', { elementId, length: text.length });
+        if (!r.ok) return `Error updating text: ${r.error}`;
+        return ok({ ok: true, characters: text.length });
+      }
+
+      case 'slides_format_text': {
+        const presentationId = args.presentation_id as string;
+        const elementId = args.element_id as string;
+        const style: Record<string, unknown> = {};
+        const fieldsList: string[] = [];
+
+        if (typeof args.bold === 'boolean') { style.bold = args.bold; fieldsList.push('bold'); }
+        if (typeof args.italic === 'boolean') { style.italic = args.italic; fieldsList.push('italic'); }
+        if (typeof args.underline === 'boolean') { style.underline = args.underline; fieldsList.push('underline'); }
+        if (typeof args.font_size === 'number') {
+          style.fontSize = { magnitude: args.font_size, unit: 'PT' };
+          fieldsList.push('fontSize');
+        }
+        if (typeof args.font_family === 'string') {
+          style.fontFamily = args.font_family;
+          fieldsList.push('fontFamily');
+        }
+        if (typeof args.text_color === 'string') {
+          let h = args.text_color.trim().replace(/^#/, '');
+          if (h.length === 3) h = h.split('').map(c => c + c).join('');
+          if (/^[0-9a-fA-F]{6}$/.test(h)) {
+            style.foregroundColor = {
+              opaqueColor: {
+                rgbColor: {
+                  red: parseInt(h.slice(0, 2), 16) / 255,
+                  green: parseInt(h.slice(2, 4), 16) / 255,
+                  blue: parseInt(h.slice(4, 6), 16) / 255,
+                },
+              },
+            };
+            fieldsList.push('foregroundColor');
+          }
+        }
+
+        if (fieldsList.length === 0) {
+          return 'Error: no formatting properties were set. Pass at least one of bold/italic/underline/font_size/font_family/text_color.';
+        }
+
+        const r = await batchUpdate(presentationId, [{
+          updateTextStyle: {
+            objectId: elementId,
+            textRange: { type: 'ALL' },
+            style,
+            fields: fieldsList.join(','),
+          },
+        }], agentId, agentName, 'slides_format_text', { elementId, fields: fieldsList });
+        if (!r.ok) return `Error formatting text: ${r.error}`;
+        return ok({ ok: true, applied: fieldsList });
       }
 
       default:

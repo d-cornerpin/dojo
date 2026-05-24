@@ -88,24 +88,48 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'gmail_label',
-    description: 'Add or remove labels from an email (move to folders, archive, etc.)',
+    description: 'Add or remove labels from an email (move to folders, archive, etc.). Call gmail_list_labels first if you do not know what custom labels exist on the account.',
     input_schema: {
       type: 'object',
       properties: {
         message_id: { type: 'string', description: 'Message ID' },
-        add_labels: { type: 'array', items: { type: 'string' }, description: "Labels to add (e.g., 'IMPORTANT', 'STARRED')" },
+        add_labels: { type: 'array', items: { type: 'string' }, description: "Labels to add (e.g., 'IMPORTANT', 'STARRED', or a custom label name from gmail_list_labels)" },
         remove_labels: { type: 'array', items: { type: 'string' }, description: "Labels to remove (e.g., 'INBOX' to archive)" },
       },
       required: ['message_id'],
     },
   },
   {
-    name: 'calendar_create',
-    description: 'Create a new calendar event. Defaults to your primary calendar; pass calendar_id to add to a shared calendar where you have write access (use calendar_list to find IDs and check accessRole).',
+    name: 'gmail_create_label',
+    description: 'Create a new Gmail label (the agent-equivalent of "make a new folder"). Returns the label\'s ID so you can pin further work to it. Use sparingly; check gmail_list_labels first to avoid duplicates.',
     input_schema: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: 'Event title' },
+        name: { type: 'string', description: 'Label name (nest with "/" for sublabels, e.g., "Projects/Foo").' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'gmail_delete_label',
+    description: 'Delete a Gmail label. Removes the label from every email that has it (the emails themselves are NOT deleted). Permanent. Use gmail_list_labels to find the label ID first.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        label_id: { type: 'string', description: 'Label ID (from gmail_list_labels). NOT the label name.' },
+      },
+      required: ['label_id'],
+    },
+  },
+  {
+    name: 'calendar_create',
+    description: 'Create a new calendar event. Defaults to your primary calendar; pass calendar_id to add to a shared calendar where you have write access (use calendar_list to find IDs and check accessRole). Pass the event name as `title` (preferred) - `summary` (Google API name) and `subject` (Microsoft API name) are also accepted as aliases.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Event title (preferred). Aliases `summary` and `subject` also accepted.' },
+        summary: { type: 'string', description: 'Alias for `title` (matches Google Calendar API field name).' },
+        subject: { type: 'string', description: 'Alias for `title` (matches Microsoft Graph field name; accepted for cross-provider portability).' },
         start: { type: 'string', description: "Start datetime (ISO 8601, e.g., '2026-03-25T10:00:00')" },
         end: { type: 'string', description: 'End datetime (ISO 8601)' },
         description: { type: 'string', description: 'Event description' },
@@ -113,17 +137,19 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
         location: { type: 'string', description: 'Event location' },
         calendar_id: { type: 'string', description: 'Calendar ID. Defaults to "primary" (your own).' },
       },
-      required: ['title', 'start', 'end'],
+      required: ['start', 'end'],
     },
   },
   {
     name: 'calendar_update',
-    description: 'Update an existing calendar event. Pass calendar_id if the event lives on a shared calendar.',
+    description: 'Update an existing calendar event. Pass calendar_id if the event lives on a shared calendar. Pass the new event name as `title` (preferred); `summary` and `subject` are accepted aliases.',
     input_schema: {
       type: 'object',
       properties: {
         event_id: { type: 'string', description: 'Calendar event ID' },
-        title: { type: 'string', description: 'New event title' },
+        title: { type: 'string', description: 'New event title (preferred). Aliases `summary` and `subject` also accepted.' },
+        summary: { type: 'string', description: 'Alias for `title`.' },
+        subject: { type: 'string', description: 'Alias for `title`.' },
         start: { type: 'string', description: 'New start datetime' },
         end: { type: 'string', description: 'New end datetime' },
         description: { type: 'string', description: 'New event description' },
@@ -226,6 +252,31 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'drive_rename',
+    description: 'Rename a Google Drive file or folder. Pass file_id and new_name. Cosmetic - does not change the file ID or path. Use drive_move to relocate.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'File or folder ID to rename.' },
+        new_name: { type: 'string', description: 'New file/folder name.' },
+      },
+      required: ['file_id', 'new_name'],
+    },
+  },
+  {
+    name: 'drive_move',
+    description: 'Move a Google Drive file or folder to a different parent folder. Pass file_id plus new_parent_id (the destination folder ID). Optionally pass old_parent_id to remove from a specific folder (if not provided, Drive removes from all current parents - simpler in 99% of cases).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        file_id: { type: 'string', description: 'File or folder ID to move.' },
+        new_parent_id: { type: 'string', description: 'Destination folder ID. Use drive_list with a query to find folder IDs.' },
+        old_parent_id: { type: 'string', description: 'Optional source folder to remove the file from. Omit to remove from all current parents (most common case).' },
+      },
+      required: ['file_id', 'new_parent_id'],
+    },
+  },
+  {
     name: 'docs_create',
     description: 'Create a new Google Doc with optional initial content.',
     input_schema: {
@@ -235,6 +286,46 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
         content: { type: 'string', description: 'Initial text content for the document' },
       },
       required: ['title'],
+    },
+  },
+  {
+    name: 'docs_find_replace',
+    description: 'Find and replace text in a Google Doc, globally. All occurrences of `find` are replaced with `replace`. Optional match_case (default false = case-insensitive). Returns the number of replacements made.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        document_id: { type: 'string', description: 'Google Doc ID.' },
+        find: { type: 'string', description: 'Exact text to search for.' },
+        replace: { type: 'string', description: 'Text to substitute. Can be empty to delete the matched text.' },
+        match_case: { type: 'boolean', description: 'If true, match is case-sensitive. Default false.' },
+      },
+      required: ['document_id', 'find', 'replace'],
+    },
+  },
+  {
+    name: 'docs_insert_text',
+    description: 'Insert text into a Google Doc at a specific character index. Index 1 is the very start of the body. To append, use docs_edit (simpler) or pass a high index. Get current document length by reading the doc first.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        document_id: { type: 'string', description: 'Google Doc ID.' },
+        text: { type: 'string', description: 'Text to insert.' },
+        index: { type: 'number', description: 'Character index for insertion. Body starts at index 1.' },
+      },
+      required: ['document_id', 'text', 'index'],
+    },
+  },
+  {
+    name: 'docs_delete_range',
+    description: 'Delete a range of content from a Google Doc by character indices. The body starts at index 1. Inclusive of start, exclusive of end (matches Google Docs convention).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        document_id: { type: 'string', description: 'Google Doc ID.' },
+        start_index: { type: 'number', description: 'Inclusive start index.' },
+        end_index: { type: 'number', description: 'Exclusive end index.' },
+      },
+      required: ['document_id', 'start_index', 'end_index'],
     },
   },
   {
@@ -259,6 +350,49 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
         headers: { type: 'array', items: { type: 'string' }, description: 'Column headers for the first row' },
       },
       required: ['title'],
+    },
+  },
+  {
+    name: 'sheets_add_sheet',
+    description: 'Add a new sheet (tab) to an existing Google Sheets spreadsheet. Returns the new sheet ID, which you need for sheets_delete_sheet or sheets_format calls that target this tab.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        spreadsheet_id: { type: 'string', description: 'Spreadsheet ID.' },
+        title: { type: 'string', description: 'Name of the new sheet/tab.' },
+      },
+      required: ['spreadsheet_id', 'title'],
+    },
+  },
+  {
+    name: 'sheets_delete_sheet',
+    description: 'Delete a sheet (tab) from a Google Sheets spreadsheet. Pass the numeric sheet_id (NOT the tab name). To find sheet IDs, read the spreadsheet metadata via sheets_read or sheets_add_sheet (which returns IDs).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        spreadsheet_id: { type: 'string', description: 'Spreadsheet ID.' },
+        sheet_id: { type: 'number', description: 'Numeric sheet ID (the tab to delete).' },
+      },
+      required: ['spreadsheet_id', 'sheet_id'],
+    },
+  },
+  {
+    name: 'sheets_format',
+    description: 'Apply formatting to a range of cells in Google Sheets. Supports bold/italic/underline, text color, background color (hex strings like "#FF0000"), horizontal alignment, and number format. Pass only the properties you want to change; others are left alone.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        spreadsheet_id: { type: 'string', description: 'Spreadsheet ID.' },
+        range: { type: 'string', description: "Cell range in A1 notation (e.g., 'Sheet1!A1:D10')." },
+        bold: { type: 'boolean', description: 'Make text bold.' },
+        italic: { type: 'boolean', description: 'Make text italic.' },
+        underline: { type: 'boolean', description: 'Underline text.' },
+        text_color: { type: 'string', description: 'Text color as hex (e.g., "#000000"). Accepts shortcut hex like "#000".' },
+        background_color: { type: 'string', description: 'Cell background color as hex.' },
+        horizontal_alignment: { type: 'string', enum: ['LEFT', 'CENTER', 'RIGHT'], description: 'Horizontal text alignment.' },
+        number_format: { type: 'string', enum: ['NUMBER', 'CURRENCY', 'PERCENT', 'DATE', 'TIME', 'DATETIME', 'TEXT'], description: 'Number format type. Uses sensible defaults per type.' },
+      },
+      required: ['spreadsheet_id', 'range'],
     },
   },
   {
@@ -798,10 +932,39 @@ export async function executeGoogleWriteTool(
       return `Labels updated on message ${messageId}`;
     }
 
+    case 'gmail_create_label': {
+      const labelName = (args.name as string | undefined)?.trim();
+      if (!labelName) return 'Error: name is required.';
+      const result = await googleWrite(
+        'POST',
+        `${GMAIL_BASE}/labels`,
+        { name: labelName, labelListVisibility: 'labelShow', messageListVisibility: 'show' },
+        agentId, agentName, 'gmail_create_label', { name: labelName },
+      );
+      if (!result.ok) return `Error creating label: ${result.error}`;
+      const data = result.data as { id?: string; name?: string };
+      return `Gmail label "${data?.name ?? labelName}" created${data?.id ? ` (ID: ${data.id})` : ''}`;
+    }
+
+    case 'gmail_delete_label': {
+      const labelId = args.label_id as string;
+      const result = await googleWrite('DELETE', `${GMAIL_BASE}/labels/${encodeURIComponent(labelId)}`, undefined, agentId, agentName, 'gmail_delete_label', { labelId });
+      if (!result.ok) return `Error deleting label: ${result.error}`;
+      return `Gmail label ${labelId} deleted (any emails that had it are unchanged)`;
+    }
+
     case 'calendar_create': {
       const calendarId = (args.calendar_id as string | undefined) ?? 'primary';
+      // Accept title under any of the three aliases (title preferred, summary
+      // = Google API native, subject = Microsoft API native). Pre-fix only
+      // `title` was honored, so a model that passed `summary` got the param
+      // silently dropped and the event was created with no name.
+      const resolvedTitle = (args.title ?? args.summary ?? args.subject) as string | undefined;
+      if (!resolvedTitle || typeof resolvedTitle !== 'string' || !resolvedTitle.trim()) {
+        return 'Error: event title is required. Pass it as `title` (preferred), or as `summary` / `subject` (aliases).';
+      }
       const event: Record<string, unknown> = {
-        summary: args.title,
+        summary: resolvedTitle,
         start: { dateTime: args.start },
         end: { dateTime: args.end },
       };
@@ -812,18 +975,19 @@ export async function executeGoogleWriteTool(
       }
 
       const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events`;
-      const result = await googleWrite('POST', url, event, agentId, agentName, 'calendar_create', { title: args.title, start: args.start, end: args.end, calendarId });
+      const result = await googleWrite('POST', url, event, agentId, agentName, 'calendar_create', { title: resolvedTitle, start: args.start, end: args.end, calendarId });
       if (!result.ok) return `Error creating event: ${result.error}`;
 
       const data = result.data as { id?: string; htmlLink?: string };
-      return `Calendar event "${args.title}" created${data?.id ? ` (ID: ${data.id})` : ''}${data?.htmlLink ? `\nLink: ${data.htmlLink}` : ''}`;
+      return `Calendar event "${resolvedTitle}" created${data?.id ? ` (ID: ${data.id})` : ''}${data?.htmlLink ? `\nLink: ${data.htmlLink}` : ''}`;
     }
 
     case 'calendar_update': {
       const eventId = args.event_id as string;
       const calendarId = (args.calendar_id as string | undefined) ?? 'primary';
+      const resolvedTitle = (args.title ?? args.summary ?? args.subject) as string | undefined;
       const patch: Record<string, unknown> = {};
-      if (args.title) patch.summary = args.title;
+      if (resolvedTitle) patch.summary = resolvedTitle;
       if (args.start) patch.start = { dateTime: args.start };
       if (args.end) patch.end = { dateTime: args.end };
       if (args.description) patch.description = args.description;
@@ -1051,6 +1215,56 @@ export async function executeGoogleWriteTool(
       }
     }
 
+    case 'drive_rename': {
+      const fileId = args.file_id as string;
+      const newName = (args.new_name as string | undefined)?.trim();
+      if (!newName) return 'Error: new_name is required and cannot be empty.';
+      const result = await googleWrite(
+        'PATCH',
+        `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}?supportsAllDrives=true&fields=id,name`,
+        { name: newName },
+        agentId, agentName, 'drive_rename',
+        { fileId, newName },
+      );
+      if (!result.ok) return `Error renaming file: ${result.error}`;
+      return `File ${fileId} renamed to "${newName}".`;
+    }
+
+    case 'drive_move': {
+      const fileId = args.file_id as string;
+      const newParentId = args.new_parent_id as string;
+      const oldParentId = args.old_parent_id as string | undefined;
+      // Drive API requires the move via addParents/removeParents query params.
+      // If old_parent_id wasn't supplied, fetch current parents and remove
+      // them all so the file ends up in only the new folder.
+      let removeParents = oldParentId;
+      if (!removeParents) {
+        const current = await googleRead(
+          `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}?fields=parents&supportsAllDrives=true`,
+          agentId, agentName, 'drive_move:lookup-parents', { fileId }, undefined,
+        );
+        if (!current.ok) return `Error looking up current parents: ${current.error}`;
+        const parents = (current.data as { parents?: string[] }).parents ?? [];
+        removeParents = parents.join(',');
+      }
+      const qs = new URLSearchParams({
+        addParents: newParentId,
+        supportsAllDrives: 'true',
+        fields: 'id,name,parents',
+      });
+      if (removeParents) qs.set('removeParents', removeParents);
+      const result = await googleWrite(
+        'PATCH',
+        `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}?${qs.toString()}`,
+        {},
+        agentId, agentName, 'drive_move',
+        { fileId, newParentId, removeParents },
+      );
+      if (!result.ok) return `Error moving file: ${result.error}`;
+      const data = result.data as { name?: string };
+      return `File ${fileId}${data?.name ? ` ("${data.name}")` : ''} moved into folder ${newParentId}.`;
+    }
+
     case 'docs_create': {
       const title = args.title as string;
       const result = await googleWrite('POST', DOCS_BASE, { title }, agentId, agentName, 'docs_create', { title });
@@ -1096,6 +1310,45 @@ export async function executeGoogleWriteTool(
       return `Text appended to document ${docId}`;
     }
 
+    case 'docs_find_replace': {
+      const docId = args.document_id as string;
+      const find = args.find as string;
+      const replace = args.replace as string;
+      const matchCase = args.match_case === true;
+      const batchUrl = `${DOCS_BASE}/${encodeURIComponent(docId)}:batchUpdate`;
+      const result = await googleWrite('POST', batchUrl, {
+        requests: [{ replaceAllText: { containsText: { text: find, matchCase }, replaceText: replace } }],
+      }, agentId, agentName, 'docs_find_replace', { documentId: docId, find, matchCase });
+      if (!result.ok) return `Error in find/replace: ${result.error}`;
+      const data = result.data as { replies?: Array<{ replaceAllText?: { occurrencesChanged?: number } }> };
+      const count = data?.replies?.[0]?.replaceAllText?.occurrencesChanged ?? 0;
+      return `Replaced ${count} occurrence(s) of "${find}" with "${replace}" in document ${docId}.`;
+    }
+
+    case 'docs_insert_text': {
+      const docId = args.document_id as string;
+      const text = args.text as string;
+      const index = args.index as number;
+      const batchUrl = `${DOCS_BASE}/${encodeURIComponent(docId)}:batchUpdate`;
+      const result = await googleWrite('POST', batchUrl, {
+        requests: [{ insertText: { location: { index }, text } }],
+      }, agentId, agentName, 'docs_insert_text', { documentId: docId, index, length: text.length });
+      if (!result.ok) return `Error inserting text: ${result.error}`;
+      return `Inserted ${text.length} character(s) at index ${index} in document ${docId}.`;
+    }
+
+    case 'docs_delete_range': {
+      const docId = args.document_id as string;
+      const startIndex = args.start_index as number;
+      const endIndex = args.end_index as number;
+      const batchUrl = `${DOCS_BASE}/${encodeURIComponent(docId)}:batchUpdate`;
+      const result = await googleWrite('POST', batchUrl, {
+        requests: [{ deleteContentRange: { range: { startIndex, endIndex } } }],
+      }, agentId, agentName, 'docs_delete_range', { documentId: docId, startIndex, endIndex });
+      if (!result.ok) return `Error deleting range: ${result.error}`;
+      return `Deleted content from index ${startIndex} to ${endIndex} in document ${docId}.`;
+    }
+
     case 'sheets_create': {
       const title = args.title as string;
       const result = await googleWrite('POST', SHEETS_BASE, { properties: { title } }, agentId, agentName, 'sheets_create', { title });
@@ -1138,7 +1391,136 @@ export async function executeGoogleWriteTool(
 
     // slides_create → migrated to tools-slides.ts (see executeGoogleSlidesTool).
 
+    case 'sheets_add_sheet': {
+      const sheetId = args.spreadsheet_id as string;
+      const title = args.title as string;
+      const url = `${SHEETS_BASE}/${encodeURIComponent(sheetId)}:batchUpdate`;
+      const result = await googleWrite('POST', url, {
+        requests: [{ addSheet: { properties: { title } } }],
+      }, agentId, agentName, 'sheets_add_sheet', { spreadsheetId: sheetId, title });
+      if (!result.ok) return `Error adding sheet: ${result.error}`;
+      const data = result.data as { replies?: Array<{ addSheet?: { properties?: { sheetId?: number; title?: string } } }> };
+      const newSheet = data?.replies?.[0]?.addSheet?.properties;
+      return `Sheet "${newSheet?.title ?? title}" added${newSheet?.sheetId !== undefined ? ` (sheet_id: ${newSheet.sheetId})` : ''}`;
+    }
+
+    case 'sheets_delete_sheet': {
+      const spreadsheetId = args.spreadsheet_id as string;
+      const sheetIdNum = args.sheet_id as number;
+      const url = `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}:batchUpdate`;
+      const result = await googleWrite('POST', url, {
+        requests: [{ deleteSheet: { sheetId: sheetIdNum } }],
+      }, agentId, agentName, 'sheets_delete_sheet', { spreadsheetId, sheetId: sheetIdNum });
+      if (!result.ok) return `Error deleting sheet: ${result.error}`;
+      return `Sheet ${sheetIdNum} deleted from spreadsheet ${spreadsheetId}.`;
+    }
+
+    case 'sheets_format': {
+      const sheetId = args.spreadsheet_id as string;
+      const range = args.range as string;
+      // Resolve the range into a GridRange via the Sheets metadata.
+      // Range is in A1 notation like 'Sheet1!A1:D10'; we need sheet ID + indices.
+      const metaUrl = `${SHEETS_BASE}/${encodeURIComponent(sheetId)}?fields=sheets.properties(sheetId,title)`;
+      const meta = await googleRead(metaUrl, agentId, agentName, 'sheets_format:meta', { spreadsheetId: sheetId });
+      if (!meta.ok) return `Error reading spreadsheet metadata: ${meta.error}`;
+      const sheets = (meta.data as { sheets?: Array<{ properties: { sheetId: number; title: string } }> }).sheets ?? [];
+      const gridRange = a1ToGridRange(range, sheets);
+      if ('error' in gridRange) return `Error parsing range "${range}": ${gridRange.error}`;
+
+      const cellFormat: Record<string, unknown> = {};
+      const textFormat: Record<string, unknown> = {};
+      const fieldsList: string[] = [];
+
+      if (typeof args.bold === 'boolean') { textFormat.bold = args.bold; fieldsList.push('userEnteredFormat.textFormat.bold'); }
+      if (typeof args.italic === 'boolean') { textFormat.italic = args.italic; fieldsList.push('userEnteredFormat.textFormat.italic'); }
+      if (typeof args.underline === 'boolean') { textFormat.underline = args.underline; fieldsList.push('userEnteredFormat.textFormat.underline'); }
+      if (typeof args.text_color === 'string') {
+        const rgb = hexToRgb(args.text_color);
+        if (rgb) { textFormat.foregroundColor = rgb; fieldsList.push('userEnteredFormat.textFormat.foregroundColor'); }
+      }
+      if (Object.keys(textFormat).length > 0) cellFormat.textFormat = textFormat;
+      if (typeof args.background_color === 'string') {
+        const rgb = hexToRgb(args.background_color);
+        if (rgb) { cellFormat.backgroundColor = rgb; fieldsList.push('userEnteredFormat.backgroundColor'); }
+      }
+      if (typeof args.horizontal_alignment === 'string') {
+        cellFormat.horizontalAlignment = args.horizontal_alignment;
+        fieldsList.push('userEnteredFormat.horizontalAlignment');
+      }
+      if (typeof args.number_format === 'string') {
+        const patterns: Record<string, string> = {
+          NUMBER: '#,##0.00', CURRENCY: '"$"#,##0.00', PERCENT: '0.00%',
+          DATE: 'yyyy-mm-dd', TIME: 'hh:mm:ss', DATETIME: 'yyyy-mm-dd hh:mm:ss', TEXT: '@',
+        };
+        cellFormat.numberFormat = { type: args.number_format, pattern: patterns[args.number_format] ?? '' };
+        fieldsList.push('userEnteredFormat.numberFormat');
+      }
+
+      if (Object.keys(cellFormat).length === 0) {
+        return 'Error: no formatting properties were set. Pass at least one of bold/italic/underline/text_color/background_color/horizontal_alignment/number_format.';
+      }
+
+      const url = `${SHEETS_BASE}/${encodeURIComponent(sheetId)}:batchUpdate`;
+      const result = await googleWrite('POST', url, {
+        requests: [{
+          repeatCell: {
+            range: gridRange,
+            cell: { userEnteredFormat: cellFormat },
+            fields: fieldsList.join(','),
+          },
+        }],
+      }, agentId, agentName, 'sheets_format', { spreadsheetId: sheetId, range, fields: fieldsList });
+      if (!result.ok) return `Error formatting cells: ${result.error}`;
+      return `Formatted range ${range} (applied: ${fieldsList.map(f => f.split('.').pop()).join(', ')}).`;
+    }
+
     default:
       return `Unknown Google write tool: ${name}`;
   }
+}
+
+// ── Helpers for sheets_format ──
+
+function hexToRgb(hex: string): { red: number; green: number; blue: number } | null {
+  let h = hex.trim().replace(/^#/, '');
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  if (!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+  return {
+    red: parseInt(h.slice(0, 2), 16) / 255,
+    green: parseInt(h.slice(2, 4), 16) / 255,
+    blue: parseInt(h.slice(4, 6), 16) / 255,
+  };
+}
+
+function colLettersToIndex(letters: string): number {
+  let n = 0;
+  for (const ch of letters.toUpperCase()) {
+    n = n * 26 + (ch.charCodeAt(0) - 64);
+  }
+  return n - 1;
+}
+
+function a1ToGridRange(
+  a1: string,
+  sheets: Array<{ properties: { sheetId: number; title: string } }>,
+): { sheetId: number; startRowIndex: number; endRowIndex: number; startColumnIndex: number; endColumnIndex: number } | { error: string } {
+  // A1 form: 'SheetName!A1:D10' or just 'A1:D10' (defaults to first sheet)
+  const m = a1.match(/^(?:'?([^'!]+)'?!)?([A-Za-z]+)(\d+)(?::([A-Za-z]+)(\d+))?$/);
+  if (!m) return { error: `could not parse "${a1}" - expected A1 notation like "Sheet1!A1:D10".` };
+  const [, sheetName, startCol, startRow, endCol, endRow] = m;
+  const sheet = sheetName
+    ? sheets.find(s => s.properties.title === sheetName)
+    : sheets[0];
+  if (!sheet) return { error: `sheet "${sheetName ?? '<default>'}" not found in spreadsheet.` };
+  const startRowIdx = parseInt(startRow, 10) - 1;
+  const startColIdx = colLettersToIndex(startCol);
+  const endRowIdx = endRow ? parseInt(endRow, 10) : startRowIdx + 1;
+  const endColIdx = endCol ? colLettersToIndex(endCol) + 1 : startColIdx + 1;
+  return {
+    sheetId: sheet.properties.sheetId,
+    startRowIndex: startRowIdx,
+    endRowIndex: endRowIdx,
+    startColumnIndex: startColIdx,
+    endColumnIndex: endColIdx,
+  };
 }
