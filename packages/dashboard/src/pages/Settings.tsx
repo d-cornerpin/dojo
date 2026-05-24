@@ -118,11 +118,79 @@ export const Settings = () => {
 
 // ── iMessage Bridge Settings ──
 
+// Shape matches packages/server/src/services/imessage-bridge.ts SafeSender.
+// Duplicated rather than imported to keep the dashboard build standalone.
+type SharingLevel = 'open_book' | 'dont_overshare' | 'cautious' | 'project_only';
+
+interface SafeSender {
+  address: string;
+  name: string;
+  description?: string;
+  is_primary: boolean;
+  sharing_level: SharingLevel;
+}
+
+const SHARING_LEVEL_LABELS: Record<SharingLevel, string> = {
+  open_book: 'Open Book',
+  dont_overshare: "Don't Over-Share",
+  cautious: 'Be Cautious',
+  project_only: 'Project Only',
+};
+
+const SHARING_LEVEL_HINTS: Record<SharingLevel, string> = {
+  open_book: 'No restrictions; treat as owner.',
+  dont_overshare: 'Share what is asked; do not volunteer extra details.',
+  cautious: 'Answer only what is asked, briefly. High-level only.',
+  project_only: 'Discuss only the specific project this contact is on.',
+};
+
+const isSharingLevel = (v: unknown): v is SharingLevel =>
+  v === 'open_book' || v === 'dont_overshare' || v === 'cautious' || v === 'project_only';
+
+// Accept both the legacy string[] shape (older installs) and the new object
+// shape so reading an unmigrated config doesn't lose data.
+const parseSenders = (raw: string | undefined): SafeSender[] => {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((item, idx): SafeSender[] => {
+      if (typeof item === 'string') {
+        const addr = item.trim();
+        if (!addr) return [];
+        const isPrimary = idx === 0;
+        return [{
+          address: addr,
+          name: addr,
+          description: undefined,
+          is_primary: isPrimary,
+          sharing_level: isPrimary ? 'open_book' : 'dont_overshare',
+        }];
+      }
+      if (item && typeof item === 'object' && typeof item.address === 'string' && item.address.trim()) {
+        const isPrimary = item.is_primary === true;
+        return [{
+          address: item.address.trim(),
+          name: typeof item.name === 'string' && item.name.trim() ? item.name.trim() : item.address.trim(),
+          description: typeof item.description === 'string' && item.description.trim() ? item.description.trim() : undefined,
+          is_primary: isPrimary,
+          sharing_level: isSharingLevel(item.sharing_level) ? item.sharing_level : (isPrimary ? 'open_book' : 'dont_overshare'),
+        }];
+      }
+      return [];
+    });
+  } catch {
+    return [];
+  }
+};
+
 const IMBridgeSettings = () => {
   const [enabled, setEnabled] = useState(false);
-  const [senders, setSenders] = useState<string[]>([]);
-  const [defaultSender, setDefaultSender] = useState<string | null>(null);
-  const [newSender, setNewSender] = useState('');
+  const [senders, setSenders] = useState<SafeSender[]>([]);
+  const [newAddress, setNewAddress] = useState('');
+  const [newName, setNewName] = useState('');
+  const [newDescription, setNewDescription] = useState('');
+  const [newSharingLevel, setNewSharingLevel] = useState<SharingLevel>('dont_overshare');
   const [showAddInput, setShowAddInput] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -131,10 +199,9 @@ const IMBridgeSettings = () => {
 
   useEffect(() => {
     const load = async () => {
-      const [enabledResult, sendersResult, legacyResult, defaultResult] = await Promise.all([
+      const [enabledResult, sendersResult, defaultResult] = await Promise.all([
         api.getSetting('imessage_enabled'),
         api.getSetting('imessage_approved_senders'),
-        api.getSetting('imessage_recipient'), // legacy single recipient
         api.getSetting('imessage_default_sender'),
       ]);
 
@@ -142,25 +209,27 @@ const IMBridgeSettings = () => {
         setEnabled(enabledResult.data.value === 'true');
       }
 
-      let loadedSenders: string[] = [];
-      if (sendersResult.ok && sendersResult.data.value) {
-        try {
-          const parsed = JSON.parse(sendersResult.data.value);
-          if (Array.isArray(parsed)) loadedSenders = parsed;
-        } catch {}
-      } else if (legacyResult.ok && legacyResult.data.value) {
-        // Migrate legacy single recipient to array
-        loadedSenders = [legacyResult.data.value];
-      }
-      setSenders(loadedSenders);
+      // Pre-fix the loader would also fall back to `imessage_recipient`
+      // (a legacy single-address field) and auto-promote it to a sender
+      // entry. On most installs that field holds the AGENT's own iMessage
+      // address (set during installation), which then showed up as the
+      // user's primary sender - confusing and wrong. We now only load
+      // actual saved safe-sender records; if there are none, the list
+      // starts empty so the user explicitly adds the right people.
+      const loaded: SafeSender[] = sendersResult.ok && sendersResult.data.value
+        ? parseSenders(sendersResult.data.value)
+        : [];
 
-      // Load default sender; fall back to first sender
-      if (defaultResult.ok && defaultResult.data.value && loadedSenders.includes(defaultResult.data.value)) {
-        setDefaultSender(defaultResult.data.value);
-      } else if (loadedSenders.length > 0) {
-        setDefaultSender(loadedSenders[0]);
+      // If no record is marked primary, promote the legacy default key's
+      // matching record (best-effort) or the first record. Best-effort
+      // only; if no primary can be inferred, the first record gets the star.
+      if (loaded.length > 0 && !loaded.some(s => s.is_primary)) {
+        const legacyDefault = defaultResult.ok ? defaultResult.data.value : '';
+        const idx = legacyDefault ? loaded.findIndex(s => s.address === legacyDefault) : -1;
+        if (idx >= 0) loaded[idx].is_primary = true;
+        else loaded[0].is_primary = true;
       }
-
+      setSenders(loaded);
       setLoading(false);
     };
     load();
@@ -177,13 +246,36 @@ const IMBridgeSettings = () => {
       return;
     }
 
-    const effectiveDefault = defaultSender && senders.includes(defaultSender) ? defaultSender : senders[0] ?? '';
+    // Ensure exactly one primary on save. If somehow none, mark the first.
+    const normalized = senders.map(s => ({ ...s }));
+    if (normalized.length > 0 && !normalized.some(s => s.is_primary)) {
+      normalized[0].is_primary = true;
+    }
+    // Force every primary record's sharing_level to open_book at save time.
+    // The UI locks the dropdown, but a stale or hand-edited record could
+    // arrive with a throttled level on the primary - normalize defensively.
+    for (const s of normalized) {
+      if (s.is_primary) s.sharing_level = 'open_book';
+    }
+    // Refuse to save a Project-Only sender with no description: the policy
+    // text references the description for project scope, and an empty
+    // description means the agent has nothing to enforce against.
+    const badProjectOnly = normalized.find(s => !s.is_primary && s.sharing_level === 'project_only' && !s.description);
+    if (badProjectOnly) {
+      setError(`"${badProjectOnly.name || badProjectOnly.address}" is set to Project Only but has no description. Add a brief description that names the specific project the agent should stay inside of, or change the sharing level.`);
+      setSaving(false);
+      return;
+    }
+    const primary = normalized.find(s => s.is_primary);
+
     const results = await Promise.all([
       api.setSetting('imessage_enabled', enabled ? 'true' : 'false'),
-      api.setSetting('imessage_approved_senders', JSON.stringify(senders)),
-      // Keep legacy field in sync for bridge compatibility
-      api.setSetting('imessage_recipient', senders[0] ?? ''),
-      api.setSetting('imessage_default_sender', effectiveDefault),
+      api.setSetting('imessage_approved_senders', JSON.stringify(normalized)),
+      // Keep legacy fields in sync so older code paths (and any external
+      // tools that read them directly) keep working until everything reads
+      // the new shape via the bridge helpers.
+      api.setSetting('imessage_recipient', normalized[0]?.address ?? ''),
+      api.setSetting('imessage_default_sender', primary?.address ?? ''),
     ]);
 
     if (results.every(r => r.ok)) {
@@ -196,26 +288,61 @@ const IMBridgeSettings = () => {
   };
 
   const addSender = () => {
-    const s = newSender.trim();
-    if (!s || senders.includes(s)) return;
-    const updated = [...senders, s];
-    setSenders(updated);
-    // Auto-set as default if it's the first sender
-    if (updated.length === 1) {
-      setDefaultSender(s);
+    const address = newAddress.trim();
+    if (!address) return;
+    if (senders.some(s => s.address === address)) {
+      setError(`"${address}" is already in the list`);
+      return;
     }
-    setNewSender('');
+    const name = newName.trim() || address;
+    const description = newDescription.trim() || undefined;
+    const isPrimary = senders.length === 0; // first sender is auto-primary
+    // Primary auto-promotes to open_book regardless of dropdown value (no
+    // reason to throttle sharing with yourself). Subsequent senders honor
+    // the selected level from the form.
+    setSenders([...senders, {
+      address,
+      name,
+      description,
+      is_primary: isPrimary,
+      sharing_level: isPrimary ? 'open_book' : newSharingLevel,
+    }]);
+    setNewAddress('');
+    setNewName('');
+    setNewDescription('');
+    setNewSharingLevel('dont_overshare');
     setShowAddInput(false);
+    setError(null);
   };
 
   const removeSender = (index: number) => {
-    const removed = senders[index];
+    const wasPrimary = senders[index].is_primary;
     const updated = senders.filter((_, i) => i !== index);
-    setSenders(updated);
-    // If removing the default sender, auto-promote the next one
-    if (removed === defaultSender) {
-      setDefaultSender(updated.length > 0 ? updated[0] : null);
+    if (wasPrimary && updated.length > 0) {
+      updated[0].is_primary = true;
     }
+    setSenders(updated);
+  };
+
+  const setPrimary = (index: number) => {
+    // When promoting to primary, force sharing_level to open_book so the
+    // primary is always treated as the owner. When demoting an old primary,
+    // if their level was open_book (the locked default), drop them to
+    // dont_overshare since open_book on a non-primary doesn't reflect a
+    // deliberate choice.
+    setSenders(senders.map((s, i) => {
+      if (i === index) return { ...s, is_primary: true, sharing_level: 'open_book' as SharingLevel };
+      if (s.is_primary) return { ...s, is_primary: false, sharing_level: s.sharing_level === 'open_book' ? 'dont_overshare' as SharingLevel : s.sharing_level };
+      return { ...s, is_primary: false };
+    }));
+  };
+
+  const updateField = (index: number, field: 'name' | 'description', value: string) => {
+    setSenders(senders.map((s, i) => i === index ? { ...s, [field]: field === 'description' && !value.trim() ? undefined : value } : s));
+  };
+
+  const setSharingLevel = (index: number, level: SharingLevel) => {
+    setSenders(senders.map((s, i) => i === index ? { ...s, sharing_level: level } : s));
   };
 
   if (loading) return null;
@@ -245,39 +372,92 @@ const IMBridgeSettings = () => {
             Approved Senders
           </label>
           <p className="text-xs text-ui/25 mb-2">
-            Phone numbers or Apple IDs that your agent will accept iMessages from and reply to.
+            Each safe sender is a person (or another agent) your DOJO will accept iMessages from. Star the primary user; everyone else is a household member, friend, or another agent. The agent sees each sender's name and description in the inbound message and replies to them by default - so it can't mix up who's who.
           </p>
 
           {/* Sender list */}
           {senders.length > 0 && (
-            <div className="space-y-1 mb-2">
+            <div className="space-y-2 mb-3">
               {senders.map((sender, i) => (
                 <div
                   key={i}
-                  className="flex items-center justify-between glass-nested rounded-xl px-3 py-2"
+                  className="glass-nested rounded-xl px-3 py-2 space-y-2"
                 >
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <button
+                        onClick={() => setPrimary(i)}
+                        title={sender.is_primary ? 'Primary user (you)' : 'Set as primary user'}
+                        className={`text-lg leading-none transition-colors shrink-0 ${
+                          sender.is_primary
+                            ? 'text-cp-amber'
+                            : 'text-ui/25 hover:text-cp-amber'
+                        }`}
+                      >
+                        {sender.is_primary ? '\u2605' : '\u2606'}
+                      </button>
+                      <span className="text-sm text-ui/90 font-mono truncate">{sender.address}</span>
+                    </div>
                     <button
-                      onClick={() => setDefaultSender(sender)}
-                      title={sender === defaultSender ? 'Default sender' : 'Set as default sender'}
-                      className={`text-lg leading-none transition-colors ${
-                        sender === defaultSender
-                          ? 'text-cp-amber'
-                          : 'text-ui/25 hover:text-cp-amber'
-                      }`}
+                      onClick={() => removeSender(i)}
+                      className="text-ui/40 hover:text-cp-coral transition-colors ml-2 shrink-0"
                     >
-                      {sender === defaultSender ? '\u2605' : '\u2606'}
+                      &times;
                     </button>
-                    <span className="text-sm text-ui/90 font-mono">{sender}</span>
                   </div>
-                  <button
-                    onClick={() => removeSender(i)}
-                    className="text-ui/40 hover:text-cp-coral transition-colors ml-2"
-                  >
-                    &times;
-                  </button>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label className="text-xs text-ui/40 block">Display name</label>
+                      <input
+                        type="text"
+                        value={sender.name === sender.address ? '' : sender.name}
+                        onChange={(e) => updateField(i, 'name', e.target.value)}
+                        placeholder="e.g., Alex"
+                        className="glass-input text-sm w-full"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs text-ui/40 block">Brief description</label>
+                      <input
+                        type="text"
+                        value={sender.description ?? ''}
+                        onChange={(e) => updateField(i, 'description', e.target.value)}
+                        placeholder="e.g., spouse, teammate, project collaborator"
+                        className="glass-input text-sm w-full"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-ui/40 block">Sharing level</label>
+                    <select
+                      value={sender.is_primary ? 'open_book' : sender.sharing_level}
+                      onChange={(e) => setSharingLevel(i, e.target.value as SharingLevel)}
+                      disabled={sender.is_primary}
+                      className="glass-input text-sm w-full disabled:opacity-60"
+                    >
+                      {(Object.keys(SHARING_LEVEL_LABELS) as SharingLevel[]).map(level => (
+                        <option key={level} value={level}>
+                          {SHARING_LEVEL_LABELS[level]}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-ui/25">
+                      {sender.is_primary
+                        ? 'Primary user is always Open Book. Star another sender first if you want to change this.'
+                        : SHARING_LEVEL_HINTS[sender.sharing_level]}
+                    </p>
+                    {sender.sharing_level === 'project_only' && !sender.description && !sender.is_primary && (
+                      <p className="text-xs text-cp-amber">⚠ Project Only needs a description that names the specific project; without it the agent has no scope to enforce.</p>
+                    )}
+                  </div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {enabled && senders.length === 0 && (
+            <div className="alert-banner alert-warning mb-2">
+              iMessage bridge is ON but no senders are configured. The bridge will sit idle until you add at least one sender below.
             </div>
           )}
 
@@ -285,31 +465,78 @@ const IMBridgeSettings = () => {
             <p className="text-xs text-ui/25 italic mb-2">No approved senders configured.</p>
           )}
 
-          {/* Add sender input */}
+          {/* Add sender form */}
           {showAddInput ? (
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={newSender}
-                onChange={(e) => setNewSender(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && addSender()}
-                placeholder="+15551234567 or user@icloud.com"
-                autoFocus
-                className="glass-input flex-1 font-mono"
-              />
-              <button
-                onClick={addSender}
-                disabled={!newSender.trim()}
-                className="px-3 py-2 glass-btn-primary text-sm rounded-lg transition-colors"
-              >
-                Add
-              </button>
-              <button
-                onClick={() => { setShowAddInput(false); setNewSender(''); }}
-                className="px-3 py-2 text-sm text-ui/55 hover:text-ui/90 transition-colors"
-              >
-                Cancel
-              </button>
+            <div className="glass-nested rounded-xl px-3 py-3 space-y-2">
+              <div className="space-y-1">
+                <label className="text-xs text-ui/40 block">Phone number or Apple ID</label>
+                <input
+                  type="text"
+                  value={newAddress}
+                  onChange={(e) => setNewAddress(e.target.value)}
+                  placeholder="+15551234567 or user@icloud.com"
+                  autoFocus
+                  className="glass-input w-full font-mono text-sm"
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <label className="text-xs text-ui/40 block">Display name</label>
+                  <input
+                    type="text"
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    placeholder="e.g., Alex"
+                    className="glass-input text-sm w-full"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-ui/40 block">Brief description</label>
+                  <input
+                    type="text"
+                    value={newDescription}
+                    onChange={(e) => setNewDescription(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && addSender()}
+                    placeholder="e.g., spouse, teammate, project collaborator"
+                    className="glass-input text-sm w-full"
+                  />
+                </div>
+              </div>
+              {senders.length > 0 && (
+                <div className="space-y-1">
+                  <label className="text-xs text-ui/40 block">Sharing level</label>
+                  <select
+                    value={newSharingLevel}
+                    onChange={(e) => setNewSharingLevel(e.target.value as SharingLevel)}
+                    className="glass-input text-sm w-full"
+                  >
+                    {(Object.keys(SHARING_LEVEL_LABELS) as SharingLevel[]).map(level => (
+                      <option key={level} value={level}>
+                        {SHARING_LEVEL_LABELS[level]}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-ui/25">{SHARING_LEVEL_HINTS[newSharingLevel]}</p>
+                </div>
+              )}
+              {senders.length === 0 && (
+                <p className="text-xs text-ui/25">First sender becomes the primary user automatically (Open Book).</p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={addSender}
+                  disabled={!newAddress.trim()}
+                  className="px-3 py-2 glass-btn-primary text-sm rounded-lg transition-colors"
+                >
+                  Add sender
+                </button>
+                <button
+                  onClick={() => { setShowAddInput(false); setNewAddress(''); setNewName(''); setNewDescription(''); setNewSharingLevel('dont_overshare'); }}
+                  className="px-3 py-2 text-sm text-ui/55 hover:text-ui/90 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           ) : (
             <button
@@ -2308,7 +2535,7 @@ const ProfileTab = () => {
               type="text"
               value={userName}
               onChange={(e) => setUserName(e.target.value)}
-              placeholder="e.g., David"
+              placeholder="e.g., Alex"
               className="glass-input w-full"
             />
             <div className="flex items-center gap-2">

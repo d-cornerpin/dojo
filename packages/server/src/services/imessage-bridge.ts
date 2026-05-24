@@ -9,7 +9,7 @@ import os from 'node:os';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { getPrimaryAgentId, getOwnerName } from '../config/platform.js';
+import { getPrimaryAgentId } from '../config/platform.js';
 import { handleIMCommand } from './imessage-commands.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -347,10 +347,208 @@ function fetchImessageAttachments(
 
 const logger = createLogger('imessage');
 
+// ── Safe-sender records ──────────────────────────────────────────────────
+//
+// The `imessage_approved_senders` config value used to be a bare JSON array
+// of phone/Apple-ID strings, with the "primary user" tracked separately in
+// `imessage_default_sender`. That made the agent unable to tell who actually
+// sent an inbound message (the framing always said "FROM <owner>") and made
+// the outbound tool's allowlist trivially bypassable.
+//
+// New shape, stored under the same config key for continuity:
+//   [
+//     { address: "+15551234567", name: "Alex", description: "Owner",
+//       is_primary: true, sharing_level: "open_book" },
+//     { address: "jordan@example.com", name: "Jordan", description:
+//       "project collaborator", is_primary: false,
+//       sharing_level: "project_only" },
+//     ...
+//   ]
+//
+// `parseSafeSenders` accepts BOTH the legacy (string[]) and new shapes,
+// so existing installs keep working until the next Settings save migrates
+// the value to the new shape on disk. Reads always go through this parser
+// so callers never see the legacy form.
+
+export type SharingLevel = 'open_book' | 'dont_overshare' | 'cautious' | 'project_only';
+
+export const SHARING_LEVELS: readonly SharingLevel[] = ['open_book', 'dont_overshare', 'cautious', 'project_only'] as const;
+
+export interface SafeSender {
+  address: string;
+  name: string;
+  description?: string;
+  is_primary: boolean;
+  sharing_level: SharingLevel;
+}
+
+function defaultSharingLevelFor(isPrimary: boolean): SharingLevel {
+  return isPrimary ? 'open_book' : 'dont_overshare';
+}
+
+function normalizeSharingLevel(raw: unknown, isPrimary: boolean): SharingLevel {
+  if (typeof raw === 'string' && (SHARING_LEVELS as readonly string[]).includes(raw)) {
+    return raw as SharingLevel;
+  }
+  return defaultSharingLevelFor(isPrimary);
+}
+
+/**
+ * Scrub characters that would break the [SOURCE: IMESSAGE FROM ...] framing
+ * envelope: square brackets (close the envelope early), CR/LF (split lines),
+ * and other control chars. Result is collapsed-whitespace-trimmed. Returns
+ * an empty string if everything was stripped (caller can fall back).
+ */
+function sanitizeFramingField(value: string): string {
+  return value
+    .replace(/[\[\]\r\n\t\v\f -]/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function parseSafeSenders(raw: string | null | undefined): SafeSender[] {
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+
+  const normalized: SafeSender[] = [];
+  for (let i = 0; i < parsed.length; i++) {
+    const item = parsed[i];
+    if (typeof item === 'string') {
+      // Legacy entry: auto-promote, mark first as primary, copy address into name.
+      const addr = item.trim();
+      if (!addr) continue;
+      const isPrimary = i === 0;
+      normalized.push({
+        address: addr,
+        name: addr,
+        description: undefined,
+        is_primary: isPrimary,
+        sharing_level: defaultSharingLevelFor(isPrimary),
+      });
+      continue;
+    }
+    if (item && typeof item === 'object') {
+      const obj = item as Record<string, unknown>;
+      const address = typeof obj.address === 'string' ? obj.address.trim() : '';
+      if (!address) continue;
+      // Strip brackets and control chars from name/description so a
+      // crafted entry can't break the [SOURCE: IMESSAGE FROM ...] envelope
+      // the agent parses out of inbound message text.
+      const rawName = typeof obj.name === 'string' ? obj.name.trim() : '';
+      const name = rawName ? (sanitizeFramingField(rawName) || address) : address;
+      const rawDescription = typeof obj.description === 'string' ? obj.description.trim() : '';
+      const cleanedDescription = rawDescription ? sanitizeFramingField(rawDescription) : '';
+      const description = cleanedDescription || undefined;
+      const is_primary = obj.is_primary === true;
+      const sharing_level = normalizeSharingLevel(obj.sharing_level, is_primary);
+      normalized.push({ address, name, description, is_primary, sharing_level });
+    }
+  }
+
+  // Guarantee exactly one primary. If none, promote the legacy default key's
+  // match or the first record. If multiple, keep only the first marked.
+  const primaries = normalized.filter(s => s.is_primary);
+  if (primaries.length === 0 && normalized.length > 0) {
+    const legacyDefault = readLegacyDefaultSender();
+    const promoteIdx = legacyDefault
+      ? normalized.findIndex(s => addressesMatch(s.address, legacyDefault))
+      : -1;
+    if (promoteIdx >= 0) normalized[promoteIdx].is_primary = true;
+    else normalized[0].is_primary = true;
+  } else if (primaries.length > 1) {
+    let seen = false;
+    for (const s of normalized) {
+      if (s.is_primary) {
+        if (seen) s.is_primary = false;
+        else seen = true;
+      }
+    }
+  }
+  return normalized;
+}
+
+function readLegacyDefaultSender(): string | null {
+  try {
+    const db = getDb();
+    const row = db.prepare(`SELECT value FROM config WHERE key = 'imessage_default_sender'`).get() as { value: string } | undefined;
+    return row?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Tolerant address comparison. Phone numbers may come in as `+15551234567`,
+ * `15551234567`, `(555) 123-4567`, etc; Apple IDs come in lowercase. Match
+ * if the normalized forms are equal OR one contains the other (substring),
+ * which handles country-code prefixes and formatting variations without
+ * false-matching completely different addresses.
+ */
+export function addressesMatch(a: string, b: string): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9@.]/g, '');
+  const na = norm(a);
+  const nb = norm(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  // Substring fallback only for "phone-ish" addresses (no @ on either side).
+  // Email matching is exact to avoid alice@x.com matching alice.smith@x.com.
+  if (na.includes('@') || nb.includes('@')) return false;
+  return na.includes(nb) || nb.includes(na);
+}
+
+export function findSafeSenderByAddress(records: readonly SafeSender[], query: string): SafeSender | null {
+  for (const r of records) {
+    if (addressesMatch(r.address, query)) return r;
+  }
+  return null;
+}
+
+/**
+ * Build the sharing-policy paragraph for an inbound iMessage's framing. The
+ * agent reads this every turn and uses it to decide what's appropriate to
+ * share with the sender. Soft enforcement only - the model still chooses
+ * what to say. For non-open-book levels we append an explicit escape hatch
+ * pointing the agent to the primary user (by name from the records) so it
+ * can ask permission when uncertain instead of guessing.
+ */
+function buildSharingPolicyLine(sender: SafeSender, records: readonly SafeSender[]): string {
+  const primary = records.find(s => s.is_primary);
+  const primaryName = primary?.name?.trim() || 'the primary user';
+  const askPrimary =
+    sender.sharing_level === 'open_book'
+      ? ''
+      : ` If in doubt about whether something is OK to share, ask ${primaryName} first - reach them via BOTH the dashboard chat AND iMessage so they see your question on whichever channel they're checking. Wait for their answer before responding to the sender.`;
+
+  switch (sender.sharing_level) {
+    case 'open_book':
+      return 'SHARING POLICY: Open Book. No restrictions - share schedule, contacts, files, ongoing projects, and personal details freely. Treat this sender as the owner.';
+    case 'dont_overshare':
+      return `SHARING POLICY: Don't Over-Share. Share what's asked and what's directly relevant to the conversation. Do NOT proactively dump information they didn't ask for (schedule details, contact info, project status, etc.). Hold back credentials, financials, and anything explicitly marked confidential.${askPrimary}`;
+    case 'cautious':
+      return `SHARING POLICY: Be Cautious. Answer only what is directly asked, briefly. Never volunteer schedule, contacts, or project details unprompted. If asked something personal, stay high-level (e.g., "${primaryName} is busy this afternoon" - NOT specific meeting names or times). When in doubt, share less rather than more.${askPrimary}`;
+    case 'project_only':
+      return `SHARING POLICY: Project Only. Discuss ONLY the specific project or topic this contact is collaborating on (see the sender description for the scope). If asked anything off-topic - personal life, schedule, contacts, other projects - politely refuse and redirect back to the project at hand.${askPrimary}`;
+  }
+}
+
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-let approvedSenders: string[] = [];
+let approvedSenders: SafeSender[] = [];
 let lastSeenRowId = 0;
 const POLL_INTERVAL_MS = 5000;
+
+// True while pollMessages is mid-flight. setInterval keeps firing every 5s,
+// but if a poll is still processing inbound messages we skip the next tick
+// to avoid two batches racing on pendingIMResponseMap. Without this guard,
+// a slow agent turn (30s+) would let the next poll tick start, set
+// pendingIMResponseMap for a NEW inbound, and the in-progress turn would
+// silently reply to the wrong person.
+let pollInFlight = false;
 
 // Track which sender triggered each agent's current turn so we reply to the right person.
 // No timeout — the flag stays until the agent's response is sent. Slow turns (tool calls,
@@ -363,6 +561,19 @@ export function isAwaitingIMResponse(agentId: string): boolean {
 
 export function clearIMResponseFlag(agentId: string): void {
   pendingIMResponseMap.delete(agentId);
+}
+
+/**
+ * The raw address of the sender whose iMessage triggered this agent's
+ * current turn, or null if the turn wasn't iMessage-initiated. The
+ * outbound `imessage_send` tool uses this to default the recipient — so
+ * a reply goes to the person who actually sent the inbound, not the
+ * starred default. Critical for setups where multiple safe senders
+ * share one Dojo (e.g. sender A messages the agent, agent must not
+ * accidentally reply to sender B).
+ */
+export function getInboundSenderFor(agentId: string): string | null {
+  return pendingIMResponseMap.get(agentId)?.sender ?? null;
 }
 
 /**
@@ -394,7 +605,29 @@ export function stripSystemTags(text: string): string {
 export function sendResponseViaIMessage(text: string, agentId?: string): void {
   if (!agentId) agentId = getPrimaryAgentId();
   const entry = pendingIMResponseMap.get(agentId);
-  const sender = entry?.sender ?? approvedSenders[0];
+  // Two safety rails on the fallback path:
+  //  (a) when there's no inbound trigger, default to the starred primary
+  //      (getDefaultSender), NOT approvedSenders[0]. They're often the
+  //      same but not always - the array's first entry is just whatever
+  //      the user typed first in Settings.
+  //  (b) re-validate the inbound sender against the current safe-sender
+  //      list. If the user removed that sender mid-conversation, silently
+  //      drop the auto-reply instead of texting someone no longer
+  //      authorized.
+  let sender: string | null = null;
+  if (entry?.sender) {
+    const stillAllowed = findSafeSenderByAddress(getSafeSenders(), entry.sender);
+    if (stillAllowed) {
+      sender = entry.sender;
+    } else {
+      logger.warn('Auto-reply suppressed: inbound sender no longer on safe-sender list', {
+        agentId,
+        sender: entry.sender,
+      });
+    }
+  } else {
+    sender = getDefaultSender();
+  }
   if (sender) {
     const cleaned = stripSystemTags(text);
     if (cleaned) sendIMessage(sender, cleaned); // sanitization happens inside sendIMessage
@@ -429,16 +662,22 @@ function saveLastSeenRowId(rowId: number): void {
 
 async function pollMessages(): Promise<void> {
   if (approvedSenders.length === 0) return;
+  if (pollInFlight) return;
+  pollInFlight = true;
 
   try {
     // Open the Messages database read-only
     const chatDb = new Database(CHAT_DB_PATH, { readonly: true, fileMustExist: true });
 
     try {
-      // Build a query that matches ANY approved sender. No text filter —
+      // Build a query that matches ANY approved sender. No text filter -
       // image-only messages store U+FFFC in `text` and we want them through.
+      // SQL LIKE is intentionally loose (`%address%`); we re-validate
+      // each row against findSafeSenderByAddress below so substring false-
+      // matches (e.g. group-chat synthetic IDs that happen to contain a
+      // safe sender's digits) are dropped before reaching the agent.
       const placeholders = approvedSenders.map(() => 'c.chat_identifier LIKE ?').join(' OR ');
-      const likeParams = approvedSenders.map(s => `%${s}%`);
+      const likeParams = approvedSenders.map(s => `%${s.address}%`);
 
       const messages = chatDb.prepare(`
         SELECT m.ROWID, m.text, m.is_from_me, m.date, m.cache_has_attachments, c.chat_identifier
@@ -499,6 +738,18 @@ async function pollMessages(): Promise<void> {
         const sender = msg.chat_identifier;
         const primaryId = getPrimaryAgentId();
 
+        // Tighten the SQL LIKE filter: confirm the chat_identifier
+        // actually matches a saved safe-sender record (addressesMatch is
+        // stricter than SQL substring). Drops group-chat synthetic IDs
+        // and substring false-matches.
+        if (!findSafeSenderByAddress(approvedSenders, sender)) {
+          logger.warn('iMessage dropped: chat_identifier matched SQL filter but no safe-sender record', {
+            chatIdentifier: sender,
+            rowid: msg.ROWID,
+          });
+          continue;
+        }
+
         // Sanitize text: strip U+FFFC attachment placeholders so we don't
         // forward control characters to the model.
         const cleanedText = stripAttachmentPlaceholder(msg.text);
@@ -550,7 +801,6 @@ async function pollMessages(): Promise<void> {
         // Forward to primary agent's runtime as a user message
         try {
           const db = getDb();
-          const ownerName = getOwnerName();
           const msgId = uuidv4();
 
           // ── Compose the forwarded message body ─────────────────────
@@ -578,12 +828,37 @@ async function pollMessages(): Promise<void> {
               `  • ${m.name} (${m.mimeType}, ${formatBytes(m.size)}) — ${m.reason}`,
             );
             bodyParts.push(
-              `[Other attachments this model can't directly process — let ${ownerName} know if the format isn't supported]:\n${lines.join('\n')}`,
+              `[Other attachments this model can't directly process — let the sender know if the format isn't supported]:\n${lines.join('\n')}`,
             );
           }
 
           const textForModel = bodyParts.join('\n\n');
-          const msgContent = `[SOURCE: IMESSAGE FROM ${ownerName.toUpperCase()} — this message came from iMessage, not the dashboard chat. Respond to THIS topic ONLY. Do not include unrelated dashboard conversation topics in your response.] ${textForModel}`;
+
+          // ── Sender identity + sharing policy in the framing ──────────
+          // Pre-fix the template hardcoded "FROM ${ownerName}" regardless
+          // of who actually sent the message, so the agent literally could
+          // not tell the wife's message from the user's. Now we look up
+          // the matching safe-sender record and tell the agent exactly
+          // who it is, who they are to the household (description), the
+          // exact recipient string to pass back when replying, AND the
+          // sharing policy that governs what's appropriate to disclose.
+          const senderRecord = findSafeSenderByAddress(approvedSenders, sender);
+          // Avoid the "kbrns6@outlook.com (kbrns6@outlook.com)" duplication
+          // when the user hasn't set a display name (legacy migration just
+          // copied the address into the name slot).
+          const senderLabel = senderRecord
+            ? (senderRecord.name && senderRecord.name !== senderRecord.address
+                ? `${senderRecord.name} (${senderRecord.address})`
+                : senderRecord.address) +
+              (senderRecord.description ? ` - ${senderRecord.description}` : '')
+            : sender;
+          const replyHint = senderRecord
+            ? `To reply, call imessage_send with recipient="${senderRecord.address}" (or omit recipient and it defaults to this same person). Do NOT pass any other safe-sender's address - that would send to the wrong person.`
+            : `To reply, call imessage_send with recipient="${sender}" (or omit recipient to reply to this same person automatically).`;
+          const policyLine = senderRecord
+            ? buildSharingPolicyLine(senderRecord, approvedSenders)
+            : `SHARING POLICY: Unknown sender - this address matched the bridge filter but isn't on the saved safe-sender list. Be cautious; share only what's directly asked. If in doubt, ask the primary user before responding.`;
+          const msgContent = `[SOURCE: IMESSAGE FROM ${senderLabel} - this arrived via iMessage, not the dashboard chat. ${policyLine} ${replyHint} Respond to THIS topic only; do not pull in unrelated dashboard conversation context.] ${textForModel}`;
 
           db.prepare(`
             INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)
@@ -620,13 +895,21 @@ async function pollMessages(): Promise<void> {
           // Flag that primary agent's next response should be sent back via iMessage to this sender
           pendingIMResponseMap.set(primaryId, { sender });
 
-          const runtime = getAgentRuntime();
-          runtime.handleMessage(primaryId, msgContent).catch(err => {
+          // Await the turn so the next iteration doesn't overwrite
+          // pendingIMResponseMap mid-flight. handleMessage resolves when
+          // the agent's turn completes (or immediately if the agent is
+          // busy and the message gets queued as a wakeup). Combined with
+          // the pollInFlight guard above, this guarantees one inbound is
+          // fully processed before the next one sets the pending sender.
+          try {
+            const runtime = getAgentRuntime();
+            await runtime.handleMessage(primaryId, msgContent);
+          } catch (err) {
             logger.error('Failed to process iMessage in runtime', {
               error: err instanceof Error ? err.message : String(err),
             });
             pendingIMResponseMap.delete(primaryId);
-          });
+          }
         } catch (err) {
           logger.error('Failed to inject iMessage to primary agent', {
             error: err instanceof Error ? err.message : String(err),
@@ -642,6 +925,8 @@ async function pollMessages(): Promise<void> {
     if (!msg.includes('SQLITE_CANTOPEN') && !msg.includes('no such file')) {
       logger.error('iMessage polling error', { error: msg });
     }
+  } finally {
+    pollInFlight = false;
   }
 }
 
@@ -651,22 +936,21 @@ export function startIMBridge(recipientId: string): void {
     return;
   }
 
-  // Load approved senders from config, falling back to legacy single recipient
+  // Load approved senders from config, falling back to legacy single recipient.
+  // parseSafeSenders accepts both the legacy string[] shape and the new
+  // SafeSender[] shape, so an install that hasn't yet re-saved Settings keeps
+  // working with bare phone-string entries.
   const db = getDb();
   const sendersRow = db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
-  if (sendersRow?.value) {
-    try {
-      const parsed = JSON.parse(sendersRow.value);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        approvedSenders = parsed;
-      } else {
-        approvedSenders = [recipientId];
-      }
-    } catch {
-      approvedSenders = [recipientId];
-    }
-  } else {
-    approvedSenders = [recipientId];
+  approvedSenders = parseSafeSenders(sendersRow?.value ?? null);
+  if (approvedSenders.length === 0) {
+    approvedSenders = [{
+      address: recipientId,
+      name: recipientId,
+      description: undefined,
+      is_primary: true,
+      sharing_level: 'open_book',
+    }];
   }
 
   lastSeenRowId = loadLastSeenRowId();
@@ -733,19 +1017,16 @@ export function reloadApprovedSenders(): void {
   if (!pollTimer) return;
   const db = getDb();
   const sendersRow = db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
-  if (sendersRow?.value) {
-    try {
-      const parsed = JSON.parse(sendersRow.value);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        approvedSenders = parsed;
-        logger.info('Reloaded approved senders from config', { approvedSenders });
-        return;
-      }
-    } catch {
-      // fall through to leave list unchanged
-    }
+  const parsed = parseSafeSenders(sendersRow?.value ?? null);
+  if (parsed.length > 0) {
+    approvedSenders = parsed;
+    logger.info('Reloaded approved senders from config', {
+      count: approvedSenders.length,
+      addresses: approvedSenders.map(s => s.address),
+    });
+    return;
   }
-  logger.warn('reloadApprovedSenders called but config key empty/invalid — leaving in-memory list unchanged');
+  logger.warn('reloadApprovedSenders called but config key empty/invalid - leaving in-memory list unchanged');
 }
 
 // ── iMessage sending via imsg CLI ──────────────────────────────────────
@@ -855,91 +1136,135 @@ export function sendIMessage(recipient: string, rawText: string): boolean {
 }
 
 /**
- * Send a file attachment via iMessage with an optional text caption.
- * Requires imsg CLI (installed by the dojo installer). If imsg isn't
- * available, falls back to text-only via AppleScript.
+ * Send a single file attachment via iMessage with an optional text caption.
+ * Requires the imsg CLI. Returns true on success, false on any failure
+ * (caller can decide how to report — internal helpers use this directly,
+ * the agent-facing imessage_send tool uses sendIMessageWithAttachments).
  */
 export function sendIMessageWithAttachment(
   recipient: string,
   filePath: string,
   caption?: string,
-): void {
+): boolean {
   const imsg = getImsgPath();
 
   if (!imsg) {
-    logger.warn('imsg CLI not found — cannot send file attachment. Install via: git clone https://github.com/steipete/imsg.git && cd imsg && make build && sudo cp bin/imsg /usr/local/bin/');
-    if (caption) sendIMessage(recipient, caption);
-    sendIMessage(recipient, '(Image generated but imsg CLI not installed — open the dashboard to see it.)');
-    return;
+    logger.warn('imsg CLI not found - cannot send file attachment. Install via: git clone https://github.com/steipete/imsg.git && cd imsg && make build && sudo cp bin/imsg /usr/local/bin/');
+    return false;
   }
 
   try {
-    const textArg = caption ? ` --text ${JSON.stringify(caption)}` : '';
-    execSync(
-      `${imsg} send --to ${JSON.stringify(recipient)}${textArg} --file ${JSON.stringify(filePath)} --service imessage`,
-      { timeout: 30000, encoding: 'utf-8', stdio: 'pipe' },
-    );
-
-    logger.info('iMessage attachment sent', { recipient, filePath });
-    // (v2.3.16) See note in sendIMessage — dedicated WS broadcast removed.
+    const args = ['send', '--to', recipient];
+    if (caption) args.push('--text', caption);
+    args.push('--file', filePath, '--service', 'imessage');
+    execFileSync(imsg, args, { timeout: 30000, encoding: 'utf-8', stdio: 'pipe' });
+    logger.info('iMessage attachment sent', { recipient, filePath, hasCaption: Boolean(caption) });
+    return true;
   } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    logger.error('imsg attachment send failed — falling back to text', {
-      error: errMsg,
+    logger.error('imsg attachment send failed', {
+      error: err instanceof Error ? err.message : String(err),
       recipient,
       filePath,
     });
-
-    try {
-      if (caption) sendIMessage(recipient, caption);
-      sendIMessage(recipient, '(The image was generated but couldn\'t be attached — open the dashboard to see it.)');
-    } catch { /* double-fault — give up */ }
+    return false;
   }
+}
+
+/**
+ * Send a text message plus zero or more file attachments. The caption rides
+ * with the first file (iMessage shows it as a single bubble + thumbnail).
+ * Additional files go in separate bubbles. Returns { ok, sent, failed } so
+ * the caller can report partial-success without misleading the user.
+ *
+ * If `filePaths` is empty, this is equivalent to sendIMessage(recipient, text).
+ */
+export function sendIMessageWithAttachments(
+  recipient: string,
+  text: string,
+  filePaths: readonly string[],
+): { ok: boolean; sentFiles: string[]; failedFiles: string[]; textSent: boolean } {
+  if (filePaths.length === 0) {
+    const ok = sendIMessage(recipient, text);
+    return { ok, sentFiles: [], failedFiles: [], textSent: ok };
+  }
+
+  // Verify every file exists before we start sending. Refusing up front beats
+  // a half-delivered message where some attachments arrived and one didn't.
+  for (const p of filePaths) {
+    if (!fs.existsSync(p)) {
+      logger.error('iMessage attachment file missing - aborting send', { path: p });
+      return { ok: false, sentFiles: [], failedFiles: [p], textSent: false };
+    }
+  }
+
+  // First file carries the caption; subsequent files go bare.
+  const sentFiles: string[] = [];
+  const failedFiles: string[] = [];
+  let textSent = false;
+
+  for (let i = 0; i < filePaths.length; i++) {
+    const caption = i === 0 && text.trim() ? text : undefined;
+    const ok = sendIMessageWithAttachment(recipient, filePaths[i], caption);
+    if (ok) {
+      sentFiles.push(filePaths[i]);
+      if (i === 0 && caption) textSent = true;
+    } else {
+      failedFiles.push(filePaths[i]);
+    }
+  }
+
+  // If the first file failed AND the caption didn't ride with anything else,
+  // make one more attempt to deliver the text on its own so the recipient at
+  // least gets the message body even though attachments didn't.
+  if (!textSent && text.trim()) {
+    const ok = sendIMessage(recipient, text);
+    if (ok) textSent = true;
+  }
+
+  return { ok: failedFiles.length === 0, sentFiles, failedFiles, textSent };
 }
 
 // ── Alert & Sender Helpers ──
 
-export function getDefaultSender(): string | null {
+/**
+ * Return the full safe-sender records, loading from config if the bridge
+ * isn't currently running. Always parsed through parseSafeSenders so callers
+ * never see the legacy string[] shape.
+ */
+export function getSafeSenders(): SafeSender[] {
+  if (approvedSenders.length > 0) return approvedSenders.map(s => ({ ...s }));
   try {
     const db = getDb();
-    const row = db.prepare(`SELECT value FROM config WHERE key = 'imessage_default_sender'`).get() as { value: string } | undefined;
-    if (row?.value) return row.value;
+    const row = db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
+    return parseSafeSenders(row?.value ?? null);
   } catch {
-    // Fall through to approvedSenders fallback
+    return [];
   }
-
-  // Fallback: if bridge is running, use in-memory list; otherwise load from config
-  if (approvedSenders.length > 0) return approvedSenders[0];
-
-  try {
-    const db = getDb();
-    const sendersRow = db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
-    if (sendersRow?.value) {
-      const parsed = JSON.parse(sendersRow.value);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed[0];
-    }
-  } catch {
-    // No senders available
-  }
-
-  return null;
 }
 
+/**
+ * Primary user's address (the "starred" sender). The is_primary flag on the
+ * record is now authoritative; the legacy imessage_default_sender config key
+ * is consulted only as a fallback for installs that haven't re-saved Settings.
+ */
+export function getDefaultSender(): string | null {
+  const records = getSafeSenders();
+  const primary = records.find(s => s.is_primary);
+  if (primary) return primary.address;
+
+  // Legacy fallback while older installs migrate.
+  const legacy = readLegacyDefaultSender();
+  if (legacy) return legacy;
+
+  return records.length > 0 ? records[0].address : null;
+}
+
+/**
+ * Address-only view, kept for callers that just need the allowlist. New code
+ * should prefer getSafeSenders() so it can read names/descriptions too.
+ */
 export function getApprovedSenders(): string[] {
-  if (approvedSenders.length > 0) return [...approvedSenders];
-
-  try {
-    const db = getDb();
-    const sendersRow = db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
-    if (sendersRow?.value) {
-      const parsed = JSON.parse(sendersRow.value);
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch {
-    // No senders available
-  }
-
-  return [];
+  return getSafeSenders().map(s => s.address);
 }
 
 export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critical' | 'notice'): void {
@@ -989,15 +1314,23 @@ export function isIMBridgeRunning(): boolean {
   return pollTimer !== null;
 }
 
-export function getIMBridgeStatus(): { running: boolean; enabled: boolean; connected: boolean; approvedSenders: string[]; lastSeenRowId: number } {
+export function getIMBridgeStatus(): {
+  running: boolean;
+  enabled: boolean;
+  connected: boolean;
+  approvedSenders: string[];
+  safeSenders: SafeSender[];
+  lastSeenRowId: number;
+} {
   const running = pollTimer !== null;
-  // "enabled" = senders are configured (bridge can be started)
-  const hasSenders = approvedSenders.length > 0 || getApprovedSenders().length > 0;
+  const records = getSafeSenders();
+  const hasSenders = records.length > 0;
   return {
     running,
     enabled: hasSenders || running,
     connected: running,
-    approvedSenders: approvedSenders.length > 0 ? approvedSenders : getApprovedSenders(),
+    approvedSenders: records.map(s => s.address),
+    safeSenders: records,
     lastSeenRowId,
   };
 }

@@ -20,7 +20,7 @@ import { checkPermission, getAgentPermissions } from './permissions.js';
 import { isPrimaryAgent, isPMAgent, isImaginerAgent, getPrimaryAgentId } from '../config/platform.js';
 import { spawnAgent, terminateAgent, completeAgent } from './spawner.js';
 import { getAgentRuntime } from './runtime.js';
-import { sendIMessage, getDefaultSender, isAwaitingIMResponse, clearIMResponseFlag } from '../services/imessage-bridge.js';
+import { isAwaitingIMResponse, clearIMResponseFlag } from '../services/imessage-bridge.js';
 import {
   trackerCreateProject,
   trackerCreateTask,
@@ -1751,17 +1751,22 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── iMessage Tool ──
   {
     name: 'imessage_send',
-    description: 'Send an iMessage. If recipient is omitted, sends to the default contact. Use for proactive communication, status updates, or escalation.',
+    description: 'Send an iMessage to one of the configured safe senders. CRITICAL recipient rule: when replying to an inbound iMessage, OMIT `recipient` - the tool will default to the person who actually sent you the inbound, not the starred contact. Only pass `recipient` explicitly when you are PROACTIVELY messaging someone (no inbound trigger), and the value MUST exactly match a safe-sender address shown in the [SOURCE: IMESSAGE FROM ...] inbound framing or in the allowlist. Passing an unknown address is refused. Supports text-only and text + file attachments (any local path, e.g. ~/.dojo/uploads/<agent-id>/photo.jpg) - files are sent via the imsg CLI; the message text rides with the first file. Use for proactive communication, status updates, or escalation.',
     input_schema: {
       type: 'object',
       properties: {
         recipient: {
           type: 'string',
-          description: 'Phone number or Apple ID. Omit to use default contact.',
+          description: 'Phone number or Apple ID of a configured safe sender. OMIT to default to the inbound sender (when replying) or the starred contact (when proactive). Refused if not in the safe-sender allowlist.',
         },
         message: {
           type: 'string',
-          description: 'The message text to send',
+          description: 'The message text to send. May be empty string if you only want to send attachments.',
+        },
+        attachments: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional array of absolute local file paths to send as iMessage attachments (images, PDFs, etc.). The message text rides with the first file; additional files arrive as separate bubbles.',
         },
       },
       required: ['message'],
@@ -2091,7 +2096,7 @@ export const toolDefinitions: ToolDefinition[] = [
 
   {
     name: 'vault_remember',
-    description: 'Save an important piece of knowledge to the dojo\'s long-term memory vault. Saved immediately and visible to all agents.\n\nWHEN THE USER EXPLICITLY ASKS YOU TO REMEMBER SOMETHING — phrases like "remember that…", "I want you to remember…", "always do X", "never do Y", "from now on, …", "make sure you always…" — call this tool with `verbatim: true` and `pin: true`. Pass the user\'s instruction word-for-word in `content`. Do NOT paraphrase or compress; the user\'s exact wording is the point.\n\nFor everything else (facts you observed, decisions made, preferences inferred), write a tight summary and let the DOJO handle filler-stripping.\n\nExample (user-explicit): vault_remember({ content: "Always confirm with David before pushing to main.", type: "preference", verbatim: true, pin: true }).\nExample (observed): vault_remember({ content: "Tunnel: Cloudflare named.", type: "fact" }).',
+    description: 'Save an important piece of knowledge to the dojo\'s long-term memory vault. Saved immediately and visible to all agents.\n\nWHEN THE USER EXPLICITLY ASKS YOU TO REMEMBER SOMETHING — phrases like "remember that…", "I want you to remember…", "always do X", "never do Y", "from now on, …", "make sure you always…" — call this tool with `verbatim: true` and `pin: true`. Pass the user\'s instruction word-for-word in `content`. Do NOT paraphrase or compress; the user\'s exact wording is the point.\n\nFor everything else (facts you observed, decisions made, preferences inferred), write a tight summary and let the DOJO handle filler-stripping.\n\nExample (user-explicit): vault_remember({ content: "Always confirm with the user before pushing to main.", type: "preference", verbatim: true, pin: true }).\nExample (observed): vault_remember({ content: "Tunnel: Cloudflare named.", type: "fact" }).',
     input_schema: {
       type: 'object',
       properties: {
@@ -5443,50 +5448,146 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         if (imErr) { content = imErr; isError = true; break; }
         let recipient = args.recipient as string | undefined;
         const message = args.message as string;
+        const attachmentPaths = Array.isArray(args.attachments)
+          ? (args.attachments as unknown[]).filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+          : [];
 
-        // v2.3.19 — fail loudly when the iMessage bridge is OFF. Pre-spec
+        // v2.3.19 - fail loudly when the iMessage bridge is OFF. Pre-spec
         // the tool returned "iMessage sent to X" regardless of bridge
         // state, which left the agent confidently claiming delivery to
         // the user when nothing was actually sent. Now the agent gets a
         // clear error so it can tell the user the bridge is disabled
         // and use the dashboard chat instead.
-        const { getIMBridgeStatus } = await import('../services/imessage-bridge.js');
+        const {
+          getIMBridgeStatus, getSafeSenders, findSafeSenderByAddress,
+          getInboundSenderFor, sendIMessageWithAttachments,
+        } = await import('../services/imessage-bridge.js');
         const bridgeStatus = getIMBridgeStatus();
         if (!bridgeStatus.running) {
           content =
             'iMessage bridge is currently disabled, so this message was NOT sent. ' +
             'Tell the user that iMessage is turned off on this server and respond to them in the dashboard chat instead. ' +
             (bridgeStatus.enabled
-              ? 'To re-enable iMessage delivery, the user can start it from Settings → iMessage.'
-              : 'The user can enable iMessage by adding an approved sender in Settings → iMessage.');
+              ? 'To re-enable iMessage delivery, the user can start it from Settings - iMessage.'
+              : 'The user can enable iMessage by adding an approved sender in Settings - iMessage.');
           isError = true;
           auditLog(agentId, 'imessage_send', recipient ?? '(no recipient)', 'denied', 'bridge disabled');
           break;
         }
 
-        if (!recipient) {
-          const defaultSender = getDefaultSender();
-          if (!defaultSender) {
-            content =
-              'iMessage was NOT sent — there is no default recipient configured on this server. ' +
-              'Tell the user in the dashboard chat instead, and let them know they can set a default contact in Settings → iMessage if they want this agent to text them.';
-            isError = true;
-            auditLog(agentId, 'imessage_send', '(no recipient)', 'error', 'no default sender');
-            break;
-          }
-          recipient = defaultSender;
+        // ── Recipient resolution + allowlist gate ────────────────────
+        // Two-stage. First, figure out the intended recipient (explicit
+        // arg, else inbound-trigger sender, else starred primary). Then
+        // confirm that recipient is in the safe-sender allowlist - this
+        // prevents the model from sending to a number it invented or
+        // copied from a different conversation context.
+        const safeRecords = getSafeSenders();
+        if (safeRecords.length === 0) {
+          content = 'iMessage was NOT sent - no safe senders are configured on this server. Add one in Settings - iMessage, then try again.';
+          isError = true;
+          auditLog(agentId, 'imessage_send', recipient ?? '(no recipient)', 'error', 'no safe senders');
+          break;
         }
 
-        const sendOk = sendIMessage(recipient, message);
-        if (!sendOk) {
-          // v2.3.19 — the low-level send failed even though the bridge
-          // is reportedly "running" (e.g. imsg CLI not installed +
-          // AppleScript denied permission). Tell the agent honestly so
-          // it can fall back to the dashboard chat.
+        const inboundSender = getInboundSenderFor(agentId);
+        let switchedFromInbound: string | null = null;
+
+        if (!recipient) {
+          // No explicit recipient. Reply context wins over the starred
+          // default - if this turn was triggered by an iMessage, default
+          // to the actual sender of that inbound, not the household
+          // primary. Falls back to the starred primary only for
+          // proactive (non-reply) sends.
+          if (inboundSender) {
+            const match = findSafeSenderByAddress(safeRecords, inboundSender);
+            recipient = match?.address ?? inboundSender;
+          } else {
+            const primary = safeRecords.find(s => s.is_primary) ?? safeRecords[0];
+            recipient = primary.address;
+          }
+        } else {
+          const match = findSafeSenderByAddress(safeRecords, recipient);
+          if (!match) {
+            const valid = safeRecords
+              .map(s => `${s.name} <${s.address}>`)
+              .join(', ');
+            content =
+              `iMessage NOT sent - recipient "${recipient}" is not on the safe-sender allowlist. ` +
+              `Valid recipients on this server: ${valid}. ` +
+              `If you meant to reply to the person who just messaged you, OMIT the recipient argument and the tool will default to them automatically. ` +
+              `If you need to text someone new, the user has to add them in Settings - iMessage first.`;
+            isError = true;
+            auditLog(agentId, 'imessage_send', recipient, 'denied', 'recipient not in allowlist');
+            break;
+          }
+          recipient = match.address; // canonicalize formatting
+          if (inboundSender) {
+            const inboundMatch = findSafeSenderByAddress(safeRecords, inboundSender);
+            const inboundAddr = inboundMatch?.address ?? inboundSender;
+            if (inboundAddr !== recipient) {
+              switchedFromInbound = inboundAddr;
+            }
+          }
+        }
+
+        const recipientRecord = findSafeSenderByAddress(safeRecords, recipient);
+
+        // ── Attachment pre-flight ────────────────────────────────────
+        // Fail-fast on any missing file before any bytes go over the
+        // wire. Partial sends (some attachments delivered, some not)
+        // are worse than no send because the recipient sees a fragment
+        // and the agent can't tell which.
+        if (attachmentPaths.length > 0) {
+          const { existsSync, statSync } = await import('node:fs');
+          for (const p of attachmentPaths) {
+            if (!p.startsWith('/')) {
+              content = `iMessage NOT sent - attachment path "${p}" must be absolute (start with /). Use the full local path.`;
+              isError = true;
+              auditLog(agentId, 'imessage_send', recipient, 'error', 'relative attachment path');
+              break;
+            }
+            if (!existsSync(p)) {
+              content = `iMessage NOT sent - attachment file not found at "${p}". Verify the path or re-create the file.`;
+              isError = true;
+              auditLog(agentId, 'imessage_send', recipient, 'error', `missing attachment: ${p}`);
+              break;
+            }
+            try {
+              const stat = statSync(p);
+              if (!stat.isFile()) {
+                content = `iMessage NOT sent - attachment "${p}" is not a regular file (is it a directory?).`;
+                isError = true;
+                auditLog(agentId, 'imessage_send', recipient, 'error', `non-file attachment: ${p}`);
+                break;
+              }
+              // iMessage tops out around 100MB per attachment. Pre-check
+              // size and refuse cleanly rather than handing a too-large
+              // file to imsg and waiting for it to time out.
+              const MAX_IMESSAGE_BYTES = 100 * 1024 * 1024;
+              if (stat.size > MAX_IMESSAGE_BYTES) {
+                const mb = (stat.size / 1024 / 1024).toFixed(1);
+                content = `iMessage NOT sent - attachment "${p}" is ${mb}MB, which exceeds iMessage's ~100MB per-file limit. Use share_publicly or upload to a cloud drive and send the link instead.`;
+                isError = true;
+                auditLog(agentId, 'imessage_send', recipient, 'error', `attachment too large: ${p} ${mb}MB`);
+                break;
+              }
+            } catch (err) {
+              content = `iMessage NOT sent - cannot stat attachment "${p}": ${err instanceof Error ? err.message : String(err)}`;
+              isError = true;
+              auditLog(agentId, 'imessage_send', recipient, 'error', `stat error: ${p}`);
+              break;
+            }
+          }
+          if (isError) break;
+        }
+
+        // ── Send ─────────────────────────────────────────────────────
+        const result = sendIMessageWithAttachments(recipient, message, attachmentPaths);
+        if (!result.ok && result.sentFiles.length === 0 && !result.textSent) {
           content =
-            'iMessage delivery failed at the system level — neither the imsg CLI nor AppleScript could send the message. ' +
+            'iMessage delivery failed at the system level - neither the imsg CLI nor AppleScript could deliver. ' +
             'Tell the user the message did not go through, and respond in the dashboard chat instead. ' +
-            'The user can check System Settings → Privacy & Security → Automation to grant Messages access if AppleScript is the issue.';
+            'The user can check System Settings - Privacy & Security - Automation to grant Messages access if AppleScript is the issue.';
           isError = true;
           auditLog(agentId, 'imessage_send', recipient, 'error', 'send returned false');
           break;
@@ -5500,23 +5601,52 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         // end-of-turn with the final text content and send a second
         // iMessage. Clearing the flag here says "the agent took
         // responsibility, don't auto-reply on top."
-        //
-        // We clear unconditionally rather than checking recipient
-        // match: the risk of double-send (annoying) is worse than
-        // the risk of not auto-replying to the original sender when
-        // the agent deliberately messaged someone else mid-turn
-        // (rare). Gemma4 in particular tends to invoke this tool to
-        // reply when other models would just respond in plain text.
         if (isAwaitingIMResponse(agentId)) {
           clearIMResponseFlag(agentId);
-          logger.info('imessage_send: cleared auto-reply flag — agent is handling iMessage response itself', {
+          logger.info('imessage_send: cleared auto-reply flag - agent is handling iMessage response itself', {
             agentId,
             recipient,
           });
         }
 
-        auditLog(agentId, 'imessage_send', recipient, 'success', `Sent ${message.length} chars`);
-        content = `iMessage sent to ${recipient}`;
+        // ── Success string (with recipient-switching warning) ────────
+        // If the agent receives an iMessage from sender A and then sends
+        // to sender B's address explicitly, the success string makes
+        // that switch loud so the user sees it in the chat log.
+        const recipientLabel = recipientRecord
+          ? `${recipientRecord.name} (${recipientRecord.address})`
+          : recipient;
+        const attachSummary = attachmentPaths.length > 0
+          ? ` with ${result.sentFiles.length}/${attachmentPaths.length} attachment(s)${result.failedFiles.length > 0 ? ` (failed: ${result.failedFiles.join(', ')})` : ''}`
+          : '';
+        const switchNote = switchedFromInbound
+          ? ` NOTE: this was a SWITCH - the inbound that triggered this turn came from ${switchedFromInbound}, but you sent to ${recipientLabel} instead. Confirm this was intentional.`
+          : '';
+        // Audit detail captures the full sharing context so a later review
+        // can answer "did Kevin over-share with sender X?" without
+        // reconstructing from chat history. We log the recipient's
+        // sharing_level, whether this was a reply or a switch, and the
+        // inbound sender (when applicable).
+        const auditDetailParts: string[] = [
+          `Sent ${message.length} chars`,
+        ];
+        if (attachmentPaths.length > 0) {
+          auditDetailParts.push(`+ ${result.sentFiles.length}/${attachmentPaths.length} attachments`);
+        }
+        if (recipientRecord) {
+          auditDetailParts.push(`recipientLevel=${recipientRecord.sharing_level}`);
+        }
+        if (inboundSender) {
+          auditDetailParts.push(
+            switchedFromInbound
+              ? `inboundSender=${inboundSender} (SWITCH)`
+              : `inboundSender=${inboundSender} (reply)`,
+          );
+        } else {
+          auditDetailParts.push('proactive');
+        }
+        auditLog(agentId, 'imessage_send', recipient, 'success', auditDetailParts.join(' | '));
+        content = `iMessage sent to ${recipientLabel}${attachSummary}.${switchNote}`;
         break;
       }
 
