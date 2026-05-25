@@ -725,6 +725,10 @@ export function updateTask(id: string, updates: Partial<{
     // or tracker_pause_schedule.
     if (updates.status === 'paused') {
       setClauses.push('is_paused = 1');
+      // v2.7.18 - reset pause validation flag every time we transition into
+      // paused so PM re-evaluates from scratch (catches repeated game
+      // attempts where the agent unpauses + re-pauses with the same notes).
+      setClauses.push('pause_validated = 0');
       // Save the current status so we can restore it on auto-resume.
       // Look up the task's current status BEFORE we overwrite it.
       const currentTask = db.prepare('SELECT status FROM tasks WHERE id = ?').get(id) as { status: string } | undefined;

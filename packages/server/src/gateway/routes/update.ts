@@ -16,6 +16,89 @@ const logger = createLogger('updater');
 
 const GITHUB_REPO = 'd-cornerpin/dojo';
 const PLATFORM_DIR = path.join(os.homedir(), '.dojo', 'platform');
+const DOJO_DIR = path.join(os.homedir(), '.dojo');
+
+// Per-update backup directories live as siblings of PLATFORM_DIR:
+//   ~/.dojo/platform                  (current install)
+//   ~/.dojo/platform.backup-2.7.16    (one per prior version)
+//   ~/.dojo/platform.backup-2.7.15
+//   ...
+// Each backup is a full copy of node_modules + dist + dashboards, easily
+// 100-200MB. Without pruning these accumulate forever and have been
+// reported to fill mac mini disks. Keep MAX_BACKUPS_TO_KEEP most recent
+// after each update (1 = the one we just made + nothing else; 2 gives
+// us a second deeper rollback option). Default 2.
+const BACKUP_PREFIX = 'platform.backup-';
+const MAX_BACKUPS_TO_KEEP = 2;
+
+interface BackupInfo {
+  name: string;
+  path: string;
+  mtimeMs: number;
+  sizeBytes: number;
+}
+
+function listPlatformBackups(): BackupInfo[] {
+  if (!fs.existsSync(DOJO_DIR)) return [];
+  const entries = fs.readdirSync(DOJO_DIR);
+  const backups: BackupInfo[] = [];
+  for (const name of entries) {
+    if (!name.startsWith(BACKUP_PREFIX)) continue;
+    const fullPath = path.join(DOJO_DIR, name);
+    let stat;
+    try { stat = fs.statSync(fullPath); } catch { continue; }
+    if (!stat.isDirectory()) continue;
+    backups.push({
+      name,
+      path: fullPath,
+      mtimeMs: stat.mtimeMs,
+      sizeBytes: dirSizeBytes(fullPath),
+    });
+  }
+  return backups;
+}
+
+function dirSizeBytes(dir: string): number {
+  // Walk the tree; reasonably fast for ~100-200MB platform backups since
+  // it's a single-shot stat walk, no I/O on file contents.
+  let total = 0;
+  const stack: string[] = [dir];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    let entries: string[];
+    try { entries = fs.readdirSync(cur); } catch { continue; }
+    for (const e of entries) {
+      const p = path.join(cur, e);
+      let st;
+      try { st = fs.lstatSync(p); } catch { continue; }
+      if (st.isDirectory()) stack.push(p);
+      else total += st.size;
+    }
+  }
+  return total;
+}
+
+function pruneOldBackups(keep: number = MAX_BACKUPS_TO_KEEP): { deleted: string[]; freedBytes: number } {
+  const backups = listPlatformBackups();
+  // Newest first.
+  backups.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const toDelete = backups.slice(keep);
+  const deleted: string[] = [];
+  let freedBytes = 0;
+  for (const b of toDelete) {
+    try {
+      fs.rmSync(b.path, { recursive: true, force: true });
+      deleted.push(b.name);
+      freedBytes += b.sizeBytes;
+    } catch (err) {
+      logger.warn('Failed to delete old backup', { name: b.name, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  if (deleted.length > 0) {
+    logger.info('Pruned old platform backups', { deleted, freedMB: Math.round(freedBytes / (1024 * 1024)), keep });
+  }
+  return { deleted, freedBytes };
+}
 
 function getCurrentVersion(): string {
   // Try reading from the installed platform's package.json first
@@ -220,6 +303,12 @@ updateRouter.post('/rollback', async (c) => {
     await execAsync('npm install --omit=dev', { cwd: PLATFORM_DIR, timeout: 120000, env });
     fs.rmSync(tmpDir, { recursive: true });
 
+    try {
+      pruneOldBackups();
+    } catch (err) {
+      logger.warn('Backup prune after rollback failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    }
+
     logger.info('Rollback complete', { from: currentVersion, to: targetVersion });
 
     setTimeout(() => {
@@ -343,6 +432,15 @@ updateRouter.post('/apply', async (c) => {
     // 8. Clean up temp files
     fs.rmSync(tmpDir, { recursive: true });
 
+    // 8b. Prune old backups - keep just the last MAX_BACKUPS_TO_KEEP so
+    // these don't fill the disk over many releases. Best-effort: if any
+    // delete fails, the update still succeeds.
+    try {
+      pruneOldBackups();
+    } catch (err) {
+      logger.warn('Backup prune after update failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    }
+
     logger.info('Update complete', { from: currentVersion, to: latestVersion });
 
     // 9. Send success response before restarting
@@ -365,5 +463,61 @@ updateRouter.post('/apply', async (c) => {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Update failed', { error: msg });
     return c.json({ ok: false, error: `Update failed: ${msg}` }, 500);
+  }
+});
+
+// ── Backup listing + manual cleanup ──
+// Auto-prune runs after every update/rollback (keeps the last 2). This
+// endpoint pair gives the user a way to inspect and free space on demand
+// for installs where backups have already piled up.
+
+updateRouter.get('/backups', (c) => {
+  try {
+    const backups = listPlatformBackups();
+    backups.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const totalBytes = backups.reduce((sum, b) => sum + b.sizeBytes, 0);
+    return c.json({
+      ok: true,
+      data: {
+        count: backups.length,
+        totalBytes,
+        totalMB: Math.round(totalBytes / (1024 * 1024)),
+        keepDefault: MAX_BACKUPS_TO_KEEP,
+        backups: backups.map(b => ({
+          name: b.name,
+          version: b.name.slice(BACKUP_PREFIX.length),
+          mtime: new Date(b.mtimeMs).toISOString(),
+          sizeBytes: b.sizeBytes,
+          sizeMB: Math.round(b.sizeBytes / (1024 * 1024)),
+        })),
+      },
+    });
+  } catch (err) {
+    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+updateRouter.post('/backups/cleanup', async (c) => {
+  // Body: { keep?: number } - how many recent backups to retain. Defaults
+  // to 1 (manual cleanup implies "free space now"; the most recent one is
+  // still kept as a single-step rollback escape hatch).
+  const body = await c.req.json().catch(() => ({} as { keep?: number }));
+  const keep = typeof body.keep === 'number' && body.keep >= 0 ? Math.floor(body.keep) : 1;
+  try {
+    const { deleted, freedBytes } = pruneOldBackups(keep);
+    const remaining = listPlatformBackups().length;
+    return c.json({
+      ok: true,
+      data: {
+        deleted,
+        deletedCount: deleted.length,
+        freedBytes,
+        freedMB: Math.round(freedBytes / (1024 * 1024)),
+        kept: keep,
+        remaining,
+      },
+    });
+  } catch (err) {
+    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });

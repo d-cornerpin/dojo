@@ -67,6 +67,7 @@ export const PM_AGENT_ALWAYS_LOADED = [
   'tracker_edit_task',
   'tracker_edit_project',
   'tracker_close_project',
+  'tracker_validate_pause',
   'send_to_agent',
   'list_agents',
 ];

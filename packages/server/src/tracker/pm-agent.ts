@@ -496,6 +496,59 @@ async function runPMReview(): Promise<void> {
     }
   }
 
+  // ── v2.7.18: unvalidated-pause detection ──
+  // Every task with status='paused' AND pause_validated=0 needs a PM
+  // judgment call before it's "trusted." Catches the gaming pattern
+  // where agents mark tasks paused just to silence PM pokes.
+  //
+  // Wait at least 1 minute after the pause to give the agent a beat to
+  // also resolve / unpause / get woken up by an inbound user message.
+  // Include the agent's last user-facing assistant message (so PM can
+  // judge whether the pause notes match a real request) and the task
+  // notes themselves (the pause reason the agent supplied).
+  const unvalidatedPauseRows = db.prepare(`
+    SELECT id, title, notes, assigned_to, updated_at
+    FROM tasks
+    WHERE status = 'paused'
+      AND pause_validated = 0
+      AND datetime(updated_at) < datetime('now', '-1 minute')
+    ORDER BY updated_at ASC
+    LIMIT 10
+  `).all() as Array<{ id: string; title: string; notes: string | null; assigned_to: string | null; updated_at: string }>;
+
+  for (const pTask of unvalidatedPauseRows) {
+    const agentName = pTask.assigned_to
+      ? agents.find(a => a.id === pTask.assigned_to)?.name ?? pTask.assigned_to
+      : 'unassigned';
+    let lastAssistantSnippet = '(no recent assistant message)';
+    if (pTask.assigned_to) {
+      const lastMsg = db.prepare(`
+        SELECT content FROM messages
+        WHERE agent_id = ? AND role = 'assistant'
+        ORDER BY created_at DESC, rowid DESC LIMIT 1
+      `).get(pTask.assigned_to) as { content: string } | undefined;
+      if (lastMsg?.content) {
+        lastAssistantSnippet = lastMsg.content.length > 220
+          ? lastMsg.content.slice(0, 220) + '...'
+          : lastMsg.content;
+      }
+    }
+    const pauseReason = pTask.notes && pTask.notes.trim()
+      ? pTask.notes.replace(/\s+/g, ' ').trim()
+      : '(EMPTY)';
+    issues.push({
+      stableId: `${pTask.id}|UNVALIDATED_PAUSE`,
+      text:
+        `UNVALIDATED_PAUSE: "${pTask.title}" (${pTask.id.slice(0, 8)}) was paused by ${agentName} but has not been validated yet.\n` +
+        `  Pause reason notes: "${pauseReason}"\n` +
+        `  Agent's last user-facing message: "${lastAssistantSnippet}"\n` +
+        `  Decide: valid pause (names a specific external trigger that matches a real request) or gaming (vague / no matching request / sounds like 'blocked' instead). ` +
+        `Call tracker_validate_pause(task_id="${pTask.id}", valid=true) if real. ` +
+        `Call tracker_validate_pause(task_id="${pTask.id}", valid=false, reject_reason="...one sentence...") if gaming. ` +
+        `Rejection auto-reverts the task to in_progress and notifies the agent.`,
+    });
+  }
+
   // Build a compact summary of active tasks for the LLM to review
   // Only include active tasks -- skip completed/fallen to keep the prompt small
   const taskSummary = activeTasks.map(t => {

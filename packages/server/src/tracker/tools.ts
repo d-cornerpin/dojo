@@ -620,6 +620,40 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       updates.pausedUntil = resumeAt;
     }
 
+    // ── Pause-reason engine pre-check (v2.7.18) ──
+    // Pausing without a real wait condition was the most common gaming
+    // pattern: agents marked tasks paused just to silence PM pokes. The
+    // engine refuses empty/short notes here; PM validates the SUBSTANCE of
+    // the reason on its next tick (see pause_validated column + the
+    // tracker_validate_pause tool).
+    if (status === 'paused') {
+      const pauseNotes = typeof args.notes === 'string' ? args.notes.trim() : '';
+      const MIN_PAUSE_NOTES_LEN = 15;
+      if (pauseNotes.length < MIN_PAUSE_NOTES_LEN) {
+        return (
+          `Error: paused tasks require a clear reason in \`notes\` (minimum ${MIN_PAUSE_NOTES_LEN} characters). ` +
+          `\`notes\` must name the specific external trigger you're waiting on - for example: ` +
+          `"waiting for user to reboot ESP board", "waiting for vendor to send tracking number". ` +
+          `If you're stuck and don't know what to do, that's NOT a paused condition - use \`status="blocked"\` ` +
+          `with the real reason so the user knows. If you're just done with the task, use \`status="complete"\`. ` +
+          `Pausing without a real reason will be reverted by the PM agent on its next tick.`
+        );
+      }
+      // Anti-gaming sniff: catch phrases that signal the agent is hiding
+      // from PM rather than waiting on a real condition. PM still gets the
+      // final say, but we may as well refuse the obvious cases at the door.
+      const lower = pauseNotes.toLowerCase();
+      const gamingSignals = ['pm keeps', 'pm is', 'silence pm', 'stop the pm', 'nagging', 'stop poking', 'stop the poke'];
+      const matched = gamingSignals.find(s => lower.includes(s));
+      if (matched) {
+        return (
+          `Error: this pause reason ("${pauseNotes.slice(0, 100)}") reads as an attempt to silence the PM, not a real wait condition. ` +
+          `If you're stuck, use \`status="blocked"\` with the real reason. ` +
+          `If you actually have a user-facing question, ask the user first then re-pause with a concrete "waiting for X" reason.`
+        );
+      }
+    }
+
     // For recurring tasks being marked complete
     if (status === 'complete' && isScheduledRecurring) {
       const notes = args.notes as string | undefined;
@@ -1367,6 +1401,93 @@ export function trackerCloseProject(agentId: string, args: Record<string, unknow
     logger.error('trackerCloseProject failed', { projectId, error: msg }, agentId);
     return `Error closing project: ${msg}`;
   }
+}
+
+// ── trackerValidatePause (v2.7.18) ──
+//
+// PM-only tool. For each paused task with pause_validated=0, PM judges
+// whether the pause is a real wait condition or gaming.
+//
+// On valid=true: pause_validated=1; task stays paused; PM stops surfacing
+// the task as an UNVALIDATED_PAUSE issue.
+//
+// On valid=false: task is reverted to in_progress, the assigned agent
+// gets a directive via send_to_agent explaining why their pause was
+// rejected and what to do instead.
+
+export async function trackerValidatePause(
+  pmAgentId: string,
+  args: { task_id: string; valid: boolean; reject_reason?: string },
+): Promise<string> {
+  const rawTaskId = args.task_id;
+  if (!rawTaskId) return 'Error: task_id is required.';
+
+  const resolved = resolveTaskId(rawTaskId);
+  if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+  const taskId = resolved.id;
+
+  const db = getDb();
+  const task = db.prepare(
+    "SELECT id, title, status, assigned_to, notes, pause_validated FROM tasks WHERE id = ?",
+  ).get(taskId) as { id: string; title: string; status: string; assigned_to: string | null; notes: string | null; pause_validated: number } | undefined;
+
+  if (!task) return `Error: task ${taskId} not found.`;
+  if (task.status !== 'paused') {
+    return `Error: task "${task.title}" (${taskId}) is currently status="${task.status}", not "paused". Nothing to validate.`;
+  }
+
+  if (args.valid) {
+    db.prepare("UPDATE tasks SET pause_validated = 1, updated_at = datetime('now') WHERE id = ?").run(taskId);
+    logger.info('Pause validated by PM', { taskId, pmAgentId }, pmAgentId);
+    return `[OK] Pause validated on "${task.title}" (${taskId}). PM will leave this task alone until the agent un-pauses it.`;
+  }
+
+  // Reject path. Revert to in_progress and notify the assigned agent.
+  const rejectReason = (args.reject_reason ?? '').trim();
+  if (!rejectReason) {
+    return 'Error: reject_reason is required when valid=false. One-sentence explanation for the agent (e.g. "no specific wait condition; you never actually asked the user anything").';
+  }
+
+  // Use updateTask so is_paused gets cleared and pause fields reset.
+  const updated = updateTask(taskId, { status: 'in_progress' });
+  if (!updated) return `Error: task ${taskId} was deleted before pause-reject could land.`;
+
+  // Direct A2A message to the assigned agent so they see the rejection on
+  // their next turn. Fire-and-forget; if delivery fails, log and continue -
+  // PM has done its part by reverting the status.
+  if (task.assigned_to) {
+    try {
+      const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
+      const directive =
+        `Your pause on task "${task.title}" (${taskId.slice(0, 8)}) was rejected by the PM. ` +
+        `Reason: ${rejectReason}. ` +
+        `The task is back to in_progress. Pick one: (a) do the work and mark complete, ` +
+        `(b) mark blocked with the real reason if you genuinely cannot proceed, ` +
+        `(c) ask the user a specific question and THEN re-pause with notes that name what you're waiting for. ` +
+        `Do not just re-pause with the same notes - PM will reject again.`;
+      const { v4: uuidv4 } = await import('uuid');
+      await deliverA2AMessage({
+        intent: 'QUESTION',
+        threadId: uuidv4(),
+        requiresResponse: true,
+        payload: directive,
+        toAgent: task.assigned_to,
+        fromAgent: pmAgentId,
+      });
+    } catch (err) {
+      logger.warn('Failed to send pause-rejection notice to agent', {
+        taskId, assignedTo: task.assigned_to,
+        error: err instanceof Error ? err.message : String(err),
+      }, pmAgentId);
+    }
+  }
+
+  logger.info('Pause rejected by PM', { taskId, pmAgentId, rejectReason }, pmAgentId);
+  return (
+    `[OK] Pause rejected on "${task.title}" (${taskId}). Task reverted to in_progress. ` +
+    `Rejection reason recorded: "${rejectReason}". ` +
+    `${task.assigned_to ? `Notified ${task.assigned_to} via send_to_agent.` : 'Task has no assigned agent to notify.'}`
+  );
 }
 
 // ── trackerPauseSchedule ──

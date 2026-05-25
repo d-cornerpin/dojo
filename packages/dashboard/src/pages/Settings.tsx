@@ -604,7 +604,20 @@ const PlatformTab = () => {
 const ServerControlSettings = () => {
   const [confirming, setConfirming] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [backups, setBackups] = useState<api.ListPlatformBackupsResponse | null>(null);
+  const [backupsLoading, setBackupsLoading] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
   const toast = useToast();
+
+  useEffect(() => {
+    const load = async () => {
+      setBackupsLoading(true);
+      const result = await api.listPlatformBackups();
+      if (result.ok) setBackups(result.data);
+      setBackupsLoading(false);
+    };
+    load();
+  }, []);
 
   const doRestart = async () => {
     setRestarting(true);
@@ -624,6 +637,28 @@ const ServerControlSettings = () => {
     // Leave the "restarting" overlay up; the WebSocket will drop and the
     // dashboard's reconnect logic will pick the server back up (in prod).
     // No setRestarting(false) — the page will reload itself on reconnect.
+  };
+
+  const doCleanup = async () => {
+    setCleaning(true);
+    const result = await api.cleanupPlatformBackups(1);
+    if (!result.ok) {
+      toast.error(`Cleanup failed: ${result.error}`);
+      setCleaning(false);
+      return;
+    }
+    const data = result.data;
+    if (data) {
+      if (data.deletedCount === 0) {
+        toast.info('No old backups to clean up.');
+      } else {
+        toast.info(`Cleaned up ${data.deletedCount} backup(s), freed ${data.freedMB} MB. ${data.remaining} kept.`);
+      }
+    }
+    // Reload the listing
+    const refresh = await api.listPlatformBackups();
+    if (refresh.ok) setBackups(refresh.data);
+    setCleaning(false);
   };
 
   return (
@@ -673,6 +708,33 @@ const ServerControlSettings = () => {
           Restarting server… the dashboard will reconnect automatically once it's back up.
         </div>
       )}
+
+      {/* ── Platform backups cleanup ── */}
+      <div className="pt-3 border-t border-ui/10 space-y-2">
+        <div className="text-sm font-medium text-ui/80">Platform backups</div>
+        <p className="text-xs text-ui/40">
+          Each auto-update saves a copy of the previous platform under <code>~/.dojo/platform.backup-&lt;version&gt;</code> for rollback safety. Updates from v2.7.18+ auto-prune the oldest, keeping the most recent {backups?.keepDefault ?? 2}. Use this if older backups have piled up and you need disk space now.
+        </p>
+        {backupsLoading && <p className="text-xs text-ui/40 italic">Loading backups…</p>}
+        {!backupsLoading && backups && (
+          <>
+            <p className="text-xs text-ui/55">
+              {backups.count === 0
+                ? 'No backups on disk.'
+                : `${backups.count} backup(s) on disk, ${backups.totalMB} MB total.`}
+            </p>
+            {backups.count > 1 && (
+              <button
+                onClick={doCleanup}
+                disabled={cleaning}
+                className="px-3 py-2 glass-btn text-sm rounded-lg transition-colors disabled:opacity-60"
+              >
+                {cleaning ? 'Cleaning up…' : 'Clean up old backups (keep most recent 1)'}
+              </button>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 };

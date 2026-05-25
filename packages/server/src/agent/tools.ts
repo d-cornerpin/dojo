@@ -1352,6 +1352,19 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'tracker_validate_pause',
+    description: '**PM AGENT ONLY.** Adjudicate whether an agent\'s pause of a task is legitimate. Call this for every UNVALIDATED_PAUSE issue surfaced in the situation report. Pass `valid=true` if the pause reason names a real, specific external trigger the agent has actually requested (e.g. "waiting for user to reboot ESP", "waiting for vendor to send tracking number"). Pass `valid=false` if the reason is vague, complains about the PM, or describes a stuck/blocked condition that should be `blocked` not `paused`. On a valid call, the task stays paused and PM ignores it from now on. On an invalid call, the task is reverted to in_progress and the assigned agent gets a directive explaining why.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'Task ID with status=paused.' },
+        valid: { type: 'boolean', description: 'true = pause stands; false = pause rejected and reverted to in_progress.' },
+        reject_reason: { type: 'string', description: 'Required when valid=false. One-sentence explanation for the agent. e.g. "no specific wait condition; you did not actually ask the user anything."' },
+      },
+      required: ['task_id', 'valid'],
+    },
+  },
+  {
     name: 'tracker_close_project',
     description: 'Close an entire project AND every open task on it in one call. Use this when you want to abandon a project, when you discover a duplicate project, when scope changed and the work is no longer relevant, or when every remaining task has genuinely been completed but is still showing as open. Pass status="cancelled" for abandoned/duplicate/scope-change cases (the default — leaves a "cancelled" marker on each task) and status="complete" only when all the work was actually done. The reason string is required and gets appended as a note on every task closed — this is the audit trail for whoever sees the kanban next. Far better than looping tracker_update_status one task at a time, and the only correct response when the engine tells you a project of yours is stranded (open tasks left behind on an abandoned project).',
     input_schema: {
@@ -3130,6 +3143,13 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
     }
   }
 
+  if (name === 'tracker_validate_pause') {
+    if (!isPMAgent(agentId)) {
+      auditLog(agentId, name, null, 'denied', 'tracker_validate_pause is restricted to the PM agent');
+      return { toolCallId: id, name, content: 'Permission denied: only the PM agent can adjudicate pauses. If you think a paused task should be reverted, message the PM or unpause it yourself.', isError: true };
+    }
+  }
+
   if (name === 'dreamer_run_now' || name === 'cost_summary') {
     if (!isPrimaryAgent(agentId)) {
       auditLog(agentId, name, null, 'denied', `${name} is restricted to the primary agent only`);
@@ -4139,6 +4159,20 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
           description: args.description as string | null | undefined,
         });
         isError = content.startsWith('Error');
+        break;
+      }
+      case 'tracker_validate_pause': {
+        const tvpErr = checkRequired([
+          { name: 'task_id', value: args.task_id, type: 'string' },
+          { name: 'valid', value: args.valid, type: 'boolean' },
+        ]);
+        if (tvpErr) { content = tvpErr; isError = true; break; }
+        const { trackerValidatePause } = await import('../tracker/tools.js');
+        content = await trackerValidatePause(agentId, {
+          task_id: args.task_id as string,
+          valid: args.valid as boolean,
+          reject_reason: args.reject_reason as string | undefined,
+        });
         break;
       }
       case 'tracker_close_project': {

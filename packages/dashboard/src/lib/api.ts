@@ -390,6 +390,43 @@ export const restartServer = async (): Promise<ApiResponse<RestartServerResponse
   return request<RestartServerResponse>('/system/restart', { method: 'POST' });
 };
 
+// ── Platform backup cleanup ──
+// The auto-update flow leaves a full platform.backup-<version> directory
+// on disk per update (~100-200MB each). Auto-prune keeps the last 2 after
+// every update; these endpoints let the user inspect + manually free more.
+export interface PlatformBackupInfo {
+  name: string;
+  version: string;
+  mtime: string;
+  sizeBytes: number;
+  sizeMB: number;
+}
+export interface ListPlatformBackupsResponse {
+  count: number;
+  totalBytes: number;
+  totalMB: number;
+  keepDefault: number;
+  backups: PlatformBackupInfo[];
+}
+export const listPlatformBackups = async (): Promise<ApiResponse<ListPlatformBackupsResponse>> => {
+  return request<ListPlatformBackupsResponse>('/update/backups');
+};
+
+export interface CleanupPlatformBackupsResponse {
+  deleted: string[];
+  deletedCount: number;
+  freedBytes: number;
+  freedMB: number;
+  kept: number;
+  remaining: number;
+}
+export const cleanupPlatformBackups = async (keep: number = 1): Promise<ApiResponse<CleanupPlatformBackupsResponse>> => {
+  return request<CleanupPlatformBackupsResponse>('/update/backups/cleanup', {
+    method: 'POST',
+    body: JSON.stringify({ keep }),
+  });
+};
+
 // V2CutoverNotice (Part XI) — bulk-reset every idle agent's session.
 // Returns count breakdown { reset, busy, errors, total }.
 export interface ResetIdleSessionsResponse {
