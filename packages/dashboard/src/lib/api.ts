@@ -437,6 +437,39 @@ export const getCleanupStatus = async (): Promise<ApiResponse<CleanupStatusRespo
   return request<CleanupStatusResponse>('/update/backups/cleanup/status');
 };
 
+// ── Plaud integration ──
+// Plaud is a meeting-recording service. Auth flow is unusual: the user
+// clicks Connect, server spawns the Plaud CLI's `login` subprocess, the
+// CLI emits an OAuth URL over WebSocket (`plaud:auth_url`), user opens
+// it, completes the flow, server detects subprocess exit and broadcasts
+// `plaud:connected`. Dashboard listens to both events.
+export interface PlaudStatus {
+  connected: boolean;
+  email: string | null;
+  connectedAt: string | null;
+  loginInProgress: boolean;
+  loginUrl: string | null;
+}
+export const getPlaudStatus = async (): Promise<ApiResponse<PlaudStatus>> => {
+  return request<PlaudStatus>('/plaud/status');
+};
+
+export const connectPlaud = async (): Promise<ApiResponse<{ status: 'started' | 'already_in_progress'; message: string }>> => {
+  return request<{ status: 'started' | 'already_in_progress'; message: string }>('/plaud/connect', { method: 'POST' });
+};
+
+export const cancelPlaudConnect = async (): Promise<ApiResponse<{ cancelled: boolean }>> => {
+  return request<{ cancelled: boolean }>('/plaud/cancel-connect', { method: 'POST' });
+};
+
+export const disconnectPlaud = async (): Promise<ApiResponse<{ disconnected: boolean }>> => {
+  return request<{ disconnected: boolean }>('/plaud/disconnect', { method: 'POST' });
+};
+
+export const refreshPlaud = async (): Promise<ApiResponse<{ connected: boolean; email: string | null }>> => {
+  return request<{ connected: boolean; email: string | null }>('/plaud/refresh', { method: 'POST' });
+};
+
 // V2CutoverNotice (Part XI) — bulk-reset every idle agent's session.
 // Returns count breakdown { reset, busy, errors, total }.
 export interface ResetIdleSessionsResponse {

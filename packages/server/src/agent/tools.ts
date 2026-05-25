@@ -49,6 +49,8 @@ import { slidesToolDefinitions, slidesToolNames, executeGoogleSlidesTool } from 
 import { formsToolDefinitions, formsToolNames, executeGoogleFormsTool } from '../google/tools-forms.js';
 import { getAgentGoogleAccessLevel, getEnabledServices, isGoogleConnected, getGoogleWorkspaceConfig } from '../google/auth.js';
 import { microsoftReadToolDefinitions, executeMicrosoftReadTool } from '../microsoft/tools-read.js';
+import { plaudReadToolDefinitions, executePlaudTool } from '../plaud/tools-read.js';
+import { isPlaudConnected } from '../plaud/auth.js';
 import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../microsoft/tools-write.js';
 import { officeToolDefinitions, executeOfficeTool } from '../microsoft/tools-office.js';
 import { getAgentMicrosoftAccessLevel, getEnabledMsServices, isMicrosoftConnected, getMicrosoftWorkspaceConfig } from '../microsoft/auth.js';
@@ -351,6 +353,14 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   // ── Office document tools (primary agent only, requires npm packages) ──
   if (msAccess === 'full' && areOfficePackagesInstalled()) {
     filtered.push(...officeToolDefinitions);
+  }
+
+  // ── Plaud (meeting recordings) ──
+  // Read-only across the board. No slot model (single account per Dojo
+  // install) and no service-level toggles — if the user connected Plaud,
+  // every agent that has integration access sees the full tool set.
+  if (isPlaudConnected()) {
+    filtered.push(...plaudReadToolDefinitions);
   }
 
   // ── Multi-account description annotation ──
@@ -6780,6 +6790,25 @@ Thread is closed — respond to the user, not Imaginer.`;
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         content = await executeMicrosoftWriteTool(name, args, agentId, agentRow?.name ?? agentId);
         isError = content.startsWith('Error');
+        break;
+      }
+
+      // ── Plaud (meeting recordings) ──
+      case 'plaud_list_recordings':
+      case 'plaud_recent_recordings':
+      case 'plaud_search_recordings':
+      case 'plaud_get_recording':
+      case 'plaud_get_transcript':
+      case 'plaud_get_summary':
+      case 'plaud_get_audio_url':
+      case 'plaud_account_info': {
+        if (!isPlaudConnected()) {
+          content = 'Plaud is not connected. Ask the user to connect Plaud from Settings → Integrations → Plaud.';
+          isError = true;
+          break;
+        }
+        content = await executePlaudTool(name, args);
+        isError = content.startsWith('Error') || content.startsWith('Plaud is no longer connected');
         break;
       }
 
