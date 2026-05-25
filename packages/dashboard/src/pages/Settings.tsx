@@ -643,21 +643,44 @@ const ServerControlSettings = () => {
     setCleaning(true);
     const result = await api.cleanupPlatformBackups(1);
     if (!result.ok) {
-      toast.error(`Cleanup failed: ${result.error}`);
+      toast.error(`Cleanup failed to start: ${result.error}`);
       setCleaning(false);
       return;
     }
     const data = result.data;
-    if (data) {
-      if (data.deletedCount === 0) {
-        toast.info('No old backups to clean up.');
-      } else {
-        toast.info(`Cleaned up ${data.deletedCount} backup(s), freed ${data.freedMB} MB. ${data.remaining} kept.`);
+    if (data?.status === 'noop') {
+      toast.info(data.message);
+      setCleaning(false);
+      return;
+    }
+    toast.info(`Cleaning up ${data?.targetCount ?? '?'} backup(s) in the background. This can take a few minutes.`);
+
+    // Poll the cleanup status endpoint every 5s until it finishes. The
+    // request itself returns instantly so Cloudflare's 100s ceiling is
+    // never a factor; the actual rm -rf runs server-side independently.
+    const start = Date.now();
+    const MAX_POLL_MS = 10 * 60 * 1000; // 10-minute ceiling on our patience
+    while (Date.now() - start < MAX_POLL_MS) {
+      await new Promise(r => setTimeout(r, 5000));
+      const status = await api.getCleanupStatus();
+      if (!status.ok) continue; // transient; keep polling
+      const s = status.data;
+      if (s && !s.inProgress) {
+        if (s.error) {
+          toast.error(`Cleanup failed: ${s.error}`);
+        } else if (s.failedCount > 0) {
+          toast.warning(`Cleanup partially complete: ${s.deletedCount} deleted, ${s.failedCount} failed. ${s.remainingOnDisk} backups still on disk.`);
+        } else {
+          toast.info(`Cleaned up ${s.deletedCount} backup(s). ${s.remainingOnDisk} kept.`);
+        }
+        const refresh = await api.listPlatformBackups();
+        if (refresh.ok) setBackups(refresh.data);
+        setCleaning(false);
+        return;
       }
     }
-    // Reload the listing
-    const refresh = await api.listPlatformBackups();
-    if (refresh.ok) setBackups(refresh.data);
+    // Polling timeout (10 min) - tell the user the job is still running.
+    toast.warning('Cleanup is taking longer than expected. It is still running in the background; refresh the page later to check.');
     setCleaning(false);
   };
 
@@ -721,7 +744,7 @@ const ServerControlSettings = () => {
             <p className="text-xs text-ui/55">
               {backups.count === 0
                 ? 'No backups on disk.'
-                : `${backups.count} backup(s) on disk, ${backups.totalMB} MB total.`}
+                : `${backups.count} backup(s) on disk.`}
             </p>
             {backups.count > 1 && (
               <button

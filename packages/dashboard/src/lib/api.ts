@@ -394,17 +394,15 @@ export const restartServer = async (): Promise<ApiResponse<RestartServerResponse
 // The auto-update flow leaves a full platform.backup-<version> directory
 // on disk per update (~100-200MB each). Auto-prune keeps the last 2 after
 // every update; these endpoints let the user inspect + manually free more.
+// Cleanup runs as a fire-and-forget background job - dashboard polls the
+// status endpoint until inProgress flips to false.
 export interface PlatformBackupInfo {
   name: string;
   version: string;
   mtime: string;
-  sizeBytes: number;
-  sizeMB: number;
 }
 export interface ListPlatformBackupsResponse {
   count: number;
-  totalBytes: number;
-  totalMB: number;
   keepDefault: number;
   backups: PlatformBackupInfo[];
 }
@@ -412,19 +410,31 @@ export const listPlatformBackups = async (): Promise<ApiResponse<ListPlatformBac
   return request<ListPlatformBackupsResponse>('/update/backups');
 };
 
-export interface CleanupPlatformBackupsResponse {
-  deleted: string[];
-  deletedCount: number;
-  freedBytes: number;
-  freedMB: number;
+export interface StartCleanupResponse {
+  status: 'started' | 'noop';
+  targetCount?: number;
   kept: number;
-  remaining: number;
+  message: string;
 }
-export const cleanupPlatformBackups = async (keep: number = 1): Promise<ApiResponse<CleanupPlatformBackupsResponse>> => {
-  return request<CleanupPlatformBackupsResponse>('/update/backups/cleanup', {
+export const cleanupPlatformBackups = async (keep: number = 1): Promise<ApiResponse<StartCleanupResponse>> => {
+  return request<StartCleanupResponse>('/update/backups/cleanup', {
     method: 'POST',
     body: JSON.stringify({ keep }),
   });
+};
+
+export interface CleanupStatusResponse {
+  inProgress: boolean;
+  startedAt: string | null;
+  finishedAt: string | null;
+  deletedCount: number;
+  failedCount: number;
+  targetCount: number;
+  error: string | null;
+  remainingOnDisk: number;
+}
+export const getCleanupStatus = async (): Promise<ApiResponse<CleanupStatusResponse>> => {
+  return request<CleanupStatusResponse>('/update/backups/cleanup/status');
 };
 
 // V2CutoverNotice (Part XI) — bulk-reset every idle agent's session.
