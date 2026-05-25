@@ -362,8 +362,8 @@ async function runPMReview(): Promise<void> {
   lastLLMReviewAt = now;
 
   const agents = db.prepare(`
-    SELECT id, name, status, classification FROM agents WHERE status != 'terminated'
-  `).all() as Array<{ id: string; name: string; status: string; classification: string }>;
+    SELECT id, name, status, classification, updated_at FROM agents WHERE status != 'terminated'
+  `).all() as Array<{ id: string; name: string; status: string; classification: string; updated_at: string }>;
 
   // Build a set of dormant agent IDs (no activity in 7+ days) so the PM
   // doesn't raise false alarms about agents from old test groups or paused projects.
@@ -453,35 +453,43 @@ async function runPMReview(): Promise<void> {
       }
     }
 
-    // 5. In-progress tasks where the assigned agent has gone silent.
-    // Exempts recurring tasks with a future nextRunAt — those are stuck-
+    // 5. In-progress tasks where the assigned agent has been sitting idle.
+    // v2.7.17 - tightened from "no message in 30 min" to "agent.status='idle'
+    // AND agents.updated_at older than 2 min." Two reasons:
+    //   (a) status='idle' on the agents row means the agent has actually
+    //       ended a turn and is NOT mid-tool-call. Don't poke during slow
+    //       legitimate work.
+    //   (b) agents.updated_at gets bumped when status flips - so it's an
+    //       exact "agent went idle at" timestamp, not a sloppy proxy.
+    // The agent's end-of-turn nudge teaches it to mark waiting-on-user
+    // tasks as 'paused' (PM ignores) and escalation cases as 'blocked' (PM
+    // surfaces but doesn't poke). An IDLE issue here means the agent
+    // genuinely stalled out without transitioning, and the PM should poke.
+    //
+    // Exempts recurring tasks with a future nextRunAt - those are stuck-
     // between-runs from a previous fire that didn't close cleanly. The
     // scheduler's cleanupStaleRuns is responsible for those (v2.3.7);
     // PM nagging only adds noise on top.
-    if (task.status === 'in_progress' && task.assignedTo && timeSinceUpdateMin > GRACE_PERIOD_MINUTES) {
+    const IN_PROGRESS_IDLE_THRESHOLD_MIN = 2;
+    if (task.status === 'in_progress' && task.assignedTo) {
       let waitingForFutureFire = false;
       if (task.nextRunAt) {
         const nextRunMs = new Date(task.nextRunAt.includes('Z') ? task.nextRunAt : task.nextRunAt + 'Z').getTime();
-        if (nextRunMs - nowDate.getTime() > GRACE_PERIOD_MINUTES * 60_000) {
+        if (nextRunMs - nowDate.getTime() > IN_PROGRESS_IDLE_THRESHOLD_MIN * 60_000) {
           waitingForFutureFire = true;
         }
       }
       if (!waitingForFutureFire) {
         const agent = agents.find(a => a.id === task.assignedTo);
-        if (agent && agent.status !== 'terminated') {
-          const lastMsg = db.prepare(`
-            SELECT created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1
-          `).get(task.assignedTo) as { created_at: string } | undefined;
-          if (lastMsg) {
-            const lastMsgTs = lastMsg.created_at.includes('Z') ? lastMsg.created_at : lastMsg.created_at + 'Z';
-            const idleMin = Math.floor((nowDate.getTime() - new Date(lastMsgTs).getTime()) / 60000);
-            if (idleMin >= 30) {
-              const agentName = task.assignedToName ?? task.assignedTo;
-              issues.push({
-                stableId: `${task.id}|IDLE`,
-                text: `IDLE: "${task.title}" is in_progress but ${agentName} has had no activity for ${idleMin} minutes. Move to on_deck with tracker_update_status if the agent is not responsive.`,
-              });
-            }
+        if (agent && agent.status === 'idle') {
+          const agentUpdatedAt = new Date(agent.updated_at.includes('Z') ? agent.updated_at : agent.updated_at + 'Z');
+          const idleMin = Math.floor((nowDate.getTime() - agentUpdatedAt.getTime()) / 60000);
+          if (idleMin >= IN_PROGRESS_IDLE_THRESHOLD_MIN) {
+            const agentName = task.assignedToName ?? task.assignedTo;
+            issues.push({
+              stableId: `${task.id}|IDLE`,
+              text: `IDLE: "${task.title}" is in_progress but ${agentName} has been sitting idle for ${idleMin} minute(s) without transitioning the task. POKE THEM: send_to_agent(${agentName}, intent="QUESTION", thread_id=new, message="You have task '${task.title}' (${task.id.slice(0, 8)}) still in_progress but you've gone idle. If you're waiting on the user for something you already asked, mark it paused. If you're blocked and need attention, mark it blocked with notes. Otherwise continue or mark complete."). The agent's expected to have already self-marked paused/blocked - if they didn't, this poke straightens them out.`,
+            });
           }
         }
       }

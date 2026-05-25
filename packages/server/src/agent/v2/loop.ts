@@ -314,27 +314,31 @@ export async function runV2Turn(agentId: string): Promise<void> {
   });
 
   // ── v2.5.46: pre-turn close-out gate detection ──
-  // Look up in_progress tasks assigned to this agent that were NOT
-  // touched since the start of this turn (i.e. they're stale carry-
-  // overs from a prior turn the agent never closed). These will be
-  // surfaced to the agent at the top of the assembled context and the
-  // tool dispatcher will refuse non-tracker calls until at least one
-  // is resolved.
+  // Look up in_progress tasks the agent appears to have abandoned. Pre-
+  // v2.7.17 this used `updated_at < turnStartedAt` (any task not touched
+  // THIS turn), which made the gate fire every time the user interrupted
+  // mid-conversation - even though the agent was actively working the task
+  // a minute ago. Now uses a wall-clock threshold so genuinely abandoned
+  // tasks are still caught but active mid-conversation work isn't.
   //
   // Per user spec ("if we default to agents creating tasks, they MUST
-  // also close them out"): tracker hygiene is no longer a soft nudge,
-  // it's a hard precondition for new work.
+  // also close them out"): tracker hygiene is still a hard precondition,
+  // just with a sane idle window before it kicks in.
   try {
-    // (1) Tasks the agent is actively in_progress on but never closed last turn.
+    // (1) Tasks the agent is in_progress on but hasn't touched in the
+    // last CLOSE_OUT_IDLE_MINUTES. Any tracker tool call (status update,
+    // notes add/edit, complete_step) bumps updated_at, so an actively-
+    // worked task naturally stays inside the window.
+    const CLOSE_OUT_IDLE_MINUTES = 10;
     const inProgressDanglers = db.prepare(`
       SELECT id, title, 'in_progress' AS kind FROM tasks
       WHERE assigned_to = ?
         AND status = 'in_progress'
         AND is_paused = 0
-        AND updated_at < ?
+        AND datetime(updated_at) < datetime('now', ?)
       ORDER BY updated_at ASC
       LIMIT 10
-    `).all(agentId, turnStartedAt) as Array<{ id: string; title: string; kind: string }>;
+    `).all(agentId, `-${CLOSE_OUT_IDLE_MINUTES} minutes`) as Array<{ id: string; title: string; kind: string }>;
 
     // (2) Stranded on_deck tasks. Catches the Presenton-shaped failure:
     // agent created a project, did some of it, then abandoned it (often
@@ -396,12 +400,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
         `[System: REQUIRED close-out — you have abandoned work on the tracker.\n\n` +
         `${sections.join('\n\n')}\n\n` +
         `**This turn must start with a tracker tool call, not a user-facing reply.** ` +
-        `Resolve at least one item before doing anything else — call tracker_complete_step (multi-step projects), ` +
+        `Resolve at least one item before doing anything else - call tracker_complete_step (multi-step projects), ` +
         `tracker_update_status (status="complete" | "blocked" | "paused" with resume_at), ` +
-        `tracker_add_notes (if you're genuinely still working it across turns — that disengages the gate too), ` +
-        `or — if the whole project was abandoned/duplicated/superseded — tracker_close_project(project_id, status="cancelled", reason="..."). ` +
+        `tracker_add_notes (if you are STILL actively working it - then KEEP GOING on this same turn, do not stop after writing the note), ` +
+        `or - if the whole project was abandoned/duplicated/superseded - tracker_close_project(project_id, status="cancelled", reason="..."). ` +
         `The engine will REFUSE every non-tracker tool call until one of those lands; after that the gate releases for the rest of the turn so you can keep resolving the others alongside other work. ` +
-        `Do NOT generate a user-facing response on this turn until the gate is satisfied — the user does not expect a reply yet; they expect the tracker to come back in sync.]`
+        `Do NOT generate a user-facing response on this turn until the gate is satisfied - the user does not expect a reply yet; they expect the tracker to come back in sync.]`
       );
       const gateMsgId = uuidv4();
       try {
@@ -1711,6 +1715,146 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
       // No tools? Loop is done.
       if (result.toolCalls.length === 0) {
+        // ── v2.7.17: "added a note then stopped" detector ──
+        // Common failure: agent is mid-project, calls tracker_add_notes as
+        // a status checkpoint, then ends the turn silently because the
+        // model treats the note as a stopping point. The user is left
+        // wondering why the agent went idle. Detect that pattern and
+        // fire a one-shot nudge before the turn ends.
+        //
+        // Conditions:
+        //   - had any tool calls this turn
+        //   - LAST tool call was tracker_add_notes
+        //   - the target task is still in_progress
+        //   - not already nudged this turn (one-shot, no loop)
+        if (
+          !state.nudgedForAddNotesStopThisTurn &&
+          state.toolResults.length > 0
+        ) {
+          const lastTool = state.toolResults[state.toolResults.length - 1];
+          if (lastTool && lastTool.name === 'tracker_add_notes') {
+            // Pull the task_id from the original tool call args. The args
+            // live on the matching toolCall record by id; search both lists.
+            let nudgedTaskId: string | null = null;
+            for (let i = state.toolCalls.length - 1; i >= 0; i--) {
+              const tc = state.toolCalls[i];
+              if (tc.id === lastTool.toolCallId && tc.name === 'tracker_add_notes') {
+                const tid = (tc.arguments as { task_id?: unknown })?.task_id;
+                if (typeof tid === 'string') nudgedTaskId = tid;
+                break;
+              }
+            }
+            if (nudgedTaskId) {
+              const row = db.prepare('SELECT status, title FROM tasks WHERE id = ?').get(nudgedTaskId) as { status?: string; title?: string } | undefined;
+              if (row?.status === 'in_progress') {
+                const titleShort = (row.title ?? '').slice(0, 60);
+                const nudgeText = (
+                  `[System: you just added a note to "${titleShort}" (${nudgedTaskId.slice(0, 8)}) but did not say what comes next. ` +
+                  `That task is STILL in_progress. If you have more work to do on it, KEEP GOING - call your next tool now, do not end the turn. ` +
+                  `If you are genuinely waiting on something (user input, an external response, a scheduled time), say so explicitly: ` +
+                  `update the task status to "blocked" or "paused" with a clear reason, OR write one sentence in your reply telling the user what you are waiting for. ` +
+                  `Silently going idle after tracker_add_notes leaves the user with no idea what is happening.]`
+                );
+                const nudgeId = uuidv4();
+                db.prepare(`
+                  INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+                  VALUES (?, ?, 'system', ?, ?, datetime('now'))
+                `).run(nudgeId, agentId, nudgeText, turnNumber);
+                broadcast({
+                  type: 'chat:message',
+                  agentId,
+                  message: {
+                    id: nudgeId, agentId, role: 'system' as const,
+                    content: nudgeText,
+                    tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                    createdAt: new Date().toISOString(),
+                  },
+                });
+                state = advance(state, { nudgedForAddNotesStopThisTurn: true });
+                logger.info('v2 add-notes-stop nudge fired', { agentId, taskId: nudgedTaskId }, agentId);
+                continue; // re-enter the loop so the model sees the nudge
+              }
+            }
+          }
+        }
+
+        // ── v2.7.17: "going idle with in_progress task" detector ──
+        // Broader sibling of the add-notes-stop nudge. Catches every case
+        // where the agent ends a turn while a task assigned to them is
+        // still in_progress AND they did not transition it this turn.
+        // Walks them through the decision matrix - keep going, mark
+        // complete, mark paused (waiting on user), or mark blocked
+        // (needs escalation). One-shot so a model that insists on
+        // stopping doesn't trigger a loop.
+        //
+        // Skip if the close-out gate is already armed for this turn
+        // (the gate's own message + dispatcher already covers the case)
+        // or the add-notes-stop nudge just fired (we just told them).
+        if (
+          !state.nudgedForGoingIdleWithInProgressThisTurn &&
+          !state.nudgedForAddNotesStopThisTurn &&
+          !state.nudgedForCloseOutThisTurn
+        ) {
+          // Find in_progress tasks assigned to this agent. Use the same
+          // criterion the close-out gate uses but at end-of-turn instead
+          // of start: any in_progress task at all (even one touched this
+          // turn) qualifies, because the issue isn't staleness - it's
+          // that the agent went idle without resolving its state.
+          const openTasks = db.prepare(`
+            SELECT id, title FROM tasks
+            WHERE assigned_to = ?
+              AND status = 'in_progress'
+              AND is_paused = 0
+            ORDER BY updated_at DESC
+            LIMIT 5
+          `).all(agentId) as Array<{ id: string; title: string }>;
+
+          // Skip if no in_progress tasks - then the agent is fine to idle.
+          // Also skip if the agent ALREADY transitioned a task this turn
+          // (any tracker_update_status / tracker_complete_step call), since
+          // that signals they DID make a deliberate state choice and just
+          // happened to leave another task in_progress for legitimate reasons.
+          const transitionedThisTurn = state.toolResults.some(
+            tr => tr.name === 'tracker_update_status' || tr.name === 'tracker_complete_step' || tr.name === 'tracker_close_project',
+          );
+
+          if (openTasks.length > 0 && !transitionedThisTurn) {
+            const taskList = openTasks
+              .map(t => `  - "${t.title.slice(0, 60)}" (${t.id.slice(0, 8)})`)
+              .join('\n');
+            const nudgeText = (
+              `[System: you are about to end this turn with ${openTasks.length} task${openTasks.length === 1 ? '' : 's'} still in_progress and assigned to you:\n` +
+              `${taskList}\n\n` +
+              `Pick exactly one of these before ending the turn:\n\n` +
+              `  1. KEEP GOING - call your next tool now if you have more work to do this turn.\n` +
+              `  2. DONE - tracker_update_status(task_id, status="complete") (or tracker_complete_step for multi-step projects).\n` +
+              `  3. WAITING ON USER (already asked them) - tracker_update_status(task_id, status="paused", notes="waiting for X"). PM will ignore this task entirely; no pokes.\n` +
+              `  4. BLOCKED (needs escalation - user does not know yet) - tracker_update_status(task_id, status="blocked", notes="why"). PM will surface this to the primary user.\n\n` +
+              `If you go idle with a task still in_progress, the PM will poke you in ~2 minutes assuming you stalled. Skip the noise by transitioning the task now.]`
+            );
+            const nudgeId = uuidv4();
+            db.prepare(`
+              INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+              VALUES (?, ?, 'system', ?, ?, datetime('now'))
+            `).run(nudgeId, agentId, nudgeText, turnNumber);
+            broadcast({
+              type: 'chat:message',
+              agentId,
+              message: {
+                id: nudgeId, agentId, role: 'system' as const,
+                content: nudgeText,
+                tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                createdAt: new Date().toISOString(),
+              },
+            });
+            state = advance(state, { nudgedForGoingIdleWithInProgressThisTurn: true });
+            logger.info('v2 going-idle-with-in_progress nudge fired', {
+              agentId, openTaskCount: openTasks.length, taskIds: openTasks.map(t => t.id),
+            }, agentId);
+            continue; // re-enter the loop so the model sees the nudge
+          }
+        }
+
         // v2.5.31 — Hardcap: if the missed-reply nudge already fired once
         // for this assign id and the LLM STILL produced text-no-tool, end
         // the turn instead of nudging again. This is the loop-breaker for

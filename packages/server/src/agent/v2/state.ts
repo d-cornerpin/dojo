@@ -191,6 +191,24 @@ export interface AgentTurnState {
    */
   nudgedForCloseOutThisTurn: boolean;
   /**
+   * Set true the first time the "added a note then stopped" detector fires
+   * in a turn. Pattern: agent's last tool call was tracker_add_notes, the
+   * task is still in_progress, and the model produced text without further
+   * tool calls. Without the flag the nudge would re-fire every loop
+   * iteration if the model insists on stopping. One-shot: after the nudge,
+   * if the model still ends with no tools, the turn ends normally.
+   */
+  nudgedForAddNotesStopThisTurn: boolean;
+  /**
+   * Set true the first time the "going idle with in_progress task" detector
+   * fires in a turn. Pattern: the agent is ending the turn (no more tool
+   * calls) with at least one in_progress task assigned to them AND did NOT
+   * transition that task to complete/paused/blocked this turn. The nudge
+   * walks the agent through the decision matrix (paused vs blocked vs
+   * keep-going). One-shot so the model can't loop on it.
+   */
+  nudgedForGoingIdleWithInProgressThisTurn: boolean;
+  /**
    * Set true at preflight when there is an unacknowledged compaction
    * recall nudge in the message log (i.e. compaction fired and the
    * agent has not yet called recall_recent_thread since). Used by the
@@ -325,6 +343,8 @@ export function initState(params: InitStateParams): AgentTurnState {
     danglingTaskIds: [],
     closeOutGateSatisfied: false,
     nudgedForCloseOutThisTurn: false,
+    nudgedForAddNotesStopThisTurn: false,
+    nudgedForGoingIdleWithInProgressThisTurn: false,
     awaitingPostCompactRecall: false,
     nudgedForPostCompactRecall: false,
     taskClosedWithTextThisTurn: false,
