@@ -51,6 +51,7 @@ import { getAgentGoogleAccessLevel, getEnabledServices, isGoogleConnected, getGo
 import { microsoftReadToolDefinitions, executeMicrosoftReadTool } from '../microsoft/tools-read.js';
 import { plaudReadToolDefinitions, executePlaudTool } from '../plaud/tools-read.js';
 import { isPlaudConnected } from '../plaud/auth.js';
+import { credentialsToolDefinitions, executeCredentialTool } from '../credentials/tools.js';
 import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../microsoft/tools-write.js';
 import { officeToolDefinitions, executeOfficeTool } from '../microsoft/tools-office.js';
 import { getAgentMicrosoftAccessLevel, getEnabledMsServices, isMicrosoftConnected, getMicrosoftWorkspaceConfig } from '../microsoft/auth.js';
@@ -362,6 +363,14 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   if (isPlaudConnected()) {
     filtered.push(...plaudReadToolDefinitions);
   }
+
+  // ── Agent credentials vault ──
+  // Always available to every agent. Storage for credentials agents
+  // collect while building techniques (third-party API keys, tokens).
+  // Separate from secrets.yaml (platform-managed) and vault entries
+  // (knowledge that decays). Encrypted at rest with a master key in
+  // secrets.yaml.
+  filtered.push(...credentialsToolDefinitions);
 
   // ── Multi-account description annotation ──
   // Every Google/Microsoft tool gets its description prefixed with
@@ -2128,7 +2137,7 @@ export const toolDefinitions: ToolDefinition[] = [
 
   {
     name: 'vault_remember',
-    description: 'Save an important piece of knowledge to the dojo\'s long-term memory vault. Saved immediately and visible to all agents.\n\nWHEN THE USER EXPLICITLY ASKS YOU TO REMEMBER SOMETHING — phrases like "remember that…", "I want you to remember…", "always do X", "never do Y", "from now on, …", "make sure you always…" — call this tool with `verbatim: true` and `pin: true`. Pass the user\'s instruction word-for-word in `content`. Do NOT paraphrase or compress; the user\'s exact wording is the point.\n\nFor everything else (facts you observed, decisions made, preferences inferred), write a tight summary and let the DOJO handle filler-stripping.\n\nExample (user-explicit): vault_remember({ content: "Always confirm with the user before pushing to main.", type: "preference", verbatim: true, pin: true }).\nExample (observed): vault_remember({ content: "Tunnel: Cloudflare named.", type: "fact" }).',
+    description: 'Save an important piece of knowledge to the dojo\'s long-term memory vault. Saved immediately and visible to all agents.\n\n**NEVER store credentials, API keys, tokens, passwords, secrets, or any other authentication material in the vault.** Those go in `credential_add` — they live in a separate encrypted store that never decays, never appears in vault_search or Dreamer summaries, and is read on-demand at API-call time via `credential_get`. The engine will refuse vault entries that look like credentials.\n\nWHEN THE USER EXPLICITLY ASKS YOU TO REMEMBER SOMETHING — phrases like "remember that…", "I want you to remember…", "always do X", "never do Y", "from now on, …", "make sure you always…" — call this tool with `verbatim: true` and `pin: true`. Pass the user\'s instruction word-for-word in `content`. Do NOT paraphrase or compress; the user\'s exact wording is the point.\n\nFor everything else (facts you observed, decisions made, preferences inferred), write a tight summary and let the DOJO handle filler-stripping.\n\nExample (user-explicit): vault_remember({ content: "Always confirm with the user before pushing to main.", type: "preference", verbatim: true, pin: true }).\nExample (observed): vault_remember({ content: "Tunnel: Cloudflare named.", type: "fact" }).',
     input_schema: {
       type: 'object',
       properties: {
@@ -6789,6 +6798,17 @@ Thread is closed — respond to the user, not Imaginer.`;
         }
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         content = await executeMicrosoftWriteTool(name, args, agentId, agentRow?.name ?? agentId);
+        isError = content.startsWith('Error');
+        break;
+      }
+
+      // ── Agent credentials vault ──
+      case 'credential_list':
+      case 'credential_get':
+      case 'credential_add':
+      case 'credential_update':
+      case 'credential_delete': {
+        content = await executeCredentialTool(name, args, agentId);
         isError = content.startsWith('Error');
         break;
       }

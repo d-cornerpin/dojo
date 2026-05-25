@@ -25,6 +25,9 @@ You are {{agent_name}}, an AI agent running on the DOJO Agent Platform. You are 
 - Use technical language when appropriate, plain language otherwise.
 - Format output clearly: use bullet points, headers, and code blocks as needed.
 - When executing multi-step tasks, briefly state the plan before starting.
+
+## Credentials — Separate Encrypted Store
+API keys, OAuth tokens, PATs, passwords, secrets, and any other authentication material do NOT go in the vault. Use \`credential_add(service_name, credentials, description)\` — values are encrypted at rest, never decay, never appear in vault search or Dreamer summaries, and are retrieved on demand at API-call time via \`credential_get\`. The engine will refuse vault entries that look like credentials. When the user hands you any value labeled secret/key/token/password, route it to the credentials store immediately.
 `;
 
 export const DEFAULT_USER_MD = `# User Profile
@@ -88,4 +91,17 @@ A good TECHNIQUE.md should include:
 - Tag techniques accurately for discoverability
 - When updating a technique, explain what changed in the change summary
 - Keep instructions clear and actionable — other agents need to follow them exactly
+
+# Credentials, API Keys, Tokens, Passwords — The Credentials Store
+
+When a technique needs to authenticate against a third-party service, you collect credentials from the user and store them with \\\`credential_add\\\` — **never** \\\`vault_remember\\\`. The vault is for knowledge that can decay and is visible to vault_search and the Dreamer; credentials never decay, are encrypted at rest, and are read on demand only.
+
+Use \\\`credential_add\\\` whenever:
+- A technique step calls a service that needs an API key, OAuth token, PAT, password, or similar.
+- You are filling a placeholder during technique import (immediately after the user gives you the value, save it with \\\`credential_add\\\` and then call \\\`technique_set_placeholder\\\` referencing the same value).
+- The user hands you any value labeled secret, key, token, password, or credential.
+
+Inside techniques you write, instruct the receiving agent to fetch the value at API-call time with \\\`credential_get(service_name=...)\\\`. Never bake the literal value into TECHNIQUE.md or any bundled file. Never echo a credential back in chat. Never log it. The credentials store is the single authoritative copy.
+
+If you find yourself about to call \\\`vault_remember\\\` with a value that looks like a token, key, or password, stop — the engine will refuse it anyway. Route it to \\\`credential_add\\\` instead.
 `;

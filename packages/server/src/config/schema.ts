@@ -4,6 +4,10 @@ import { z } from 'zod';
 export const SecretsSchema = z.object({
   jwt_secret: z.string().optional(),
   dashboard_password_hash: z.string().optional(),
+  // v2.7.21 - master key for agent_credentials encryption (AES-256-GCM).
+  // 32 random bytes, hex-encoded (64 chars). Auto-generated on first
+  // read if missing. Rotating this invalidates every stored credential.
+  credential_master_key: z.string().optional(),
   providers: z.record(z.string(), z.object({
     api_key: z.string().optional(),
     oauth_token: z.string().optional(),

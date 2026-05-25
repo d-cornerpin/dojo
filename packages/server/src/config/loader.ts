@@ -128,6 +128,21 @@ export function getJwtSecret(): string {
   return secrets.jwt_secret;
 }
 
+// v2.7.21 - master key for agent_credentials AES-256-GCM encryption.
+// Auto-generates on first call if missing. 32 random bytes hex-encoded.
+// Rotating this in secrets.yaml will invalidate every stored credential
+// (decryption will fail with auth-tag mismatch on every read).
+export function getCredentialMasterKey(): Buffer {
+  const secrets = loadSecrets();
+  if (!secrets.credential_master_key) {
+    const newKey = crypto.randomBytes(32).toString('hex');
+    secrets.credential_master_key = newKey;
+    saveSecrets(secrets);
+    logger.info('Generated new credential master key');
+  }
+  return Buffer.from(secrets.credential_master_key, 'hex');
+}
+
 export function getDashboardPasswordHash(): string | null {
   const secrets = loadSecrets();
   return secrets.dashboard_password_hash ?? null;

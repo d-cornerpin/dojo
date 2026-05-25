@@ -470,6 +470,45 @@ export const refreshPlaud = async (): Promise<ApiResponse<{ connected: boolean; 
   return request<{ connected: boolean; email: string | null }>('/plaud/refresh', { method: 'POST' });
 };
 
+// ── Agent credentials vault ──
+// Encrypted store for third-party API credentials that agents collect
+// while building techniques. Separate from secrets.yaml (platform-
+// managed) and vault entries (knowledge that decays). List endpoint
+// returns metadata only; /reveal returns the decrypted value.
+export interface CredentialSummary {
+  id: string;
+  service_name: string;
+  description: string | null;
+  created_by_agent_id: string | null;
+  created_at: string;
+  updated_at: string;
+  last_accessed_at: string | null;
+  last_accessed_by_agent_id: string | null;
+  access_count: number;
+}
+export interface CredentialRevealed extends CredentialSummary {
+  credentials: Record<string, unknown>;
+}
+export const listCredentials = async (): Promise<ApiResponse<{ count: number; credentials: CredentialSummary[] }>> => {
+  return request<{ count: number; credentials: CredentialSummary[] }>('/credentials');
+};
+export const revealCredential = async (id: string): Promise<ApiResponse<Pick<CredentialRevealed, 'id' | 'service_name' | 'description' | 'credentials'>>> => {
+  return request<Pick<CredentialRevealed, 'id' | 'service_name' | 'description' | 'credentials'>>(`/credentials/${encodeURIComponent(id)}/reveal`);
+};
+export const createCredential = async (input: { service_name: string; credentials: Record<string, unknown>; description?: string | null }): Promise<ApiResponse<{ id: string; service_name: string; description: string | null; created_at: string }>> => {
+  return request<{ id: string; service_name: string; description: string | null; created_at: string }>('/credentials', {
+    method: 'POST', body: JSON.stringify(input),
+  });
+};
+export const updateCredentialApi = async (id: string, input: { credentials: Record<string, unknown>; description?: string }): Promise<ApiResponse<{ id: string; service_name: string }>> => {
+  return request<{ id: string; service_name: string }>(`/credentials/${encodeURIComponent(id)}`, {
+    method: 'PATCH', body: JSON.stringify(input),
+  });
+};
+export const deleteCredential = async (id: string): Promise<ApiResponse<{ deleted: boolean }>> => {
+  return request<{ deleted: boolean }>(`/credentials/${encodeURIComponent(id)}`, { method: 'DELETE' });
+};
+
 // V2CutoverNotice (Part XI) — bulk-reset every idle agent's session.
 // Returns count breakdown { reset, busy, errors, total }.
 export interface ResetIdleSessionsResponse {
