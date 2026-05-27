@@ -50,7 +50,6 @@ import { checkTimeouts } from '../spawner.js';
 import {
   isAwaitingIMResponse,
   clearIMResponseFlag,
-  sendResponseViaIMessage,
 } from '../../services/imessage-bridge.js';
 // recordCost intentionally NOT imported — callModel records cost internally.
 import { queueEmbedding } from '../../memory/embeddings.js';
@@ -157,6 +156,43 @@ function appendVisibilityHintIfRelevant<T extends { content?: string; isError?: 
   if (typeof content !== 'string' || !content) return toolResult;
   if (!VISIBILITY_TRIGGER_RE.test(content)) return toolResult;
   return { ...toolResult, content: content + VISIBILITY_HINT };
+}
+
+// v2.7.22 — Soft nudge after internal-bookkeeping tools. These tools
+// (vault_remember, tracker_update_status, complete_task, credential_*,
+// etc.) reliably trigger the model's "wrap up with a closeout line"
+// reflex even though the prompt teaches [no-reply] as the escape
+// hatch. The prompt sits at the top of the context; the tool result
+// sits at the bottom right next to the model's next decision. This
+// nudge appends a one-line reminder INSIDE the tool result so the
+// escape hatch is in the model's face at the exact moment it would
+// otherwise default to "All set." or "Done."
+//
+// Soft, not destructive: we don't strip anything; we only inform.
+// The model still chooses. If a substantive reply is warranted (user
+// asked a real question, work isn't done, etc.), it can ignore the
+// nudge and write whatever it wants. Same machinery as the visibility
+// hint above — append-on-condition, no behavior change to the tool.
+const BOOKKEEPING_NUDGE_TOOLS = new Set([
+  'tracker_update_status',
+  'tracker_complete_step',
+  'complete_task',
+  'vault_remember',
+  'vault_update',
+  'vault_forget',
+  'credential_add',
+  'credential_update',
+  'credential_delete',
+]);
+
+const BOOKKEEPING_NUDGE = `\n\n[Engine note: this was internal bookkeeping. If the user already has the answer they needed (or didn't ask one), end the turn with literal \`[no-reply]\` instead of writing a closeout line like "Done." / "All set." / "Got it." — silent turns are first-class and the right outcome here.]`;
+
+function appendBookkeepingNudgeIfRelevant<T extends { name?: string; content?: string; isError?: boolean }>(toolResult: T): T {
+  if (toolResult.isError) return toolResult;
+  if (!toolResult.name || !BOOKKEEPING_NUDGE_TOOLS.has(toolResult.name)) return toolResult;
+  const content = toolResult.content;
+  if (typeof content !== 'string') return toolResult;
+  return { ...toolResult, content: content + BOOKKEEPING_NUDGE };
 }
 
 const STATUS_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -1588,6 +1624,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }, agentId);
       }
 
+
       // ── XML-fallback detection (matches v1 runtime.ts:1240) ──
       // Weak/local models that don't support structured tool calling emit
       // tool calls via the XML text-fallback parser. Their tool IDs are
@@ -2470,6 +2507,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
             if (isPrimaryAgent(agentId)) {
               toolResult = appendVisibilityHintIfRelevant(toolResult);
             }
+            // v2.7.22 — soft nudge toward [no-reply] after bookkeeping
+            // tools. Applies to all agents (sub-agents close out via
+            // complete_task; primary agents via tracker_update_status
+            // / vault_remember / etc.). See BOOKKEEPING_NUDGE comment.
+            toolResult = appendBookkeepingNudgeIfRelevant(toolResult);
           } catch (toolErr) {
             const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
             logger.error('v2: tool crashed', { tool: tc.name, error: errMsg }, agentId);
@@ -3034,53 +3076,29 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // ── Phase: finalize ──
     state = advance(state, { phase: 'finalize' });
 
-    // ── iMessage routing (Part XIX preservation, matches v1 runtime.ts:1688-1747) ──
-    // Two paths can send a response via iMessage:
-    //   1. The turn was triggered by an iMessage → reply goes back via iMessage
-    //   2. User is "away from the dojo" → all primary responses forward via iMessage
-    // In EITHER case, persist a `[SENT VIA IMESSAGE to <owner>]` system tag
-    // so the agent (next turn) and user (chat feed) both see the routing
-    // happened. v1 had a `sentViaIMessage` flag for this; v2 mirrors it.
-    if (isPrimaryAgent(agentId) && state.lastAssistantTextForIM) {
-      let sentViaIMessage = false;
-      try {
-        if (triggeredByIMessage || imFlagSetAtRunStart) {
-          sendResponseViaIMessage(state.lastAssistantTextForIM, agentId);
-          sentViaIMessage = true;
-        } else {
-          const { getPresence, maybeForwardToImessage } = await import('../../services/presence.js');
-          if (getPresence() === 'away') {
-            maybeForwardToImessage(agentId, state.lastAssistantTextForIM);
-            sentViaIMessage = true;
-          }
-        }
-
-        if (sentViaIMessage) {
-          const tagId = uuidv4();
-          const { getOwnerName } = await import('../../config/platform.js');
-          const tagContent = `[SENT VIA IMESSAGE to ${getOwnerName()}]`;
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-            VALUES (?, ?, 'system', ?, ?, datetime('now'))
-          `).run(tagId, agentId, tagContent, turnNumber);
-          broadcast({
-            type: 'chat:message',
-            agentId,
-            message: {
-              id: tagId, agentId, role: 'system' as const,
-              content: tagContent,
-              tokenCount: null, modelId: null, cost: null, latencyMs: null,
-              createdAt: new Date().toISOString(),
-            },
-          });
-        }
-      } catch (err) {
-        logger.warn('v2: iMessage routing failed', {
-          agentId,
-          error: err instanceof Error ? err.message : String(err),
-        }, agentId);
-      }
-    }
+    // ── iMessage delivery is a DELIBERATE act, not auto-forwarding ──
+    // The chat→iMessage auto-forward was removed in v2.7.22. iMessage is
+    // now strictly an opt-in channel: the agent must call `imessage_send`
+    // when it wants to reach the user on their phone. Dashboard chat is
+    // the agent's working space; nothing typed there leaves the dashboard
+    // unless the agent explicitly sends it.
+    //
+    // What disappeared with this change:
+    //   - The "user is away → forward final text" path (was the source of
+    //     noise messages like "Done. Locked in.", "All three cleared.",
+    //     "Standing by." reaching the user's phone).
+    //   - The "turn was triggered by an iMessage → auto-reply with final
+    //     text" path (was the source of multi-turn iMessage thread spam
+    //     where every intermediate assistant text got texted).
+    //
+    // Replacement levers live in the prompt assembler (top-of-prompt
+    // away block when presence === 'away') and the imessage-bridge
+    // inbound envelope (per-message delivery directive on inbound texts).
+    // The watchdog/sendAlert path is untouched - infra alerts still fire.
+    //
+    // We still clear the pending-IM flag at end of turn so the recipient
+    // default for `imessage_send(no recipient)` doesn't go stale across
+    // unrelated subsequent turns.
     if (imFlagSetAtRunStart) clearIMResponseFlag(agentId);
 
     stopStatusHeartbeat(agentId);

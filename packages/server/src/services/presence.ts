@@ -1,12 +1,15 @@
 // ════════════════════════════════════════
 // User Presence — In the Dojo / Away
-// Routes agent-to-user messages through iMessage when away
+// Exposes the in_dojo / away toggle. Chat→iMessage auto-forwarding was
+// removed in v2.7.22; iMessage delivery is now a deliberate act via the
+// `imessage_send` tool. The prompt assembler injects an away-presence
+// override block when getPresence() === 'away' so the agent knows the
+// dashboard is invisible and must use imessage_send to reach the user.
 // ════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { sendIMessage, getDefaultSender, getIMBridgeStatus, stripSystemTags } from './imessage-bridge.js';
-import { isPrimaryAgent, getPrimaryAgentName } from '../config/platform.js';
+import { getIMBridgeStatus, getDefaultSender } from './imessage-bridge.js';
 
 const logger = createLogger('presence');
 
@@ -35,89 +38,4 @@ export function isImessageConfigured(): boolean {
   const status = getIMBridgeStatus();
   // "Configured" means senders are set up — the bridge doesn't need to be actively running
   return (status.enabled || status.running) && !!getDefaultSender();
-}
-
-/**
- * Distill an agent's response into a brief, friendly text message.
- * Strips markdown, tool calls, verbose content. Keeps only conversational text.
- */
-function distillForText(content: string, agentName: string): string {
-  // v2.5.7 — Strip "[SENT VIA IMESSAGE to ...]" routing tags first via the
-  // shared helper. By v2.5.7 the v2 loop already strips these from
-  // persisted assistant text, but distillForText is called with raw
-  // content from various sources — keep this layer too as defense.
-  let text = stripSystemTags(content);
-
-  // Strip === File: === blocks
-  text = text.replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '');
-
-  // Strip markdown headers
-  text = text.replace(/^#{1,6}\s+/gm, '');
-
-  // Strip markdown bold/italic
-  text = text.replace(/\*\*(.+?)\*\*/g, '$1');
-  text = text.replace(/\*(.+?)\*/g, '$1');
-  text = text.replace(/_(.+?)_/g, '$1');
-
-  // Strip code blocks
-  text = text.replace(/```[\s\S]*?```/g, '[code block]');
-  text = text.replace(/`([^`]+)`/g, '$1');
-
-  // Strip markdown links
-  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
-
-  // Strip bullet points
-  text = text.replace(/^[\s]*[-*•]\s/gm, '');
-
-  // Collapse whitespace
-  text = text.replace(/\n{3,}/g, '\n\n').trim();
-
-  // Truncate to reasonable text message length
-  if (text.length > 500) {
-    const truncated = text.slice(0, 480);
-    const lastSentence = truncated.lastIndexOf('.');
-    text = (lastSentence > 200 ? truncated.slice(0, lastSentence + 1) : truncated) + '...';
-  }
-
-  // Prefix with agent name
-  return `${agentName}: ${text}`;
-}
-
-/**
- * Called after an agent produces a final text response (no tool calls).
- * If the user is away and this is a primary/PM agent, forward via iMessage.
- */
-export function maybeForwardToImessage(agentId: string, content: string): void {
-  if (getPresence() !== 'away') return;
-  if (!isImessageConfigured()) return;
-
-  // Only forward messages from the primary agent — the PM escalates through
-  // the primary agent, never contacts the owner directly
-  if (!isPrimaryAgent(agentId)) return;
-
-  // Don't forward empty or very short responses
-  if (!content || content.trim().length < 10) return;
-
-  // Don't forward system/internal messages
-  if (content.startsWith('[System]') || content.startsWith('[Task Update]')) return;
-
-  const agentName = getPrimaryAgentName();
-  const recipient = getDefaultSender();
-  if (!recipient) return;
-
-  const text = distillForText(content, agentName);
-
-  try {
-    sendIMessage(recipient, text);
-    logger.info('Forwarded agent response via iMessage (user away)', {
-      agentId,
-      agentName,
-      originalLength: content.length,
-      textLength: text.length,
-    });
-  } catch (err) {
-    logger.error('Failed to forward via iMessage', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
 }
