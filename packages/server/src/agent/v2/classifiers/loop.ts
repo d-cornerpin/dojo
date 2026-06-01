@@ -33,11 +33,54 @@ export interface LoopCheckResult {
  *
  * Verbatim from v1 runtime.ts:255-259.
  */
-const PROSE_FIELDS = new Set([
+const DEFAULT_PROSE_FIELDS = new Set([
   'caption', 'message', 'content', 'text', 'payload',
   'summary', 'description', 'query', 'reason', 'note', 'notes',
   'change_summary', 'instructions',
 ]);
+
+/**
+ * v2.7.25 — Search / exploration tools where the `query` field IS the
+ * operation identity, not prose. Dropping `query` from the signature
+ * collapsed semantically-distinct searches into one bucket and blocked
+ * legitimate "try a different phrasing" sweeps (e.g. vault_search with
+ * 4 related queries hit the 3-repeat threshold and refused the 4th).
+ *
+ * For these tools the global PROSE_FIELDS minus `query` is used —
+ * everything else (`reason`, `note`, etc.) still gets stripped, but
+ * each distinct query phrase counts as a distinct operation.
+ *
+ * Update this set when you add a new search-style tool whose primary
+ * input is the user-supplied search string.
+ */
+const SEARCH_TOOLS = new Set([
+  // Vault + memory
+  'vault_search', 'vault_describe', 'vault_expand',
+  'memory_grep', 'memory_describe', 'memory_expand',
+  'squad_recall',
+  // External search
+  'web_search', 'web_fetch', 'web_browse',
+  // Email
+  'gmail_search', 'outlook_search',
+  // Calendar
+  'calendar_search', 'calendar_search_ms',
+  // Storage / contacts / sites
+  'drive_list', 'onedrive_search', 'sharepoint_list_sites', 'contacts_search',
+  // Plaud
+  'plaud_search_recordings',
+  // Screen / techniques (different questions → different operations)
+  'screen_read', 'technique_read',
+]);
+
+const SEARCH_TOOL_PROSE_FIELDS = (() => {
+  const s = new Set(DEFAULT_PROSE_FIELDS);
+  s.delete('query');
+  return s;
+})();
+
+function proseFieldsFor(toolName: string): ReadonlySet<string> {
+  return SEARCH_TOOLS.has(toolName) ? SEARCH_TOOL_PROSE_FIELDS : DEFAULT_PROSE_FIELDS;
+}
 
 /**
  * Build a canonical signature for a tool call, used to detect loops.
@@ -70,8 +113,9 @@ export function canonicalToolSignature(
   // arguments) within the same operation.
   const fingerprintLong = (s: string): string =>
     s.length > 80 ? `${s.slice(0, 60)}…[len=${s.length}]` : s;
+  const proseFields = proseFieldsFor(name);
   for (const k of Object.keys(args).sort()) {
-    if (PROSE_FIELDS.has(k)) continue;
+    if (proseFields.has(k)) continue;
     const v = args[k];
     if (typeof v === 'string') {
       const s = v.replace(/\d{6,}/g, '*');

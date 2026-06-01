@@ -68,7 +68,13 @@ function getDownloadUrl(fileId: string): string {
   try {
     const tunnel = getTunnelStatus();
     if (tunnel.status === 'active' && tunnel.url) {
-      return `${tunnel.url}/api/upload/download/${fileId}`;
+      // v2.7.25 — strip any trailing slash on the tunnel URL so the
+      // concatenation doesn't produce "https://host//api/...". User-
+      // entered named-tunnel URLs often have a trailing slash from
+      // copy-paste; the public-share.ts builder already normalizes
+      // this way (see line 329) — match that here too.
+      const base = tunnel.url.replace(/\/+$/, '');
+      return `${base}/api/upload/download/${fileId}`;
     }
   } catch { /* tunnel module may not be loaded yet */ }
   const port = process.env.DOJO_PORT ?? '3001';
@@ -1834,7 +1840,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'imessage_send',
-    description: 'Send an iMessage from YOUR OWN iMessage account (the DOJO bridge). **As of v2.7.23, replies to inbound iMessages auto-route via the engine — you do NOT need to call this tool to reply. Just write your reply text; engine delivers it.** This tool is reserved for:\n\n- PROACTIVE outreach (no inbound triggered this turn, you\'re initiating)\n- CROSS-RECIPIENT sends (texting someone OTHER than the active iMessage thread)\n- RICH actions (attachments — the text rides with the first file via the imsg CLI)\n\nVOICE: write like an actual text message. No markdown, no headers, no bullet lists. Short and conversational.\n\nRecipient rule: pass `recipient` explicitly when proactively messaging someone or when sending to a non-default address. The value MUST exactly match a safe-sender address. If you only know the person by name (e.g. user said "text <contact-name>"), call `imessage_list_contacts` first to look up the address. Passing an unknown address is refused. For attachments, pass any local path (e.g. ~/.dojo/uploads/<agent-id>/photo.jpg).',
+    description: 'Send an iMessage from YOUR OWN iMessage account (the DOJO bridge). **As of v2.7.23, replies to inbound iMessages auto-route via the engine — you do NOT need to call this tool to reply. Just write your reply text; engine delivers it.**\n\n**HARD RULE — When the primary user is actively talking to you on dashboard, DO NOT call this tool to message them.** The user is in the dashboard right now; your reply belongs in the dashboard, full stop. Calling imessage_send to "also share this on their phone" or "make sure they see it" is wrong — they\'re looking at the dashboard. The engine will refuse the call anyway; do not even try. (Engine guard fires when the most recent inbound was a dashboard message within the last 60 seconds and the recipient is the primary user.)\n\nThis tool is reserved for exactly these three cases:\n\n- **PROACTIVE outreach** = the turn was NOT triggered by a user message at all. Examples: a scheduled task fires and you decide to text the user about it, a watchdog event needs surfacing while the user is offline, a long-running job you started yesterday completes and you proactively let the user know. "PROACTIVE" does NOT mean "I am choosing to additionally send via another channel" — if the user just messaged you (on any channel), this is a REPLY turn, not a proactive turn.\n- **CROSS-RECIPIENT sends** = the recipient is someone OTHER than the primary user. Texting the user\'s spouse, a colleague, a third-party contact on the safe-sender list. The dashboard-active guard does not apply when the recipient is not the primary user.\n- **RICH actions** = sending with attachments (image, PDF, etc.). The text rides with the first file via the imsg CLI. Use only when an attachment is genuinely needed — sending a link as a "rich action" is still a regular text and does not qualify.\n\nVOICE: write like an actual text message. No markdown, no headers, no bullet lists. Short and conversational.\n\nRecipient rule: pass `recipient` explicitly when proactively messaging someone or when sending to a non-default address. The value MUST exactly match a safe-sender address. If you only know the person by name (e.g. user said "text <contact-name>"), call `imessage_list_contacts` first to look up the address. Passing an unknown address is refused. For attachments, pass any local path (e.g. ~/.dojo/uploads/<agent-id>/photo.jpg).',
     input_schema: {
       type: 'object',
       properties: {

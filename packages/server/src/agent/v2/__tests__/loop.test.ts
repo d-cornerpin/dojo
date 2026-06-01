@@ -92,16 +92,48 @@ describe('canonicalToolSignature', () => {
     expect(sig1).toBe(sig2);
   });
 
-  it('matches v1 runtime.ts behavior: prose fields list', () => {
-    // Verifying the exact prose field set from v1 runtime.ts:255-259 is stripped
+  it('strips the default prose fields for non-search tools', () => {
+    // For ordinary tools, all of these fields are agent prose and get dropped
+    // from the signature. v2.7.25 — `query` only stays in for search tools
+    // (see test below); for everything else it's still stripped here so
+    // ordinary tools that happen to accept a `query` field don't suddenly
+    // start logging distinct sigs.
     const proseFields = ['caption', 'message', 'content', 'text', 'payload',
       'summary', 'description', 'query', 'reason', 'note', 'notes',
       'change_summary', 'instructions'];
     for (const field of proseFields) {
-      const sig1 = canonicalToolSignature('foo', { path: '/x', [field]: 'value-A' });
-      const sig2 = canonicalToolSignature('foo', { path: '/x', [field]: 'value-B' });
+      const sig1 = canonicalToolSignature('some_non_search_tool', { path: '/x', [field]: 'value-A' });
+      const sig2 = canonicalToolSignature('some_non_search_tool', { path: '/x', [field]: 'value-B' });
       expect(sig1).toBe(sig2);
     }
+  });
+
+  // v2.7.25 regression — vault_search with 4 different query phrasings was
+  // collapsing to the same signature because `query` was in the global
+  // PROSE_FIELDS set, so the 4th call tripped the 3-repeat loop detector.
+  // For search tools, different queries are different operations.
+  it('keeps `query` in signature for search tools (vault_search, web_search, gmail_search, etc.)', () => {
+    const searchTools = [
+      'vault_search', 'web_search', 'web_fetch', 'web_browse',
+      'memory_grep', 'memory_describe', 'memory_expand',
+      'gmail_search', 'outlook_search', 'calendar_search', 'calendar_search_ms',
+      'drive_list', 'onedrive_search', 'contacts_search',
+      'plaud_search_recordings', 'squad_recall', 'screen_read', 'technique_read',
+    ];
+    for (const tool of searchTools) {
+      const sig1 = canonicalToolSignature(tool, { query: 'phrasing A' });
+      const sig2 = canonicalToolSignature(tool, { query: 'phrasing B' });
+      expect(sig1).not.toBe(sig2);
+    }
+  });
+
+  it('still strips non-query prose fields (reason, note, etc.) for search tools', () => {
+    // Search tools keep `query` but other prose fields still get dropped —
+    // the agent shouldn't be able to disguise a duplicate call by passing
+    // a different `reason` string.
+    const sig1 = canonicalToolSignature('vault_search', { query: 'same query', reason: 'first try' });
+    const sig2 = canonicalToolSignature('vault_search', { query: 'same query', reason: 'second try' });
+    expect(sig1).toBe(sig2);
   });
 });
 
@@ -184,6 +216,35 @@ describe('loopDetector', () => {
       sigs,
     );
     expect(result.decision).toBe('ok');
+  });
+
+  // v2.7.25 regression — David reported a vault_search sweep getting
+  // blocked: 4 related-but-distinct phrasings hit the 3-repeat threshold
+  // because the global PROSE_FIELDS set dropped `query` from the
+  // signature. For search tools query is the operation; this test pins
+  // the fix so it doesn't regress.
+  it('does not block vault_search with distinct query phrasings (the user-reported case)', () => {
+    const sigs = [
+      canonicalToolSignature('vault_search', { query: 'iMessage delivery issues communication protocol', mode: 'semantic' }),
+      canonicalToolSignature('vault_search', { query: 'imessage protocol reply send delivery failure bridge', mode: 'semantic' }),
+      canonicalToolSignature('vault_search', { query: 'iMessage delivery failure broken bridge troubleshooting not receiving replies', mode: 'semantic' }),
+    ];
+    const result = loopDetector(
+      tc('vault_search', { query: 'inbound iMessage from David gets an imessage_send', mode: 'semantic' }),
+      sigs,
+    );
+    expect(result.decision).toBe('ok');
+  });
+
+  it('STILL blocks vault_search when the EXACT same query is repeated 4+ times', () => {
+    // Loop detection should still catch a true loop — same query, same
+    // mode, over and over. The fix only opens up DISTINCT phrasings.
+    const sig = canonicalToolSignature('vault_search', { query: 'identical query', mode: 'semantic' });
+    const result = loopDetector(
+      tc('vault_search', { query: 'identical query', mode: 'semantic' }),
+      [sig, sig, sig],
+    );
+    expect(result.decision).toBe('block');
   });
 
   it('exposes constants matching v1', () => {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { Message } from '@dojo/shared';
 import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, WsEvent } from '@dojo/shared';
 import * as api from '../lib/api';
@@ -887,6 +887,26 @@ export const Chat = () => {
 
   if (loading) return <div className="flex-1 loading-state">Loading...</div>;
 
+  // v2.7.25 — tool_use_id → is_error lookup so the ChannelSendBubble can
+  // hide itself when its underlying tool was refused. Mirrors the same
+  // logic in AgentDetail.tsx; see that file for the longer rationale.
+  const toolResultErrorById = useMemo(() => {
+    const m = new Map<string, boolean>();
+    for (const msg of messages) {
+      if (msg.role !== 'tool') continue;
+      try {
+        const parsed = JSON.parse(msg.content);
+        if (!Array.isArray(parsed)) continue;
+        for (const block of parsed) {
+          if (block?.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+            m.set(block.tool_use_id, block.is_error === true);
+          }
+        }
+      } catch { /* not JSON */ }
+    }
+    return m;
+  }, [messages]);
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Messages */}
@@ -990,7 +1010,12 @@ export const Chat = () => {
             const channelSend = blocks?.find(
               (b) => b.type === 'tool_use' && b.name && CHANNEL_SEND_TOOLS[b.name],
             );
-            if (channelSend) {
+            // v2.7.25 — hide the outbound bubble when the underlying tool
+            // call was refused. See AgentDetail.tsx for the longer rationale.
+            const channelSendErrored = channelSend?.id
+              ? toolResultErrorById.get(channelSend.id) === true
+              : false;
+            if (channelSend && !channelSendErrored) {
               return (
                 <div key={msg.id} className="flex flex-col gap-2">
                   {text && (
@@ -999,6 +1024,15 @@ export const Chat = () => {
                   <ChannelSendBubble msg={msg} toolUse={channelSend} />
                 </div>
               );
+            }
+            // v2.7.25 — channel send errored with nothing else in this
+            // message: render nothing so the user doesn't see a blocked
+            // attempt. Recovery text (if any) renders separately.
+            if (channelSendErrored && !text) {
+              const otherToolUses = (blocks ?? []).filter(
+                (b) => b.type === 'tool_use' && b !== channelSend,
+              );
+              if (otherToolUses.length === 0) return null;
             }
             if (!text && hasToolUse) return <ToolOnlyPill key={msg.id} msg={msg} />;
           }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import type { AgentDetail as AgentDetailType, Message, AgentMessage, Model, PermissionManifest } from '@dojo/shared';
 import type { ChatChunkEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, ChatMessageEvent, WsEvent } from '@dojo/shared';
@@ -726,6 +726,30 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
     );
   }
 
+  // v2.7.25 — build a tool_use_id → is_error lookup so the channel-send
+  // bubble can hide itself when its underlying tool call was refused.
+  // Tool results live in subsequent role='tool' messages; each block in
+  // the JSON-array content has tool_use_id + is_error. Without this map,
+  // a blocked imessage_send would still render "sent via iMessage" + the
+  // message text in non-wordy mode (the tool result is hidden), making
+  // the user think a message was delivered when it wasn't.
+  const toolResultErrorById = useMemo(() => {
+    const m = new Map<string, boolean>();
+    for (const msg of messages) {
+      if (msg.role !== 'tool') continue;
+      try {
+        const parsed = JSON.parse(msg.content);
+        if (!Array.isArray(parsed)) continue;
+        for (const block of parsed) {
+          if (block?.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+            m.set(block.tool_use_id, block.is_error === true);
+          }
+        }
+      } catch { /* not JSON */ }
+    }
+    return m;
+  }, [messages]);
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto min-h-0 px-2 sm:px-4 md:px-6 py-3 sm:py-6 space-y-2 sm:space-y-4">
@@ -742,6 +766,12 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             </div>
           </div>
         )}
+        {/* v2.7.25 — map tool_use_id → was-error so the channel-send
+            bubble can hide itself when the underlying tool was refused
+            (e.g. engine blocked imessage_send to primary user while
+            they were active on dashboard). Without this, the bubble
+            would falsely render "sent via iMessage" + the message text
+            even though nothing was actually delivered. */}
         {messages.map((msg) => {
           // Hide inter-agent and system messages unless wordy mode is on.
           // iMessage-sourced user messages stay visible (they're a real
@@ -809,7 +839,14 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             const channelSend = parsed.blocks?.find(
               (b) => b.type === 'tool_use' && b.name && CHANNEL_SEND_TOOLS[b.name],
             );
-            if (channelSend) {
+            // v2.7.25 — if the channel-send tool was refused (engine guard,
+            // bridge off, allowlist miss, etc.), hide the outbound bubble.
+            // Falsely rendering it as "sent via iMessage" with the message
+            // text would tell the user a message was delivered that wasn't.
+            const channelSendErrored = channelSend?.id
+              ? toolResultErrorById.get(channelSend.id) === true
+              : false;
+            if (channelSend && !channelSendErrored) {
               return (
                 <div key={msg.id} className="flex flex-col gap-2">
                   {parsed.text && (
@@ -818,6 +855,16 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
                   <ChannelSendBubble msg={msg} toolUse={channelSend} />
                 </div>
               );
+            }
+            // v2.7.25 — channel send errored and it's the only thing in
+            // this assistant message: render nothing. The agent's recovery
+            // text (if any) lives in a subsequent assistant message and
+            // will render through the normal path on its own iteration.
+            if (channelSendErrored && !parsed.text) {
+              const otherToolUses = (parsed.blocks ?? []).filter(
+                (b) => b.type === 'tool_use' && b !== channelSend,
+              );
+              if (otherToolUses.length === 0) return null;
             }
             // Tool-only turns become a compact pill (rather than disappearing)
             // so the user still sees that the agent did something.

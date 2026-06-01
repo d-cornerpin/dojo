@@ -150,7 +150,12 @@ export function setNamedTunnelUrl(url: string | null): void {
     try { getDb().prepare("DELETE FROM config WHERE key = 'tunnel_named_url'").run(); } catch { /* ignore */ }
     return;
   }
-  setConfig('tunnel_named_url', url.trim());
+  // v2.7.25 — strip trailing slash before persisting so downstream URL
+  // concatenations (download links, share links, etc.) don't end up
+  // with "https://host//path". Users routinely copy-paste URLs with a
+  // trailing slash from their browser address bar; normalize on save.
+  const normalized = url.trim().replace(/\/+$/, '');
+  setConfig('tunnel_named_url', normalized);
 }
 
 export function getTunnelStatus(): TunnelStatus {
