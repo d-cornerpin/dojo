@@ -50,6 +50,7 @@ import { checkTimeouts } from '../spawner.js';
 import {
   isAwaitingIMResponse,
   clearIMResponseFlag,
+  getInboundSenderFor,
 } from '../../services/imessage-bridge.js';
 // recordCost intentionally NOT imported — callModel records cost internally.
 import { queueEmbedding } from '../../memory/embeddings.js';
@@ -280,6 +281,32 @@ export async function runV2Turn(agentId: string): Promise<void> {
   const lastUserMessageContent = triggerRow?.content ?? null;
   const triggeredByIMessage = lastUserMessageContent?.includes('[SOURCE: IMESSAGE FROM') ?? false;
   const imFlagSetAtRunStart = isAwaitingIMResponse(agentId);
+
+  // v2.7.23 — structural inbound channel binding. Parse the source tag from
+  // the most recent user message to determine which channel the turn was
+  // triggered from. The reply-destination resolver reads these at end of
+  // turn to auto-route the model's terminal text back to the source
+  // channel (OpenClaw-inspired pattern). For replies inside an active
+  // iMessage thread, the bridge sets pendingIMResponseMap[agentId] with
+  // the inbound sender — we read it via getInboundSenderFor so the agent
+  // doesn't have to embed the recipient in its reply.
+  let inboundChannel: 'imessage' | 'teams' | 'dashboard' | null = null;
+  let inboundContext: import('./state.js').ChannelInboundContext | null = null;
+  if (triggeredByIMessage) {
+    inboundChannel = 'imessage';
+    const pendingSender = getInboundSenderFor(agentId);
+    inboundContext = { recipientAddress: pendingSender ?? undefined, chatType: 'dm' };
+  } else if (lastUserMessageContent?.includes('[SOURCE: TEAMS MESSAGE FROM')) {
+    inboundChannel = 'teams';
+    // Extract chat_id from the envelope. The teams notification format
+    // includes "Chat ID: <id>" per assembler.ts:399. Conservative parse:
+    // try to find it; leave undefined if absent (Phase 2 will wire teams
+    // routing fully).
+    const chatIdMatch = lastUserMessageContent.match(/Chat ID:\s*([^\s\]]+)/i);
+    inboundContext = { chatId: chatIdMatch?.[1], chatType: 'dm' };
+  } else if (lastUserMessageContent) {
+    inboundChannel = 'dashboard';
+  }
   // v2.5.31 — A2A reply context now sources from the durable a2a_replies
   // table, not just "is the most recent user message an [A2A:...] tag."
   // findUnrepliedAssignForAgent returns null if the most recent ASSIGN/
@@ -345,6 +372,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
     triggeredByA2AReplyIntent: a2aReplyContext,
     imFlagSetAtRunStart,
     lastUserMessageContent,
+    inboundChannel,
+    inboundContext,
     shouldNudgeTracker: false, // Phase 2.1 may compute this; baseline disabled
     pendingTechniqueAck: initialPendingTechniqueAck,
   });
@@ -2524,6 +2553,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }
           state = advance(state, { toolCallsExecutedThisTurn: state.toolCallsExecutedThisTurn + 1 });
 
+          // v2.7.23 — track explicit channel-send tool calls so the
+          // end-of-turn reply-destination resolver can skip auto-routing
+          // for channels the agent already handled directly.
+          if (!toolResult.isError) {
+            if (tc.name === 'imessage_send') {
+              state = advance(state, {
+                explicitSendThisTurn: { ...state.explicitSendThisTurn, imessage: true },
+              });
+            } else if (tc.name === 'teams_send_message') {
+              state = advance(state, {
+                explicitSendThisTurn: { ...state.explicitSendThisTurn, teams: true },
+              });
+            }
+          }
+
           // ── Technique-acknowledgement gate state sync (v2.7.6) ──
           // Engage the gate after a successful technique_read / use_technique
           // — UNLESS the agent already has a pending or acknowledged ack
@@ -3076,29 +3120,72 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // ── Phase: finalize ──
     state = advance(state, { phase: 'finalize' });
 
-    // ── iMessage delivery is a DELIBERATE act, not auto-forwarding ──
-    // The chat→iMessage auto-forward was removed in v2.7.22. iMessage is
-    // now strictly an opt-in channel: the agent must call `imessage_send`
-    // when it wants to reach the user on their phone. Dashboard chat is
-    // the agent's working space; nothing typed there leaves the dashboard
-    // unless the agent explicitly sends it.
+    // ── Reply-destination resolver (v2.7.23, OpenClaw-inspired) ──
+    // The model just writes text; the engine decides which channel to
+    // route it through. The 2.7.22 "model must call imessage_send for
+    // every reply" pattern failed in practice (the model defaults to
+    // streaming text and can't reliably switch to tool mode for short
+    // conversational replies) — see /Users/dcliff9/Downloads/
+    // imessage_not_working.txt for the investigation.
     //
-    // What disappeared with this change:
-    //   - The "user is away → forward final text" path (was the source of
-    //     noise messages like "Done. Locked in.", "All three cleared.",
-    //     "Standing by." reaching the user's phone).
-    //   - The "turn was triggered by an iMessage → auto-reply with final
-    //     text" path (was the source of multi-turn iMessage thread spam
-    //     where every intermediate assistant text got texted).
+    // Routing rules (see reply-destination.ts):
+    //   - inbound from channel X → reply auto-routes back to X
+    //   - dashboard inbound / proactive turn → dashboard
+    //   - AWAY OVERRIDE: dashboard destination + presence='away' +
+    //     bridge configured → rewrite to iMessage so the user (who
+    //     isn't at the dashboard) gets the message on their phone
     //
-    // Replacement levers live in the prompt assembler (top-of-prompt
-    // away block when presence === 'away') and the imessage-bridge
-    // inbound envelope (per-message delivery directive on inbound texts).
-    // The watchdog/sendAlert path is untouched - infra alerts still fire.
-    //
-    // We still clear the pending-IM flag at end of turn so the recipient
-    // default for `imessage_send(no recipient)` doesn't go stale across
-    // unrelated subsequent turns.
+    // Dedup: if the agent already called the channel's explicit send
+    // tool this turn (state.explicitSendThisTurn[channel]), skip the
+    // auto-route — they handled it directly.
+    if (isPrimaryAgent(agentId) && state.lastAssistantTextForIM) {
+      try {
+        const { resolveReplyDestination } = await import('./reply-destination.js');
+        const { getPresence, isImessageConfigured } = await import('../../services/presence.js');
+        const { sendResponseViaIMessage } = await import('../../services/imessage-bridge.js');
+
+        const destination = resolveReplyDestination({
+          state,
+          presence: getPresence(),
+          imessageBridgeConfigured: isImessageConfigured(),
+        });
+
+        if (destination === 'imessage' && !state.explicitSendThisTurn.imessage && isImessageConfigured()) {
+          sendResponseViaIMessage(state.lastAssistantTextForIM, agentId);
+          // Persist a small system marker for forensic visibility (filtered
+          // out of non-wordy dashboard view in Phase 1.5).
+          const tagId = uuidv4();
+          const { getOwnerName } = await import('../../config/platform.js');
+          const tagContent = `[Reply routed via iMessage to ${getOwnerName()}]`;
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+            VALUES (?, ?, 'system', ?, ?, datetime('now'))
+          `).run(tagId, agentId, tagContent, turnNumber);
+          broadcast({
+            type: 'chat:message',
+            agentId,
+            message: {
+              id: tagId, agentId, role: 'system' as const,
+              content: tagContent,
+              tokenCount: null, modelId: null, cost: null, latencyMs: null,
+              createdAt: new Date().toISOString(),
+            },
+          });
+          logger.info('v2.7.23: routed reply via iMessage', {
+            agentId,
+            inboundChannel: state.inboundChannel,
+            presence: getPresence(),
+            textLength: state.lastAssistantTextForIM.length,
+          }, agentId);
+        }
+        // 'teams' routing is wired in Phase 2.
+      } catch (err) {
+        logger.warn('v2.7.23: reply-destination routing failed', {
+          agentId,
+          error: err instanceof Error ? err.message : String(err),
+        }, agentId);
+      }
+    }
     if (imFlagSetAtRunStart) clearIMResponseFlag(agentId);
 
     stopStatusHeartbeat(agentId);

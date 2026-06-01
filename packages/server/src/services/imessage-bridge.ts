@@ -879,30 +879,14 @@ async function pollMessages(): Promise<void> {
           const exampleRelationship = senderRecord?.description ? ` (${senderRecord.description})` : '';
           const updateDiscipline =
             `UPDATING THE PRIMARY USER: After you finish texting ${senderRecord?.name ?? 'this person'} back, do NOT send a separate update to ${primaryName} - NOT in the dashboard, and NOT as a separate iMessage to ${primaryName}'s address - UNLESS one of these is true: (a) you need to ASK ${primaryName} something to handle this conversation, or (b) there's specific information ${primaryName} genuinely needs to know. ${primaryName} does NOT see the iMessage thread between you and ${senderRecord?.name ?? 'this person'}; an unprompted "Sent." or "Standing by." or "Just the schedule, nothing else." reads as meaningless and confusing because they have no idea what you're referring to. If you DO send an update, ALWAYS lead with full context: who you were texting (name + relationship), what they asked you, and what you did or are waiting on. GOOD: "${exampleName}${exampleRelationship} just asked for your schedule this week - I sent her the calendar entries, no other personal details, and I'll let you know when she replies." BAD: "Sent. Just the schedule." Most iMessage exchanges should resolve silently from ${primaryName}'s perspective; only break that silence with real signal and real context.`;
-          // ── Delivery directive header (v2.7.22) ──────────────────────
-          // The header below sits ABOVE the source tag so the agent reads it
-          // first on every inbound iMessage. It exists because chat→iMessage
-          // auto-forwarding was removed: nothing the agent types in the
-          // dashboard reaches the sender automatically anymore. If the
-          // agent wants to reply, it MUST call imessage_send. Anything else
-          // (chat text, internal narration, status updates) stays in the
-          // dashboard and the sender never sees it. Without this header,
-          // the agent's prior conditioning ("auto-routes back") would
-          // silently drop replies into a void.
-          const deliveryHeader =
-            `════════════════════════════════════════════════════════════\n` +
-            `📱 INBOUND IMESSAGE — IF YOU REPLY, IT MUST GO VIA imessage_send\n` +
-            `════════════════════════════════════════════════════════════\n` +
-            `This message reached you via iMessage, not the dashboard. ` +
-            `${senderRecord?.name ?? 'The sender'} is on their phone, expecting a reply ` +
-            `on iMessage. If you choose to respond, you MUST call \`imessage_send\` — ` +
-            `anything you type as a chat reply will NOT reach them. Dashboard chat is ` +
-            `still your working space for thinking, tool calls, and planning; delivery ` +
-            `to ${senderRecord?.name ?? 'this person'} only happens via imessage_send. ` +
-            `If there is no reply worth sending, end the turn with literal \`[no-reply]\` and nothing else.\n` +
-            `────────────────────────────────────────────────────────────`;
-
-          const msgContent = `${deliveryHeader}\n[SOURCE: IMESSAGE FROM ${senderLabel} - this person texted YOUR OWN iMessage account (the DOJO bridge - YOUR phone, not the user's). The text arrived via iMessage, not the dashboard chat. ${policyLine} ${replyHint} ${updateDiscipline} Respond to THIS topic only; do not pull in unrelated dashboard conversation context.] ${textForModel}`;
+          // v2.7.23 — the giant `══ INBOUND IMESSAGE — MUST GO VIA imessage_send ══`
+          // delivery header was removed. The engine now auto-routes the model's
+          // terminal text back via iMessage (see reply-destination.ts), so the
+          // model no longer needs to be told to call a tool — it just writes,
+          // engine delivers. The remaining SOURCE tag below carries the policy
+          // + sender identity. The per-turn `[Reply destination: ...]` line in
+          // the assembled system prompt tells the model SMS voice is required.
+          const msgContent = `[SOURCE: IMESSAGE FROM ${senderLabel} - this person texted YOUR OWN iMessage account (the DOJO bridge - YOUR phone, not the user's). The text arrived via iMessage, not the dashboard chat. ${policyLine} ${replyHint} ${updateDiscipline} Respond to THIS topic only; do not pull in unrelated dashboard conversation context.] ${textForModel}`;
 
           db.prepare(`
             INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)

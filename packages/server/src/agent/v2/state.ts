@@ -51,6 +51,19 @@ export interface A2AReplyContext {
   fromName: string;
 }
 
+// v2.7.23 — Channel-routing context. When an inbound message arrives via
+// a non-dashboard channel (iMessage, Teams), the bridge populates this so
+// the reply-destination resolver can route the model's terminal text back
+// to the same channel without requiring an explicit tool call from the
+// model. recipientAddress is the email/phone for iMessage; chatId is the
+// Teams chat id. chatType distinguishes 'dm' from 'group' for routing
+// policy (group chats default to message_tool mode per OpenClaw pattern).
+export interface ChannelInboundContext {
+  recipientAddress?: string;
+  chatId?: string;
+  chatType?: 'dm' | 'group';
+}
+
 export interface AgentTurnState {
   // ── Identity & config (immutable across turn) ──
   readonly agentId: string;
@@ -102,10 +115,28 @@ export interface AgentTurnState {
   readonly triggeredByA2AReplyIntent: A2AReplyContext | null;
   readonly imFlagSetAtRunStart: boolean;
   readonly lastUserMessageContent: string | null;
+  // v2.7.23 — structural inbound channel binding (OpenClaw-inspired). Set
+  // once at preflight by inspecting the last user message. Read at end-
+  // of-turn by the reply-destination resolver so terminal assistant text
+  // can be auto-routed back to the source channel. `null` means the turn
+  // came in via dashboard (or no clear inbound source). Replaces the
+  // 2.7.22 "model must call imessage_send for every reply" pattern,
+  // which the model couldn't follow reliably for short conversational
+  // replies (per imessage_not_working.txt investigation).
+  readonly inboundChannel: 'imessage' | 'teams' | 'dashboard' | null;
+  readonly inboundContext: ChannelInboundContext | null;
 
   // ── Engine-tracked turn flags ──
   sentToAgentThisTurn: boolean;
   lastAssistantTextForIM: string | null;
+  // v2.7.23 — set when the agent calls a channel-specific send tool
+  // (imessage_send, teams_send_message) successfully this turn. The
+  // reply-destination resolver reads this at end-of-turn to skip
+  // auto-routing for the same channel (otherwise terminal text would
+  // get delivered twice — once via the tool call, once via the auto-
+  // route). Multiple channels can be tracked if the agent crosses
+  // them in one turn (rare).
+  explicitSendThisTurn: { imessage?: boolean; teams?: boolean };
   trackerToolCalledThisTurn: boolean;
   nonTrackerToolCalls: number;
   /**
@@ -274,6 +305,9 @@ export interface InitStateParams {
   triggeredByA2AReplyIntent: A2AReplyContext | null;
   imFlagSetAtRunStart: boolean;
   lastUserMessageContent: string | null;
+  // v2.7.23 — structural inbound channel binding; see AgentTurnState fields
+  inboundChannel: 'imessage' | 'teams' | 'dashboard' | null;
+  inboundContext: ChannelInboundContext | null;
   shouldNudgeTracker: boolean;
   /**
    * Hydrated from agents.config.pendingTechniqueAck. Null when the gate
@@ -328,9 +362,12 @@ export function initState(params: InitStateParams): AgentTurnState {
     triggeredByA2AReplyIntent: params.triggeredByA2AReplyIntent,
     imFlagSetAtRunStart: params.imFlagSetAtRunStart,
     lastUserMessageContent: params.lastUserMessageContent,
+    inboundChannel: params.inboundChannel,
+    inboundContext: params.inboundContext,
 
     sentToAgentThisTurn: false,
     lastAssistantTextForIM: null,
+    explicitSendThisTurn: {},
     trackerToolCalledThisTurn: false,
     nonTrackerToolCalls: 0,
     nudgedForMissedReplyOnAssignId: null,

@@ -12,6 +12,8 @@ import { assembleGroupContext as _assembleGroupContext } from '../agent/groups.j
 import { generateTechniqueIndex, generateDraftTechniqueContext } from '../techniques/index-builder.js';
 import { getContextWindow } from '../agent/model.js';
 import { isIMBridgeRunning } from '../services/imessage-bridge.js';
+import { getPresence, isImessageConfigured } from '../services/presence.js';
+import { resolveReplyDestination } from '../agent/v2/reply-destination.js';
 
 // Prompt complexity tiers based on model context window
 type PromptTier = 'full' | 'standard' | 'compact' | 'minimal';
@@ -253,19 +255,15 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
       lines.push(`## iMessage`);
       if (bridgeRunning) {
         lines.push(
-          `\`imessage_send\` is the ONLY way to deliver a message to ${ownerName}'s phone or to anyone else on iMessage. ` +
-          `Nothing you type in dashboard chat is auto-forwarded. If you want it delivered, you call the tool.\n\n` +
-          `Voice when sending: write like a text message. No markdown, no headers, no bullet lists, no "Done." or "Noted." or "On it." ` +
-          `Short and conversational. Only send things the recipient actually needs or wants to receive — real news, real answers, ` +
-          `things requiring their input. Don't send acknowledgments, internal narration, tool-completion summaries, or echoes of ` +
-          `notifications. If there's nothing worth sending, don't call the tool.\n\n` +
-          `When replying to someone who texted you, OMIT \`recipient\` — the tool defaults to the actual sender.`,
+          `**Replies to inbound iMessages auto-route via the engine — you do NOT need to call \`imessage_send\` to reply.** Just write your reply text; the per-turn \`[Reply destination: ...]\` tag at the top of this prompt tells you when iMessage routing is active. When it is, write in SMS voice (no markdown).\n\n` +
+          `\`imessage_send\` is reserved for:\n` +
+          `- Proactive outreach (no inbound triggered this turn, you're initiating)\n` +
+          `- Sending to someone OTHER than the active iMessage thread\n` +
+          `- Rich actions (attachments, reactions — Phase 2)\n\n` +
+          `If the inbound doesn't warrant a reply (closing pleasantry, FYI, etc.), end the turn with \`[no-reply]\`.`,
         );
-        if (isIMessageTurn(agentId)) {
-          lines.push(`If the inbound message doesn't warrant a reply (closing pleasantry, FYI you don't need to act on, etc.), end the turn with \`[no-reply]\` — same escape hatch you use for any silent turn. Skips the send and ends cleanly.`);
-        }
       } else {
-        lines.push(`iMessage is currently disabled on this server — \`imessage_send\` will fail. Use the dashboard chat for all communication with ${ownerName} until they re-enable it in Settings → iMessage.`);
+        lines.push(`iMessage is currently disabled on this server — auto-routing won't fire and \`imessage_send\` will fail. Use the dashboard chat for all communication with ${ownerName} until they re-enable it in Settings → iMessage.`);
       }
       lines.push('');
     } else if (!bridgeRunning) {
@@ -360,45 +358,49 @@ export function assembleSystemPrompt(agentId: string, modelId: string): string {
   });
   const timeHeader = `**Current date/time: ${localStr}**\n\nUse this to judge the age and relevance of any context, vault entries, or summaries you see. Recent information is more reliable than old information.`;
 
-  // ── Away-presence override block (v2.7.22) ──────────────────────────
-  // When the user is "out of the dojo", dashboard chat is invisible to
-  // them. This block is prepended ABOVE everything else (including the
-  // identity/SOUL) so the rule cannot be diluted by other instructions
-  // about surfacing, reporting, or replying. It is the highest-priority
-  // directive in the prompt while presence === 'away'. Only applies to
-  // the primary agent — sub-agents never reach the user directly.
-  const awayHeaders: string[] = [];
+  // ── Per-turn reply-destination tag (v2.7.23) ──────────────────────
+  // The engine routes the model's terminal text based on inbound channel
+  // (see reply-destination.ts). The model doesn't choose the channel —
+  // it just needs to know which voice to use (SMS-style for iMessage,
+  // normal markdown for dashboard) and that delivery is automatic. This
+  // one-line tag replaces the v2.7.22 away-presence top-block and the
+  // giant inbound-iMessage envelope, both of which fought the model's
+  // text-streaming default and lost.
+  const destinationTags: string[] = [];
   if (isPrimaryAgent(agentId)) {
     try {
-      // Dynamic import avoids a circular dep at module-load time.
-      const { getPresence } = require('../services/presence.js') as typeof import('../services/presence.js');
-      if (getPresence() === 'away') {
-        const ownerName = getOwnerName();
-        const awayBlock =
-          `════════════════════════════════════════════════════════════\n` +
-          `⚠ ${ownerName.toUpperCase()} IS OUT OF THE DOJO — READ FIRST, OVERRIDES EVERYTHING BELOW\n` +
-          `════════════════════════════════════════════════════════════\n` +
-          `${ownerName} is away from the dashboard right now. They CANNOT see anything you type in chat. ` +
-          `iMessage is the ONLY channel that reaches them. If you want them to know something, you MUST call ` +
-          `\`imessage_send\`. If you do not call \`imessage_send\`, they will not see it. Period.\n\n` +
-          `This rule overrides every other instruction in this prompt about surfacing notifications, ` +
-          `keeping ${ownerName} informed, sending brief summaries in your reply, or reporting completed work. ` +
-          `Those rules assume the dashboard is visible. It is not.\n\n` +
-          `Dashboard chat is still your working space — think, narrate, plan, acknowledge tools as needed. ` +
-          `Just understand none of it is being delivered. Delivery only happens via \`imessage_send\`.\n\n` +
-          `BAR FOR USING imessage_send: only things ${ownerName} genuinely needs or wants to receive — ` +
-          `real outbound news, real answers to questions they asked, things requiring their input or a decision. ` +
-          `NOT: acknowledgments ("Got it", "Noted", "On it"), self-narration ("Standing by", "Waiting on his reply"), ` +
-          `tool-completion summaries ("Done", "All cleared", "Locked in"), echoes of notifications you've already seen, ` +
-          `status reports nobody asked for, or restatements of the same info. ` +
-          `When in doubt, leave it in dashboard chat — silent is better than noisy.\n` +
-          `════════════════════════════════════════════════════════════`;
-        awayHeaders.push(awayBlock);
+      // Inbound channel is derived from the last user message (same logic
+      // as the loop's preflight). Cheap heuristic here so the assembler
+      // doesn't depend on turn state being threaded through.
+      const db = getDb();
+      const lastRow = db.prepare(
+        "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      ).get(agentId) as { content: string } | undefined;
+      const lastContent = lastRow?.content ?? '';
+      let inboundChannel: 'imessage' | 'teams' | 'dashboard' | null = null;
+      if (lastContent.includes('[SOURCE: IMESSAGE FROM')) inboundChannel = 'imessage';
+      else if (lastContent.includes('[SOURCE: TEAMS MESSAGE FROM')) inboundChannel = 'teams';
+      else if (lastContent) inboundChannel = 'dashboard';
+
+      const destination = resolveReplyDestination({
+        state: { inboundChannel },
+        presence: getPresence(),
+        imessageBridgeConfigured: isImessageConfigured(),
+      });
+      const ownerName = getOwnerName();
+      let tag: string;
+      if (destination === 'imessage') {
+        tag = `[Reply destination: iMessage to ${ownerName} — write in SMS voice (no markdown, no headers, no bullet lists). Just write the reply text; the engine delivers it via iMessage automatically. Use [no-reply] if nothing worth sending. The imessage_send tool is reserved for proactive sends, sending to someone other than ${ownerName}, or rich actions (attachments).]`;
+      } else if (destination === 'teams') {
+        tag = `[Reply destination: Teams — write the reply text; the engine delivers it via Teams automatically. Use [no-reply] if nothing worth sending. The teams_send_message tool is reserved for cross-chat sends.]`;
+      } else {
+        tag = `[Reply destination: dashboard chat — normal voice, markdown ok. Use [no-reply] if nothing worth sending.]`;
       }
-    } catch { /* presence module may not be loaded yet */ }
+      destinationTags.push(tag);
+    } catch { /* presence/resolver not available — proceed without tag */ }
   }
 
-  const parts = [...awayHeaders, timeHeader, soul, tools];
+  const parts = [...destinationTags, timeHeader, soul, tools];
 
   // Conditionally include USER.md
   if (shouldShareUserProfile(agentId)) {
@@ -428,7 +430,7 @@ export function assembleSystemPrompt(agentId: string, modelId: string): string {
 
 Each non-user-chat message has a \`[SOURCE: ...]\` tag:
 - No tag = direct message from ${getOwnerName()} via dashboard
-- \`[SOURCE: IMESSAGE FROM ${getOwnerName().toUpperCase()}]\` = ${getOwnerName()} via iMessage. Reply ONLY via \`imessage_send\` — nothing you type in chat reaches their phone. Each inbound iMessage carries a delivery-directive header explaining this; obey it. If the message doesn't warrant a reply, end the turn with literal \`[no-reply]\`.
+- \`[SOURCE: IMESSAGE FROM ${getOwnerName().toUpperCase()}]\` = ${getOwnerName()} via iMessage. Your reply text auto-routes back via iMessage — just write it (SMS voice, no markdown). The \`[Reply destination: ...]\` tag at the top of this prompt confirms the routing. If no reply is warranted, end the turn with literal \`[no-reply]\`.
 - \`[SOURCE: GMAIL NOTIFICATION]\` / \`[SOURCE: OUTLOOK NOTIFICATION]\` = a new email just landed in ${getOwnerName()}'s inbox. NOT a request from ${getOwnerName()} themselves. **Default: do nothing.** No chat message, no \`user_gmail_read\` / \`user_outlook_read\`, no surfacing. Most email is noise; the preview is enough to tell.
 
   **DO NOT SURFACE (and do not even read the full body of):**

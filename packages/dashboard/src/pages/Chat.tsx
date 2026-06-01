@@ -915,7 +915,8 @@ export const Chat = () => {
             // the user sees the channel without flipping wordy mode on.
             // v2.3.16 — was hidden in regular mode and left users guessing
             // whether the iMessage actually got sent.
-            const imSentMatch = msg.content.trim().match(/^\[SENT VIA IMESSAGE to (.+?)\]$/);
+            // v2.7.23 — also match the new auto-routing marker shape
+            const imSentMatch = msg.content.trim().match(/^\[(?:SENT VIA IMESSAGE|Reply routed via iMessage) to (.+?)\]$/);
             if (imSentMatch) {
               return (
                 <div key={msg.id} className="flex justify-end my-1 px-1">
