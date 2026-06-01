@@ -43,7 +43,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'gmail_reply',
-    description: 'Reply to an existing email thread. Supports attachments — same rules as gmail_send (25MB inline cap, overflow to Drive link).',
+    description: 'Reply to an existing email thread. **As of v2.7.24, in-thread replies to "Re:" messages from known correspondents auto-route via the engine — you do NOT need to call this tool for those.** Just write your reply text; the engine sends it on the same thread. Call this tool when: replying to a DIFFERENT thread than the inbound, replying to a notification that the engine did NOT auto-route, or when you need attachments / reply_all behavior. Supports attachments — same rules as gmail_send (25MB inline cap, overflow to Drive link).',
     input_schema: {
       type: 'object',
       properties: {

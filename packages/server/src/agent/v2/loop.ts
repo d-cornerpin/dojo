@@ -51,7 +51,13 @@ import {
   isAwaitingIMResponse,
   clearIMResponseFlag,
   getInboundSenderFor,
+  addressesMatch,
 } from '../../services/imessage-bridge.js';
+import {
+  getGmailSafeSenders,
+  getOutlookSafeSenders,
+  getTeamsSafeSenders,
+} from '../../services/channel-safe-senders.js';
 // recordCost intentionally NOT imported — callModel records cost internally.
 import { queueEmbedding } from '../../memory/embeddings.js';
 import { isPrimaryAgent, isTrainerAgent } from '../../config/platform.js';
@@ -290,20 +296,87 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // iMessage thread, the bridge sets pendingIMResponseMap[agentId] with
   // the inbound sender — we read it via getInboundSenderFor so the agent
   // doesn't have to embed the recipient in its reply.
-  let inboundChannel: 'imessage' | 'teams' | 'dashboard' | null = null;
+  let inboundChannel: 'imessage' | 'teams' | 'email' | 'dashboard' | null = null;
   let inboundContext: import('./state.js').ChannelInboundContext | null = null;
   if (triggeredByIMessage) {
     inboundChannel = 'imessage';
     const pendingSender = getInboundSenderFor(agentId);
     inboundContext = { recipientAddress: pendingSender ?? undefined, chatType: 'dm' };
   } else if (lastUserMessageContent?.includes('[SOURCE: TEAMS MESSAGE FROM')) {
-    inboundChannel = 'teams';
-    // Extract chat_id from the envelope. The teams notification format
-    // includes "Chat ID: <id>" per assembler.ts:399. Conservative parse:
-    // try to find it; leave undefined if absent (Phase 2 will wire teams
-    // routing fully).
+    // v2.7.24 — Teams inbound routing. The auto-route ONLY fires when the
+    // sender is on the per-channel Teams safe-sender allowlist. Without
+    // this check, ANY Teams DM (including from external/unvetted contacts)
+    // would trigger an auto-reply.
     const chatIdMatch = lastUserMessageContent.match(/Chat ID:\s*([^\s\]]+)/i);
-    inboundContext = { chatId: chatIdMatch?.[1], chatType: 'dm' };
+    const chatTypeMatch = lastUserMessageContent.match(/Chat:[^()\n]*\(([^)]+)\)/i);
+    const isGroup = chatTypeMatch?.[1]?.toLowerCase().includes('group') ?? false;
+    // Sender format from teams-watcher.ts: "FROM Name <email@x>" or "FROM Name (email@x)".
+    const senderHeader = lastUserMessageContent.match(/\[SOURCE: TEAMS MESSAGE FROM ([^\]]+)\]/i);
+    const senderRaw = senderHeader?.[1] ?? '';
+    const emailMatch = senderRaw.match(/<([^>]+)>/) ?? senderRaw.match(/\(([^)]+)\)/) ?? senderRaw.match(/(\S+@\S+)/);
+    const senderAddress = emailMatch?.[1]?.toLowerCase() ?? '';
+    const senderIsKnown = senderAddress
+      ? getTeamsSafeSenders().some(s => addressesMatch(s.address, senderAddress))
+      : false;
+    if (senderIsKnown && chatIdMatch?.[1]) {
+      inboundChannel = 'teams';
+      inboundContext = {
+        chatId: chatIdMatch[1],
+        chatType: isGroup ? 'group' : 'dm',
+        recipientAddress: senderAddress,
+      };
+    } else {
+      // Unknown Teams sender → notification flow only. Agent reads the
+      // message, decides whether to surface or engage; auto-route stays off.
+      inboundChannel = 'dashboard';
+    }
+  } else if (
+    lastUserMessageContent?.includes('[SOURCE: OUTLOOK NOTIFICATION') ||
+    lastUserMessageContent?.includes('[SOURCE: GMAIL NOTIFICATION')
+  ) {
+    // v2.7.24 — email inbound routing. Only treat as inbound-REPLY (auto-
+    // route the agent's response back via email) when all of these are
+    // true:
+    //   (a) subject starts with "Re:" (case-insensitive)
+    //   (b) the From address is on the per-slot safe-sender list for the
+    //       mailbox that received this notification (parsed from the
+    //       notification's "(agent)" or "(user)" suffix)
+    //   (c) we have a Message ID to reply against
+    // Per-slot lists match the per-slot "Allow sending email" toggle —
+    // adding Sarah to the agent slot's gmail list does NOT authorize
+    // auto-reply to Sarah's emails arriving at the user slot's gmail.
+    const subjectMatch = lastUserMessageContent.match(/^Subject:\s*(.+)$/im);
+    const fromMatch = lastUserMessageContent.match(/^From:\s*(.+)$/im);
+    const messageIdMatch = lastUserMessageContent.match(/^Message ID:\s*(\S+)/im);
+    const isOutlook = lastUserMessageContent.includes('[SOURCE: OUTLOOK NOTIFICATION');
+    // Format: [SOURCE: GMAIL NOTIFICATION — kbrns66@gmail.com (agent)]
+    // The parenthesized suffix is the slot. Default to 'agent' on parse
+    // failure (most common slot for monitored inboxes).
+    const slotMatch = lastUserMessageContent.match(/\[SOURCE: (?:GMAIL|OUTLOOK) NOTIFICATION[^()]*\(([^)]+)\)\]/i);
+    const inboundSlot: 'agent' | 'user' = slotMatch?.[1]?.toLowerCase() === 'user' ? 'user' : 'agent';
+    const subject = subjectMatch?.[1]?.trim() ?? '';
+    const fromRaw = fromMatch?.[1]?.trim() ?? '';
+    const emailMatch = fromRaw.match(/<([^>]+)>/) ?? fromRaw.match(/(\S+@\S+)/);
+    const fromAddress = emailMatch?.[1]?.toLowerCase() ?? '';
+    const looksLikeReply = /^re:\s/i.test(subject);
+    let fromIsKnownSafeSender = false;
+    if (fromAddress) {
+      const channelList = isOutlook
+        ? getOutlookSafeSenders(inboundSlot)
+        : getGmailSafeSenders(inboundSlot);
+      fromIsKnownSafeSender = channelList.some(s => addressesMatch(s.address, fromAddress));
+    }
+    if (looksLikeReply && fromIsKnownSafeSender && messageIdMatch?.[1]) {
+      inboundChannel = 'email';
+      inboundContext = {
+        emailMessageId: messageIdMatch[1],
+        emailService: isOutlook ? 'outlook' : 'gmail',
+        emailSubject: subject,
+        recipientAddress: fromAddress,
+      };
+    } else {
+      inboundChannel = 'dashboard';
+    }
   } else if (lastUserMessageContent) {
     inboundChannel = 'dashboard';
   }
@@ -1723,6 +1796,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
             reasoningContent: result.reasoningContent ?? undefined,
           },
         });
+        // v2.7.24 — also track text-with-tools iterations as deliverable
+        // assistant text. Previously this branch ran (because there are
+        // tool calls) without updating lastAssistantTextForIM, which meant
+        // a turn shaped "text + tool call → tool result → [no-reply]" would
+        // leave the channel-routing block with nothing to deliver. The
+        // user's substantive answer (the text in iter 1) never reached
+        // iMessage / Teams / email. Capturing the LAST iteration's text
+        // regardless of whether tools rode with it gives the routing
+        // block the right value to deliver at end-of-turn.
+        if (persistedContent && persistedContent.trim().length > 0) {
+          state = advance(state, { lastAssistantTextForIM: persistedContent.trim() });
+        }
       } else if (persistedContent) {
         db.prepare(`
           INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, token_count, model_id, cost, latency_ms, turn_number, reasoning_content, created_at)
@@ -2565,6 +2650,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
               state = advance(state, {
                 explicitSendThisTurn: { ...state.explicitSendThisTurn, teams: true },
               });
+            } else if (tc.name === 'outlook_reply' || tc.name === 'gmail_reply') {
+              state = advance(state, {
+                explicitSendThisTurn: { ...state.explicitSendThisTurn, email: true },
+              });
             }
           }
 
@@ -3150,13 +3239,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
           imessageBridgeConfigured: isImessageConfigured(),
         });
 
-        if (destination === 'imessage' && !state.explicitSendThisTurn.imessage && isImessageConfigured()) {
-          sendResponseViaIMessage(state.lastAssistantTextForIM, agentId);
-          // Persist a small system marker for forensic visibility (filtered
-          // out of non-wordy dashboard view in Phase 1.5).
+        // Small helper: persist + broadcast the routing marker so wordy
+        // mode shows it and the dashboard renderer can surface a "sent
+        // via X" pill (the existing pill regex matches `Reply routed via
+        // (iMessage|Teams|email)`).
+        const persistRoutingMarker = (label: string) => {
           const tagId = uuidv4();
-          const { getOwnerName } = await import('../../config/platform.js');
-          const tagContent = `[Reply routed via iMessage to ${getOwnerName()}]`;
+          const tagContent = `[Reply routed via ${label}]`;
           db.prepare(`
             INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
             VALUES (?, ?, 'system', ?, ?, datetime('now'))
@@ -3171,14 +3260,88 @@ export async function runV2Turn(agentId: string): Promise<void> {
               createdAt: new Date().toISOString(),
             },
           });
+        };
+
+        if (destination === 'imessage' && !state.explicitSendThisTurn.imessage && isImessageConfigured()) {
+          sendResponseViaIMessage(state.lastAssistantTextForIM, agentId);
+          const { getOwnerName } = await import('../../config/platform.js');
+          persistRoutingMarker(`iMessage to ${getOwnerName()}`);
           logger.info('v2.7.23: routed reply via iMessage', {
             agentId,
             inboundChannel: state.inboundChannel,
             presence: getPresence(),
             textLength: state.lastAssistantTextForIM.length,
           }, agentId);
+        } else if (destination === 'teams' && !state.explicitSendThisTurn.teams && state.inboundContext?.chatId) {
+          // v2.7.24 — Teams reply routing. Inbound Teams DM → reply
+          // auto-routes back to the same chat_id via teams_send_message.
+          // We invoke executeTool with a synthetic ToolCall so the
+          // existing dispatcher handles auth, retries, audit logging.
+          // Group chats stay 'message_tool' per the resolver (inbound
+          // context populates chatType='group' for those), so this only
+          // fires for DM-style Teams chats.
+          try {
+            const tc: ToolCall = {
+              id: uuidv4(),
+              name: 'teams_send_message',
+              arguments: {
+                chat_id: state.inboundContext.chatId,
+                message: state.lastAssistantTextForIM,
+              },
+            };
+            const result = await executeTool(agentId, tc);
+            if (result.isError) {
+              logger.warn('v2.7.24: teams auto-reply failed', { agentId, error: result.content }, agentId);
+            } else {
+              persistRoutingMarker(`Teams to chat ${state.inboundContext.chatId.slice(0, 8)}…`);
+              logger.info('v2.7.24: routed reply via Teams', {
+                agentId,
+                chatId: state.inboundContext.chatId,
+                textLength: state.lastAssistantTextForIM.length,
+              }, agentId);
+            }
+          } catch (err) {
+            logger.warn('v2.7.24: teams auto-reply crashed', {
+              agentId, error: err instanceof Error ? err.message : String(err),
+            }, agentId);
+          }
+        } else if (destination === 'email' && !state.explicitSendThisTurn.email && state.inboundContext?.emailMessageId) {
+          // v2.7.24 — email reply routing. Only fires when the inbound
+          // was a "Re:" from a known safe-sender (set in preflight). For
+          // those, the model's terminal text is sent as an in-thread
+          // reply via outlook_reply (Outlook) or gmail_reply (Gmail).
+          // Random new-email notifications keep the existing "agent
+          // decides whether to surface" flow — they get inboundChannel=
+          // 'dashboard', not 'email'.
+          const toolName = state.inboundContext.emailService === 'gmail' ? 'gmail_reply' : 'outlook_reply';
+          try {
+            const tc: ToolCall = {
+              id: uuidv4(),
+              name: toolName,
+              arguments: {
+                message_id: state.inboundContext.emailMessageId,
+                body: state.lastAssistantTextForIM,
+              },
+            };
+            const result = await executeTool(agentId, tc);
+            if (result.isError) {
+              logger.warn('v2.7.24: email auto-reply failed', { agentId, tool: toolName, error: result.content }, agentId);
+            } else {
+              const subjectPreview = state.inboundContext.emailSubject?.slice(0, 40) ?? '(no subject)';
+              persistRoutingMarker(`email reply (thread: "${subjectPreview}")`);
+              logger.info('v2.7.24: routed reply via email', {
+                agentId,
+                emailService: state.inboundContext.emailService,
+                subject: state.inboundContext.emailSubject,
+                textLength: state.lastAssistantTextForIM.length,
+              }, agentId);
+            }
+          } catch (err) {
+            logger.warn('v2.7.24: email auto-reply crashed', {
+              agentId, error: err instanceof Error ? err.message : String(err),
+            }, agentId);
+          }
         }
-        // 'teams' routing is wired in Phase 2.
       } catch (err) {
         logger.warn('v2.7.23: reply-destination routing failed', {
           agentId,

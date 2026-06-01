@@ -31,7 +31,7 @@
 
 import type { AgentTurnState } from './state.js';
 
-export type ReplyDestination = 'imessage' | 'teams' | 'dashboard';
+export type ReplyDestination = 'imessage' | 'teams' | 'email' | 'dashboard';
 
 export interface ResolveReplyDestinationParams {
   state: Pick<AgentTurnState, 'inboundChannel'>;
@@ -42,12 +42,17 @@ export interface ResolveReplyDestinationParams {
 export function resolveReplyDestination(params: ResolveReplyDestinationParams): ReplyDestination {
   const { state, presence, imessageBridgeConfigured } = params;
 
-  // Layer 1: bind to the inbound channel when one is set.
+  // Layer 1: bind to the inbound channel when one is set. The away override
+  // never applies to these — if the user reached out via Teams, the reply
+  // goes back via Teams regardless of presence; same for iMessage and email.
   if (state.inboundChannel === 'imessage') return 'imessage';
   if (state.inboundChannel === 'teams') return 'teams';
+  if (state.inboundChannel === 'email') return 'email';
 
   // Layer 2: dashboard inbound or proactive turn → default to dashboard,
-  // then apply the away override if applicable.
+  // then apply the away override if applicable. (Away override only
+  // promotes to iMessage — Teams/email require a specific recipient
+  // context that proactive turns don't carry.)
   const base: ReplyDestination = 'dashboard';
   if (presence === 'away' && imessageBridgeConfigured) {
     return 'imessage';

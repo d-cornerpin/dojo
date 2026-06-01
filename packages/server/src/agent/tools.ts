@@ -1763,7 +1763,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Show files to user ──
   {
     name: 'show_to_user',
-    description: 'Display one or more files (images, PDFs, etc.) to the user IN THE CHAT as part of your reply. Use this when you have a file you want the user to actually look at — a slide PNG that a sub-agent sent you, a Drive file you downloaded, an image from your uploads folder. WITHOUT this tool, "take a look at this image" is a lie — the file is on disk but the user sees no thumbnail.\n\nThis tool inserts an assistant-role message into your chat with the files attached and your `caption` as the bubble text. The user sees: your caption + thumbnails. After calling, end your turn (or continue with more tool calls if needed).\n\nExample (Kevin forwarding a slide preview Maddy sent):\n  show_to_user({ file_paths: ["/Users/.../uploads/kevin/maddy_slide_preview.png"], caption: "Maddy finished a draft of the Verve Health title slide. Looks good to me — anything you want changed?" })\n\nFile paths must already exist (typically under ~/.dojo/uploads/<your-agent-id>/ or wherever a sub-agent delivered them). Files outside the uploads dir are copied in.',
+    description: 'Display one or more files (images, PDFs, etc.) to the user IN THE CHAT as part of your reply. Use this when you have a file you want the user to actually look at — a slide PNG that a sub-agent sent you, a Drive file you downloaded, an image from your uploads folder. WITHOUT this tool, "take a look at this image" is a lie — the file is on disk but the user sees no thumbnail.\n\nThis tool inserts an assistant-role message into your chat with the files attached and your `caption` as the bubble text. The user sees: your caption + thumbnails. After calling, end your turn (or continue with more tool calls if needed).\n\nExample (forwarding a slide preview a sub-agent sent):\n  show_to_user({ file_paths: ["/Users/.../uploads/<your-agent-id>/draft_slide_preview.png"], caption: "Sub-agent finished a draft of the title slide. Looks good to me — anything you want changed?" })\n\nFile paths must already exist (typically under ~/.dojo/uploads/<your-agent-id>/ or wherever a sub-agent delivered them). Files outside the uploads dir are copied in.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1780,6 +1780,48 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['file_paths'],
     },
   },
+  // ── Channel Safe-Sender Management ──
+  {
+    name: 'add_safe_sender',
+    description: 'Add a person to one of the channel safe-sender allowlists so the agent can auto-reply when they message back. **Call this ONLY when the user explicitly asks you to start a conversation with someone (e.g., "email Sarah about Q4", "text Mike a heads-up", "start a Teams chat with Priya"). Do NOT call this preemptively, and do NOT call it because someone happened to email or text you without the user asking.**\n\nThe `user_request_quote` parameter is required and must contain the user\'s actual words asking for this. If you cannot quote a real user request — because no one asked — do NOT call this tool. The quote is audit-logged and reviewed by the user.\n\nThe allowlist controls AUTO-REPLY: once a person is on the channel\'s list, when they reply back (e.g., a Re: email or a Teams DM back), the engine routes the agent\'s response automatically. People NOT on the list can still send the agent messages; the agent just decides whether to surface them to the user instead of auto-replying.\n\nChannels:\n- `imessage` — iMessage contacts (no slot)\n- `gmail` — email senders, PER-SLOT (`agent` or `user`); the slot you add to must have "Allow sending email" enabled on that account, or the call is refused\n- `outlook` — same as gmail, per-slot\n- `teams` — Teams DM senders (Entra accounts only, no slot)\n\nThe `slot` parameter is REQUIRED for `gmail` and `outlook` (decides which mailbox\'s list to add to) and IGNORED for `imessage` and `teams`. If the user doesn\'t specify the slot, infer from context: the agent\'s own account (kbrns66@gmail.com for Gmail) is the `agent` slot; the user\'s personal account (e.g., dcliff9@gmail.com) is the `user` slot. If unsure, ask the user before calling.\n\nSharing levels:\n- `open_book` — no restrictions, treat like the owner (use for the owner\'s alternate addresses, household members the user trusts fully)\n- `dont_overshare` — default for new contacts; share what is asked, do not volunteer extra details\n- `cautious` — answer only what is asked, briefly, high-level only\n- `project_only` — discuss only the specific project named in description (description is required for this level)\n\nIf the user asks you to start a conversation with someone but does not specify a sharing level, default to `dont_overshare`.\n\nIdempotent: if the address is already on the target list, the call succeeds without modifying anything.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        channel: {
+          type: 'string',
+          enum: ['imessage', 'gmail', 'outlook', 'teams'],
+          description: 'Which channel\'s safe-sender list to add to.',
+        },
+        address: {
+          type: 'string',
+          description: 'For iMessage: phone number or email/Apple ID. For gmail/outlook: email address. For teams: email or UPN.',
+        },
+        slot: {
+          type: 'string',
+          enum: ['agent', 'user'],
+          description: 'REQUIRED for gmail/outlook: which mailbox slot\'s safe-sender list to add to. `agent` = the agent\'s own account (the bot\'s mailbox). `user` = the user\'s personal account. The slot must have "Allow sending email" enabled in Settings → that integration card, or this call is refused. Ignored for imessage and teams.',
+        },
+        user_request_quote: {
+          type: 'string',
+          description: 'REQUIRED. Quote the user\'s actual words asking you to start this conversation or add this person. Pull verbatim from a recent user message in this thread — do not paraphrase, do not invent. If you cannot quote a real user request, do NOT call this tool. The quote is persisted to the audit log and the user can review it.',
+        },
+        name: {
+          type: 'string',
+          description: 'Display name for this contact (e.g., "Sarah Chen"). Optional but strongly recommended; defaults to the address if omitted.',
+        },
+        sharing_level: {
+          type: 'string',
+          enum: ['open_book', 'dont_overshare', 'cautious', 'project_only'],
+          description: 'How much info the agent should share with this person. Defaults to "dont_overshare" if omitted.',
+        },
+        description: {
+          type: 'string',
+          description: 'Optional note about who this person is. Required when sharing_level=project_only — name the specific project.',
+        },
+      },
+      required: ['channel', 'address', 'user_request_quote'],
+    },
+  },
   // ── iMessage Tools ──
   {
     name: 'imessage_list_contacts',
@@ -1792,7 +1834,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'imessage_send',
-    description: 'Send an iMessage from YOUR OWN iMessage account (the DOJO bridge). **As of v2.7.23, replies to inbound iMessages auto-route via the engine — you do NOT need to call this tool to reply. Just write your reply text; engine delivers it.** This tool is reserved for:\n\n- PROACTIVE outreach (no inbound triggered this turn, you\'re initiating)\n- CROSS-RECIPIENT sends (texting someone OTHER than the active iMessage thread)\n- RICH actions (attachments — the text rides with the first file via the imsg CLI)\n\nVOICE: write like an actual text message. No markdown, no headers, no bullet lists. Short and conversational.\n\nRecipient rule: pass `recipient` explicitly when proactively messaging someone or when sending to a non-default address. The value MUST exactly match a safe-sender address. If you only know the person by name (e.g. user said "text Kevin"), call `imessage_list_contacts` first to look up the address. Passing an unknown address is refused. For attachments, pass any local path (e.g. ~/.dojo/uploads/<agent-id>/photo.jpg).',
+    description: 'Send an iMessage from YOUR OWN iMessage account (the DOJO bridge). **As of v2.7.23, replies to inbound iMessages auto-route via the engine — you do NOT need to call this tool to reply. Just write your reply text; engine delivers it.** This tool is reserved for:\n\n- PROACTIVE outreach (no inbound triggered this turn, you\'re initiating)\n- CROSS-RECIPIENT sends (texting someone OTHER than the active iMessage thread)\n- RICH actions (attachments — the text rides with the first file via the imsg CLI)\n\nVOICE: write like an actual text message. No markdown, no headers, no bullet lists. Short and conversational.\n\nRecipient rule: pass `recipient` explicitly when proactively messaging someone or when sending to a non-default address. The value MUST exactly match a safe-sender address. If you only know the person by name (e.g. user said "text <contact-name>"), call `imessage_list_contacts` first to look up the address. Passing an unknown address is refused. For attachments, pass any local path (e.g. ~/.dojo/uploads/<agent-id>/photo.jpg).',
     input_schema: {
       type: 'object',
       properties: {
@@ -5504,12 +5546,198 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         break;
       }
 
+      // ── Channel Safe-Sender Management (v2.7.24) ──
+      case 'add_safe_sender': {
+        const channelArg = args.channel as string | undefined;
+        const addressArg = args.address as string | undefined;
+        const userRequestQuote = (args.user_request_quote as string | undefined)?.trim() ?? '';
+        if (!channelArg || !addressArg) {
+          content = 'Error: both `channel` and `address` are required.';
+          isError = true;
+          break;
+        }
+        if (!userRequestQuote) {
+          content = 'Error: `user_request_quote` is required. Quote the user\'s actual words asking you to start this conversation. If you cannot quote a real user request, do NOT call this tool.';
+          isError = true;
+          break;
+        }
+        // Minimum length guard — a one-word "ok" isn't a request to add a
+        // sender. Forces the agent to commit to specific evidence.
+        if (userRequestQuote.length < 8) {
+          content = 'Error: `user_request_quote` is too short to be a real user request. Quote the full sentence where the user asked you to start this conversation.';
+          isError = true;
+          break;
+        }
+        const validChannels = ['imessage', 'gmail', 'outlook', 'teams'];
+        if (!validChannels.includes(channelArg)) {
+          content = `Error: channel must be one of: ${validChannels.join(', ')}`;
+          isError = true;
+          break;
+        }
+        const address = addressArg.trim();
+        if (!address) {
+          content = 'Error: address is empty.';
+          isError = true;
+          break;
+        }
+        const name = ((args.name as string | undefined) ?? address).trim() || address;
+        const description = (args.description as string | undefined)?.trim() || undefined;
+        const sharingLevel = (args.sharing_level as string | undefined) ?? 'dont_overshare';
+        const validLevels = ['open_book', 'dont_overshare', 'cautious', 'project_only'];
+        if (!validLevels.includes(sharingLevel)) {
+          content = `Error: sharing_level must be one of: ${validLevels.join(', ')}`;
+          isError = true;
+          break;
+        }
+        if (sharingLevel === 'project_only' && !description) {
+          content = 'Error: sharing_level=project_only requires a description naming the specific project.';
+          isError = true;
+          break;
+        }
+        // Truncate the quote for the audit log so a giant paste doesn't
+        // flood the log row; full quote stays in the tool-call args for
+        // forensic review.
+        const auditQuote = userRequestQuote.length > 200
+          ? userRequestQuote.slice(0, 200) + '…'
+          : userRequestQuote;
+
+        const sender = {
+          address,
+          name,
+          description,
+          is_primary: false,
+          sharing_level: sharingLevel as 'open_book' | 'dont_overshare' | 'cautious' | 'project_only',
+        };
+
+        try {
+          if (channelArg === 'imessage') {
+            // iMessage list lives in its own config key with a bridge cache.
+            // Read, dedup, write, then hot-reload the bridge so it picks up
+            // the new sender immediately (matches the Settings.tsx flow).
+            const { parseSafeSenders, reloadApprovedSenders } = await import('../services/imessage-bridge.js');
+            const db = getDb();
+            const row = db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
+            const existing = parseSafeSenders(row?.value ?? null);
+            const target = address.toLowerCase();
+            if (existing.some(s => s.address.toLowerCase() === target)) {
+              content = `${name} (${address}) is already on the iMessage safe-sender list. No change.`;
+              isError = false;
+              auditLog(agentId, 'add_safe_sender', `imessage:${address}`, 'success', `already on list; quote: "${auditQuote}"`);
+              break;
+            }
+            // Preserve at least one primary record (first entry stars by default).
+            const next = [...existing, sender];
+            if (!next.some(s => s.is_primary) && next.length > 0) {
+              next[0].is_primary = true;
+            }
+            db.prepare(`
+              INSERT INTO config (key, value, updated_at) VALUES ('imessage_approved_senders', ?, datetime('now'))
+              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+            `).run(JSON.stringify(next));
+            try { reloadApprovedSenders(); } catch { /* bridge may not be running */ }
+            content =
+              `Added ${name} (${address}) to the iMessage safe-sender list (sharing level: ${sharingLevel}). ` +
+              `Future iMessages from this address will auto-route a reply when you respond. ` +
+              `${next.length} safe sender(s) total.`;
+            isError = false;
+            auditLog(agentId, 'add_safe_sender', `imessage:${address}`, 'success', `level=${sharingLevel}; quote: "${auditQuote}"`);
+          } else if (channelArg === 'teams') {
+            // Teams: single shared list (no slot today).
+            const { appendTeamsSafeSender } = await import('../services/channel-safe-senders.js');
+            const result = appendTeamsSafeSender(sender);
+            if (!result.added) {
+              content = `${name} (${address}) is already on the Teams safe-sender list. No change.`;
+              isError = false;
+              auditLog(agentId, 'add_safe_sender', `teams:${address}`, 'success', `already on list; quote: "${auditQuote}"`);
+              break;
+            }
+            content =
+              `Added ${name} (${address}) to the Teams safe-sender list (sharing level: ${sharingLevel}). ` +
+              `The engine will auto-route their next Teams DM back to them when you respond. ` +
+              `${result.totalSenders} safe sender(s) total.`;
+            isError = false;
+            auditLog(agentId, 'add_safe_sender', `teams:${address}`, 'success', `level=${sharingLevel}; quote: "${auditQuote}"`);
+          } else {
+            // gmail / outlook — per-slot. Require the slot arg AND verify
+            // the slot has "Allow sending email" enabled before adding.
+            // Adding a safe sender to a slot whose sending is disabled would
+            // be useless (auto-reply wouldn't fire) and confusing.
+            const slot = args.slot as string | undefined;
+            if (slot !== 'agent' && slot !== 'user') {
+              content = `Error: \`slot\` is required for ${channelArg} (must be "agent" or "user"). The slot identifies which mailbox\'s list to add to — the agent\'s own ${channelArg} account or the user\'s personal ${channelArg} account.`;
+              isError = true;
+              auditLog(agentId, 'add_safe_sender', `${channelArg}:${address}`, 'error', `missing slot arg; quote: "${auditQuote}"`);
+              break;
+            }
+            // Check sending capability on the target slot. Also read the
+            // account email so error/success messages can name the actual
+            // mailbox (e.g., "dcliff9@gmail.com (user slot)") rather than
+            // just "user slot" which is opaque. Config keys match the
+            // existing slotKey helpers in google/auth.ts + microsoft/auth.ts
+            // (agent = unprefixed; user = `_user_` infix).
+            let sendingEnabled = false;
+            let accountEmail: string | null = null;
+            const emailKey = channelArg === 'gmail'
+              ? (slot === 'agent' ? 'gws_account_email' : 'gws_user_account_email')
+              : (slot === 'agent' ? 'ms_account_email' : 'ms_user_account_email');
+            try {
+              const row = getDb().prepare('SELECT value FROM config WHERE key = ?').get(emailKey) as { value: string } | undefined;
+              accountEmail = row?.value ?? null;
+            } catch { /* best effort */ }
+            if (channelArg === 'gmail') {
+              const { isEmailSendingEnabled } = await import('../google/auth.js');
+              sendingEnabled = isEmailSendingEnabled(slot);
+            } else { // outlook
+              const { isMsEmailSendingEnabled } = await import('../microsoft/auth.js');
+              sendingEnabled = isMsEmailSendingEnabled(slot);
+            }
+            if (!sendingEnabled) {
+              const acctLabel = accountEmail ? `${accountEmail} (the ${slot} slot)` : `the ${slot} slot`;
+              const channelLabel = channelArg === 'gmail' ? 'Gmail' : 'Outlook';
+              content =
+                `Refused: ${acctLabel} has "Allow sending email" turned OFF on the ${channelLabel} integration. ` +
+                `Safe senders are only useful on a slot that can actually auto-reply, so adding them here would be misleading. ` +
+                `Tell the user they need to open Settings → Channels and toggle "Allow sending email" ON for ${acctLabel}, then retry. ` +
+                `Don't try this call again until they confirm they've turned it on.`;
+              isError = true;
+              auditLog(agentId, 'add_safe_sender', `${channelArg}:${address}`, 'denied', `slot=${slot} sendEmail=off; quote: "${auditQuote}"`);
+              break;
+            }
+            // OK to add.
+            const { appendGmailSafeSender, appendOutlookSafeSender } = await import('../services/channel-safe-senders.js');
+            const result = channelArg === 'gmail'
+              ? appendGmailSafeSender(slot, sender)
+              : appendOutlookSafeSender(slot, sender);
+            const channelHumanLabel = channelArg === 'gmail' ? 'Gmail' : 'Outlook';
+            const slotLabel = accountEmail ? `${accountEmail} (${slot} slot)` : `${slot} slot`;
+            if (!result.added) {
+              content = `${name} (${address}) is already on the ${channelHumanLabel} safe-sender list for ${slotLabel}. No change.`;
+              isError = false;
+              auditLog(agentId, 'add_safe_sender', `${channelArg}/${slot}:${address}`, 'success', `already on list; quote: "${auditQuote}"`);
+              break;
+            }
+            content =
+              `Added ${name} (${address}) to the ${channelHumanLabel} safe-sender list for ${slotLabel} ` +
+              `(sharing level: ${sharingLevel}). When they reply on this mailbox, the engine will auto-route ` +
+              `your response back. ${result.totalSenders} safe sender(s) total on this slot.`;
+            isError = false;
+            auditLog(agentId, 'add_safe_sender', `${channelArg}/${slot}:${address}`, 'success', `level=${sharingLevel}; quote: "${auditQuote}"`);
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          content = `Error adding safe sender: ${msg}`;
+          isError = true;
+          auditLog(agentId, 'add_safe_sender', `${channelArg}:${address}`, 'error', msg);
+        }
+        break;
+      }
+
       // ── iMessage Tools ──
       case 'imessage_list_contacts': {
         const { getSafeSenders } = await import('../services/imessage-bridge.js');
         const all = getSafeSenders();
         if (all.length === 0) {
-          content = 'No iMessage safe senders are configured on this server. Tell the user to add contacts in Settings - iMessage if they want you to text someone.';
+          content = 'No iMessage safe senders are configured on this server. Tell the user to add contacts in Settings → Channels (iMessage card) if they want you to text someone.';
           isError = false;
           break;
         }
@@ -5553,8 +5781,8 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
             'iMessage bridge is currently disabled, so this message was NOT sent. ' +
             'Tell the user that iMessage is turned off on this server and respond to them in the dashboard chat instead. ' +
             (bridgeStatus.enabled
-              ? 'To re-enable iMessage delivery, the user can start it from Settings - iMessage.'
-              : 'The user can enable iMessage by adding an approved sender in Settings - iMessage.');
+              ? 'To re-enable iMessage delivery, the user can start it from Settings → Channels (iMessage card).'
+              : 'The user can enable iMessage by adding an approved sender in Settings → Channels (iMessage card).');
           isError = true;
           auditLog(agentId, 'imessage_send', recipient ?? '(no recipient)', 'denied', 'bridge disabled');
           break;
@@ -5568,7 +5796,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         // copied from a different conversation context.
         const safeRecords = getSafeSenders();
         if (safeRecords.length === 0) {
-          content = 'iMessage was NOT sent - no safe senders are configured on this server. Add one in Settings - iMessage, then try again.';
+          content = 'iMessage was NOT sent - no safe senders are configured on this server. Add one in Settings → Channels (iMessage card), then try again.';
           isError = true;
           auditLog(agentId, 'imessage_send', recipient ?? '(no recipient)', 'error', 'no safe senders');
           break;
@@ -5600,7 +5828,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
               `iMessage NOT sent - recipient "${recipient}" is not on the safe-sender allowlist. ` +
               `Valid recipients on this server: ${valid}. ` +
               `If you meant to reply to the person who just messaged you, OMIT the recipient argument and the tool will default to them automatically. ` +
-              `If you need to text someone new, the user has to add them in Settings - iMessage first.`;
+              `If you need to text someone new, the user has to add them in Settings → Channels (iMessage card) first.`;
             isError = true;
             auditLog(agentId, 'imessage_send', recipient, 'denied', 'recipient not in allowlist');
             break;
@@ -5616,6 +5844,46 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         }
 
         const recipientRecord = findSafeSenderByAddress(safeRecords, recipient);
+
+        // ── v2.7.24: channel-context guard ──────────────────────────
+        // If the most recent user message arrived via dashboard (no
+        // [SOURCE: IMESSAGE FROM] tag) AND that message was recent (< 60s),
+        // the user is actively chatting with the agent in dashboard. Sending
+        // an iMessage to the primary user in that situation is the textbook
+        // failure mode (user types in dashboard → agent texts them on phone).
+        // Refuse with a redirect telling the model to just write a reply.
+        //
+        // The 60s window distinguishes "reply to a dashboard chat" from
+        // "proactive send while the user happens to have used dashboard
+        // recently." Proactive sends (scheduled tasks, etc.) and replies
+        // to iMessage threads remain fully supported.
+        try {
+          const lastUserRow = getDb().prepare(
+            "SELECT content, created_at FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+          ).get(agentId) as { content: string; created_at: string } | undefined;
+          if (lastUserRow) {
+            const lastInboundWasImessage = lastUserRow.content.includes('[SOURCE: IMESSAGE FROM');
+            // created_at is stored as UTC datetime string without timezone marker
+            const inboundAgeMs = Date.now() - new Date(lastUserRow.created_at + 'Z').getTime();
+            const recentInbound = inboundAgeMs >= 0 && inboundAgeMs < 60_000;
+            if (recentInbound && !lastInboundWasImessage) {
+              const primary = safeRecords.find(s => s.is_primary);
+              if (primary && primary.address.toLowerCase() === recipient.toLowerCase()) {
+                content =
+                  'iMessage NOT sent — the user is currently active on the dashboard ' +
+                  '(just sent you a dashboard message). Reply by writing your text directly; ' +
+                  'the engine delivers dashboard replies automatically. ' +
+                  '`imessage_send` is reserved for: (a) PROACTIVE sends when no inbound ' +
+                  'triggered this turn, (b) sending to someone OTHER than the primary user, ' +
+                  'or (c) rich actions like attachments. Do not call this tool to reply to ' +
+                  'the primary user when they are actively talking to you in dashboard.';
+                isError = true;
+                auditLog(agentId, 'imessage_send', recipient, 'denied', 'inbound channel was dashboard');
+                break;
+              }
+            }
+          }
+        } catch { /* DB error — fall through, don't block on diagnostic */ }
 
         // ── Attachment pre-flight ────────────────────────────────────
         // Fail-fast on any missing file before any bytes go over the

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import * as api from '../lib/api';
 import { MicrosoftActivityLog } from './MicrosoftActivityLog';
+import { ChannelSafeSenders } from './ChannelSafeSenders';
 
 type Slot = 'agent' | 'user';
 
@@ -250,6 +251,24 @@ export const MicrosoftWorkspaceSettings = () => {
                     className="rounded border-ui/[0.15] bg-ui/[0.05] text-cp-amber focus:ring-cp-amber focus:ring-offset-0 disabled:opacity-30 disabled:cursor-not-allowed"
                   />
                 </label>
+
+                {info.sendEmail && info.services.outlook && (
+                  <ChannelSafeSenders
+                    configKey={`outlook_approved_senders_${slot}`}
+                    channelLabel={`Outlook (${info.email ?? slot})`}
+                    description={`Senders the agent is allowed to AUTO-reply to from THIS specific Outlook account (${info.email ?? `${slot} slot`}). When one of these people replies on a thread (subject starts with Re:), the agent's response routes back via email automatically. The list is independent per slot — adding someone here does NOT authorize auto-reply on the other slot's Outlook (if connected), or on iMessage / Gmail / Teams.`}
+                    addressPlaceholder="name@example.com"
+                  />
+                )}
+
+                {info.accountType === 'entra' && info.services.teams && (
+                  <ChannelSafeSenders
+                    configKey="teams_approved_senders"
+                    channelLabel="Teams"
+                    description="Senders the agent is allowed to AUTO-reply to via Teams DMs. When one of these people DMs the agent on Teams, the agent's response routes back via Teams automatically. Teams DMs from anyone NOT on the list still show as notifications, but the agent won't auto-reply without your approval. Available only on Entra (work/school) accounts."
+                    addressPlaceholder="name@org.com"
+                  />
+                )}
 
                 {/* Office Document Tools — agent slot only; the install is shared at machine level. */}
                 {slot === 'agent' && (

@@ -120,6 +120,51 @@ const ToolOnlyPill = ({ msg }: { msg: ChatMessage }) => {
   );
 };
 
+// v2.7.23 — when the agent calls a channel-send tool directly (imessage_send,
+// teams_send_message), render the outbound message content + channel pill
+// rather than the generic tool-only pill. Mirrors the inbound channel
+// rendering so user and agent sides have symmetric "via iMessage" treatment.
+// In non-wordy mode this is what the user sees instead of a "⚙ imessage_send"
+// gear icon — they see the actual text the agent sent.
+const CHANNEL_SEND_TOOLS: Record<string, { label: string; emoji: string }> = {
+  imessage_send: { label: 'sent via iMessage', emoji: '\u{1F4AC}' },
+  teams_send_message: { label: 'sent via Teams', emoji: '\u{1F4DD}' },
+  outlook_reply: { label: 'sent via email reply', emoji: '\u{2709}\u{FE0F}' },
+  gmail_reply: { label: 'sent via email reply', emoji: '\u{2709}\u{FE0F}' },
+  outlook_send: { label: 'sent via email', emoji: '\u{2709}\u{FE0F}' },
+  gmail_send: { label: 'sent via email', emoji: '\u{2709}\u{FE0F}' },
+};
+
+const ChannelSendBubble = ({ msg, toolUse }: { msg: ChatMessage; toolUse: ContentBlock }) => {
+  const meta = CHANNEL_SEND_TOOLS[toolUse.name ?? ''];
+  if (!meta) return null;
+  // imessage_send / teams_send_message use `message`; outlook/gmail use `body`.
+  const messageText = typeof toolUse.input?.message === 'string'
+    ? toolUse.input.message
+    : typeof toolUse.input?.body === 'string'
+      ? toolUse.input.body
+      : typeof toolUse.input?.text === 'string'
+        ? toolUse.input.text
+        : '';
+  if (!messageText) return null;
+  return (
+    <div className="flex flex-col items-start">
+      <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono mb-1 ml-1">
+        <span className="text-ui/40">{meta.emoji}</span>
+        <span>{meta.label}</span>
+      </div>
+      <div className="bubble-assistant max-w-[75%] px-4 py-3 text-ui">
+        <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed break-words">
+          {messageText}
+        </pre>
+        <div className="text-xs mt-2 text-tertiary">
+          {formatDate(msg.createdAt)}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // v2.3.16 — strip the iMessage source framing (engine-injected routing
 // wrapper) and surface a small "via iMessage" badge instead. Mirrors the
 // treatment in Chat.tsx so the channel-vs-conversation distinction is
@@ -726,17 +771,25 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
                 </div>
               );
             }
-            // Always-show iMessage delivery marker (mirrors Chat.tsx).
-            // Matches both the legacy `[SENT VIA IMESSAGE to X]` marker and
-            // the v2.7.23 `[Reply routed via iMessage to X]` marker produced
-            // by the auto-routing resolver.
-            const imSentMatch = msg.content.trim().match(/^\[(?:SENT VIA IMESSAGE|Reply routed via iMessage) to (.+?)\]$/);
-            if (imSentMatch) {
+            // v2.7.24 — channel routing delivery marker. Matches:
+            //   - Legacy `[SENT VIA IMESSAGE to X]`
+            //   - `[Reply routed via iMessage to X]` (v2.7.23)
+            //   - `[Reply routed via Teams to chat X]` (v2.7.24)
+            //   - `[Reply routed via email reply (thread: "X")]` (v2.7.24)
+            const routingMatch = msg.content.trim().match(/^\[(?:SENT VIA IMESSAGE to .+|Reply routed via (iMessage|Teams|email)[^\]]*)\]$/);
+            if (routingMatch) {
+              const channel = routingMatch[1] ?? 'iMessage';
+              const channelLabel = channel.toLowerCase() === 'email'
+                ? 'sent via email reply'
+                : `sent via ${channel}`;
+              const channelEmoji = channel.toLowerCase() === 'email'
+                ? '\u{2709}\u{FE0F}'
+                : channel === 'Teams' ? '\u{1F4DD}' : '\u{1F4AC}';
               return (
                 <div key={msg.id} className="flex justify-end my-1 px-1">
                   <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono">
-                    <span className="text-ui/40">{'\u{1F4AC}'}</span>
-                    <span>sent via iMessage</span>
+                    <span className="text-ui/40">{channelEmoji}</span>
+                    <span>{channelLabel}</span>
                   </div>
                 </div>
               );
@@ -745,10 +798,29 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
           }
           if (!wordyMode && msg.role === 'assistant') {
             if (msg.content.startsWith('I got stuck on that') || msg.content.startsWith("I'm sorry — I'm having trouble")) return null;
-            // Tool-only turns become a compact pill (rather than disappearing)
-            // so the user still sees that the agent did something.
+            // v2.7.23 — when the assistant's tool calls include a channel-
+            // send (imessage_send / teams_send_message), render the
+            // outbound message content + channel pill instead of the
+            // generic "⚙ imessage_send" tool icon. The user wants the same
+            // symmetry as inbound: see what was sent, not just that
+            // something was sent.
             const parsed = parseMessageContent(msg.content);
             const hasToolUse = parsed.blocks?.some((b) => b.type === 'tool_use');
+            const channelSend = parsed.blocks?.find(
+              (b) => b.type === 'tool_use' && b.name && CHANNEL_SEND_TOOLS[b.name],
+            );
+            if (channelSend) {
+              return (
+                <div key={msg.id} className="flex flex-col gap-2">
+                  {parsed.text && (
+                    <AssistantBubble msg={{ ...msg, content: parsed.text }} wordyMode={wordyMode} />
+                  )}
+                  <ChannelSendBubble msg={msg} toolUse={channelSend} />
+                </div>
+              );
+            }
+            // Tool-only turns become a compact pill (rather than disappearing)
+            // so the user still sees that the agent did something.
             if (!parsed.text && hasToolUse) return <ToolOnlyPill key={msg.id} msg={msg} />;
           }
           if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} />;

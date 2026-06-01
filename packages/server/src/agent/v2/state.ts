@@ -52,16 +52,29 @@ export interface A2AReplyContext {
 }
 
 // v2.7.23 — Channel-routing context. When an inbound message arrives via
-// a non-dashboard channel (iMessage, Teams), the bridge populates this so
-// the reply-destination resolver can route the model's terminal text back
-// to the same channel without requiring an explicit tool call from the
-// model. recipientAddress is the email/phone for iMessage; chatId is the
-// Teams chat id. chatType distinguishes 'dm' from 'group' for routing
-// policy (group chats default to message_tool mode per OpenClaw pattern).
+// a non-dashboard channel (iMessage, Teams, email), the watcher/bridge
+// populates this so the reply-destination resolver can route the model's
+// terminal text back to the same channel without requiring an explicit
+// tool call from the model.
+//   - recipientAddress: email/phone for iMessage replies, or sender's
+//     address for email auto-reply identity checks.
+//   - chatId: Teams chat id (per the [Chat ID: ...] line in the Teams
+//     notification envelope).
+//   - chatType: 'dm' | 'group' — group chats default to message_tool
+//     mode per OpenClaw pattern to avoid auto-replying to every group
+//     ping the agent is mentioned in.
+//   - emailMessageId: original message id for email reply tools
+//     (outlook_reply / gmail_reply require this).
+//   - emailService: which mailbox handler to use ('outlook' | 'gmail').
+//   - emailSubject: thread subject (used for the destination tag and
+//     for the dashboard rendering).
 export interface ChannelInboundContext {
   recipientAddress?: string;
   chatId?: string;
   chatType?: 'dm' | 'group';
+  emailMessageId?: string;
+  emailService?: 'outlook' | 'gmail';
+  emailSubject?: string;
 }
 
 export interface AgentTurnState {
@@ -123,7 +136,7 @@ export interface AgentTurnState {
   // 2.7.22 "model must call imessage_send for every reply" pattern,
   // which the model couldn't follow reliably for short conversational
   // replies (per imessage_not_working.txt investigation).
-  readonly inboundChannel: 'imessage' | 'teams' | 'dashboard' | null;
+  readonly inboundChannel: 'imessage' | 'teams' | 'email' | 'dashboard' | null;
   readonly inboundContext: ChannelInboundContext | null;
 
   // ── Engine-tracked turn flags ──
@@ -136,7 +149,7 @@ export interface AgentTurnState {
   // get delivered twice — once via the tool call, once via the auto-
   // route). Multiple channels can be tracked if the agent crosses
   // them in one turn (rare).
-  explicitSendThisTurn: { imessage?: boolean; teams?: boolean };
+  explicitSendThisTurn: { imessage?: boolean; teams?: boolean; email?: boolean };
   trackerToolCalledThisTurn: boolean;
   nonTrackerToolCalls: number;
   /**
@@ -306,7 +319,7 @@ export interface InitStateParams {
   imFlagSetAtRunStart: boolean;
   lastUserMessageContent: string | null;
   // v2.7.23 — structural inbound channel binding; see AgentTurnState fields
-  inboundChannel: 'imessage' | 'teams' | 'dashboard' | null;
+  inboundChannel: 'imessage' | 'teams' | 'email' | 'dashboard' | null;
   inboundContext: ChannelInboundContext | null;
   shouldNudgeTracker: boolean;
   /**

@@ -406,7 +406,7 @@ function sanitizeFramingField(value: string): string {
     .trim();
 }
 
-function parseSafeSenders(raw: string | null | undefined): SafeSender[] {
+export function parseSafeSenders(raw: string | null | undefined): SafeSender[] {
   if (!raw) return [];
   let parsed: unknown;
   try {

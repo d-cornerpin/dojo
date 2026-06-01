@@ -36,7 +36,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'outlook_reply',
-    description: 'Reply to an existing Outlook email thread. Supports attachments — same rules as outlook_send (3MB inline threshold per file, overflow to OneDrive link).',
+    description: 'Reply to an existing Outlook email thread. **As of v2.7.24, in-thread replies to "Re:" messages from known correspondents auto-route via the engine — you do NOT need to call this tool for those.** Just write your reply text; the engine sends it on the same thread. Call this tool when: replying to a DIFFERENT thread than the inbound, replying to a notification that the engine did NOT auto-route (e.g., a new email rather than a "Re:"), or when you need attachments / reply_all behavior. Supports attachments — same rules as outlook_send (3MB inline threshold per file, overflow to OneDrive link).',
     input_schema: {
       type: 'object',
       properties: {
@@ -159,7 +159,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'teams_send_message',
-    description: 'Send a message to a Teams chat. Requires a Microsoft work/school account (Entra ID). Not available on personal Microsoft accounts. If you do not have a chat_id, use teams_create_chat first.',
+    description: 'Send a message to a Teams chat. **As of v2.7.24, replies to inbound Teams DMs auto-route via the engine — you do NOT need to call this tool to reply.** Just write your reply text; the engine sends it back to the inbound chat. Call this tool only when: starting a new chat (use teams_create_chat first), replying to a DIFFERENT chat than the inbound, or sending in a group chat where the agent decided to participate. Requires a Microsoft work/school account (Entra ID).',
     input_schema: {
       type: 'object',
       properties: {

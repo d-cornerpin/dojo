@@ -15,12 +15,20 @@ import { MigrationImport } from '../components/MigrationImport';
 import { useTheme } from '../themes';
 import { invalidateSavedVoiceSettings } from '../hooks/useVoiceMode';
 
-type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'sensei' | 'integrations' | 'voice' | 'update';
+type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'sensei' | 'channels' | 'integrations' | 'voice' | 'update';
 
 export const Settings = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const rawTab = searchParams.get('tab');
-  const tabFromUrl = (rawTab === 'workspace' || rawTab === 'microsoft' ? 'integrations' : rawTab) as Tab | null;
+  // v2.7.24 — iMessage / Google / Microsoft cards moved from 'platform'/
+  // 'integrations' into a new 'channels' tab (they're all communication
+  // channels with safe-sender lists, auto-routing, etc.). Old deep links
+  // map forward so bookmarks don't 404.
+  const tabFromUrl = (
+    rawTab === 'workspace' || rawTab === 'microsoft' || rawTab === 'imessage'
+      ? 'channels'
+      : rawTab
+  ) as Tab | null;
   const [activeTab, setActiveTab] = useState<Tab>(tabFromUrl || 'platform');
 
   // Sync tab with URL query param so mobile hamburger sub-menu links work
@@ -43,6 +51,7 @@ export const Settings = () => {
     { key: 'profile', label: 'Profile' },
     { key: 'security', label: 'Security' },
     { key: 'sensei', label: 'Sensei' },
+    { key: 'channels', label: 'Channels' },
     { key: 'integrations', label: 'Integrations' },
     { key: 'voice', label: 'Voice' },
     { key: 'update', label: 'Update' },
@@ -92,7 +101,7 @@ export const Settings = () => {
       {activeTab === 'profile' && <ProfileTab />}
       {activeTab === 'security' && <SecurityTab />}
       {activeTab === 'sensei' && <DreamingTab />}
-      {activeTab === 'integrations' && (
+      {activeTab === 'channels' && (
         <div className="max-w-4xl">
           {/* OAuth callbacks land on http://localhost:3001 — connecting from
               a Cloudflare-tunneled URL (or any remote host) breaks the
@@ -106,8 +115,15 @@ export const Settings = () => {
             </p>
           </div>
           <div className="columns-1 lg:columns-2 gap-6 [&>*]:mb-6 [&>*]:break-inside-avoid">
+            <IMBridgeSettings />
             <GoogleWorkspaceSettings />
             <MicrosoftWorkspaceSettings />
+          </div>
+        </div>
+      )}
+      {activeTab === 'integrations' && (
+        <div className="max-w-4xl">
+          <div className="columns-1 lg:columns-2 gap-6 [&>*]:mb-6 [&>*]:break-inside-avoid">
             <PlaudSettings />
           </div>
         </div>
@@ -587,7 +603,6 @@ const PlatformTab = () => {
       <AgentLimitsSettings />
       <OllamaSettings />
       <RemoteAccessSettings />
-      <IMBridgeSettings />
       <SearchSettings />
       <MigrationSettings />
       <FengShuiSettings />
@@ -3134,18 +3149,26 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
   const [saved, setSaved] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+  // Primary agent name pulled from runtime config so the help copy reads
+  // "Kevin / Jain / whatever-this-install-named-their-agent" instead of
+  // hardcoding any one user's choice.
+  const [primaryAgentName, setPrimaryAgentName] = useState('the primary agent');
 
   // Filter to models that the capability probe has flagged as image-capable.
   const imageCapableModels = models.filter(m => m.capabilities.includes('image_generation'));
 
   useEffect(() => {
     const load = async () => {
-      const [enabledResult, modelResult, aspectResult, styleResult] = await Promise.all([
+      const [enabledResult, modelResult, aspectResult, styleResult, nameResult] = await Promise.all([
         api.getSetting('imaginer_enabled'),
         api.getSetting('imaginer_image_model'),
         api.getSetting('imaginer_default_aspect_ratio'),
         api.getSetting('imaginer_default_style'),
+        api.getSetting('primary_agent_name'),
       ]);
+      if (nameResult.ok && nameResult.data.value) {
+        setPrimaryAgentName(nameResult.data.value);
+      }
       if (enabledResult.ok) {
         setEnabled(enabledResult.data.value !== 'false'); // default true
       }
@@ -3217,7 +3240,7 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
         <h3 className="card-header">Imaginer (Image Generation Sensei)</h3>
         <p className="text-xs text-ui/40 mt-1">
           Imaginer is a system agent that turns text descriptions into images when any agent calls the{' '}
-          <code className="text-cp-amber">image_create</code> tool. Kevin and sub-agents never need to switch models
+          <code className="text-cp-amber">image_create</code> tool. {primaryAgentName} and sub-agents never need to switch models
           to generate images — they describe what they want and Imaginer handles the rest.
         </p>
       </div>
@@ -3260,7 +3283,7 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
             <p className="text-[10px] text-ui/25 mt-1">
               Only models with the <code className="text-cp-amber">Image Gen</code> capability are shown. Imaginer
               calls this model whenever it needs to actually produce an image — its orchestration/chat brain uses a
-              separate text model (Kevin's default by default).
+              separate text model ({primaryAgentName}'s default by default).
             </p>
           </>
         )}
@@ -4023,7 +4046,7 @@ const VoiceTab = () => {
       {/* Playback speed */}
       <div className="glass-card p-4 space-y-3">
         <h3 className="card-header">Playback speed</h3>
-        <p className="text-xs text-ui/40">How fast Kevin's voice plays back. 1.0 is the natural Kokoro rate.</p>
+        <p className="text-xs text-ui/40">How fast {primaryAgentName}'s voice plays back. 1.0 is the natural Kokoro rate.</p>
         <div className="flex items-center gap-3">
           <input
             type="range"
@@ -4043,7 +4066,7 @@ const VoiceTab = () => {
       <div className="glass-card p-4 space-y-3">
         <h3 className="card-header">Voice activity sensitivity</h3>
         <p className="text-xs text-ui/40">
-          How quickly Kevin decides you've finished speaking after you pause.
+          How quickly {primaryAgentName} decides you've finished speaking after you pause.
         </p>
         <div className="flex flex-col gap-2">
           {VAD_OPTIONS.map((opt) => (
@@ -4130,7 +4153,7 @@ const VoiceTab = () => {
         </div>
         <p className="text-xs text-ui/40">
           When enabled, voice mode stays in a passive listening state and only routes your speech
-          to Kevin after it hears the wake phrase. Say the sleep phrase to put it back to sleep.
+          to {primaryAgentName} after it hears the wake phrase. Say the sleep phrase to put it back to sleep.
           Phrase match is case-insensitive. Heads up: passive mode runs STT continuously, so it
           uses noticeably more CPU than push-to-talk voice mode.
         </p>
@@ -4300,7 +4323,7 @@ const VoiceTab = () => {
             )}
           </div>
           <p className="text-xs text-ui/40">
-            Kokoro generates Kevin's spoken replies. One model, ~330&nbsp;MB.
+            Kokoro generates {primaryAgentName}'s spoken replies. One model, ~330&nbsp;MB.
           </p>
 
           <div className="glass-nested px-3 py-2.5 rounded-lg space-y-2">

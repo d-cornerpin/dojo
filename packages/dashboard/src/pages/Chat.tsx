@@ -303,6 +303,47 @@ const ToolOnlyPill = ({ msg }: { msg: ChatMessage }) => {
   );
 };
 
+// v2.7.23 — mirror AgentDetail.tsx: render channel-send tool calls as
+// outbound message bubbles with the channel pill, not generic gear icons.
+const CHANNEL_SEND_TOOLS: Record<string, { label: string; emoji: string }> = {
+  imessage_send: { label: 'sent via iMessage', emoji: '\u{1F4AC}' },
+  teams_send_message: { label: 'sent via Teams', emoji: '\u{1F4DD}' },
+  outlook_reply: { label: 'sent via email reply', emoji: '\u{2709}\u{FE0F}' },
+  gmail_reply: { label: 'sent via email reply', emoji: '\u{2709}\u{FE0F}' },
+  outlook_send: { label: 'sent via email', emoji: '\u{2709}\u{FE0F}' },
+  gmail_send: { label: 'sent via email', emoji: '\u{2709}\u{FE0F}' },
+};
+
+const ChannelSendBubble = ({ msg, toolUse }: { msg: ChatMessage; toolUse: ContentBlock }) => {
+  const meta = CHANNEL_SEND_TOOLS[toolUse.name ?? ''];
+  if (!meta) return null;
+  // imessage_send / teams_send_message use `message`; outlook/gmail use `body`.
+  const messageText = typeof toolUse.input?.message === 'string'
+    ? toolUse.input.message
+    : typeof toolUse.input?.body === 'string'
+      ? toolUse.input.body
+      : typeof toolUse.input?.text === 'string'
+        ? toolUse.input.text
+        : '';
+  if (!messageText) return null;
+  return (
+    <div className="flex flex-col items-start">
+      <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono mb-1 ml-1">
+        <span className="text-ui/40">{meta.emoji}</span>
+        <span>{meta.label}</span>
+      </div>
+      <div className="bubble-assistant max-w-[75%] px-4 py-3 text-ui">
+        <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed break-words">
+          {messageText}
+        </pre>
+        <div className="text-xs mt-2 text-tertiary">
+          {formatDate(msg.createdAt)}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const ToolResultBubble = ({ msg }: { msg: ChatMessage }) => {
   const { blocks } = parseMessageContent(msg.content);
 
@@ -915,14 +956,21 @@ export const Chat = () => {
             // the user sees the channel without flipping wordy mode on.
             // v2.3.16 — was hidden in regular mode and left users guessing
             // whether the iMessage actually got sent.
-            // v2.7.23 — also match the new auto-routing marker shape
-            const imSentMatch = msg.content.trim().match(/^\[(?:SENT VIA IMESSAGE|Reply routed via iMessage) to (.+?)\]$/);
-            if (imSentMatch) {
+            // v2.7.24 — channel routing delivery marker (iMessage, Teams, email)
+            const routingMatch = msg.content.trim().match(/^\[(?:SENT VIA IMESSAGE to .+|Reply routed via (iMessage|Teams|email)[^\]]*)\]$/);
+            if (routingMatch) {
+              const channel = routingMatch[1] ?? 'iMessage';
+              const channelLabel = channel.toLowerCase() === 'email'
+                ? 'sent via email reply'
+                : `sent via ${channel}`;
+              const channelEmoji = channel.toLowerCase() === 'email'
+                ? '\u{2709}\u{FE0F}'
+                : channel === 'Teams' ? '\u{1F4DD}' : '\u{1F4AC}';
               return (
                 <div key={msg.id} className="flex justify-end my-1 px-1">
                   <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono">
-                    <span className="text-ui/40">{'\u{1F4AC}'}</span>
-                    <span>sent via iMessage</span>
+                    <span className="text-ui/40">{channelEmoji}</span>
+                    <span>{channelLabel}</span>
                   </div>
                 </div>
               );
@@ -937,6 +985,21 @@ export const Chat = () => {
           if (msg.role === 'assistant' && !wordyMode) {
             const { text, blocks } = parseMessageContent(msg.content);
             const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
+            // v2.7.23 — render channel-send tool calls as outbound bubbles
+            // (the user sees what was sent, not just a "⚙ imessage_send" gear).
+            const channelSend = blocks?.find(
+              (b) => b.type === 'tool_use' && b.name && CHANNEL_SEND_TOOLS[b.name],
+            );
+            if (channelSend) {
+              return (
+                <div key={msg.id} className="flex flex-col gap-2">
+                  {text && (
+                    <AssistantBubble msg={{ ...msg, content: text }} wordyMode={wordyMode} modelNames={modelNames} />
+                  )}
+                  <ChannelSendBubble msg={msg} toolUse={channelSend} />
+                </div>
+              );
+            }
             if (!text && hasToolUse) return <ToolOnlyPill key={msg.id} msg={msg} />;
           }
           return <AssistantBubble key={msg.id} msg={msg} wordyMode={wordyMode} modelNames={modelNames} />;

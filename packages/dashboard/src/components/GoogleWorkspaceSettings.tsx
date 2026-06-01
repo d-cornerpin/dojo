@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import * as api from '../lib/api';
 import { GoogleActivityLog } from './GoogleActivityLog';
+import { ChannelSafeSenders } from './ChannelSafeSenders';
 
 type Slot = 'agent' | 'user';
 
@@ -271,6 +272,15 @@ export const GoogleWorkspaceSettings = () => {
                     className="rounded border-ui/[0.15] bg-ui/[0.05] text-cp-amber focus:ring-cp-amber focus:ring-offset-0 disabled:opacity-30 disabled:cursor-not-allowed"
                   />
                 </label>
+
+                {info.sendEmail && info.services.gmail && (
+                  <ChannelSafeSenders
+                    configKey={`gmail_approved_senders_${slot}`}
+                    channelLabel={`Gmail (${info.email ?? slot})`}
+                    description={`Senders the agent is allowed to AUTO-reply to from THIS specific Gmail account (${info.email ?? `${slot} slot`}). When one of these people replies on a thread (subject starts with Re:), the agent's response routes back via email automatically. The list is independent per slot — adding someone here does NOT authorize auto-reply on the other slot's Gmail (if connected), or on iMessage / Outlook / Teams.`}
+                    addressPlaceholder="name@example.com"
+                  />
+                )}
 
                 <div className="flex gap-2 pt-2 flex-wrap">
                   <button onClick={() => handleTest(slot)} disabled={isTesting}

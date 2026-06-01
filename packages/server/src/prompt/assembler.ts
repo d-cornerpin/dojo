@@ -11,9 +11,10 @@ import { getAgentMicrosoftAccessLevel, getMsAccountType, getMicrosoftWorkspaceCo
 import { assembleGroupContext as _assembleGroupContext } from '../agent/groups.js';
 import { generateTechniqueIndex, generateDraftTechniqueContext } from '../techniques/index-builder.js';
 import { getContextWindow } from '../agent/model.js';
-import { isIMBridgeRunning } from '../services/imessage-bridge.js';
+import { isIMBridgeRunning, addressesMatch } from '../services/imessage-bridge.js';
 import { getPresence, isImessageConfigured } from '../services/presence.js';
 import { resolveReplyDestination } from '../agent/v2/reply-destination.js';
+import { getGmailSafeSenders, getOutlookSafeSenders, getTeamsSafeSenders } from '../services/channel-safe-senders.js';
 
 // Prompt complexity tiers based on model context window
 type PromptTier = 'full' | 'standard' | 'compact' | 'minimal';
@@ -263,7 +264,7 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
           `If the inbound doesn't warrant a reply (closing pleasantry, FYI, etc.), end the turn with \`[no-reply]\`.`,
         );
       } else {
-        lines.push(`iMessage is currently disabled on this server — auto-routing won't fire and \`imessage_send\` will fail. Use the dashboard chat for all communication with ${ownerName} until they re-enable it in Settings → iMessage.`);
+        lines.push(`iMessage is currently disabled on this server — auto-routing won't fire and \`imessage_send\` will fail. Use the dashboard chat for all communication with ${ownerName} until they re-enable it in Settings → Channels (iMessage card).`);
       }
       lines.push('');
     } else if (!bridgeRunning) {
@@ -377,10 +378,49 @@ export function assembleSystemPrompt(agentId: string, modelId: string): string {
         "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1",
       ).get(agentId) as { content: string } | undefined;
       const lastContent = lastRow?.content ?? '';
-      let inboundChannel: 'imessage' | 'teams' | 'dashboard' | null = null;
-      if (lastContent.includes('[SOURCE: IMESSAGE FROM')) inboundChannel = 'imessage';
-      else if (lastContent.includes('[SOURCE: TEAMS MESSAGE FROM')) inboundChannel = 'teams';
-      else if (lastContent) inboundChannel = 'dashboard';
+      let inboundChannel: 'imessage' | 'teams' | 'email' | 'dashboard' | null = null;
+      if (lastContent.includes('[SOURCE: IMESSAGE FROM')) {
+        inboundChannel = 'imessage';
+      } else if (lastContent.includes('[SOURCE: TEAMS MESSAGE FROM')) {
+        // v2.7.24 — same per-channel safe-sender gate as loop.ts preflight.
+        // Unknown Teams senders stay in notification mode.
+        const senderHeader = lastContent.match(/\[SOURCE: TEAMS MESSAGE FROM ([^\]]+)\]/i);
+        const senderRaw = senderHeader?.[1] ?? '';
+        const emailMatch = senderRaw.match(/<([^>]+)>/) ?? senderRaw.match(/\(([^)]+)\)/) ?? senderRaw.match(/(\S+@\S+)/);
+        const senderAddress = emailMatch?.[1]?.toLowerCase() ?? '';
+        const senderIsKnown = senderAddress
+          ? getTeamsSafeSenders().some(s => addressesMatch(s.address, senderAddress))
+          : false;
+        inboundChannel = senderIsKnown ? 'teams' : 'dashboard';
+      } else if (
+        (lastContent.includes('[SOURCE: OUTLOOK NOTIFICATION') ||
+         lastContent.includes('[SOURCE: GMAIL NOTIFICATION'))
+      ) {
+        // v2.7.24 — email auto-routes ONLY when the inbound is a "Re:" reply
+        // from a known correspondent on THAT MAILBOX'S per-slot safe-sender
+        // list. Mirrors the loop's preflight logic so the destination tag
+        // matches what the engine will actually do.
+        const subjectMatch = lastContent.match(/^Subject:\s*(.+)$/im);
+        const fromMatch = lastContent.match(/^From:\s*(.+)$/im);
+        const isOutlook = lastContent.includes('[SOURCE: OUTLOOK NOTIFICATION');
+        const slotMatch = lastContent.match(/\[SOURCE: (?:GMAIL|OUTLOOK) NOTIFICATION[^()]*\(([^)]+)\)\]/i);
+        const inboundSlot: 'agent' | 'user' = slotMatch?.[1]?.toLowerCase() === 'user' ? 'user' : 'agent';
+        const subject = subjectMatch?.[1]?.trim() ?? '';
+        const fromRaw = fromMatch?.[1]?.trim() ?? '';
+        const emailMatch = fromRaw.match(/<([^>]+)>/) ?? fromRaw.match(/(\S+@\S+)/);
+        const fromAddress = emailMatch?.[1]?.toLowerCase() ?? '';
+        const looksLikeReply = /^re:\s/i.test(subject);
+        let fromIsKnownSafeSender = false;
+        if (fromAddress) {
+          const channelList = isOutlook
+            ? getOutlookSafeSenders(inboundSlot)
+            : getGmailSafeSenders(inboundSlot);
+          fromIsKnownSafeSender = channelList.some(s => addressesMatch(s.address, fromAddress));
+        }
+        inboundChannel = (looksLikeReply && fromIsKnownSafeSender) ? 'email' : 'dashboard';
+      } else if (lastContent) {
+        inboundChannel = 'dashboard';
+      }
 
       const destination = resolveReplyDestination({
         state: { inboundChannel },
@@ -392,7 +432,9 @@ export function assembleSystemPrompt(agentId: string, modelId: string): string {
       if (destination === 'imessage') {
         tag = `[Reply destination: iMessage to ${ownerName} — write in SMS voice (no markdown, no headers, no bullet lists). Just write the reply text; the engine delivers it via iMessage automatically. Use [no-reply] if nothing worth sending. The imessage_send tool is reserved for proactive sends, sending to someone other than ${ownerName}, or rich actions (attachments).]`;
       } else if (destination === 'teams') {
-        tag = `[Reply destination: Teams — write the reply text; the engine delivers it via Teams automatically. Use [no-reply] if nothing worth sending. The teams_send_message tool is reserved for cross-chat sends.]`;
+        tag = `[Reply destination: Teams DM — just write the reply text; the engine delivers it via Teams automatically. Conversational voice, light formatting ok. Use [no-reply] if nothing worth sending. The teams_send_message tool is reserved for starting new chats or sending to a different chat than the inbound.]`;
+      } else if (destination === 'email') {
+        tag = `[Reply destination: email reply (in-thread) — just write the reply body; the engine sends it as a Re: on the existing thread automatically. Email voice (slightly more formal than chat, but no need for a greeting/signoff if the thread is conversational). Use [no-reply] if nothing worth sending. The outlook_reply / gmail_reply / outlook_send / gmail_send tools are reserved for replies to OTHER threads or new outbound emails.]`;
       } else {
         tag = `[Reply destination: dashboard chat — normal voice, markdown ok. Use [no-reply] if nothing worth sending.]`;
       }
@@ -431,31 +473,22 @@ export function assembleSystemPrompt(agentId: string, modelId: string): string {
 Each non-user-chat message has a \`[SOURCE: ...]\` tag:
 - No tag = direct message from ${getOwnerName()} via dashboard
 - \`[SOURCE: IMESSAGE FROM ${getOwnerName().toUpperCase()}]\` = ${getOwnerName()} via iMessage. Your reply text auto-routes back via iMessage — just write it (SMS voice, no markdown). The \`[Reply destination: ...]\` tag at the top of this prompt confirms the routing. If no reply is warranted, end the turn with literal \`[no-reply]\`.
-- \`[SOURCE: GMAIL NOTIFICATION]\` / \`[SOURCE: OUTLOOK NOTIFICATION]\` = a new email just landed in ${getOwnerName()}'s inbox. NOT a request from ${getOwnerName()} themselves. **Default: do nothing.** No chat message, no \`user_gmail_read\` / \`user_outlook_read\`, no surfacing. Most email is noise; the preview is enough to tell.
+- \`[SOURCE: GMAIL NOTIFICATION]\` / \`[SOURCE: OUTLOOK NOTIFICATION]\` = email landed in ${getOwnerName()}'s inbox. Two flavors:
 
-  **DO NOT SURFACE (and do not even read the full body of):**
-  - Receipts, payment confirmations, "thank you for your invoice/order/payment"
-  - Auto-acknowledgments ("we received your", "your submission has been recorded")
-  - Anything from \`no-reply@\` / \`noreply@\` / \`notifications@\` / \`updates@\` / \`alerts@\` / \`donotreply@\` addresses unless it explicitly asks ${getOwnerName()} to do something
-  - Newsletters, promo blasts, marketing emails (Netflix new releases, LinkedIn digests, Spotify recommendations, brand updates)
-  - Social platform notifications ("X liked your post", "Y commented", "Z sent you a connection request")
-  - Calendar reminders for events already on ${getOwnerName()}'s calendar
-  - Shipping/tracking updates unless there's a problem
-  - Any email whose preview makes clear no human wrote it for ${getOwnerName()} specifically
+  **Flavor A — Reply on a thread you're part of** (Subject starts with "Re:" AND From is a known safe-sender like ${getOwnerName()}). The engine treats this as a real inbound-REPLY: the per-turn \`[Reply destination: email reply (in-thread)]\` tag will be set, and your terminal text auto-routes back as a Re: on the same thread. Just write your reply. Use \`[no-reply]\` if no reply is warranted.
 
-  **DO SURFACE (briefly, one line):**
-  - Direct human-written emails to ${getOwnerName()} personally (not a list)
-  - Emails containing a deadline, decision needed, blocker, or specific action request for ${getOwnerName()}
-  - New project initiations, new contracts, new client outreach
-  - Emails from people the platform records as known contacts/collaborators
-  - Anything that's a genuine reply in a conversation ${getOwnerName()} is part of
+  **Flavor B — Notification of a new email** (everything else). NOT a request from ${getOwnerName()} themselves. **Default: do nothing.** No chat message, no \`user_gmail_read\` / \`user_outlook_read\`, no surfacing. Most email is noise.
 
-  When you do surface, use the channel rules: dashboard chat when ${getOwnerName()} is in the dojo, \`imessage_send\` when away. One line: "Email from <sender>: <subject>" plus a one-sentence summary if the body adds anything beyond the subject. If multiple emails to surface, batch into one message. Never reply to the email or take action on it unless ${getOwnerName()} asks. If you decided not to surface, just don't — no "I saw a promo email, nothing to do" line; that itself is noise.
+  When in Flavor B, **DO NOT SURFACE** (don't even read the body): receipts, payment confirmations, "thank you for your invoice/order"; auto-acknowledgments ("we received your"); \`no-reply@\` / \`noreply@\` / \`notifications@\` / \`updates@\` / \`alerts@\` / \`donotreply@\` senders unless they explicitly ask ${getOwnerName()} to do something; newsletters, promo blasts, marketing emails (Netflix, LinkedIn digests, Spotify); social platform pings ("X liked your post"); calendar reminders for events already on the calendar; shipping/tracking updates unless there's a problem; anything whose preview shows no human wrote it for ${getOwnerName()} specifically.
+
+  **DO SURFACE** (one line): direct human-written emails to ${getOwnerName()} personally; emails containing a deadline, decision, blocker, or specific action request; new project initiations, contracts, client outreach.
+
+  When you do surface, use channel rules: dashboard chat when ${getOwnerName()} is in the dojo, \`imessage_send\` when away. One line: "Email from <sender>: <subject>" plus a one-sentence summary if the body adds anything beyond the subject. Never reply to the email unless ${getOwnerName()} asks (or it's Flavor A where the engine auto-routes). If you decided not to surface, just don't — no "I saw a promo email, nothing to do" line.
 - \`[A2A:INTENT thread:ID from:Name]\` = structured agent message — engine validates your reply via \`send_to_agent\`
 - \`[SOURCE: AGENT MESSAGE FROM X]\` = legacy agent message
 
 **INTER-AGENT REPLY RULE (HARD):** if the most recent message in your active context starts with \`[A2A:\` or \`[SOURCE: AGENT MESSAGE FROM\`, your response on this turn MUST go through \`send_to_agent\` on the same \`thread_id\`. Text you write to your own chat is INVISIBLE to the originating agent — they only see what you send via \`send_to_agent\`. The pattern is: do the work (call any tools you need), then make exactly ONE \`send_to_agent\` call addressed to the originator with the right intent (ANSWER for QUESTION, COMPLETE/STATUS/FAIL for ASSIGN, ASSIGN if delegating further), then end your turn. **Do not write a chat summary** — your trailing text gets suppressed by the engine on inter-agent turns and is only readable by the user, who is not the audience here. If you've already sent the reply via \`send_to_agent\` and the engine still re-prompts you, just END YOUR TURN — the originator has the message; further chat text does nothing useful.
-- \`[SOURCE: TEAMS MESSAGE FROM ...]\` = Teams message (reply via \`teams_send_message\` using the chat_id in the note)
+- \`[SOURCE: TEAMS MESSAGE FROM ...]\` = Teams message. Your reply text auto-routes back via Teams — just write it (light formatting ok). The \`[Reply destination: Teams DM]\` tag at the top of this prompt confirms the routing. Use \`teams_send_message\` only for starting new chats or replying to a different chat.
 - \`[SYSTEM NOTE: ...]\`, \`[Note: ...]\`, \`[Engine ack] ...\` = system context, not requests
 - \`[SENT VIA IMESSAGE to ${getOwnerName()}]\` = your prior response went via iMessage. **DO NOT EMIT THIS TAG YOURSELF.** It's a system-generated marker the engine writes automatically after iMessage delivery. Including it in your reply text would send the literal string "[SENT VIA IMESSAGE to ${getOwnerName()}]" to ${getOwnerName()}'s phone — they'd see the routing annotation in their iMessage, which looks broken.`);
 
@@ -487,15 +520,8 @@ Each non-user-chat message has a \`[SOURCE: ...]\` tag:
     if (msAccess === 'full') {
       const teamsInboundGuidance = msAccountType !== 'msa' ? `
 
-**CRITICAL — Incoming Teams messages:**
-People can send you Microsoft Teams messages directly. When they do, a notification arrives in your conversation tagged \`[SOURCE: TEAMS MESSAGE FROM {name} ({email})]\`. These are real people reaching out via Teams — they are NOT messages from the dashboard user.
-
-When you see a \`[SOURCE: TEAMS MESSAGE FROM ...]\` notification:
-1. Read the message and the \`Chat ID\` shown at the bottom of the notification.
-2. Reply by calling \`teams_send_message\` with that \`chat_id\` and your reply text.
-3. Do NOT reply in plain chat — the person is on Teams, not the dashboard. They will never see a plain chat response.
-
-The \`teams_create_chat\` tool is for starting a new conversation with someone. \`teams_send_message\` is for replying to an existing chat using the \`chat_id\` from the notification.` : '';
+**Incoming Teams messages:**
+People can send you Microsoft Teams messages directly. When they do, a notification arrives in your conversation tagged \`[SOURCE: TEAMS MESSAGE FROM {name} ({email})]\` and the per-turn \`[Reply destination: Teams DM]\` tag at the top of the prompt confirms auto-routing. **Just write your reply text** — the engine sends it back via Teams automatically. Light formatting ok. The \`teams_send_message\` tool is reserved for starting new chats (\`teams_create_chat\` first if needed) or replying to a DIFFERENT chat than the inbound; for the inbound thread you just write text.` : '';
 
       // Trimmed: keep account context + the Teams-inbound rule (that's
       // behavior, not bloat — agents must know to reply on the right channel).

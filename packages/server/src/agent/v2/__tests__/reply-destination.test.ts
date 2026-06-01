@@ -29,6 +29,23 @@ describe('resolveReplyDestination', () => {
     ).toBe('teams');
   });
 
+  it('routes email inbound back to email regardless of presence', () => {
+    expect(
+      resolveReplyDestination({
+        state: { inboundChannel: 'email' },
+        presence: 'in_dojo',
+        imessageBridgeConfigured: false,
+      }),
+    ).toBe('email');
+    expect(
+      resolveReplyDestination({
+        state: { inboundChannel: 'email' },
+        presence: 'away',
+        imessageBridgeConfigured: true,
+      }),
+    ).toBe('email');
+  });
+
   it('dashboard inbound while in_dojo stays on dashboard', () => {
     expect(
       resolveReplyDestination({
