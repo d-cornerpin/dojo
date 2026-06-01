@@ -193,15 +193,40 @@ function interpretLocalAsTz(isoNaive: string, tz: string): Date | null {
   const asUtc = new Date(isoNaive.endsWith('Z') ? isoNaive : isoNaive + 'Z');
   if (isNaN(asUtc.getTime())) return null;
   // Format that UTC moment in the target tz, parse back, compute offset.
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: tz, hour12: false,
-    year: 'numeric', month: '2-digit', day: 'numeric',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-  }).formatToParts(asUtc);
+  //
+  // v2.7.26 — defensive try/catch around the Intl call. Some providers
+  // hand back non-IANA timezone names (Microsoft Graph used to return
+  // Windows zone names like "Pacific Standard Time" before we added the
+  // Prefer: outlook.timezone="UTC" header). Intl.DateTimeFormat throws
+  // RangeError on those. Without this catch, the throw propagated up
+  // through parseFlexibleTime into the calendar tools and made events
+  // render as "(invalid time: Invalid Date)" — confusing both the agent
+  // and the user. Return null on any failure so the caller's truthy
+  // check fails and a graceful "(could not parse)" fallback is used.
+  let parts;
+  try {
+    parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hour12: false,
+      // v2.7.26 — day MUST be '2-digit', not 'numeric'. `numeric` returns
+      // "1" rather than "01" for single-digit days, which then made the
+      // reconstructed ISO string "YYYY-MM-1T..." (not valid ISO),
+      // `new Date()` returned Invalid Date, and the whole event time
+      // surfaced as "(invalid time: Invalid Date)". This was the primary
+      // cause of the recurring-calendar-event report — events on June 1-9,
+      // July 1-9, etc. broke; days 10-31 happened to work because the
+      // formatter emits two digits naturally. Hour/minute/second were
+      // already '2-digit'; only day was wrong.
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }).formatToParts(asUtc);
+  } catch {
+    return null;
+  }
   const lookup: Record<string, string> = {};
   for (const p of parts) lookup[p.type] = p.value;
   const asLocalStr = `${lookup.year}-${lookup.month}-${lookup.day}T${lookup.hour}:${lookup.minute}:${lookup.second}Z`;
   const asLocal = new Date(asLocalStr);
+  if (isNaN(asLocal.getTime())) return null;
   const offsetMs = asLocal.getTime() - asUtc.getTime();
   // The wall-clock time we want is the naive input. To get the absolute
   // moment whose wall-clock-in-tz equals that input, subtract the offset.

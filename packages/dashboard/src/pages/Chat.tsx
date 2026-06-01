@@ -885,11 +885,16 @@ export const Chat = () => {
     }
   };
 
-  if (loading) return <div className="flex-1 loading-state">Loading...</div>;
-
   // v2.7.25 — tool_use_id → is_error lookup so the ChannelSendBubble can
   // hide itself when its underlying tool was refused. Mirrors the same
   // logic in AgentDetail.tsx; see that file for the longer rationale.
+  //
+  // v2.7.26 — MUST sit ABOVE the `if (loading) return ...` early exit.
+  // React hook order has to be identical across every render of the
+  // component. Placing the useMemo below the early return meant it
+  // didn't run on the first (loading=true) render but ran once loading
+  // flipped, producing React error #310 ("Rendered more hooks than
+  // during the previous render") and a blank chat page.
   const toolResultErrorById = useMemo(() => {
     const m = new Map<string, boolean>();
     for (const msg of messages) {
@@ -906,6 +911,8 @@ export const Chat = () => {
     }
     return m;
   }, [messages]);
+
+  if (loading) return <div className="flex-1 loading-state">Loading...</div>;
 
   return (
     <div className="flex-1 flex flex-col min-h-0">

@@ -718,14 +718,6 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <p className="text-ui/40">Loading chat...</p>
-      </div>
-    );
-  }
-
   // v2.7.25 — build a tool_use_id → is_error lookup so the channel-send
   // bubble can hide itself when its underlying tool call was refused.
   // Tool results live in subsequent role='tool' messages; each block in
@@ -733,6 +725,13 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
   // a blocked imessage_send would still render "sent via iMessage" + the
   // message text in non-wordy mode (the tool result is hidden), making
   // the user think a message was delivered when it wasn't.
+  //
+  // v2.7.26 — MUST sit ABOVE the `if (loading) return ...` early exit.
+  // React hook order has to be identical across every render. Placing
+  // the useMemo below the early return meant it didn't run on the first
+  // (loading=true) render but ran once loading flipped — producing
+  // React error #310 ("Rendered more hooks than during the previous
+  // render") and a blank agent-detail page.
   const toolResultErrorById = useMemo(() => {
     const m = new Map<string, boolean>();
     for (const msg of messages) {
@@ -749,6 +748,14 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
     }
     return m;
   }, [messages]);
+
+  if (loading) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <p className="text-ui/40">Loading chat...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 flex flex-col min-h-0">

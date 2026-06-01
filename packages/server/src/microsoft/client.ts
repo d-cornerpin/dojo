@@ -66,6 +66,26 @@ async function graphFetch(
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
+    // v2.7.26 — force calendar event times to UTC in the response.
+    //
+    // Without this header, Microsoft Graph returns event start/end times
+    // in the event's ORIGINAL timezone. Events created via Outlook desktop
+    // get stored with the Windows timezone NAME ("Pacific Standard Time",
+    // "Eastern Standard Time", etc.) rather than the IANA name. Node's
+    // Intl.DateTimeFormat only accepts IANA names — it throws RangeError
+    // on Windows names — which caused recurring events in the agenda
+    // tools to surface as "(invalid time: Invalid Date)" because the
+    // parser hit the unrecognized timezone string.
+    //
+    // With Prefer: outlook.timezone="UTC", Graph normalizes every event's
+    // start/end to UTC + sets timeZone to "UTC" on the response. The
+    // existing parseFlexibleTime + formatTimeRangeForAgent path then
+    // handles them correctly, and the agent's user_timezone arg shapes
+    // the human-facing display string.
+    //
+    // The header is only honored by calendar endpoints; non-calendar
+    // Graph endpoints ignore it. Safe to set globally.
+    Prefer: 'outlook.timezone="UTC"',
   };
 
   try {
