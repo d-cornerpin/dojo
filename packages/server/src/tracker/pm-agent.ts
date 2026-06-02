@@ -572,6 +572,39 @@ async function runPMReview(): Promise<void> {
 
   // Prune old messages before each review to keep context tight
   pruneOldPMMessages(pmId);
+
+  // ── Validation-review context wipe ──
+  // When there's pending validation work, Kelly's previous turns left
+  // assistant tool_calls + tool_results in her history. The OpenAI Pass 1
+  // sanitizer can strip orphan tool_results (e.g., when a prior assistant
+  // got pruned away or compacted out), leaving Kelly's view of her own
+  // past work inconsistent — and she responds with [no-reply] because she
+  // can't reconcile what she sees with what she's being asked to do.
+  // The codebase's design intent is that PM is stateless and the tracker
+  // is its memory. Honor that: wipe Kelly's conversation history before
+  // each validation review so she starts fresh. We keep system messages
+  // (system prompt, session boundary) so identity/instructions persist.
+  if (pendingValidationCount > 0) {
+    try {
+      const wiped = db.prepare(`
+        DELETE FROM messages
+        WHERE agent_id = ? AND role != 'system'
+      `).run(pmId);
+      if (wiped.changes > 0) {
+        // Also reset the dedup hash so the next situation-report send goes
+        // through to a clean Kelly instead of being skipped as a duplicate.
+        lastSituationReportHash = '';
+        logger.info('Wiped PM conversation history before validation review', {
+          pmId, deletedMessages: wiped.changes, pendingValidation: pendingValidationCount,
+        });
+      }
+    } catch (err) {
+      logger.warn('Failed to wipe PM conversation before validation review (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   const pmName = getPMAgentName();
   const primaryName = getPrimaryAgentName();
 

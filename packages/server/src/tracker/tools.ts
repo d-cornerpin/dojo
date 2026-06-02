@@ -811,48 +811,116 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       clearHardGateBreaker(taskId, agentId);
     }
 
-    // For recurring tasks being marked complete
-    if (status === 'complete' && isScheduledRecurring) {
+    // For recurring tasks being marked complete with complete_all_runs=true,
+    // the agent is asserting that NO further runs are needed. Stop the
+    // schedule immediately and bypass per-run PM validation — this is the
+    // "I did them all internally, please close the loop" path.
+    if (status === 'complete' && isScheduledRecurring && (args.complete_all_runs as boolean) === true) {
       const notes = args.notes as string | undefined;
-      const completeAllRuns = (args.complete_all_runs as boolean) ?? false;
-
-      if (completeAllRuns) {
-        // Agent says ALL work is done — stop the entire repeat cycle immediately
-        // This handles the case where an agent completed multiple iterations internally
-        db.prepare("UPDATE tasks SET status = 'complete', schedule_status = 'completed', is_paused = 1, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(taskId);
-        db.prepare("UPDATE task_runs SET status = 'complete', completed_at = datetime('now'), result_summary = ? WHERE task_id = ? AND status = 'running'").run(notes ?? 'All runs completed by agent', taskId);
-        const updatedTask = getTask(taskId)!;
-        broadcast({ type: 'tracker:task_updated', data: updatedTask });
-        notifyPrimaryAgent(
-          `Recurring task "${updatedTask.title}" fully completed by ${updatedTask.assignedToName ?? updatedTask.assignedTo ?? agentId} (all runs done).${notes ? ` Notes: ${notes}` : ''}`,
-          agentId,
-        );
-        checkProjectCompletion(updatedTask.projectId, agentId);
-        return `Recurring task "${updatedTask.title}" fully completed. Schedule stopped. All runs marked done.`;
-      }
-
-      // Normal path: complete the current run, let onTaskRunComplete decide about next run
-      onTaskRunComplete(taskId, 'complete', notes ?? '');
+      db.prepare("UPDATE tasks SET status = 'complete', schedule_status = 'completed', is_paused = 1, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(taskId);
+      db.prepare("UPDATE task_runs SET status = 'complete', completed_at = datetime('now'), result_summary = ? WHERE task_id = ? AND status = 'running'").run(notes ?? 'All runs completed by agent', taskId);
       const updatedTask = getTask(taskId)!;
-
-      const nextRunFmt = updatedTask.nextRunAt ? formatTimeForAgent(updatedTask.nextRunAt) : null;
+      broadcast({ type: 'tracker:task_updated', data: updatedTask });
       notifyPrimaryAgent(
-        `Task "${updatedTask.title}" run completed by ${updatedTask.assignedToName ?? updatedTask.assignedTo ?? agentId}. Run ${updatedTask.runCount}${nextRunFmt ? `, next run: ${nextRunFmt}` : ' (no more runs)'}.${notes ? ` Notes: ${notes}` : ''}`,
+        `Recurring task "${updatedTask.title}" fully completed by ${updatedTask.assignedToName ?? updatedTask.assignedTo ?? agentId} (all runs done).${notes ? ` Notes: ${notes}` : ''}`,
         agentId,
       );
+      checkProjectCompletion(updatedTask.projectId, agentId);
+      return `Recurring task "${updatedTask.title}" fully completed. Schedule stopped. All runs marked done.`;
+    }
 
-      if (!updatedTask.nextRunAt) {
-        updateTask(taskId, { status: 'complete' });
-        checkProjectCompletion(updatedTask.projectId, agentId);
+    // Recurring per-run complete (non-terminal): advance the schedule
+    // immediately so the wall-clock anchor is preserved. PM validation
+    // happens as an async audit on task_log but does NOT gate the next
+    // fire — late validation must never lose a scheduled run. The hard
+    // gate above already validated result+evidence presence, so we have
+    // a clean record to archive.
+    //
+    // Detection: probe calculateNextRun with run_count+1. If it would
+    // return null, this run is the TERMINAL close and we hold for Kelly's
+    // validation (matches one-shot complete semantics — final state needs
+    // the same review discipline).
+    if (status === 'complete' && isScheduledRecurring) {
+      const detail = db.prepare(`
+        SELECT scheduled_start, repeat_interval, repeat_unit, repeat_end_type,
+               repeat_end_value, repeat_days_of_week, anchor_time, run_count,
+               is_paused, last_run_at, next_run_at, schedule_status
+        FROM tasks WHERE id = ?
+      `).get(taskId) as {
+        scheduled_start: string | null; repeat_interval: number | null;
+        repeat_unit: string | null; repeat_end_type: string | null;
+        repeat_end_value: string | null; repeat_days_of_week: string | null;
+        anchor_time: string | null; run_count: number; is_paused: number;
+        last_run_at: string | null; next_run_at: string | null; schedule_status: string;
+      } | undefined;
+
+      const wouldBeTerminal = (() => {
+        if (!detail) return false;
+        const probe: ScheduledTask = {
+          id: taskId,
+          scheduled_start: detail.scheduled_start,
+          repeat_interval: detail.repeat_interval,
+          repeat_unit: detail.repeat_unit,
+          repeat_end_type: detail.repeat_end_type,
+          repeat_end_value: detail.repeat_end_value,
+          repeat_days_of_week: detail.repeat_days_of_week,
+          anchor_time: detail.anchor_time,
+          run_count: detail.run_count + 1,
+          is_paused: detail.is_paused,
+          last_run_at: new Date().toISOString(),
+          next_run_at: detail.next_run_at,
+          schedule_status: detail.schedule_status,
+        };
+        return calculateNextRun(probe) === null;
+      })();
+
+      if (!wouldBeTerminal) {
+        // Non-terminal recurring per-run: archive result+evidence to
+        // task_log for audit and advance the schedule immediately.
+        const runResult = typeof args.result === 'string' ? args.result.trim() : '';
+        const evidenceJson = Array.isArray(args.evidence) ? JSON.stringify(args.evidence) : null;
+        try {
+          writeTaskLog({
+            taskId,
+            fromEntity: `agent:${agentId}`,
+            entryKind: 'transition',
+            fromStatus: 'in_progress',
+            toStatus: 'on_deck',
+            actionTaken: `recurring per-run complete (run #${detail!.run_count + 1})`,
+            reason: runResult || null,
+            note: runResult || null,
+            evidenceJson,
+          });
+        } catch (err) {
+          logger.warn('Failed to archive recurring per-run to task_log (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
+        }
+        // Clear result/evidence on the task row so the next fire starts
+        // from scratch — the per-run record lives in task_log.
+        db.prepare(`UPDATE tasks SET result = NULL, evidence_json = NULL WHERE id = ?`).run(taskId);
+        // Advance the schedule (fire-and-forget — same pattern the
+        // generic complete handler uses below).
+        const notes = args.notes as string | undefined;
+        onTaskRunComplete(taskId, 'complete', notes ?? '').catch(err => {
+          logger.warn('onTaskRunComplete failed during recurring per-run advance (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
+        });
+        const updatedTask = getTask(taskId)!;
+        const nextRunFmt = updatedTask.nextRunAt ? formatTimeForAgent(updatedTask.nextRunAt) : null;
+        notifyPrimaryAgent(
+          `Recurring run completed by ${updatedTask.assignedToName ?? updatedTask.assignedTo ?? agentId}: "${updatedTask.title}". Run ${updatedTask.runCount}${nextRunFmt ? `, next: ${nextRunFmt}` : ''}.${notes ? ` Notes: ${notes}` : ''}`,
+          agentId,
+        );
+        return [
+          `Run completed for recurring task.`,
+          `Task: ${updatedTask.title} (${updatedTask.id})`,
+          `Runs completed: ${updatedTask.runCount}`,
+          nextRunFmt ? `Next run: ${nextRunFmt}` : 'No further runs scheduled.',
+        ].join('\n');
       }
-
-      const parts = [
-        `Run completed for recurring task.`,
-        `Task: ${updatedTask.title} (${updatedTask.id})`,
-        `Runs completed: ${updatedTask.runCount}`,
-        nextRunFmt ? `Next run: ${nextRunFmt}` : 'All runs finished — task complete.',
-      ];
-      return parts.join('\n');
+      // Terminal recurring complete: fall through to the standard complete
+      // flow. The hard gate persists result/evidence, status flips to
+      // 'complete', complete_validated stays 0, and Kelly's terminal-close
+      // validation runs against this final state. checkProjectCompletion
+      // and dep cascades fire when Kelly validates.
     }
 
     const task = updateTask(taskId, updates);
@@ -905,10 +973,16 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         `Task "${task.title}" completed by ${task.assignedToName ?? task.assignedTo ?? agentId}.${notes ? ` Notes: ${notes}` : ''}`,
         agentId,
       );
-      // Handle one-time scheduled task completion
-      try {
-        onTaskRunComplete(taskId, 'complete', notes ?? '');
-      } catch { /* not a scheduled task */ }
+      // Handle one-time scheduled task completion. Recurring tasks are
+      // gated out — their per-run advance happens only after PM (Kelly)
+      // validates this run via tracker_validate_complete. Calling
+      // onTaskRunComplete here would silently advance the schedule and
+      // bypass PM review (the bug v2.8.2 fixes).
+      if (!isScheduledRecurring) {
+        try {
+          onTaskRunComplete(taskId, 'complete', notes ?? '');
+        } catch { /* not a scheduled task */ }
+      }
       checkProjectCompletion(task.projectId, agentId);
     }
 
@@ -2216,38 +2290,72 @@ export async function trackerValidateComplete(
   }
 
   if (args.valid) {
-    // Recurring-task branch: per-run validation success archives result/evidence
-    // into task_log and resets the task for the next fire. Terminal-run validation
-    // success keeps the task complete and lets the cascade run.
+    // Recurring-task branch: archive this run's result/evidence, then let
+    // the scheduler's onTaskRunComplete decide whether to advance the
+    // schedule (more runs) or close terminal. Previously this branch
+    // used `task.next_run_at === null` to detect terminal, but the
+    // scheduler doesn't null next_run_at on terminal close — so the
+    // detection misfired and Kelly mis-routed terminal closes through
+    // the per-run reset, leaving inconsistent state. Now we just run
+    // the same advance the scheduler would and observe the outcome.
     const isRecurring = task.repeat_interval !== null;
-    const isTerminalRun = task.next_run_at === null;
 
-    if (isRecurring && !isTerminalRun) {
+    if (isRecurring) {
+      // Archive this run's result/evidence to task_log BEFORE clearing
+      // them — preserves the per-run history.
       writeTaskLog({
         taskId,
-        fromEntity: 'engine',
+        fromEntity: 'pm',
         entryKind: 'transition',
         fromStatus: 'complete',
-        toStatus: 'on_deck',
-        actionTaken: `recurring per-run validation success (next_run_at=${task.next_run_at ?? 'unknown'})`,
-        reason: 'PM blessed the run',
+        toStatus: 'pending-advance',
+        actionTaken: `tracker_validate_complete(valid=true) — recurring per-run`,
+        reason: 'PM blessed this run',
         note: task.result,
         evidenceJson: task.evidence_json,
       });
-      db.prepare(`
-        UPDATE tasks
-        SET status = 'on_deck',
-            result = NULL,
-            evidence_json = NULL,
-            complete_validated = 0,
-            updated_at = datetime('now')
-        WHERE id = ?
-      `).run(taskId);
-      // Real-time sync: status flipped complete→on_deck via direct SQL.
-      const freshRecurring = getTask(taskId);
-      if (freshRecurring) broadcast({ type: 'tracker:task_updated', data: freshRecurring });
-      logger.info('Per-run validation success: archived and reset for next fire', { taskId, pmAgentId }, pmAgentId);
-      return `[OK] Per-run validation success on "${task.title}" (${taskId}). Result archived to task_log, task reset to on_deck for next scheduler fire.`;
+      // Clear result/evidence so the next run starts fresh.
+      db.prepare(`UPDATE tasks SET result = NULL, evidence_json = NULL, updated_at = datetime('now') WHERE id = ?`).run(taskId);
+      // Advance the schedule. onTaskRunComplete:
+      //   - marks the running task_run row complete
+      //   - increments run_count
+      //   - calls calculateNextRun
+      //   - sets status=on_deck + schedule_status=waiting (more runs), OR
+      //     status=complete + schedule_status=completed (terminal)
+      try {
+        const { onTaskRunComplete } = await import('../scheduler/runner.js');
+        await onTaskRunComplete(taskId, 'complete', '(PM validated this run)');
+      } catch (err) {
+        logger.warn('onTaskRunComplete failed during recurring validate (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
+      }
+      // Read back and decide which return path applies.
+      const after = getTask(taskId);
+      if (!after) {
+        return `Error: task ${taskId} disappeared during recurring validate.`;
+      }
+      const wasTerminal = after.scheduleStatus === 'completed' || after.status === 'complete';
+      if (wasTerminal) {
+        // Terminal close: flip complete_validated=1, run dep cascade.
+        db.prepare(`UPDATE tasks SET complete_validated = 1, updated_at = datetime('now') WHERE id = ?`).run(taskId);
+        const final = getTask(taskId);
+        if (final) broadcast({ type: 'tracker:task_updated', data: final });
+        try {
+          const { checkDependencies } = await import('./pm-agent.js');
+          checkDependencies(taskId);
+        } catch (err) {
+          logger.warn('checkDependencies failed after terminal recurring validate (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
+        }
+        try {
+          checkProjectCompletion(task.project_id, pmAgentId);
+        } catch { /* best-effort */ }
+        logger.info('Recurring task terminal close validated by PM', { taskId, pmAgentId }, pmAgentId);
+        return `[OK] Final run validated on "${task.title}" (${taskId.slice(0, 8)}). Recurring task closed terminal.`;
+      }
+      // Per-run advance: next run will need its own validation.
+      const fresh = getTask(taskId);
+      if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
+      logger.info('Per-run validation success — schedule advanced', { taskId, pmAgentId, runCount: after.runCount, nextRunAt: after.nextRunAt }, pmAgentId);
+      return `[OK] Per-run validation success on "${task.title}" (${taskId.slice(0, 8)}). Schedule advanced to next run at ${after.nextRunAt ?? '(unknown)'}.`;
     }
 
     // Terminal close path: flip complete_validated=1, run dep cascade, notify parent.

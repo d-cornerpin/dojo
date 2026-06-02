@@ -56,7 +56,16 @@ export function calculateNextRun(task: ScheduledTask): string | null {
   // then walks the anchor forward by whole intervals, so the wall-clock
   // alignment (e.g. "Monday at 06:00") is preserved even if past runs
   // took variable time to complete.
-  const anchorIso = task.anchor_time ?? task.scheduled_start;
+  // SQLite's `datetime('now')` writes UTC timestamps in `YYYY-MM-DD
+  // HH:MM:SS` form (space separator, no `Z`). The space-separator variant
+  // is parsed as LOCAL time by V8, which yields a 7-hour drift for any
+  // anchor that came in via a raw SQL path instead of the tracker tools
+  // (which normalize via .toISOString()). Be defensive: if the string is
+  // missing an explicit timezone marker, treat it as UTC.
+  const rawAnchor = task.anchor_time ?? task.scheduled_start;
+  const anchorIso = rawAnchor.includes('Z') || /[+-]\d{2}:?\d{2}$/.test(rawAnchor)
+    ? rawAnchor
+    : rawAnchor.replace(' ', 'T') + 'Z';
   const baseTime = new Date(anchorIso);
 
   if (isNaN(baseTime.getTime())) return null;
