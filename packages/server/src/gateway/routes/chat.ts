@@ -110,9 +110,9 @@ export async function submitUserMessage(
   // stale stop signal from a prior interrupted turn must be cleared, or
   // the v2 loop will read the flag on the very first iteration, delete
   // it, and bail before processing the new message. (2026-06-02 bug
-  // fix: David interrupted Kevin mid-task, reset his session, sent a
-  // new prompt — Kevin's loop saw the stale stop flag and ended without
-  // doing anything.)
+  // fix: user interrupted an agent mid-task, reset its session, sent a
+  // new prompt — the agent's loop saw the stale stop flag and ended
+  // without doing anything.)
   try {
     const { stoppedAgents } = await import('../../agent/shared-state.js');
     stoppedAgents.delete(agentId);

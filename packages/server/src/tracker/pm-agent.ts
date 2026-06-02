@@ -438,11 +438,11 @@ const LLM_REVIEW_INTERVAL_MS = 600_000; // 10 minutes — gives tasks time to se
 
 // How many recent messages to keep for the PM. Bumped from 10 to 30 in
 // v2.7.27 — at 10 the pair-aware cutoff + downstream orphan sanitizer
-// were trimming Kelly down to 1-2 effective messages on bad turns,
-// leaving her with no context to judge anything. 30 gives the sanitizer
-// more pair-completeness to work with while still keeping PM's window
-// small. PM is still stateless conceptually (tracker is her memory),
-// this is just enough scratch space.
+// were trimming the PM down to 1-2 effective messages on bad turns,
+// leaving it with no context to judge anything. 30 gives the sanitizer
+// more pair-completeness to work with while still keeping the PM's
+// window small. PM is still stateless conceptually (tracker is its
+// memory), this is just enough scratch space.
 const PM_MAX_MESSAGES = 30;
 
 // ── Phase C: per-hour PM LLM call cap (cost guard) ──
@@ -496,7 +496,7 @@ function pruneOldPMMessages(pmId: string): void {
     // tool result (no preceding assistant with tool_calls). DeepSeek and most
     // other providers 400 with "Messages with role 'tool' must be a response
     // to a preceding message with 'tool_calls'", which then triggered the
-    // injury-recovery loop and made Kelly perpetually broken. The fix walks
+    // injury-recovery loop and made the PM perpetually broken. The fix walks
     // forward from the initial cutoff to find the first non-tool message,
     // using that as the safe cutoff. We may keep fewer than PM_MAX_MESSAGES
     // when this fires; that's fine, PM is stateless and tracker is its memory.
@@ -574,16 +574,17 @@ async function runPMReview(): Promise<void> {
   pruneOldPMMessages(pmId);
 
   // ── Validation-review context wipe ──
-  // When there's pending validation work, Kelly's previous turns left
-  // assistant tool_calls + tool_results in her history. The OpenAI Pass 1
-  // sanitizer can strip orphan tool_results (e.g., when a prior assistant
-  // got pruned away or compacted out), leaving Kelly's view of her own
-  // past work inconsistent — and she responds with [no-reply] because she
-  // can't reconcile what she sees with what she's being asked to do.
-  // The codebase's design intent is that PM is stateless and the tracker
-  // is its memory. Honor that: wipe Kelly's conversation history before
-  // each validation review so she starts fresh. We keep system messages
-  // (system prompt, session boundary) so identity/instructions persist.
+  // When there's pending validation work, the PM agent's previous turns
+  // left assistant tool_calls + tool_results in its history. The OpenAI
+  // Pass 1 sanitizer can strip orphan tool_results (e.g., when a prior
+  // assistant got pruned away or compacted out), leaving the PM's view
+  // of its own past work inconsistent — and it responds with [no-reply]
+  // because it can't reconcile what it sees with what it's being asked
+  // to do. The codebase's design intent is that PM is stateless and the
+  // tracker is its memory. Honor that: wipe the PM's conversation
+  // history before each validation review so it starts fresh. We keep
+  // system messages (system prompt, session boundary) so identity /
+  // instructions persist.
   if (pendingValidationCount > 0) {
     try {
       const wiped = db.prepare(`
@@ -592,7 +593,7 @@ async function runPMReview(): Promise<void> {
       `).run(pmId);
       if (wiped.changes > 0) {
         // Also reset the dedup hash so the next situation-report send goes
-        // through to a clean Kelly instead of being skipped as a duplicate.
+        // through to the freshly-wiped PM instead of being skipped as a duplicate.
         lastSituationReportHash = '';
         logger.info('Wiped PM conversation history before validation review', {
           pmId, deletedMessages: wiped.changes, pendingValidation: pendingValidationCount,
@@ -1149,7 +1150,7 @@ async function runPokeCheck(): Promise<void> {
   // unvalidated, pending override requests). Without this, a completed task
   // sits with complete_validated=0 forever because activeTasks is 0, the
   // polled review never fires, and the event-driven debounce is the only
-  // path that could wake Kelly. Belt-and-suspenders.
+  // path that could wake the PM. Belt-and-suspenders.
   const pendingValidation = (() => {
     try {
       const row = getDb().prepare(`

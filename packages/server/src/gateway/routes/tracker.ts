@@ -14,7 +14,7 @@ import {
 } from '../../tracker/schema.js';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
-import { getPrimaryAgentId } from '../../config/platform.js';
+import { getPrimaryAgentId, getPMAgentId } from '../../config/platform.js';
 
 const logger = createLogger('tracker-routes');
 const trackerRouter = new Hono();
@@ -343,17 +343,19 @@ trackerRouter.get('/hygiene', async (c) => {
     `).all();
 
     // Per-model PM-call cost over last 24h (Phase D cost telemetry).
-    // audit_log.target stores the model name on model_call rows.
+    // audit_log.target stores the model name on model_call rows. PM agent
+    // id is config-driven (default 'pm', user-customizable via setup) —
+    // don't hardcode a specific user's PM id here.
     const pmCost = db.prepare(`
       SELECT target as modelId,
              COUNT(*) as calls,
              ROUND(COALESCE(SUM(cost), 0), 4) as cost_24h
       FROM audit_log
-      WHERE agent_id = 'kelly'
+      WHERE agent_id = ?
         AND action_type = 'model_call'
         AND datetime(created_at) > datetime('now', '-1 day')
       GROUP BY target
-    `).all();
+    `).all(getPMAgentId());
 
     return c.json({
       ok: true,

@@ -1280,7 +1280,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // v2.7.27: skip for the PM agent. The PM's situation reports land as
       // role='user' messages on its conversation; the classifier was treating
       // them as multistep user intent and auto-creating tracker projects
-      // titled "Tracker review -- N active tasks:". Polluted Kelly's view
+      // titled "Tracker review -- N active tasks:". Polluted the PM's view
       // every poke tick. PM never wants engine-auto-created projects.
       if (state.loopCount === 1 && lastUserMessageContent && !isPMAgent(agentId)) {
         try {
@@ -1916,8 +1916,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // backticks/asterisks) — strip just the sentinel so the user sees
       // the actual reply text. This handles the common model mistake of
       // appending the sentinel after a real reply (2026-06-02 bug fix:
-      // Kevin was tail-appending `[no-reply]` to user-facing messages
-      // and the literal text was rendering in chat).
+      // the primary agent was tail-appending `[no-reply]` to user-facing
+      // messages and the literal text was rendering in chat).
       const NO_REPLY_TAIL_RE = /\s*[`*_]*\s*\[no-reply\]\s*[`*_]*\s*$/i;
       if (
         persistedContent &&

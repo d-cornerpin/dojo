@@ -1209,8 +1209,8 @@ async function callOpenAIModel(
 
   // v2.7.27: belt-and-suspenders tool_call/tool_result pair sanitizer.
   // The trimming logic earlier only fires when input exceeds the context
-  // window. Kelly was hitting "Messages with role 'tool' must be a response
-  // to a preceding message with 'tool_calls'" (orphaned tool result) AND
+  // window. The PM agent was hitting "Messages with role 'tool' must be
+  // a response to a preceding message with 'tool_calls'" (orphaned tool result) AND
   // "An assistant message with 'tool_calls' must be followed by tool messages
   // responding to each 'tool_call_id'" (assistant tool_calls without matching
   // results) without crossing the context ceiling. Two passes:

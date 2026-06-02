@@ -837,7 +837,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // a clean record to archive.
     //
     // Detection: probe calculateNextRun with run_count+1. If it would
-    // return null, this run is the TERMINAL close and we hold for Kelly's
+    // return null, this run is the TERMINAL close and we hold for the PM's
     // validation (matches one-shot complete semantics — final state needs
     // the same review discipline).
     if (status === 'complete' && isScheduledRecurring) {
@@ -918,9 +918,9 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       }
       // Terminal recurring complete: fall through to the standard complete
       // flow. The hard gate persists result/evidence, status flips to
-      // 'complete', complete_validated stays 0, and Kelly's terminal-close
+      // 'complete', complete_validated stays 0, and the PM's terminal-close
       // validation runs against this final state. checkProjectCompletion
-      // and dep cascades fire when Kelly validates.
+      // and dep cascades fire when the PM validates.
     }
 
     const task = updateTask(taskId, updates);
@@ -974,7 +974,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         agentId,
       );
       // Handle one-time scheduled task completion. Recurring tasks are
-      // gated out — their per-run advance happens only after PM (Kelly)
+      // gated out — their per-run advance happens only after the PM
       // validates this run via tracker_validate_complete. Calling
       // onTaskRunComplete here would silently advance the schedule and
       // bypass PM review (the bug v2.8.2 fixes).
@@ -2295,7 +2295,7 @@ export async function trackerValidateComplete(
     // schedule (more runs) or close terminal. Previously this branch
     // used `task.next_run_at === null` to detect terminal, but the
     // scheduler doesn't null next_run_at on terminal close — so the
-    // detection misfired and Kelly mis-routed terminal closes through
+    // detection misfired and the PM mis-routed terminal closes through
     // the per-run reset, leaving inconsistent state. Now we just run
     // the same advance the scheduler would and observe the outcome.
     const isRecurring = task.repeat_interval !== null;
