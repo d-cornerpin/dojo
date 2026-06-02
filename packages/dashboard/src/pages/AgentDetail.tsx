@@ -170,6 +170,8 @@ const ChannelSendBubble = ({ msg, toolUse }: { msg: ChatMessage; toolUse: Conten
 // treatment in Chat.tsx so the channel-vs-conversation distinction is
 // consistent everywhere.
 const IMESSAGE_SOURCE_RE = /^\[SOURCE: IMESSAGE FROM [^\]]+\]\s*/;
+// Capture variant: extracts the safe-sender name for the inbound badge.
+const IMESSAGE_SOURCE_CAPTURE_RE = /^\[SOURCE: IMESSAGE FROM ([^\]]+)\]/;
 
 // Mirrors Chat.tsx's stripper. See chat.ts buildContentWithAttachments
 // for the source of these tags. Exported for the temp-bubble dedup so
@@ -187,13 +189,16 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
   const fromVoice = msg.source === 'voice';
   const stripped = fromIMessage ? msg.content.replace(IMESSAGE_SOURCE_RE, '') : msg.content;
   const displayContent = msg.attachments?.length ? stripAttachmentTags(stripped) : stripped;
+  const iMessageSender = fromIMessage
+    ? msg.content.match(IMESSAGE_SOURCE_CAPTURE_RE)?.[1]?.trim() ?? null
+    : null;
 
   return (
     <div className="flex flex-col items-end">
       {fromIMessage && (
         <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono mb-1 mr-1">
           <span className="text-ui/40">{'\u{1F4AC}'}</span>
-          <span>via iMessage</span>
+          <span>{iMessageSender ? `from ${iMessageSender} via iMessage` : 'via iMessage'}</span>
         </div>
       )}
       {fromVoice && !fromIMessage && (
@@ -816,9 +821,26 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             const routingMatch = msg.content.trim().match(/^\[(?:SENT VIA IMESSAGE to .+|Reply routed via (iMessage|Teams|email)[^\]]*)\]$/);
             if (routingMatch) {
               const channel = routingMatch[1] ?? 'iMessage';
+              // Extract recipient name so the badge can show "to <name>
+              // via iMessage" — symmetric with the inbound "from <name>
+              // via iMessage" badge. Email uses '(thread: "X")' which
+              // isn't a person's name, so we keep "sent via email reply"
+              // for that channel.
+              const trimmedContent = msg.content.trim();
+              let recipient: string | null = null;
+              if (channel.toLowerCase() === 'imessage' || routingMatch[0].startsWith('[SENT VIA IMESSAGE')) {
+                const m = trimmedContent.match(/to ([^\]]+?)\]$/);
+                recipient = m?.[1]?.trim() ?? null;
+              } else if (channel === 'Teams') {
+                const m = trimmedContent.match(/to chat ([^\]]+?)\]$/);
+                recipient = m?.[1]?.trim() ?? null;
+              }
+              const channelName = channel.toLowerCase() === 'imessage' ? 'iMessage' : channel;
               const channelLabel = channel.toLowerCase() === 'email'
                 ? 'sent via email reply'
-                : `sent via ${channel}`;
+                : recipient
+                  ? `to ${recipient} via ${channelName}`
+                  : `sent via ${channelName}`;
               const channelEmoji = channel.toLowerCase() === 'email'
                 ? '\u{2709}\u{FE0F}'
                 : channel === 'Teams' ? '\u{1F4DD}' : '\u{1F4AC}';
