@@ -207,11 +207,6 @@ export function createProject(params: {
 
   if (tasks && tasks.length > 0) {
     const totalSteps = tasks.length;
-    // Find the lowest step number to auto-start it
-    const sortedSteps = tasks
-      .map((t, i) => ({ ...t, idx: i, step: t.stepNumber ?? (i + 1) }))
-      .sort((a, b) => a.step - b.step);
-    const firstStepNumber = sortedSteps[0]?.step ?? 1;
 
     for (const task of tasks) {
       const taskId = uuidv4();
@@ -219,9 +214,19 @@ export function createProject(params: {
 
       const assignee = task.assignedTo ?? createdBy;
       const stepNum = task.stepNumber ?? null;
-      // Auto-start: if this is the first step and assigned to the creator, start as in_progress
-      const isFirstStep = stepNum === firstStepNumber || (stepNum === null && tasks.indexOf(task) === 0);
-      const status = (isFirstStep && assignee === createdBy) ? 'in_progress' : 'on_deck';
+      // Status default: all subtasks land in 'in_progress'. The previous
+      // model (only the first-step task assigned to the creator started
+      // in_progress, everything else 'on_deck') routinely produced the
+      // failure mode where the agent finished the first task and then
+      // never returned to the on_deck pile — those tasks went unseen
+      // forever. New rule: 'on_deck' is reserved for "scheduled for
+      // later". A task with no future scheduled_start belongs in
+      // 'in_progress' so the assigned agent (and the PM) keep seeing it
+      // as work to do. Project subtasks created here have no per-task
+      // scheduled_start under the current API, so all of them are
+      // in_progress. Sequencing is still expressed via step_number for
+      // the agent to read, but the engine does not gate visibility.
+      const status = 'in_progress';
 
       // Phase 7: original_description is an immutable copy of the user's
       // original ask. Mirrors the standalone createTask path. tracker_create_project
@@ -489,8 +494,16 @@ export function createTask(params: {
 
   const { projectId, title, description, assignedTo, createdBy, priority, stepNumber, dependsOn, phase, kind } = params;
 
-  // If the creator is also the assignee, start as in_progress (they're about to work on it)
-  const initialStatus = (assignedTo && assignedTo === createdBy) ? 'in_progress' : 'on_deck';
+  // v2.8.x rule: 'on_deck' is reserved for tasks with a future
+  // scheduled_start (the scheduler owns the transition to 'in_progress'
+  // at fire time). Tasks with no schedule belong in 'in_progress' so
+  // they stay visible to the assigned agent and the PM. createTask
+  // doesn't take scheduled_start directly; the trackerCreateTask
+  // wrapper applies the schedule override after this insert by calling
+  // updateTask(taskId, { status: 'on_deck' }) when hasSchedule is true.
+  // Default here is in_progress for both self-assigned and other-
+  // assigned tasks.
+  const initialStatus = 'in_progress';
 
   // original_description is an immutable copy of the user's original ask.
   // Phase 7 onTaskComplete uses it to surface the original intent to the
@@ -572,13 +585,14 @@ export function autoCreateAssignTask(params: {
     // ASSIGN tasks we use the payload itself as the goal — it IS the
     // sender's stated definition of done for the receiver.
     const autoGoal = params.payload.trim().slice(0, 2000) || title;
-    // Receiver-assigned tasks always start on_deck so the receiver picks
-    // them up explicitly via tracker_update_status. createTask's
-    // self-assigned path uses in_progress, but here sender ≠ receiver.
+    // v2.8.x rule: auto-created ASSIGN tasks land in 'in_progress' so the
+    // receiver and the PM keep seeing them as work to do. 'on_deck' is now
+    // reserved for future-scheduled tasks (the scheduler owns the
+    // transition); auto-ASSIGN has no schedule.
     db.prepare(`
       INSERT INTO tasks (id, project_id, title, description, original_description, goal, status, assigned_to, created_by, priority,
                          step_number, total_steps, phase, depends_on, a2a_thread_id, created_at, updated_at)
-      VALUES (?, NULL, ?, ?, ?, ?, 'on_deck', ?, ?, 'normal', NULL, NULL, 1, '[]', ?, datetime('now'), datetime('now'))
+      VALUES (?, NULL, ?, ?, ?, ?, 'in_progress', ?, ?, 'normal', NULL, NULL, 1, '[]', ?, datetime('now'), datetime('now'))
     `).run(
       taskId,
       title,

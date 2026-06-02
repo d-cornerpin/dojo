@@ -489,15 +489,16 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       logger.warn('Failed to persist goal on new task (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
     }
 
-    // Status reconciliation against the schema default (createTask sets a
-    // self-assigned task to 'in_progress' automatically). v2.3.13:
-    //   - hasSchedule → force back to 'on_deck' so the scheduler owns the
-    //     transition to in_progress at fire time. Without this override
-    //     scheduled self-assigned tasks were landing in_progress
-    //     immediately, silently bypassing the scheduler.
-    //   - no schedule + assigned to someone else → bump to in_progress
-    //     (schema default for that case is on_deck).
-    //   - no schedule + self-assigned → leave the schema default alone.
+    // Status reconciliation. v2.8.x rule: 'on_deck' is reserved for
+    // tasks with a FUTURE scheduled_start (the scheduler owns the
+    // transition to 'in_progress' at fire time). Anything else lands
+    // in 'in_progress' immediately so the assigned agent and the PM
+    // keep seeing it as work to do — sitting in 'on_deck' without a
+    // schedule was the failure mode where agents created multi-task
+    // projects, worked the first one, and never returned to the rest.
+    // The schema default (set in createTask above) is now 'in_progress'
+    // for all rows; we only override to 'on_deck' here when a future
+    // schedule justifies it.
     let scheduledStart = args.scheduled_start as string | undefined;
     if (scheduledStart) {
       try {
@@ -507,14 +508,17 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
         }
       } catch { /* keep original if parse fails */ }
     }
-    const hasSchedule = !!(scheduledStart || args.repeat_interval);
-    if (hasSchedule) {
+    // hasFutureSchedule is true only when scheduled_start is in the
+    // future (past-dated scheduled_start counts as "fire ASAP" and lands
+    // in_progress immediately), OR when repeat_interval is set (recurring
+    // tasks always go through the scheduler).
+    const scheduledStartIsFuture = !!(
+      scheduledStart && new Date(scheduledStart).getTime() > Date.now()
+    );
+    const hasFutureSchedule = scheduledStartIsFuture || !!args.repeat_interval;
+    if (hasFutureSchedule) {
       try {
         updateTask(taskId, { status: 'on_deck' });
-      } catch { /* ignore */ }
-    } else if (assignedTo && assignedTo !== agentId) {
-      try {
-        updateTask(taskId, { status: 'in_progress' });
       } catch { /* ignore */ }
     }
 
@@ -599,7 +603,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
 
     // Notify assigned agent about the new task (unless they created it themselves,
     // or it's a scheduled task — the scheduler handles those).
-    if (assignedTo && !hasSchedule) {
+    if (assignedTo && !hasFutureSchedule) {
       injectTaskAssignmentNotification({
         assignedAgentId: assignedTo,
         creatorAgentId: agentId,
@@ -700,6 +704,38 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     if (status) updates.status = status;
     if (assignedTo) updates.assignedTo = assignedTo;
     if (priority) updates.priority = priority;
+
+    // v2.8.x rule: 'on_deck' is reserved for tasks with a FUTURE
+    // scheduled_start (the scheduler owns the transition to 'in_progress'
+    // at fire time). Anything else belongs in 'in_progress' so the work
+    // stays visible to the assigned agent and the PM. Refuse explicit
+    // moves to 'on_deck' on tasks without a future schedule so agents
+    // don't accidentally park work in the "waiting for never" bucket —
+    // the failure mode being addressed is the agent creating tasks,
+    // working one, and forgetting the rest.
+    if (status === 'on_deck' && !isPMAgent(agentId)) {
+      const sched = db.prepare(
+        'SELECT scheduled_start, repeat_interval, next_run_at FROM tasks WHERE id = ?'
+      ).get(taskId) as { scheduled_start: string | null; repeat_interval: number | null; next_run_at: string | null } | undefined;
+      const nowMs = Date.now();
+      const futureScheduledStart = !!(
+        sched?.scheduled_start && new Date(sched.scheduled_start).getTime() > nowMs
+      );
+      const futureNextRun = !!(
+        sched?.next_run_at && new Date(sched.next_run_at).getTime() > nowMs
+      );
+      const isRecurring = !!sched?.repeat_interval;
+      if (!futureScheduledStart && !futureNextRun && !isRecurring) {
+        return (
+          `Error: status="on_deck" is reserved for tasks with a FUTURE scheduled_start ` +
+          `(or a recurring schedule). This task has no future schedule, so it belongs in ` +
+          `"in_progress" until you actively work it. If you want to park it for later, ` +
+          `set a scheduled_start with tracker_edit_task first, then move to on_deck. ` +
+          `If you're done, use status="complete". If you're waiting on the user, use ` +
+          `status="paused" with notes naming what you're waiting for.`
+        );
+      }
+    }
 
     // Pass resume_at through for timed pauses
     const resumeAt = args.resume_at as string | undefined;

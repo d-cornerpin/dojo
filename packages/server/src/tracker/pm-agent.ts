@@ -1415,9 +1415,12 @@ export function checkDependencies(completedTaskId: string): void {
     });
 
     if (allDepsComplete) {
-      // Unblock the task
+      // Unblock the task. v2.8.x rule: tasks without a future schedule
+      // land in 'in_progress' so they stay visible. 'on_deck' is reserved
+      // for scheduled-for-later. A previously-blocked task whose deps just
+      // cleared is ready to be worked on now, not parked.
       db.prepare(`
-        UPDATE tasks SET status = 'on_deck', updated_at = datetime('now') WHERE id = ?
+        UPDATE tasks SET status = 'in_progress', updated_at = datetime('now') WHERE id = ?
       `).run(row.id);
 
       logger.info('Task unblocked by dependency completion', {
