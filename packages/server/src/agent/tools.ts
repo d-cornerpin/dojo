@@ -1137,6 +1137,10 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'string',
           description: 'Assign this task to a group instead of a specific agent. The PM will pick an available agent from the group at run time.',
         },
+        allow_duplicate: {
+          type: 'boolean',
+          description: 'Set true to bypass the near-duplicate guard. The engine refuses creation if you already opened a similarly-titled task in the last 5 minutes (catches runaway loops where an error on one tool causes the agent to spawn duplicates instead of recovering). Only override when the new task is genuinely unrelated work that happens to share keywords.',
+        },
       },
       required: ['title'],
     },
@@ -1203,7 +1207,24 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         notes: {
           type: 'string',
-          description: 'Optional notes about the status change',
+          description: 'For paused (min 15 chars, names a specific external trigger) or blocked (min 15 chars, names the obstacle). On complete, use the `result` field instead, not notes.',
+        },
+        result: {
+          type: 'string',
+          description: 'Required when status="complete". Non-empty string describing what was accomplished. PM compares this to the task goal.',
+        },
+        evidence: {
+          type: 'array',
+          description: 'Required when status="complete". Non-empty array of text-only evidence records. Each entry is {kind, claim, pointer?}. Supported kinds: claim, file_modified, file_read, tool_call_ref, output_paste, external_action, quote. Engine enforces structure; PM reads content and judges substance. Example: [{kind:"file_modified", claim:"updated 12 routes", pointer:"packages/server/src/gateway/routes/"}, {kind:"tool_call_ref", claim:"18 file_edit calls succeeded"}].',
+          items: {
+            type: 'object',
+            properties: {
+              kind: { type: 'string', description: 'One of: claim, file_modified, file_read, tool_call_ref, output_paste, external_action, quote.' },
+              claim: { type: 'string', description: 'Non-empty text statement of what this evidence shows.' },
+              pointer: { type: 'string', description: 'Optional: file path, audit-log timestamp, URL, or other locator PM can use to verify.' },
+            },
+            required: ['kind', 'claim'],
+          },
         },
         resume_at: {
           type: 'string',
@@ -1267,6 +1288,7 @@ export const toolDefinitions: ToolDefinition[] = [
         task_id: { type: 'string', description: 'The task ID to edit' },
         title: { type: 'string', description: 'New title (optional)' },
         description: { type: 'string', description: 'New description/instructions. Pass an empty string to clear.' },
+        goal: { type: 'string', description: 'Edit the definition of done. Both the prior and new goal are logged to task_log so PM can see the history when validating. Editing the goal narrower after work started will be flagged by PM as goalpost-moving.' },
         depends_on: {
           type: 'array',
           items: { type: 'string' },
@@ -1378,15 +1400,111 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'tracker_validate_pause',
-    description: '**PM AGENT ONLY.** Adjudicate whether an agent\'s pause of a task is legitimate. Call this for every UNVALIDATED_PAUSE issue surfaced in the situation report. Pass `valid=true` if the pause reason names a real, specific external trigger the agent has actually requested (e.g. "waiting for user to reboot ESP", "waiting for vendor to send tracking number"). Pass `valid=false` if the reason is vague, complains about the PM, or describes a stuck/blocked condition that should be `blocked` not `paused`. On a valid call, the task stays paused and PM ignores it from now on. On an invalid call, the task is reverted to in_progress and the assigned agent gets a directive explaining why.',
+    description: '**PM AGENT ONLY.** Adjudicate whether an agent\'s pause of a task is legitimate. Call this for every UNVALIDATED_PAUSE issue surfaced in the situation report. Pass `valid=true` if the pause reason names a real, specific external trigger the agent has actually requested (e.g. "waiting for user to reboot ESP", "waiting for vendor to send tracking number"). Pass `valid=false` if the reason is vague, complains about the PM, or describes a stuck/blocked condition that should be `blocked` not `paused`. On a valid call, the task stays paused and PM ignores it from now on. On an invalid call, the task is reverted to target_status (default in_progress) and the assigned agent gets a directive explaining why.',
     input_schema: {
       type: 'object',
       properties: {
         task_id: { type: 'string', description: 'Task ID with status=paused.' },
-        valid: { type: 'boolean', description: 'true = pause stands; false = pause rejected and reverted to in_progress.' },
-        reject_reason: { type: 'string', description: 'Required when valid=false. One-sentence explanation for the agent. e.g. "no specific wait condition; you did not actually ask the user anything."' },
+        valid: { type: 'boolean', description: 'true = pause stands; false = pause rejected and reverted.' },
+        reject_reason: { type: 'string', description: 'Required when valid=false. One-sentence explanation for the agent.' },
+        target_status: { type: 'string', enum: ['in_progress', 'on_deck', 'blocked'], description: 'Optional. Where to send the task on rejection. Default in_progress. Use blocked if the pause reason was really a block.' },
       },
       required: ['task_id', 'valid'],
+    },
+  },
+  {
+    name: 'tracker_validate_complete',
+    description: '**PM AGENT ONLY.** Adjudicate whether an agent\'s claim of complete is legitimate by comparing the goal against the result and evidence. Read the file/audit-log/output named in evidence before validating â€” do not validate on prose alone (see your skepticism guidance). For recurring tasks, valid=true on a per-run completion archives result/evidence to task_log and resets the task to on_deck for the next fire. For one-shot tasks, valid=true fires the dependency cascade and notifies the parent. Pass valid=false when the evidence does not actually demonstrate the goal was met; the task reverts to target_status and the agent gets a one-sentence directive.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'Task ID with status=complete and complete_validated=0.' },
+        valid: { type: 'boolean', description: 'true = complete stands; false = complete rejected and reverted.' },
+        reject_reason: { type: 'string', description: 'Required when valid=false. One-sentence directive (e.g. "your evidence does not show field-15 was migrated; finish that field and resubmit").' },
+        target_status: { type: 'string', enum: ['in_progress', 'on_deck', 'blocked'], description: 'Optional. Where to send the task on rejection. Default in_progress.' },
+      },
+      required: ['task_id', 'valid'],
+    },
+  },
+  {
+    name: 'tracker_validate_blocked',
+    description: '**PM AGENT ONLY.** Adjudicate whether a blocked claim is real. Pass valid=true when the obstacle named in the agent\'s notes is genuine and external (no workaround the agent could try) â€” the primary agent gets notified to investigate or unblock. Pass valid=false when the agent has not actually attempted the work, has not asked the user a question they could ask, or has named a "block" that is really just confusion; the task reverts to target_status with a directive.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'Task ID with status=blocked and blocked_validated=0.' },
+        valid: { type: 'boolean', description: 'true = block stands and primary is notified; false = block rejected and reverted.' },
+        reject_reason: { type: 'string', description: 'Required when valid=false. One-sentence directive for the agent.' },
+        target_status: { type: 'string', enum: ['in_progress', 'on_deck', 'blocked'], description: 'Optional. Where to send the task on rejection. Default in_progress.' },
+      },
+      required: ['task_id', 'valid'],
+    },
+  },
+  {
+    name: 'tracker_request_override',
+    description: 'Queue an explicit ask for the PM (or the user via dashboard) to force a status change that the engine\'s hard gate refused, OR that you believe the PM\'s last rejection got wrong. Auto-fired by the engine when the hard-gate circuit-breaker trips after 3 consecutive same-task hard-gate rejections by you (in which case you do NOT need to call this yourself â€” the engine queued it on your behalf). Justification must be at least 30 characters explaining concretely why the engine/PM was wrong. Rate limit: at most one pending request per (task, you) at a time. Auto-denied after 12 hours if PM does not resolve.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'Task ID.' },
+        requested_status: { type: 'string', description: 'The status you want the task to land in (e.g. "complete", "blocked").' },
+        justification: { type: 'string', description: 'At least 30 characters. Why was the engine/PM wrong? Be specific.' },
+      },
+      required: ['task_id', 'requested_status', 'justification'],
+    },
+  },
+  {
+    name: 'tracker_override',
+    description: '**PM AGENT ONLY.** Resolve a queued OVERRIDE_REQUEST. Approve forces the requested status through (bypassing the engine hard gate); deny notifies the agent the engine was right. Distinct from bare tracker_update_status: override is for resolving an explicit pending request, bare update_status is for proactive PM correction.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        override_request_id: { type: 'string', description: 'The OVERRIDE_REQUEST id (full or 8-char prefix).' },
+        approve: { type: 'boolean', description: 'true = force the status through; false = deny and notify the agent.' },
+        reason: { type: 'string', description: 'One sentence on why you approved or denied.' },
+      },
+      required: ['override_request_id', 'approve', 'reason'],
+    },
+  },
+  {
+    name: 'tracker_request_user_verdict',
+    description: 'Only callable on tasks where the engine has flagged a stalemate (awaiting_user_verdict=1, set after revert_count crossed the per-priority threshold of high=2/normal=3/low=5). Composes a user-facing message describing the stalemate and routes it to the user (direct chat if you are primary, A2A relay through primary otherwise). The user\'s reply becomes the final verdict, applied via tracker_apply_user_verdict.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'The stalled task id.' },
+        status_requested: { type: 'string', description: 'The status you believe is correct (will be presented as your ask to the user).' },
+        agent_summary: { type: 'string', description: 'At least 30 characters. One-paragraph recap of what you did.' },
+        pm_rejection_summary: { type: 'string', description: 'At least 20 characters. One-paragraph recap of PM\'s stated objections.' },
+      },
+      required: ['task_id', 'status_requested', 'agent_summary', 'pm_rejection_summary'],
+    },
+  },
+  {
+    name: 'tracker_apply_user_verdict',
+    description: 'Apply the user\'s reply to a stalemate. Only valid when awaiting_user_verdict=1 on the task. Quote the user\'s exact words in user_quote for the audit log. The status flips immediately with from_entity="user", the validation flag for that status is set to 1, revert_count resets, and the stalemate flag clears. The user\'s authority is supreme â€” PM is told not to revisit.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'The stalled task id.' },
+        status: { type: 'string', description: 'The status the user chose. Typically complete, blocked, paused, in_progress, or on_deck.' },
+        user_quote: { type: 'string', description: 'The user\'s exact reply for audit. Required.' },
+      },
+      required: ['task_id', 'status', 'user_quote'],
+    },
+  },
+  {
+    name: 'tracker_apply_user_validation',
+    description: '**Call this when the user replies to a "[VALIDATION CHECK]" system message in chat.** The engine asks the user about a task that has been sitting unvalidated for 5 minutes. The user\'s reply tells us whether the work was actually done. validated=true confirms it (clears the bug icon). validated=false reverts the task to in_progress and pings the assigned agent with any feedback the user provided. Quote the user\'s exact reply in user_quote for audit.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'The task id from the validation-check system message.' },
+        validated: { type: 'boolean', description: 'true = user confirmed the work is done. false = user said it is NOT done.' },
+        user_quote: { type: 'string', description: 'The user\'s exact reply for the audit trail.' },
+        feedback: { type: 'string', description: 'Optional. When validated=false: any feedback to relay to the assigned agent (e.g. "the file is empty, rerun").' },
+      },
+      required: ['task_id', 'validated', 'user_quote'],
     },
   },
   {
@@ -3210,10 +3328,10 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
     }
   }
 
-  if (name === 'tracker_validate_pause') {
+  if (name === 'tracker_validate_pause' || name === 'tracker_validate_complete' || name === 'tracker_validate_blocked' || name === 'tracker_override') {
     if (!isPMAgent(agentId)) {
-      auditLog(agentId, name, null, 'denied', 'tracker_validate_pause is restricted to the PM agent');
-      return { toolCallId: id, name, content: 'Permission denied: only the PM agent can adjudicate pauses. If you think a paused task should be reverted, message the PM or unpause it yourself.', isError: true };
+      auditLog(agentId, name, null, 'denied', `${name} is restricted to the PM agent`);
+      return { toolCallId: id, name, content: `Permission denied: only the PM agent can call ${name}. If you think the engine or PM got it wrong, call tracker_request_override with a justification instead.`, isError: true };
     }
   }
 
@@ -4020,6 +4138,10 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent â
             repeat_days_of_week: repeatDaysOfWeek,
             // Group assignment
             assigned_to_group: args.assigned_to_group as string | undefined,
+            // Override for the near-duplicate guard
+            allow_duplicate: args.allow_duplicate as boolean | undefined,
+            // Goal pass-through (B.1)
+            goal: args.goal as string | undefined,
           });
         } catch (err) {
           content = friendlyDbError(err, 'tracker_create_task');
@@ -4081,6 +4203,9 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent â
         if (args.notes) updateArgs.notes = args.notes;
         if (args.resume_at) updateArgs.resume_at = args.resume_at;
         if (args.complete_all_runs) updateArgs.complete_all_runs = args.complete_all_runs;
+        // Phase B.1: result + evidence forwarded for the complete hard gate.
+        if (args.result !== undefined) updateArgs.result = args.result;
+        if (args.evidence !== undefined) updateArgs.evidence = args.evidence;
         // assigned_to / priority forwards (these were missing before, even
         // though trackerUpdateStatus accepts them)
         if (args.assigned_to !== undefined) updateArgs.assignedTo = args.assigned_to;
@@ -4140,6 +4265,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent â
           'title', 'description', 'depends_on', 'step_number', 'phase',
           'scheduled_start', 'repeat_interval', 'repeat_unit',
           'repeat_end_type', 'repeat_end_value', 'priority', 'notes',
+          'goal',
         ]) {
           if (args[k] !== undefined) editArgs[k] = args[k];
         }
@@ -4239,6 +4365,115 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent â
           task_id: args.task_id as string,
           valid: args.valid as boolean,
           reject_reason: args.reject_reason as string | undefined,
+          target_status: args.target_status as string | undefined,
+        });
+        break;
+      }
+      case 'tracker_validate_complete': {
+        const tvcErr = checkRequired([
+          { name: 'task_id', value: args.task_id, type: 'string' },
+          { name: 'valid', value: args.valid, type: 'boolean' },
+        ]);
+        if (tvcErr) { content = tvcErr; isError = true; break; }
+        const { trackerValidateComplete } = await import('../tracker/tools.js');
+        content = await trackerValidateComplete(agentId, {
+          task_id: args.task_id as string,
+          valid: args.valid as boolean,
+          reject_reason: args.reject_reason as string | undefined,
+          target_status: args.target_status as string | undefined,
+        });
+        break;
+      }
+      case 'tracker_validate_blocked': {
+        const tvbErr = checkRequired([
+          { name: 'task_id', value: args.task_id, type: 'string' },
+          { name: 'valid', value: args.valid, type: 'boolean' },
+        ]);
+        if (tvbErr) { content = tvbErr; isError = true; break; }
+        const { trackerValidateBlocked } = await import('../tracker/tools.js');
+        content = await trackerValidateBlocked(agentId, {
+          task_id: args.task_id as string,
+          valid: args.valid as boolean,
+          reject_reason: args.reject_reason as string | undefined,
+          target_status: args.target_status as string | undefined,
+        });
+        break;
+      }
+      case 'tracker_request_override': {
+        const troErr = checkRequired([
+          { name: 'task_id', value: args.task_id, type: 'string' },
+          { name: 'requested_status', value: args.requested_status, type: 'string' },
+          { name: 'justification', value: args.justification, type: 'string' },
+        ]);
+        if (troErr) { content = troErr; isError = true; break; }
+        const { trackerRequestOverride } = await import('../tracker/tools.js');
+        content = trackerRequestOverride(agentId, {
+          task_id: args.task_id as string,
+          requested_status: args.requested_status as string,
+          justification: args.justification as string,
+        });
+        break;
+      }
+      case 'tracker_override': {
+        const toErr = checkRequired([
+          { name: 'override_request_id', value: args.override_request_id, type: 'string' },
+          { name: 'approve', value: args.approve, type: 'boolean' },
+          { name: 'reason', value: args.reason, type: 'string' },
+        ]);
+        if (toErr) { content = toErr; isError = true; break; }
+        const { trackerOverride } = await import('../tracker/tools.js');
+        content = await trackerOverride(agentId, {
+          override_request_id: args.override_request_id as string,
+          approve: args.approve as boolean,
+          reason: args.reason as string,
+        });
+        break;
+      }
+      case 'tracker_request_user_verdict': {
+        const truvErr = checkRequired([
+          { name: 'task_id', value: args.task_id, type: 'string' },
+          { name: 'status_requested', value: args.status_requested, type: 'string' },
+          { name: 'agent_summary', value: args.agent_summary, type: 'string' },
+          { name: 'pm_rejection_summary', value: args.pm_rejection_summary, type: 'string' },
+        ]);
+        if (truvErr) { content = truvErr; isError = true; break; }
+        const { trackerRequestUserVerdict } = await import('../tracker/tools.js');
+        content = await trackerRequestUserVerdict(agentId, {
+          task_id: args.task_id as string,
+          status_requested: args.status_requested as string,
+          agent_summary: args.agent_summary as string,
+          pm_rejection_summary: args.pm_rejection_summary as string,
+        });
+        break;
+      }
+      case 'tracker_apply_user_verdict': {
+        const tauvErr = checkRequired([
+          { name: 'task_id', value: args.task_id, type: 'string' },
+          { name: 'status', value: args.status, type: 'string' },
+          { name: 'user_quote', value: args.user_quote, type: 'string' },
+        ]);
+        if (tauvErr) { content = tauvErr; isError = true; break; }
+        const { trackerApplyUserVerdict } = await import('../tracker/tools.js');
+        content = await trackerApplyUserVerdict(agentId, {
+          task_id: args.task_id as string,
+          status: args.status as string,
+          user_quote: args.user_quote as string,
+        });
+        break;
+      }
+      case 'tracker_apply_user_validation': {
+        const tauvErr = checkRequired([
+          { name: 'task_id', value: args.task_id, type: 'string' },
+          { name: 'validated', value: args.validated, type: 'boolean' },
+          { name: 'user_quote', value: args.user_quote, type: 'string' },
+        ]);
+        if (tauvErr) { content = tauvErr; isError = true; break; }
+        const { trackerApplyUserValidation } = await import('../tracker/tools.js');
+        content = await trackerApplyUserValidation(agentId, {
+          task_id: args.task_id as string,
+          validated: args.validated as boolean,
+          user_quote: args.user_quote as string,
+          feedback: args.feedback as string | undefined,
         });
         break;
       }

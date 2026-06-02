@@ -82,6 +82,23 @@ export const TaskCard = ({ task, agentIsWorking, onClick, onDeleted }: TaskCardP
           {task.title}
         </h4>
         <div className="flex items-center gap-1.5 shrink-0">
+          {/* Awaiting-validation bug. Shows for complete/paused/blocked
+              tasks whose matching *_validated flag is still 0. Disappears
+              the moment PM (or the user) validates. */}
+          {((task.status === 'complete' && task.completeValidated === 0) ||
+            (task.status === 'paused' && task.pauseValidated === 0) ||
+            (task.status === 'blocked' && task.blockedValidated === 0)) && (
+            <span
+              className={`text-cp-amber text-xs ${task.validationEscalatedAt ? 'animate-pulse' : ''}`}
+              title={
+                task.validationEscalatedAt
+                  ? `Awaiting validation since ${task.updatedAt}. Engine has asked the user.`
+                  : `Awaiting validation by PM since ${task.updatedAt}.`
+              }
+            >
+              {'⚠'}
+            </span>
+          )}
           <span className={`glass-badge ${priority} capitalize`}>
             {task.priority}
           </span>

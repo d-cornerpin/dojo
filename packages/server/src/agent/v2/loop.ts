@@ -60,7 +60,7 @@ import {
 } from '../../services/channel-safe-senders.js';
 // recordCost intentionally NOT imported — callModel records cost internally.
 import { queueEmbedding } from '../../memory/embeddings.js';
-import { isPrimaryAgent, isTrainerAgent } from '../../config/platform.js';
+import { isPrimaryAgent, isTrainerAgent, isPMAgent } from '../../config/platform.js';
 import os from 'node:os';
 import path from 'node:path';
 import { turnBoundary } from '../turn-state.js';
@@ -89,7 +89,7 @@ import {
 } from './state.js';
 
 import { partitionTools, type ToolBatch } from './classifiers/concurrency.js';
-import { loopDetector, RECENT_TOOL_WINDOW } from './classifiers/loop.js';
+import { loopDetector, RECENT_TOOL_WINDOW, canonicalToolSignature } from './classifiers/loop.js';
 import {
   isLoadingTool,
   isStructuringTool,
@@ -207,6 +207,88 @@ const MAX_TOOL_LOOPS = 75;                     // matches v1
 const TURN_TIME_BUDGET_MS = 15 * 60 * 1000;    // matches v1 — 15 min/turn
 const MAX_TURN_AUTO_CONTINUATIONS = 3;         // matches v1
 const ACK_DEFAULT_TEXT = 'Working on it…';
+
+// ── Task-thrash detector ──
+// Catches the "agent re-runs the SAME canonical tool call over and over"
+// pattern.
+//
+// Signature semantics matter: reading 20 unique messages each once is NOT
+// thrashing (the task asks for it). Reading the SAME message 4 times is.
+// We key on canonicalToolSignature so a model that varies one parameter
+// (limit=1000 vs no limit) doesn't slip past, but distinct args = distinct
+// signatures = no false positive on legitimate iteration.
+//
+// REACTION (rewritten): instead of pausing the task and walking away
+// (which strands work and forces the user to manually intervene), we
+// inject a specific steer message naming the exact gated signature and
+// activate a per-signature refusal gate. The agent can still call the
+// same tool with DIFFERENT args. Only the exact spinning signature is
+// refused. Cleared on any tracker_update_status.
+//
+// LAST RESORT: if the gate has had to refuse THRASH_GATE_BREAKER_LIMIT+
+// calls without the agent transitioning, the engine auto-blocks the task
+// so it reaches a real terminal state instead of looping.
+const THRASH_WINDOW_MS = 2 * 60 * 1000;
+const DUPLICATE_SIG_LIMIT = 4;
+const THRASH_GATE_BREAKER_LIMIT = 6;
+const THRASH_GATE_DRIFT_LIMIT = 8;
+
+function detectTaskThrashing(agentId: string): {
+  thrashing: boolean;
+  toolName?: string;
+  signature?: string;
+  count?: number;
+} {
+  try {
+    const db = getDb();
+    const cutoff = new Date(Date.now() - THRASH_WINDOW_MS).toISOString();
+    const rows = db.prepare(`
+      SELECT content FROM messages
+      WHERE agent_id = ? AND role = 'assistant'
+        AND datetime(created_at) > datetime(?)
+      ORDER BY created_at ASC, rowid ASC
+    `).all(agentId, cutoff) as Array<{ content: string }>;
+
+    const counts = new Map<string, { count: number; toolName: string }>();
+    let madeProgress = false;
+    for (const row of rows) {
+      let blocks: unknown;
+      try { blocks = JSON.parse(row.content); } catch { continue; }
+      if (!Array.isArray(blocks)) continue;
+      for (const b of blocks) {
+        if (!b || typeof b !== 'object') continue;
+        const block = b as { type?: string; name?: string; input?: Record<string, unknown> };
+        if (block.type !== 'tool_use') continue;
+        const name = String(block.name ?? '');
+        if (!name) continue;
+        // tracker_update_status / complete_task count as forward progress —
+        // an agent that calls these is at least transitioning. Same for
+        // send_to_user / chat-style replies (they finish the work).
+        if (name === 'tracker_update_status' || name === 'complete_task') {
+          madeProgress = true;
+          continue;
+        }
+        const sig = canonicalToolSignature(name, block.input);
+        const cur = counts.get(sig) ?? { count: 0, toolName: name };
+        counts.set(sig, { count: cur.count + 1, toolName: name });
+      }
+    }
+    if (madeProgress) return { thrashing: false };
+    let topSig = '';
+    let topCount = 0;
+    let topName = '';
+    for (const [sig, v] of counts) {
+      if (v.count > topCount) { topCount = v.count; topSig = sig; topName = v.toolName; }
+    }
+    if (topCount >= DUPLICATE_SIG_LIMIT) {
+      return { thrashing: true, toolName: topName, signature: topSig, count: topCount };
+    }
+    return { thrashing: false };
+  } catch {
+    return { thrashing: false };
+  }
+}
+
 
 // ── Heartbeat (mirrors v1 helpers — local copy so v2 can run standalone) ──
 
@@ -667,6 +749,155 @@ export async function runV2Turn(agentId: string): Promise<void> {
         break;
       }
 
+      // Last-resort auto-block. Two conditions trip it:
+      //   (1) Refusal count exceeded — agent kept calling gated sigs and
+      //       ignored the refusals.
+      //   (2) Drift exceeded — gate has been on for THRASH_GATE_DRIFT_LIMIT
+      //       iterations and the agent kept dodging the gate by varying
+      //       its calls (different ids, get_current_time, tracker_get_status)
+      //       without ever calling tracker_update_status to wrap up. This
+      //       is the "look around to avoid finishing" failure mode.
+      // We block (not pause) so the task hits a real terminal state.
+      const drift =
+        state.thrashGateActivatedAtLoopCount !== null
+          ? state.loopCount - state.thrashGateActivatedAtLoopCount
+          : 0;
+      if (
+        !isPMAgent(agentId) &&
+        (state.thrashGateRefusalCount >= THRASH_GATE_BREAKER_LIMIT || drift >= THRASH_GATE_DRIFT_LIMIT)
+      ) {
+        const breakerReason =
+          state.thrashGateRefusalCount >= THRASH_GATE_BREAKER_LIMIT
+            ? `agent ignored the thrash gate ${state.thrashGateRefusalCount}× without wrapping up`
+            : `agent dodged the thrash gate for ${drift} iterations (varying call signatures to avoid the gate) without calling tracker_update_status`;
+        try {
+          const db2 = getDb();
+          const task = db2.prepare(`
+            SELECT id, title FROM tasks
+            WHERE assigned_to = ? AND status = 'in_progress'
+            ORDER BY updated_at DESC LIMIT 1
+          `).get(agentId) as { id: string; title: string } | undefined;
+          if (task) {
+            const noteLine = `Engine auto-blocked: ${breakerReason}. Likely needs human review or a re-stated goal.`;
+            db2.prepare(`
+              UPDATE tasks
+              SET status = 'blocked',
+                  blocked_validated = 1,
+                  updated_at = datetime('now')
+              WHERE id = ?
+            `).run(task.id);
+            void import('../../tracker/task-log.js').then(({ writeTaskLog }) => {
+              writeTaskLog({
+                taskId: task.id,
+                fromEntity: 'engine',
+                entryKind: 'observation',
+                fromStatus: 'in_progress',
+                toStatus: 'blocked',
+                actionTaken: 'engine auto-block (thrash gate ignored)',
+                reason: 'thrash:gate-ignored',
+                note: noteLine,
+              });
+            }).catch(() => { /* best effort */ });
+            void import('../../tracker/schema.js').then(({ getTask: schemaGetTask }) => {
+              const fresh = schemaGetTask(task.id);
+              if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
+            }).catch(() => { /* best effort */ });
+            logger.warn('v2: thrash gate breaker tripped — task auto-blocked', {
+              taskId: task.id, refusalCount: state.thrashGateRefusalCount, loopCount: state.loopCount,
+            }, agentId);
+          }
+        } catch (err) {
+          logger.warn('v2: thrash auto-block failed', { error: err instanceof Error ? err.message : String(err) }, agentId);
+        }
+        try {
+          broadcast({
+            type: 'chat:error',
+            agentId,
+            error: `Engine auto-blocked task — ${breakerReason}.`,
+            code: 'TASK_THRASH_PAUSED',
+            severity: 'warning',
+            retryable: true,
+          });
+        } catch { /* best effort */ }
+        setAgentStatus(agentId, 'idle');
+        break;
+      }
+
+      // Task-thrash detector — steer + per-signature gate (not pause).
+      //
+      // When the model re-runs the SAME canonical signature 4+ times in 2
+      // minutes without calling tracker_update_status, inject a specific
+      // steer message that names the exact tool + args + count + window
+      // and gate further calls to that one signature. The agent can keep
+      // calling the same tool with DIFFERENT args (legitimate iteration
+      // over a list of N items stays unblocked). Last resort: if the gate
+      // has refused THRASH_GATE_BREAKER_LIMIT+ calls without a
+      // tracker_update_status transition, the engine auto-blocks the task
+      // so it reaches a clean terminal state instead of looping forever.
+      if (!isPMAgent(agentId) && state.loopCount >= 4) {
+        const thrash = detectTaskThrashing(agentId);
+        if (thrash.thrashing && thrash.signature && !state.thrashGatedSignatures.includes(thrash.signature)) {
+          // Pull the recent canonical sig back into a human-readable form
+          // for the steer message. The signature itself is `name:{...json}`
+          // — we extract the JSON tail to show args verbatim.
+          const argsPart = thrash.signature.includes(':')
+            ? thrash.signature.slice(thrash.signature.indexOf(':') + 1)
+            : '{}';
+          // The steer MUST reach the model. assembler.ts strips role='system'
+          // messages from history, so writing one as `system` would be
+          // invisible to the model (dashboard-only theater). pendingNudge
+          // gets injected at the top of the next model call as a synthetic
+          // `role: 'user'` message — that's the engine's waking-style
+          // delivery channel. We also persist as `role: 'user'` so the
+          // dashboard renders it AND any next assemble cycle keeps seeing
+          // it (pendingNudge is single-shot).
+          const steerMsg =
+            `[Engine thrash gate] You've called \`${thrash.toolName}(${argsPart})\` ${thrash.count}× in the last ${Math.round(THRASH_WINDOW_MS/60000)} minutes. ` +
+            `You already have the result from the first call; further calls with these exact args are refused.\n\n` +
+            `Your next action MUST be one of:\n` +
+            `  (a) Call \`${thrash.toolName}\` with DIFFERENT args (e.g., a different id / target) if you genuinely have more to read.\n` +
+            `  (b) Reply to the user with the answer you can give using the data you already have.\n` +
+            `  (c) Call tracker_update_status(status='complete') with a result + evidence if this is a tracker task.\n` +
+            `  (d) Call tracker_update_status(status='blocked') if you genuinely cannot proceed.\n` +
+            `  (e) Send the user a specific question if you need clarification.\n\n` +
+            `If you keep hitting refused signatures the engine will auto-block this task to stop the loop.`;
+          const steerMsgId = uuidv4();
+          try {
+            // Persist as role='user' so the assembler picks it up next time
+            // and the dashboard shows it inline as the engine's voice.
+            db.prepare(`
+              INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+              VALUES (?, ?, 'user', ?, ?, datetime('now'))
+            `).run(steerMsgId, agentId, steerMsg, turnNumber);
+          } catch { /* best effort */ }
+          logger.warn('v2: thrash gate activated for signature', {
+            toolName: thrash.toolName, signature: thrash.signature,
+            count: thrash.count, loopCount: state.loopCount,
+          }, agentId);
+          state = advance(state, {
+            thrashGatedSignatures: [...state.thrashGatedSignatures, thrash.signature],
+            thrashGateActivatedAtLoopCount: state.thrashGateActivatedAtLoopCount ?? state.loopCount,
+            // Also set pendingNudge so the steer reaches the model on the
+            // very NEXT iteration even if the assembler hasn't seen the
+            // persisted user message yet.
+            pendingNudge: steerMsg,
+          });
+          try {
+            broadcast({
+              type: 'chat:error',
+              agentId,
+              error: `Engine refusing further ${thrash.toolName} calls with these args — try different input, mark complete, or block.`,
+              code: 'TASK_THRASH_PAUSED',
+              severity: 'warning',
+              retryable: true,
+            });
+          } catch { /* best effort */ }
+          // Don't break — let the loop continue. The next model turn will
+          // see the system message and pick a wrap-up path. The runOne
+          // path enforces the gate on tool execution.
+        }
+      }
+
       // ── Turn time budget — auto-continue, don't halt ──
       // (Matches v1 runtime.ts:884-919.) When a turn runs longer than 15 min,
       // force a compaction and queue a wakeup so the agent picks up where it
@@ -898,7 +1129,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
       //   - on the first loop iteration of a turn (not per tool call)
       //   - when there is a last user message (not on auto-continuations,
       //     A2A wakes, or PM pokes — those carry their own context)
-      if (state.loopCount === 1 && lastUserMessageContent) {
+      //   - not for the PM agent (situation reports land as role='user',
+      //     don't need technique hints injected on every poke tick).
+      if (state.loopCount === 1 && lastUserMessageContent && !isPMAgent(agentId)) {
         try {
           const techniques = listTechniques({ state: 'published' }).map((t) => ({
             id: t.id,
@@ -1043,7 +1276,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
       //
       // Same fire conditions as technique matcher: loopCount === 1 with
       // a real user message (not auto-continuation / A2A / PM poke).
-      if (state.loopCount === 1 && lastUserMessageContent) {
+      //
+      // v2.7.27: skip for the PM agent. The PM's situation reports land as
+      // role='user' messages on its conversation; the classifier was treating
+      // them as multistep user intent and auto-creating tracker projects
+      // titled "Tracker review -- N active tasks:". Polluted Kelly's view
+      // every poke tick. PM never wants engine-auto-created projects.
+      if (state.loopCount === 1 && lastUserMessageContent && !isPMAgent(agentId)) {
         try {
           const { detectMultistep, getMultistepConfig } = await import('./classifiers/multistep.js');
           const cfg = getMultistepConfig();
@@ -1670,10 +1909,34 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // means lastAssistantTextForIM stays unset, which suppresses the
       // iMessage routing at end-of-turn. Critical for preventing endless
       // back-and-forth chatter on iMessage.
+      //
+      // Two forms: (a) the entire message IS the sentinel — swallow the
+      // bubble entirely, persist a [conversation closed] system marker.
+      // (b) the message ENDS with the sentinel (optionally wrapped in
+      // backticks/asterisks) — strip just the sentinel so the user sees
+      // the actual reply text. This handles the common model mistake of
+      // appending the sentinel after a real reply (2026-06-02 bug fix:
+      // Kevin was tail-appending `[no-reply]` to user-facing messages
+      // and the literal text was rendering in chat).
+      const NO_REPLY_TAIL_RE = /\s*[`*_]*\s*\[no-reply\]\s*[`*_]*\s*$/i;
       if (
         persistedContent &&
         result.toolCalls.length === 0 &&
-        /^\s*\[no-reply\]\s*$/i.test(persistedContent)
+        NO_REPLY_TAIL_RE.test(persistedContent) &&
+        !/^\s*[`*_]*\s*\[no-reply\]\s*[`*_]*\s*$/i.test(persistedContent)
+      ) {
+        const cleaned = persistedContent.replace(NO_REPLY_TAIL_RE, '').trimEnd();
+        if (cleaned.length > 0) {
+          logger.info('v2: stripped trailing [no-reply] sentinel from user-facing message', {
+            agentId, originalLength: persistedContent.length, cleanedLength: cleaned.length,
+          }, agentId);
+          persistedContent = cleaned;
+        }
+      }
+      if (
+        persistedContent &&
+        result.toolCalls.length === 0 &&
+        /^\s*[`*_]*\s*\[no-reply\]\s*[`*_]*\s*$/i.test(persistedContent)
       ) {
         persistedContent = null;
         // Clear the streaming bubble in the dashboard. We need BOTH events:
@@ -2003,6 +2266,121 @@ export async function runV2Turn(agentId: string): Promise<void> {
               agentId, openTaskCount: openTasks.length, taskIds: openTasks.map(t => t.id),
             }, agentId);
             continue; // re-enter the loop so the model sees the nudge
+          }
+        }
+
+        // 2026-06-02 hardcap: if the going-idle-with-in_progress nudge
+        // already fired this turn and the model STILL produced a user-
+        // facing "Done" / "All set" message without calling
+        // tracker_update_status, AUTO-PAUSE the danglers AND suppress
+        // the misleading assistant text. The user must not see "Done"
+        // while the tracker still shows in_progress; that's the exact
+        // failure shape David reported on the iMessage profile run.
+        if (
+          state.nudgedForGoingIdleWithInProgressThisTurn &&
+          !state.toolResults.some(
+            tr => tr.name === 'tracker_update_status' || tr.name === 'tracker_complete_step' || tr.name === 'tracker_close_project',
+          ) &&
+          persistedContent && persistedContent.trim().length > 0
+        ) {
+          // Re-query in-progress tasks at the moment of escalation.
+          const danglerRows = db.prepare(`
+            SELECT id, title FROM tasks
+            WHERE assigned_to = ?
+              AND status = 'in_progress'
+              AND is_paused = 0
+            ORDER BY updated_at DESC
+            LIMIT 10
+          `).all(agentId) as Array<{ id: string; title: string }>;
+          if (danglerRows.length > 0) {
+            // Delete the just-streamed assistant message so the user does
+            // not see "Done" while the tracker shows in_progress.
+            try {
+              db.prepare('DELETE FROM messages WHERE id = ?').run(messageId);
+            } catch (delErr) {
+              logger.warn('v2: idle-with-in_progress hardcap — failed to delete suppressed assistant message', {
+                agentId, messageId, error: delErr instanceof Error ? delErr.message : String(delErr),
+              }, agentId);
+            }
+            try {
+              broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
+              broadcast({
+                type: 'chat:message',
+                agentId,
+                message: {
+                  id: messageId, agentId, role: 'assistant' as const,
+                  content: '',
+                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                  createdAt: new Date().toISOString(),
+                },
+              });
+            } catch { /* best effort */ }
+
+            const note = `[${new Date().toISOString()}] Auto-paused by engine: agent "${agentId}" ignored the going-idle-with-in_progress nudge (produced closeout text without calling tracker_update_status). User: reassign or resolve manually from the dashboard.`;
+            const pauseStmt = db.prepare(`
+              UPDATE tasks
+              SET status = 'paused', is_paused = 1, status_before_pause = 'in_progress',
+                  pause_validated = 0,
+                  updated_at = datetime('now')
+              WHERE id = ? AND status = 'in_progress'
+            `);
+            let pausedCount = 0;
+            const pausedIds: string[] = [];
+            for (const r of danglerRows) {
+              const res = pauseStmt.run(r.id);
+              if (res.changes > 0) {
+                pausedCount++;
+                pausedIds.push(r.id);
+                // Phase B.0: audit the auto-pause as a transition entry.
+                try {
+                  const { writeTaskLog } = await import('../../tracker/task-log.js');
+                  writeTaskLog({
+                    taskId: r.id,
+                    fromEntity: 'engine',
+                    entryKind: 'auto_sweep',
+                    fromStatus: 'in_progress',
+                    toStatus: 'paused',
+                    actionTaken: 'idle-with-in_progress hardcap auto-pause',
+                    reason: 'agent produced closeout text without calling tracker_update_status after the nudge fired',
+                    note,
+                  });
+                } catch { /* best effort */ }
+              }
+            }
+
+            const escMsg = (
+              `[System: idle-with-in_progress nudge was unsatisfied AND you produced user-facing text — your reply was suppressed (the bubble was removed from the user's view) and ${pausedCount} dangling in_progress task${pausedCount === 1 ? '' : 's'} auto-paused (ids: ${pausedIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ')}${pausedIds.length > 5 ? '...' : ''}). ` +
+              `Next time you finish a task, the FIRST action of your final turn must be tracker_update_status(status="complete", result="...", evidence=[...]). The user did not see your closeout; there is nothing to reply to. PM will re-validate the paused state and may revert.]`
+            );
+            const escId = uuidv4();
+            try {
+              db.prepare(`
+                INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+                VALUES (?, ?, 'system', ?, ?, datetime('now'))
+              `).run(escId, agentId, escMsg, turnNumber);
+              broadcast({
+                type: 'chat:message',
+                agentId,
+                message: {
+                  id: escId, agentId, role: 'system' as const,
+                  content: escMsg,
+                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                  createdAt: new Date().toISOString(),
+                },
+              });
+            } catch { /* best effort */ }
+            try {
+              const { getTask } = await import('../../tracker/schema.js');
+              for (const id of pausedIds) {
+                const t = getTask(id);
+                if (t) broadcast({ type: 'tracker:task_updated', data: t } as never);
+              }
+            } catch { /* best effort */ }
+            logger.warn('v2 idle-with-in_progress hardcap fired — auto-paused + suppressed reply', {
+              agentId, pausedCount, pausedIds,
+            }, agentId);
+            setAgentStatus(agentId, 'idle');
+            break;
           }
         }
 
@@ -2420,6 +2798,44 @@ export async function runV2Turn(agentId: string): Promise<void> {
               isError: true,
             };
           }
+
+          // ── Thrash-gate refusal (per-canonical-signature) ──
+          // The iteration-top thrash detector added this signature to the
+          // gate when it caught the agent repeating the same call. The
+          // gate refuses ONLY this exact (tool, normalized_args) combo —
+          // the agent can keep calling the same tool with DIFFERENT args.
+          // The refusal message names the exact call so DeepSeek can't
+          // miss it (unlike a buried system message). Refusal count tracks
+          // how many times the agent ignored the gate.
+          if (state.thrashGatedSignatures.length > 0) {
+            const thisSig = canonicalToolSignature(tc.name, tc.arguments);
+            if (state.thrashGatedSignatures.includes(thisSig)) {
+              const argsPart = thisSig.includes(':') ? thisSig.slice(thisSig.indexOf(':') + 1) : '{}';
+              const refusal =
+                `BLOCKED by engine thrash gate — \`${tc.name}(${argsPart})\` is refused. ` +
+                `You've already called this exact signature multiple times and have the result from the first call.\n\n` +
+                `Pick a different next action:\n` +
+                `  (a) Call \`${tc.name}\` with DIFFERENT args (a different id / target) if you have more to read.\n` +
+                `  (b) Call tracker_update_status(status='complete', result='...', evidence=[...]) using the data you've already gathered.\n` +
+                `  (c) Call tracker_update_status(status='blocked', notes='<specific obstacle>') if you genuinely cannot proceed.\n` +
+                `  (d) Send the user a direct question if you need clarification.`;
+              state = advance(state, { thrashGateRefusalCount: state.thrashGateRefusalCount + 1 });
+              logger.warn('v2: thrash gate refused tool call', {
+                toolName: tc.name, signature: thisSig,
+                refusalCount: state.thrashGateRefusalCount,
+              }, agentId);
+              try {
+                broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
+                broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusal.slice(0, 500) });
+              } catch { /* best effort */ }
+              return {
+                toolCallId: tc.id,
+                name: tc.name,
+                content: refusal,
+                isError: true,
+              };
+            }
+          }
           // ── Anti-hoarding gate (v2.5.43) ──
           // Refuse loading-tool calls past LOADING_GATE_THRESHOLD when no
           // structuring (tracker_create_*, file_write/append/patch,
@@ -2562,6 +2978,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
           ) {
             state = advance(state, { closeOutGateSatisfied: true });
             logger.info('v2: close-out gate satisfied', { agentId, tool: tc.name }, agentId);
+          }
+          // Thrash-gate clear on any tracker transition. Any successful
+          // tracker_update_status (complete/blocked/paused/in_progress) is
+          // forward progress — the gate's purpose was to force the agent
+          // to wrap up, so wrapping up clears it.
+          if (
+            (tc.name === 'tracker_update_status' || tc.name === 'tracker_complete_step' || tc.name === 'tracker_close_project') &&
+            (state.thrashGatedSignatures.length > 0 || state.thrashGateRefusalCount > 0 || state.thrashGateActivatedAtLoopCount !== null)
+          ) {
+            state = advance(state, {
+              thrashGatedSignatures: [],
+              thrashGateRefusalCount: 0,
+              thrashGateActivatedAtLoopCount: null,
+            });
+            logger.info('v2: thrash gate cleared on tracker transition', { agentId, tool: tc.name }, agentId);
           }
           // ── Post-compaction recall (v2.7.10 — auto-injection REMOVED) ──
           //

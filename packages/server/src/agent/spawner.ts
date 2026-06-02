@@ -635,13 +635,62 @@ export async function completeAgent(
   // If task_id: update task status
   if (resolvedTaskId) {
     const taskStatus = status === 'complete' ? 'complete' : status === 'fallen' ? 'fallen' : 'blocked';
+    // Phase B.0: tasks.notes is read-only legacy. Snapshot prior status
+    // for the task_log transition entry, then update the row without
+    // touching the notes column. completion_summary stays as the
+    // canonical "result" home for apprentice flows (also reused by
+    // Phase B.1 evidence plumbing).
+    const priorRow = db.prepare('SELECT status FROM tasks WHERE id = ?').get(resolvedTaskId) as { status: string } | undefined;
+
+    // Phase B.1: plumb result + evidence_json from the apprentice's summary
+    // so PM has structured input to validate against (instead of just prose).
+    // The 'tool_call_ref' evidence kind points PM at the audit log window
+    // for this apprentice; the 'claim' kind carries the summary text itself.
+    let evidenceJson: string | null = null;
+    if (taskStatus === 'complete') {
+      try {
+        const evidence: Array<{ kind: string; claim: string; pointer?: string }> = [
+          {
+            kind: 'tool_call_ref',
+            claim: `Apprentice "${agent.name}" completed ${toolStats.count} tool calls over ${durationSeconds}s runtime, see audit log.`,
+            pointer: `audit_log WHERE agent_id="${agentId}" AND created_at BETWEEN "${agent.created_at}" AND now`,
+          },
+          { kind: 'claim', claim: summary },
+        ];
+        if (results) {
+          evidence.push({ kind: 'output_paste', claim: 'Apprentice provided detailed results text.', pointer: 'see task.completion_summary' });
+        }
+        evidenceJson = JSON.stringify(evidence);
+      } catch { /* leave null on failure */ }
+    }
+
     db.prepare(`
       UPDATE tasks SET status = ?, updated_at = datetime('now'),
         completed_at = CASE WHEN ? = 'complete' THEN datetime('now') ELSE completed_at END,
-        notes = COALESCE(notes, '') || ? || char(10),
-        completion_summary = ?
+        completion_summary = ?,
+        result = CASE WHEN ? = 'complete' THEN ? ELSE result END,
+        evidence_json = CASE WHEN ? = 'complete' THEN ? ELSE evidence_json END
       WHERE id = ?
-    `).run(taskStatus, taskStatus, `[${new Date().toISOString()}] Agent completed: ${summary}`, summary, resolvedTaskId);
+    `).run(taskStatus, taskStatus, summary, taskStatus, summary, taskStatus, evidenceJson, resolvedTaskId);
+
+    void (await import('../tracker/task-log.js')).writeTaskLog({
+      taskId: resolvedTaskId,
+      fromEntity: `agent:${agentId}`,
+      entryKind: 'transition',
+      fromStatus: priorRow?.status ?? null,
+      toStatus: taskStatus,
+      actionTaken: 'complete_task',
+      note: summary,
+      evidenceJson,
+    });
+
+    // Phase B.1: event-driven PM wake on terminal transitions.
+    try {
+      const { noteTransitionForReview } = await import('../tracker/pm-agent.js');
+      noteTransitionForReview(resolvedTaskId, taskStatus);
+    } catch (err) {
+      logger.warn('noteTransitionForReview hookup failed (non-fatal)', { taskId: resolvedTaskId, error: err instanceof Error ? err.message : String(err) });
+    }
 
     // Phase 7 (Part X) — fire onTaskComplete hook so the parent agent gets
     // a structured note containing the original ask + completion summary.
@@ -678,18 +727,23 @@ export async function completeAgent(
         AND is_paused = 0
         AND id != COALESCE(?, '')
     `).all(agentId, resolvedTaskId ?? null) as Array<{ id: string; title: string }>;
+    const danglerLog = await import('../tracker/task-log.js');
     for (const dt of otherDanglers) {
       db.prepare(`
         UPDATE tasks SET status = ?, updated_at = datetime('now'),
-          completed_at = CASE WHEN ? = 'complete' THEN datetime('now') ELSE completed_at END,
-          notes = COALESCE(notes, '') || ? || char(10)
+          completed_at = CASE WHEN ? = 'complete' THEN datetime('now') ELSE completed_at END
         WHERE id = ?
-      `).run(
-        bulkStatus,
-        bulkStatus,
-        `[${new Date().toISOString()}] Auto-closed by engine: agent "${agent.name}" called complete_task with status="${status}" but never explicitly closed this task. If it should not have been closed, reopen via dashboard or tracker_update_status.`,
-        dt.id,
-      );
+      `).run(bulkStatus, bulkStatus, dt.id);
+
+      void danglerLog.writeTaskLog({
+        taskId: dt.id,
+        fromEntity: 'engine',
+        entryKind: 'auto_sweep',
+        fromStatus: 'in_progress',
+        toStatus: bulkStatus,
+        actionTaken: 'completeAgent layer-2 dangler sweep',
+        reason: `agent "${agent.name}" called complete_task(status="${status}") but did not explicitly close this co-assigned task`,
+      });
     }
     if (otherDanglers.length > 0) {
       logger.info('completeAgent: auto-closed dangling in_progress tasks', {

@@ -818,6 +818,107 @@ export const getTaskDetail = async (id: string): Promise<ApiResponse<TaskDetailR
   return request<TaskDetailResponse>(`/tracker/tasks/${id}`);
 };
 
+// Phase B.0: structured audit log for a task.
+export interface TaskLogEntry {
+  id: string;
+  taskId: string;
+  fromEntity: string;
+  entryKind: string;
+  fromStatus: string | null;
+  toStatus: string | null;
+  reason: string | null;
+  actionTaken: string | null;
+  note: string | null;
+  evidenceJson: string | null;
+  createdAt: string;
+}
+
+export const getTaskLog = async (
+  id: string,
+  opts?: { limit?: number; kinds?: string[] },
+): Promise<ApiResponse<TaskLogEntry[]>> => {
+  const params = new URLSearchParams();
+  if (opts?.limit) params.set('limit', String(opts.limit));
+  if (opts?.kinds && opts.kinds.length > 0) params.set('kinds', opts.kinds.join(','));
+  const q = params.toString();
+  return request<TaskLogEntry[]>(`/tracker/tasks/${id}/log${q ? `?${q}` : ''}`);
+};
+
+export const addTaskObservation = async (
+  id: string,
+  note: string,
+): Promise<ApiResponse<{ entryId: string }>> => {
+  return request<{ entryId: string }>(`/tracker/tasks/${id}/observation`, {
+    method: 'POST',
+    body: JSON.stringify({ note }),
+  });
+};
+
+// User-side validation: flips the appropriate *_validated flag from the dashboard.
+export const userValidateTask = async (
+  id: string,
+): Promise<ApiResponse<{ validated: boolean }>> => {
+  return request<{ validated: boolean }>(`/tracker/tasks/${id}/user-validate`, {
+    method: 'POST',
+  });
+};
+
+// Phase B.1: override-request queue.
+export interface OverrideRequestRow {
+  id: string;
+  task_id: string;
+  task_title: string | null;
+  task_goal: string | null;
+  requested_by: string;
+  requested_status: string;
+  justification: string;
+  last_engine_error: string | null;
+  attempts_attached: number;
+  status: 'pending' | 'approved' | 'denied' | 'auto_denied';
+  resolved_by: string | null;
+  resolved_reason: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+export const getOverrideRequests = async (
+  status?: 'pending' | 'approved' | 'denied' | 'auto_denied',
+): Promise<ApiResponse<OverrideRequestRow[]>> => {
+  const q = status ? `?status=${status}` : '';
+  return request<OverrideRequestRow[]>(`/tracker/override-requests${q}`);
+};
+
+export const resolveOverrideRequest = async (
+  id: string,
+  approve: boolean,
+  reason: string,
+): Promise<ApiResponse<{ approved: boolean }>> => {
+  return request<{ approved: boolean }>(`/tracker/override-requests/${id}/resolve`, {
+    method: 'POST',
+    body: JSON.stringify({ approve, reason }),
+  });
+};
+
+// Phase D: tracker hygiene + telemetry.
+export interface TrackerHygiene {
+  validateOutcomes: Array<{ from_entity: string; rejects: number; validates: number }>;
+  smellFlags: Array<{ category: string; count: number }>;
+  overrideRollup: Array<{ status: string; count: number }>;
+  elevated: Array<{
+    id8: string;
+    title: string;
+    status: string;
+    revert_count: number;
+    awaiting_user_verdict: number;
+    last_smell_flag: string | null;
+  }>;
+  pmCost: Array<{ modelId: string | null; calls: number; cost_24h: number | null }>;
+}
+
+export const getTrackerHygiene = async (): Promise<ApiResponse<TrackerHygiene>> => {
+  return request<TrackerHygiene>(`/tracker/hygiene`);
+};
+
 export const createTask = async (data: CreateTaskRequest): Promise<ApiResponse<{ taskId: string }>> => {
   return request<{ taskId: string }>('/tracker/tasks', {
     method: 'POST',

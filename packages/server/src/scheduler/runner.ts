@@ -154,6 +154,229 @@ export function pickAvailableAgentFromGroup(groupId: string): string | null {
   return agents.length > 0 ? agents[0].id : null;
 }
 
+// ── Phase B.1: 12h auto-expire sweeps ──
+//
+// Override requests that PM hasn't resolved within 12 hours auto-deny,
+// with a notice to the agent. Tasks flagged awaiting_user_verdict that
+// the user hasn't replied to within 12 hours drop to 'blocked' with
+// the timeout reason logged. Both keep the system honest when humans
+// are away.
+
+const STALE_REQUEST_HOURS = 12;
+
+async function sweepStaleOverrideRequests(): Promise<void> {
+  const db = getDb();
+  try {
+    const stale = db.prepare(`
+      SELECT id, task_id, requested_by, requested_status, justification
+      FROM task_override_requests
+      WHERE status = 'pending'
+        AND datetime(created_at) < datetime('now', '-${STALE_REQUEST_HOURS} hours')
+      LIMIT 50
+    `).all() as Array<{
+      id: string; task_id: string; requested_by: string;
+      requested_status: string; justification: string;
+    }>;
+    if (stale.length === 0) return;
+
+    const denyStmt = db.prepare(`
+      UPDATE task_override_requests
+      SET status = 'auto_denied', resolved_by = 'engine',
+          resolved_reason = 'timed out after ${STALE_REQUEST_HOURS}h with no PM resolution',
+          resolved_at = datetime('now')
+      WHERE id = ?
+    `);
+    const { writeTaskLog } = await import('../tracker/task-log.js');
+    let swept = 0;
+    for (const r of stale) {
+      denyStmt.run(r.id);
+      writeTaskLog({
+        taskId: r.task_id,
+        fromEntity: 'engine',
+        entryKind: 'auto_sweep',
+        actionTaken: `override request auto-denied (id=${r.id.slice(0, 8)})`,
+        reason: `pending more than ${STALE_REQUEST_HOURS}h without PM resolution; original justification: ${r.justification.slice(0, 200)}`,
+      });
+
+      // Notify the requesting agent via A2A.
+      try {
+        const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
+        await deliverA2AMessage({
+          intent: 'QUESTION',
+          threadId: '',
+          requiresResponse: true,
+          payload:
+            `Your override request on task ${r.task_id.slice(0, 8)} (status="${r.requested_status}") ` +
+            `timed out after ${STALE_REQUEST_HOURS}h with no PM resolution. The request is auto-denied. ` +
+            `Address the engine's original concern and resubmit cleanly, or file a fresh tracker_request_override.`,
+          toAgent: r.requested_by,
+          fromAgent: getPMAgentId(),
+        });
+      } catch { /* best-effort */ }
+      swept++;
+    }
+    if (swept > 0) {
+      logger.info('Auto-expired override requests', { swept, hours: STALE_REQUEST_HOURS });
+    }
+  } catch (err) {
+    logger.warn('sweepStaleOverrideRequests failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+async function sweepStaleUserVerdictRequests(): Promise<void> {
+  const db = getDb();
+  try {
+    const stale = db.prepare(`
+      SELECT id, title, assigned_to, status as current_status, user_verdict_requested_at
+      FROM tasks
+      WHERE awaiting_user_verdict = 1
+        AND user_verdict_requested_at IS NOT NULL
+        AND datetime(user_verdict_requested_at) < datetime('now', '-${STALE_REQUEST_HOURS} hours')
+      LIMIT 50
+    `).all() as Array<{
+      id: string; title: string; assigned_to: string | null;
+      current_status: string; user_verdict_requested_at: string;
+    }>;
+    if (stale.length === 0) return;
+
+    const dropStmt = db.prepare(`
+      UPDATE tasks
+      SET status = 'blocked',
+          awaiting_user_verdict = 0,
+          user_verdict_requested_at = NULL,
+          blocked_validated = 1,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `);
+    const { writeTaskLog } = await import('../tracker/task-log.js');
+    const { broadcast: bcast } = await import('../gateway/ws.js');
+    let swept = 0;
+    for (const t of stale) {
+      dropStmt.run(t.id);
+      writeTaskLog({
+        taskId: t.id,
+        fromEntity: 'engine',
+        entryKind: 'auto_sweep',
+        fromStatus: t.current_status,
+        toStatus: 'blocked',
+        actionTaken: 'user verdict timed out',
+        reason: `pending more than ${STALE_REQUEST_HOURS}h since user_verdict_requested_at=${t.user_verdict_requested_at}; dropped to blocked, please review`,
+      });
+      bcast({ type: 'tracker:task_updated', data: { id: t.id, status: 'blocked' } } as never);
+      swept++;
+    }
+    if (swept > 0) {
+      logger.info('Auto-expired user verdict requests', { swept, hours: STALE_REQUEST_HOURS });
+    }
+  } catch (err) {
+    logger.warn('sweepStaleUserVerdictRequests failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+// ── 5-minute validation escalation ──
+//
+// If a task has been sitting in complete/paused/blocked with the matching
+// *_validated flag at 0 for more than 5 minutes AND we haven't asked the
+// user yet, the engine asks the user directly via primary-agent chat (and
+// iMessage when the user-away setting is on). One ask, then we leave the
+// task alone — the dashboard bug icon stays until either PM, the user, or
+// the assigned agent (acting on user feedback) validates.
+
+const VALIDATION_ESCALATION_MIN = 5;
+
+async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
+  const db = getDb();
+  try {
+    const stale = db.prepare(`
+      SELECT id, title, status, assigned_to, datetime(updated_at) as updated
+      FROM tasks
+      WHERE validation_escalated_at IS NULL
+        AND awaiting_user_verdict = 0
+        AND (
+          (status = 'complete' AND complete_validated = 0)
+          OR (status = 'paused' AND pause_validated = 0)
+          OR (status = 'blocked' AND blocked_validated = 0)
+        )
+        AND datetime(updated_at) < datetime('now', '-${VALIDATION_ESCALATION_MIN} minutes')
+      LIMIT 20
+    `).all() as Array<{ id: string; title: string; status: string; assigned_to: string | null; updated: string }>;
+    if (stale.length === 0) return;
+
+    const { writeTaskLog } = await import('../tracker/task-log.js');
+    const { broadcast } = await import('../gateway/ws.js');
+    const stamp = db.prepare(`
+      UPDATE tasks SET validation_escalated_at = datetime('now'), validation_thread_id = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `);
+    const primaryId = getPrimaryAgentId();
+    const { v4: uuidv4 } = await import('uuid');
+
+    for (const t of stale) {
+      const threadId = uuidv4();
+      const agentName = t.assigned_to
+        ? (db.prepare('SELECT name FROM agents WHERE id = ?').get(t.assigned_to) as { name: string } | undefined)?.name ?? t.assigned_to
+        : 'an agent';
+      const askText =
+        `[VALIDATION CHECK] Task "${t.title}" (id=${t.id}) was marked ${t.status} by ${agentName} ${VALIDATION_ESCALATION_MIN}+ minutes ago, ` +
+        `but the PM agent has not validated it. ` +
+        `David, is this actually ${t.status === 'complete' ? 'done' : t.status}? Reply yes/no with any context. ` +
+        `\n\n` +
+        `**Primary agent**: when David replies, call tracker_apply_user_validation(task_id="${t.id}", validated=<true if yes / false if no>, user_quote="<David's exact reply>", feedback="<optional details if validated=false>"). ` +
+        `validated=true clears the bug icon; validated=false reverts to in_progress and notifies the assigned agent with David's feedback.`;
+
+      // Post as a user-facing system message in the primary agent's chat
+      // so the user sees the question alongside their normal chat history.
+      const msgId = uuidv4();
+      db.prepare(`
+        INSERT INTO messages (id, agent_id, role, content, created_at)
+        VALUES (?, ?, 'system', ?, datetime('now'))
+      `).run(msgId, primaryId, askText);
+      broadcast({
+        type: 'chat:message',
+        agentId: primaryId,
+        message: {
+          id: msgId, agentId: primaryId, role: 'system' as const,
+          content: askText,
+          tokenCount: null, modelId: null, cost: null, latencyMs: null,
+          createdAt: new Date().toISOString(),
+        },
+      });
+
+      // For iMessage delivery when David is away from the dojo: the system
+      // message above is also broadcast to the primary agent, who has the
+      // imessage_send tool. When the primary is woken by the message they
+      // can forward via iMessage naturally. We do not call iMessage
+      // directly from the engine because it requires the agent tool path.
+
+      stamp.run(threadId, t.id);
+      writeTaskLog({
+        taskId: t.id,
+        fromEntity: 'engine',
+        entryKind: 'directive',
+        actionTaken: '5-min validation escalation: asked user',
+        reason: `task has been ${t.status} with *_validated=0 since ${t.updated}; PM hasn't acted`,
+        note: askText,
+      });
+
+      // Re-broadcast the task so the dashboard re-renders with the
+      // "user has been asked" indicator (the bug icon pulse).
+      const fresh = db.prepare('SELECT * FROM tasks WHERE id = ?').get(t.id) as Record<string, unknown> | undefined;
+      if (fresh) {
+        broadcast({ type: 'tracker:task_updated', data: { id: t.id, validation_escalated_at: fresh.validation_escalated_at } } as never);
+      }
+    }
+    logger.info('Validation escalation: asked user about unvalidated tasks', { count: stale.length });
+  } catch (err) {
+    logger.warn('sweepUnvalidatedTasksForUserEscalation failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 // ── Check and trigger due tasks ──
 
 export async function checkScheduledTasks(): Promise<void> {
@@ -165,6 +388,12 @@ export async function checkScheduledTasks(): Promise<void> {
   cleanupStaleRuns();
   pruneTerminalTasks();
   resumeExpiredPauses();
+  // Phase B.1: 12-hour auto-expire sweeps.
+  await sweepStaleOverrideRequests();
+  await sweepStaleUserVerdictRequests();
+  // 5-minute validation escalation: if PM hasn't validated within the
+  // threshold, ask the user via primary chat (and iMessage if available).
+  await sweepUnvalidatedTasksForUserEscalation();
 
   const dueTasks = db.prepare(`
     SELECT * FROM tasks
@@ -269,6 +498,22 @@ export async function checkScheduledTasks(): Promise<void> {
       UPDATE tasks SET schedule_status = 'running', status = 'in_progress', last_run_at = ?, updated_at = datetime('now') WHERE id = ?
     `).run(now, taskId);
 
+    // Phase B.0: audit trail of scheduler-driven transition.
+    try {
+      const { writeTaskLog } = await import('../tracker/task-log.js');
+      writeTaskLog({
+        taskId,
+        fromEntity: 'scheduler',
+        entryKind: 'transition',
+        fromStatus: 'on_deck',
+        toStatus: 'in_progress',
+        actionTaken: `scheduler fired run #${runNumber}`,
+        reason: `next_run_at reached; assigned to ${assignedAgent}`,
+      });
+    } catch (err) {
+      logger.warn('scheduler: writeTaskLog on fire failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
+    }
+
     // 4. Update run instance
     db.prepare(`
       UPDATE task_runs SET status = 'running', started_at = ?, assigned_to = ? WHERE id = ?
@@ -368,6 +613,29 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   };
 
   const nextRun = calculateNextRun(scheduledTask);
+
+  // Phase B.0/B.1: audit the per-run completion with whatever
+  // result_summary the scheduler/agent provided. For terminal closes
+  // the validation flow still expects result+evidence on the task row;
+  // per-run completions here are scheduler bookkeeping, not user-facing
+  // closes.
+  try {
+    const { writeTaskLog } = await import('../tracker/task-log.js');
+    writeTaskLog({
+      taskId,
+      fromEntity: 'scheduler',
+      entryKind: 'transition',
+      fromStatus: 'in_progress',
+      toStatus: nextRun ? 'on_deck' : 'complete',
+      actionTaken: nextRun
+        ? `scheduler ran #${(task.run_count as number) + 1}, next at ${nextRun}`
+        : `scheduler ran final run #${(task.run_count as number) + 1}, no more runs`,
+      reason: `run finished with status=${status}`,
+      note: summary || null,
+    });
+  } catch (err) {
+    logger.warn('scheduler: writeTaskLog on run-complete failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
+  }
 
   if (nextRun) {
     // Recurring: set next run, go back to waiting, reset task status to on_deck

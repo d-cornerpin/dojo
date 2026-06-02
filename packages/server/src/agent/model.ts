@@ -145,13 +145,37 @@ function getMaxOutputTokens(apiModelId: string, providerType: string): number {
 
 // ── Universal orphan tool_use/tool_result sanitization ──
 // Mutates the messages array in place. Strips tool_use blocks from assistant
-// messages that don't have matching tool_result blocks in the immediately
-// following message. Works on both the assembler's output format and
-// provider-specific formats (Anthropic MessageParam, OpenAI ChatCompletionMessage).
+// messages whose ids aren't matched by tool_result blocks in the
+// immediately-following tool-result-bearing messages.
+//
+// Parallel-call gotcha: when an agent fires N parallel tool_use blocks, the
+// store / assembler often emit N separate consecutive `role:'user'` (or
+// `role:'tool'`) messages — one per result — instead of a single bundled
+// user message. The old version of this function only looked at the SINGLE
+// immediately-next message, so it saw the first tool_result and declared
+// the remaining N-1 tool_use blocks orphaned. Stripping them silently
+// rewrote the assistant message — on the next turn the model thought it
+// had only called one tool, so it re-fired the others. That's the
+// "agent repeats itself" regression David caught.
+//
+// Fix: walk forward consuming every consecutive message that looks like a
+// tool-result carrier and union all their tool_use_ids before deciding
+// what's orphaned. A message "looks like a tool-result carrier" when it
+// has role='user' or role='tool' AND every content block is type
+// 'tool_result' (i.e. it's purely a result container, not a normal user
+// message that happens to follow tool calls).
 function sanitizeOrphanToolBlocks(
   messages: Array<{ role: string; content: unknown }>,
   agentId: string,
 ): void {
+  const isPureToolResultMessage = (m: { role: string; content: unknown }): boolean => {
+    if (m.role !== 'user' && m.role !== 'tool') return false;
+    if (!Array.isArray(m.content)) return false;
+    const blocks = m.content as Array<Record<string, unknown>>;
+    if (blocks.length === 0) return false;
+    return blocks.every(b => b.type === 'tool_result');
+  };
+
   let stripped = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
@@ -162,15 +186,18 @@ function sanitizeOrphanToolBlocks(
       .map(b => b.id as string);
     if (useIds.length === 0) continue;
 
-    // Collect tool_result IDs from the next message
-    const next = i + 1 < messages.length ? messages[i + 1] : null;
+    // Collect tool_result IDs from ALL consecutive following tool-result
+    // carrier messages — not just messages[i+1]. Parallel tool calls
+    // commonly result in multiple back-to-back tool-result messages.
     const resultIds = new Set<string>();
-    if (next && (next.role === 'user' || next.role === 'tool') && Array.isArray(next.content)) {
-      for (const b of next.content as Array<Record<string, unknown>>) {
+    let j = i + 1;
+    while (j < messages.length && isPureToolResultMessage(messages[j])) {
+      for (const b of messages[j].content as Array<Record<string, unknown>>) {
         if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
           resultIds.add(b.tool_use_id as string);
         }
       }
+      j++;
     }
 
     const orphanIds = useIds.filter(id => !resultIds.has(id));
@@ -1179,6 +1206,110 @@ async function callOpenAIModel(
   const maxOutputBudget = Math.floor(modelInfo.contextWindow * 0.25);
   const availableForOutput = Math.max(1024, Math.min(maxOutputBudget, modelInfo.contextWindow - finalInputEstimate - 1000));
   const effectiveMaxTokens = Math.min(modelInfo.maxOutputTokens, availableForOutput);
+
+  // v2.7.27: belt-and-suspenders tool_call/tool_result pair sanitizer.
+  // The trimming logic earlier only fires when input exceeds the context
+  // window. Kelly was hitting "Messages with role 'tool' must be a response
+  // to a preceding message with 'tool_calls'" (orphaned tool result) AND
+  // "An assistant message with 'tool_calls' must be followed by tool messages
+  // responding to each 'tool_call_id'" (assistant tool_calls without matching
+  // results) without crossing the context ceiling. Two passes:
+  //   1. Drop any role='tool' message whose tool_call_id isn't owed by the
+  //      MOST RECENT assistant-with-tool_calls. (The old version checked
+  //      the immediately-prior kept message only — that broke parallel
+  //      calls because after the first tool result was kept, subsequent
+  //      tool results in the same parallel batch had a tool message as
+  //      their immediate prior and got dropped. That made Pass 2 also
+  //      drop the assistant because its tool_calls were "unanswered",
+  //      erasing the whole turn from history — the regression that made
+  //      DeepSeek re-fire identical parallel calls every turn.)
+  //   2. Drop any assistant message whose tool_calls do not all have
+  //      matching tool-result messages immediately after (orphan call).
+  // Idempotent and cheap, runs every call.
+  {
+    type AnyMsg = OpenAI.ChatCompletionMessageParam & {
+      tool_calls?: Array<{ id: string }>;
+      tool_call_id?: string;
+    };
+
+    // Pass 1: drop orphan tool results. A tool result is an orphan iff its
+    // tool_call_id is not in the set of pending call ids the most recent
+    // assistant-with-tool_calls is owed answers for. As we keep tool
+    // messages we remove their id from the pending set; when we encounter
+    // the NEXT assistant message we reset.
+    const afterPass1: OpenAI.ChatCompletionMessageParam[] = [];
+    let strippedOrphanResult = 0;
+    let pendingOwedIds: Set<string> | null = null;
+    for (const m of openaiMessages as AnyMsg[]) {
+      if (m.role === 'assistant') {
+        if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+          pendingOwedIds = new Set(m.tool_calls.map((c) => c.id));
+        } else {
+          pendingOwedIds = null;
+        }
+        afterPass1.push(m);
+        continue;
+      }
+      if (m.role === 'tool') {
+        const callId = m.tool_call_id ?? '';
+        if (!pendingOwedIds || !pendingOwedIds.has(callId)) {
+          strippedOrphanResult++;
+          continue;
+        }
+        afterPass1.push(m);
+        continue;
+      }
+      // Any other role (user, system) breaks the parallel-batch run; the
+      // assistant's tool_calls should have been fully answered by then.
+      pendingOwedIds = null;
+      afterPass1.push(m);
+    }
+
+    // Pass 2: drop assistant messages whose tool_calls are not all answered
+    // by the immediately-following tool-result messages with matching ids.
+    const afterPass2: OpenAI.ChatCompletionMessageParam[] = [];
+    let strippedOrphanCall = 0;
+    for (let i = 0; i < afterPass1.length; i++) {
+      const m = afterPass1[i] as AnyMsg;
+      if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+        const callIds = new Set(m.tool_calls.map((c) => c.id));
+        const followIds = new Set<string>();
+        let j = i + 1;
+        while (j < afterPass1.length) {
+          const f = afterPass1[j] as AnyMsg;
+          if (f.role !== 'tool') break;
+          if (f.tool_call_id) followIds.add(f.tool_call_id);
+          j++;
+        }
+        // Every call id must be answered.
+        let allAnswered = true;
+        for (const id of callIds) {
+          if (!followIds.has(id)) { allAnswered = false; break; }
+        }
+        if (!allAnswered) {
+          // Drop this assistant message AND any of the following tool
+          // results that belong to it (they would orphan too).
+          strippedOrphanCall++;
+          // Skip the following tool results we just inspected.
+          i = j - 1;
+          continue;
+        }
+      }
+      afterPass2.push(m);
+    }
+
+    if (strippedOrphanResult > 0 || strippedOrphanCall > 0) {
+      logger.warn('Sanitized tool_call/tool_result pairs before model call', {
+        agentId,
+        strippedOrphanResult,
+        strippedOrphanCall,
+        finalMessageCount: afterPass2.length,
+        originalMessageCount: openaiMessages.length,
+      }, agentId);
+      openaiMessages.length = 0;
+      openaiMessages.push(...afterPass2);
+    }
+  }
 
   const requestParams: OpenAI.ChatCompletionCreateParams = {
     model: modelInfo.apiModelId,

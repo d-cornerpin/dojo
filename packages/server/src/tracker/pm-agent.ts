@@ -113,6 +113,9 @@ export function ensurePMAgentRunning(): void {
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
         'tracker_add_notes', 'tracker_edit_notes', 'tracker_clear_notes', 'tracker_complete_step',
         'tracker_pause_schedule', 'tracker_resume_schedule',
+        'tracker_validate_pause', 'tracker_validate_complete', 'tracker_validate_blocked',
+        'tracker_override', 'tracker_request_override',
+        'tracker_apply_user_verdict',
         'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
         'vault_search', 'vault_remember', 'memory_grep', 'memory_describe',
@@ -120,6 +123,29 @@ export function ensurePMAgentRunning(): void {
       ],
     });
     db.prepare("UPDATE agents SET tools_policy = ?, updated_at = datetime('now') WHERE id = ?").run(syncToolsPolicy, pmId);
+    // Phase B.1: also keep the PM-SOUL system message in sync with the
+    // template on every boot. Without this, the skepticism block (and any
+    // other prompt updates) never reach an already-running PM. We INSERT
+    // a fresh system message rather than mutating the original so the
+    // history audit trail is preserved; the runtime message-assembly path
+    // reads the LATEST system message for context.
+    try {
+      const freshPrompt = loadPMSoulPrompt();
+      const existing = db.prepare(`
+        SELECT content FROM messages
+        WHERE agent_id = ? AND role = 'system'
+        ORDER BY created_at DESC, rowid DESC LIMIT 1
+      `).get(pmId) as { content: string } | undefined;
+      if (!existing || existing.content !== freshPrompt) {
+        db.prepare(`
+          INSERT INTO messages (id, agent_id, role, content, created_at)
+          VALUES (?, ?, 'system', ?, datetime('now'))
+        `).run(uuidv4(), pmId, freshPrompt);
+        logger.info('PM system prompt refreshed from template', { pmId });
+      }
+    } catch (err) {
+      logger.warn('PM system prompt refresh failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    }
     startPokeLoop();
     return;
   }
@@ -151,6 +177,9 @@ export function ensurePMAgentRunning(): void {
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
         'tracker_add_notes', 'tracker_edit_notes', 'tracker_clear_notes', 'tracker_complete_step',
         'tracker_pause_schedule', 'tracker_resume_schedule',
+        'tracker_validate_pause', 'tracker_validate_complete', 'tracker_validate_blocked',
+        'tracker_override', 'tracker_request_override',
+        'tracker_apply_user_verdict',
         'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
         'vault_search', 'vault_remember', 'memory_grep', 'memory_describe',
@@ -192,6 +221,9 @@ export function ensurePMAgentRunning(): void {
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
         'tracker_add_notes', 'tracker_edit_notes', 'tracker_clear_notes', 'tracker_complete_step',
         'tracker_pause_schedule', 'tracker_resume_schedule',
+        'tracker_validate_pause', 'tracker_validate_complete', 'tracker_validate_blocked',
+        'tracker_override', 'tracker_request_override',
+        'tracker_apply_user_verdict',
         'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
         'vault_search', 'vault_remember', 'memory_grep', 'memory_describe',
@@ -228,23 +260,19 @@ export function startPokeLoop(): void {
 
   logger.info(`PM poke loop started, checking every ${POKE_INTERVAL_MS / 1000}s`);
 
-  // Run an immediate first check
-  try {
-    runPokeCheck();
-  } catch (err) {
+  // Run an immediate first check (fire-and-forget; errors are logged inside).
+  runPokeCheck().catch((err) => {
     logger.error('PM poke loop initial check failed', {
       error: err instanceof Error ? err.message : String(err),
     });
-  }
+  });
 
   pokeLoopTimer = setInterval(() => {
-    try {
-      runPokeCheck();
-    } catch (err) {
+    runPokeCheck().catch((err) => {
       logger.error('PM poke loop tick failed', {
         error: err instanceof Error ? err.message : String(err),
       });
-    }
+    });
   }, POKE_INTERVAL_MS);
 
   // Start separate scheduler check at 30s interval
@@ -276,15 +304,172 @@ export function stopPokeLoop(): void {
   logger.info('Poke loop and scheduler stopped');
 }
 
+// ── Phase B.1: event-driven PM wake on transitions ──
+// When trackerUpdateStatus flips a task into paused/complete/blocked the
+// engine buffers the task id, debounces 10 seconds (so a burst of
+// transitions becomes one PM review), then fires a fresh review that
+// bypasses the polled 10-minute throttle. The polled review still runs
+// as a safety-net heartbeat. The smell-pattern detector runs inline on
+// transition and writes any signals into task_log + tasks.last_smell_flag.
+
+const TRANSITION_DEBOUNCE_MS = 10_000;
+const SMELL_POKE_WINDOW_SEC = 60;
+const SMELL_PAUSE_THRASH_CYCLES = 3;
+const SMELL_PAUSE_THRASH_WINDOW_MIN = 30;
+const transitionBuffer = new Set<string>();
+let transitionDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Called by trackerUpdateStatus / completeAgent / closeProjectAndOpenTasks
+ * whenever a task transitions into paused, complete, or blocked. Buffers
+ * the task id and schedules a debounced PM review. The review runs as a
+ * fresh LLM call regardless of the polled throttle.
+ */
+export function noteTransitionForReview(taskId: string, toStatus: string): void {
+  if (!['paused', 'complete', 'blocked'].includes(toStatus)) return;
+  // Smell detection happens here so the flag lands BEFORE PM reviews.
+  try {
+    runSmellDetector(taskId, toStatus);
+  } catch (err) {
+    logger.warn('runSmellDetector threw (non-fatal)', { taskId, toStatus, error: err instanceof Error ? err.message : String(err) });
+  }
+  const wasEmpty = transitionBuffer.size === 0;
+  transitionBuffer.add(taskId);
+  if (transitionDebounceTimer) {
+    logger.info('PM event wake: transition buffered (timer already running)', { taskId, toStatus, bufferSize: transitionBuffer.size });
+    return;
+  }
+  logger.info('PM event wake: armed debounce timer', { taskId, toStatus, debounceMs: TRANSITION_DEBOUNCE_MS, freshBuffer: wasEmpty });
+  transitionDebounceTimer = setTimeout(() => {
+    transitionDebounceTimer = null;
+    const fired = Array.from(transitionBuffer);
+    transitionBuffer.clear();
+    // Phase C cost guard: when PM has already burned its hourly budget,
+    // drop the event wake and let the polled 10-minute review pick this
+    // up later. Keeps a runaway transition burst from dragging cost up.
+    if (pmCapReached()) {
+      logger.warn('PM event wake dropped: hourly LLM cap reached', {
+        cap: PM_LLM_CALLS_PER_HOUR_CAP,
+        callsLastHour: pmLlmCallsInLastHour(),
+        droppedTasks: fired,
+      });
+      return;
+    }
+    // Reset the throttle so the next runPMReview fires immediately.
+    lastLLMReviewAt = 0;
+    lastSituationReportHash = '';
+    logger.info('PM event wake: firing runPMReview', { batchedTasks: fired });
+    runPMReview().catch((err) => {
+      logger.error('Event-driven PM review failed', { error: err instanceof Error ? err.message : String(err) });
+    });
+  }, TRANSITION_DEBOUNCE_MS);
+}
+
+/**
+ * Smell-pattern detector. Writes signal entries into task_log and sets
+ * tasks.last_smell_flag for PM to read as context. Never blocks the
+ * transition (that's the engine hard-gate's job) — this is purely an
+ * advisory signal.
+ */
+function runSmellDetector(taskId: string, toStatus: string): void {
+  const db = getDb();
+  if (toStatus === 'complete') {
+    const lastPoke = db.prepare(`
+      SELECT sent_at FROM poke_log WHERE task_id = ?
+      ORDER BY sent_at DESC LIMIT 1
+    `).get(taskId) as { sent_at: string } | undefined;
+    if (lastPoke) {
+      const pokeTs = new Date(lastPoke.sent_at.includes('Z') ? lastPoke.sent_at : lastPoke.sent_at + 'Z').getTime();
+      const elapsedSec = Math.floor((Date.now() - pokeTs) / 1000);
+      if (elapsedSec <= SMELL_POKE_WINDOW_SEC) {
+        const taskAgent = db.prepare(`SELECT assigned_to FROM tasks WHERE id = ?`).get(taskId) as { assigned_to: string | null } | undefined;
+        if (taskAgent?.assigned_to) {
+          const nonTrackerTool = db.prepare(`
+            SELECT 1 FROM audit_log
+            WHERE agent_id = ?
+              AND action_type = 'tool_call'
+              AND target NOT LIKE 'tracker_%'
+              AND created_at > ?
+            LIMIT 1
+          `).get(taskAgent.assigned_to, lastPoke.sent_at) as { 1: number } | undefined;
+          if (!nonTrackerTool) {
+            const flag = `closed within ${elapsedSec}s of last poke with no non-tracker tool calls in between`;
+            db.prepare(`UPDATE tasks SET last_smell_flag = ? WHERE id = ?`).run(flag, taskId);
+            void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
+              taskId,
+              fromEntity: 'engine',
+              entryKind: 'smell_flag',
+              reason: flag,
+            }));
+            logger.info('Smell flag set: complete dodging poke', { taskId, elapsedSec });
+          }
+        }
+      }
+    }
+  } else if (toStatus === 'paused' || toStatus === 'in_progress') {
+    // Pause-resume thrash: count transitions in/out of paused for this task
+    // within the last 30 minutes.
+    const cycles = db.prepare(`
+      SELECT COUNT(*) as c FROM task_log
+      WHERE task_id = ?
+        AND entry_kind = 'transition'
+        AND (to_status = 'paused' OR (from_status = 'paused' AND to_status != 'paused'))
+        AND datetime(created_at) > datetime('now', '-${SMELL_PAUSE_THRASH_WINDOW_MIN} minutes')
+    `).get(taskId) as { c: number } | undefined;
+    if (cycles && cycles.c >= SMELL_PAUSE_THRASH_CYCLES) {
+      const flag = `pause-resume thrash: ${cycles.c} transitions in last ${SMELL_PAUSE_THRASH_WINDOW_MIN} min`;
+      db.prepare(`UPDATE tasks SET last_smell_flag = ? WHERE id = ?`).run(flag, taskId);
+      void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
+        taskId,
+        fromEntity: 'engine',
+        entryKind: 'smell_flag',
+        reason: flag,
+      }));
+      logger.info('Smell flag set: pause-resume thrash', { taskId, cycles: cycles.c });
+    }
+  }
+}
+
 // ── PM LLM Review — runs the PM agent's brain periodically ──
 
 let lastLLMReviewAt = 0;
 let lastSituationReportHash = '';
 const LLM_REVIEW_INTERVAL_MS = 600_000; // 10 minutes — gives tasks time to settle before reviewing
 
-// How many recent messages to keep for the PM. The PM is a stateless checker —
-// it only needs enough context for a short back-and-forth about a stalled task.
-const PM_MAX_MESSAGES = 10;
+// How many recent messages to keep for the PM. Bumped from 10 to 30 in
+// v2.7.27 — at 10 the pair-aware cutoff + downstream orphan sanitizer
+// were trimming Kelly down to 1-2 effective messages on bad turns,
+// leaving her with no context to judge anything. 30 gives the sanitizer
+// more pair-completeness to work with while still keeping PM's window
+// small. PM is still stateless conceptually (tracker is her memory),
+// this is just enough scratch space.
+const PM_MAX_MESSAGES = 30;
+
+// ── Phase C: per-hour PM LLM call cap (cost guard) ──
+//
+// Even with debounced event wakes, a chaotic spell of agent transitions
+// can wake PM dozens of times in an hour. Each wake is a real DeepSeek
+// call. We hard-cap PM LLM invocations per rolling 60-minute window:
+// once the cap is hit, runPMReview falls back to "polled-only" mode
+// (event wakes are dropped, the 10-min polled review still runs as the
+// safety net heartbeat) until the window rolls forward.
+const PM_LLM_CALLS_PER_HOUR_CAP = 30;
+const pmLlmCallTimestamps: number[] = [];
+function recordPmLlmCall(): void {
+  const now = Date.now();
+  pmLlmCallTimestamps.push(now);
+  const cutoff = now - 60 * 60 * 1000;
+  while (pmLlmCallTimestamps.length > 0 && pmLlmCallTimestamps[0] < cutoff) {
+    pmLlmCallTimestamps.shift();
+  }
+}
+function pmLlmCallsInLastHour(): number {
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  return pmLlmCallTimestamps.filter((t) => t >= cutoff).length;
+}
+function pmCapReached(): boolean {
+  return pmLlmCallsInLastHour() >= PM_LLM_CALLS_PER_HOUR_CAP;
+}
 
 /**
  * Prune old PM messages to keep the context window small.
@@ -297,12 +482,32 @@ function pruneOldPMMessages(pmId: string): void {
     const countRow = db.prepare('SELECT COUNT(*) as c FROM messages WHERE agent_id = ?').get(pmId) as { c: number };
     if (countRow.c <= PM_MAX_MESSAGES) return;
 
-    // Get the ID of the Nth most recent message (our cutoff)
-    const cutoff = db.prepare(`
+    // Get the ID of the Nth most recent message (our initial cutoff candidate)
+    const initialCutoff = db.prepare(`
       SELECT id FROM messages WHERE agent_id = ?
       ORDER BY created_at DESC, rowid DESC
       LIMIT 1 OFFSET ?
     `).get(pmId, PM_MAX_MESSAGES) as { id: string } | undefined;
+
+    if (!initialCutoff) return;
+
+    // v2.7.27: tool_call_pair-aware cutoff. If the initial cutoff lands on a
+    // 'tool' role message, the resulting kept window starts with an orphaned
+    // tool result (no preceding assistant with tool_calls). DeepSeek and most
+    // other providers 400 with "Messages with role 'tool' must be a response
+    // to a preceding message with 'tool_calls'", which then triggered the
+    // injury-recovery loop and made Kelly perpetually broken. The fix walks
+    // forward from the initial cutoff to find the first non-tool message,
+    // using that as the safe cutoff. We may keep fewer than PM_MAX_MESSAGES
+    // when this fires; that's fine, PM is stateless and tracker is its memory.
+    const cutoff = db.prepare(`
+      SELECT id FROM messages
+      WHERE agent_id = ?
+        AND rowid >= (SELECT rowid FROM messages WHERE id = ?)
+        AND role != 'tool'
+      ORDER BY rowid ASC
+      LIMIT 1
+    `).get(pmId, initialCutoff.id) as { id: string } | undefined;
 
     if (!cutoff) return;
 
@@ -339,9 +544,30 @@ function pruneOldPMMessages(pmId: string): void {
 
 async function runPMReview(): Promise<void> {
   const now = Date.now();
-  if (now - lastLLMReviewAt < LLM_REVIEW_INTERVAL_MS) return;
-
   const db = getDb();
+
+  // The 10-minute time gate avoids spamming the LLM when nothing meaningful
+  // is happening. But unvalidated-complete / blocked / paused tasks and
+  // pending override requests are time-sensitive — the engine escalates to
+  // the user at 5 minutes, so PM needs a chance well before that. Bypass
+  // the gate when validation work is queued. The per-hour PM LLM cap
+  // (PM_LLM_CALLS_PER_HOUR_CAP) still bounds cost.
+  const pendingValidationCount = (() => {
+    try {
+      return (db.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM tasks WHERE status = 'complete' AND complete_validated = 0 AND awaiting_user_verdict = 0) +
+          (SELECT COUNT(*) FROM tasks WHERE status = 'blocked' AND blocked_validated = 0 AND awaiting_user_verdict = 0) +
+          (SELECT COUNT(*) FROM tasks WHERE status = 'paused' AND pause_validated = 0) +
+          (SELECT COUNT(*) FROM task_override_requests WHERE status = 'pending')
+        AS c
+      `).get() as { c: number }).c;
+    } catch {
+      return 0;
+    }
+  })();
+  if (pendingValidationCount === 0 && now - lastLLMReviewAt < LLM_REVIEW_INTERVAL_MS) return;
+
   const pmId = getPMAgentId();
 
   // Prune old messages before each review to keep context tight
@@ -357,7 +583,21 @@ async function runPMReview(): Promise<void> {
   const allTasks = listTasks({});
   const activeTasks = allTasks.filter(t => !['complete', 'fallen', 'paused'].includes(t.status));
 
-  if (activeTasks.length === 0) return;
+  // Phase B.1: even when no tasks are "active" (in_progress / on_deck /
+  // blocked), there may still be unvalidated-complete or override-request
+  // rows that need PM judgment. Only return early when truly nothing
+  // requires PM attention. Cheap COUNT queries before deciding.
+  if (activeTasks.length === 0) {
+    const pendingCount = db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM tasks WHERE status = 'complete' AND complete_validated = 0 AND awaiting_user_verdict = 0) +
+        (SELECT COUNT(*) FROM tasks WHERE status = 'blocked' AND blocked_validated = 0 AND awaiting_user_verdict = 0) +
+        (SELECT COUNT(*) FROM tasks WHERE status = 'paused' AND pause_validated = 0) +
+        (SELECT COUNT(*) FROM task_override_requests WHERE status = 'pending')
+      AS c
+    `).get() as { c: number };
+    if (pendingCount.c === 0) return;
+  }
 
   lastLLMReviewAt = now;
 
@@ -507,14 +747,25 @@ async function runPMReview(): Promise<void> {
   // judge whether the pause notes match a real request) and the task
   // notes themselves (the pause reason the agent supplied).
   const unvalidatedPauseRows = db.prepare(`
-    SELECT id, title, notes, assigned_to, updated_at
+    SELECT id, title, assigned_to, updated_at
     FROM tasks
     WHERE status = 'paused'
       AND pause_validated = 0
       AND datetime(updated_at) < datetime('now', '-1 minute')
     ORDER BY updated_at ASC
     LIMIT 10
-  `).all() as Array<{ id: string; title: string; notes: string | null; assigned_to: string | null; updated_at: string }>;
+  `).all() as Array<{ id: string; title: string; assigned_to: string | null; updated_at: string }>;
+
+  // Phase B.0: read the pause reason from the most recent observation entry
+  // attached to this task in task_log, with fallback to the legacy notes
+  // column for tasks that pre-date the migration backfill. Once the
+  // backfill has run on this DB the legacy fallback should rarely hit.
+  const recentObservation = db.prepare(`
+    SELECT note FROM task_log
+    WHERE task_id = ? AND entry_kind IN ('observation', 'legacy_note')
+    ORDER BY created_at DESC, rowid DESC LIMIT 1
+  `);
+  const legacyNotesStmt = db.prepare(`SELECT notes FROM tasks WHERE id = ?`);
 
   for (const pTask of unvalidatedPauseRows) {
     const agentName = pTask.assigned_to
@@ -533,8 +784,11 @@ async function runPMReview(): Promise<void> {
           : lastMsg.content;
       }
     }
-    const pauseReason = pTask.notes && pTask.notes.trim()
-      ? pTask.notes.replace(/\s+/g, ' ').trim()
+    const logRow = recentObservation.get(pTask.id) as { note: string | null } | undefined;
+    const legacyRow = legacyNotesStmt.get(pTask.id) as { notes: string | null } | undefined;
+    const rawReason = logRow?.note ?? legacyRow?.notes ?? null;
+    const pauseReason = rawReason && rawReason.trim()
+      ? rawReason.replace(/\s+/g, ' ').trim()
       : '(EMPTY)';
     issues.push({
       stableId: `${pTask.id}|UNVALIDATED_PAUSE`,
@@ -545,7 +799,150 @@ async function runPMReview(): Promise<void> {
         `  Decide: valid pause (names a specific external trigger that matches a real request) or gaming (vague / no matching request / sounds like 'blocked' instead). ` +
         `Call tracker_validate_pause(task_id="${pTask.id}", valid=true) if real. ` +
         `Call tracker_validate_pause(task_id="${pTask.id}", valid=false, reject_reason="...one sentence...") if gaming. ` +
-        `Rejection auto-reverts the task to in_progress and notifies the agent.`,
+        `Rejection auto-reverts the task to in_progress (or pass target_status to pick on_deck/blocked) and notifies the agent.`,
+    });
+  }
+
+  // ── Phase B.1: UNVALIDATED_COMPLETE ──
+  // Every task with status='complete' AND complete_validated=0 needs a PM
+  // judgment. Read the goal, result, evidence, and any smell_flag context;
+  // open files / pull audit log entries when evidence points there.
+  const unvalidatedCompleteRows = db.prepare(`
+    SELECT id, title, assigned_to, goal, result, evidence_json, last_smell_flag,
+           created_by, project_id, repeat_interval, next_run_at, priority,
+           updated_at, revert_count
+    FROM tasks
+    WHERE status = 'complete'
+      AND complete_validated = 0
+      AND awaiting_user_verdict = 0
+      AND datetime(updated_at) < datetime('now', '-15 seconds')
+    ORDER BY updated_at ASC
+    LIMIT 10
+  `).all() as Array<{
+    id: string; title: string; assigned_to: string | null; goal: string | null;
+    result: string | null; evidence_json: string | null; last_smell_flag: string | null;
+    created_by: string; project_id: string | null;
+    repeat_interval: number | null; next_run_at: string | null;
+    priority: string; updated_at: string; revert_count: number;
+  }>;
+
+  // Phase B.1: per-task lookup for goal-edit history. If the goal was
+  // edited AFTER the task moved to in_progress, the assigned agent may have
+  // moved the goalposts; PM needs to know.
+  const goalEditStmt = db.prepare(`
+    SELECT note, datetime(created_at) as edited_at
+    FROM task_log
+    WHERE task_id = ?
+      AND entry_kind = 'observation'
+      AND action_taken = 'goal_edited'
+    ORDER BY created_at DESC
+    LIMIT 3
+  `);
+
+  for (const cTask of unvalidatedCompleteRows) {
+    const agentName = cTask.assigned_to
+      ? agents.find(a => a.id === cTask.assigned_to)?.name ?? cTask.assigned_to
+      : 'unassigned';
+    const isRecurringRun = cTask.repeat_interval !== null && cTask.next_run_at !== null;
+    const tierHint = cTask.assigned_to === cTask.created_by
+      ? '  Trust hint: this is a SELF-ASSIGNED task. Bias toward validate unless something concretely smells off.'
+      : '';
+    const smellLine = cTask.last_smell_flag
+      ? `\n  ⚠ SMELL_FLAG: ${cTask.last_smell_flag}`
+      : '';
+    const runLine = isRecurringRun
+      ? `\n  Per-run completion (recurring task, next fire at ${cTask.next_run_at}). On valid=true the engine archives result/evidence to task_log and resets to on_deck for next fire.`
+      : '';
+    const goalEdits = goalEditStmt.all(cTask.id) as Array<{ note: string | null; edited_at: string }>;
+    const goalEditLine = goalEdits.length > 0
+      ? `\n  ⚠ GOAL EDITED ${goalEdits.length} time(s). Most recent: ${goalEdits[0].edited_at}. ` +
+        `Compare result against the ORIGINAL goal, not the rewritten one. Diffs:\n` +
+        goalEdits.map((e) => `    - ${e.note ?? '(no diff captured)'}`).join('\n')
+      : '';
+    let evidenceLines = '(no evidence array)';
+    try {
+      if (cTask.evidence_json) {
+        const parsed = JSON.parse(cTask.evidence_json) as Array<{ kind?: string; claim?: string; pointer?: string }>;
+        evidenceLines = parsed.map((e, i) => `    ${i + 1}. [${e.kind ?? '?'}] ${e.claim ?? ''}${e.pointer ? ` @ ${e.pointer}` : ''}`).join('\n');
+      }
+    } catch { /* leave as default */ }
+    issues.push({
+      stableId: `${cTask.id}|UNVALIDATED_COMPLETE|${cTask.revert_count}`,
+      text:
+        `UNVALIDATED_COMPLETE: "${cTask.title}" (${cTask.id.slice(0, 8)}) closed by ${agentName}, awaiting your validation.${smellLine}${runLine}${goalEditLine}\n` +
+        `  Goal: ${cTask.goal ?? '(no goal recorded — pre-migration row)'}\n` +
+        `  Result: ${cTask.result ?? '(none)'}\n` +
+        `  Evidence:\n${evidenceLines}\n` +
+        `  Priority=${cTask.priority}, revert_count=${cTask.revert_count}.${tierHint}\n` +
+        `  Read the file/audit log/output referenced in evidence BEFORE validating (skepticism rule). ` +
+        `Call tracker_validate_complete(task_id="${cTask.id}", valid=true) when the work demonstrably matches the goal. ` +
+        `Call tracker_validate_complete(task_id="${cTask.id}", valid=false, reject_reason="...", target_status="in_progress") when it does not.`,
+    });
+  }
+
+  // ── Phase B.1: UNVALIDATED_BLOCK ──
+  const unvalidatedBlockRows = db.prepare(`
+    SELECT id, title, assigned_to, goal, priority, updated_at, revert_count
+    FROM tasks
+    WHERE status = 'blocked'
+      AND blocked_validated = 0
+      AND awaiting_user_verdict = 0
+      AND datetime(updated_at) < datetime('now', '-1 minute')
+    ORDER BY updated_at ASC
+    LIMIT 10
+  `).all() as Array<{
+    id: string; title: string; assigned_to: string | null; goal: string | null;
+    priority: string; updated_at: string; revert_count: number;
+  }>;
+
+  for (const bTask of unvalidatedBlockRows) {
+    const agentName = bTask.assigned_to
+      ? agents.find(a => a.id === bTask.assigned_to)?.name ?? bTask.assigned_to
+      : 'unassigned';
+    const obsRow = recentObservation.get(bTask.id) as { note: string | null } | undefined;
+    const blockReason = obsRow?.note?.trim() || '(no recent observation)';
+    issues.push({
+      stableId: `${bTask.id}|UNVALIDATED_BLOCK|${bTask.revert_count}`,
+      text:
+        `UNVALIDATED_BLOCK: "${bTask.title}" (${bTask.id.slice(0, 8)}) marked blocked by ${agentName}, awaiting validation.\n` +
+        `  Goal: ${bTask.goal ?? '(no goal recorded)'}\n` +
+        `  Block reason: ${blockReason}\n` +
+        `  Priority=${bTask.priority}, revert_count=${bTask.revert_count}.\n` +
+        `  Real block (genuine external obstacle, no workaround) -> tracker_validate_blocked(task_id="${bTask.id}", valid=true). ` +
+        `Not really blocked (agent hasn't asked the user, or has a workaround they haven't tried) -> tracker_validate_blocked(task_id="${bTask.id}", valid=false, reject_reason="...").`,
+    });
+  }
+
+  // ── Phase B.1: OVERRIDE_REQUEST ──
+  const overrideRows = db.prepare(`
+    SELECT r.id, r.task_id, r.requested_by, r.requested_status, r.justification, r.last_engine_error, r.attempts_attached, r.created_at,
+           t.title as task_title, t.goal as task_goal
+    FROM task_override_requests r
+    LEFT JOIN tasks t ON t.id = r.task_id
+    WHERE r.status = 'pending'
+    ORDER BY r.created_at ASC
+    LIMIT 10
+  `).all() as Array<{
+    id: string; task_id: string; requested_by: string;
+    requested_status: string; justification: string; last_engine_error: string | null;
+    attempts_attached: number; created_at: string;
+    task_title: string | null; task_goal: string | null;
+  }>;
+
+  for (const oRow of overrideRows) {
+    const agentName = oRow.requested_by === 'engine'
+      ? 'engine (circuit-breaker)'
+      : agents.find(a => a.id === oRow.requested_by)?.name ?? oRow.requested_by;
+    issues.push({
+      stableId: `override|${oRow.id}`,
+      text:
+        `OVERRIDE_REQUEST (id=${oRow.id.slice(0, 8)}): ${agentName} wants task "${oRow.task_title ?? '?'}" (${oRow.task_id.slice(0, 8)}) forced to "${oRow.requested_status}".\n` +
+        `  Goal: ${oRow.task_goal ?? '(no goal recorded)'}\n` +
+        `  Justification: ${oRow.justification}\n` +
+        (oRow.last_engine_error ? `  Last engine error: ${oRow.last_engine_error}\n` : '') +
+        (oRow.attempts_attached > 1 ? `  Engine-auto-fired after ${oRow.attempts_attached} hard-gate rejections — the agent was thrashing on shape.\n` : '') +
+        `  Approve: tracker_override(override_request_id="${oRow.id}", approve=true, reason="..."). ` +
+        `Deny: tracker_override(override_request_id="${oRow.id}", approve=false, reason="...").`,
     });
   }
 
@@ -622,13 +1019,14 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
 
   const runtime = getAgentRuntime();
   try {
+    recordPmLlmCall();
     await runtime.handleMessage(pmId, situationReport);
   } catch (err) {
     logger.error('PM LLM review failed', { error: err instanceof Error ? err.message : String(err) });
   }
 }
 
-function runPokeCheck(): void {
+async function runPokeCheck(): Promise<void> {
   const db = getDb();
 
   // ── A2A auto-task sweeper ──
@@ -665,10 +1063,10 @@ function runPokeCheck(): void {
     `).all(sweepCutoff) as Array<{ id: string; title: string; assigned_to: string; created_at: string }>;
 
     if (candidates.length > 0) {
+      // Phase B.0: tasks.notes is read-only legacy. Audit trail lives in task_log.
       const closeStmt = db.prepare(`
         UPDATE tasks
-        SET status = 'fallen', completed_at = datetime('now'), updated_at = datetime('now'),
-            notes = COALESCE(notes, '') || ? || char(10)
+        SET status = 'fallen', completed_at = datetime('now'), updated_at = datetime('now')
         WHERE id = ?
       `);
       const activeCheck = db.prepare(`
@@ -677,6 +1075,7 @@ function runPokeCheck(): void {
         LIMIT 1
       `);
       let swept = 0;
+      const { writeTaskLog } = await import('./task-log.js');
       for (const t of candidates) {
         // Only close if the receiver was active (sent any assistant
         // message) after the task was created. If they were silent the
@@ -684,8 +1083,16 @@ function runPokeCheck(): void {
         // chain — leave it for that, don't sweep silently.
         const wasActive = activeCheck.get(t.assigned_to, t.created_at) as { 1: number } | undefined;
         if (!wasActive) continue;
-        const note = `[${new Date().toISOString()}] Auto-swept by engine: A2A-assigned on_deck task untouched for ≥ 30 min while receiver ("${t.assigned_to}") was otherwise active — they handled the message via reply, not via tracker. Closed to prevent kanban buildup.`;
-        closeStmt.run(note, t.id);
+        closeStmt.run(t.id);
+        writeTaskLog({
+          taskId: t.id,
+          fromEntity: 'engine',
+          entryKind: 'auto_sweep',
+          fromStatus: 'on_deck',
+          toStatus: 'fallen',
+          actionTaken: 'A2A auto-task sweeper',
+          reason: `A2A-assigned on_deck task untouched for >= 30 min while receiver ("${t.assigned_to}") was otherwise active. Handled via reply not via tracker.`,
+        });
         swept++;
       }
       if (swept > 0) {
@@ -704,10 +1111,32 @@ function runPokeCheck(): void {
   // ── Engine-level quick checks (still needed for immediate alerts) ──
   const allActiveTasks = listTasks({}).filter(t => !['complete', 'fallen', 'paused'].includes(t.status));
 
-  logger.info('PM poke loop tick', { activeTasks: allActiveTasks.length });
+  // 2026-06-02 bug fix: also count tasks that need PM judgment but are not
+  // "active" (complete-but-unvalidated, blocked-but-unvalidated, paused-but-
+  // unvalidated, pending override requests). Without this, a completed task
+  // sits with complete_validated=0 forever because activeTasks is 0, the
+  // polled review never fires, and the event-driven debounce is the only
+  // path that could wake Kelly. Belt-and-suspenders.
+  const pendingValidation = (() => {
+    try {
+      const row = getDb().prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM tasks WHERE status = 'complete' AND complete_validated = 0 AND awaiting_user_verdict = 0) +
+          (SELECT COUNT(*) FROM tasks WHERE status = 'blocked' AND blocked_validated = 0 AND awaiting_user_verdict = 0) +
+          (SELECT COUNT(*) FROM tasks WHERE status = 'paused' AND pause_validated = 0) +
+          (SELECT COUNT(*) FROM task_override_requests WHERE status = 'pending')
+        AS c
+      `).get() as { c: number };
+      return row.c;
+    } catch {
+      return 0;
+    }
+  })();
 
-  // If there are active tasks, trigger the PM's LLM to review (throttled to every 10 min)
-  if (allActiveTasks.length > 0) {
+  logger.info('PM poke loop tick', { activeTasks: allActiveTasks.length, pendingValidation });
+
+  // Trigger PM review if there's any active or pending-validation work.
+  if (allActiveTasks.length > 0 || pendingValidation > 0) {
     runPMReview().catch(err => {
       logger.error('PM review failed', { error: err instanceof Error ? err.message : String(err) });
     });

@@ -9,6 +9,8 @@ import {
   updateTask,
   addTaskNotes,
   closeProjectAndOpenTasks,
+  resolveTaskId,
+  formatResolveError,
 } from '../../tracker/schema.js';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
@@ -180,6 +182,315 @@ trackerRouter.get('/tasks/:id', (c) => {
   return c.json({ ok: true, data: task });
 });
 
+// POST /tasks/:id/observation — user-added observation entry from dashboard (Phase B.0)
+trackerRouter.post('/tasks/:id/observation', async (c) => {
+  const rawId = c.req.param('id');
+  let body: { note?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, error: 'invalid JSON body' }, 400);
+  }
+  const note = (body.note ?? '').trim();
+  if (!note) return c.json({ ok: false, error: 'note is required' }, 400);
+
+  // Resolve short prefix to full UUID for FK integrity.
+  const resolved = resolveTaskId(rawId);
+  if (!resolved.ok) {
+    return c.json({ ok: false, error: formatResolveError('task', rawId, resolved) }, 404);
+  }
+
+  try {
+    const { writeTaskLog } = await import('../../tracker/task-log.js');
+    const entryId = writeTaskLog({
+      taskId: resolved.id,
+      fromEntity: 'user',
+      entryKind: 'observation',
+      note,
+    });
+    return c.json({ ok: true, data: { entryId } });
+  } catch (err) {
+    logger.error('POST /tasks/:id/observation failed', { id: rawId, error: err instanceof Error ? err.message : String(err) });
+    return c.json({ ok: false, error: 'failed to write observation' }, 500);
+  }
+});
+
+// POST /tasks/:id/user-validate — user validates a complete/paused/blocked task from the dashboard.
+// This is the user-side counterpart to tracker_validate_*. Bypasses PM entirely; user authority is final.
+trackerRouter.post('/tasks/:id/user-validate', async (c) => {
+  const rawId = c.req.param('id');
+  const resolved = resolveTaskId(rawId);
+  if (!resolved.ok) {
+    return c.json({ ok: false, error: formatResolveError('task', rawId, resolved) }, 404);
+  }
+
+  const task = getTask(resolved.id);
+  if (!task) return c.json({ ok: false, error: 'Task not found' }, 404);
+
+  const { writeTaskLog } = await import('../../tracker/task-log.js');
+  const db = getDb();
+  let flagColumn: 'complete_validated' | 'pause_validated' | 'blocked_validated' | null = null;
+  if (task.status === 'complete') flagColumn = 'complete_validated';
+  else if (task.status === 'paused') flagColumn = 'pause_validated';
+  else if (task.status === 'blocked') flagColumn = 'blocked_validated';
+  if (!flagColumn) {
+    return c.json({ ok: false, error: `task status="${task.status}" cannot be user-validated (only complete/paused/blocked).` }, 400);
+  }
+
+  db.prepare(`
+    UPDATE tasks
+    SET ${flagColumn} = 1,
+        validation_escalated_at = COALESCE(validation_escalated_at, datetime('now')),
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(resolved.id);
+
+  writeTaskLog({
+    taskId: resolved.id,
+    fromEntity: 'user',
+    entryKind: 'transition',
+    fromStatus: task.status,
+    toStatus: task.status,
+    actionTaken: `user-validate via dashboard (${flagColumn}=1)`,
+    reason: 'user marked validated',
+  });
+
+  const updated = getTask(resolved.id);
+  if (updated) {
+    const { broadcast } = await import('../../gateway/ws.js');
+    broadcast({ type: 'tracker:task_updated', data: updated });
+  }
+  return c.json({ ok: true, data: { validated: true } });
+});
+
+// GET /tasks/:id/log — structured audit log entries for a task (Phase B.0)
+trackerRouter.get('/tasks/:id/log', async (c) => {
+  const rawId = c.req.param('id');
+  const limitParam = c.req.query('limit');
+  const limit = limitParam ? Math.min(Math.max(parseInt(limitParam, 10) || 100, 1), 500) : 100;
+  const kindsParam = c.req.query('kinds');
+  const kinds = kindsParam
+    ? (kindsParam.split(',').map((k) => k.trim()).filter(Boolean) as Array<
+        'transition' | 'observation' | 'reject' | 'override' | 'evidence' |
+        'directive' | 'poke' | 'auto_sweep' | 'smell_flag' |
+        'user_verdict_request' | 'user_verdict_applied' | 'legacy_note'
+      >)
+    : undefined;
+
+  const resolved = resolveTaskId(rawId);
+  if (!resolved.ok) {
+    return c.json({ ok: false, error: formatResolveError('task', rawId, resolved) }, 404);
+  }
+
+  try {
+    const { listTaskLog } = await import('../../tracker/task-log.js');
+    const entries = listTaskLog(resolved.id, { limit, kinds });
+    return c.json({ ok: true, data: entries });
+  } catch (err) {
+    logger.error('GET /tasks/:id/log failed', { id: rawId, error: err instanceof Error ? err.message : String(err) });
+    return c.json({ ok: false, error: 'failed to load task log' }, 500);
+  }
+});
+
+// GET /hygiene — Phase D: tracker hygiene + telemetry summary.
+// Aggregates validate rates by entity, smell-flag frequency, override counts,
+// revert counts, and recent gaming signals. Dashboard renders this as a panel.
+trackerRouter.get('/hygiene', async (c) => {
+  try {
+    const { getDb } = await import('../../db/connection.js');
+    const db = getDb();
+
+    // Validation outcomes per from_entity (PM rejects vs blesses) over last 7 days.
+    const validateOutcomes = db.prepare(`
+      SELECT from_entity,
+             SUM(CASE WHEN entry_kind = 'reject' THEN 1 ELSE 0 END) as rejects,
+             SUM(CASE WHEN entry_kind = 'transition' AND action_taken LIKE '%valid=true%' THEN 1 ELSE 0 END) as validates
+      FROM task_log
+      WHERE datetime(created_at) > datetime('now', '-7 days')
+        AND (entry_kind = 'reject' OR (entry_kind = 'transition' AND action_taken LIKE '%valid=%'))
+      GROUP BY from_entity
+    `).all() as Array<{ from_entity: string; rejects: number; validates: number }>;
+
+    // Smell flag counts by reason category (rough cluster) over last 7 days.
+    const smellFlags = db.prepare(`
+      SELECT
+        CASE
+          WHEN reason LIKE '%poke%' THEN 'poke-dodge'
+          WHEN reason LIKE '%thrash%' THEN 'pause-resume thrash'
+          ELSE 'other'
+        END as category,
+        COUNT(*) as count
+      FROM task_log
+      WHERE entry_kind = 'smell_flag'
+        AND datetime(created_at) > datetime('now', '-7 days')
+      GROUP BY category
+    `).all() as Array<{ category: string; count: number }>;
+
+    // Override request rollup (last 7 days).
+    const overrideRollup = db.prepare(`
+      SELECT status, COUNT(*) as count FROM task_override_requests
+      WHERE datetime(created_at) > datetime('now', '-7 days')
+      GROUP BY status
+    `).all() as Array<{ status: string; count: number }>;
+
+    // Tasks currently elevated: high revert_count or awaiting verdict.
+    const elevated = db.prepare(`
+      SELECT substr(id, 1, 8) as id8, title, status, revert_count, awaiting_user_verdict, last_smell_flag
+      FROM tasks
+      WHERE revert_count >= 2 OR awaiting_user_verdict = 1 OR last_smell_flag IS NOT NULL
+      ORDER BY revert_count DESC, updated_at DESC
+      LIMIT 20
+    `).all();
+
+    // Per-model PM-call cost over last 24h (Phase D cost telemetry).
+    // audit_log.target stores the model name on model_call rows.
+    const pmCost = db.prepare(`
+      SELECT target as modelId,
+             COUNT(*) as calls,
+             ROUND(COALESCE(SUM(cost), 0), 4) as cost_24h
+      FROM audit_log
+      WHERE agent_id = 'kelly'
+        AND action_type = 'model_call'
+        AND datetime(created_at) > datetime('now', '-1 day')
+      GROUP BY target
+    `).all();
+
+    return c.json({
+      ok: true,
+      data: {
+        validateOutcomes,
+        smellFlags,
+        overrideRollup,
+        elevated,
+        pmCost,
+      },
+    });
+  } catch (err) {
+    logger.error('GET /hygiene failed', { error: err instanceof Error ? err.message : String(err) });
+    return c.json({ ok: false, error: 'failed to compute hygiene metrics' }, 500);
+  }
+});
+
+// POST /override-requests/:id/resolve — user (via dashboard) approves or denies an override.
+// Mirrors the PM-side tracker_override tool but credits the user as the resolver.
+trackerRouter.post('/override-requests/:id/resolve', async (c) => {
+  const id = c.req.param('id');
+  let body: { approve?: boolean; reason?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, error: 'invalid JSON body' }, 400);
+  }
+  const approve = body.approve === true;
+  const reason = (body.reason ?? '').trim();
+  if (!reason) return c.json({ ok: false, error: 'reason is required' }, 400);
+
+  try {
+    const { getDb } = await import('../../db/connection.js');
+    const db = getDb();
+    const req = db.prepare(`
+      SELECT id, task_id, requested_by, requested_status, status
+      FROM task_override_requests WHERE id = ?
+    `).get(id) as { id: string; task_id: string; requested_by: string; requested_status: string; status: string } | undefined;
+    if (!req) return c.json({ ok: false, error: 'override request not found' }, 404);
+    if (req.status !== 'pending') {
+      return c.json({ ok: false, error: `override request is already ${req.status}` }, 400);
+    }
+
+    const { writeTaskLog } = await import('../../tracker/task-log.js');
+    if (approve) {
+      const { updateTask } = await import('../../tracker/schema.js');
+      const updated = updateTask(req.task_id, { status: req.requested_status });
+      if (!updated) return c.json({ ok: false, error: 'task vanished before override could be applied' }, 500);
+      // Override approval is an authoritative decision: also set the
+      // corresponding *_validated flag so PM doesn't re-surface the task.
+      db.prepare(`
+        UPDATE tasks
+        SET revert_count = 0,
+            awaiting_user_verdict = 0,
+            user_verdict_requested_at = NULL,
+            complete_validated = CASE WHEN ? = 'complete' THEN 1 ELSE complete_validated END,
+            pause_validated = CASE WHEN ? = 'paused' THEN 1 ELSE pause_validated END,
+            blocked_validated = CASE WHEN ? = 'blocked' THEN 1 ELSE blocked_validated END,
+            updated_at = datetime('now')
+        WHERE id = ?
+      `).run(req.requested_status, req.requested_status, req.requested_status, req.task_id);
+      db.prepare(`
+        UPDATE task_override_requests
+        SET status = 'approved', resolved_by = 'user', resolved_reason = ?, resolved_at = datetime('now')
+        WHERE id = ?
+      `).run(reason, id);
+      writeTaskLog({
+        taskId: req.task_id,
+        fromEntity: 'user',
+        entryKind: 'override',
+        toStatus: req.requested_status,
+        actionTaken: 'dashboard override(approve=true)',
+        reason,
+      });
+      logger.info('Override approved via dashboard', { taskId: req.task_id, requestId: id });
+      return c.json({ ok: true, data: { approved: true } });
+    }
+
+    db.prepare(`
+      UPDATE task_override_requests
+      SET status = 'denied', resolved_by = 'user', resolved_reason = ?, resolved_at = datetime('now')
+      WHERE id = ?
+    `).run(reason, id);
+    writeTaskLog({
+      taskId: req.task_id,
+      fromEntity: 'user',
+      entryKind: 'override',
+      actionTaken: 'dashboard override(approve=false)',
+      reason: `denied: ${reason}`,
+    });
+    // Best-effort A2A notification to the requesting agent.
+    try {
+      const { deliverA2AMessage } = await import('../../agent/a2a-transport.js');
+      const { getPMAgentId } = await import('../../config/platform.js');
+      await deliverA2AMessage({
+        intent: 'QUESTION',
+        threadId: '',
+        requiresResponse: true,
+        payload: `Your override request on task ${req.task_id.slice(0, 8)} was denied by the user. Reason: ${reason}. Address the original engine objection and resubmit cleanly.`,
+        toAgent: req.requested_by,
+        fromAgent: getPMAgentId(),
+      });
+    } catch { /* best-effort */ }
+    logger.info('Override denied via dashboard', { taskId: req.task_id, requestId: id });
+    return c.json({ ok: true, data: { approved: false } });
+  } catch (err) {
+    logger.error('POST /override-requests/:id/resolve failed', { id, error: err instanceof Error ? err.message : String(err) });
+    return c.json({ ok: false, error: 'failed to resolve override' }, 500);
+  }
+});
+
+// GET /override-requests — list override requests, optionally filtered by status (Phase B.1)
+trackerRouter.get('/override-requests', async (c) => {
+  const statusParam = c.req.query('status');
+  try {
+    const { getDb } = await import('../../db/connection.js');
+    const db = getDb();
+    const allowed = new Set(['pending', 'approved', 'denied', 'auto_denied']);
+    const where = statusParam && allowed.has(statusParam) ? `WHERE r.status = '${statusParam}'` : '';
+    const rows = db.prepare(`
+      SELECT r.id, r.task_id, r.requested_by, r.requested_status, r.justification,
+             r.last_engine_error, r.attempts_attached, r.status, r.resolved_by,
+             r.resolved_reason, r.created_at, r.resolved_at,
+             t.title as task_title, t.goal as task_goal
+      FROM task_override_requests r
+      LEFT JOIN tasks t ON t.id = r.task_id
+      ${where}
+      ORDER BY r.created_at DESC
+      LIMIT 100
+    `).all();
+    return c.json({ ok: true, data: rows });
+  } catch (err) {
+    logger.error('GET /override-requests failed', { error: err instanceof Error ? err.message : String(err) });
+    return c.json({ ok: false, error: 'failed to load override requests' }, 500);
+  }
+});
+
 // POST /tasks — create standalone task
 trackerRouter.post('/tasks', async (c) => {
   const body = await c.req.json().catch(() => null);
@@ -281,13 +592,49 @@ trackerRouter.put('/tasks/:id', async (c) => {
     if (body.assignedTo !== undefined) updates.assignedTo = body.assignedTo;
     if (body.priority) updates.priority = body.priority;
 
-    // Handle notes separately — append rather than replace
+    // Phase B.0: dashboard observations go through task_log, not the
+    // legacy tasks.notes column. Caller can still pass `notes` and we
+    // route it as a user-observation entry for back-compat with older
+    // dashboard builds.
     if (body.notes) {
-      addTaskNotes(id, body.notes);
+      const { writeTaskLog } = await import('../../tracker/task-log.js');
+      writeTaskLog({
+        taskId: id,
+        fromEntity: 'user',
+        entryKind: 'observation',
+        note: body.notes,
+      });
     }
 
     if (Object.keys(updates).length > 0) {
+      // Snapshot prior status BEFORE updateTask so the transition entry
+      // is accurate. User dashboard transitions auto-validate the new
+      // status (user is the ultimate authority — Q5).
+      const prior = getTask(id);
+      const fromStatus = prior?.status ?? null;
       updateTask(id, updates);
+      if (body.status && body.status !== fromStatus) {
+        const { writeTaskLog } = await import('../../tracker/task-log.js');
+        writeTaskLog({
+          taskId: id,
+          fromEntity: 'user',
+          entryKind: 'transition',
+          fromStatus,
+          toStatus: body.status,
+          actionTaken: 'dashboard PUT /tracker/tasks/:id',
+        });
+        // User dashboard transitions auto-validate. Skip awaiting_user_verdict tasks
+        // because those have their own resolution path via tracker_apply_user_verdict.
+        const db = getDb();
+        db.prepare(`
+          UPDATE tasks
+          SET complete_validated = CASE WHEN ? = 'complete' THEN 1 ELSE complete_validated END,
+              pause_validated = CASE WHEN ? = 'paused' THEN 1 ELSE pause_validated END,
+              blocked_validated = CASE WHEN ? = 'blocked' THEN 1 ELSE blocked_validated END,
+              revert_count = 0
+          WHERE id = ? AND awaiting_user_verdict = 0
+        `).run(body.status, body.status, body.status, id);
+      }
     }
 
     // Handle schedule updates

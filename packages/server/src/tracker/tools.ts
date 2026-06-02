@@ -9,21 +9,19 @@ import {
   listProjects,
   updateTask,
   updateProject,
-  addTaskNotes,
-  setTaskNotes,
-  clearTaskNotes,
   resolveTaskId,
   resolveProjectId,
   formatResolveError,
   closeProjectAndOpenTasks,
 } from './schema.js';
-import { ensurePMAgentRunning } from './pm-agent.js';
+import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
 import { injectTaskAssignmentNotification } from './notify.js';
+import { writeTaskLog } from './task-log.js';
 import { calculateNextRun, type ScheduledTask } from '../scheduler/engine.js';
 import { onTaskRunComplete } from '../scheduler/runner.js';
 import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../gateway/ws.js';
-import { getPrimaryAgentId, isPrimaryAgent, getOwnerName } from '../config/platform.js';
+import { getPrimaryAgentId, isPrimaryAgent, getOwnerName, isPMAgent } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { formatTimeForAgent } from '../services/format-time.js';
 
@@ -380,6 +378,21 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
 
     const projectId = args.projectId as string | undefined;
     const description = args.description as string | undefined;
+    // Phase B.1: goal is required on every new task (Q6). PM is the supreme
+    // authority on whether the work matches; without a goal there is nothing
+    // to compare result+evidence against. The engine accepts `goal` (camelCase)
+    // or `goal_description` (legacy alias). Empty string is rejected.
+    let goal = typeof args.goal === 'string' ? args.goal.trim() : '';
+    if (!goal && typeof description === 'string' && description.trim()) {
+      // Permissive fallback for now: copy description into goal when caller
+      // forgot. Logged so we can see who needs prompt updates. Once every
+      // caller is migrated this fallback can be removed and we hard-reject.
+      goal = description.trim();
+      logger.info('tracker_create_task: goal omitted, defaulted from description', { agentId, title }, agentId);
+    }
+    if (!goal) {
+      return 'Error: `goal` is required. One-sentence definition of done that PM will compare result + evidence against. Example: goal="migrate all 12 routes under packages/server/src/gateway/routes/ to the new auth middleware, with each route\'s tests passing".';
+    }
     // Default assigned_to to the calling agent if not specified
     // Resolve agent name to ID if a name was passed instead of a UUID
     let assignedTo = (args.assignedTo as string | undefined) ?? agentId;
@@ -393,6 +406,67 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     const dependsOn = args.dependsOn as string[] | undefined;
     const phase = args.phase as number | undefined;
 
+    // Near-duplicate guard (2026-06-02 bug fix). Without this, a hoarding-
+    // gate error on file_read/exec can put the agent into a loop where
+    // every iteration calls tracker_create_task with the same title — 27
+    // duplicates landed in one session before this guard. Two prongs,
+    // both within a 5-minute window because tasks turn over faster than
+    // projects:
+    //   (a) Exact-title-match by the same creator + same assignee.
+    //   (b) Jaccard ≥ 0.6 on normalised content tokens, ≥ 2 shared tokens.
+    // Agent can override with allow_duplicate=true when the dup match is
+    // a false positive (e.g. genuinely separate work that shares keywords).
+    const allowDuplicate = (args.allow_duplicate as boolean) ?? false;
+    if (!allowDuplicate) {
+      const db = getDb();
+      const exact = db.prepare(`
+        SELECT id, substr(id, 1, 8) as id8 FROM tasks
+        WHERE created_by = ?
+          AND LOWER(title) = LOWER(?)
+          AND COALESCE(assigned_to, '') = COALESCE(?, '')
+          AND status IN ('on_deck', 'in_progress', 'paused', 'blocked')
+          AND datetime(created_at) >= datetime('now', '-5 minutes')
+        ORDER BY created_at DESC
+        LIMIT 1
+      `).get(agentId, title, assignedTo ?? null) as { id: string; id8: string } | undefined;
+      if (exact) {
+        return (
+          `Error: a task with this exact title was created by you in the last 5 minutes (id=${exact.id8}, assigned to the same agent). ` +
+          `If you meant to update that task, call tracker_update_status / tracker_edit_task on id=${exact.id8}. ` +
+          `If this is genuinely separate work that happens to share a title, re-call with allow_duplicate=true.`
+        );
+      }
+
+      const newTokens = normalizeTitle(title);
+      if (newTokens.length >= 2) {
+        const newSet = new Set(newTokens);
+        const recent = db.prepare(`
+          SELECT id, title, substr(id, 1, 8) as id8 FROM tasks
+          WHERE created_by = ?
+            AND status IN ('on_deck', 'in_progress', 'paused', 'blocked')
+            AND datetime(created_at) >= datetime('now', '-5 minutes')
+          ORDER BY created_at DESC
+          LIMIT 20
+        `).all(agentId) as Array<{ id: string; title: string; id8: string }>;
+        for (const row of recent) {
+          const oldTokens = normalizeTitle(row.title);
+          if (oldTokens.length < 2) continue;
+          const oldSet = new Set(oldTokens);
+          const intersection = new Set([...newSet].filter(w => oldSet.has(w)));
+          if (intersection.size < 2) continue;
+          const union = new Set([...newSet, ...oldSet]);
+          const jaccard = intersection.size / union.size;
+          if (jaccard >= 0.6) {
+            return (
+              `Error: a near-duplicate task "${row.title}" (id=${row.id8}) was created by you in the last 5 minutes (token-overlap ${(jaccard * 100).toFixed(0)}%). ` +
+              `If you meant to update that task, call tracker_update_status / tracker_edit_task on id=${row.id8}. ` +
+              `If this is genuinely separate work, re-call with allow_duplicate=true.`
+            );
+          }
+        }
+      }
+    }
+
     const taskId = createTask({
       projectId,
       title,
@@ -405,6 +479,15 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       phase,
       kind: args.kind as string | undefined,
     });
+
+    // Persist the goal onto the new row. (createTask itself only writes the
+    // legacy columns; adding goal as an extra parameter would force every
+    // call site to update. Cleaner to set it here.)
+    try {
+      getDb().prepare(`UPDATE tasks SET goal = ? WHERE id = ?`).run(goal, taskId);
+    } catch (err) {
+      logger.warn('Failed to persist goal on new task (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
+    }
 
     // Status reconciliation against the schema default (createTask sets a
     // self-assigned task to 'in_progress' automatically). v2.3.13:
@@ -604,10 +687,14 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       return 'Error: at least one of status, assignedTo, or priority must be provided';
     }
 
-    // Check if this is a scheduled recurring task
+    // Check if this is a scheduled recurring task. Also snapshot the prior
+    // status so we can emit a task_log transition entry below with the
+    // accurate from→to pair (we cannot read it AFTER updateTask, the row
+    // already moved by then).
     const db = getDb();
-    const taskRow = db.prepare('SELECT schedule_status, repeat_interval FROM tasks WHERE id = ?').get(taskId) as { schedule_status: string; repeat_interval: number | null } | undefined;
+    const taskRow = db.prepare('SELECT schedule_status, repeat_interval, status as prior_status FROM tasks WHERE id = ?').get(taskId) as { schedule_status: string; repeat_interval: number | null; prior_status: string } | undefined;
     const isScheduledRecurring = taskRow && taskRow.schedule_status !== 'unscheduled' && taskRow.repeat_interval;
+    const priorStatus = taskRow?.prior_status ?? null;
 
     const updates: Record<string, string | null> = {};
     if (status) updates.status = status;
@@ -620,13 +707,18 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       updates.pausedUntil = resumeAt;
     }
 
+    // PM is the overseer. Its proactive transitions skip the worker-targeted
+    // hard gates below. The audit trail still logs from_entity='pm', and
+    // the validate_*/override tools are the structured PM paths.
+    const callerIsPM = isPMAgent(agentId);
+
     // ── Pause-reason engine pre-check (v2.7.18) ──
     // Pausing without a real wait condition was the most common gaming
     // pattern: agents marked tasks paused just to silence PM pokes. The
     // engine refuses empty/short notes here; PM validates the SUBSTANCE of
     // the reason on its next tick (see pause_validated column + the
     // tracker_validate_pause tool).
-    if (status === 'paused') {
+    if (status === 'paused' && !callerIsPM) {
       const pauseNotes = typeof args.notes === 'string' ? args.notes.trim() : '';
       const MIN_PAUSE_NOTES_LEN = 15;
       if (pauseNotes.length < MIN_PAUSE_NOTES_LEN) {
@@ -654,6 +746,71 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       }
     }
 
+    // ── Phase B.1: complete engine hard gate ──
+    // Structure only. Engine never inspects evidence content; that is PM's job.
+    if (status === 'complete' && !callerIsPM) {
+      const result = typeof args.result === 'string' ? args.result.trim() : '';
+      const evidence = Array.isArray(args.evidence) ? args.evidence : null;
+      if (!result) {
+        const breaker = noteHardGateRejection(taskId, agentId, 'missing result field on complete');
+        return (
+          `Error: status="complete" requires a non-empty \`result\` field describing what was done. ` +
+          `Example call: tracker_update_status(task_id="${taskId}", status="complete", result="migrated 12 routes to new auth middleware", evidence=[{kind:"file_modified", claim:"12 routes updated", pointer:"packages/server/src/gateway/routes/"}, {kind:"tool_call_ref", claim:"18 file_edit calls completed"}]).` +
+          breaker
+        );
+      }
+      if (!evidence || evidence.length === 0) {
+        const breaker = noteHardGateRejection(taskId, agentId, 'missing or empty evidence array on complete');
+        return (
+          `Error: status="complete" requires \`evidence\` as a non-empty array. Each entry must be {kind, claim, pointer?}. ` +
+          `Supported kinds (text-only, PM-readable): claim, file_modified, file_read, tool_call_ref, output_paste, external_action, quote. ` +
+          `Example: evidence=[{kind:"file_modified", claim:"updated 12 routes", pointer:"packages/server/src/gateway/routes/"}, {kind:"tool_call_ref", claim:"18 file_edit calls succeeded"}].` +
+          breaker
+        );
+      }
+      // Each entry must be an object with non-empty `kind` and `claim`.
+      for (let i = 0; i < evidence.length; i++) {
+        const e = evidence[i] as Record<string, unknown> | null;
+        if (!e || typeof e !== 'object') {
+          const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] is not an object`);
+          return `Error: evidence[${i}] must be an object with {kind, claim, pointer?}, got ${typeof e}.${breaker}`;
+        }
+        const kind = typeof e.kind === 'string' ? e.kind.trim() : '';
+        const claim = typeof e.claim === 'string' ? e.claim.trim() : '';
+        if (!kind || !claim) {
+          const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] missing kind or claim`);
+          return `Error: evidence[${i}] must have both \`kind\` (string) and \`claim\` (string). Got kind="${kind}", claim length=${claim.length}.${breaker}`;
+        }
+      }
+      // Persist result + evidence on the task row for PM to read.
+      try {
+        db.prepare(`UPDATE tasks SET result = ?, evidence_json = ?, updated_at = datetime('now') WHERE id = ?`)
+          .run(result, JSON.stringify(evidence), taskId);
+      } catch (err) {
+        logger.warn('Failed to persist result/evidence on complete (non-fatal)', {
+          taskId, error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      // Clear circuit-breaker tracking — the hard gate accepted.
+      clearHardGateBreaker(taskId, agentId);
+    }
+
+    // ── Phase B.1: blocked engine hard gate ──
+    if (status === 'blocked' && !callerIsPM) {
+      const blockedNotes = typeof args.notes === 'string' ? args.notes.trim() : '';
+      const MIN_BLOCKED_NOTES_LEN = 15;
+      if (blockedNotes.length < MIN_BLOCKED_NOTES_LEN) {
+        const breaker = noteHardGateRejection(taskId, agentId, 'missing or short blocked reason');
+        return (
+          `Error: status="blocked" requires a clear reason in \`notes\` (minimum ${MIN_BLOCKED_NOTES_LEN} characters). ` +
+          `Name the specific obstacle (e.g. "need API key for service X", "external service Y is returning 500s"). ` +
+          `If you are paused waiting for the user to do something, use status="paused" with notes naming the wait condition instead.` +
+          breaker
+        );
+      }
+      clearHardGateBreaker(taskId, agentId);
+    }
+
     // For recurring tasks being marked complete
     if (status === 'complete' && isScheduledRecurring) {
       const notes = args.notes as string | undefined;
@@ -665,6 +822,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         db.prepare("UPDATE tasks SET status = 'complete', schedule_status = 'completed', is_paused = 1, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(taskId);
         db.prepare("UPDATE task_runs SET status = 'complete', completed_at = datetime('now'), result_summary = ? WHERE task_id = ? AND status = 'running'").run(notes ?? 'All runs completed by agent', taskId);
         const updatedTask = getTask(taskId)!;
+        broadcast({ type: 'tracker:task_updated', data: updatedTask });
         notifyPrimaryAgent(
           `Recurring task "${updatedTask.title}" fully completed by ${updatedTask.assignedToName ?? updatedTask.assignedTo ?? agentId} (all runs done).${notes ? ` Notes: ${notes}` : ''}`,
           agentId,
@@ -706,6 +864,38 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       //   2. The task was deleted between the UPDATE and the SELECT
       // Either way, the task genuinely no longer exists — not a prefix mismatch.
       return `Error: Task ${taskId} was deleted before the update completed. It no longer exists.`;
+    }
+
+    // Phase B.0: write the transition + any supplied notes to task_log.
+    // tasks.notes is now read-only legacy (Q7) — new code does not append to it.
+    {
+      const fromEntity = isPMAgent(agentId)
+        ? 'pm'
+        : `agent:${agentId}`;
+
+      if (status && status !== priorStatus) {
+        writeTaskLog({
+          taskId,
+          fromEntity,
+          entryKind: 'transition',
+          fromStatus: priorStatus,
+          toStatus: status,
+          actionTaken: 'tracker_update_status',
+        });
+        // Event-driven PM wake: buffer + 10s debounce, then runPMReview.
+        // Smell detector also fires inside noteTransitionForReview.
+        noteTransitionForReview(taskId, status);
+      }
+      const persistNotes = typeof args.notes === 'string' ? args.notes.trim() : '';
+      if (persistNotes.length > 0) {
+        writeTaskLog({
+          taskId,
+          fromEntity,
+          entryKind: 'observation',
+          note: persistNotes,
+          actionTaken: status ? `notes attached to status=${status}` : 'notes attached',
+        });
+      }
     }
 
     // Notify primary agent when a task completes
@@ -757,6 +947,10 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
 }
 
 // ── trackerAddNotes ──
+//
+// Phase B.0: writes an observation entry to task_log instead of appending to
+// the legacy tasks.notes column. Call signature is unchanged so agents do
+// not need to relearn.
 
 export function trackerAddNotes(agentId: string, args: Record<string, unknown>): string {
   try {
@@ -770,9 +964,15 @@ export function trackerAddNotes(agentId: string, args: Record<string, unknown>):
     const notes = args.notes as string;
     if (!notes) return 'Error: notes is required';
 
-    addTaskNotes(taskId, notes);
+    const fromEntity = isPMAgent(agentId) ? 'pm' : `agent:${agentId}`;
+    writeTaskLog({
+      taskId,
+      fromEntity,
+      entryKind: 'observation',
+      note: notes,
+    });
 
-    return `[OK] task_id=${taskId}\n\nNotes appended successfully.`;
+    return `[OK] task_id=${taskId}\n\nObservation appended to task_log.`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('trackerAddNotes failed', { error: msg }, agentId);
@@ -780,60 +980,40 @@ export function trackerAddNotes(agentId: string, args: Record<string, unknown>):
   }
 }
 
-// ── trackerEditNotes ──
+// ── trackerEditNotes (deprecated v2.8.0) ──
 //
-// Replace the entire notes field on a task. Use when the existing
-// notes are stale or wrong and need to be rewritten wholesale —
-// e.g. you appended a note that turned out to be incorrect and want
-// the field to read cleanly without "[timestamp] correction:" cruft.
-// For incremental updates that preserve prior entries, use
-// tracker_add_notes (the appender). For wiping notes back to NULL,
-// use tracker_clear_notes.
+// Phase B.0 makes the task_log append-only by design (audit trail).
+// Mutating past entries breaks the audit guarantees. The tool stays in the
+// registry for one release so existing prompts do not 404; returns a
+// directive instead of doing the edit. Removed in Phase C.
 export function trackerEditNotes(agentId: string, args: Record<string, unknown>): string {
-  try {
-    const rawTaskId = args.taskId as string;
-    if (!rawTaskId) return 'Error: taskId is required';
-
-    const resolved = resolveTaskId(rawTaskId);
-    if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
-    const taskId = resolved.id;
-
-    const notes = args.notes;
-    if (typeof notes !== 'string') {
-      return 'Error: notes is required (string). To wipe notes back to empty, use tracker_clear_notes instead.';
-    }
-
-    setTaskNotes(taskId, notes);
-
-    return `[OK] task_id=${taskId}\n\nNotes replaced (${notes.length} chars).`;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error('trackerEditNotes failed', { error: msg }, agentId);
-    return `Error editing notes: ${msg}`;
-  }
+  const rawTaskId = args.taskId as string | undefined;
+  const taskFragment = rawTaskId ? ` (task ${rawTaskId.slice(0, 8)})` : '';
+  logger.info('trackerEditNotes called against deprecated tool', { agentId }, agentId);
+  return (
+    `Error: tracker_edit_notes is deprecated as of v2.8.0${taskFragment}. ` +
+    `Task notes are now an append-only audit log (task_log). To correct a ` +
+    `prior entry, write a new observation that supersedes it via ` +
+    `tracker_add_notes(taskId, notes="Correction to my earlier note: <new info>"). ` +
+    `The original entry stays in the log for the audit trail.`
+  );
 }
 
-// ── trackerClearNotes ──
+// ── trackerClearNotes (deprecated v2.8.0) ──
 //
-// Wipe the notes field on a task back to NULL. Use when the existing
-// notes are obsolete and no replacement content is appropriate.
+// Same deprecation rationale as trackerEditNotes. The task_log is the
+// audit trail; wiping it would defeat the point. Returns a directive
+// instead of clearing.
 export function trackerClearNotes(agentId: string, args: Record<string, unknown>): string {
-  try {
-    const rawTaskId = args.taskId as string;
-    if (!rawTaskId) return 'Error: taskId is required';
-
-    const resolved = resolveTaskId(rawTaskId);
-    if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
-    const taskId = resolved.id;
-
-    clearTaskNotes(taskId);
-
-    return `[OK] task_id=${taskId}\n\nNotes cleared.`;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error('trackerClearNotes failed', { error: msg }, agentId);
-    return `Error clearing notes: ${msg}`;
-  }
+  const rawTaskId = args.taskId as string | undefined;
+  const taskFragment = rawTaskId ? ` (task ${rawTaskId.slice(0, 8)})` : '';
+  logger.info('trackerClearNotes called against deprecated tool', { agentId }, agentId);
+  return (
+    `Error: tracker_clear_notes is deprecated as of v2.8.0${taskFragment}. ` +
+    `Task notes are now an append-only audit log (task_log) and cannot be ` +
+    `wiped. If a prior entry is obsolete, write a new observation that says ` +
+    `so via tracker_add_notes(taskId, notes="The prior entries are stale: <why>").`
+  );
 }
 
 // ── trackerEditTask ──
@@ -871,15 +1051,39 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     const anchorTime = (args.anchorTime ?? args.anchor_time) as string | null | undefined;
     const priority = args.priority as string | undefined;
     const notes = args.notes as string | undefined;
+    const goal = args.goal as string | undefined;
 
     const editableKeys = [
       title, description, dependsOn, stepNumber, phase,
       scheduledStart, repeatInterval, repeatUnit, repeatEndType, repeatEndValue,
       repeatDaysOfWeek, anchorTime,
-      priority, notes,
+      priority, notes, goal,
     ];
     if (editableKeys.every(v => v === undefined)) {
-      return 'Error: at least one editable field must be provided. Editable: title, description, depends_on, step_number, phase, scheduled_start, repeat_interval, repeat_unit, repeat_end_type, repeat_end_value, repeat_days_of_week, anchor_time, priority, notes. (For status changes use tracker_update_status; for assignee changes use tracker_reassign_task; for pause/resume use tracker_pause_schedule.)';
+      return 'Error: at least one editable field must be provided. Editable: title, description, goal, depends_on, step_number, phase, scheduled_start, repeat_interval, repeat_unit, repeat_end_type, repeat_end_value, repeat_days_of_week, anchor_time, priority, notes. (For status changes use tracker_update_status; for assignee changes use tracker_reassign_task; for pause/resume use tracker_pause_schedule.)';
+    }
+
+    // Phase B.1: goal edits are special. PM watches for goalpost-narrowing
+    // mid-work. We log both old and new with a diff, so PM can see history
+    // when validating later.
+    if (goal !== undefined) {
+      const goalTrimmed = goal.trim();
+      if (!goalTrimmed) {
+        return 'Error: goal cannot be empty. To edit other fields without changing goal, omit goal from the args.';
+      }
+      try {
+        const priorGoal = getDb().prepare(`SELECT goal FROM tasks WHERE id = ?`).get(taskId) as { goal: string | null } | undefined;
+        getDb().prepare(`UPDATE tasks SET goal = ?, updated_at = datetime('now') WHERE id = ?`).run(goalTrimmed, taskId);
+        writeTaskLog({
+          taskId,
+          fromEntity: isPMAgent(agentId) ? 'pm' : `agent:${agentId}`,
+          entryKind: 'observation',
+          actionTaken: 'goal_edited',
+          note: `BEFORE: ${priorGoal?.goal ?? '(none)'} -- AFTER: ${goalTrimmed}`,
+        });
+      } catch (err) {
+        logger.warn('goal edit persist failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
+      }
     }
 
     const updates: Parameters<typeof updateTask>[1] = {};
@@ -1417,7 +1621,7 @@ export function trackerCloseProject(agentId: string, args: Record<string, unknow
 
 export async function trackerValidatePause(
   pmAgentId: string,
-  args: { task_id: string; valid: boolean; reject_reason?: string },
+  args: { task_id: string; valid: boolean; reject_reason?: string; target_status?: string },
 ): Promise<string> {
   const rawTaskId = args.task_id;
   if (!rawTaskId) return 'Error: task_id is required.';
@@ -1428,8 +1632,8 @@ export async function trackerValidatePause(
 
   const db = getDb();
   const task = db.prepare(
-    "SELECT id, title, status, assigned_to, notes, pause_validated FROM tasks WHERE id = ?",
-  ).get(taskId) as { id: string; title: string; status: string; assigned_to: string | null; notes: string | null; pause_validated: number } | undefined;
+    "SELECT id, title, status, assigned_to, notes, pause_validated, goal FROM tasks WHERE id = ?",
+  ).get(taskId) as { id: string; title: string; status: string; assigned_to: string | null; notes: string | null; pause_validated: number; goal: string | null } | undefined;
 
   if (!task) return `Error: task ${taskId} not found.`;
   if (task.status !== 'paused') {
@@ -1438,19 +1642,57 @@ export async function trackerValidatePause(
 
   if (args.valid) {
     db.prepare("UPDATE tasks SET pause_validated = 1, updated_at = datetime('now') WHERE id = ?").run(taskId);
+    writeTaskLog({
+      taskId,
+      fromEntity: 'pm',
+      entryKind: 'transition',
+      fromStatus: 'paused',
+      toStatus: 'paused',
+      actionTaken: 'tracker_validate_pause(valid=true)',
+      reason: 'PM blessed the pause as legitimate',
+    });
+    // Real-time dashboard sync: the validate-success path bypasses
+    // updateTask() and writes the validation flag via direct SQL, so
+    // we have to broadcast manually for the bug icon to clear without
+    // a manual refresh.
+    const fresh = getTask(taskId);
+    if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
     logger.info('Pause validated by PM', { taskId, pmAgentId }, pmAgentId);
     return `[OK] Pause validated on "${task.title}" (${taskId}). PM will leave this task alone until the agent un-pauses it.`;
   }
 
-  // Reject path. Revert to in_progress and notify the assigned agent.
+  // Reject path. Revert to PM-chosen target_status (default in_progress) and notify the assigned agent.
   const rejectReason = (args.reject_reason ?? '').trim();
   if (!rejectReason) {
     return 'Error: reject_reason is required when valid=false. One-sentence explanation for the agent (e.g. "no specific wait condition; you never actually asked the user anything").';
   }
+  const targetStatus = args.target_status ?? 'in_progress';
+  const ALLOWED_TARGETS = new Set(['in_progress', 'on_deck', 'blocked']);
+  if (!ALLOWED_TARGETS.has(targetStatus)) {
+    return `Error: target_status="${targetStatus}" is not allowed for a pause rejection. Use 'in_progress' (default), 'on_deck', or 'blocked'.`;
+  }
 
   // Use updateTask so is_paused gets cleared and pause fields reset.
-  const updated = updateTask(taskId, { status: 'in_progress' });
+  const updated = updateTask(taskId, { status: targetStatus });
   if (!updated) return `Error: task ${taskId} was deleted before pause-reject could land.`;
+  // Increment revert_count and log the reject + transition.
+  db.prepare(`UPDATE tasks SET revert_count = revert_count + 1, updated_at = datetime('now') WHERE id = ?`).run(taskId);
+  // updateTask already broadcast with the status flip, but revert_count
+  // moved after that broadcast — re-broadcast so the dashboard's copy
+  // matches the row.
+  const freshPauseReject = getTask(taskId);
+  if (freshPauseReject) broadcast({ type: 'tracker:task_updated', data: freshPauseReject });
+  writeTaskLog({
+    taskId,
+    fromEntity: 'pm',
+    entryKind: 'reject',
+    fromStatus: 'paused',
+    toStatus: targetStatus,
+    actionTaken: 'tracker_validate_pause(valid=false)',
+    reason: rejectReason,
+  });
+  // Check whether revert_count just crossed the stalemate threshold.
+  await maybeTriggerStalemate(taskId, pmAgentId);
 
   // Direct A2A message to the assigned agent so they see the rejection on
   // their next turn. Fire-and-forget; if delivery fails, log and continue -
@@ -1459,12 +1701,10 @@ export async function trackerValidatePause(
     try {
       const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
       const directive =
-        `Your pause on task "${task.title}" (${taskId.slice(0, 8)}) was rejected by the PM. ` +
-        `Reason: ${rejectReason}. ` +
-        `The task is back to in_progress. Pick one: (a) do the work and mark complete, ` +
-        `(b) mark blocked with the real reason if you genuinely cannot proceed, ` +
-        `(c) ask the user a specific question and THEN re-pause with notes that name what you're waiting for. ` +
-        `Do not just re-pause with the same notes - PM will reject again.`;
+        `Your pause on "${task.title}" (${taskId.slice(0, 8)}) was lifted back to in_progress — PM didn't see a real wait condition. This is a routine check, not a penalty.\n\n` +
+        `PM's reason: ${rejectReason}\n\n` +
+        `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
+        `Pick one and move: (a) finish the work and mark complete with result + evidence, (b) mark blocked with the real obstacle if you can't proceed, (c) ask the user a specific question and re-pause naming what you're waiting for. Don't re-pause with the same notes — PM will reject again.`;
       const { v4: uuidv4 } = await import('uuid');
       await deliverA2AMessage({
         intent: 'QUESTION',
@@ -1519,12 +1759,16 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
     // Stop the schedule AND mark the task as complete (terminal state)
     db.prepare("UPDATE tasks SET is_paused = 1, schedule_status = 'completed', status = 'complete', completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(taskId);
     db.prepare("UPDATE task_runs SET status = 'complete', completed_at = datetime('now'), result_summary = 'Schedule stopped and marked complete' WHERE task_id = ? AND status = 'running'").run(taskId);
+    const freshSchedDone = getTask(taskId);
+    if (freshSchedDone) broadcast({ type: 'tracker:task_updated', data: freshSchedDone });
     logger.info('Schedule paused and task marked complete', { taskId }, agentId);
     checkProjectCompletion(task.project_id, agentId);
     return `Schedule stopped and task "${task.title}" marked complete.`;
   }
 
   db.prepare("UPDATE tasks SET is_paused = 1, schedule_status = 'paused', status = 'paused', updated_at = datetime('now') WHERE id = ?").run(taskId);
+  const freshSchedPaused = getTask(taskId);
+  if (freshSchedPaused) broadcast({ type: 'tracker:task_updated', data: freshSchedPaused });
   logger.info('Schedule paused', { taskId }, agentId);
   return `Schedule paused for "${task.title}". Status set to "paused" — stale detection and PM monitoring will ignore it until resumed.`;
 }
@@ -1561,6 +1805,8 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
 
   const nextRun = calculateNextRun(scheduledTask);
   db.prepare("UPDATE tasks SET is_paused = 0, schedule_status = 'waiting', status = 'on_deck', next_run_at = ?, updated_at = datetime('now') WHERE id = ?").run(nextRun, taskId);
+  const freshResumed = getTask(taskId);
+  if (freshResumed) broadcast({ type: 'tracker:task_updated', data: freshResumed });
 
   logger.info('Schedule resumed', { taskId, nextRun }, agentId);
   return `Schedule resumed for "${task.title as string}". Next run: ${nextRun ?? 'none'}`;
@@ -1642,4 +1888,896 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
   `).run(nowIso, taskId);
   logger.info('Missed-runs resolved: run_now', { taskId }, agentId);
   return `OK: task "${title}" unpaused and scheduled to fire on the next scheduler tick (within ~1 minute). Schedule resumes on its normal anchor after this run completes.`;
+}
+
+/**
+ * tracker_apply_user_validation — used by the primary agent when the user
+ * replies to a "[VALIDATION CHECK]" system message in chat. The user is
+ * telling us whether work that's been sitting unvalidated is actually
+ * done or not.
+ *
+ * Args:
+ *   - task_id: the task being validated
+ *   - validated: true if user confirmed it's actually done; false to revert
+ *   - user_quote: the user's exact reply for audit
+ *   - feedback: optional feedback to relay to the assigned agent when
+ *     validated=false (e.g. "no, the script didn't actually run; rerun it")
+ *
+ * On validated=true: flips the matching *_validated flag to 1, logs as
+ * from_entity='user' via primary, clears the bug icon. Mirrors the
+ * dashboard /user-validate endpoint.
+ *
+ * On validated=false: reverts to in_progress, increments revert_count,
+ * appends feedback as an observation entry, A2A-pings the assigned agent
+ * with the feedback. The assigned agent picks up where they left off.
+ */
+export async function trackerApplyUserValidation(
+  callerAgentId: string,
+  args: { task_id: string; validated: boolean; user_quote: string; feedback?: string },
+): Promise<string> {
+  const rawTaskId = args.task_id;
+  if (!rawTaskId) return 'Error: task_id is required.';
+  const resolved = resolveTaskId(rawTaskId);
+  if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+  const taskId = resolved.id;
+
+  const userQuote = (args.user_quote ?? '').trim();
+  if (!userQuote) return 'Error: user_quote is required (the user\'s exact reply, for the audit trail).';
+
+  const db = getDb();
+  const task = db.prepare(`
+    SELECT id, title, status, assigned_to, complete_validated, pause_validated, blocked_validated
+    FROM tasks WHERE id = ?
+  `).get(taskId) as {
+    id: string; title: string; status: string; assigned_to: string | null;
+    complete_validated: number; pause_validated: number; blocked_validated: number;
+  } | undefined;
+  if (!task) return `Error: task ${taskId} not found.`;
+
+  let flagColumn: 'complete_validated' | 'pause_validated' | 'blocked_validated' | null = null;
+  if (task.status === 'complete') flagColumn = 'complete_validated';
+  else if (task.status === 'paused') flagColumn = 'pause_validated';
+  else if (task.status === 'blocked') flagColumn = 'blocked_validated';
+  if (!flagColumn) {
+    return `Error: task "${task.title}" (${taskId.slice(0, 8)}) is currently status="${task.status}". User-validation only applies to complete/paused/blocked.`;
+  }
+
+  if (args.validated) {
+    db.prepare(`UPDATE tasks SET ${flagColumn} = 1, updated_at = datetime('now') WHERE id = ?`).run(taskId);
+    // Real-time sync after direct SQL flag-set.
+    const freshUserValid = getTask(taskId);
+    if (freshUserValid) broadcast({ type: 'tracker:task_updated', data: freshUserValid });
+    writeTaskLog({
+      taskId,
+      fromEntity: 'user',
+      entryKind: 'transition',
+      fromStatus: task.status,
+      toStatus: task.status,
+      actionTaken: `apply_user_validation via ${callerAgentId} (${flagColumn}=1)`,
+      reason: 'user confirmed in chat reply',
+      note: userQuote,
+    });
+    logger.info('User validation applied via chat reply', { taskId, callerAgentId, flagColumn }, callerAgentId);
+    return `[OK] task "${task.title}" (${taskId.slice(0, 8)}) marked validated by user (${flagColumn}=1). Bug icon cleared.`;
+  }
+
+  // Reject path: revert to in_progress, add feedback as observation, ping the assigned agent.
+  const feedback = (args.feedback ?? '').trim();
+  const updated = updateTask(taskId, { status: 'in_progress' });
+  if (!updated) return `Error: task ${taskId} was deleted before user-revert could land.`;
+  db.prepare(`UPDATE tasks SET revert_count = revert_count + 1, updated_at = datetime('now') WHERE id = ?`).run(taskId);
+  const freshUserReject = getTask(taskId);
+  if (freshUserReject) broadcast({ type: 'tracker:task_updated', data: freshUserReject });
+
+  writeTaskLog({
+    taskId,
+    fromEntity: 'user',
+    entryKind: 'reject',
+    fromStatus: task.status,
+    toStatus: 'in_progress',
+    actionTaken: `apply_user_validation via ${callerAgentId} (validated=false)`,
+    reason: feedback || 'user said work was not actually done',
+    note: userQuote,
+  });
+
+  if (task.assigned_to) {
+    try {
+      const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
+      const directive =
+        `User reviewed task "${task.title}" (${taskId.slice(0, 8)}) and said it is NOT actually ${task.status}. ` +
+        `User's reply: "${userQuote}". ` +
+        (feedback ? `Feedback to address: ${feedback}. ` : '') +
+        `Task is back to in_progress. Address the feedback, then resubmit with proper result + evidence.`;
+      await deliverA2AMessage({
+        intent: 'ASSIGN',
+        threadId: '',
+        requiresResponse: true,
+        payload: directive,
+        toAgent: task.assigned_to,
+        fromAgent: callerAgentId,
+      });
+    } catch (err) {
+      logger.warn('apply_user_validation: A2A delivery to assigned agent failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  logger.info('User reverted via chat reply', { taskId, callerAgentId, hasFeedback: feedback.length > 0 }, callerAgentId);
+  return `[OK] task "${task.title}" (${taskId.slice(0, 8)}) reverted to in_progress. Assigned agent (${task.assigned_to ?? 'unassigned'}) notified with the feedback.`;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Phase B.1: validation + override + user-verdict tools
+// ──────────────────────────────────────────────────────────────────────
+
+const USER_VERDICT_THRESHOLDS: Record<string, number> = {
+  high: 2,
+  normal: 3,
+  low: 5,
+};
+
+const ALLOWED_REJECT_TARGETS = new Set(['in_progress', 'on_deck', 'blocked']);
+
+// Hard-gate circuit-breaker. Counts consecutive engine hard-gate
+// rejections per (task, agent). After HARD_GATE_BREAKER_LIMIT, the
+// engine auto-queues an OVERRIDE_REQUEST on the agent's behalf and the
+// thrashing stops. In-memory is fine: a server restart resets all
+// counters and the agent gets fresh chances. Phase B.1.
+const HARD_GATE_BREAKER_LIMIT = 3;
+interface BreakerState {
+  count: number;
+  reasons: string[];
+  firstAt: number;
+}
+const hardGateBreaker = new Map<string, BreakerState>();
+function breakerKey(taskId: string, agentId: string): string {
+  return `${taskId}::${agentId}`;
+}
+/**
+ * Record one hard-gate rejection. Returns a suffix string to append to
+ * the agent-facing error. After the limit hits, the suffix tells the
+ * agent the engine queued an override on their behalf.
+ */
+function noteHardGateRejection(taskId: string, agentId: string, reason: string): string {
+  const key = breakerKey(taskId, agentId);
+  const prev = hardGateBreaker.get(key);
+  const next: BreakerState = prev
+    ? { count: prev.count + 1, reasons: [...prev.reasons, reason].slice(-HARD_GATE_BREAKER_LIMIT), firstAt: prev.firstAt }
+    : { count: 1, reasons: [reason], firstAt: Date.now() };
+  hardGateBreaker.set(key, next);
+
+  if (next.count >= HARD_GATE_BREAKER_LIMIT) {
+    // Auto-queue an OVERRIDE_REQUEST on the agent's behalf.
+    try {
+      const justification =
+        `Engine hard-gate circuit-breaker auto-fired after ${next.count} consecutive same-task hard-gate rejections by ${agentId}. ` +
+        `Last reasons (most recent first): ${next.reasons.slice().reverse().join(' | ')}. ` +
+        `Either the agent is misinterpreting the schema or the engine is wrong; PM should decide.`;
+      const db = getDb();
+      const existing = db.prepare(`
+        SELECT id FROM task_override_requests
+        WHERE task_id = ? AND requested_by = ? AND status = 'pending'
+        LIMIT 1
+      `).get(taskId, agentId) as { id: string } | undefined;
+      if (!existing) {
+        const id = uuidv4();
+        db.prepare(`
+          INSERT INTO task_override_requests
+            (id, task_id, requested_by, requested_status, justification, last_engine_error, attempts_attached, status, created_at)
+          VALUES (?, ?, ?, 'complete', ?, ?, ?, 'pending', datetime('now'))
+        `).run(id, taskId, agentId, justification, reason, next.count);
+        writeTaskLog({
+          taskId,
+          fromEntity: 'engine',
+          entryKind: 'override',
+          actionTaken: 'hard-gate circuit-breaker auto-fired',
+          reason: justification,
+        });
+        logger.warn('Hard-gate circuit-breaker fired', { taskId, agentId, count: next.count }, agentId);
+      }
+    } catch (err) {
+      logger.warn('Circuit-breaker auto-override queue failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
+    }
+    // Reset after firing so the agent doesn't loop on the breaker too.
+    hardGateBreaker.delete(key);
+    return ` (Circuit-breaker: engine queued an OVERRIDE_REQUEST on your behalf after ${HARD_GATE_BREAKER_LIMIT} consecutive hard-gate rejections on this task. Stop retrying; wait for PM to resolve.)`;
+  }
+  return ` (Attempt ${next.count}/${HARD_GATE_BREAKER_LIMIT} before circuit-breaker auto-queues an override.)`;
+}
+/**
+ * Reset the breaker for a (task, agent) pair. Called when the hard gate
+ * accepts a transition — the agent is back in a good state.
+ */
+function clearHardGateBreaker(taskId: string, agentId: string): void {
+  hardGateBreaker.delete(breakerKey(taskId, agentId));
+}
+
+/**
+ * Helper: after PM rejects a transition, see if revert_count has reached
+ * the per-priority stalemate threshold. If so, flip awaiting_user_verdict
+ * and dispatch a directive A2A to the assigned agent telling them to
+ * call tracker_request_user_verdict.
+ */
+async function maybeTriggerStalemate(taskId: string, pmAgentId: string): Promise<void> {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT id, title, status, priority, assigned_to, revert_count, awaiting_user_verdict
+    FROM tasks WHERE id = ?
+  `).get(taskId) as {
+    id: string; title: string; status: string; priority: string;
+    assigned_to: string | null; revert_count: number; awaiting_user_verdict: number;
+  } | undefined;
+  if (!row) return;
+  if (row.awaiting_user_verdict === 1) return;
+  const threshold = USER_VERDICT_THRESHOLDS[row.priority] ?? USER_VERDICT_THRESHOLDS.normal;
+  if (row.revert_count < threshold) return;
+
+  db.prepare(`
+    UPDATE tasks
+    SET awaiting_user_verdict = 1,
+        user_verdict_requested_at = datetime('now'),
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(taskId);
+
+  writeTaskLog({
+    taskId,
+    fromEntity: 'engine',
+    entryKind: 'user_verdict_request',
+    actionTaken: 'awaiting_user_verdict set',
+    reason: `stalemate after ${row.revert_count} reverts (priority=${row.priority}, threshold=${threshold})`,
+  });
+
+  logger.warn('Stalemate triggered: awaiting_user_verdict set', {
+    taskId, priority: row.priority, revertCount: row.revert_count, threshold,
+  }, pmAgentId);
+
+  if (!row.assigned_to) return;
+  try {
+    const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
+    const directive =
+      `STALEMATE on task "${row.title}" (${taskId.slice(0, 8)}). ` +
+      `Your submissions have been rejected ${row.revert_count} times (priority=${row.priority}, threshold=${threshold}). ` +
+      `Call tracker_request_user_verdict with task_id="${taskId}", status_requested="<the status you believe is correct>", ` +
+      `agent_summary="<one-paragraph recap of what you did>", and ` +
+      `pm_rejection_summary="<one-paragraph recap of PM's stated objections>". ` +
+      `The user will make the final call. While awaiting_user_verdict=1 the PM will leave this task alone, do not retry the rejected transition.`;
+    await deliverA2AMessage({
+      intent: 'ASSIGN',
+      threadId: '',
+      requiresResponse: true,
+      payload: directive,
+      toAgent: row.assigned_to,
+      fromAgent: pmAgentId,
+    });
+  } catch (err) {
+    logger.warn('Stalemate directive A2A delivery failed (non-fatal)', {
+      taskId, error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
+ * tracker_validate_complete — PM-only.
+ *
+ * Mirrors trackerValidatePause. On valid=true, complete_validated=1
+ * fires, the dependency cascade runs, and (for recurring tasks) the
+ * per-run archive-and-reset path takes over instead of terminal close.
+ * On valid=false, the task reverts to target_status (default
+ * in_progress), revert_count++, directive A2A goes to the assigned
+ * agent, maybeTriggerStalemate fires if the threshold is hit.
+ */
+export async function trackerValidateComplete(
+  pmAgentId: string,
+  args: { task_id: string; valid: boolean; reject_reason?: string; target_status?: string },
+): Promise<string> {
+  const rawTaskId = args.task_id;
+  if (!rawTaskId) return 'Error: task_id is required.';
+
+  const resolved = resolveTaskId(rawTaskId);
+  if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+  const taskId = resolved.id;
+
+  const db = getDb();
+  const task = db.prepare(`
+    SELECT id, title, status, assigned_to, priority, project_id, repeat_interval,
+           next_run_at, complete_validated, result, evidence_json, goal
+    FROM tasks WHERE id = ?
+  `).get(taskId) as {
+    id: string; title: string; status: string; assigned_to: string | null;
+    priority: string; project_id: string | null; repeat_interval: number | null;
+    next_run_at: string | null; complete_validated: number;
+    result: string | null; evidence_json: string | null; goal: string | null;
+  } | undefined;
+
+  if (!task) return `Error: task ${taskId} not found.`;
+  if (task.status !== 'complete') {
+    return `Error: task "${task.title}" (${taskId}) is currently status="${task.status}", not "complete". Nothing to validate.`;
+  }
+  if (task.complete_validated === 1) {
+    return `Error: task "${task.title}" (${taskId}) is already complete_validated=1. No-op.`;
+  }
+
+  // Phase B.1: if there is a pending OVERRIDE_REQUEST on this task, the
+  // agent has explicitly asked PM to make a judgment call. Validating the
+  // underlying close without resolving the override leaves the override
+  // queue stale and bypasses the structured ask. Refuse and direct PM to
+  // tracker_override(override_request_id=..., approve=true|false).
+  const pendingOverride = db.prepare(`
+    SELECT id FROM task_override_requests
+    WHERE task_id = ? AND status = 'pending'
+    ORDER BY created_at DESC LIMIT 1
+  `).get(taskId) as { id: string } | undefined;
+  if (pendingOverride) {
+    return (
+      `Error: task "${task.title}" (${taskId.slice(0, 8)}) has a pending OVERRIDE_REQUEST (id=${pendingOverride.id.slice(0, 8)}). ` +
+      `Resolve that first via tracker_override(override_request_id="${pendingOverride.id}", approve=true|false, reason="..."). ` +
+      `Validating directly here would leave the override queue stale.`
+    );
+  }
+
+  if (args.valid) {
+    // Recurring-task branch: per-run validation success archives result/evidence
+    // into task_log and resets the task for the next fire. Terminal-run validation
+    // success keeps the task complete and lets the cascade run.
+    const isRecurring = task.repeat_interval !== null;
+    const isTerminalRun = task.next_run_at === null;
+
+    if (isRecurring && !isTerminalRun) {
+      writeTaskLog({
+        taskId,
+        fromEntity: 'engine',
+        entryKind: 'transition',
+        fromStatus: 'complete',
+        toStatus: 'on_deck',
+        actionTaken: `recurring per-run validation success (next_run_at=${task.next_run_at ?? 'unknown'})`,
+        reason: 'PM blessed the run',
+        note: task.result,
+        evidenceJson: task.evidence_json,
+      });
+      db.prepare(`
+        UPDATE tasks
+        SET status = 'on_deck',
+            result = NULL,
+            evidence_json = NULL,
+            complete_validated = 0,
+            updated_at = datetime('now')
+        WHERE id = ?
+      `).run(taskId);
+      // Real-time sync: status flipped complete→on_deck via direct SQL.
+      const freshRecurring = getTask(taskId);
+      if (freshRecurring) broadcast({ type: 'tracker:task_updated', data: freshRecurring });
+      logger.info('Per-run validation success: archived and reset for next fire', { taskId, pmAgentId }, pmAgentId);
+      return `[OK] Per-run validation success on "${task.title}" (${taskId}). Result archived to task_log, task reset to on_deck for next scheduler fire.`;
+    }
+
+    // Terminal close path: flip complete_validated=1, run dep cascade, notify parent.
+    db.prepare(`UPDATE tasks SET complete_validated = 1, updated_at = datetime('now') WHERE id = ?`).run(taskId);
+    // Real-time sync: complete_validated=1 cleared via direct SQL, not updateTask.
+    const freshTerminal = getTask(taskId);
+    if (freshTerminal) broadcast({ type: 'tracker:task_updated', data: freshTerminal });
+    writeTaskLog({
+      taskId,
+      fromEntity: 'pm',
+      entryKind: 'transition',
+      fromStatus: 'complete',
+      toStatus: 'complete',
+      actionTaken: 'tracker_validate_complete(valid=true) — terminal',
+      reason: 'PM blessed the complete',
+    });
+    try {
+      const { checkDependencies } = await import('./pm-agent.js');
+      checkDependencies(taskId);
+    } catch (err) {
+      logger.warn('checkDependencies failed after validate_complete (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
+    }
+    // Project rollup if every sibling on the project is also validated-complete or terminal.
+    try {
+      checkProjectCompletion(task.project_id, pmAgentId);
+    } catch { /* best-effort */ }
+
+    logger.info('Complete validated by PM', { taskId, pmAgentId }, pmAgentId);
+    return `[OK] Complete validated on "${task.title}" (${taskId}). Dependency cascade fired. Parent notified.`;
+  }
+
+  // Reject path.
+  const rejectReason = (args.reject_reason ?? '').trim();
+  if (!rejectReason) {
+    return 'Error: reject_reason is required when valid=false. One-sentence directive for the agent (e.g. "evidence does not show field-15 was migrated; finish that field and resubmit").';
+  }
+  const targetStatus = args.target_status ?? 'in_progress';
+  if (!ALLOWED_REJECT_TARGETS.has(targetStatus)) {
+    return `Error: target_status="${targetStatus}" is not allowed. Use 'in_progress' (default), 'on_deck', or 'blocked'.`;
+  }
+
+  const updated = updateTask(taskId, { status: targetStatus });
+  if (!updated) return `Error: task ${taskId} was deleted before complete-reject could land.`;
+  // Clear stale result/evidence on revert so the agent can resubmit cleanly.
+  db.prepare(`
+    UPDATE tasks
+    SET revert_count = revert_count + 1,
+        result = NULL,
+        evidence_json = NULL,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(taskId);
+  // updateTask broadcast with stale result/evidence/revert_count above —
+  // re-broadcast so the dashboard's evidence panel reflects the cleared
+  // state.
+  const freshCompleteReject = getTask(taskId);
+  if (freshCompleteReject) broadcast({ type: 'tracker:task_updated', data: freshCompleteReject });
+
+  writeTaskLog({
+    taskId,
+    fromEntity: 'pm',
+    entryKind: 'reject',
+    fromStatus: 'complete',
+    toStatus: targetStatus,
+    actionTaken: 'tracker_validate_complete(valid=false)',
+    reason: rejectReason,
+  });
+
+  if (task.assigned_to) {
+    try {
+      const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
+      const directive =
+        `Your complete on "${task.title}" (${taskId.slice(0, 8)}) was reverted to ${targetStatus} for a recheck — this is a routine PM check, not a penalty.\n\n` +
+        `PM's reason: ${rejectReason}\n\n` +
+        `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
+        `To close this out: address what PM flagged, then call tracker_update_status(status='complete') again with a clear result + evidence pointing at the concrete work (file paths, tool_call_ref, output paste, external_action). You don't have to redo work that's already done — just fix the gap PM named. PM validates fast when the evidence matches the goal. revert_count=${(updated as { revertCount?: number }).revertCount ?? '(incremented)'}.`;
+      await deliverA2AMessage({
+        intent: 'QUESTION',
+        threadId: '',
+        requiresResponse: true,
+        payload: directive,
+        toAgent: task.assigned_to,
+        fromAgent: pmAgentId,
+      });
+    } catch (err) {
+      logger.warn('Reject directive A2A delivery failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  await maybeTriggerStalemate(taskId, pmAgentId);
+
+  logger.info('Complete rejected by PM', { taskId, pmAgentId, rejectReason, targetStatus }, pmAgentId);
+  return `[OK] Complete rejected on "${task.title}" (${taskId}). Task reverted to "${targetStatus}". Reason logged: "${rejectReason}". ${task.assigned_to ? `Notified ${task.assigned_to} via send_to_agent.` : ''}`;
+}
+
+/**
+ * tracker_validate_blocked — PM-only. Mirror of validate_complete for the
+ * blocked transition. Bless or revert.
+ */
+export async function trackerValidateBlocked(
+  pmAgentId: string,
+  args: { task_id: string; valid: boolean; reject_reason?: string; target_status?: string },
+): Promise<string> {
+  const rawTaskId = args.task_id;
+  if (!rawTaskId) return 'Error: task_id is required.';
+
+  const resolved = resolveTaskId(rawTaskId);
+  if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+  const taskId = resolved.id;
+
+  const db = getDb();
+  const task = db.prepare(`
+    SELECT id, title, status, assigned_to, priority, blocked_validated, goal
+    FROM tasks WHERE id = ?
+  `).get(taskId) as {
+    id: string; title: string; status: string; assigned_to: string | null;
+    priority: string; blocked_validated: number; goal: string | null;
+  } | undefined;
+
+  if (!task) return `Error: task ${taskId} not found.`;
+  if (task.status !== 'blocked') {
+    return `Error: task "${task.title}" (${taskId}) is currently status="${task.status}", not "blocked". Nothing to validate.`;
+  }
+  if (task.blocked_validated === 1) {
+    return `Error: task "${task.title}" (${taskId}) is already blocked_validated=1. No-op.`;
+  }
+
+  if (args.valid) {
+    db.prepare(`UPDATE tasks SET blocked_validated = 1, updated_at = datetime('now') WHERE id = ?`).run(taskId);
+    // Real-time sync: blocked_validated flag set via direct SQL.
+    const freshBlocked = getTask(taskId);
+    if (freshBlocked) broadcast({ type: 'tracker:task_updated', data: freshBlocked });
+    writeTaskLog({
+      taskId,
+      fromEntity: 'pm',
+      entryKind: 'transition',
+      fromStatus: 'blocked',
+      toStatus: 'blocked',
+      actionTaken: 'tracker_validate_blocked(valid=true)',
+      reason: 'PM blessed the block as real',
+    });
+    notifyPrimaryAgent(
+      `Block validated on task "${task.title}" (${taskId.slice(0, 8)}). Real obstacle, surface to user or unblock manually.`,
+      pmAgentId,
+      true, // forceNotify even if PM is primary (it's not, but be safe)
+    );
+    logger.info('Block validated by PM', { taskId, pmAgentId }, pmAgentId);
+    return `[OK] Block validated on "${task.title}" (${taskId}). Primary notified to investigate or unblock.`;
+  }
+
+  const rejectReason = (args.reject_reason ?? '').trim();
+  if (!rejectReason) {
+    return 'Error: reject_reason is required when valid=false. One-sentence directive (e.g. "you have not actually asked the user, do that first" or "this is a workaround not a block").';
+  }
+  const targetStatus = args.target_status ?? 'in_progress';
+  if (!ALLOWED_REJECT_TARGETS.has(targetStatus)) {
+    return `Error: target_status="${targetStatus}" is not allowed. Use 'in_progress' (default), 'on_deck', or 'blocked'.`;
+  }
+
+  const updated = updateTask(taskId, { status: targetStatus });
+  if (!updated) return `Error: task ${taskId} was deleted before block-reject could land.`;
+  db.prepare(`UPDATE tasks SET revert_count = revert_count + 1, updated_at = datetime('now') WHERE id = ?`).run(taskId);
+  // Re-broadcast so revert_count reaches the dashboard.
+  const freshBlockReject = getTask(taskId);
+  if (freshBlockReject) broadcast({ type: 'tracker:task_updated', data: freshBlockReject });
+
+  writeTaskLog({
+    taskId,
+    fromEntity: 'pm',
+    entryKind: 'reject',
+    fromStatus: 'blocked',
+    toStatus: targetStatus,
+    actionTaken: 'tracker_validate_blocked(valid=false)',
+    reason: rejectReason,
+  });
+
+  if (task.assigned_to) {
+    try {
+      const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
+      const directive =
+        `Your block on "${task.title}" (${taskId.slice(0, 8)}) was reverted to ${targetStatus} — PM didn't see a real obstacle. Routine check, not a penalty.\n\n` +
+        `PM's reason: ${rejectReason}\n\n` +
+        `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
+        `Address what PM flagged, then either complete with result + evidence, or re-block with a clearer reason naming the specific obstacle. Don't re-block with the same notes — PM will reject again.`;
+      await deliverA2AMessage({
+        intent: 'QUESTION',
+        threadId: '',
+        requiresResponse: true,
+        payload: directive,
+        toAgent: task.assigned_to,
+        fromAgent: pmAgentId,
+      });
+    } catch (err) {
+      logger.warn('Block reject directive A2A delivery failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  await maybeTriggerStalemate(taskId, pmAgentId);
+
+  logger.info('Block rejected by PM', { taskId, pmAgentId, rejectReason, targetStatus }, pmAgentId);
+  return `[OK] Block rejected on "${task.title}" (${taskId}). Task reverted to "${targetStatus}".`;
+}
+
+/**
+ * tracker_request_override — agent-side. Queues a request for PM (or
+ * the user via dashboard) to manually force a status change that the
+ * engine's hard gate refused, or that the agent thinks should land
+ * despite a PM rejection.
+ *
+ * Rate limit: at most one pending request per (task, agent). A second
+ * call while one is still pending returns an error referencing the
+ * prior request id.
+ *
+ * Also called by the engine when the hard-gate circuit-breaker fires
+ * (3 consecutive same-task hard-gate rejections by the same agent).
+ */
+export function trackerRequestOverride(
+  agentId: string,
+  args: { task_id: string; requested_status: string; justification: string },
+): string {
+  const rawTaskId = args.task_id;
+  if (!rawTaskId) return 'Error: task_id is required.';
+  const resolved = resolveTaskId(rawTaskId);
+  if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+  const taskId = resolved.id;
+
+  const requestedStatus = (args.requested_status ?? '').trim();
+  if (!requestedStatus) return 'Error: requested_status is required.';
+
+  const justification = (args.justification ?? '').trim();
+  if (justification.length < 30) {
+    return 'Error: justification must be at least 30 characters. Explain in one sentence why the engine was wrong or why PM should reconsider (e.g. "tool_call id from 3 days ago, audit log rotated, artifact at /tmp/foo.sh still exists and was created by the call").';
+  }
+
+  const db = getDb();
+  const existing = db.prepare(`
+    SELECT id FROM task_override_requests
+    WHERE task_id = ? AND requested_by = ? AND status = 'pending'
+    LIMIT 1
+  `).get(taskId, agentId) as { id: string } | undefined;
+  if (existing) {
+    return `Error: you already have a pending override request on this task (id=${existing.id.slice(0, 8)}). Wait for PM to resolve it before requesting again.`;
+  }
+
+  const id = uuidv4();
+  db.prepare(`
+    INSERT INTO task_override_requests
+      (id, task_id, requested_by, requested_status, justification, status, created_at)
+    VALUES (?, ?, ?, ?, ?, 'pending', datetime('now'))
+  `).run(id, taskId, agentId, requestedStatus, justification);
+
+  writeTaskLog({
+    taskId,
+    fromEntity: `agent:${agentId}`,
+    entryKind: 'override',
+    actionTaken: 'tracker_request_override',
+    reason: justification,
+    toStatus: requestedStatus,
+  });
+
+  logger.info('Override request queued', { taskId, agentId, requestedStatus, requestId: id }, agentId);
+  return `[OK] override request queued (id=${id.slice(0, 8)}). PM will review on next tick. If no resolution within 12 hours the request auto-denies.`;
+}
+
+/**
+ * tracker_override — PM-only. Resolves a queued OVERRIDE_REQUEST by
+ * either approving (force the requested status through, bypassing the
+ * engine hard gate) or denying (the engine was right; notify the
+ * agent).
+ *
+ * Distinct from PM bare tracker_update_status: bare update_status is
+ * proactive PM action with no pending request. Override resolves an
+ * explicit ask.
+ */
+export async function trackerOverride(
+  pmAgentId: string,
+  args: { override_request_id: string; approve: boolean; reason: string },
+): Promise<string> {
+  const requestId = (args.override_request_id ?? '').trim();
+  if (!requestId) return 'Error: override_request_id is required.';
+
+  const reason = (args.reason ?? '').trim();
+  if (!reason) return 'Error: reason is required (one sentence on why you approved or denied).';
+
+  const db = getDb();
+  const req = db.prepare(`
+    SELECT id, task_id, requested_by, requested_status, justification, status
+    FROM task_override_requests WHERE id = ? OR id LIKE ?
+    LIMIT 1
+  `).get(requestId, `${requestId}%`) as {
+    id: string; task_id: string; requested_by: string;
+    requested_status: string; justification: string; status: string;
+  } | undefined;
+
+  if (!req) return `Error: override request ${requestId} not found.`;
+  if (req.status !== 'pending') {
+    return `Error: override request ${req.id.slice(0, 8)} is already ${req.status}, cannot resolve again.`;
+  }
+
+  if (args.approve) {
+    // Force the status through (bypass engine hard gate).
+    const updated = updateTask(req.task_id, { status: req.requested_status });
+    if (!updated) return `Error: task ${req.task_id} was deleted before override approval could land.`;
+    // Override approval is authoritative: set the matching *_validated
+    // flag so PM doesn't re-surface this row as unvalidated. Clear
+    // revert_count and awaiting_user_verdict too.
+    db.prepare(`
+      UPDATE tasks
+      SET revert_count = 0,
+          awaiting_user_verdict = 0,
+          user_verdict_requested_at = NULL,
+          complete_validated = CASE WHEN ? = 'complete' THEN 1 ELSE complete_validated END,
+          pause_validated = CASE WHEN ? = 'paused' THEN 1 ELSE pause_validated END,
+          blocked_validated = CASE WHEN ? = 'blocked' THEN 1 ELSE blocked_validated END,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(req.requested_status, req.requested_status, req.requested_status, req.task_id);
+    // updateTask broadcast above with only the status flip — re-broadcast
+    // so revert_count=0 and the matching *_validated flag reach the dashboard.
+    const freshOverride = getTask(req.task_id);
+    if (freshOverride) broadcast({ type: 'tracker:task_updated', data: freshOverride });
+    db.prepare(`
+      UPDATE task_override_requests
+      SET status = 'approved', resolved_by = ?, resolved_reason = ?, resolved_at = datetime('now')
+      WHERE id = ?
+    `).run(pmAgentId, reason, req.id);
+
+    writeTaskLog({
+      taskId: req.task_id,
+      fromEntity: 'pm',
+      entryKind: 'override',
+      toStatus: req.requested_status,
+      actionTaken: 'tracker_override(approve=true)',
+      reason,
+    });
+
+    logger.info('Override approved by PM', { taskId: req.task_id, pmAgentId, requestId: req.id }, pmAgentId);
+    return `[OK] override approved. Task ${req.task_id.slice(0, 8)} forced to "${req.requested_status}". Reason: ${reason}.`;
+  }
+
+  // Deny path: leave the task where it is, notify the agent.
+  db.prepare(`
+    UPDATE task_override_requests
+    SET status = 'denied', resolved_by = ?, resolved_reason = ?, resolved_at = datetime('now')
+    WHERE id = ?
+  `).run(pmAgentId, reason, req.id);
+  writeTaskLog({
+    taskId: req.task_id,
+    fromEntity: 'pm',
+    entryKind: 'override',
+    actionTaken: 'tracker_override(approve=false)',
+    reason: `denied: ${reason}`,
+  });
+  try {
+    const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
+    await deliverA2AMessage({
+      intent: 'QUESTION',
+      threadId: '',
+      requiresResponse: true,
+      payload: `Your override request on task ${req.task_id.slice(0, 8)} was denied by the PM. Reason: ${reason}. The engine's original objection stands; address it and resubmit cleanly.`,
+      toAgent: req.requested_by,
+      fromAgent: pmAgentId,
+    });
+  } catch (err) {
+    logger.warn('Override deny notification failed (non-fatal)', { taskId: req.task_id, error: err instanceof Error ? err.message : String(err) });
+  }
+
+  logger.info('Override denied by PM', { taskId: req.task_id, pmAgentId, requestId: req.id }, pmAgentId);
+  return `[OK] override denied. Task left as-is. Agent notified.`;
+}
+
+/**
+ * tracker_request_user_verdict — assigned-agent-side, only callable
+ * while awaiting_user_verdict=1. Composes a user-facing message
+ * describing the stalemate and routes it.
+ */
+export async function trackerRequestUserVerdict(
+  agentId: string,
+  args: { task_id: string; status_requested: string; agent_summary: string; pm_rejection_summary: string },
+): Promise<string> {
+  const rawTaskId = args.task_id;
+  if (!rawTaskId) return 'Error: task_id is required.';
+  const resolved = resolveTaskId(rawTaskId);
+  if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+  const taskId = resolved.id;
+
+  const statusRequested = (args.status_requested ?? '').trim();
+  if (!statusRequested) return 'Error: status_requested is required (the status you believe is correct).';
+  const agentSummary = (args.agent_summary ?? '').trim();
+  if (agentSummary.length < 30) return 'Error: agent_summary must be at least 30 characters (a one-paragraph recap of what you did).';
+  const pmRejectionSummary = (args.pm_rejection_summary ?? '').trim();
+  if (pmRejectionSummary.length < 20) return 'Error: pm_rejection_summary must be at least 20 characters (one-paragraph recap of PM\'s stated objections).';
+
+  const db = getDb();
+  const task = db.prepare(`
+    SELECT id, title, assigned_to, goal, awaiting_user_verdict
+    FROM tasks WHERE id = ?
+  `).get(taskId) as { id: string; title: string; assigned_to: string | null; goal: string | null; awaiting_user_verdict: number } | undefined;
+  if (!task) return `Error: task ${taskId} not found.`;
+  if (task.awaiting_user_verdict !== 1) {
+    return `Error: task ${taskId.slice(0, 8)} is not awaiting_user_verdict. This tool is only callable when the engine has flagged a stalemate.`;
+  }
+  if (task.assigned_to !== agentId) {
+    return `Error: only the assigned agent (${task.assigned_to}) can request a user verdict on this task.`;
+  }
+
+  const userMessage =
+    `Task "${task.title}" has stalled. Asking for your verdict.\n\n` +
+    `Goal: ${task.goal ?? '(no goal recorded)'}\n\n` +
+    `What I did: ${agentSummary}\n\n` +
+    `PM rejected because: ${pmRejectionSummary}\n\n` +
+    `My request: mark this "${statusRequested}". ` +
+    `Your reply is the final call. ` +
+    `Options: "complete" / "send it back" / "blocked" / "paused" / "I don't care, you decide".`;
+
+  writeTaskLog({
+    taskId,
+    fromEntity: `agent:${agentId}`,
+    entryKind: 'user_verdict_request',
+    actionTaken: 'tracker_request_user_verdict composed and routed',
+    note: userMessage,
+    toStatus: statusRequested,
+  });
+
+  // Routing: if the assigned agent is the primary, the message goes
+  // straight into the user chat via notifyPrimaryAgent (forceNotify=true).
+  // Otherwise relay via A2A to the primary agent.
+  try {
+    if (isPrimaryAgent(agentId)) {
+      // Use the existing primary notification path. notifyPrimaryAgent
+      // suppresses self-notifications by default; forceNotify=true wakes
+      // the primary's chat for the user.
+      notifyPrimaryAgent(`[user verdict requested] ${userMessage}`, agentId, true);
+    } else {
+      const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
+      const relayPayload =
+        `Please relay to David: a stalemate has been flagged on task "${task.title}" (${taskId.slice(0, 8)}) ` +
+        `assigned to me (${agentId}). The user verdict request follows. Show this verbatim to David in chat and ` +
+        `then call tracker_apply_user_verdict(task_id="${taskId}", status="<david's choice>", user_quote="<his exact reply>") on my behalf.\n\n` +
+        userMessage;
+      await deliverA2AMessage({
+        intent: 'ASSIGN',
+        threadId: '',
+        requiresResponse: true,
+        payload: relayPayload,
+        toAgent: getPrimaryAgentId(),
+        fromAgent: agentId,
+      });
+    }
+  } catch (err) {
+    logger.warn('User verdict request routing failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
+  }
+
+  logger.info('User verdict requested', { taskId, agentId, statusRequested }, agentId);
+  return `[OK] user verdict requested on task ${taskId.slice(0, 8)}. The user will reply. While awaiting, do not retry the rejected transition.`;
+}
+
+/**
+ * tracker_apply_user_verdict — the receiving agent (primary if relayed,
+ * assigned agent if it owns the user chat) calls this with the user's
+ * reply to land the final decision.
+ */
+export async function trackerApplyUserVerdict(
+  agentId: string,
+  args: { task_id: string; status: string; user_quote: string },
+): Promise<string> {
+  const rawTaskId = args.task_id;
+  if (!rawTaskId) return 'Error: task_id is required.';
+  const resolved = resolveTaskId(rawTaskId);
+  if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+  const taskId = resolved.id;
+
+  const status = (args.status ?? '').trim();
+  if (!status) return 'Error: status is required (the status the user chose).';
+  const userQuote = (args.user_quote ?? '').trim();
+  if (!userQuote) return 'Error: user_quote is required (the user\'s exact reply, for audit).';
+
+  const db = getDb();
+  const task = db.prepare(`
+    SELECT id, title, status as current_status, awaiting_user_verdict, project_id
+    FROM tasks WHERE id = ?
+  `).get(taskId) as { id: string; title: string; current_status: string; awaiting_user_verdict: number; project_id: string | null } | undefined;
+  if (!task) return `Error: task ${taskId} not found.`;
+  if (task.awaiting_user_verdict !== 1) {
+    return `Error: task ${taskId.slice(0, 8)} is not awaiting_user_verdict. Apply only works on stalemate-flagged tasks.`;
+  }
+
+  // Force the status, clear the stalemate flag, validate immediately
+  // (user is the ultimate authority). updateTask handles is_paused etc.
+  const updated = updateTask(taskId, { status });
+  if (!updated) return `Error: task ${taskId} was deleted before user verdict could land.`;
+
+  db.prepare(`
+    UPDATE tasks
+    SET awaiting_user_verdict = 0,
+        user_verdict_requested_at = NULL,
+        revert_count = 0,
+        complete_validated = CASE WHEN ? = 'complete' THEN 1 ELSE complete_validated END,
+        blocked_validated = CASE WHEN ? = 'blocked' THEN 1 ELSE blocked_validated END,
+        pause_validated = CASE WHEN ? = 'paused' THEN 1 ELSE pause_validated END,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(status, status, status, taskId);
+  // updateTask broadcast the status flip above — re-broadcast so the
+  // dashboard sees the validated flag flip and the stalemate clear.
+  const freshUserVerdict = getTask(taskId);
+  if (freshUserVerdict) broadcast({ type: 'tracker:task_updated', data: freshUserVerdict });
+
+  writeTaskLog({
+    taskId,
+    fromEntity: 'user',
+    entryKind: 'user_verdict_applied',
+    fromStatus: task.current_status,
+    toStatus: status,
+    actionTaken: `applied via ${agentId}`,
+    reason: 'user verdict',
+    note: userQuote,
+  });
+
+  // Cascade if user chose 'complete'.
+  if (status === 'complete') {
+    try {
+      const { checkDependencies } = await import('./pm-agent.js');
+      checkDependencies(taskId);
+    } catch { /* best-effort */ }
+    try {
+      checkProjectCompletion(task.project_id, agentId);
+    } catch { /* best-effort */ }
+  }
+
+  logger.info('User verdict applied', { taskId, agentId, status }, agentId);
+  return `[OK] user verdict applied on "${task.title}" (${taskId.slice(0, 8)}). Status="${status}". Quote logged. Stalemate cleared.`;
 }

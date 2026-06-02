@@ -387,6 +387,19 @@ agentsRouter.post('/:id/reset-session', async (c) => {
     const { archiveAgentConversation } = await import('../../vault/archive.js');
     try { archiveAgentConversation(id, true); } catch { /* */ }
 
+    // 1b. Clear any stale runtime signals so the post-reset agent starts
+    //     truly clean. Without this, a previously-stopped agent stays
+    //     "stopped" — the next user message hits the v2 loop's stop check,
+    //     the flag clears, but the loop bails immediately without
+    //     processing the user message. Same risk for queued wakeups and
+    //     preempt flags. (2026-06-02 bug fix.)
+    try {
+      const { stoppedAgents, preemptedAgents, pendingWakeups } = await import('../../agent/shared-state.js');
+      stoppedAgents.delete(id);
+      preemptedAgents.delete(id);
+      pendingWakeups.delete(id);
+    } catch { /* best-effort */ }
+
     // 2. Set session boundary + clear continuity brief + clear scratchpad.
     //    (Scratchpad is session-scoped: the outline an agent built for the
     //    prior task isn't relevant once the session resets.)

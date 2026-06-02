@@ -123,6 +123,25 @@ export interface AgentTurnState {
   retriedEmptyResponse: boolean;          // v1 phase 1 — silent retry has fired this turn (#38)
   nudgedForEmptyResponse: boolean;        // v1 phase 2 — explicit nudge has fired this turn (#38)
 
+  // ── Per-signature thrash gate ──
+  // When the task-thrash detector trips on a specific canonical tool
+  // signature, that signature gets added here and any further tool call
+  // matching it is refused with a structured steer. Cleared on
+  // tracker_update_status (any transition counts as progress). Distinct
+  // from recentToolSignatures (which is the loopDetector's rolling
+  // window).
+  thrashGatedSignatures: string[];
+  // How many times the gate has had to refuse since the last transition.
+  // After THRASH_GATE_BREAKER_LIMIT refusals without progress, the engine
+  // auto-blocks the task with a clean reason so it reaches a terminal
+  // state instead of looping forever.
+  thrashGateRefusalCount: number;
+  // loopCount when the thrash gate first activated this turn. Lets the
+  // "drift" detector escalate: if the gate has been on for N iterations
+  // and the agent still hasn't called tracker_update_status (just varied
+  // its non-gated calls to dodge the refusal), engine auto-blocks too.
+  thrashGateActivatedAtLoopCount: number | null;
+
   // ── Trigger context (read once at preflight) ──
   readonly triggeredByIMessage: boolean;
   readonly triggeredByA2AReplyIntent: A2AReplyContext | null;
@@ -370,6 +389,10 @@ export function initState(params: InitStateParams): AgentTurnState {
     nudgedForRepetition: false,
     retriedEmptyResponse: false,
     nudgedForEmptyResponse: false,
+
+    thrashGatedSignatures: [],
+    thrashGateRefusalCount: 0,
+    thrashGateActivatedAtLoopCount: null,
 
     triggeredByIMessage: params.triggeredByIMessage,
     triggeredByA2AReplyIntent: params.triggeredByA2AReplyIntent,

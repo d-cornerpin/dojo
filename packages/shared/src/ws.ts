@@ -61,6 +61,7 @@ export interface ChatErrorEvent {
   code?:
     | 'RATE_LIMITED' | 'MODEL_FAILED' | 'PERMISSION_DENIED' | 'ERROR_LOOP'
     | 'TIMEOUT' | 'TERMINATED' | 'STUCK_REPEATING' | 'NO_RESULTS'
+    | 'TASK_THRASH_PAUSED'
     // Healer visibility codes (added 2026-04-29) — surface every silent
     // return path so the user always knows whether auto-recovery is running.
     | 'HEALER_DISPATCHED' | 'HEALER_SUPPRESSED_MAX_ATTEMPTS' | 'HEALER_MISSING'

@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
+import { writeTaskLog } from './task-log.js';
 import type { Project, ProjectDetail, Task, PokeEntry } from '@dojo/shared';
 
 const logger = createLogger('tracker-schema');
@@ -55,6 +56,13 @@ interface TaskRow {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  pause_validated: number;
+  complete_validated: number;
+  blocked_validated: number;
+  validation_escalated_at: string | null;
+  goal: string | null;
+  result: string | null;
+  evidence_json: string | null;
 }
 
 interface PokeRow {
@@ -137,7 +145,24 @@ function mapTaskRow(row: TaskRow): Task {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
+    pauseValidated: (row.pause_validated ? 1 : 0) as 0 | 1,
+    completeValidated: (row.complete_validated ? 1 : 0) as 0 | 1,
+    blockedValidated: (row.blocked_validated ? 1 : 0) as 0 | 1,
+    validationEscalatedAt: row.validation_escalated_at ?? null,
+    goal: row.goal ?? null,
+    result: row.result ?? null,
+    evidence: parseEvidence(row.evidence_json),
   };
+}
+
+function parseEvidence(raw: string | null): Task['evidence'] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as Task['evidence']) : [];
+  } catch {
+    return [];
+  }
 }
 
 function mapPokeRow(row: PokeRow): PokeEntry {
@@ -333,25 +358,27 @@ export function closeProjectAndOpenTasks(params: {
   let alreadyClosed = 0;
   const TERMINAL = new Set(['complete', 'fallen', 'cancelled']);
 
-  const noteLine = `[${new Date().toISOString()}] ${noteMarker} Bulk-closed by ${closingAgentId} via tracker_close_project: ${reason}`;
-
+  // Phase B.0: tasks.notes is read-only legacy. Bulk-close transitions
+  // land in task_log instead. We capture the per-task prior status inside
+  // the loop so each transition entry has the right from→to pair.
   const closeStmt = db.prepare(`
     UPDATE tasks
     SET status = ?,
         is_paused = 0,
         completed_at = datetime('now'),
-        notes = COALESCE(notes, '') || ? || char(10),
         updated_at = datetime('now')
     WHERE id = ?
   `);
 
+  const closedTransitions: Array<{ taskId: string; from: string; to: string }> = [];
   const txn = db.transaction(() => {
     for (const t of tasks) {
       if (TERMINAL.has(t.status)) {
         alreadyClosed++;
         continue;
       }
-      closeStmt.run(dbTaskStatus, noteLine, t.id);
+      closeStmt.run(dbTaskStatus, t.id);
+      closedTransitions.push({ taskId: t.id, from: t.status, to: dbTaskStatus });
       tasksClosed++;
     }
     db.prepare(`
@@ -363,6 +390,21 @@ export function closeProjectAndOpenTasks(params: {
     `).run(projectStatus, projectId);
   });
   txn();
+
+  // Write the task_log entries OUTSIDE the closing transaction so a single
+  // failure to write a log row never rolls back the actual status changes.
+  // The log writer is best-effort by design (see task-log.ts).
+  for (const tx of closedTransitions) {
+    void writeTaskLog({
+      taskId: tx.taskId,
+      fromEntity: `agent:${closingAgentId}`,
+      entryKind: 'transition',
+      fromStatus: tx.from,
+      toStatus: tx.to,
+      actionTaken: `bulk-closed via tracker_close_project (${noteMarker})`,
+      reason,
+    });
+  }
 
   logger.info('Project bulk-closed', { projectId, tasksClosed, alreadyClosed, taskStatus, projectStatus, closingAgentId });
 
@@ -526,18 +568,23 @@ export function autoCreateAssignTask(params: {
     const title = rawTitle.length > 0 ? rawTitle : 'Assigned task (untitled)';
 
     const taskId = uuidv4();
+    // Phase B.1: goal is required on every task. For engine-auto-created
+    // ASSIGN tasks we use the payload itself as the goal — it IS the
+    // sender's stated definition of done for the receiver.
+    const autoGoal = params.payload.trim().slice(0, 2000) || title;
     // Receiver-assigned tasks always start on_deck so the receiver picks
     // them up explicitly via tracker_update_status. createTask's
     // self-assigned path uses in_progress, but here sender ≠ receiver.
     db.prepare(`
-      INSERT INTO tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, priority,
+      INSERT INTO tasks (id, project_id, title, description, original_description, goal, status, assigned_to, created_by, priority,
                          step_number, total_steps, phase, depends_on, a2a_thread_id, created_at, updated_at)
-      VALUES (?, NULL, ?, ?, ?, 'on_deck', ?, ?, 'normal', NULL, NULL, 1, '[]', ?, datetime('now'), datetime('now'))
+      VALUES (?, NULL, ?, ?, ?, ?, 'on_deck', ?, ?, 'normal', NULL, NULL, 1, '[]', ?, datetime('now'), datetime('now'))
     `).run(
       taskId,
       title,
       params.payload,
       params.payload,
+      autoGoal,
       params.receiverId,
       params.senderId,
       params.threadId,

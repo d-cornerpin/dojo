@@ -333,6 +333,20 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+  // Phase B.1 validation flags. 1 = PM (or user) has blessed the matching
+  // status. 0 = awaiting validation, dashboard shows the bug icon.
+  pauseValidated: 0 | 1;
+  completeValidated: 0 | 1;
+  blockedValidated: 0 | 1;
+  // 5-minute escalation: timestamp when the engine asked the user about
+  // an unvalidated transition. NULL until the sweep fires.
+  validationEscalatedAt: string | null;
+  // Phase B.1 reasoning surface. Goal = what success looks like (set at
+  // task creation), result = what the agent says it did, evidence = the
+  // claims/files/tool-call refs the agent offered to back it up.
+  goal: string | null;
+  result: string | null;
+  evidence: Array<{ kind: string; [k: string]: unknown }>;
 }
 
 export interface PokeEntry {

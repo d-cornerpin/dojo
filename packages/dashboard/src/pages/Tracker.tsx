@@ -29,12 +29,26 @@ const TaskDetailPanel = ({
   const [assignedTo, setAssignedTo] = useState(task.assignedTo || '');
   const [noteInput, setNoteInput] = useState('');
   const [saving, setSaving] = useState(false);
+  const [logEntries, setLogEntries] = useState<api.TaskLogEntry[]>([]);
+  const [logLoading, setLogLoading] = useState(false);
 
   useEffect(() => {
     setStatus(task.status);
     setPriority(task.priority);
     setAssignedTo(task.assignedTo || '');
   }, [task]);
+
+  // Phase B.0: load the structured audit log for this task.
+  useEffect(() => {
+    let cancelled = false;
+    setLogLoading(true);
+    api.getTaskLog(task.id, { limit: 50 }).then((res) => {
+      if (cancelled) return;
+      if (res.ok) setLogEntries(res.data);
+      setLogLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [task.id, task.updatedAt]);
 
   const handleFieldUpdate = async (updates: Record<string, string | undefined>) => {
     setSaving(true);
@@ -47,15 +61,16 @@ const TaskDetailPanel = ({
 
   const handleAddNote = async () => {
     if (!noteInput.trim()) return;
-    const existingNotes = task.notes || '';
-    const timestamp = new Date().toLocaleString();
-    const newNotes = existingNotes
-      ? `${existingNotes}\n\n[${timestamp}]\n${noteInput.trim()}`
-      : `[${timestamp}]\n${noteInput.trim()}`;
     setSaving(true);
-    const result = await api.updateTask(task.id, { notes: newNotes });
+    // Phase B.0: user observations now go into task_log as structured
+    // entries (entry_kind='observation', from_entity='user') instead of
+    // being appended to the legacy tasks.notes column.
+    const result = await api.addTaskObservation(task.id, noteInput.trim());
     if (result.ok) {
       setNoteInput('');
+      // Refresh the task_log feed.
+      const logRes = await api.getTaskLog(task.id, { limit: 50 });
+      if (logRes.ok) setLogEntries(logRes.data);
       onUpdate();
     }
     setSaving(false);
@@ -94,6 +109,46 @@ const TaskDetailPanel = ({
             </div>
           )}
 
+          {/* Validation context (Phase B.1). Goal / result / evidence are
+              what the PM agent (and a user reviewing manually) read when
+              deciding whether to validate. Showing them here so the human
+              has the same information the PM sees. */}
+          {(task.goal || task.result || task.evidence.length > 0) && (
+            <div className="space-y-3 glass-nested rounded-lg p-3 border border-ui/10">
+              {task.goal && (
+                <div>
+                  <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-1">Goal</h3>
+                  <p className="text-sm text-ui/80 whitespace-pre-wrap">{task.goal}</p>
+                </div>
+              )}
+              {task.result && (
+                <div>
+                  <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-1">Agent result</h3>
+                  <p className="text-sm text-ui/80 whitespace-pre-wrap">{task.result}</p>
+                </div>
+              )}
+              {task.evidence.length > 0 && (
+                <div>
+                  <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-1">Evidence</h3>
+                  <div className="space-y-1.5">
+                    {task.evidence.map((ev, i) => {
+                      const { kind, ...rest } = ev;
+                      const detail = Object.entries(rest)
+                        .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
+                        .join(' / ');
+                      return (
+                        <div key={i} className="text-xs">
+                          <span className="text-cp-amber uppercase tracking-wide mr-2">{kind}</span>
+                          <span className="text-ui/70 whitespace-pre-wrap">{detail || '(no detail)'}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Status */}
           <div>
             <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-1">Status</h3>
@@ -114,6 +169,39 @@ const TaskDetailPanel = ({
               <option value="blocked">Blocked</option>
               <option value="fallen">Failed</option>
             </select>
+            {/* Awaiting-validation chip + manual validate button. */}
+            {((task.status === 'complete' && task.completeValidated === 0) ||
+              (task.status === 'paused' && task.pauseValidated === 0) ||
+              (task.status === 'blocked' && task.blockedValidated === 0)) && (
+              <div className="mt-2 glass-nested rounded-lg p-2 border border-cp-amber/30">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs text-cp-amber">
+                    <span>{'⚠'}</span>
+                    <span>Awaiting validation</span>
+                    {task.validationEscalatedAt && (
+                      <span className="text-ui/55">(user has been asked)</span>
+                    )}
+                  </div>
+                  <button
+                    onClick={async () => {
+                      setSaving(true);
+                      const res = await api.userValidateTask(task.id);
+                      if (res.ok) {
+                        onUpdate();
+                      }
+                      setSaving(false);
+                    }}
+                    disabled={saving}
+                    className="px-2 py-1 text-xs glass-btn-primary rounded disabled:opacity-50"
+                  >
+                    Mark validated
+                  </button>
+                </div>
+                <div className="text-[10px] text-ui/55 mt-1">
+                  Neither PM nor you has validated this status yet. If you confirm, this clears the bug.
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Priority */}
@@ -203,18 +291,50 @@ const TaskDetailPanel = ({
             {task.completedAt && <div>Completed: {formatDate(task.completedAt)}</div>}
           </div>
 
-          {/* Notes */}
+          {/* Activity log (Phase B.0). Renders task_log entries in newest-first order. */}
           <div>
-            <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-2">Notes</h3>
-            {task.notes && (
-              <div className="glass-nested rounded-xl p-3 mb-3 max-h-48 overflow-y-auto">
-                <pre className="text-sm text-ui/70 whitespace-pre-wrap font-sans">{task.notes}</pre>
+            <h3 className="text-xs font-semibold text-ui/55 uppercase tracking-wide mb-2">Activity log</h3>
+            {logLoading ? (
+              <div className="text-sm text-ui/55 italic">loading...</div>
+            ) : logEntries.length === 0 ? (
+              <div className="text-sm text-ui/55 italic">no entries yet</div>
+            ) : (
+              <div className="glass-nested rounded-xl p-3 mb-3 max-h-72 overflow-y-auto space-y-2">
+                {logEntries.map((e) => {
+                  const kindColor: Record<string, string> = {
+                    transition: 'text-cp-teal',
+                    observation: 'text-ui/80',
+                    reject: 'text-cp-coral',
+                    override: 'text-cp-amber',
+                    smell_flag: 'text-cp-coral',
+                    user_verdict_request: 'text-cp-amber',
+                    user_verdict_applied: 'text-cp-teal',
+                    auto_sweep: 'text-ui/55',
+                    legacy_note: 'text-ui/55',
+                  };
+                  const k = kindColor[e.entryKind] ?? 'text-ui/70';
+                  return (
+                    <div key={e.id} className="text-xs text-ui/70 border-l-2 border-ui/20 pl-2">
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-ui/50">{formatDate(e.createdAt)}</span>
+                        <span className="text-ui/55">[{e.fromEntity}]</span>
+                        <span className={`font-semibold uppercase tracking-wide ${k}`}>{e.entryKind}</span>
+                        {e.fromStatus && e.toStatus && (
+                          <span className="text-ui/55">{e.fromStatus} → {e.toStatus}</span>
+                        )}
+                      </div>
+                      {e.actionTaken && <div className="text-ui/70 mt-0.5">{e.actionTaken}</div>}
+                      {e.reason && <div className="text-ui/70 italic mt-0.5">reason: {e.reason}</div>}
+                      {e.note && <div className="text-ui/80 mt-1 whitespace-pre-wrap">{e.note}</div>}
+                    </div>
+                  );
+                })}
               </div>
             )}
             <textarea
               value={noteInput}
               onChange={(e) => setNoteInput(e.target.value)}
-              placeholder="Add a note..."
+              placeholder="Add an observation..."
               rows={3}
               className="glass-textarea w-full resize-none"
             />
@@ -223,8 +343,14 @@ const TaskDetailPanel = ({
               disabled={saving || !noteInput.trim()}
               className="mt-2 px-3 py-1.5 text-sm glass-btn-primary rounded-lg transition-colors"
             >
-              Add Note
+              Add observation
             </button>
+            {task.notes && (
+              <details className="mt-3">
+                <summary className="text-xs text-ui/55 cursor-pointer">Legacy notes (pre-Phase B.0)</summary>
+                <pre className="text-xs text-ui/55 whitespace-pre-wrap font-sans mt-2 p-2 glass-nested rounded">{task.notes}</pre>
+              </details>
+            )}
           </div>
         </div>
       </div>
@@ -427,6 +553,242 @@ const CreateProjectModal = ({
 
 // ── Main Tracker Component ──
 
+// ── Override request queue (Phase B.1, Wordy Mode only) ──
+// Renders pending tracker_override requests with approve/deny buttons.
+// Lives at the top of the Tracker page so it's impossible to miss when
+// the user is power-user-mode and an agent is asking for an override.
+const OverrideQueuePanel = ({
+  overrides,
+  onResolved,
+}: {
+  overrides: api.OverrideRequestRow[];
+  onResolved: () => void;
+}) => {
+  const [resolving, setResolving] = useState<string | null>(null);
+  const handle = async (id: string, approve: boolean) => {
+    const reason = window.prompt(
+      approve
+        ? 'Reason for approving (one sentence):'
+        : 'Reason for denying (one sentence). The agent will be notified.'
+    );
+    if (!reason || !reason.trim()) return;
+    setResolving(id);
+    const res = await api.resolveOverrideRequest(id, approve, reason.trim());
+    setResolving(null);
+    if (res.ok) onResolved();
+  };
+  return (
+    <div className="mb-4 glass-card border border-cp-amber/30 p-4">
+      <h2 className="text-sm font-semibold text-cp-amber uppercase tracking-wide mb-3">
+        Override requests ({overrides.length})
+      </h2>
+      <div className="space-y-3">
+        {overrides.map((o) => (
+          <div key={o.id} className="glass-nested rounded-lg p-3">
+            <div className="text-xs text-ui/55 mb-1">
+              from <span className="text-ui font-medium">{o.requested_by}</span>
+              {' · '}
+              wants <span className="text-cp-teal">{o.requested_status}</span>
+              {o.attempts_attached > 1 && (
+                <span className="ml-2 text-cp-coral">(circuit-breaker auto-fired x{o.attempts_attached})</span>
+              )}
+            </div>
+            <div className="text-sm text-ui font-medium mb-1">
+              Task: {o.task_title ?? o.task_id.slice(0, 8)}
+            </div>
+            {o.task_goal && (
+              <div className="text-xs text-ui/70 mb-1">Goal: {o.task_goal}</div>
+            )}
+            <div className="text-xs text-ui/80 mb-1">
+              <span className="text-ui/55">Justification:</span> {o.justification}
+            </div>
+            {o.last_engine_error && (
+              <div className="text-xs text-ui/55 italic mb-2">
+                Engine: {o.last_engine_error}
+              </div>
+            )}
+            <div className="flex gap-2 mt-2">
+              <button
+                disabled={resolving === o.id}
+                onClick={() => handle(o.id, true)}
+                className="px-3 py-1 text-xs glass-btn-primary rounded-lg disabled:opacity-50"
+              >
+                Approve
+              </button>
+              <button
+                disabled={resolving === o.id}
+                onClick={() => handle(o.id, false)}
+                className="px-3 py-1 text-xs glass-btn-secondary rounded-lg disabled:opacity-50"
+              >
+                Deny
+              </button>
+              <span className="text-xs text-ui/55 self-center ml-2">
+                queued {formatDate(o.created_at)}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// ── Tracker hygiene + telemetry (Phase D, Wordy Mode only) ──
+// Renders rolled-up validate rates, smell flag counts, override rollup,
+// elevated tasks, and PM cost-per-model. Lets David see at a glance
+// whether the system is healthy or something needs attention.
+const HygienePanel = ({
+  hygiene,
+  expanded,
+  onToggle,
+  onTaskClick,
+}: {
+  hygiene: api.TrackerHygiene;
+  expanded: boolean;
+  onToggle: () => void;
+  onTaskClick: (id8: string) => void;
+}) => {
+  // One-glance summary numbers for the collapsed header row.
+  const totalValidates = hygiene.validateOutcomes.reduce((s, v) => s + v.validates, 0);
+  const totalRejects = hygiene.validateOutcomes.reduce((s, v) => s + v.rejects, 0);
+  const totalSmells = hygiene.smellFlags.reduce((s, v) => s + v.count, 0);
+  const pendingOverrides = hygiene.overrideRollup.find((o) => o.status === 'pending')?.count ?? 0;
+  const elevatedCount = hygiene.elevated.length;
+  const totalPmCost = hygiene.pmCost.reduce((s, p) => s + (p.cost_24h ?? 0), 0);
+
+  return (
+    <div className="mb-4 glass-card border border-cp-teal/30">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-4 py-2 hover:bg-ui/5 transition-colors"
+        aria-expanded={expanded}
+      >
+        <div className="flex items-center gap-3">
+          <span className={`text-cp-teal text-sm transition-transform ${expanded ? 'rotate-90' : ''}`}>▶</span>
+          <h2 className="text-sm font-semibold text-cp-teal uppercase tracking-wide">
+            Tracker hygiene
+          </h2>
+        </div>
+        <div className="flex items-center gap-3 text-xs text-ui/70">
+          <span><span className="text-cp-teal">{totalValidates}</span> blessed</span>
+          {totalRejects > 0 && <span><span className="text-cp-coral">{totalRejects}</span> rejected</span>}
+          {totalSmells > 0 && <span><span className="text-cp-amber">{totalSmells}</span> smell</span>}
+          {pendingOverrides > 0 && <span><span className="text-cp-amber">{pendingOverrides}</span> overrides</span>}
+          {elevatedCount > 0 && <span><span className="text-cp-coral">{elevatedCount}</span> elevated</span>}
+          {totalPmCost > 0 && <span className="text-ui/55">${totalPmCost.toFixed(2)}/24h</span>}
+        </div>
+      </button>
+
+      {!expanded ? null : (
+      <div className="px-4 pb-4">
+      <div className="text-xs text-ui/55 mb-2">7-day window</div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+        <div className="glass-nested rounded-lg p-3">
+          <div className="text-xs text-ui/55 uppercase tracking-wide mb-2">Validate outcomes</div>
+          {hygiene.validateOutcomes.length === 0 ? (
+            <div className="text-xs text-ui/55 italic">none yet</div>
+          ) : (
+            <div className="space-y-1">
+              {hygiene.validateOutcomes.map((v) => (
+                <div key={v.from_entity} className="text-xs">
+                  <span className="text-ui font-medium">{v.from_entity}:</span>{' '}
+                  <span className="text-cp-teal">{v.validates} blessed</span>{' / '}
+                  <span className="text-cp-coral">{v.rejects} rejected</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="glass-nested rounded-lg p-3">
+          <div className="text-xs text-ui/55 uppercase tracking-wide mb-2">Smell flags</div>
+          {hygiene.smellFlags.length === 0 ? (
+            <div className="text-xs text-ui/55 italic">none</div>
+          ) : (
+            <div className="space-y-1">
+              {hygiene.smellFlags.map((s) => (
+                <div key={s.category} className="text-xs">
+                  <span className="text-cp-amber font-medium">{s.category}:</span>{' '}
+                  <span className="text-ui/80">{s.count}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="glass-nested rounded-lg p-3">
+          <div className="text-xs text-ui/55 uppercase tracking-wide mb-2">Override rollup</div>
+          {hygiene.overrideRollup.length === 0 ? (
+            <div className="text-xs text-ui/55 italic">none</div>
+          ) : (
+            <div className="space-y-1">
+              {hygiene.overrideRollup.map((o) => (
+                <div key={o.status} className="text-xs">
+                  <span className="text-ui font-medium">{o.status}:</span>{' '}
+                  <span className="text-ui/80">{o.count}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="glass-nested rounded-lg p-3">
+          <div className="text-xs text-ui/55 uppercase tracking-wide mb-2">PM cost (24h)</div>
+          {hygiene.pmCost.length === 0 ? (
+            <div className="text-xs text-ui/55 italic">no PM model calls</div>
+          ) : (
+            <div className="space-y-1">
+              {hygiene.pmCost.map((p) => (
+                <div key={p.modelId ?? 'unknown'} className="text-xs">
+                  <span className="text-ui font-medium">{p.modelId ?? 'unknown'}:</span>{' '}
+                  <span className="text-ui/80">{p.calls} calls</span>{' / '}
+                  <span className="text-cp-amber">${(p.cost_24h ?? 0).toFixed(4)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="glass-nested rounded-lg p-3 md:col-span-2 lg:col-span-2">
+          <div className="text-xs text-ui/55 uppercase tracking-wide mb-2">
+            Elevated tasks ({hygiene.elevated.length})
+          </div>
+          {hygiene.elevated.length === 0 ? (
+            <div className="text-xs text-ui/55 italic">no tasks need attention</div>
+          ) : (
+            <div className="space-y-1 max-h-32 overflow-y-auto">
+              {hygiene.elevated.map((t) => (
+                <button
+                  key={t.id8}
+                  type="button"
+                  onClick={() => onTaskClick(t.id8)}
+                  className="text-xs text-left w-full hover:bg-ui/5 rounded px-1 py-0.5"
+                >
+                  <span className="text-ui/55">{t.id8}</span>{' '}
+                  <span className="text-ui font-medium underline-offset-2 hover:underline">{t.title}</span>{' '}
+                  <span className="text-ui/70">[{t.status}]</span>
+                  {t.revert_count > 0 && (
+                    <span className="ml-2 text-cp-coral">↺{t.revert_count}</span>
+                  )}
+                  {t.awaiting_user_verdict === 1 && (
+                    <span className="ml-2 text-cp-amber">verdict?</span>
+                  )}
+                  {t.last_smell_flag && (
+                    <div className="text-ui/55 italic ml-3 text-[10px]">{t.last_smell_flag}</div>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      </div>
+      )}
+    </div>
+  );
+};
+
 export const Tracker = () => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -439,6 +801,32 @@ export const Tracker = () => {
   const [confirmDeleteProject, setConfirmDeleteProject] = useState(false);
   const [closeProjectModalOpen, setCloseProjectModalOpen] = useState(false);
   const { subscribe } = useWebSocket();
+
+  // Phase B.1 / Q5 (corrected): override queue and hygiene panel are
+  // tracker-page concerns and always visible here. Wordy Mode is a chat-page
+  // toggle for showing tool-call mechanics inline; it does not apply here.
+  const [overrides, setOverrides] = useState<api.OverrideRequestRow[]>([]);
+  const [hygiene, setHygiene] = useState<api.TrackerHygiene | null>(null);
+  const [hygieneExpanded, setHygieneExpanded] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const loadOverrides = () => {
+      api.getOverrideRequests('pending').then((res) => {
+        if (cancelled) return;
+        if (res.ok) setOverrides(res.data);
+      });
+    };
+    const loadHygiene = () => {
+      api.getTrackerHygiene().then((res) => {
+        if (cancelled) return;
+        if (res.ok) setHygiene(res.data);
+      });
+    };
+    loadOverrides();
+    loadHygiene();
+    const interval = setInterval(() => { loadOverrides(); loadHygiene(); }, 30_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
 
   const loadData = useCallback(async () => {
     const [projectsResult, agentsResult] = await Promise.all([
@@ -532,6 +920,33 @@ export const Tracker = () => {
 
   return (
     <div className="flex-1 flex flex-col min-h-0 p-6">
+      {/* Phase B.1: override request queue. Visible whenever there are
+          pending requests; this is actionable work the user should see. */}
+      {overrides.length > 0 && (
+        <OverrideQueuePanel
+          overrides={overrides}
+          onResolved={() => {
+            api.getOverrideRequests('pending').then((res) => {
+              if (res.ok) setOverrides(res.data);
+            });
+          }}
+        />
+      )}
+
+      {/* Phase D: tracker hygiene + telemetry panel. Collapsed by default;
+          click the chevron to expand. */}
+      {hygiene && (
+        <HygienePanel
+          hygiene={hygiene}
+          expanded={hygieneExpanded}
+          onToggle={() => setHygieneExpanded((v) => !v)}
+          onTaskClick={(id8) => {
+            const match = tasks.find((t) => t.id.startsWith(id8));
+            if (match) setSelectedTaskId(match.id);
+          }}
+        />
+      )}
+
       {/* Top Bar */}
       <div className="shrink-0 mb-6 space-y-3">
         <div className="flex items-center justify-between">
