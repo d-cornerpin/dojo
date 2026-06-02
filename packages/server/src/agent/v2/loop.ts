@@ -2240,11 +2240,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
               `[System: you are about to end this turn with ${openTasks.length} task${openTasks.length === 1 ? '' : 's'} still in_progress and assigned to you:\n` +
               `${taskList}\n\n` +
               `Pick exactly one of these before ending the turn:\n\n` +
-              `  1. KEEP GOING - call your next tool now if you have more work to do this turn.\n` +
-              `  2. DONE - tracker_update_status(task_id, status="complete") (or tracker_complete_step for multi-step projects).\n` +
+              `  1. KEEP GOING - call your next tool NOW to continue from EXACTLY where you stopped. Long file reads, batch operations, multi-step processes — don't restart, don't re-read content you already processed, just advance to the next line / next item / next step.\n` +
+              `  2. DONE - tracker_update_status(task_id, status="complete", result="...", evidence=[...]) (or tracker_complete_step for multi-step projects).\n` +
               `  3. WAITING ON USER (already asked them) - tracker_update_status(task_id, status="paused", notes="waiting for X"). PM will ignore this task entirely; no pokes.\n` +
               `  4. BLOCKED (needs escalation - user does not know yet) - tracker_update_status(task_id, status="blocked", notes="why"). PM will surface this to the primary user.\n\n` +
-              `If you go idle with a task still in_progress, the PM will poke you in ~2 minutes assuming you stalled. Skip the noise by transitioning the task now.]`
+              `If you go idle with a task still in_progress, the PM will poke you in ~2 minutes assuming you stalled. Skip the noise by either advancing the work or transitioning the task now.]`
             );
             const nudgeId = uuidv4();
             db.prepare(`
