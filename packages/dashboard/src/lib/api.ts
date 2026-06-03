@@ -736,6 +736,70 @@ export const fetchVoicePreview = async (voice: string, speed = 1, text?: string)
   return res.blob();
 };
 
+// ── Hume cloud TTS ──
+
+export interface HumeVoiceInfo {
+  id: string;
+  name: string;
+  provider: 'HUME_AI' | 'CUSTOM_VOICE';
+}
+
+export const getHumeStatus = async (): Promise<ApiResponse<{ keySet: boolean }>> => {
+  return request('/voice/hume/status');
+};
+
+export const setHumeKey = async (apiKey: string): Promise<ApiResponse<{ keySet: boolean }>> => {
+  return request('/voice/hume/key', {
+    method: 'POST',
+    body: JSON.stringify({ apiKey }),
+  });
+};
+
+export const clearHumeKey = async (): Promise<ApiResponse<{ keySet: boolean }>> => {
+  return request('/voice/hume/key', { method: 'DELETE' });
+};
+
+export const listHumeVoices = async (): Promise<ApiResponse<{ voices: HumeVoiceInfo[] }>> => {
+  return request('/voice/hume/voices');
+};
+
+/**
+ * Fetch a preview for the Cloud engine. Distinct from `fetchVoicePreview`
+ * because cloud previews carry extra fields (voice provider, delivery
+ * description) and route to Hume on the server.
+ */
+export const fetchCloudVoicePreview = async (args: {
+  voice: string;
+  voiceProvider: 'HUME_AI' | 'CUSTOM_VOICE';
+  description?: string;
+  speed?: number;
+  text?: string;
+}): Promise<Blob> => {
+  const token = getToken();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const csrf = getCsrfToken();
+  if (csrf) headers['X-CSRF-Token'] = csrf;
+  const res = await fetch(`${BASE_URL}/voice/preview`, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: JSON.stringify({
+      engine: 'cloud',
+      voice: args.voice,
+      voiceProvider: args.voiceProvider,
+      description: args.description,
+      speed: args.speed ?? 1,
+      text: args.text,
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`cloud preview failed: ${res.status} ${body}`);
+  }
+  return res.blob();
+};
+
 // ── Memory ──
 
 export const getMemoryDag = async (

@@ -36,6 +36,14 @@ import {
   isValidCustomVoiceId,
   EXPECTED_VOICE_BYTES,
 } from './custom-voices.js';
+import {
+  isHumeConfigured,
+  validateHumeKey,
+  invalidateHumeClient,
+  listHumeVoices,
+  synthesizeOnce as humeSynthesizeOnce,
+} from './hume-engine.js';
+import { setProviderCredential, loadSecrets, saveSecrets } from '../config/loader.js';
 
 const logger = createLogger('voice-routes');
 
@@ -266,26 +274,109 @@ voiceRouter.delete('/custom-voices/:id', (c) => {
   }
 });
 
+// ── Hume cloud TTS ──
+
+/** Status without exposing the key. Dashboard polls this to render Cloud-tab UI state. */
+voiceRouter.get('/hume/status', (c) => {
+  return c.json({ ok: true, data: { keySet: isHumeConfigured() } });
+});
+
+/** Set + validate the Hume API key. Body: { apiKey: string }. */
+voiceRouter.post('/hume/key', async (c) => {
+  const body = await c.req.json().catch(() => ({} as { apiKey?: unknown }));
+  const key = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+  if (!key) {
+    return c.json({ ok: false, error: 'apiKey is required' }, 400);
+  }
+  const v = await validateHumeKey(key);
+  if (!v.ok) {
+    return c.json({ ok: false, error: v.error }, 400);
+  }
+  try {
+    setProviderCredential('hume', key, 'api_key');
+    invalidateHumeClient();
+    return c.json({ ok: true, data: { keySet: true } });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ ok: false, error: msg }, 500);
+  }
+});
+
+/** Clear the stored Hume key. Doesn't touch other provider entries. */
+voiceRouter.delete('/hume/key', (c) => {
+  try {
+    const secrets = loadSecrets();
+    if (secrets.providers?.hume) {
+      delete secrets.providers.hume;
+      saveSecrets(secrets);
+    }
+    invalidateHumeClient();
+    return c.json({ ok: true, data: { keySet: false } });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ ok: false, error: msg }, 500);
+  }
+});
+
+/** Proxy the Hume voice list (Voice Library + user's custom voices). */
+voiceRouter.get('/hume/voices', async (c) => {
+  if (!isHumeConfigured()) {
+    return c.json({ ok: false, error: 'Hume not configured — set an API key first.' }, 400);
+  }
+  try {
+    const voices = await listHumeVoices();
+    return c.json({ ok: true, data: { voices } });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn('Hume voice list failed', { error: msg });
+    return c.json({ ok: false, error: msg }, 502);
+  }
+});
+
 // ── Voice preview ──
 
 voiceRouter.post('/preview', async (c) => {
-  const body = await c.req.json().catch(() => ({} as { voice?: string; text?: string; speed?: number }));
-  const voice = typeof body.voice === 'string' && body.voice.length > 0 ? body.voice : DEFAULT_VOICE;
-  const text = (typeof body.text === 'string' && body.text.trim().length > 0 ? body.text : DEFAULT_PREVIEW_TEXT).slice(0, 240);
+  const body = await c.req.json().catch(() => ({} as {
+    voice?: string; text?: string; speed?: number;
+    engine?: string; voiceProvider?: string; description?: string;
+  }));
+  const text = (typeof body.text === 'string' && body.text.trim().length > 0
+    ? body.text
+    : DEFAULT_PREVIEW_TEXT).slice(0, 240);
   const speed = typeof body.speed === 'number' && body.speed > 0.5 && body.speed < 2 ? body.speed : 1;
+  // Default to local. Cloud dispatch requires explicit engine=cloud +
+  // a Hume voice id; the dashboard sends both when previewing from the
+  // Cloud tab.
+  const engine = body.engine === 'cloud' ? 'cloud' : 'local';
 
   try {
+    if (engine === 'cloud') {
+      if (!isHumeConfigured()) {
+        return c.json({ ok: false, error: 'Hume not configured — set an API key first.' }, 400);
+      }
+      const voiceId = typeof body.voice === 'string' && body.voice.length > 0 ? body.voice : '';
+      if (!voiceId) {
+        return c.json({ ok: false, error: 'Cloud preview requires a voice id.' }, 400);
+      }
+      const voiceProvider: 'HUME_AI' | 'CUSTOM_VOICE' =
+        body.voiceProvider === 'CUSTOM_VOICE' ? 'CUSTOM_VOICE' : 'HUME_AI';
+      const description = typeof body.description === 'string' && body.description.trim().length > 0
+        ? body.description.trim().slice(0, 500) : undefined;
+      const result = await humeSynthesizeOnce(text, voiceId, { description, speed, voiceProvider });
+      return new Response(result.wav, {
+        status: 200,
+        headers: { 'Content-Type': 'audio/wav', 'Cache-Control': 'no-store' },
+      });
+    }
+    const voice = typeof body.voice === 'string' && body.voice.length > 0 ? body.voice : DEFAULT_VOICE;
     const result = await synthesizeOnce(text, voice, speed);
     return new Response(result.wav, {
       status: 200,
-      headers: {
-        'Content-Type': 'audio/wav',
-        'Cache-Control': 'no-store',
-      },
+      headers: { 'Content-Type': 'audio/wav', 'Cache-Control': 'no-store' },
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.warn('Voice preview failed', { voice, error: msg });
+    logger.warn('Voice preview failed', { engine, error: msg });
     return c.json({ ok: false, error: msg }, 500);
   }
 });

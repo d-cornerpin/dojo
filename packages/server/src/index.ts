@@ -15,6 +15,25 @@ import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, isPMEnabled } fro
 const logger = createLogger('main');
 const PORT = parseInt(process.env.DOJO_PORT ?? '3001', 10);
 
+// Surface uncaught crashes to the structured log instead of silently
+// exiting. Without this, a throw inside a third-party WebSocket event
+// listener (Hume SDK, the gateway WS) takes down the process leaving
+// only an opaque stderr dump. We still exit so dev-mode (tsx watch)
+// restarts cleanly — just leave a breadcrumb first.
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught exception — process will exit', {
+    error: err instanceof Error ? err.message : String(err),
+    stack: err instanceof Error ? err.stack : undefined,
+  });
+  setTimeout(() => process.exit(1), 100);
+});
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled promise rejection', {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
+});
+
 const PLATFORM_DIRS = [
   path.join(os.homedir(), '.dojo'),
   path.join(os.homedir(), '.dojo', 'data'),

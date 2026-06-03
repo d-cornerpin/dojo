@@ -373,6 +373,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // a single voice turn.
   const latestUserSource: 'voice' | 'text' | null =
     triggerRow?.source === 'voice' ? 'voice' : triggerRow ? 'text' : null;
+  // Hume cloud-TTS brief — extend turn context with the active TTS engine
+  // so the assembler can swap between the flat-voice (Kokoro) addendum
+  // and the expressive (Hume) addendum that teaches the ((deliver: ...))
+  // cue. Resolved once here so it stays stable across tool iterations.
+  let latestTtsEngine: 'local' | 'cloud' | null = null;
+  if (latestUserSource === 'voice') {
+    try {
+      const ttsRow = db.prepare("SELECT value FROM config WHERE key = ?")
+        .get('voice.tts_engine') as { value: string } | undefined;
+      latestTtsEngine = ttsRow?.value === 'cloud' ? 'cloud' : 'local';
+    } catch {
+      latestTtsEngine = 'local';
+    }
+  }
   const triggeredByIMessage = lastUserMessageContent?.includes('[SOURCE: IMESSAGE FROM') ?? false;
   const imFlagSetAtRunStart = isAwaitingIMResponse(agentId);
 
@@ -1120,7 +1134,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
       // ── Phase: assemble context ──
       state = advance(state, { phase: 'assemble' });
-      const ctx = await assembleContext(agentId, contextModelId, { latestUserSource });
+      const ctx = await assembleContext(agentId, contextModelId, { latestUserSource, ttsEngine: latestTtsEngine });
       let systemPrompt = ctx.systemPrompt;
       const messages = ctx.messages;
 

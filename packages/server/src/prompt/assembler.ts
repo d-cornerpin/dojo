@@ -345,15 +345,23 @@ function shouldShareUserProfile(agentId: string): boolean {
  */
 export interface PromptTurnContext {
   latestUserSource: 'voice' | 'text' | null;
+  /**
+   * Active TTS engine for the voice path, used to choose between the
+   * flat-voice (local Kokoro) and expressive (cloud Hume) addendum. If
+   * omitted, the assembler reads `voice.tts_engine` from the config
+   * table; the explicit field is for tests and for callers that already
+   * have the value cached.
+   */
+  ttsEngine?: 'local' | 'cloud' | null;
 }
 
 /**
- * Voice-mode conduct block (Phase 3). Injected at the END of the prompt
- * — AFTER the agent's persona — so persona stays primary and this block
- * shapes delivery rather than rewriting identity. Kept verbatim from the
- * v3 plan; do not edit without revisiting that doc.
+ * Voice-mode conduct base (Phase 3 + Hume cloud TTS). Shared by both
+ * engines — the short/spoken/no-markdown rules apply regardless of which
+ * voice is reading the reply aloud. The engine-specific addendum below
+ * gets appended at injection time.
  */
-const VOICE_CONDUCT_BLOCK = `## Voice mode (this turn)
+const VOICE_BASE_BLOCK = `## Voice mode (this turn)
 
 You are speaking out loud in a live voice conversation, not writing.
 Everything you say is read by a text-to-speech voice, so write it the way you
@@ -390,6 +398,106 @@ Do say: "Sure. Short version, it's mostly about the budget cuts and how they
 hit the two big projects. Want the details or just the bottom line?"
 
 Keep it short and spoken. When in doubt, say less.`;
+
+/**
+ * Local (Kokoro) addendum. Kokoro reads flat, so do not write in stage
+ * directions, sound effects, or written-out hesitations — they get
+ * spoken literally and sound worse. Do NOT teach the cloud delivery-cue
+ * format here; cue parsing is engine-agnostic but only the cloud engine
+ * acts on it.
+ */
+const VOICE_LOCAL_ADDENDUM = `
+
+The voice you are spoken through is even and flat, so do not convey emotion
+through stage directions, sound effects, or written-out hesitations ("um",
+"uh", "*sighs*"). Those get spoken literally and sound worse than just
+plain natural phrasing. Keep it short and natural.`;
+
+/**
+ * Cloud (Hume Octave) addendum. The expressive engine reads emotional
+ * meaning from the words automatically; the per-turn `((deliver: ...))`
+ * cue is parsed off the front of the reply and applied as Hume's
+ * "acting instructions" for that turn only. Kept verbatim from the
+ * cloud-TTS brief; do not edit without revisiting that doc.
+ */
+const VOICE_CLOUD_ADDENDUM = `
+
+EVERY voice-mode reply you write MUST start with a delivery cue on its own
+line, in this exact shape:
+
+((deliver: emotion words))
+your actual reply here
+
+Example of a CORRECT voice-mode reply:
+
+((deliver: sad, quiet, heavy))
+The old man still set two plates on the table every night, even though he had been eating alone for six years.
+
+Example of an INCORRECT voice-mode reply (no cue, voice reads flat):
+
+The old man still set two plates on the table every night.
+
+The cue is the FIRST LINE of every voice-mode reply, no exceptions. The
+delivery system reads it off and applies it as acting instructions to the
+voice; without it the voice falls back to flat baseline and your tone does
+not come through. The cue is never spoken — only the line below it is read
+aloud.
+
+How to write the cue (Hume's published best practices):
+- Keep it concise. Under a hundred characters. "Frightened, rushed" lands;
+  "the speaker is scared and trying to leave" does not.
+- Use precise emotions instead of broad ones. "Melancholy" beats "sad";
+  "frustrated" beats "annoyed"; "anxious" or "uneasy" beats "worried".
+- Combine emotion with delivery style for nuance. "Excited but whispering",
+  "confident, professional tone", "sarcastic, dry", "hype announcer,
+  stadium energy", "gentle, slower, reassuring".
+- Indicate pacing with rhythm words when it matters: "rushed", "measured",
+  "deliberate pause", "drawn out", "quick clipped delivery".
+- Specify the audience when it shapes the delivery. "Speaking to a child",
+  "addressing a large crowd", "talking to a close friend", "in a courtroom".
+- Match the cue to the content. Sad story gets a melancholy cue. Quick
+  weather update gets a warm-conversational cue. Bad news gets gentle-
+  and-measured.
+- If nothing emotional is called for, the default cue is
+  ((deliver: warm, conversational)). Use it — do not skip the cue line.
+- Leave actual speed multipliers to settings; describe rate in words inside
+  the cue.
+
+Pauses inside the reply
+You can add real silence into the spoken line by inserting [pause] or
+[long pause] right into your text. The voice engine reads them as actual
+breaks; they're never spoken as the words "pause" or "long pause". Use
+them where a person would naturally stop: before a punchline, between two
+distinct thoughts, after a heavy sentence to let it land, at a hesitant
+"well…" moment.
+
+Example with both a cue and inline pauses:
+
+((deliver: thoughtful, measured))
+Honestly? [pause] I think you already know the answer. [long pause] You just want someone else to say it first.
+
+Use [pause] for a short beat, [long pause] for a deliberate hold. Don't
+overuse them; one or two in a reply is plenty. They go in the body of the
+text, never in the cue.`;
+
+/**
+ * Resolve the active TTS engine: prefer the value threaded into the
+ * turnContext (loop preflight reads it once at turn start so it stays
+ * stable across tool iterations); otherwise read `voice.tts_engine` out
+ * of the config table.
+ */
+function resolveTtsEngine(turnContext: PromptTurnContext | undefined): 'local' | 'cloud' {
+  if (turnContext?.ttsEngine === 'cloud') return 'cloud';
+  if (turnContext?.ttsEngine === 'local') return 'local';
+  try {
+    const db = getDb();
+    const row = db.prepare("SELECT value FROM config WHERE key = ?")
+      .get('voice.tts_engine') as { value: string } | undefined;
+    return row?.value === 'cloud' ? 'cloud' : 'local';
+  } catch {
+    return 'local';
+  }
+}
 
 export function assembleSystemPrompt(
   agentId: string,
@@ -651,9 +759,12 @@ People can send you Microsoft Teams messages directly. When they do, a notificat
   // model's next token and shapes how the assembled prompt resolves into a
   // reply, without overwriting persona earlier in the prompt. Skipped on
   // text turns (which is the common case), so prompt token cost is unchanged
-  // for chat.
+  // for chat. Hume cloud-TTS brief: the addendum after the shared base is
+  // engine-specific — local enforces flat voice, cloud teaches the
+  // ((deliver: ...)) cue.
   if (turnContext?.latestUserSource === 'voice') {
-    parts.push(VOICE_CONDUCT_BLOCK);
+    const engine = resolveTtsEngine(turnContext);
+    parts.push(VOICE_BASE_BLOCK + (engine === 'cloud' ? VOICE_CLOUD_ADDENDUM : VOICE_LOCAL_ADDENDUM));
   }
 
   const systemPrompt = parts.join('\n\n---\n\n');

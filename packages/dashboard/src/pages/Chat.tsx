@@ -6,6 +6,7 @@ import type { AttachmentInfo } from '../lib/api';
 import { formatDate } from '../lib/dates';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { ToolCallBlock, ToolCallCard, ToolResultBlock } from '../components/ToolCallBlock';
+import { stripVoiceMarkers, stripVoiceMarkersForStream } from '../lib/voice-markers';
 import { Markdown } from '../components/Markdown';
 import { ChatInput } from '../components/ChatInput';
 import { useToast } from '../hooks/useToast';
@@ -168,6 +169,12 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
 const AssistantBubble = ({ msg, wordyMode = true, modelNames = {} }: { msg: ChatMessage; wordyMode?: boolean; modelNames?: Record<string, string> }) => {
   const { text: rawText, blocks } = parseMessageContent(msg.content);
   const text = rawText?.trim() || '';
+  // Hide cloud voice-mode markers ((deliver: ...)), [pause], [long pause]
+  // from regular chat. Wordy mode shows them so you can debug agent output.
+  const displayText = wordyMode
+    ? text
+    : (msg.isStreaming ? stripVoiceMarkersForStream(text) : stripVoiceMarkers(text));
+  const spokenAloud = msg.source === 'voice';
   const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
   const hasReasoning = !!(msg.reasoningContent && msg.reasoningContent.length > 0);
   // Auto-expand while reasoning is actively streaming OR while no answer
@@ -185,6 +192,18 @@ const AssistantBubble = ({ msg, wordyMode = true, modelNames = {} }: { msg: Chat
   return (
     <div className="flex justify-start">
       <div className="max-w-[92%] sm:max-w-[75%]">
+        {/* "via voice" badge — left-aligned mirror of the user-side badge,
+            stamped by the server when voice-mode TTS routes this message
+            through Kokoro or Hume. */}
+        {spokenAloud && (
+          <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-cp-teal/10 text-cp-teal text-[10px] font-mono mb-1 ml-1">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+              <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" />
+            </svg>
+            <span>via voice</span>
+          </div>
+        )}
         {/* Reasoning / "Thinking…" panel — appears above the answer text.
             Live-streams while the model is thinking, collapses when the
             final answer starts arriving. Click header to toggle later.
@@ -218,12 +237,12 @@ const AssistantBubble = ({ msg, wordyMode = true, modelNames = {} }: { msg: Chat
         )}
 
         {/* Text content */}
-        {text && (
+        {displayText && (
           <div className="bubble-assistant px-3 py-2 sm:px-4 sm:py-3 whitespace-pre-wrap text-xs sm:text-sm">
             {wordyMode && msg.modelId && (
               <div className="text-[9px] sm:text-[10px] text-ui/25 mb-1">{modelNames[msg.modelId] ?? msg.modelId}</div>
             )}
-            <Markdown content={text} />
+            <Markdown content={displayText} />
             {msg.isStreaming && (
               <span className="inline-flex gap-1 ml-1 align-middle">
                 <span className="w-1.5 h-1.5 rounded-full bg-cp-amber animate-bounce" style={{ animationDelay: '0ms' }} />
@@ -859,6 +878,22 @@ export const Chat = () => {
       reconcileStreamingBubbles();
     });
 
+    // Server stamps assistant messages as voice-delivered when voice mode
+    // routes their content through TTS, then broadcasts this event so the
+    // local bubble can update its source and render the "via voice" badge
+    // without a refetch.
+    const unsubSource = subscribe('chat:source_updated', (event: WsEvent) => {
+      const e = event as { agentId: string; messageId: string; source: 'voice' | null };
+      if (e.agentId !== agentIdRef.current) return;
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === e.messageId);
+        if (idx < 0) return prev;
+        const updated = [...prev];
+        updated[idx] = { ...updated[idx], source: e.source };
+        return updated;
+      });
+    });
+
     return () => {
       unsubChunk();
       unsubReasoning();
@@ -868,6 +903,7 @@ export const Chat = () => {
       unsubMessage();
       unsubStatus();
       unsubTerminated();
+      unsubSource();
     };
   }, [subscribe, AGENT_ID]);
 

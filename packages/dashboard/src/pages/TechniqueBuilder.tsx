@@ -7,6 +7,7 @@ import { formatDate } from '../lib/dates';
 import type { AttachmentInfo } from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { ToolCallBlock, ToolCallCard, ToolResultBlock } from '../components/ToolCallBlock';
+import { stripVoiceMarkers, stripVoiceMarkersForStream } from '../lib/voice-markers';
 import { Markdown } from '../components/Markdown';
 import { ChatInput } from '../components/ChatInput';
 import { ThinkingBubble } from '../components/ThinkingBubble';
@@ -232,6 +233,11 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
 const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMode?: boolean }) => {
   const { text: rawText, blocks } = parseMessageContent(msg.content);
   const text = rawText?.trim() || '';
+  // Hide cloud voice-mode markers ((deliver: ...)), [pause], [long pause]
+  // from regular chat. Wordy mode shows them so you can debug agent output.
+  const displayText = wordyMode
+    ? text
+    : (msg.isStreaming ? stripVoiceMarkersForStream(text) : stripVoiceMarkers(text));
   const hasToolUse = blocks?.some((b) => b.type === 'tool_use');
   const hasReasoning = !!(msg.reasoningContent && msg.reasoningContent.length > 0);
 
@@ -280,9 +286,9 @@ const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMod
           </div>
         )}
 
-        {text && (
+        {displayText && (
           <div className="bubble-assistant px-4 py-3 whitespace-pre-wrap">
-            <Markdown content={text} />
+            <Markdown content={displayText} />
             {msg.isStreaming && (
               <span className="inline-flex gap-1 ml-1 align-middle">
                 <span className="w-1.5 h-1.5 rounded-full bg-cp-amber animate-bounce" style={{ animationDelay: '0ms' }} />

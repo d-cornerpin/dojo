@@ -26,6 +26,8 @@ import { submitUserMessage } from '../gateway/routes/chat.js';
 import { transcribeBuffer, pcmFloatToWav, ensureSttReady, DEFAULT_STT_MODEL_KEY, parseSttModelKey, isWhisperBinaryAvailable } from './stt-service.js';
 import { synthesizeClauseStream, createClauseQueue, DEFAULT_VOICE, loadKokoro, isKokoroLoaded } from './tts-service.js';
 import { StreamingSpeechBuffer } from './text-sanitize.js';
+import { HumeStreamSession, isHumeConfigured } from './hume-engine.js';
+import { createCueExtractor } from './cue-parser.js';
 import { getDb } from '../db/connection.js';
 import { getPrimaryAgentName } from '../config/platform.js';
 import { WHISPER_MODELS, type WhisperSize } from './model-manager.js';
@@ -93,6 +95,22 @@ interface VoiceSession {
    * at onSpeechStart instead of preSpeechPadMs before it.
    */
   expectingCanonicalFrame: boolean;
+  /**
+   * Active TTS engine for this session — 'local' (Kokoro) or 'cloud'
+   * (Hume). Stored in config as voice.tts_engine; voice-ws.ts reads it
+   * once at session open and again whenever the dashboard sends a
+   * 'config' WS message with a new tts_engine field. The Cloud path
+   * silently falls back to Local when isHumeConfigured() is false.
+   */
+  ttsEngine: 'local' | 'cloud';
+  /** Hume voice id used for cloud TTS bursts. */
+  cloudVoice: string;
+  /** Hume provider: HUME_AI (Voice Library) or CUSTOM_VOICE (the user's). */
+  cloudVoiceProvider: 'HUME_AI' | 'CUSTOM_VOICE';
+  /** Standing delivery description for cloud TTS. null = let Octave decide. */
+  cloudDescription: string | null;
+  /** Speed multiplier for cloud TTS. */
+  cloudSpeed: number;
 }
 
 /**
@@ -102,6 +120,11 @@ interface VoiceSession {
 function loadVoiceSettings(): {
   voice: string; speed: number; sttModel: string;
   wakeWordEnabled: boolean; wakePhrase: string; sleepPhrase: string;
+  ttsEngine: 'local' | 'cloud';
+  cloudVoice: string;
+  cloudVoiceProvider: 'HUME_AI' | 'CUSTOM_VOICE';
+  cloudDescription: string | null;
+  cloudSpeed: number;
 } {
   const db = getDb();
   let voice = DEFAULT_VOICE;
@@ -114,9 +137,14 @@ function loadVoiceSettings(): {
   // the user has named their primary agent in setup.
   let wakePhrase = `hey ${getPrimaryAgentName().toLowerCase()}`;
   let sleepPhrase = 'stop listening';
+  let ttsEngine: 'local' | 'cloud' = 'local';
+  let cloudVoice = '';
+  let cloudVoiceProvider: 'HUME_AI' | 'CUSTOM_VOICE' = 'HUME_AI';
+  let cloudDescription: string | null = null;
+  let cloudSpeed = 1;
   try {
     const row = db.prepare(
-      "SELECT key, value FROM config WHERE key IN ('voice.preferred_voice', 'voice.playback_speed', 'voice.stt_model', 'voice.wake_word_enabled', 'voice.wake_phrase', 'voice.sleep_phrase')",
+      "SELECT key, value FROM config WHERE key IN ('voice.preferred_voice', 'voice.playback_speed', 'voice.stt_model', 'voice.wake_word_enabled', 'voice.wake_phrase', 'voice.sleep_phrase', 'voice.tts_engine', 'voice.cloud_voice', 'voice.cloud_voice_provider', 'voice.cloud_voice_description', 'voice.cloud_speed')",
     ).all() as Array<{ key: string; value: string }>;
     for (const r of row) {
       if (r.key === 'voice.preferred_voice' && r.value) voice = r.value;
@@ -133,9 +161,51 @@ function loadVoiceSettings(): {
       if (r.key === 'voice.wake_word_enabled') wakeWordEnabled = r.value === 'true';
       if (r.key === 'voice.wake_phrase' && r.value.trim()) wakePhrase = r.value.trim().toLowerCase();
       if (r.key === 'voice.sleep_phrase' && r.value.trim()) sleepPhrase = r.value.trim().toLowerCase();
+      if (r.key === 'voice.tts_engine' && r.value === 'cloud') ttsEngine = 'cloud';
+      if (r.key === 'voice.cloud_voice' && r.value) cloudVoice = r.value;
+      if (r.key === 'voice.cloud_voice_provider' && r.value === 'CUSTOM_VOICE') cloudVoiceProvider = 'CUSTOM_VOICE';
+      if (r.key === 'voice.cloud_voice_description' && r.value.trim()) cloudDescription = r.value.trim().slice(0, 500);
+      if (r.key === 'voice.cloud_speed') {
+        const n = Number(r.value);
+        if (Number.isFinite(n) && n >= 0.5 && n <= 2) cloudSpeed = n;
+      }
     }
   } catch { /* table may not yet have these rows — defaults are fine */ }
-  return { voice, speed, sttModel, wakeWordEnabled, wakePhrase, sleepPhrase };
+  // Hard guard: if the user picked cloud but never configured a key OR
+  // a cloud voice, drop back to local. We don't want voice mode to break
+  // on a misconfiguration; engine fallback is the contract.
+  if (ttsEngine === 'cloud' && (!isHumeConfigured() || cloudVoice.length === 0)) {
+    ttsEngine = 'local';
+  }
+  return {
+    voice, speed, sttModel,
+    wakeWordEnabled, wakePhrase, sleepPhrase,
+    ttsEngine, cloudVoice, cloudVoiceProvider, cloudDescription, cloudSpeed,
+  };
+}
+
+/**
+ * Mark an assistant message as voice-delivered: stamps messages.source =
+ * 'voice' in the DB and broadcasts chat:source_updated so live dashboard
+ * sessions update the bubble's "via voice" badge in place. Idempotent —
+ * the SQL only updates rows where source IS NULL, and the broadcast is
+ * cheap, so duplicate calls during a burst are a no-op end-to-end.
+ */
+function markAssistantMessageVoiced(agentId: string, messageId: string): void {
+  if (!messageId) return;
+  try {
+    const db = getDb();
+    const res = db.prepare(
+      "UPDATE messages SET source = 'voice' WHERE id = ? AND role = 'assistant' AND (source IS NULL OR source = '')",
+    ).run(messageId);
+    if (res.changes > 0) {
+      broadcast({ type: 'chat:source_updated', agentId, messageId, source: 'voice' });
+    }
+  } catch (err) {
+    logger.warn('Failed to mark message as voice-delivered', {
+      messageId, error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 /**
@@ -313,6 +383,11 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
       unsubscribeProactive: null,
       pendingTurnExtension: null,
       expectingCanonicalFrame: false,
+      ttsEngine: saved.ttsEngine,
+      cloudVoice: saved.cloudVoice,
+      cloudVoiceProvider: saved.cloudVoiceProvider,
+      cloudDescription: saved.cloudDescription,
+      cloudSpeed: saved.cloudSpeed,
     };
     sessions.set(ws, session);
     // Heartbeat every 25s — under Cloudflare Tunnel's default WS idle timeout
@@ -419,6 +494,25 @@ export async function handleVoiceMessage(ws: WSContext, data: string | ArrayBuff
       if (typeof msg.voice === 'string') session.voice = msg.voice;
       if (typeof msg.speed === 'number' && msg.speed >= 0.5 && msg.speed <= 2) session.speed = msg.speed;
       if (typeof msg.pcmSampleRate === 'number') session.pcmSampleRate = msg.pcmSampleRate;
+      if (typeof msg.ttsEngine === 'string') {
+        const next: 'local' | 'cloud' = msg.ttsEngine === 'cloud' ? 'cloud' : 'local';
+        // Same fallback rule as initial load: cloud requires both a key
+        // and a chosen voice. Misconfigured cloud silently degrades to
+        // local so voice mode never breaks.
+        session.ttsEngine = (next === 'cloud' && (!isHumeConfigured() || session.cloudVoice.length === 0))
+          ? 'local' : next;
+      }
+      if (typeof msg.cloudVoice === 'string' && msg.cloudVoice.length > 0) session.cloudVoice = msg.cloudVoice;
+      if (msg.cloudVoiceProvider === 'CUSTOM_VOICE' || msg.cloudVoiceProvider === 'HUME_AI') {
+        session.cloudVoiceProvider = msg.cloudVoiceProvider;
+      }
+      if (typeof msg.cloudDescription === 'string') {
+        session.cloudDescription = msg.cloudDescription.trim().length > 0
+          ? msg.cloudDescription.trim().slice(0, 500) : null;
+      }
+      if (typeof msg.cloudSpeed === 'number' && msg.cloudSpeed >= 0.5 && msg.cloudSpeed <= 2) {
+        session.cloudSpeed = msg.cloudSpeed;
+      }
       if (typeof msg.sttModel === 'string' && msg.sttModel.length > 0) {
         // Accept either the new canonical key ('moonshine-base') or a
         // WhisperSize. parseSttModelKey normalises and falls back to the
@@ -450,6 +544,10 @@ export async function handleVoiceMessage(ws: WSContext, data: string | ArrayBuff
         type: 'voice:config_ack',
         voice: session.voice, speed: session.speed, sttModel: session.sttModel,
         wakeWordEnabled: session.wakeWordEnabled, passive: session.passive,
+        ttsEngine: session.ttsEngine,
+        cloudVoice: session.cloudVoice,
+        cloudVoiceProvider: session.cloudVoiceProvider,
+        cloudSpeed: session.cloudSpeed,
       });
       return;
     }
@@ -784,6 +882,25 @@ async function submitTranscriptAndStartTts(session: VoiceSession, transcript: st
  *     isn't lost — the burst listener subscribes after this function
  *     returns and only catches subsequent broadcasts.
  */
+/**
+ * Strip engine control markers from text destined for TTS. These tokens
+ * are routing/suppression signals the agent emits for the chat pipeline
+ * (e.g. `[no-reply]` to say "this turn produces no chat reply") — they
+ * are NEVER meant to be spoken. When the agent emits just `[no-reply]`
+ * by itself, Octave will improvise something plausible from the
+ * baseline description rather than synthesise the literal token; the
+ * user hears words the agent never wrote. Strip them here so neither
+ * engine has a chance to read them aloud.
+ */
+function stripEngineControlMarkers(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(/\[no-reply\]/gi, '')
+    // Collapse runs of spaces produced by the removal so word boundaries
+    // stay intact but we don't end up with double spaces.
+    .replace(/ {2,}/g, ' ');
+}
+
 function startTtsForAgent(session: VoiceSession, initialContent?: string): void {
   // Pause the proactive watcher for the duration of this burst — the
   // burst's own chat:chunk listener will handle every event from here.
@@ -805,6 +922,15 @@ function startTtsForAgent(session: VoiceSession, initialContent?: string): void 
   if (session.activeTts) {
     session.activeTts.abort.abort();
     session.activeTts = null;
+  }
+
+  // Engine dispatch — cloud (Hume) takes a totally different streaming
+  // shape (one socket per turn, internal buffering, no clause queue), so
+  // it lives in its own handler. Local (Kokoro) keeps the clause-queue
+  // path below.
+  if (session.ttsEngine === 'cloud') {
+    startCloudTtsBurst(session, initialContent);
+    return;
   }
 
   // Phase 4 — clause-level TTS. We drive Kokoro one clause at a time so
@@ -933,6 +1059,21 @@ function startTtsForAgent(session: VoiceSession, initialContent?: string): void 
     if (bubbleDoneSeen && toolsInFlight === 0) armQuietTimer();
   };
   abort.signal.addEventListener('abort', cancelQuietTimer, { once: true });
+  // Defensive cue strip — even on the local engine, if the agent emits
+  // a stray ((deliver: ...)) cue we don't want it read aloud. Kokoro
+  // discards the description; only the cloud path acts on it.
+  const cueExtractor = createCueExtractor();
+  const pushContent = (raw: string): void => {
+    const stripped = stripEngineControlMarkers(raw);
+    if (stripped.length === 0) return;
+    const { content } = cueExtractor.consume(stripped);
+    if (content.length === 0) return;
+    const clauses = sanitizer.pushClauses(content);
+    if (clauses.length > 0) {
+      splitter.push(...clauses);
+      startStreaming();
+    }
+  };
   // Proactive watcher path: the watcher captures the FIRST chat:chunk
   // content and hands it to us as `initialContent`. We push it through
   // sanitizer+splitter here BEFORE subscribing the burst listener, so
@@ -940,11 +1081,7 @@ function startTtsForAgent(session: VoiceSession, initialContent?: string): void 
   // already fired before we got here).
   if (initialContent) {
     bubbleChars += initialContent.length;
-    const clauses = sanitizer.pushClauses(initialContent);
-    if (clauses.length > 0) {
-      splitter.push(...clauses);
-      startStreaming();
-    }
+    pushContent(initialContent);
   }
   const unsubscribe = onBroadcast((event: WsEvent) => {
     if (abort.signal.aborted) return;
@@ -956,11 +1093,12 @@ function startTtsForAgent(session: VoiceSession, initialContent?: string): void 
       if (event.content) {
         bubbleChars += event.content.length;
         bubbleDoneSeen = false;  // new content means this bubble isn't done anymore
-        const clauses = sanitizer.pushClauses(event.content);
-        if (clauses.length > 0) {
-          splitter.push(...clauses);
-          startStreaming();
-        }
+        // Stamp the assistant message as voice-delivered so the dashboard
+        // renders the "via voice" badge on the agent bubble (mirror of
+        // the user-side badge driven by the user message's source). No-op
+        // after the first call per messageId.
+        markAssistantMessageVoiced(session.agentId, event.messageId);
+        pushContent(event.content);
       }
       if (event.done) {
         bubbleCount++;
@@ -1022,6 +1160,254 @@ function startTtsForAgent(session: VoiceSession, initialContent?: string): void 
     }
   });
   session.unsubscribeChunk = unsubscribe;
+}
+
+/**
+ * Cloud (Hume) TTS burst. Mirrors the Kokoro burst's lifecycle (chat:chunk
+ * for text + flush points, agent:status idle for end-of-turn, quiet
+ * timer fallback) but drives a single HumeStreamSession instead of a
+ * ClauseQueue + per-clause Kokoro generate() loop.
+ *
+ * Key differences vs the local path:
+ *   - One socket per BURST (not per clause). Hume buffers internally for
+ *     expressive timing; we flush at LLM-clause boundaries to push audio
+ *     out as soon as a clause completes.
+ *   - The ((deliver: ...)) cue at the front of the burst is parsed and
+ *     applied as the per-turn `description` (Hume's "acting
+ *     instructions") before the first sendPublish.
+ *   - On Hume open() or socket error, we surface a voice:state error so
+ *     the client can fall back at the UI level. Engine-level fallback
+ *     (silently switch to local mid-session) is intentionally NOT done
+ *     here: the engine choice is user-driven, and a silent flip would
+ *     mask a misconfiguration.
+ */
+function startCloudTtsBurst(session: VoiceSession, initialContent?: string): void {
+  const abort = new AbortController();
+  const messageId = `tts-cloud-${Date.now()}`;
+  session.activeTts = { abort, messageId };
+
+  const sanitizer = new StreamingSpeechBuffer();
+  const cueExtractor = createCueExtractor();
+
+  const hume = new HumeStreamSession({
+    voiceId: session.cloudVoice,
+    voiceProvider: session.cloudVoiceProvider,
+    description: session.cloudDescription ?? undefined,
+    speed: session.cloudSpeed,
+  });
+
+  let started = false;
+  const startStreaming = (): void => {
+    if (started) return;
+    started = true;
+    logger.info('Cloud TTS streaming started', {
+      agentId: session.agentId, messageId, voice: session.cloudVoice,
+    });
+    sendJson(session.ws, { type: 'voice:tts_start', agentId: session.agentId, messageId });
+    sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'speaking' });
+  };
+
+  hume.onWav = (wav) => {
+    if (abort.signal.aborted) return;
+    sendBinary(session.ws, wav);
+  };
+  hume.onError = (err) => {
+    logger.error('Cloud TTS stream error', { error: err.message, agentId: session.agentId }, session.agentId);
+    sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'error', detail: 'cloud_tts_failed' });
+    abort.abort();
+  };
+
+  // Subscribe to chat:chunk SYNCHRONOUSLY so the 100-300ms window for
+  // hume.open() doesn't drop events. The proactive watcher snaps off
+  // the moment it triggers this burst; without this immediate
+  // subscription, every chat:chunk that arrives during the handshake
+  // has no listener and is lost. The bug manifested as proactive
+  // agent messages getting only their first content token spoken,
+  // with the rest of the message orphaned in the buffer until the
+  // NEXT proactive message tacked onto it.
+  const pendingEvents: WsEvent[] = [];
+  let handler: ((event: WsEvent) => void) | null = null;
+  const unsubscribe = onBroadcast((event: WsEvent) => {
+    if (handler) handler(event);
+    else pendingEvents.push(event);
+  });
+
+  void (async () => {
+    try {
+      await hume.open();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error('Cloud TTS open failed', { error: msg }, session.agentId);
+      sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'error', detail: 'cloud_tts_open_failed' });
+      unsubscribe();
+      if (session.activeTts && session.activeTts.abort === abort) session.activeTts = null;
+      // Re-arm the proactive watcher so the next burst attempt can fire.
+      if (sessions.has(session.ws) && !session.unsubscribeProactive) {
+        session.unsubscribeProactive = subscribeProactiveWatcher(session);
+      }
+      return;
+    }
+
+    let bubbleCount = 0;
+    let bubbleChars = 0;
+    const QUIET_CLOSE_MS = 4000;
+    let quietTimer: ReturnType<typeof setTimeout> | null = null;
+    let toolsInFlight = 0;
+    let bubbleDoneSeen = false;
+    let finishing = false;
+
+    const cancelQuietTimer = (): void => {
+      if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; }
+    };
+    const finishStream = (reason: string): void => {
+      if (finishing) return;
+      finishing = true;
+      cancelQuietTimer();
+      logger.info('Cloud TTS: finishing burst', { agentId: session.agentId, messageId, reason });
+      const tail = sanitizer.flushUnsafe();
+      if (tail) {
+        hume.push(tail);
+        startStreaming();
+      }
+      hume.flush();
+      void hume.close().finally(() => {
+        if (!abort.signal.aborted) {
+          sendJson(session.ws, { type: 'voice:tts_end', agentId: session.agentId, messageId });
+          sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
+          // Same Cloudflare tunnel insurance as the local path — push 4
+          // redundant tts_end frames so the client doesn't get stuck on
+          // 'speaking' if the trailing JSON gets buffered.
+          for (let i = 1; i <= 4; i++) {
+            setTimeout(() => {
+              if (abort.signal.aborted) return;
+              try { sendJson(session.ws, { type: 'voice:tts_end', agentId: session.agentId, messageId }); } catch { /* ignore */ }
+            }, i * 120);
+          }
+        }
+        if (session.activeTts && session.activeTts.abort === abort) {
+          session.activeTts = null;
+        }
+        if (session.unsubscribeChunk) {
+          session.unsubscribeChunk();
+          session.unsubscribeChunk = null;
+        }
+        if (sessions.has(session.ws) && !session.unsubscribeProactive) {
+          session.unsubscribeProactive = subscribeProactiveWatcher(session);
+        }
+      });
+    };
+    const armQuietTimer = (): void => {
+      if (quietTimer) clearTimeout(quietTimer);
+      quietTimer = setTimeout(() => {
+        if (abort.signal.aborted) return;
+        finishStream('quiet_timeout');
+      }, QUIET_CLOSE_MS);
+    };
+    const maybeArmQuietTimer = (): void => {
+      if (bubbleDoneSeen && toolsInFlight === 0) armQuietTimer();
+    };
+    abort.signal.addEventListener('abort', () => {
+      cancelQuietTimer();
+      // Best-effort close on abort so the socket doesn't dangle.
+      void hume.close();
+    }, { once: true });
+
+    // When the agent emits a `((deliver: ...))` cue, override Hume's
+    // active description for this turn. When it doesn't, leave the
+    // baseline (set on the HumeStreamSession constructor from
+    // voice.cloud_voice_description) in place — that's the user's
+    // Settings → Voice → Cloud → Baseline delivery field, which is the
+    // intended fallback for cue-less replies. If they leave the field
+    // blank, that's a deliberate choice and we don't substitute one.
+    const pushContent = (raw: string): void => {
+      const stripped = stripEngineControlMarkers(raw);
+      if (stripped.length === 0) return;
+      const { content, description } = cueExtractor.consume(stripped);
+      if (description) hume.setDescription(description);
+      if (content.length === 0) return;
+      // Whole-sentence buffering for the cloud engine. The Hume emotion
+      // brief is explicit: feed Octave complete thoughts, not clause
+      // fragments. sanitizer.push() returns text up to the last balanced
+      // sentence boundary (period/!/? followed by whitespace), so each
+      // hume.push() carries one or more complete sentences. Anything
+      // mid-sentence stays in the buffer until the next chunk completes
+      // it — and the bubble-done path uses flushUnsafe to drain the
+      // tail when the reply ends mid-sentence.
+      const safe = sanitizer.push(content);
+      if (safe.length > 0) {
+        hume.push(safe);
+        hume.flush();
+        startStreaming();
+      }
+    };
+
+    const handleEvent = (event: WsEvent): void => {
+      if (abort.signal.aborted || finishing) return;
+      if (event.type === 'chat:chunk') {
+        if (event.agentId !== session.agentId) return;
+        cancelQuietTimer();
+        if (event.content) {
+          bubbleChars += event.content.length;
+          bubbleDoneSeen = false;
+          // Same voice-badge stamp as the local-engine burst — driven by
+          // the chat:chunk's DB messageId, not the internal TTS one.
+          markAssistantMessageVoiced(session.agentId, event.messageId);
+          pushContent(event.content);
+        }
+        if (event.done) {
+          bubbleCount++;
+          const tail = sanitizer.flushUnsafe();
+          if (tail) {
+            hume.push(tail);
+            startStreaming();
+          }
+          hume.flush();
+          logger.debug('Cloud TTS bubble done', { agentId: session.agentId, bubble: bubbleCount, textChars: bubbleChars });
+          bubbleChars = 0;
+          bubbleDoneSeen = true;
+          maybeArmQuietTimer();
+        }
+        return;
+      }
+      if (event.type === 'chat:tool_call') {
+        if (event.agentId !== session.agentId) return;
+        toolsInFlight++;
+        cancelQuietTimer();
+        return;
+      }
+      if (event.type === 'chat:tool_result') {
+        if (event.agentId !== session.agentId) return;
+        toolsInFlight = Math.max(0, toolsInFlight - 1);
+        maybeArmQuietTimer();
+        return;
+      }
+      if (event.type === 'agent:status') {
+        if (event.agentId !== session.agentId) return;
+        if (event.status === 'idle') finishStream('agent_idle');
+        return;
+      }
+      if (event.type === 'chat:error') {
+        if (event.agentId !== session.agentId) return;
+        finishStream('chat_error');
+        return;
+      }
+    };
+
+    // Process the initial chunk (captured by the proactive watcher
+    // before this burst was created) FIRST, then drain any chat:chunk
+    // events that landed during hume.open(). After draining, attach the
+    // live handler so future events flow through directly.
+    if (initialContent) {
+      bubbleChars += initialContent.length;
+      pushContent(initialContent);
+    }
+    while (pendingEvents.length > 0) {
+      const e = pendingEvents.shift();
+      if (e) handleEvent(e);
+    }
+    handler = handleEvent;
+    session.unsubscribeChunk = unsubscribe;
+  })();
 }
 
 /**

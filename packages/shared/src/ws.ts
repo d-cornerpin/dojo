@@ -54,6 +54,19 @@ export interface ChatMessageEvent {
   message: Message;
 }
 
+/**
+ * Marks an existing assistant message as having been delivered through
+ * voice mode TTS (Kokoro or Hume). The dashboard sets the local
+ * message's `source` field to 'voice' so the AssistantBubble renders
+ * a "via voice" badge, mirroring the user-side badge.
+ */
+export interface ChatSourceUpdatedEvent {
+  type: 'chat:source_updated';
+  agentId: string;
+  messageId: string;
+  source: 'voice' | null;
+}
+
 export interface ChatErrorEvent {
   type: 'chat:error';
   agentId: string;
@@ -202,6 +215,7 @@ export type WsEvent =
   | ChatChunkEvent
   | ChatReasoningChunkEvent
   | ChatMessageEvent
+  | ChatSourceUpdatedEvent
   | ChatToolCallEvent
   | ChatToolResultEvent
   | ChatErrorEvent

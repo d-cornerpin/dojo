@@ -3901,10 +3901,138 @@ const VoiceTab = () => {
   const [importBusy, setImportBusy] = useState(false);
   const [importMsg, setImportMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
+  // ── Hume cloud TTS (Local | Cloud sub-tabs in the Voice card) ──
+  // Sub-tab selection persisted as voice.tts_engine. Cloud tab is only
+  // usable once a valid Hume key is on file.
+  const [ttsTab, setTtsTab] = useState<'local' | 'cloud'>('local');
+  const [humeKeySet, setHumeKeySet] = useState(false);
+  const [humeKeyInput, setHumeKeyInput] = useState('');
+  const [humeKeyBusy, setHumeKeyBusy] = useState(false);
+  const [humeKeyMsg, setHumeKeyMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [humeVoices, setHumeVoices] = useState<api.HumeVoiceInfo[]>([]);
+  const [humeVoicesLoading, setHumeVoicesLoading] = useState(false);
+  const [humeVoicesError, setHumeVoicesError] = useState<string | null>(null);
+  const [cloudVoice, setCloudVoice] = useState('');
+  const [cloudVoiceProvider, setCloudVoiceProvider] = useState<'HUME_AI' | 'CUSTOM_VOICE'>('HUME_AI');
+  const [cloudDescription, setCloudDescription] = useState('');
+  const [cloudSpeed, setCloudSpeed] = useState(1.0);
+
+  const refreshHumeStatus = async () => {
+    const r = await api.getHumeStatus();
+    if (r.ok) setHumeKeySet(r.data.keySet);
+  };
+
+  const refreshHumeVoices = async () => {
+    setHumeVoicesLoading(true);
+    setHumeVoicesError(null);
+    try {
+      const r = await api.listHumeVoices();
+      if (!r.ok) {
+        setHumeVoicesError(r.error);
+        setHumeVoices([]);
+        return;
+      }
+      setHumeVoices(r.data.voices);
+    } finally {
+      setHumeVoicesLoading(false);
+    }
+  };
+
+  const handleSetHumeKey = async () => {
+    const k = humeKeyInput.trim();
+    if (!k) {
+      setHumeKeyMsg({ kind: 'err', text: 'Paste a Hume API key first.' });
+      return;
+    }
+    setHumeKeyBusy(true);
+    setHumeKeyMsg(null);
+    try {
+      const r = await api.setHumeKey(k);
+      if (!r.ok) {
+        setHumeKeyMsg({ kind: 'err', text: r.error });
+        return;
+      }
+      setHumeKeySet(true);
+      setHumeKeyInput('');
+      setHumeKeyMsg({ kind: 'ok', text: 'Loading voices…' });
+      await refreshHumeVoices();
+      // Clear the flash message — the static "Key set." label takes
+      // over the "key is configured" indication, so a duplicate flash
+      // just clutters the row.
+      setHumeKeyMsg(null);
+    } finally {
+      setHumeKeyBusy(false);
+    }
+  };
+
+  const handleClearHumeKey = async () => {
+    if (!confirm('Clear the stored Hume API key? Cloud TTS will stop until you re-add one.')) return;
+    const r = await api.clearHumeKey();
+    if (!r.ok) {
+      setHumeKeyMsg({ kind: 'err', text: r.error });
+      return;
+    }
+    setHumeKeySet(false);
+    setHumeVoices([]);
+    setHumeKeyMsg({ kind: 'ok', text: 'Key cleared.' });
+    // If we were on the Cloud tab, snap back to Local — the engine
+    // dropped out from under us.
+    if (ttsTab === 'cloud') {
+      setTtsTab('local');
+      void saveSetting('voice.tts_engine', 'local', 'engine');
+    }
+  };
+
+  const handleCloudPreview = async () => {
+    if (!cloudVoice) {
+      setPreviewError('Pick a Hume voice first.');
+      return;
+    }
+    setPreviewError(null);
+    setPreviewing(true);
+    try {
+      const blob = await api.fetchCloudVoicePreview({
+        voice: cloudVoice,
+        voiceProvider: cloudVoiceProvider,
+        description: cloudDescription.trim() || undefined,
+        speed: cloudSpeed,
+      });
+      if (previewAudioRef.current) {
+        try { previewAudioRef.current.pause(); } catch { /* ignore */ }
+      }
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      previewAudioRef.current = audio;
+      audio.onended = () => URL.revokeObjectURL(url);
+      await audio.play();
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const handleSwitchTtsTab = async (next: 'local' | 'cloud') => {
+    if (next === ttsTab) return;
+    if (next === 'cloud' && !humeKeySet) {
+      // Don't persist cloud as the engine when there's no key yet.
+      // Show the Cloud tab anyway so the user can enter a key.
+      setTtsTab('cloud');
+      return;
+    }
+    setTtsTab(next);
+    await saveSetting('voice.tts_engine', next, 'engine');
+  };
+
   useEffect(() => {
     let mounted = true;
     const load = async () => {
-      const [presets, modelsRes, vSetting, sSetting, vadSetting, sttSetting, wakeEnabled, wakeP, sleepP, primaryName, bargeIn, sfx] = await Promise.all([
+      const [
+        presets, modelsRes, vSetting, sSetting, vadSetting, sttSetting,
+        wakeEnabled, wakeP, sleepP, primaryName, bargeIn, sfx,
+        ttsEngineSetting, cloudVoiceSetting, cloudVoiceProviderSetting,
+        cloudDescriptionSetting, cloudSpeedSetting, humeStatus,
+      ] = await Promise.all([
         api.getVoicePresets(),
         api.getVoiceModels(),
         api.getSetting('voice.preferred_voice'),
@@ -3917,6 +4045,12 @@ const VoiceTab = () => {
         api.getSetting('primary_agent_name'),
         api.getSetting('voice.barge_in_enabled'),
         api.getSetting('voice.sound_effects_enabled'),
+        api.getSetting('voice.tts_engine'),
+        api.getSetting('voice.cloud_voice'),
+        api.getSetting('voice.cloud_voice_provider'),
+        api.getSetting('voice.cloud_voice_description'),
+        api.getSetting('voice.cloud_speed'),
+        api.getHumeStatus(),
       ]);
       if (!mounted) return;
       if (presets.ok) {
@@ -3941,6 +4075,7 @@ const VoiceTab = () => {
         if (Number.isFinite(n)) setSpeed(n);
       }
       if (vadSetting.ok && vadSetting.data.value === 'quick') setVad('quick');
+      if (vadSetting.ok && vadSetting.data.value === 'normal') setVad('normal');
       if (vadSetting.ok && vadSetting.data.value === 'patient') setVad('patient');
       if (sttSetting.ok && sttSetting.data.value) setSttModel(sttSetting.data.value);
       if (wakeEnabled.ok && wakeEnabled.data.value === 'true') setWakeWordEnabled(true);
@@ -3952,6 +4087,26 @@ const VoiceTab = () => {
       if (bargeIn.ok && bargeIn.data.value === 'true') setBargeInEnabled(true);
       // sound effects default ON — only flip off when explicitly stored as 'false'
       if (sfx.ok && sfx.data.value === 'false') setSoundEffectsEnabled(false);
+      // Hume cloud TTS state
+      if (humeStatus.ok) setHumeKeySet(humeStatus.data.keySet);
+      if (ttsEngineSetting.ok && ttsEngineSetting.data.value === 'cloud' && humeStatus.ok && humeStatus.data.keySet) {
+        setTtsTab('cloud');
+      }
+      if (cloudVoiceSetting.ok && cloudVoiceSetting.data.value) setCloudVoice(cloudVoiceSetting.data.value);
+      if (cloudVoiceProviderSetting.ok && cloudVoiceProviderSetting.data.value === 'CUSTOM_VOICE') {
+        setCloudVoiceProvider('CUSTOM_VOICE');
+      }
+      if (cloudDescriptionSetting.ok && cloudDescriptionSetting.data.value) {
+        setCloudDescription(cloudDescriptionSetting.data.value);
+      }
+      if (cloudSpeedSetting.ok && cloudSpeedSetting.data.value) {
+        const n = Number(cloudSpeedSetting.data.value);
+        if (Number.isFinite(n) && n >= 0.5 && n <= 2) setCloudSpeed(n);
+      }
+      // Pull Hume voices if the key is set; non-blocking.
+      if (humeStatus.ok && humeStatus.data.keySet) {
+        void refreshHumeVoices();
+      }
       setLoading(false);
     };
     void load();
@@ -4100,9 +4255,33 @@ const VoiceTab = () => {
 
   return (
     <div className="space-y-6 max-w-4xl">
+      {/* TTS engine sub-tabs (Local Kokoro | Cloud Hume). The Cloud tab is
+          selectable even without a key — picking it shows the key entry
+          form. The engine setting (voice.tts_engine) only persists as
+          'cloud' once a key is on file. */}
+      <div className="flex items-center gap-2 text-sm">
+        <span className="text-ui/55">Text-to-speech:</span>
+        {(['local', 'cloud'] as const).map((opt) => (
+          <button
+            key={opt}
+            onClick={() => void handleSwitchTtsTab(opt)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              ttsTab === opt ? 'glass-btn-primary' : 'glass-btn'
+            }`}
+          >
+            {opt === 'local' ? 'Local (Kokoro)' : 'Cloud (Hume)'}
+          </button>
+        ))}
+        {savedKey === 'engine' && <span className="text-xs text-cp-teal">Saved!</span>}
+        {ttsTab === 'cloud' && !humeKeySet && (
+          <span className="text-xs text-cp-amber">key required</span>
+        )}
+      </div>
+
       {/* Two-column grid for the short config cards. STT and TTS model cards
           stay full-width below because they hold per-model rows + progress bars. */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      {ttsTab === 'local' && (<>
       {/* Voice picker */}
       <div className="glass-card p-4 space-y-3">
         <h3 className="card-header">Voice for {primaryAgentName}</h3>
@@ -4263,6 +4442,152 @@ const VoiceTab = () => {
           {savedKey === 'speed' && <span className="text-xs text-cp-teal">Saved!</span>}
         </div>
       </div>
+      </>)}
+
+      {ttsTab === 'cloud' && (<>
+      {/* Hume API key */}
+      <div className="glass-card p-4 space-y-3 md:col-span-2">
+        <h3 className="card-header">Hume API key</h3>
+        <p className="text-xs text-ui/40">
+          Cloud TTS uses Hume Octave. Grab a key from your Hume dashboard and paste it here.
+          The key is stored on this machine only and is never sent to the browser after it's saved.
+        </p>
+        {humeKeySet ? (
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-cp-teal">Key set.</span>
+            <button
+              onClick={() => void handleClearHumeKey()}
+              className="px-3 py-1.5 glass-btn-destructive text-xs rounded-lg"
+            >
+              Clear key
+            </button>
+            {humeKeyMsg && (
+              <span className={`text-xs ${humeKeyMsg.kind === 'ok' ? 'text-cp-teal' : 'text-cp-coral'}`}>
+                {humeKeyMsg.text}
+              </span>
+            )}
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <input
+              type="password"
+              value={humeKeyInput}
+              onChange={(e) => setHumeKeyInput(e.target.value)}
+              placeholder="Paste Hume API key"
+              className="glass-input flex-1 font-mono text-sm"
+            />
+            <button
+              onClick={() => void handleSetHumeKey()}
+              disabled={humeKeyBusy || !humeKeyInput.trim()}
+              className="px-3 py-2 glass-btn-primary text-xs font-medium rounded-lg disabled:opacity-50"
+            >
+              {humeKeyBusy ? 'Validating…' : 'Save key'}
+            </button>
+            {humeKeyMsg && (
+              <span className={`text-xs ${humeKeyMsg.kind === 'ok' ? 'text-cp-teal' : 'text-cp-coral'}`}>
+                {humeKeyMsg.text}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Hume voice picker */}
+      <div className="glass-card p-4 space-y-3 md:col-span-2">
+        <h3 className="card-header">Voice for {primaryAgentName}</h3>
+        <p className="text-xs text-ui/40">
+          Pulled live from Hume's Voice Library (HUME_AI provider) plus any custom voices saved
+          to your account. The voice carries between turns within a session.
+        </p>
+        {!humeKeySet ? (
+          <p className="text-xs text-ui/55">Set a Hume API key above to load the voice list.</p>
+        ) : humeVoicesLoading ? (
+          <p className="text-xs text-ui/55">Loading voices…</p>
+        ) : humeVoicesError ? (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-cp-coral flex-1">{humeVoicesError}</span>
+            <button
+              onClick={() => void refreshHumeVoices()}
+              className="px-2 py-1 glass-btn text-xs rounded-lg"
+            >Retry</button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <select
+              value={cloudVoice}
+              onChange={(e) => {
+                const selected = humeVoices.find((v) => v.id === e.target.value);
+                setCloudVoice(e.target.value);
+                if (selected) {
+                  setCloudVoiceProvider(selected.provider);
+                  void saveSetting('voice.cloud_voice_provider', selected.provider, 'cloud_voice');
+                }
+                void saveSetting('voice.cloud_voice', e.target.value, 'cloud_voice');
+              }}
+              className="glass-select flex-1"
+            >
+              <option value="">— pick a voice —</option>
+              {humeVoices.map((v) => (
+                <option key={`${v.provider}:${v.id}`} value={v.id}>
+                  {v.name} {v.provider === 'CUSTOM_VOICE' ? '· custom' : ''}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => void handleCloudPreview()}
+              disabled={previewing || !cloudVoice}
+              className="px-3 py-2 glass-btn-primary text-xs font-medium rounded-lg disabled:opacity-50"
+            >
+              {previewing ? 'Synthesizing…' : 'Preview'}
+            </button>
+            {savedKey === 'cloud_voice' && <span className="text-xs text-cp-teal">Saved!</span>}
+          </div>
+        )}
+        {previewError && <p className="text-xs text-cp-coral">{previewError}</p>}
+      </div>
+
+      {/* Baseline delivery description */}
+      <div className="glass-card p-4 space-y-3 md:col-span-2">
+        <h3 className="card-header">Baseline delivery</h3>
+        <p className="text-xs text-ui/40">
+          Standing "acting instructions" Hume applies to every turn unless the agent overrides
+          with a <code className="px-1 rounded bg-ui/[0.06]">((deliver: ...))</code> cue at the
+          start of a reply. Keep it short and general ("Speak warmly and conversationally").
+          Leave blank to let Octave's automatic emotion read do all the work.
+        </p>
+        <textarea
+          value={cloudDescription}
+          onChange={(e) => setCloudDescription(e.target.value.slice(0, 500))}
+          onBlur={() => void saveSetting('voice.cloud_voice_description', cloudDescription, 'cloud_desc')}
+          placeholder="Speak warmly and conversationally."
+          rows={2}
+          className="glass-input w-full text-sm"
+        />
+        <div className="flex items-center justify-between text-xs text-ui/40">
+          <span>{cloudDescription.length} / 500</span>
+          {savedKey === 'cloud_desc' && <span className="text-cp-teal">Saved!</span>}
+        </div>
+      </div>
+
+      {/* Cloud playback speed */}
+      <div className="glass-card p-4 space-y-3">
+        <h3 className="card-header">Playback speed</h3>
+        <p className="text-xs text-ui/40">Speed multiplier for cloud TTS. 1.0 is natural.</p>
+        <div className="flex items-center gap-3">
+          <input
+            type="range"
+            min={0.8} max={1.4} step={0.05}
+            value={cloudSpeed}
+            onChange={(e) => setCloudSpeed(Number(e.target.value))}
+            onMouseUp={() => void saveSetting('voice.cloud_speed', String(cloudSpeed), 'cloud_speed')}
+            onTouchEnd={() => void saveSetting('voice.cloud_speed', String(cloudSpeed), 'cloud_speed')}
+            className="flex-1 accent-cp-teal"
+          />
+          <span className="text-sm font-mono text-ui w-12 text-right">{cloudSpeed.toFixed(2)}x</span>
+          {savedKey === 'cloud_speed' && <span className="text-xs text-cp-teal">Saved!</span>}
+        </div>
+      </div>
+      </>)}
 
       {/* VAD sensitivity */}
       <div className="glass-card p-4 space-y-3">
