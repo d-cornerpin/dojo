@@ -21,7 +21,6 @@ import {
   ensureWhisperModel,
   ensureKokoroFiles,
   ensureMoonshineFiles,
-  MOONSHINE_MODEL_ID,
   listInstalledModels,
   deleteModel,
   totalVoiceDiskBytes,
@@ -170,7 +169,7 @@ voiceRouter.post('/models/:kind/:id', (c) => {
         await ensureMoonshineFiles((p) => {
           broadcast({
             type: 'voice:model_download',
-            data: { kind: 'moonshine', modelId: MOONSHINE_MODEL_ID, bytesDownloaded: p.bytesDownloaded, bytesTotal: p.bytesTotal },
+            data: { kind: 'moonshine', modelId: id, bytesDownloaded: p.bytesDownloaded, bytesTotal: p.bytesTotal },
           });
         });
         // Warm the engine immediately so a user who clicked "install" can
@@ -178,12 +177,12 @@ voiceRouter.post('/models/:kind/:id', (c) => {
         await ensureSttReady('moonshine-base');
         broadcast({
           type: 'voice:model_download',
-          data: { kind: 'moonshine', modelId: MOONSHINE_MODEL_ID, bytesDownloaded: 1, bytesTotal: 1 },
+          data: { kind: 'moonshine', modelId: id, bytesDownloaded: 1, bytesTotal: 1 },
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error('moonshine install failed', { error: msg });
-        broadcast({ type: 'voice:model_install_error', data: { kind: 'moonshine', modelId: MOONSHINE_MODEL_ID, error: msg } });
+        broadcast({ type: 'voice:model_install_error', data: { kind: 'moonshine', modelId: id, error: msg } });
       }
     })();
     return c.json({ ok: true, data: { kind, id, started: true } }, 202);

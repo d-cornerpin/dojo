@@ -94,9 +94,29 @@ function parseMessageContent(raw: string): { text: string; blocks?: ContentBlock
 // rendered verbatim and looked like noise. Treat iMessage as a channel —
 // the badge tells you where it came from, the bubble shows what was sent.
 const IMESSAGE_SOURCE_RE = /^\[SOURCE: IMESSAGE FROM [^\]]+\]\s*/;
+
+/**
+ * Pull just the safe-sender's NAME out of the iMessage source tag.
+ * Older envelopes wrap the inbound with verbose persona instructions
+ * (e.g. "DAVID — this message came from iMessage, not the dashboard
+ * chat. Respond to THIS topic ONLY. ..."), and even older ones include
+ * sharing-tier strings and recipient hints. We want the bare name, not
+ * the prompt body — so capture the leading [A-Za-z' -]+ before the
+ * first non-name delimiter (paren, dash, em-dash, comma, period).
+ */
+function extractIMessageSender(content: string): string | null {
+  const m = content.match(/^\[SOURCE: IMESSAGE FROM ([^\]]+)\]/);
+  if (!m) return null;
+  const inside = m[1].trim();
+  // Match leading name chars (letters, apostrophes, hyphens, spaces)
+  // up to the first delimiter that marks the end of the name.
+  const name = inside.match(/^[A-Za-z'\- ]+?(?=\s*[(\-—,.]|$)/)?.[0]?.trim();
+  if (name && name.length > 0) return name;
+  // Fallback: first whitespace-delimited token if our regex missed.
+  const firstToken = inside.split(/\s+/)[0]?.trim();
+  return firstToken && firstToken.length > 0 ? firstToken : null;
+}
 // Capture variant used to extract the safe-sender name for the
-// "from <name> via iMessage" badge. Same anchoring as the strip regex.
-const IMESSAGE_SOURCE_CAPTURE_RE = /^\[SOURCE: IMESSAGE FROM ([^\]]+)\]/;
 
 // Server-side `buildContentWithAttachments` (chat.ts) appends one of these
 // blocks per attachment to the user's typed text. The blocks are FOR THE
@@ -126,9 +146,7 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
   // Extract the safe-sender name for the badge ("from David via iMessage")
   // so it's obvious WHO an inbound iMessage is from when watching the
   // chat feed.
-  const iMessageSender = fromIMessage
-    ? msg.content.match(IMESSAGE_SOURCE_CAPTURE_RE)?.[1]?.trim() ?? null
-    : null;
+  const iMessageSender = fromIMessage ? extractIMessageSender(msg.content) : null;
 
   return (
     <div className="flex flex-col items-end">

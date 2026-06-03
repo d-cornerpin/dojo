@@ -171,8 +171,22 @@ const ChannelSendBubble = ({ msg, toolUse }: { msg: ChatMessage; toolUse: Conten
 // treatment in Chat.tsx so the channel-vs-conversation distinction is
 // consistent everywhere.
 const IMESSAGE_SOURCE_RE = /^\[SOURCE: IMESSAGE FROM [^\]]+\]\s*/;
-// Capture variant: extracts the safe-sender name for the inbound badge.
-const IMESSAGE_SOURCE_CAPTURE_RE = /^\[SOURCE: IMESSAGE FROM ([^\]]+)\]/;
+
+/**
+ * Pull just the safe-sender's NAME out of the iMessage source tag.
+ * Same logic as Chat.tsx — the inbound envelope wraps the name with
+ * verbose persona instructions, and we only want the leading name part
+ * for the "from X via iMessage" badge.
+ */
+function extractIMessageSender(content: string): string | null {
+  const m = content.match(/^\[SOURCE: IMESSAGE FROM ([^\]]+)\]/);
+  if (!m) return null;
+  const inside = m[1].trim();
+  const name = inside.match(/^[A-Za-z'\- ]+?(?=\s*[(\-—,.]|$)/)?.[0]?.trim();
+  if (name && name.length > 0) return name;
+  const firstToken = inside.split(/\s+/)[0]?.trim();
+  return firstToken && firstToken.length > 0 ? firstToken : null;
+}
 
 // Mirrors Chat.tsx's stripper. See chat.ts buildContentWithAttachments
 // for the source of these tags. Exported for the temp-bubble dedup so
@@ -190,9 +204,7 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
   const fromVoice = msg.source === 'voice';
   const stripped = fromIMessage ? msg.content.replace(IMESSAGE_SOURCE_RE, '') : msg.content;
   const displayContent = msg.attachments?.length ? stripAttachmentTags(stripped) : stripped;
-  const iMessageSender = fromIMessage
-    ? msg.content.match(IMESSAGE_SOURCE_CAPTURE_RE)?.[1]?.trim() ?? null
-    : null;
+  const iMessageSender = fromIMessage ? extractIMessageSender(msg.content) : null;
 
   return (
     <div className="flex flex-col items-end">
