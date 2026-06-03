@@ -78,8 +78,33 @@ const SEARCH_TOOL_PROSE_FIELDS = (() => {
   return s;
 })();
 
+/**
+ * Generation / creation tools where the `description` (or `prompt`) IS the
+ * operation identity, not prose. Field bug: image_create takes
+ * `aspect_ratio` + `description`, and `description` was being stripped as
+ * prose — leaving only `aspect_ratio: '1:1'` in the signature. Every
+ * image_create call with the same aspect ratio collapsed to the same
+ * signature, so a batch of 7 distinct headshots got blocked after 3.
+ *
+ * For these tools we keep `description` and `prompt` in the signature so
+ * each distinct prompt counts as a distinct operation. The other
+ * DEFAULT_PROSE_FIELDS (reason, note, etc.) still get stripped.
+ */
+const GENERATION_TOOLS = new Set([
+  'image_create',
+]);
+
+const GENERATION_TOOL_PROSE_FIELDS = (() => {
+  const s = new Set(DEFAULT_PROSE_FIELDS);
+  s.delete('description');
+  s.delete('prompt');
+  return s;
+})();
+
 function proseFieldsFor(toolName: string): ReadonlySet<string> {
-  return SEARCH_TOOLS.has(toolName) ? SEARCH_TOOL_PROSE_FIELDS : DEFAULT_PROSE_FIELDS;
+  if (SEARCH_TOOLS.has(toolName)) return SEARCH_TOOL_PROSE_FIELDS;
+  if (GENERATION_TOOLS.has(toolName)) return GENERATION_TOOL_PROSE_FIELDS;
+  return DEFAULT_PROSE_FIELDS;
 }
 
 /**

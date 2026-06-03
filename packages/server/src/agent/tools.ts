@@ -1039,7 +1039,8 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         tasks: {
           type: 'array',
-          description: 'Optional initial tasks to create with the project',
+          description: 'REQUIRED: at least one task. The engine refuses project creation with zero tasks — a tracker project with nothing to do can\'t be poked, completed, or audited, and silently strands work. If you don\'t know every task upfront, that\'s fine — just put down the FIRST concrete thing you\'ll do (e.g. "scope the deliverable", "draft outline", "pull source data"). Add more later with tracker_create_task as the shape clarifies.',
+          minItems: 1,
           items: {
             type: 'object',
             properties: {
@@ -1059,7 +1060,7 @@ export const toolDefinitions: ToolDefinition[] = [
           description: 'Set true to bypass the near-duplicate guard. The engine refuses creation if you already opened a similarly-titled project in the last 60 minutes (catches the post-compaction "I forgot I already opened this" failure mode). Only override when the new project is genuinely unrelated work that happens to share keywords.',
         },
       },
-      required: ['title', 'level'],
+      required: ['title', 'level', 'tasks'],
     },
   },
   {
@@ -6566,6 +6567,50 @@ Thread is closed — respond to the user, not Imaginer.`;
                   sizeBytes: result.sizeBytes, latencyMs: result.latencyMs,
                   threadId: a2aResult.threadId,
                 });
+
+                // ── Pre-queue the image as a pending attachment ──
+                // The A2A DELIVERABLE wakes the agent and gives them
+                // proper memory of the inbound, but the user sees that
+                // message as a hidden [A2A:...] user-role row in
+                // non-wordy mode. Without this queue, the user would
+                // never see the image unless the agent remembered to
+                // call show_to_user — which they often don't.
+                //
+                // queuePendingAttachments drops the file into the
+                // runtime's attachment buffer; the very next assistant
+                // message the agent writes (their text reaction to
+                // the delivery) auto-attaches the image. User sees
+                // one clean bubble with the agent's text + the image
+                // thumbnail, exactly like show_to_user would produce.
+                try {
+                  const { queuePendingAttachments } = await import('./pending-attachments.js');
+                  const stat = fs.statSync(deliveredPath);
+                  const filename = path.basename(deliveredPath);
+                  const ext = path.extname(filename).toLowerCase();
+                  const mimeType =
+                    ext === '.png' ? 'image/png'
+                    : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
+                    : ext === '.webp' ? 'image/webp'
+                    : ext === '.gif' ? 'image/gif'
+                    : 'application/octet-stream';
+                  queuePendingAttachments(agentId, [{
+                    fileId: uuidv4(),
+                    filename,
+                    mimeType,
+                    size: stat.size,
+                    path: deliveredPath,
+                    category: 'image',
+                  }]);
+                } catch (queueErr) {
+                  // Best-effort — if the queue fails, the agent's
+                  // text reply still goes through (just without the
+                  // auto-attached image). They can still call
+                  // show_to_user manually.
+                  logger.warn('Imaginer: failed to pre-queue image as pending attachment', {
+                    requestId, requesterId: agentId,
+                    error: queueErr instanceof Error ? queueErr.message : String(queueErr),
+                  });
+                }
               } else {
                 // A2A delivery itself failed (semantic dedup, hop limit,
                 // agent terminated, etc.). Fall back to writing an error

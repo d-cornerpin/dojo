@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 
 interface Attachment {
   fileId: string;
@@ -71,11 +72,14 @@ const ImageLightbox = ({
     document.body.removeChild(a);
   }, [src, alt]);
 
-  // Global keyboard: Esc closes, D downloads
+  // Global keyboard: Esc closes, D downloads. Also lock body scroll so
+  // the chat behind the lightbox doesn't scroll when the user wheels
+  // over the modal.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
+        e.stopPropagation();
         onClose();
       } else if ((e.key === 'd' || e.key === 'D') && !e.metaKey && !e.ctrlKey && !e.altKey) {
         // Avoid hijacking browser devtools / Cmd+D bookmark shortcut
@@ -84,12 +88,24 @@ const ImageLightbox = ({
       }
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+    };
   }, [handleDownload, onClose]);
 
-  return (
+  // Render the lightbox at document.body via portal so its lifecycle is
+  // fully independent of whichever message bubble's AttachmentChips
+  // happened to open it. Without the portal, a parent re-render or a
+  // CSS ancestor with `transform`/`filter`/`backdrop-filter` could clip
+  // or break the fixed positioning, leaving the modal stuck mid-screen
+  // with broken close behavior — the symptom: "I have to refresh the
+  // page to make the image go away."
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center cursor-pointer"
+      className="fixed inset-0 z-[100] flex flex-col items-center justify-center cursor-pointer"
       style={{ background: 'var(--overlay-dark)' }}
       onClick={onClose}
     >
@@ -147,7 +163,8 @@ const ImageLightbox = ({
         Press <kbd className="px-1 py-0.5 rounded bg-ui/[0.08] border border-ui/[0.15] text-ui/40">D</kbd> to download ·
         <kbd className="ml-1 px-1 py-0.5 rounded bg-ui/[0.08] border border-ui/[0.15] text-ui/40">Esc</kbd> to close
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 };
 

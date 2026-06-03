@@ -278,6 +278,29 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       phase?: number;
     }> | undefined;
 
+    // Hard engine gate (2026-06-03 bug fix): a project MUST be opened
+    // with at least one task. Agents were creating projects without any
+    // task — leaving the project sitting open with nothing to do, PM
+    // pokes piling up, and no recovery path. The fix is at the engine,
+    // not in the prompt: refuse the create if `tasks` is missing or
+    // empty. The agent can always add more tasks later with
+    // tracker_create_task once the work shape clarifies.
+    if (!tasksInput || tasksInput.length === 0 || !tasksInput.some((t) => typeof t.title === 'string' && t.title.trim().length > 0)) {
+      return (
+        `Error: tracker_create_project requires at least one task. ` +
+        `Open it like this:\n` +
+        `  tracker_create_project(\n` +
+        `    title: "...",\n` +
+        `    level: 1,\n` +
+        `    tasks: [{ title: "<the first concrete thing you'll do>", assigned_to: "${agentId}" }]\n` +
+        `  )\n\n` +
+        `If you don't know every step upfront, that's fine — just put down the FIRST one (e.g. "scope the deliverable", ` +
+        `"draft the outline", "pull source data"). Add more tasks incrementally with tracker_create_task as the shape clarifies. ` +
+        `A project with zero tasks is a stuck project — PM has no row to poke, you have nothing to mark complete, ` +
+        `and the tracker can't tell whether the work is done.`
+      );
+    }
+
     // Duplicate guard. Catches the most common failure shape: agent gets
     // compacted mid-task, loses the project it already opened, and creates
     // a near-identical one. Agents can override by setting allow_duplicate=true
