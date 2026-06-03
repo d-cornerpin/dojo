@@ -242,7 +242,15 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
   );
 };
 
-const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMode?: boolean }) => {
+interface OutboundChannelInfo {
+  label: string;
+  emoji: string;
+}
+
+const AssistantBubble = ({ msg, wordyMode = true, outboundChannel }: {
+  msg: ChatMessage; wordyMode?: boolean;
+  outboundChannel?: OutboundChannelInfo | null;
+}) => {
   const { text: rawText, blocks } = parseMessageContent(msg.content);
   const text = rawText?.trim() || '';
   // Hide cloud voice-mode markers ((deliver: ...)), [pause], [long pause]
@@ -262,6 +270,15 @@ const AssistantBubble = ({ msg, wordyMode = true }: { msg: ChatMessage; wordyMod
   return (
     <div className="flex justify-start">
       <div className="max-w-[92%] sm:max-w-[75%]">
+        {/* Outbound channel routing badge — see Chat.tsx for rationale.
+            Same shape: badge above the bubble, left-aligned, "to X via
+            iMessage" symmetric with the inbound "from X via iMessage". */}
+        {outboundChannel && (
+          <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono mb-1 ml-1">
+            <span className="text-ui/40">{outboundChannel.emoji}</span>
+            <span>{outboundChannel.label}</span>
+          </div>
+        )}
         {/* "via voice" badge — left-aligned mirror of the user-side badge,
             stamped by the server when voice-mode TTS routes this message
             through Kokoro or Hume. */}
@@ -801,6 +818,49 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
     return m;
   }, [messages]);
 
+  // Attach channel routing markers ([Reply routed via iMessage to X], etc.)
+  // to the preceding assistant message instead of rendering them as a
+  // standalone right-aligned badge below. See Chat.tsx for the same
+  // mechanism in detail.
+  const ROUTING_MARKER_RE = /^\[(?:SENT VIA IMESSAGE to .+|Reply routed via (iMessage|Teams|email)[^\]]*)\]$/;
+  const { outboundChannelByAssistantId, hiddenRoutingMarkerIds } = useMemo(() => {
+    const byAssistant = new Map<string, OutboundChannelInfo>();
+    const hidden = new Set<string>();
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      if (m.role !== 'system') continue;
+      const trimmed = m.content.trim();
+      const match = trimmed.match(ROUTING_MARKER_RE);
+      if (!match) continue;
+      let assistantId: string | null = null;
+      for (let j = i - 1; j >= 0; j--) {
+        const prev = messages[j];
+        if (prev.role === 'assistant') { assistantId = prev.id; break; }
+        if (prev.role !== 'tool' && prev.role !== 'system') break;
+      }
+      if (!assistantId) continue;
+      const channel = match[1] ?? 'iMessage';
+      let recipient: string | null = null;
+      if (channel.toLowerCase() === 'imessage' || trimmed.startsWith('[SENT VIA IMESSAGE')) {
+        recipient = trimmed.match(/to ([^\]]+?)\]$/)?.[1]?.trim() ?? null;
+      } else if (channel === 'Teams') {
+        recipient = trimmed.match(/to chat ([^\]]+?)\]$/)?.[1]?.trim() ?? null;
+      }
+      const channelName = channel.toLowerCase() === 'imessage' ? 'iMessage' : channel;
+      const label = channel.toLowerCase() === 'email'
+        ? 'sent via email reply'
+        : recipient
+          ? `to ${recipient} via ${channelName}`
+          : `sent via ${channelName}`;
+      const emoji = channel.toLowerCase() === 'email'
+        ? '\u{2709}\u{FE0F}'
+        : channel === 'Teams' ? '\u{1F4DD}' : '\u{1F4AC}';
+      byAssistant.set(assistantId, { label, emoji });
+      hidden.add(m.id);
+    }
+    return { outboundChannelByAssistantId: byAssistant, hiddenRoutingMarkerIds: hidden };
+  }, [messages]);
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -860,11 +920,13 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
                 </div>
               );
             }
-            // v2.7.24 — channel routing delivery marker. Matches:
-            //   - Legacy `[SENT VIA IMESSAGE to X]`
-            //   - `[Reply routed via iMessage to X]` (v2.7.23)
-            //   - `[Reply routed via Teams to chat X]` (v2.7.24)
-            //   - `[Reply routed via email reply (thread: "X")]` (v2.7.24)
+            // v2.9.3 — routing markers attached to the preceding
+            // assistant message now render as a left-aligned badge ABOVE
+            // that bubble (see outboundChannelByAssistantId useMemo).
+            // Skip the standalone marker if it's been attached. Markers
+            // we couldn't attach (no preceding assistant) still fall
+            // through to the original right-aligned rendering.
+            if (hiddenRoutingMarkerIds.has(msg.id)) return null;
             const routingMatch = msg.content.trim().match(/^\[(?:SENT VIA IMESSAGE to .+|Reply routed via (iMessage|Teams|email)[^\]]*)\]$/);
             if (routingMatch) {
               const channel = routingMatch[1] ?? 'iMessage';
@@ -926,7 +988,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
               return (
                 <div key={msg.id} className="flex flex-col gap-2">
                   {parsed.text && (
-                    <AssistantBubble msg={{ ...msg, content: parsed.text }} wordyMode={wordyMode} />
+                    <AssistantBubble msg={{ ...msg, content: parsed.text }} wordyMode={wordyMode} outboundChannel={outboundChannelByAssistantId.get(msg.id) ?? null} />
                   )}
                   <ChannelSendBubble msg={msg} toolUse={channelSend} />
                 </div>
@@ -947,7 +1009,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             if (!parsed.text && hasToolUse) return <ToolOnlyPill key={msg.id} msg={msg} />;
           }
           if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} />;
-          return <AssistantBubble key={msg.id} msg={msg} wordyMode={wordyMode} />;
+          return <AssistantBubble key={msg.id} msg={msg} wordyMode={wordyMode} outboundChannel={outboundChannelByAssistantId.get(msg.id) ?? null} />;
         })}
         {isWorking && !messages.some(m => m.isStreaming) && <ThinkingBubble />}
         <div ref={messagesEndRef} />
