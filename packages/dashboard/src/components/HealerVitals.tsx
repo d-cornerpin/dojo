@@ -78,7 +78,7 @@ export const HealerVitals = () => {
             </span>
           )}
         </h3>
-        <span className="text-ui/25 text-xs">{expanded ? '���' : '▼'}</span>
+        <span className="text-ui/25 text-xs">{expanded ? '▲' : '▼'}</span>
       </button>
 
       {expanded && (
@@ -98,9 +98,10 @@ export const HealerVitals = () => {
                       <p className="text-xs text-ui/70">
                         <span className="text-cp-amber">Suggested fix:</span> {p.proposed_fix}
                       </p>
-                      {p.confidence !== null && (
-                        <p className="text-[10px] text-ui/25 mt-1">Confidence: {p.confidence}%</p>
-                      )}
+                      <p className="text-[10px] text-ui/25 mt-1">
+                        Flagged {formatDate(p.created_at)}
+                        {p.confidence !== null && <span> · Confidence: {p.confidence}%</span>}
+                      </p>
                     </div>
                   </div>
 
@@ -165,22 +166,29 @@ export const HealerVitals = () => {
                 const isApplied = p.status === 'approved' && !!p.applied_at;
                 const isApprovedPending = p.status === 'approved' && !p.applied_at;
                 const isDenied = p.status === 'denied';
+                const isAutoResolved = p.status === 'auto_resolved';
                 const iconColor = isApplied ? 'text-cp-teal'
+                  : isAutoResolved ? 'text-cp-teal'
                   : isApprovedPending ? 'text-cp-amber'
                   : isDenied ? 'text-cp-coral'
                   : 'text-ui/25';
                 const icon = isApplied ? '✓'
+                  : isAutoResolved ? '✓'
                   : isApprovedPending ? '⋯'
                   : isDenied ? '✗'
                   : '○';
                 const label = isApplied ? 'applied'
+                  : isAutoResolved ? 'resolved on its own'
                   : isApprovedPending ? 'approved — waiting on Healer'
                   : p.status;
+                // Show resolved-at if we have one, otherwise created-at.
+                const stamp = p.resolved_at ?? p.created_at;
                 return (
                   <div key={p.id} className="flex items-center gap-2 text-xs text-ui/40 py-1">
                     <span className={iconColor}>{icon}</span>
-                    <span>{p.title}</span>
+                    <span className="flex-1 truncate" title={p.title}>{p.title}</span>
                     <span className="text-ui/25">({label})</span>
+                    <span className="text-ui/25 text-[10px] shrink-0">{formatDate(stamp)}</span>
                   </div>
                 );
               })}

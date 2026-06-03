@@ -173,6 +173,17 @@ export const MicrosoftWorkspaceSettings = () => {
                     For work/school accounts: if you see "Need admin approval", your organization's admin needs to approve the app once.
                   </p>
                 )}
+                <p className="text-[11px] text-ui/40">
+                  No Microsoft account?{' '}
+                  <a
+                    href="https://signup.live.com/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-cp-teal hover:text-cp-teal/80 underline"
+                  >
+                    Create one ↗
+                  </a>
+                </p>
               </div>
             ) : (
               <div className="space-y-4">

@@ -175,6 +175,17 @@ export const GoogleWorkspaceSettings = () => {
                     Complete the sign-in in the browser window that opened. This page will update automatically.
                   </p>
                 )}
+                <p className="text-[11px] text-ui/40">
+                  No Google account?{' '}
+                  <a
+                    href="https://accounts.google.com/signup"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-cp-teal hover:text-cp-teal/80 underline"
+                  >
+                    Create one ↗
+                  </a>
+                </p>
               </div>
             ) : (
               <div className="space-y-4">

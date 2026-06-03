@@ -121,7 +121,18 @@ const OpenRouterBudget = () => {
     <div className="glass-card p-4 mb-6">
       <div className="flex items-center justify-between">
         <h2 className="card-header">OpenRouter Balance</h2>
-        <p className={`text-lg font-semibold ${balanceColor}`}>${balance.toFixed(2)}</p>
+        <div className="flex items-center gap-3">
+          <p className={`text-lg font-semibold ${balanceColor}`}>${balance.toFixed(2)}</p>
+          <a
+            href="https://openrouter.ai/settings/credits"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-cp-teal hover:text-cp-teal/80 transition-colors"
+            title="Open OpenRouter credits page in a new tab"
+          >
+            Add ↗
+          </a>
+        </div>
       </div>
       <p className="text-xs text-ui/25 mt-1">Lifetime spend: ${totalUsage.toFixed(2)}</p>
       <div className="flex items-center gap-2 mt-3 pt-3 border-t border-ui/[0.06]">
@@ -199,7 +210,18 @@ const DeepSeekBudget = () => {
     <div className="glass-card p-4 mb-6">
       <div className="flex items-center justify-between">
         <h2 className="card-header">DeepSeek Balance</h2>
-        <p className={`text-lg font-semibold ${balanceColor}`}>${balance.toFixed(2)}</p>
+        <div className="flex items-center gap-3">
+          <p className={`text-lg font-semibold ${balanceColor}`}>${balance.toFixed(2)}</p>
+          <a
+            href="https://platform.deepseek.com/top_up"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-cp-teal hover:text-cp-teal/80 transition-colors"
+            title="Open DeepSeek top-up page in a new tab"
+          >
+            Add ↗
+          </a>
+        </div>
       </div>
       <p className="text-xs text-ui/25 mt-1">
         Topped up: ${toppedUp.toFixed(2)}{granted > 0 ? ` · Granted credits: $${granted.toFixed(2)}` : ''}

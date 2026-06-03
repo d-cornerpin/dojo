@@ -1409,6 +1409,26 @@ const SearchSettings = () => {
           placeholder={hasKey ? '••••••••••••••••' : 'Enter Brave Search API key'}
           className="glass-input w-full"
         />
+        <p className="text-[11px] text-ui/40 mt-1">
+          Brave Search has a free tier (2,000 queries/month).{' '}
+          <a
+            href="https://api-dashboard.search.brave.com/app/keys"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-cp-teal hover:text-cp-teal/80 underline"
+          >
+            Get a key ↗
+          </a>{' '}
+          · No account?{' '}
+          <a
+            href="https://api-dashboard.search.brave.com/register"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-cp-teal hover:text-cp-teal/80 underline"
+          >
+            Sign up ↗
+          </a>
+        </p>
       </div>
 
       {error && (
@@ -1478,7 +1498,15 @@ const AgentSdkSetup = () => {
   return (
     <div className="space-y-3">
       <p className="text-xs text-ui/40">
-        Use your Claude Pro or Max subscription through the Agent SDK. Requires two things: the Claude Code CLI installed, and a signed-in Claude account.
+        Use your Claude Pro or Max subscription through the Agent SDK. Requires two things: the Claude Code CLI installed, and a signed-in Claude account.{' '}
+        <a
+          href="https://claude.ai/upgrade"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-cp-teal hover:text-cp-teal/80 underline"
+        >
+          Don't have Claude Pro? Sign up ↗
+        </a>
       </p>
 
       <div className="space-y-2 text-xs">
@@ -1764,6 +1792,18 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
             placeholder="http://localhost:11434"
             className="glass-input w-full"
           />
+          <p className="text-[11px] text-ui/40 mt-1">
+            Ollama runs models locally — no account needed.{' '}
+            <a
+              href="https://ollama.com/download"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-cp-teal hover:text-cp-teal/80 underline"
+            >
+              Download Ollama ↗
+            </a>{' '}
+            if you don't have it installed yet.
+          </p>
         </div>
       )}
 
@@ -1802,6 +1842,65 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
                 }
                 className="glass-input w-full"
               />
+              {/* Per-provider help: where to grab a key (or create an
+                  account first). Each link opens the provider's
+                  console keys page in a new tab. */}
+              {preset === 'anthropic' && authType !== 'oauth' && (
+                <p className="text-[11px] text-ui/40 mt-1">
+                  Don't have a key?{' '}
+                  <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" className="text-cp-teal hover:text-cp-teal/80 underline">
+                    Create one at Anthropic Console ↗
+                  </a>{' '}
+                  · No account?{' '}
+                  <a href="https://console.anthropic.com/signup" target="_blank" rel="noopener noreferrer" className="text-cp-teal hover:text-cp-teal/80 underline">
+                    Sign up ↗
+                  </a>
+                </p>
+              )}
+              {preset === 'anthropic' && authType === 'oauth' && (
+                <p className="text-[11px] text-ui/40 mt-1">
+                  OAuth tokens are typically issued through a Claude Pro/Max plan.{' '}
+                  <a href="https://claude.ai/upgrade" target="_blank" rel="noopener noreferrer" className="text-cp-teal hover:text-cp-teal/80 underline">
+                    Compare plans ↗
+                  </a>
+                </p>
+              )}
+              {preset === 'openai' && (
+                <p className="text-[11px] text-ui/40 mt-1">
+                  Don't have a key?{' '}
+                  <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-cp-teal hover:text-cp-teal/80 underline">
+                    Create one at OpenAI Platform ↗
+                  </a>{' '}
+                  · No account?{' '}
+                  <a href="https://platform.openai.com/signup" target="_blank" rel="noopener noreferrer" className="text-cp-teal hover:text-cp-teal/80 underline">
+                    Sign up ↗
+                  </a>
+                </p>
+              )}
+              {preset === 'openrouter' && (
+                <p className="text-[11px] text-ui/40 mt-1">
+                  Don't have a key?{' '}
+                  <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noopener noreferrer" className="text-cp-teal hover:text-cp-teal/80 underline">
+                    Create one at OpenRouter ↗
+                  </a>{' '}
+                  · No account?{' '}
+                  <a href="https://openrouter.ai/sign-up" target="_blank" rel="noopener noreferrer" className="text-cp-teal hover:text-cp-teal/80 underline">
+                    Sign up ↗
+                  </a>
+                </p>
+              )}
+              {preset === 'deepseek' && (
+                <p className="text-[11px] text-ui/40 mt-1">
+                  Don't have a key?{' '}
+                  <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer" className="text-cp-teal hover:text-cp-teal/80 underline">
+                    Create one at DeepSeek Platform ↗
+                  </a>{' '}
+                  · No account?{' '}
+                  <a href="https://platform.deepseek.com/sign_up" target="_blank" rel="noopener noreferrer" className="text-cp-teal hover:text-cp-teal/80 underline">
+                    Sign up ↗
+                  </a>
+                </p>
+              )}
             </div>
           )}
         </>
@@ -4451,6 +4550,25 @@ const VoiceTab = () => {
         <p className="text-xs text-ui/40">
           Cloud TTS uses Hume Octave. Grab a key from your Hume dashboard and paste it here.
           The key is stored on this machine only and is never sent to the browser after it's saved.
+        </p>
+        <p className="text-[11px] text-ui/40">
+          <a
+            href="https://platform.hume.ai/settings/keys"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-cp-teal hover:text-cp-teal/80 underline"
+          >
+            Get a Hume API key ↗
+          </a>{' '}
+          · No account?{' '}
+          <a
+            href="https://platform.hume.ai/sign-up"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-cp-teal hover:text-cp-teal/80 underline"
+          >
+            Sign up ↗
+          </a>
         </p>
         {humeKeySet ? (
           <div className="flex items-center gap-3">

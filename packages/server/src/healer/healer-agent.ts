@@ -505,7 +505,63 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
     infoCount: report.infoCount,
   });
 
-  // Step 2: Run auto-fixes (Tier 1) — no LLM needed
+  // Step 2: Sweep pending proposals — anything that's no longer in the
+  // current diagnostic is closed out as auto-resolved. Users don't check
+  // the Healer block often, and a lot of intermittent issues clear on
+  // their own (e.g., a transient provider failure, a stuck agent that
+  // restarted, a model the user removed). Without this sweep those
+  // proposals pile up forever, even after the underlying problem is
+  // gone.
+  let autoResolvedCount = 0;
+  try {
+    const db = getDb();
+    const pending = db.prepare(
+      `SELECT id, category, title, agent_id FROM healer_proposals WHERE status = 'pending'`,
+    ).all() as Array<{ id: string; category: string; title: string; agent_id: string | null }>;
+    if (pending.length > 0) {
+      // Build a lookup of current diagnostic items by (code, title, agent_id).
+      // Match keys are normalized so trailing punctuation / case drift
+      // between runs doesn't accidentally re-flag a still-present issue
+      // as resolved.
+      const norm = (s: string): string => s.toLowerCase().trim().replace(/\s+/g, ' ');
+      const currentKeys = new Set<string>();
+      for (const item of report.items) {
+        // Agent-scoped issues key on (code, agent). Global issues key
+        // on (code, title) — title is the discriminator there.
+        if (item.agentId) {
+          currentKeys.add(`${item.code}::${item.agentId}`);
+        }
+        currentKeys.add(`${item.code}::${norm(item.title)}`);
+      }
+      for (const p of pending) {
+        const stillPresent = p.agent_id
+          ? currentKeys.has(`${p.category}::${p.agent_id}`)
+            || currentKeys.has(`${p.category}::${norm(p.title)}`)
+          : currentKeys.has(`${p.category}::${norm(p.title)}`);
+        if (!stillPresent) {
+          db.prepare(
+            `UPDATE healer_proposals
+             SET status = 'auto_resolved',
+                 resolved_at = datetime('now'),
+                 result_summary = 'Issue no longer detected in diagnostic — closed by sweep.'
+             WHERE id = ? AND status = 'pending'`,
+          ).run(p.id);
+          autoResolvedCount++;
+        }
+      }
+      if (autoResolvedCount > 0) {
+        logger.info('Healer sweep auto-resolved stale proposals', {
+          autoResolvedCount, pendingChecked: pending.length,
+        });
+      }
+    }
+  } catch (err) {
+    logger.warn('Healer proposal sweep failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Step 3: Run auto-fixes (Tier 1) — no LLM needed
   let autoFixCount = 0;
   if (config.healerMode === 'active') {
     const autoResult = runAutoFixes(report.id, report.items);

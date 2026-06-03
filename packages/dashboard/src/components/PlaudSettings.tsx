@@ -133,12 +133,25 @@ export const PlaudSettings = () => {
 
       {/* ── Disconnected state ── */}
       {!status.connected && !connecting && (
-        <button
-          onClick={handleConnect}
-          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
-        >
-          Connect Plaud
-        </button>
+        <>
+          <button
+            onClick={handleConnect}
+            className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
+          >
+            Connect Plaud
+          </button>
+          <p className="text-[11px] text-ui/40">
+            No Plaud account?{' '}
+            <a
+              href="https://www.plaud.ai/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-cp-teal hover:text-cp-teal/80 underline"
+            >
+              Sign up at plaud.ai ↗
+            </a>
+          </p>
+        </>
       )}
 
       {/* ── Connecting state ── */}
