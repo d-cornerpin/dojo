@@ -83,10 +83,14 @@ const PATTERNS: Array<[RegExp, Replacer]> = [
   [/(\d+(?:\.\d+)?)\s*yrs?\b/g, '$1 years'],
 
   // ── AM/PM (digit-prefixed so "I am 25" doesn't get caught) ─────────
-  // Number-then-meridian only: "3pm", "10AM", "8:30 PM". Kokoro otherwise
-  // mushes "pm" into one syllable. Space-separated letters read correctly.
-  [/(\d+(?::\d+)?)\s*[Pp][Mm]\b/g, '$1 p m'],
-  [/(\d+(?::\d+)?)\s*[Aa][Mm]\b/g, '$1 a m'],
+  // Catches "3pm", "10AM", "8:30 PM", "11 a.m.", "1 P.M." — any digit
+  // followed by an optional space and the meridian letters with or
+  // without inner periods. Replaced with uppercase letter-name form
+  // ("A M" / "P M") because lowercase space-separated letters ("a m")
+  // get phonemized as the article "a" plus the letter "m" and slur
+  // together; uppercase letters get read out as letter names.
+  [/(\d+(?::\d+)?)\s*[Pp]\.?\s*[Mm]\.?(?!\w)/g, '$1 P M'],
+  [/(\d+(?::\d+)?)\s*[Aa]\.?\s*[Mm]\.?(?!\w)/g, '$1 A M'],
 
   // ── Storage / data ──────────────────────────────────────────────────
   [/(\d+(?:\.\d+)?)\s*GB\b/g, '$1 gigabytes'],

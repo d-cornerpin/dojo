@@ -3830,15 +3830,16 @@ const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) 
 
 const VAD_OPTIONS: Array<{ id: 'quick' | 'normal' | 'patient'; label: string; hint: string }> = [
   { id: 'quick',   label: 'Quick',   hint: '200ms — picks up on short pauses, may interrupt' },
-  { id: 'normal',  label: 'Normal',  hint: '500ms — balanced (default)' },
+  { id: 'normal',  label: 'Normal',  hint: '500ms — balanced' },
   { id: 'patient', label: 'Patient', hint: '1s — waits longer, better for long thoughts' },
 ];
 
 const STT_LABELS: Record<string, string> = {
-  'base.en':         'Base · English only · fastest, lower quality',
-  'small.en':        'Small · English only',
-  'medium.en':       'Medium · English only',
-  'large-v3-turbo':  'Large v3 Turbo · multilingual, best quality (default)',
+  'moonshine-base':  'Moonshine base · English only · fastest, no native deps (default)',
+  'base.en':         'Whisper Base · English only · fast, lower quality',
+  'small.en':        'Whisper Small · English only',
+  'medium.en':       'Whisper Medium · English only',
+  'large-v3-turbo':  'Whisper Large v3 Turbo · multilingual',
 };
 
 function formatBytes(b: number): string {
@@ -3859,8 +3860,8 @@ const VoiceTab = () => {
   // Settings (loaded from config table)
   const [voice, setVoice] = useState('am_michael');
   const [speed, setSpeed] = useState(1.0);
-  const [vad, setVad] = useState<'quick' | 'normal' | 'patient'>('normal');
-  const [sttModel, setSttModel] = useState('large-v3-turbo');
+  const [vad, setVad] = useState<'quick' | 'normal' | 'patient'>('quick');
+  const [sttModel, setSttModel] = useState('moonshine-base');
   const [wakeWordEnabled, setWakeWordEnabled] = useState(false);
   const [wakePhrase, setWakePhrase] = useState('');
   const [sleepPhrase, setSleepPhrase] = useState('stop listening');
@@ -3884,6 +3885,21 @@ const VoiceTab = () => {
     const m = await api.getVoiceModels();
     if (m.ok) setModels(m.data);
   };
+
+  const refreshVoices = async () => {
+    const v = await api.getVoicePresets();
+    if (v.ok) setVoices(v.data.voices);
+  };
+
+  // Custom voice import form state. Kept inside the component so the form
+  // doesn't outlive a tab unmount.
+  const [importName, setImportName] = useState('');
+  const [importId, setImportId] = useState('');
+  const [importLang, setImportLang] = useState<'en-us' | 'en-gb'>('en-us');
+  const [importGender, setImportGender] = useState<'Male' | 'Female'>('Male');
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importMsg, setImportMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -3910,7 +3926,14 @@ const VoiceTab = () => {
       }
       if (modelsRes.ok) {
         setModels(modelsRes.data);
-        if (!sttSetting.ok || !sttSetting.data.value) setSttModel(modelsRes.data.defaultWhisper);
+        // Prefer the server-reported defaultSttModel ('moonshine-base'). Fall
+        // back to defaultWhisper for older builds that don't expose the new
+        // key, so this code keeps working against an in-place upgrade.
+        if (!sttSetting.ok || !sttSetting.data.value) {
+          const fallback = (modelsRes.data as { defaultSttModel?: string }).defaultSttModel
+            ?? modelsRes.data.defaultWhisper;
+          setSttModel(fallback);
+        }
       }
       if (vSetting.ok && vSetting.data.value) setVoice(vSetting.data.value);
       if (sSetting.ok && sSetting.data.value) {
@@ -3990,7 +4013,7 @@ const VoiceTab = () => {
     }
   };
 
-  const handleInstall = async (kind: 'whisper' | 'kokoro', id: string) => {
+  const handleInstall = async (kind: 'whisper' | 'kokoro' | 'moonshine', id: string) => {
     setInstallError(null);
     setInstalling(`${kind}/${id}`);
     const res = await api.installVoiceModel(kind, id);
@@ -3999,11 +4022,78 @@ const VoiceTab = () => {
     setInstalling(null);
   };
 
-  const handleDelete = async (kind: 'whisper' | 'kokoro', id: string) => {
+  const handleDelete = async (kind: 'whisper' | 'kokoro' | 'moonshine', id: string) => {
     if (!confirm(`Delete ${kind}/${id}? You can re-download it from this page.`)) return;
     const res = await api.deleteVoiceModel(kind, id);
     if (!res.ok) setInstallError(res.error);
     await refreshModels();
+  };
+
+  // Build a candidate voice id from a display name. Kokoro convention:
+  // first char = language (a=US, b=GB), second char = gender (f/m), then
+  // underscore + slug. Returns '' if name is empty.
+  const buildVoiceId = (name: string, lang: 'en-us' | 'en-gb', gender: 'Male' | 'Female'): string => {
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 24);
+    if (!slug) return '';
+    const langChar = lang === 'en-gb' ? 'b' : 'a';
+    const genderChar = gender === 'Female' ? 'f' : 'm';
+    return `${langChar}${genderChar}_${slug}`;
+  };
+
+  const handleImportVoice = async () => {
+    if (!importFile) {
+      setImportMsg({ kind: 'err', text: 'Pick a voicepack .bin first.' });
+      return;
+    }
+    const name = importName.trim();
+    if (!name) {
+      setImportMsg({ kind: 'err', text: 'Display name is required.' });
+      return;
+    }
+    const id = (importId.trim() || buildVoiceId(name, importLang, importGender)).toLowerCase();
+    setImportBusy(true);
+    setImportMsg(null);
+    try {
+      const res = await api.importCustomVoice({
+        id,
+        name,
+        language: importLang,
+        gender: importGender,
+        file: importFile,
+      });
+      if (!res.ok) {
+        setImportMsg({ kind: 'err', text: res.error });
+        return;
+      }
+      setImportMsg({ kind: 'ok', text: `Imported ${res.data.name}. Try it with Preview.` });
+      setImportFile(null);
+      setImportName('');
+      setImportId('');
+      await refreshVoices();
+      // Auto-select the new voice and save so the user can hit Preview straight away.
+      setVoice(res.data.id);
+      void saveSetting('voice.preferred_voice', res.data.id, 'voice');
+    } catch (err) {
+      setImportMsg({ kind: 'err', text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
+  const handleDeleteCustomVoice = async (id: string, name: string) => {
+    if (!confirm(`Delete custom voice "${name}"? You'll need the original .bin file to re-import it.`)) return;
+    const res = await api.deleteCustomVoice(id);
+    if (!res.ok) {
+      setImportMsg({ kind: 'err', text: res.error });
+      return;
+    }
+    await refreshVoices();
+    // If the user was using the deleted voice, fall back to the default.
+    if (voice === id) {
+      setVoice(defaultVoice);
+      void saveSetting('voice.preferred_voice', defaultVoice, 'voice');
+    }
+    setImportMsg({ kind: 'ok', text: `Deleted ${name}.` });
   };
 
   if (loading) return <div className="loading-state">Loading voice settings...</div>;
@@ -4027,7 +4117,7 @@ const VoiceTab = () => {
           >
             {voices.map((v) => (
               <option key={v.id} value={v.id}>
-                {v.name} · {v.gender === 'Female' ? 'F' : 'M'} · {v.language}{v.id === defaultVoice ? ' (default)' : ''}
+                {v.name} · {v.gender === 'Female' ? 'F' : 'M'} · {v.language}{v.id === defaultVoice ? ' (default)' : ''}{v.custom ? ' · custom' : ''}
               </option>
             ))}
           </select>
@@ -4041,6 +4131,118 @@ const VoiceTab = () => {
           {savedKey === 'voice' && <span className="text-xs text-cp-teal">Saved!</span>}
         </div>
         {previewError && <p className="text-xs text-cp-coral">{previewError}</p>}
+      </div>
+
+      {/* Custom voice imports — full-width inside the grid so the form has room
+          to breathe. Visible even when no customs exist (the form is the main
+          surface). */}
+      <div className="glass-card p-4 space-y-3 md:col-span-2">
+        <h3 className="card-header">Custom voice imports</h3>
+        <p className="text-xs text-ui/40">
+          Import a Kokoro voicepack (a 522,240-byte <code className="px-1 rounded bg-ui/[0.06]">.bin</code> file
+          produced by fine-tuning or shared from elsewhere). Imported voices show up in the picker
+          above with a "custom" tag.
+        </p>
+        {voices.filter((v) => v.custom).length > 0 && (
+          <div className="space-y-2 border-b border-ui/10 pb-3">
+            {voices.filter((v) => v.custom).map((v) => (
+              <div key={v.id} className="flex items-center gap-2 text-sm">
+                <span className="flex-1 text-ui">{v.name} <span className="text-ui/40">· {v.id}</span></span>
+                <button
+                  onClick={() => void handlePreview(v.id)}
+                  disabled={previewing}
+                  className="px-2 py-1 glass-btn text-xs rounded-lg disabled:opacity-50"
+                >
+                  Preview
+                </button>
+                <button
+                  onClick={() => void handleDeleteCustomVoice(v.id, v.name)}
+                  className="px-2 py-1 glass-btn-destructive text-xs rounded-lg"
+                >
+                  Delete
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+          <label className="flex flex-col gap-1 text-xs text-ui/60">
+            <span>Display name</span>
+            <input
+              type="text"
+              value={importName}
+              onChange={(e) => setImportName(e.target.value)}
+              placeholder="My voice"
+              className="glass-input"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-ui/60">
+            <span>Voice id <span className="text-ui/40">(optional — auto-derived from name)</span></span>
+            <input
+              type="text"
+              value={importId}
+              onChange={(e) => setImportId(e.target.value)}
+              placeholder={importName ? buildVoiceId(importName, importLang, importGender) : 'am_myvoice'}
+              className="glass-input"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-ui/60">
+            <span>Language</span>
+            <select
+              value={importLang}
+              onChange={(e) => setImportLang(e.target.value as 'en-us' | 'en-gb')}
+              className="glass-select"
+            >
+              <option value="en-us">English (US)</option>
+              <option value="en-gb">English (UK)</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-ui/60">
+            <span>Gender</span>
+            <select
+              value={importGender}
+              onChange={(e) => setImportGender(e.target.value as 'Male' | 'Female')}
+              className="glass-select"
+            >
+              <option value="Male">Male</option>
+              <option value="Female">Female</option>
+            </select>
+          </label>
+          <div className="md:col-span-2 flex flex-col gap-1 text-xs text-ui/60">
+            <span>Voicepack file (.bin)</span>
+            <div className="flex items-center gap-2">
+              {/* Hide the native file input — the rest of the dashboard does
+                  the same (Techniques.tsx, MigrationImport.tsx) and triggers
+                  it via a styled button so themes stay consistent. */}
+              <label className="px-3 py-2 glass-btn text-xs rounded-lg cursor-pointer">
+                Choose file
+                <input
+                  type="file"
+                  accept=".bin,application/octet-stream"
+                  onChange={(e) => setImportFile(e.target.files?.[0] ?? null)}
+                  className="hidden"
+                />
+              </label>
+              <span className="text-xs text-ui/55 truncate">
+                {importFile ? importFile.name : 'no file selected'}
+              </span>
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 pt-1">
+          <button
+            onClick={() => void handleImportVoice()}
+            disabled={importBusy || !importFile || !importName.trim()}
+            className="px-3 py-2 glass-btn-primary text-xs font-medium rounded-lg disabled:opacity-50"
+          >
+            {importBusy ? 'Importing…' : 'Import voice'}
+          </button>
+          {importMsg && (
+            <span className={`text-xs ${importMsg.kind === 'ok' ? 'text-cp-teal' : 'text-cp-coral'}`}>
+              {importMsg.text}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Playback speed */}
@@ -4222,15 +4424,106 @@ const VoiceTab = () => {
           )}
         </div>
         <p className="text-xs text-ui/40">
-          Whisper transcribes your voice when voice mode is on. Larger models are more accurate
-          but use more disk and CPU. The model marked Default is what the dojo uses right now.
+          Transcribes your voice when voice mode is on. Moonshine is the small,
+          fast default and runs anywhere with no native dependencies. Whisper is
+          available as an alternative when the whisper.cpp binary is installed.
+          The model marked Default is what the dojo uses right now.
         </p>
+
+        {/* Moonshine row (no native deps, default). */}
+        {models?.moonshine && (() => {
+          const m = models.moonshine;
+          const id = 'moonshine-base';
+          const dl = downloads[`moonshine/${id}`];
+          const pct = dl && dl.total > 0 ? Math.min(100, (dl.downloaded / dl.total) * 100) : 0;
+          const isActive = id === sttModel;
+          const setAsDefault = () => {
+            setSttModel(id);
+            void saveSetting('voice.stt_model', id, 'stt');
+            if (!m.installed && !dl) {
+              setDownloads((prev) => ({ ...prev, [`moonshine/${id}`]: { downloaded: 0, total: 0 } }));
+              void handleInstall('moonshine', id);
+            }
+          };
+          return (
+            <div
+              className={`glass-nested px-3 py-2.5 rounded-lg space-y-2 transition-colors ${
+                isActive ? 'ring-1 ring-cp-teal/40' : ''
+              }`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <label className="flex items-start gap-3 cursor-pointer flex-1 min-w-0">
+                  <input
+                    type="radio"
+                    name="stt-model"
+                    checked={isActive}
+                    onChange={setAsDefault}
+                    className="mt-1 accent-cp-teal shrink-0"
+                  />
+                  <div className="min-w-0">
+                    <div className="text-sm text-ui flex items-center gap-2">
+                      <span className="truncate">{STT_LABELS[id]}</span>
+                      {isActive && <span className="text-[10px] uppercase tracking-wide text-cp-teal shrink-0">Default</span>}
+                    </div>
+                    <div className="text-xs text-ui/40">
+                      {m.installed ? `${formatBytes(m.bytes)} on disk` : '~65 MB to download'}
+                    </div>
+                  </div>
+                </label>
+                <div className="flex gap-2 shrink-0">
+                  {!m.installed && !dl && (
+                    <button
+                      onClick={() => {
+                        setDownloads((prev) => ({ ...prev, [`moonshine/${id}`]: { downloaded: 0, total: 0 } }));
+                        void handleInstall('moonshine', id);
+                      }}
+                      disabled={installing === `moonshine/${id}`}
+                      className="px-3 py-1.5 glass-btn-primary text-xs font-medium rounded-lg disabled:opacity-50"
+                    >
+                      Download
+                    </button>
+                  )}
+                  {m.installed && !isActive && (
+                    <button
+                      onClick={() => void handleDelete('moonshine', id)}
+                      className="px-3 py-1.5 text-xs text-cp-coral hover:bg-cp-coral/10 rounded-lg"
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
+              </div>
+              {dl && (
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] text-ui/40">
+                    <span>{formatBytes(dl.downloaded)} / {formatBytes(dl.total)}</span>
+                    <span>{pct.toFixed(0)}%</span>
+                  </div>
+                  <div className="h-1 bg-ui/[0.06] rounded-full overflow-hidden">
+                    <div className="h-full bg-cp-teal transition-all" style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* Install hint when the Whisper binary isn't present on this OS. */}
+        {models && models.whisperBinaryAvailable === false && (
+          <div className="text-[11px] text-ui/40 px-3 py-2 rounded-lg bg-ui/[0.03] border border-ui/[0.06]">
+            Whisper requires <code className="font-mono text-ui/55">whisper-cpp</code> via Homebrew
+            (<code className="font-mono text-ui/55">brew install whisper-cpp</code>). The rows below
+            stay greyed out until the binary is installed.
+          </div>
+        )}
 
         {models?.whisper.map((m) => {
           const dl = downloads[`whisper/${m.id}`];
           const pct = dl && dl.total > 0 ? Math.min(100, (dl.downloaded / dl.total) * 100) : 0;
           const isActive = m.id === sttModel;
+          const whisperDisabled = models.whisperBinaryAvailable === false;
           const setAsDefault = () => {
+            if (whisperDisabled) return;
             setSttModel(m.id);
             void saveSetting('voice.stt_model', m.id, 'stt');
             if (!m.installed && !dl) {
@@ -4243,7 +4536,7 @@ const VoiceTab = () => {
               key={m.id}
               className={`glass-nested px-3 py-2.5 rounded-lg space-y-2 transition-colors ${
                 isActive ? 'ring-1 ring-cp-teal/40' : ''
-              }`}
+              } ${whisperDisabled ? 'opacity-50 pointer-events-none' : ''}`}
             >
               <div className="flex items-center justify-between gap-3">
                 {/* Default radio + label */}
@@ -4253,6 +4546,7 @@ const VoiceTab = () => {
                     name="stt-model"
                     checked={isActive}
                     onChange={setAsDefault}
+                    disabled={whisperDisabled}
                     className="mt-1 accent-cp-teal shrink-0"
                   />
                   <div className="min-w-0">
@@ -4276,7 +4570,7 @@ const VoiceTab = () => {
                         setDownloads((prev) => ({ ...prev, [`whisper/${m.id}`]: { downloaded: 0, total: m.approxBytes ?? 0 } }));
                         void handleInstall('whisper', m.id);
                       }}
-                      disabled={installing === `whisper/${m.id}`}
+                      disabled={whisperDisabled || installing === `whisper/${m.id}`}
                       className="px-3 py-1.5 glass-btn-primary text-xs font-medium rounded-lg disabled:opacity-50"
                     >
                       Download
@@ -4285,7 +4579,8 @@ const VoiceTab = () => {
                   {m.installed && !isActive && (
                     <button
                       onClick={() => void handleDelete('whisper', m.id)}
-                      className="px-3 py-1.5 text-xs text-cp-coral hover:bg-cp-coral/10 rounded-lg"
+                      disabled={whisperDisabled}
+                      className="px-3 py-1.5 text-xs text-cp-coral hover:bg-cp-coral/10 rounded-lg disabled:opacity-50"
                     >
                       Delete
                     </button>

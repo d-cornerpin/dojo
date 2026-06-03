@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { assembleSystemPrompt } from '../prompt/assembler.js';
+import { assembleSystemPrompt, type PromptTurnContext } from '../prompt/assembler.js';
 import { getContextWindow } from '../agent/model.js';
 import { estimateTokens, getRecentMessages } from './store.js';
 import { getContextSummaries } from './dag.js';
@@ -153,6 +153,7 @@ function getFreshTailCount(contextWindow: number): number {
 export async function assembleContext(
   agentId: string,
   modelId: string,
+  turnContext?: PromptTurnContext,
 ): Promise<{
   systemPrompt: string;
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>;
@@ -164,7 +165,7 @@ export async function assembleContext(
   const maxTokens = Math.floor(DEFAULTS.contextThreshold * contextWindow) - toolAndOutputReserve;
 
   // 1. System prompt
-  const systemPrompt = assembleSystemPrompt(agentId, modelId);
+  const systemPrompt = assembleSystemPrompt(agentId, modelId, turnContext);
   let usedTokens = estimateTokens(systemPrompt);
 
   const messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }> = [];

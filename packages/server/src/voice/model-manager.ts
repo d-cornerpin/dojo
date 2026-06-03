@@ -67,6 +67,56 @@ export const DEFAULT_WHISPER: WhisperSize = 'large-v3-turbo';
 /** Kokoro is loaded via kokoro-js which caches under HF cache. */
 export const KOKORO_MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 
+// ── Moonshine (STT) ──
+// Runs through @huggingface/transformers, same runtime as Kokoro. The
+// transformers cache bug documented above bites Moonshine identically, so we
+// reuse the direct-download workaround: pull every required file directly
+// from the HF resolve URLs into MOONSHINE_CACHE_DIR, then point
+// env.localModelPath at the cache and disable remote fetches so the
+// local-file branch fires.
+
+export const MOONSHINE_CACHE_DIR = path.join(VOICE_ROOT, 'moonshine');
+export const MOONSHINE_MODEL_ID = 'onnx-community/moonshine-base-ONNX';
+
+export type MoonshineSize = 'base';
+
+/**
+ * Files the transformers.js automatic-speech-recognition pipeline needs for
+ * Moonshine at dtype='q8'. With dtype='q8' transformers appends `_quantized`
+ * to the encoder/decoder onnx filenames. The "merged" decoder bundles the
+ * with-past variant so a single session handles both initial and
+ * incremental decoding.
+ *
+ * Byte counts pulled from the HF API tree on 2026-06-02. They're a hint
+ * for progress estimation — the actual content-length header overrides
+ * them when present.
+ */
+const MOONSHINE_REQUIRED_FILES: Array<{ path: string; approxBytes: number }> = [
+  { path: 'config.json',                              approxBytes: 922 },
+  { path: 'generation_config.json',                   approxBytes: 147 },
+  { path: 'preprocessor_config.json',                 approxBytes: 128 },
+  { path: 'special_tokens_map.json',                  approxBytes: 3 },
+  { path: 'tokenizer.json',                           approxBytes: 3_761_754 },
+  { path: 'tokenizer_config.json',                    approxBytes: 135_735 },
+  { path: 'onnx/encoder_model_quantized.onnx',         approxBytes: 20_513_063 },
+  { path: 'onnx/decoder_model_merged_quantized.onnx',  approxBytes: 42_498_870 },
+];
+
+export function moonshineLocalDir(): string {
+  return path.join(MOONSHINE_CACHE_DIR, 'onnx-community', 'moonshine-base-ONNX');
+}
+
+export function isMoonshineFullyDownloaded(): boolean {
+  const base = moonshineLocalDir();
+  return MOONSHINE_REQUIRED_FILES.every((f) => {
+    try { return fs.statSync(path.join(base, f.path)).size > 0; } catch { return false; }
+  });
+}
+
+export function moonshineCacheBytes(): number {
+  return dirSizeSync(moonshineLocalDir());
+}
+
 /**
  * The complete set of files Kokoro's `style_text_to_speech_2` config needs.
  * We download these directly (bypassing transformers.js's broken cache layer
@@ -96,7 +146,7 @@ export function isKokoroFullyDownloaded(): boolean {
 }
 
 export interface DownloadProgress {
-  kind: 'whisper' | 'kokoro';
+  kind: 'whisper' | 'kokoro' | 'moonshine';
   modelId: string;
   bytesDownloaded: number;
   bytesTotal: number;
@@ -179,7 +229,7 @@ export async function ensureWhisperModel(
 }
 
 export interface InstalledModelInfo {
-  kind: 'whisper' | 'kokoro';
+  kind: 'whisper' | 'kokoro' | 'moonshine';
   id: string;
   filename: string;
   bytes: number;
@@ -216,6 +266,17 @@ export function listInstalledModels(): InstalledModelInfo[] {
     installed: isKokoroCached(),
   });
 
+  // Moonshine — same dual-file pattern as Kokoro (transformers.js cache bug
+  // workaround). The "installed" check is the canonical "every required file
+  // present", with cache size as a soft signal for partial-download states.
+  out.push({
+    kind: 'moonshine',
+    id: MOONSHINE_MODEL_ID,
+    filename: MOONSHINE_MODEL_ID,
+    bytes: moonshineCacheBytes(),
+    installed: isMoonshineFullyDownloaded(),
+  });
+
   return out;
 }
 
@@ -237,6 +298,101 @@ export function isKokoroCached(): boolean {
     try { return fs.existsSync(p) && dirSizeSync(p) > 1024 * 1024; }
     catch { return false; }
   });
+}
+
+/**
+ * Generic direct-download for transformers.js model files. Mirrors what
+ * `ensureKokoroFiles` did for Kokoro and `ensureMoonshineFiles` does for
+ * Moonshine — both bypass the @huggingface/transformers cache layer
+ * (cache.put writes but cache.match returns undefined in our dev-server
+ * context) by writing files directly into a pinned local dir and pointing
+ * env.localModelPath at it.
+ *
+ * Idempotent: skips files already on disk with non-zero size. Streams
+ * downloads through .partial then renames so a crashed download never
+ * leaves a half-written file that future calls would skip.
+ */
+async function ensureModelFiles(
+  kind: 'kokoro' | 'moonshine',
+  modelId: string,
+  baseDir: string,
+  requiredFiles: Array<{ path: string; approxBytes: number }>,
+  onProgress?: ProgressCallback,
+): Promise<void> {
+  await ensureDir(baseDir);
+
+  const filesToFetch: Array<{ path: string; dest: string; approxBytes: number }> = [];
+  let totalBytes = 0;
+  let alreadyHave = 0;
+  for (const f of requiredFiles) {
+    const dest = path.join(baseDir, f.path);
+    let onDisk = 0;
+    try { onDisk = fs.statSync(dest).size; } catch { /* missing */ }
+    totalBytes += Math.max(onDisk, f.approxBytes);
+    if (onDisk > 0) {
+      alreadyHave += onDisk;
+    } else {
+      filesToFetch.push({ path: f.path, dest, approxBytes: f.approxBytes });
+    }
+  }
+
+  if (filesToFetch.length === 0) {
+    onProgress?.({ kind, modelId, bytesDownloaded: totalBytes, bytesTotal: totalBytes });
+    return;
+  }
+
+  let runningBytes = alreadyHave;
+  onProgress?.({ kind, modelId, bytesDownloaded: runningBytes, bytesTotal: totalBytes });
+
+  for (const file of filesToFetch) {
+    const url = `https://huggingface.co/${modelId}/resolve/main/${file.path}`;
+    const tmp = file.dest + '.partial';
+    try { await fsp.unlink(tmp); } catch { /* ignore */ }
+    await ensureDir(path.dirname(file.dest));
+
+    logger.info(`Downloading ${kind} file`, { file: file.path, url });
+    const res = await fetch(url);
+    if (!res.ok || !res.body) {
+      throw new Error(`${kind} file download failed (${file.path}): HTTP ${res.status} ${res.statusText}`);
+    }
+
+    const cl = res.headers.get('content-length');
+    if (cl) {
+      const actualBytes = Number(cl);
+      if (Number.isFinite(actualBytes) && actualBytes > 0) {
+        totalBytes = totalBytes - file.approxBytes + actualBytes;
+      }
+    }
+
+    const reader = res.body.getReader();
+    const writer = fs.createWriteStream(tmp);
+    let lastReport = runningBytes;
+    const REPORT_EVERY = 256 * 1024;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        await new Promise<void>((resolve, reject) => {
+          writer.write(Buffer.from(value), (err) => (err ? reject(err) : resolve()));
+        });
+        runningBytes += value.byteLength;
+        if (onProgress && runningBytes - lastReport >= REPORT_EVERY) {
+          lastReport = runningBytes;
+          onProgress({ kind, modelId, bytesDownloaded: Math.min(runningBytes, totalBytes), bytesTotal: totalBytes });
+        }
+      }
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        writer.end((err?: Error | null) => (err ? reject(err) : resolve()));
+      });
+    }
+
+    await fsp.rename(tmp, file.dest);
+    logger.info(`${kind} file written`, { file: file.path });
+  }
+
+  onProgress?.({ kind, modelId, bytesDownloaded: totalBytes, bytesTotal: totalBytes });
 }
 
 /**
@@ -338,6 +494,21 @@ export async function ensureKokoroFiles(onProgress?: ProgressCallback): Promise<
   onProgress?.({ kind: 'kokoro', modelId: KOKORO_MODEL_ID, bytesDownloaded: totalBytes, bytesTotal: totalBytes });
 }
 
+/**
+ * Download every required Moonshine file directly into MOONSHINE_CACHE_DIR.
+ * Same direct-download pattern as Kokoro (transformers.js cache bug
+ * workaround). Idempotent.
+ */
+export async function ensureMoonshineFiles(onProgress?: ProgressCallback): Promise<void> {
+  return ensureModelFiles(
+    'moonshine',
+    MOONSHINE_MODEL_ID,
+    moonshineLocalDir(),
+    MOONSHINE_REQUIRED_FILES,
+    onProgress,
+  );
+}
+
 function dirSizeSync(dir: string): number {
   let total = 0;
   try {
@@ -375,7 +546,7 @@ export function totalVoiceDiskBytes(): number {
   return total;
 }
 
-export async function deleteModel(kind: 'whisper' | 'kokoro', id: string): Promise<void> {
+export async function deleteModel(kind: 'whisper' | 'kokoro' | 'moonshine', id: string): Promise<void> {
   if (kind === 'whisper') {
     if (!(id in WHISPER_MODELS)) {
       throw new Error(`Unknown whisper size: ${id}`);
@@ -391,6 +562,12 @@ export async function deleteModel(kind: 'whisper' | 'kokoro', id: string): Promi
       try { await fsp.rm(dir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
     logger.info('Deleted kokoro cache (all known locations)');
+    return;
+  }
+  if (kind === 'moonshine') {
+    // Single pinned location, mirrors the Kokoro cleanup.
+    try { await fsp.rm(moonshineLocalDir(), { recursive: true, force: true }); } catch { /* ignore */ }
+    logger.info('Deleted moonshine cache');
     return;
   }
   throw new Error(`Unknown model kind: ${kind}`);

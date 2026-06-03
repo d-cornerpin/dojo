@@ -91,6 +91,24 @@ function getToken(): string | null {
 const VAD_ASSET_BASE = '/api/voice/assets/vad/';
 const ORT_ASSET_BASE = '/api/voice/assets/ort/';
 
+/**
+ * Heuristic mobile detection — picks up iPhone, iPad, and modern Android
+ * phones. Used to enable the half-duplex mic gate during TTS playback
+ * (Phase 5.2). iPadOS 13+ pretends to be macOS via UA; check
+ * `maxTouchPoints` to catch it. Desktops report 0–1 touch points; even
+ * touchscreen Windows laptops max out at low single digits, but they
+ * usually have proper speaker separation so a false positive there is
+ * benign (you just lose barge-in while the agent speaks).
+ */
+function isMobileUserAgent(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  if (/iPhone|iPod|Android|Mobile|webOS/i.test(ua)) return true;
+  // iPad disguised as macOS — has touch.
+  if (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) return true;
+  return false;
+}
+
 function configureOrt() {
   try {
     const env = (ortEnv as { env?: { wasm?: { wasmPaths?: string; numThreads?: number } } }).env;
@@ -167,10 +185,20 @@ export class VoiceClient {
     this.agentId = opts.agentId;
     this.voice = opts.voice ?? 'am_michael';
     this.speed = opts.speed ?? 1;
-    this.sttModel = opts.sttModel ?? 'large-v3-turbo';
-    this.vadSensitivity = opts.vadSensitivity ?? 'normal';
+    // Default STT is Moonshine, no native deps. The server resolves any
+    // value here through parseSttModelKey, so a stale 'large-v3-turbo' in
+    // a user's settings still works — they just keep their preference.
+    this.sttModel = opts.sttModel ?? 'moonshine-base';
+    // Default VAD redemption is 'quick' (200 ms). The prior 'normal'
+    // (500 ms) default added half a second of dead air to every turn
+    // before STT could even start — the latency tax was not worth its
+    // accuracy tradeoff for natural conversation. Users can still pick
+    // 'normal' or 'patient' from voice settings.
+    this.vadSensitivity = opts.vadSensitivity ?? 'quick';
     this.wakeWordEnabled = opts.wakeWordEnabled ?? false;
-    this.wakePhrase = opts.wakePhrase ?? 'hey kevin';
+    // Track however the user named their primary agent. Falls back to the
+    // codebase's role-based phrasing if the wake phrase was never set.
+    this.wakePhrase = opts.wakePhrase ?? 'hey agent';
     this.sleepPhrase = opts.sleepPhrase ?? 'stop listening';
     this.bargeInEnabled = opts.bargeInEnabled ?? false;
     this.soundEffectsEnabled = opts.soundEffectsEnabled ?? true;
@@ -196,8 +224,42 @@ export class VoiceClient {
 
   private setState(next: VoiceState): void {
     if (this.state === next) return;
+    const prev = this.state;
     this.state = next;
     this.emit('state-change', next);
+    // Phase 5.2 — half-duplex on mobile. While the agent is speaking,
+    // disable the mic input track so the VAD literally can't hear the
+    // TTS playback (echoCancellation in 5.1 isn't enough on iPhone
+    // loudspeaker; the speaker bleed is loud enough that silero will
+    // false-trigger). Desktop is unaffected: the gate is mobile-only
+    // because barge-in works fine when there's any real speaker
+    // separation. Trade-off: barge-in is disabled on phones during
+    // playback — accepted per plan.
+    if (isMobileUserAgent()) {
+      if (next === 'speaking' && prev !== 'speaking') {
+        this.setMicTrackEnabled(false);
+      } else if (prev === 'speaking' && next !== 'speaking') {
+        this.setMicTrackEnabled(true);
+      }
+    }
+  }
+
+  /**
+   * Toggle the input MediaStreamTrack on the VAD's underlying stream.
+   * Used by the mobile half-duplex gate (Phase 5.2). The `_stream` field
+   * is a verified private property on @ricky0123/vad-web@0.0.30.
+   */
+  private setMicTrackEnabled(enabled: boolean): void {
+    if (!this.vad) return;
+    const stream = (this.vad as unknown as { _stream?: MediaStream })._stream;
+    if (!stream) return;
+    try {
+      for (const track of stream.getAudioTracks()) {
+        track.enabled = enabled;
+      }
+    } catch (err) {
+      console.warn('[voice] failed to toggle mic track', err);
+    }
   }
 
   isActive(): boolean { return this.state !== 'idle' && this.state !== 'error'; }
@@ -284,6 +346,17 @@ export class VoiceClient {
         model: 'v5',
         baseAssetPath: VAD_ASSET_BASE,
         onnxWASMBasePath: ORT_ASSET_BASE,
+        // Phase 5.1 — acoustic echo cancellation, noise suppression, and
+        // AGC. @ricky0123/vad-web@0.0.30's default `getStream` already
+        // requests all three in its getUserMedia call (see real-time-vad.js
+        // getDefaultRealTimeVADOptions), so we intentionally do NOT override
+        // it: the lib's defaults are exactly the constraints Phase 5.1
+        // calls for. If we ever need extra constraints (a specific
+        // deviceId, samplerate hint), override `getStream` here and merge
+        // these three flags in by hand. Modern Safari honours
+        // echoCancellation outside WebRTC, so this also helps iPhone — but
+        // it's not enough on iPhone loudspeaker, which is why Phase 5.2
+        // disables the mic track entirely during TTS playback.
         // How long after speech ends before we declare end-of-utterance.
         // Tied to Settings → Voice → "Voice activity sensitivity".
         redemptionMs: VAD_REDEMPTION_MS[this.vadSensitivity],
@@ -544,25 +617,31 @@ export class VoiceClient {
     try { this.ws?.send(JSON.stringify({ type: 'utterance_start' })); } catch { /* ignore */ }
   }
 
-  private handleSpeechEnd(_audio: Float32Array): void {
+  private handleSpeechEnd(audio: Float32Array): void {
     if (this.suppressedCurrentUtterance) {
-      // The matching speech-start was suppressed (echo while Kevin was
+      // The matching speech-start was suppressed (echo while the agent was
       // speaking). Don't send utterance_end — there's nothing to transcribe
       // and we don't want to flip UI state away from 'speaking'.
       this.suppressedCurrentUtterance = false;
       return;
     }
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    // The server already has every PCM frame — we streamed them live via
-    // onFrameProcessed while `isCapturing` was true. So we ONLY need to
-    // signal end-of-utterance here. Sending the full audio buffer again
-    // would just duplicate (and inflate the server's transcription input).
-    //
-    // Note: vad-web's `audio` callback arg includes `preSpeechPadMs` of
-    // audio captured BEFORE onSpeechStart fired (~32ms by default). That
-    // tiny prefix is not in our streamed frames, so we lose it — a fair
-    // trade for getting live partials.
+    // vad-web's `audio` callback arg is the canonical utterance buffer:
+    // every sample from preSpeechPadMs (800ms default on 0.0.30) BEFORE
+    // onSpeechStart fired, through the redemption tail. The live frames
+    // we streamed while `isCapturing` was true START at onSpeechStart, so
+    // they're missing the leading 800ms — which is exactly enough to
+    // chop off the first word of every utterance ("Hey Kevin" → "Kevin",
+    // "How are you feeling" → "feeling"). Fix: send the canonical buffer
+    // at end-of-utterance and have the server use IT for the final
+    // transcript instead of its accumulated streamed frames. Live frames
+    // remain useful for partials only.
     try {
+      this.ws.send(JSON.stringify({ type: 'utterance_canonical' }));
+      // Copy: vad-web reuses the underlying memory between callbacks.
+      const copy = new Float32Array(audio.length);
+      copy.set(audio);
+      this.ws.send(copy.buffer);
       this.ws.send(JSON.stringify({ type: 'utterance_end' }));
     } catch (err) {
       this.fail('send_utterance_failed', err);

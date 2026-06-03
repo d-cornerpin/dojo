@@ -23,12 +23,12 @@ import { getJwtSecret } from '../config/loader.js';
 import { createLogger } from '../logger.js';
 import { broadcast, onBroadcast } from '../gateway/ws.js';
 import { submitUserMessage } from '../gateway/routes/chat.js';
-import { transcribeBuffer, pcmFloatToWav, ensureSttReady } from './stt-service.js';
-import { synthesizeStream, createTextSplitter, DEFAULT_VOICE, loadKokoro, isKokoroLoaded } from './tts-service.js';
+import { transcribeBuffer, pcmFloatToWav, ensureSttReady, DEFAULT_STT_MODEL_KEY, parseSttModelKey, isWhisperBinaryAvailable } from './stt-service.js';
+import { synthesizeClauseStream, createClauseQueue, DEFAULT_VOICE, loadKokoro, isKokoroLoaded } from './tts-service.js';
 import { StreamingSpeechBuffer } from './text-sanitize.js';
 import { getDb } from '../db/connection.js';
 import { getPrimaryAgentName } from '../config/platform.js';
-import { DEFAULT_WHISPER, WHISPER_MODELS, type WhisperSize } from './model-manager.js';
+import { WHISPER_MODELS, type WhisperSize } from './model-manager.js';
 import type { WsEvent } from '@dojo/shared';
 
 const logger = createLogger('voice-ws');
@@ -39,12 +39,17 @@ interface VoiceSession {
   agentId: string;
   voice: string;
   speed: number;
-  sttModel: WhisperSize;
+  /**
+   * Canonical STT model key. 'moonshine-base' (default) selects the
+   * Moonshine engine; any WhisperSize string selects Whisper.cpp via the
+   * native server. See parseSttModelKey in stt-service.ts.
+   */
+  sttModel: string;
   pcmChunks: Float32Array[];
   pcmSampleRate: number;
   unsubscribeChunk: (() => void) | null;
   activeTts: { abort: AbortController; messageId: string } | null;
-  splitter: ReturnType<typeof createTextSplitter> | null;
+  splitter: ReturnType<typeof createClauseQueue> | null;
   // Live partial transcription state. We run whisper against the in-flight
   // audio buffer every ~1s of new audio so the user sees their words appear
   // before the utterance ends — perceived STT latency drops from ~1s
@@ -71,6 +76,23 @@ interface VoiceSession {
   // and there's no active TTS, it triggers a TTS burst so voice users
   // hear those too. Reset between bursts.
   unsubscribeProactive: (() => void) | null;
+  /**
+   * Phase 6 — held transcript awaiting a possible continuation. Populated
+   * when the previous utterance ended on a conjunction; the timer submits
+   * after TURN_EXTENSION_MS if the user doesn't keep talking. If they do
+   * keep talking, the next handleUtteranceEnd merges this transcript with
+   * the new one and clears the timer.
+   */
+  pendingTurnExtension: { transcript: string; timer: ReturnType<typeof setTimeout> } | null;
+  /**
+   * Set true by an 'utterance_canonical' control message; the very next
+   * binary frame is then treated as vad-web's canonical buffer (preroll
+   * included) and REPLACES pcmChunks rather than appending. Cleared
+   * immediately on use. This is what restores the first word of every
+   * utterance, which the live frame stream cuts off because it starts
+   * at onSpeechStart instead of preSpeechPadMs before it.
+   */
+  expectingCanonicalFrame: boolean;
 }
 
 /**
@@ -78,16 +100,18 @@ interface VoiceSession {
  * defaults on any missing or malformed key.
  */
 function loadVoiceSettings(): {
-  voice: string; speed: number; sttModel: WhisperSize;
+  voice: string; speed: number; sttModel: string;
   wakeWordEnabled: boolean; wakePhrase: string; sleepPhrase: string;
 } {
   const db = getDb();
   let voice = DEFAULT_VOICE;
   let speed = 1;
-  let sttModel: WhisperSize = DEFAULT_WHISPER;
+  // Default to Moonshine. Users with an existing voice.stt_model = WhisperSize
+  // preference keep it (the parser accepts those values too).
+  let sttModel: string = DEFAULT_STT_MODEL_KEY;
   let wakeWordEnabled = false;
-  // Default to "hey <primary agent name>" — most users name their primary agent
-  // and "hey kevin" makes no sense if they didn't name it Kevin.
+  // Default to "hey <primary agent name>" so the wake phrase tracks however
+  // the user has named their primary agent in setup.
   let wakePhrase = `hey ${getPrimaryAgentName().toLowerCase()}`;
   let sleepPhrase = 'stop listening';
   try {
@@ -100,8 +124,11 @@ function loadVoiceSettings(): {
         const n = Number(r.value);
         if (Number.isFinite(n) && n >= 0.5 && n <= 2) speed = n;
       }
-      if (r.key === 'voice.stt_model' && r.value in WHISPER_MODELS) {
-        sttModel = r.value as WhisperSize;
+      if (r.key === 'voice.stt_model' && r.value) {
+        // parseSttModelKey returns the default for unknown values, so an
+        // invalid stored value silently falls back rather than failing.
+        const parsed = parseSttModelKey(r.value);
+        sttModel = parsed.kind === 'moonshine' ? 'moonshine-base' : parsed.size;
       }
       if (r.key === 'voice.wake_word_enabled') wakeWordEnabled = r.value === 'true';
       if (r.key === 'voice.wake_phrase' && r.value.trim()) wakePhrase = r.value.trim().toLowerCase();
@@ -284,6 +311,8 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
       passive: saved.wakeWordEnabled,
       pingInterval: null,
       unsubscribeProactive: null,
+      pendingTurnExtension: null,
+      expectingCanonicalFrame: false,
     };
     sessions.set(ws, session);
     // Heartbeat every 25s — under Cloudflare Tunnel's default WS idle timeout
@@ -337,6 +366,12 @@ export function closeVoiceSession(ws: WSContext): void {
   if (session.activeTts) session.activeTts.abort.abort();
   if (session.splitter) { try { session.splitter.close(); } catch { /* ignore */ } }
   if (session.pingInterval) clearInterval(session.pingInterval);
+  // Phase 6 — clear any held turn-extension timer so it can't fire after
+  // the session is gone (would land a submitUserMessage on a dead WS).
+  if (session.pendingTurnExtension) {
+    clearTimeout(session.pendingTurnExtension.timer);
+    session.pendingTurnExtension = null;
+  }
   sessions.delete(ws);
   logger.info('Voice session closed', { userId: session.userId, agentId: session.agentId });
 }
@@ -349,6 +384,17 @@ export async function handleVoiceMessage(ws: WSContext, data: string | ArrayBuff
   if (data instanceof ArrayBuffer || Buffer.isBuffer(data)) {
     const ab = Buffer.isBuffer(data) ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : data;
     const f32 = new Float32Array(ab);
+    // Canonical replacement path: the previous control message flipped
+    // expectingCanonicalFrame, so this frame is the full vad-web
+    // utterance buffer (including pre-speech padding). Drop whatever live
+    // frames accumulated and use this as the authoritative final buffer.
+    // Don't trigger a partial — the next message is utterance_end.
+    if (session.expectingCanonicalFrame) {
+      session.expectingCanonicalFrame = false;
+      session.pcmChunks = [f32];
+      session.partialLastChunkCount = session.pcmChunks.length;
+      return;
+    }
     session.pcmChunks.push(f32);
     // Kick off a partial transcription if we've accumulated enough new audio
     // since the last one. Runs async — caller doesn't wait. If a partial is
@@ -373,8 +419,12 @@ export async function handleVoiceMessage(ws: WSContext, data: string | ArrayBuff
       if (typeof msg.voice === 'string') session.voice = msg.voice;
       if (typeof msg.speed === 'number' && msg.speed >= 0.5 && msg.speed <= 2) session.speed = msg.speed;
       if (typeof msg.pcmSampleRate === 'number') session.pcmSampleRate = msg.pcmSampleRate;
-      if (typeof msg.sttModel === 'string' && msg.sttModel in WHISPER_MODELS) {
-        session.sttModel = msg.sttModel as WhisperSize;
+      if (typeof msg.sttModel === 'string' && msg.sttModel.length > 0) {
+        // Accept either the new canonical key ('moonshine-base') or a
+        // WhisperSize. parseSttModelKey normalises and falls back to the
+        // Moonshine default for anything unknown.
+        const parsed = parseSttModelKey(msg.sttModel);
+        session.sttModel = parsed.kind === 'moonshine' ? 'moonshine-base' : parsed.size;
         void ensureSttReady(session.sttModel).catch(() => { /* ignore */ });
       }
       if (typeof msg.wakeWordEnabled === 'boolean') {
@@ -408,7 +458,16 @@ export async function handleVoiceMessage(ws: WSContext, data: string | ArrayBuff
       session.pcmChunks = [];
       session.partialLastChunkCount = 0;
       session.lastPartialText = '';
+      session.expectingCanonicalFrame = false;
       sendJson(ws, { type: 'voice:state', agentId: session.agentId, state: 'capturing' });
+      return;
+    }
+
+    case 'utterance_canonical': {
+      // The next binary frame is vad-web's canonical buffer for this
+      // utterance — replaces pcmChunks rather than appending. See the
+      // expectingCanonicalFrame field comment for why.
+      session.expectingCanonicalFrame = true;
       return;
     }
 
@@ -455,7 +514,7 @@ async function runPartialTranscribe(session: VoiceSession): Promise<void> {
     const pcm = concatPcm(session.pcmChunks); // snapshot, not drain
     if (pcm.length < PARTIAL_MIN_SAMPLES) return;
     const wav = pcmFloatToWav(pcm, session.pcmSampleRate);
-    const result = await transcribeBuffer(wav, { modelSize: session.sttModel });
+    const result = await transcribeBuffer(wav, { modelKey: session.sttModel });
     const text = result.text.trim();
     // Skip empty / duplicate emissions — whisper sometimes returns "" or
     // re-returns the same partial when audio hasn't changed meaningfully.
@@ -508,6 +567,31 @@ const BACKCHANNELS = new Set([
   'nah', 'nope', 'no',
 ]);
 
+/**
+ * Phase 6 — turn-taking heuristic. After the backchannel filter, look at
+ * the FINAL transcript and decide whether the user actually finished the
+ * thought. If the last word is a continuing conjunction ("and", "but",
+ * "so", "or", "because"), treat the utterance as mid-thought and give
+ * the user another 500ms of silence to keep going before we submit it
+ * to the LLM. If they DO keep talking, the next utterance_end merges
+ * with the held one and we submit as a single combined turn. If they
+ * don't, the held timer fires and submits as-is.
+ *
+ * Strips terminal punctuation before checking so "and." still counts as
+ * "and". Operates ONLY on the final transcript, never on partials — the
+ * partial stream can flicker between conjunction and non-conjunction
+ * endings depending on how the model committed each chunk.
+ */
+const TURN_TAKING_CONJUNCTIONS = new Set(['and', 'but', 'so', 'because', 'or']);
+const TURN_EXTENSION_MS = 500;
+
+function endsWithUnfinishedConjunction(transcript: string): boolean {
+  const cleaned = transcript.trim().replace(/[.!?,;:]+$/g, '').toLowerCase();
+  if (!cleaned) return false;
+  const lastWord = cleaned.split(/\s+/).pop() ?? '';
+  return TURN_TAKING_CONJUNCTIONS.has(lastWord);
+}
+
 function isBackchannel(transcript: string): boolean {
   const cleaned = transcript
     .toLowerCase()
@@ -548,7 +632,7 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
     // that's still in the middle of download/warmup) leaves the client in
     // "transcribing" forever with no error feedback.
     const result = await Promise.race([
-      transcribeBuffer(wav, { modelSize: session.sttModel }),
+      transcribeBuffer(wav, { modelKey: session.sttModel }),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('transcribe_timeout (30s) — STT engine not ready')), 30_000),
       ),
@@ -629,6 +713,49 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
     return;
   }
 
+  // Phase 6 — turn-taking heuristic. If a previous utterance ended on a
+  // conjunction and is still held by the extension timer, merge it with
+  // the new transcript and clear the timer. This is what makes "I went
+  // to the store... and... bought some milk" land as a single turn even
+  // though the user paused long enough for the VAD to call utterance_end
+  // twice.
+  if (session.pendingTurnExtension) {
+    clearTimeout(session.pendingTurnExtension.timer);
+    transcript = `${session.pendingTurnExtension.transcript} ${transcript}`.trim();
+    session.pendingTurnExtension = null;
+  }
+
+  // Phase 6 — does THIS utterance end on a conjunction? If so, hold it
+  // for 500ms before submitting. The user may still be mid-thought; the
+  // VAD just fired on a natural breath. If they keep talking, the next
+  // handleUtteranceEnd call merges and submits a combined turn. If they
+  // don't, the timer below submits the held transcript on its own.
+  if (endsWithUnfinishedConjunction(transcript)) {
+    logger.debug('Holding transcript on unfinished conjunction', {
+      agentId: session.agentId, transcript,
+    });
+    sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
+    const heldTranscript = transcript;
+    const timer = setTimeout(() => {
+      // Only fire if nothing has cleared us first (a continuation utterance
+      // would have cancelled this timer and moved the transcript forward).
+      if (session.pendingTurnExtension?.timer !== timer) return;
+      session.pendingTurnExtension = null;
+      void submitTranscriptAndStartTts(session, heldTranscript);
+    }, TURN_EXTENSION_MS);
+    session.pendingTurnExtension = { transcript: heldTranscript, timer };
+    return;
+  }
+
+  await submitTranscriptAndStartTts(session, transcript);
+}
+
+/**
+ * Submit a final voice transcript through the chat pipeline and start
+ * TTS streaming for the agent's reply. Factored out so both the normal
+ * end-of-turn path and the turn-extension timer (Phase 6) can reuse it.
+ */
+async function submitTranscriptAndStartTts(session: VoiceSession, transcript: string): Promise<void> {
   // Post the transcript through the normal chat pipeline. source='voice'
   // so the dashboard renders a mic icon on this user bubble.
   const submit = await submitUserMessage(session.agentId, transcript, undefined, 'voice');
@@ -680,7 +807,10 @@ function startTtsForAgent(session: VoiceSession, initialContent?: string): void 
     session.activeTts = null;
   }
 
-  const splitter = createTextSplitter();
+  // Phase 4 — clause-level TTS. We drive Kokoro one clause at a time so
+  // first audio lands within the first ~30 chars of the LLM's reply,
+  // instead of waiting for a full sentence boundary.
+  const splitter = createClauseQueue();
   session.splitter = splitter;
   const sanitizer = new StreamingSpeechBuffer();
 
@@ -699,7 +829,7 @@ function startTtsForAgent(session: VoiceSession, initialContent?: string): void 
     // Drain the splitter through Kokoro and emit WAV chunks.
     void (async () => {
       try {
-        for await (const chunk of synthesizeStream(splitter, session.voice, session.speed, abort.signal)) {
+        for await (const chunk of synthesizeClauseStream(splitter, session.voice, session.speed, abort.signal)) {
           if (abort.signal.aborted) break;
           sentenceCount++;
           logger.debug('TTS sentence sent', {
@@ -810,9 +940,9 @@ function startTtsForAgent(session: VoiceSession, initialContent?: string): void 
   // already fired before we got here).
   if (initialContent) {
     bubbleChars += initialContent.length;
-    const safe = sanitizer.push(initialContent);
-    if (safe) {
-      splitter.push(safe);
+    const clauses = sanitizer.pushClauses(initialContent);
+    if (clauses.length > 0) {
+      splitter.push(...clauses);
       startStreaming();
     }
   }
@@ -826,18 +956,18 @@ function startTtsForAgent(session: VoiceSession, initialContent?: string): void 
       if (event.content) {
         bubbleChars += event.content.length;
         bubbleDoneSeen = false;  // new content means this bubble isn't done anymore
-        const safe = sanitizer.push(event.content);
-        if (safe) {
-          splitter.push(safe);
+        const clauses = sanitizer.pushClauses(event.content);
+        if (clauses.length > 0) {
+          splitter.push(...clauses);
           startStreaming();
         }
       }
       if (event.done) {
         bubbleCount++;
-        // Flush the tail of this bubble — sanitize any pending text and
-        // force the splitter to yield its in-progress sentence so audio
-        // for this bubble starts immediately, even if Kevin's text didn't
-        // end with terminal punctuation.
+        // Flush the tail of this bubble — anything past the last clause
+        // boundary, sanitized with no boundary requirement, gets queued
+        // as the final clause so audio for this bubble starts even when
+        // the model's reply doesn't end on punctuation.
         const tail = sanitizer.flushUnsafe();
         if (tail) {
           splitter.push(tail);

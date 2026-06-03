@@ -85,8 +85,13 @@ async function loadSavedVoiceSettings(): Promise<SavedVoiceSettings> {
     return {
       voice: (v.ok && v.data.value) || 'am_michael',
       speed: Number.isFinite(speedNum) && speedNum >= 0.5 && speedNum <= 2 ? speedNum : 1.0,
-      sttModel: (stt.ok && stt.data.value) || 'large-v3-turbo',
-      vadSensitivity: vadVal === 'quick' ? 'quick' : vadVal === 'patient' ? 'patient' : 'normal',
+      // Default is 'moonshine-base' (Moonshine v2 base, no native deps).
+      // Existing users with 'large-v3-turbo' or any other WhisperSize keep
+      // their preference; the server's parseSttModelKey normalises it.
+      sttModel: (stt.ok && stt.data.value) || 'moonshine-base',
+      // Default VAD redemption is 'quick' (200 ms). Lower latency at the
+      // cost of occasional early cutoffs vs the prior 'normal' default.
+      vadSensitivity: vadVal === 'normal' ? 'normal' : vadVal === 'patient' ? 'patient' : 'quick',
       wakeWordEnabled: wake.ok && wake.data.value === 'true',
       wakePhrase: (wp.ok && wp.data.value && wp.data.value.trim()) || defaultWakePhrase,
       sleepPhrase: (sp.ok && sp.data.value && sp.data.value.trim()) || 'stop listening',

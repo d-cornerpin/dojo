@@ -364,9 +364,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
   // Trigger context — read once at preflight (Part XIX preservation)
   const triggerRow = db.prepare(
-    "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1",
-  ).get(agentId) as { content: string } | undefined;
+    "SELECT content, source FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+  ).get(agentId) as { content: string; source: string | null } | undefined;
   const lastUserMessageContent = triggerRow?.content ?? null;
+  // Phase 3 — bind the inbound source for the whole turn. Computed once
+  // here and threaded into every assembleContext call below so the
+  // voice-conduct block stays in scope across tool-call iterations of
+  // a single voice turn.
+  const latestUserSource: 'voice' | 'text' | null =
+    triggerRow?.source === 'voice' ? 'voice' : triggerRow ? 'text' : null;
   const triggeredByIMessage = lastUserMessageContent?.includes('[SOURCE: IMESSAGE FROM') ?? false;
   const imFlagSetAtRunStart = isAwaitingIMResponse(agentId);
 
@@ -1114,7 +1120,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
       // ── Phase: assemble context ──
       state = advance(state, { phase: 'assemble' });
-      const ctx = await assembleContext(agentId, contextModelId);
+      const ctx = await assembleContext(agentId, contextModelId, { latestUserSource });
       let systemPrompt = ctx.systemPrompt;
       const messages = ctx.messages;
 

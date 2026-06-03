@@ -109,6 +109,11 @@ export function sanitizeForSpeech(text: string): string {
  * call `flushUnsafe()` — it sanitizes whatever is left, leaking literal
  * asterisks if necessary.
  */
+/** Default minimum fragment length (chars) for clause-level flushing. */
+export const DEFAULT_CLAUSE_MIN_LEN = 30;
+
+const CONJUNCTIONS = ['and', 'but', 'so', 'or', 'because'];
+
 export class StreamingSpeechBuffer {
   private buffer = '';
 
@@ -116,6 +121,20 @@ export class StreamingSpeechBuffer {
     if (!chunk) return '';
     this.buffer += chunk;
     return this.takeSafe();
+  }
+
+  /**
+   * Clause-level streaming flush (Phase 4). Each push returns zero or more
+   * ready clauses — each one is at least `minLen` characters and ends at a
+   * sentence boundary, comma, or pre-conjunction word break. Anything past
+   * the last clause boundary (and anything inside unbalanced markdown) stays
+   * buffered until a later push completes it. Designed for callers that
+   * synthesize one clause at a time so audio starts within the first phrase
+   * of an LLM reply rather than after the first full sentence.
+   */
+  pushClauses(chunk: string, minLen: number = DEFAULT_CLAUSE_MIN_LEN): string[] {
+    if (chunk) this.buffer += chunk;
+    return this.takeClauses(minLen);
   }
 
   /** Flush everything regardless of unbalanced markdown. */
@@ -129,6 +148,96 @@ export class StreamingSpeechBuffer {
 
   hasPending(): boolean {
     return this.buffer.length > 0;
+  }
+
+  private takeClauses(minLen: number): string[] {
+    const out: string[] = [];
+    let consumed = 0;
+    while (true) {
+      const boundary = this.findClauseBoundary(consumed, minLen);
+      if (boundary < 0) break;
+      const raw = this.buffer.slice(consumed, boundary);
+      consumed = boundary;
+      const trimmed = raw.trim();
+      if (trimmed.length === 0) continue;
+      const sanitized = sanitizeForSpeech(trimmed);
+      if (sanitized.trim().length > 0) out.push(sanitized.trim());
+    }
+    if (consumed > 0) this.buffer = this.buffer.slice(consumed);
+    return out;
+  }
+
+  /**
+   * Find the next clause boundary at or after `start`, requiring the
+   * resulting clause to be at least `minLen` characters AND markdown to
+   * be balanced through that point. Returns the end-exclusive index
+   * (one past the boundary character) or -1 if no boundary is ready.
+   *
+   * Recognised boundaries:
+   *   - sentence-end punctuation (.!?) or newline followed by whitespace/EOF
+   *   - comma followed by whitespace
+   *   - whitespace immediately preceding a conjunction word
+   *     (and / but / so / or / because)
+   */
+  private findClauseBoundary(start: number, minLen: number): number {
+    const buf = this.buffer;
+    const counts = { star2: 0, under2: 0, star1: 0, under1: 0, tick: 0, tick3: 0 };
+    for (let i = start; i < buf.length; i++) {
+      const c = buf[i];
+      if (c === '`' && buf[i + 1] === '`' && buf[i + 2] === '`') {
+        counts.tick3 ^= 1;
+        i += 2;
+        continue;
+      }
+      if (c === '`') { counts.tick ^= 1; continue; }
+      if (c === '*' && buf[i + 1] === '*') { counts.star2 ^= 1; i++; continue; }
+      if (c === '*') { counts.star1 ^= 1; continue; }
+      if (c === '_' && buf[i + 1] === '_') { counts.under2 ^= 1; i++; continue; }
+      if (c === '_' && (i === 0 || !/\w/.test(buf[i - 1])) && (i + 1 < buf.length && !/\s/.test(buf[i + 1]))) {
+        counts.under1 ^= 1; continue;
+      }
+      const balanced = counts.star2 === 0 && counts.under2 === 0 &&
+                       counts.star1 === 0 && counts.under1 === 0 &&
+                       counts.tick === 0 && counts.tick3 === 0;
+      if (!balanced) continue;
+
+      // Length check is on the prospective clause (start..i+1).
+      const lenSoFar = i + 1 - start;
+      if (lenSoFar < minLen) continue;
+
+      // Sentence-end punctuation followed by whitespace/EOF.
+      if (/[.!?\n]/.test(c)) {
+        const next = buf[i + 1];
+        if (next === undefined) {
+          // EOF — defer: more content may still arrive; we'll catch this on
+          // the next push, or via flushUnsafe at bubble done.
+          continue;
+        }
+        if (/\s/.test(next)) return i + 1;
+      }
+      // Comma followed by whitespace.
+      if (c === ',') {
+        const next = buf[i + 1];
+        if (next !== undefined && /\s/.test(next)) return i + 1;
+      }
+      // Whitespace followed by a conjunction word — boundary is BEFORE the
+      // conjunction so the next clause begins with it (matches natural
+      // prosody, e.g. "I went to the store" / "and bought some milk").
+      if (/\s/.test(c)) {
+        const rest = buf.slice(i + 1);
+        const match = rest.match(/^([a-z]+)(?:\b|$)/i);
+        if (match && CONJUNCTIONS.includes(match[1].toLowerCase())) {
+          // Need a trailing space after the conjunction to know it's a word,
+          // not a prefix in the middle of another (e.g. "android" starts with
+          // "and"). If conjunction word would terminate or hit whitespace, fine.
+          const after = rest[match[1].length];
+          if (after === undefined || /\s/.test(after)) {
+            return i + 1;
+          }
+        }
+      }
+    }
+    return -1;
   }
 
   private takeSafe(): string {

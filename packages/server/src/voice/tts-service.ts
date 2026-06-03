@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { createLogger } from '../logger.js';
 import { KOKORO_MODEL_ID, KOKORO_CACHE_DIR, ensureKokoroFiles, isKokoroFullyDownloaded } from './model-manager.js';
+import { listCustomVoices, installCustomVoicePatch } from './custom-voices.js';
 
 const logger = createLogger('voice-tts');
 
@@ -124,10 +125,16 @@ export function loadKokoro(
         }
       });
     }
-    return KokoroTTS.from_pretrained(KOKORO_MODEL_ID, {
+    const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL_ID, {
       dtype,
       device: 'cpu',
     });
+    // Teach the loaded instance about imported custom voicepacks (Phase 2).
+    // Built-in voices keep working through their original code paths; only
+    // ids that look like custom ones and have a matching .bin on disk are
+    // intercepted.
+    await installCustomVoicePatch(tts);
+    return tts;
   })();
   modelPromise = promise;
   // If the load rejects, drop the cached promise so the next attempt actually
@@ -149,7 +156,7 @@ export function isKokoroLoaded(): boolean {
   return modelPromise !== null;
 }
 
-export function listVoices(): Array<{ id: string; name: string; language: string; gender: string }> {
+export function listVoices(): Array<{ id: string; name: string; language: string; gender: string; custom?: boolean }> {
   // Mirror of the static voice list in kokoro-js to avoid forcing a model load.
   // Keep in sync with node_modules/kokoro-js/dist/kokoro.js voice table.
   const voices: Record<string, { name: string; language: string; gender: string }> = {
@@ -182,7 +189,15 @@ export function listVoices(): Array<{ id: string; name: string; language: string
     bm_daniel: { name: 'Daniel', language: 'en-gb', gender: 'Male' },
     bm_fable: { name: 'Fable', language: 'en-gb', gender: 'Male' },
   };
-  return Object.entries(voices).map(([id, v]) => ({ id, ...v }));
+  const builtIns = Object.entries(voices).map(([id, v]) => ({ id, ...v }));
+  const customs = listCustomVoices().map((v) => ({
+    id: v.id,
+    name: v.name,
+    language: v.language,
+    gender: v.gender,
+    custom: true as const,
+  }));
+  return [...builtIns, ...customs];
 }
 
 /** One-shot synthesis. Returns a WAV buffer. */
@@ -230,6 +245,96 @@ export async function* synthesizeStream(
 
 export function createTextSplitter(): TextSplitterStream {
   return new TextSplitterStream();
+}
+
+/**
+ * Phase 4 — clause-level synthesis queue.
+ *
+ * kokoro-js's TextSplitterStream chunks by sentence (its v1.2.1 splitter
+ * only recognises .!?…) so the first audio waits for a full sentence even
+ * when the LLM has already streamed half a paragraph. ClauseQueue is a
+ * tiny producer/consumer for pre-split clauses — the caller pushes ready
+ * clauses, `synthesizeClauseStream` pulls them one at a time and runs
+ * `tts.generate(clauseText)` per clause, yielding PCM as soon as each
+ * clause finishes synthesis.
+ *
+ * Surface mirrors TextSplitterStream's contract so the call sites only
+ * change at the queue/sentence-stream swap, not at every push.
+ */
+export class ClauseQueue {
+  private items: string[] = [];
+  private resolver: (() => void) | null = null;
+  private closed = false;
+
+  push(...clauses: string[]): void {
+    for (const c of clauses) {
+      const trimmed = c.trim();
+      if (trimmed.length > 0) this.items.push(trimmed);
+    }
+    if (this.resolver) {
+      this.resolver();
+      this.resolver = null;
+    }
+  }
+
+  /** Idempotent close. Wakes any pending iterator so it terminates. */
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.resolver) {
+      this.resolver();
+      this.resolver = null;
+    }
+  }
+
+  /** No-op for compatibility with kokoro-js's TextSplitterStream API. */
+  flush(): void { /* clauses are flushed at push time */ }
+
+  hasPending(): boolean {
+    return this.items.length > 0;
+  }
+
+  async *[Symbol.asyncIterator](): AsyncGenerator<string, void, void> {
+    while (true) {
+      if (this.items.length > 0) {
+        const next = this.items.shift();
+        if (next !== undefined) yield next;
+        continue;
+      }
+      if (this.closed) return;
+      await new Promise<void>((resolve) => { this.resolver = resolve; });
+    }
+  }
+}
+
+export function createClauseQueue(): ClauseQueue {
+  return new ClauseQueue();
+}
+
+/**
+ * Stream synthesis driven by a ClauseQueue. One Kokoro `generate` call
+ * per clause — first audio lands within one short clause of the LLM
+ * starting to stream (vs one full sentence with the kokoro-js splitter).
+ */
+export async function* synthesizeClauseStream(
+  queue: ClauseQueue,
+  voice: string = DEFAULT_VOICE,
+  speed = 1,
+  signal?: AbortSignal,
+): AsyncGenerator<TtsChunk, void, void> {
+  const tts = await loadKokoro();
+  for await (const clauseText of queue) {
+    if (signal?.aborted) {
+      logger.debug('Clause TTS stream aborted by caller');
+      return;
+    }
+    const audio = await tts.generate(clauseText, { voice: voice as keyof typeof tts.voices, speed });
+    yield {
+      text: clauseText,
+      pcm: audio.audio,
+      sampleRate: audio.sampling_rate,
+    };
+  }
 }
 
 /** Encode a Float32Array PCM buffer as a 16-bit PCM WAV Buffer. */

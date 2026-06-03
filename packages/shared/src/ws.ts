@@ -292,7 +292,7 @@ export interface MigrationChecksEvent {
 export interface VoiceModelDownloadEvent {
   type: 'voice:model_download';
   data: {
-    kind: 'whisper' | 'kokoro';
+    kind: 'whisper' | 'kokoro' | 'moonshine';
     modelId: string;
     bytesDownloaded: number;
     bytesTotal: number;
@@ -302,7 +302,7 @@ export interface VoiceModelDownloadEvent {
 export interface VoiceModelInstallErrorEvent {
   type: 'voice:model_install_error';
   data: {
-    kind: 'whisper' | 'kokoro';
+    kind: 'whisper' | 'kokoro' | 'moonshine';
     modelId: string;
     error: string;
   };

@@ -20,6 +20,8 @@ import {
   DEFAULT_WHISPER,
   ensureWhisperModel,
   ensureKokoroFiles,
+  ensureMoonshineFiles,
+  MOONSHINE_MODEL_ID,
   listInstalledModels,
   deleteModel,
   totalVoiceDiskBytes,
@@ -27,6 +29,13 @@ import {
   type WhisperSize,
 } from './model-manager.js';
 import { synthesizeOnce, listVoices, DEFAULT_VOICE, loadKokoro, isKokoroLoaded } from './tts-service.js';
+import { DEFAULT_STT_MODEL_KEY, isWhisperBinaryAvailable, ensureSttReady } from './stt-service.js';
+import {
+  installCustomVoice,
+  deleteCustomVoice,
+  isValidCustomVoiceId,
+  EXPECTED_VOICE_BYTES,
+} from './custom-voices.js';
 
 const logger = createLogger('voice-routes');
 
@@ -65,13 +74,20 @@ voiceRouter.get('/models', async (c) => {
     });
 
   const kokoro = models.find((m) => m.kind === 'kokoro') ?? null;
+  const moonshine = models.find((m) => m.kind === 'moonshine') ?? null;
 
   return c.json({
     ok: true,
     data: {
       whisper,
       kokoro,
+      moonshine,
       defaultWhisper: DEFAULT_WHISPER,
+      defaultSttModel: DEFAULT_STT_MODEL_KEY,
+      // The dashboard greys out the Whisper engine option (and the per-size
+      // download buttons) when the local whisper.cpp binary is not present.
+      // Moonshine has no native dep, so this flag only gates Whisper UI.
+      whisperBinaryAvailable: isWhisperBinaryAvailable(),
       kokoroLoaded: isKokoroLoaded(),
       totalDiskBytes: totalBytes,
       freeDiskMb: freeMb,
@@ -137,6 +153,33 @@ voiceRouter.post('/models/:kind/:id', (c) => {
     })();
     return c.json({ ok: true, data: { kind, id, started: true } }, 202);
   }
+  if (kind === 'moonshine') {
+    // Currently a single size ('base'); accept any id so the route's a
+    // straight passthrough. The Moonshine engine treats it as a no-op if
+    // the files are already present.
+    void (async () => {
+      try {
+        await ensureMoonshineFiles((p) => {
+          broadcast({
+            type: 'voice:model_download',
+            data: { kind: 'moonshine', modelId: MOONSHINE_MODEL_ID, bytesDownloaded: p.bytesDownloaded, bytesTotal: p.bytesTotal },
+          });
+        });
+        // Warm the engine immediately so a user who clicked "install" can
+        // start speaking without paying cold-start on the first utterance.
+        await ensureSttReady('moonshine-base');
+        broadcast({
+          type: 'voice:model_download',
+          data: { kind: 'moonshine', modelId: MOONSHINE_MODEL_ID, bytesDownloaded: 1, bytesTotal: 1 },
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error('moonshine install failed', { error: msg });
+        broadcast({ type: 'voice:model_install_error', data: { kind: 'moonshine', modelId: MOONSHINE_MODEL_ID, error: msg } });
+      }
+    })();
+    return c.json({ ok: true, data: { kind, id, started: true } }, 202);
+  }
   return c.json({ ok: false, error: `unknown model kind: ${kind}` }, 400);
 });
 
@@ -145,7 +188,7 @@ voiceRouter.post('/models/:kind/:id', (c) => {
 voiceRouter.delete('/models/:kind/:id', async (c) => {
   const kind = c.req.param('kind');
   const id = c.req.param('id');
-  if (kind !== 'whisper' && kind !== 'kokoro') {
+  if (kind !== 'whisper' && kind !== 'kokoro' && kind !== 'moonshine') {
     return c.json({ ok: false, error: `unknown model kind: ${kind}` }, 400);
   }
   try {
@@ -160,6 +203,70 @@ voiceRouter.delete('/models/:kind/:id', async (c) => {
 // ── Voice preview ──
 
 const DEFAULT_PREVIEW_TEXT = 'Hi, this is your voice for the dojo. How does it sound?';
+
+// ── Custom voice import / delete ──
+
+voiceRouter.post('/custom-voices', async (c) => {
+  let form: Record<string, unknown>;
+  try {
+    form = await c.req.parseBody();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ ok: false, error: `Could not parse upload: ${msg}` }, 400);
+  }
+  const file = form.file;
+  if (!(file instanceof File)) {
+    return c.json({ ok: false, error: 'Missing "file" field (the .bin voicepack)' }, 400);
+  }
+  if (file.size > EXPECTED_VOICE_BYTES * 2) {
+    // Avoid pulling a multi-MB blob into memory only to reject it; the
+    // validator will reject anything that isn't exactly EXPECTED_VOICE_BYTES,
+    // so cap the upload at 2x that as a defence-in-depth limit.
+    return c.json({ ok: false, error: `File too large (${file.size} bytes)` }, 413);
+  }
+
+  const id = typeof form.id === 'string' ? form.id.trim().toLowerCase() : '';
+  const name = typeof form.name === 'string' ? form.name : '';
+  const language = form.language === 'en-gb' ? 'en-gb' : 'en-us';
+  const gender = form.gender === 'Female' ? 'Female' : 'Male';
+
+  if (!isValidCustomVoiceId(id)) {
+    return c.json(
+      { ok: false, error: 'Voice id must look like am_myvoice (a/b = US/GB, f/m = female/male) and not collide with a built-in.' },
+      400,
+    );
+  }
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const meta = installCustomVoice({
+      id,
+      name,
+      language: language as 'en-us' | 'en-gb',
+      gender: gender as 'Male' | 'Female',
+      binary: Buffer.from(arrayBuffer),
+    });
+    return c.json({ ok: true, data: meta }, 201);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ ok: false, error: msg }, 400);
+  }
+});
+
+voiceRouter.delete('/custom-voices/:id', (c) => {
+  const id = c.req.param('id');
+  if (!isValidCustomVoiceId(id)) {
+    return c.json({ ok: false, error: `Invalid voice id: ${id}` }, 400);
+  }
+  try {
+    deleteCustomVoice(id);
+    return c.json({ ok: true, data: { id, deleted: true } });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ ok: false, error: msg }, 500);
+  }
+});
+
+// ── Voice preview ──
 
 voiceRouter.post('/preview', async (c) => {
   const body = await c.req.json().catch(() => ({} as { voice?: string; text?: string; speed?: number }));

@@ -610,6 +610,16 @@ export interface VoicePreset {
   name: string;
   language: string;
   gender: string;
+  /** True when this preset was imported by the user (vs a Kokoro built-in). */
+  custom?: boolean;
+}
+
+export interface CustomVoiceMeta {
+  id: string;
+  name: string;
+  language: 'en-us' | 'en-gb';
+  gender: 'Male' | 'Female';
+  createdAt: string;
 }
 
 export interface VoiceModelInfo {
@@ -625,7 +635,18 @@ export interface VoiceModelInfo {
 export interface VoiceModelsResponse {
   whisper: VoiceModelInfo[];
   kokoro: VoiceModelInfo | null;
+  // Moonshine (STT, transformers.js, no native deps). Optional in the type
+  // so an older server build that hasn't shipped it still parses cleanly.
+  moonshine?: VoiceModelInfo | null;
   defaultWhisper: string;
+  // Canonical default STT engine key ('moonshine-base' on v2.9+). Optional
+  // so an older server build that lacks the key still parses; the dashboard
+  // falls back to defaultWhisper.
+  defaultSttModel?: string;
+  // True when the native whisper.cpp binary is on disk. The dashboard
+  // greys out Whisper rows + the "switch to Whisper" button when this is
+  // false (the binary is macOS Homebrew only today).
+  whisperBinaryAvailable?: boolean;
   kokoroLoaded: boolean;
   totalDiskBytes: number;
   freeDiskMb: number;
@@ -639,7 +660,7 @@ export const getVoiceModels = async (): Promise<ApiResponse<VoiceModelsResponse>
   return request('/voice/models');
 };
 
-export const installVoiceModel = async (kind: 'whisper' | 'kokoro', id: string): Promise<ApiResponse<{ kind: string; id: string }>> => {
+export const installVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine', id: string): Promise<ApiResponse<{ kind: string; id: string }>> => {
   // The server returns 202 immediately and streams progress over the
   // `voice:model_download` WS broadcast (whisper-large is ~1.5GB; holding the
   // HTTP response open for ~2 minutes hits Cloudflare's free-tier 524 cap).
@@ -662,8 +683,37 @@ export const installVoiceModel = async (kind: 'whisper' | 'kokoro', id: string):
   return { ok: false, error: 'install timed out — check server logs' };
 };
 
-export const deleteVoiceModel = async (kind: 'whisper' | 'kokoro', id: string): Promise<ApiResponse<{ kind: string; id: string; deleted: boolean }>> => {
+export const deleteVoiceModel = async (kind: 'whisper' | 'kokoro' | 'moonshine', id: string): Promise<ApiResponse<{ kind: string; id: string; deleted: boolean }>> => {
   return request(`/voice/models/${kind}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+};
+
+/** Upload a Kokoro voicepack `.bin` and register it under the given id. */
+export const importCustomVoice = async (
+  args: { id: string; name: string; language: 'en-us' | 'en-gb'; gender: 'Male' | 'Female'; file: File },
+): Promise<ApiResponse<CustomVoiceMeta>> => {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const csrf = getCsrfToken();
+  if (csrf) headers['X-CSRF-Token'] = csrf;
+  const form = new FormData();
+  form.append('id', args.id);
+  form.append('name', args.name);
+  form.append('language', args.language);
+  form.append('gender', args.gender);
+  form.append('file', args.file, args.file.name);
+  const res = await fetch(`${BASE_URL}/voice/custom-voices`, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: form,
+  });
+  const body = await res.json().catch(() => ({ ok: false, error: `parse failed: ${res.status}` }));
+  return body as ApiResponse<CustomVoiceMeta>;
+};
+
+export const deleteCustomVoice = async (id: string): Promise<ApiResponse<{ id: string; deleted: boolean }>> => {
+  return request(`/voice/custom-voices/${encodeURIComponent(id)}`, { method: 'DELETE' });
 };
 
 /** Fetch a synthesized preview clip as a Blob (audio/wav) for inline <audio> playback. */

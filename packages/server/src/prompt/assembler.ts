@@ -335,7 +335,67 @@ function shouldShareUserProfile(agentId: string): boolean {
 
 // ── Main Assembly ──
 
-export function assembleSystemPrompt(agentId: string, modelId: string): string {
+/**
+ * Per-turn context that influences how the system prompt is composed.
+ * Today this is just the source of the latest user message (voice vs
+ * text); the assembler uses it to swap in spoken-conduct guidance on
+ * voice turns. The caller computes this once per turn and threads the
+ * same value through every model call within the turn, so a voice-mode
+ * conduct rule stays in scope across tool iterations.
+ */
+export interface PromptTurnContext {
+  latestUserSource: 'voice' | 'text' | null;
+}
+
+/**
+ * Voice-mode conduct block (Phase 3). Injected at the END of the prompt
+ * — AFTER the agent's persona — so persona stays primary and this block
+ * shapes delivery rather than rewriting identity. Kept verbatim from the
+ * v3 plan; do not edit without revisiting that doc.
+ */
+const VOICE_CONDUCT_BLOCK = `## Voice mode (this turn)
+
+You are speaking out loud in a live voice conversation, not writing.
+Everything you say is read by a text-to-speech voice, so write it the way you
+would actually say it.
+
+How to talk:
+- Short. Usually one or two sentences. Lead with the answer, then stop. If
+  there is more, offer it instead of dumping it all at once.
+- Plain spoken phrasing and contractions. Say "it's", "you'll", "I'd". Talk
+  like a person catching someone up, not like a written document.
+- No markdown, no bullet points, no numbered lists, no headings, no emojis, no
+  asterisks or symbols meant to be seen rather than heard. If you catch
+  yourself making a list, say it as a sentence instead.
+- For anything long or step-by-step, give the short spoken version and offer to
+  drop the full details in text rather than reading it all aloud.
+
+Here is the kind of difference that matters:
+
+User: What's the weather looking like for the trip?
+Don't say: "Here's the forecast: 1. Saturday: sunny, high 72. 2. Sunday:
+partly cloudy, 68. 3. Monday: rain likely."
+Do say: "Looks good. Sunny Saturday, around 72, then it cools off and there's
+some rain coming in Monday."
+
+User: How do I reset the router?
+Don't say: a numbered five-step list.
+Do say: "Hold the little reset button on the back for about ten seconds till
+the lights blink, then give it a minute to come back up. Want me to stay on
+while it does?"
+
+User: Can you summarize that doc?
+Don't say: a multi-paragraph summary with headings.
+Do say: "Sure. Short version, it's mostly about the budget cuts and how they
+hit the two big projects. Want the details or just the bottom line?"
+
+Keep it short and spoken. When in doubt, say less.`;
+
+export function assembleSystemPrompt(
+  agentId: string,
+  modelId: string,
+  turnContext?: PromptTurnContext,
+): string {
   const contextWindow = getContextWindow(modelId);
   const tier = getPromptTier(contextWindow);
   const soul = getSoulContent(agentId);
@@ -586,6 +646,15 @@ People can send you Microsoft Teams messages directly. When they do, a notificat
 - Host: ${os.hostname()}
 `;
   parts.push(runtimeInfo);
+
+  // Voice-mode conduct block — Phase 3. Goes LAST so it sits closest to the
+  // model's next token and shapes how the assembled prompt resolves into a
+  // reply, without overwriting persona earlier in the prompt. Skipped on
+  // text turns (which is the common case), so prompt token cost is unchanged
+  // for chat.
+  if (turnContext?.latestUserSource === 'voice') {
+    parts.push(VOICE_CONDUCT_BLOCK);
+  }
 
   const systemPrompt = parts.join('\n\n---\n\n');
 
