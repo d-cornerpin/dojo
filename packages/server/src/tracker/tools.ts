@@ -1196,6 +1196,50 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       return 'Error: at least one editable field must be provided. Editable: title, description, goal, depends_on, step_number, phase, scheduled_start, repeat_interval, repeat_unit, repeat_end_type, repeat_end_value, repeat_days_of_week, anchor_time, priority, notes. (For status changes use tracker_update_status; for assignee changes use tracker_reassign_task; for pause/resume use tracker_pause_schedule.)';
     }
 
+    // Recurring-schedule integrity gate. Same shape as the gate in
+    // tracker_create_task's dispatch — the edit path is the OTHER way to
+    // produce a partial schedule (e.g. add repeat_interval to a row that
+    // had no repeat_unit, or strip repeat_unit while leaving
+    // repeat_interval set). Compute the EFFECTIVE post-edit values and
+    // reject before applying the update so the agent gets clear feedback.
+    const isScheduleEdit =
+      scheduledStart !== undefined ||
+      repeatInterval !== undefined ||
+      repeatUnit !== undefined;
+    if (isScheduleEdit) {
+      const current = getDb().prepare(`
+        SELECT scheduled_start, repeat_interval, repeat_unit FROM tasks WHERE id = ?
+      `).get(taskId) as { scheduled_start: string | null; repeat_interval: number | null; repeat_unit: string | null } | undefined;
+      const VALID_REPEAT_UNITS = new Set([
+        'minutes', 'hours', 'days', 'weeks', 'months', 'years', 'weekdays', 'specific_days',
+      ]);
+      const effScheduledStart = scheduledStart === undefined
+        ? current?.scheduled_start ?? null
+        : (scheduledStart ?? null);
+      const effInterval = repeatInterval === undefined
+        ? current?.repeat_interval ?? null
+        : (repeatInterval ?? null);
+      const effUnit = repeatUnit === undefined
+        ? current?.repeat_unit ?? null
+        : (repeatUnit ?? null);
+      const effHasInterval = effInterval !== null && effInterval !== undefined;
+      const effHasUnit = effUnit !== null && effUnit !== undefined && effUnit !== '';
+      // Catch invalid unit first so a typo like "weekly" produces a
+      // corrective hint instead of a misleading missing-interval message.
+      if (effHasUnit && !VALID_REPEAT_UNITS.has(effUnit as string)) {
+        return `Error: repeat_unit="${effUnit}" is not a valid unit. Valid values: minutes, hours, days, weeks, months, years, weekdays, specific_days. Common mistakes: "weekly" → repeat_unit="weeks"; "daily" → repeat_unit="days".`;
+      }
+      if (effHasInterval && !effHasUnit) {
+        return 'Error: this edit would leave the task with repeat_interval set but no repeat_unit. The task would fire at most once. Either set repeat_unit (one of: minutes, hours, days, weeks, months, years, weekdays, specific_days), or clear repeat_interval (pass null) to turn off recurrence.';
+      }
+      if (effHasUnit && !effHasInterval && effUnit !== 'specific_days') {
+        return `Error: this edit would leave the task with repeat_unit="${effUnit}" but no repeat_interval. The scheduler can't compute the next run. Either set repeat_interval (e.g. 1 for "every ${effUnit!.replace(/s$/, '')}"), or clear repeat_unit to turn off recurrence.`;
+      }
+      if ((effHasInterval || effHasUnit) && !effScheduledStart) {
+        return 'Error: this edit would leave the task with recurring fields set but no scheduled_start. The scheduler has no anchor for the first run. Either set scheduled_start to an ISO 8601 timestamp, or clear repeat_interval and repeat_unit to turn off recurrence.';
+      }
+    }
+
     // Phase B.1: goal edits are special. PM watches for goalpost-narrowing
     // mid-work. We log both old and new with a diff, so PM can see history
     // when validating later.

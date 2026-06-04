@@ -98,6 +98,25 @@ export const HealerVitals = () => {
                       <p className="text-xs text-ui/70">
                         <span className="text-cp-amber">Suggested fix:</span> {p.proposed_fix}
                       </p>
+                      {(() => {
+                        if (!p.evidence_json) return null;
+                        let bullets: string[] = [];
+                        try {
+                          const parsed = JSON.parse(p.evidence_json);
+                          if (Array.isArray(parsed)) bullets = parsed.filter((b: unknown) => typeof b === 'string');
+                        } catch { return null; }
+                        if (bullets.length === 0) return null;
+                        return (
+                          <div className="mt-2">
+                            <p className="text-[10px] text-ui/40 mb-0.5">Evidence:</p>
+                            <ul className="list-disc list-inside space-y-0.5">
+                              {bullets.map((b, i) => (
+                                <li key={i} className="text-[11px] text-ui/55">{b}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        );
+                      })()}
                       <p className="text-[10px] text-ui/25 mt-1">
                         Flagged {formatDate(p.created_at)}
                         {p.confidence !== null && <span> · Confidence: {p.confidence}%</span>}

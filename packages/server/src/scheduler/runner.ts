@@ -760,10 +760,31 @@ function cleanupStaleRuns(): void {
       AND t.updated_at < datetime('now', '-' || ? || ' minutes')
   `).all(HARD_STUCK_THRESHOLD_MINUTES) as Array<{ id: string; title: string }>;
 
+  // 4. Recurring task with full repeat config but next_run_at not
+  //    populated. Pre-2.9.x the create/edit paths could write a partial
+  //    schedule (interval+unit but no scheduled_start, or invalid unit
+  //    that calculateNextRun returns null for) and leave next_run_at
+  //    null. The dispatch gates now prevent this on new rows, but
+  //    legacy rows that landed in this state silently never fire — the
+  //    scheduler's `WHERE next_run_at <= now` filter excludes NULL.
+  //    Find them and recompute, then either restore the schedule or
+  //    mark the task complete if there are no more runs.
+  const missingNextRun = db.prepare(`
+    SELECT t.id, t.title
+    FROM tasks t
+    WHERE t.repeat_interval IS NOT NULL
+      AND t.repeat_unit IS NOT NULL
+      AND t.next_run_at IS NULL
+      AND t.is_paused = 0
+      AND t.status NOT IN ('complete', 'fallen', 'paused')
+      AND t.schedule_status != 'completed'
+  `).all() as Array<{ id: string; title: string }>;
+
   const allStale = [
     ...staleTasks.map(t => ({ id: t.id, title: t.title, reason: `assigned agent idle for ${AGENT_IDLE_THRESHOLD_MINUTES}+ minutes`, kind: 'stale_running' as const })),
     ...unassigned.map(t => ({ id: t.id, title: t.title, reason: 'no agent assigned', kind: 'stale_running' as const })),
     ...stuckOutOfSync.map(t => ({ id: t.id, title: t.title, reason: `recurring task stuck in_progress with out-of-sync schedule_status for ${HARD_STUCK_THRESHOLD_MINUTES}+ minutes`, kind: 'stuck_out_of_sync' as const })),
+    ...missingNextRun.map(t => ({ id: t.id, title: t.title, reason: 'recurring task has repeat_interval+repeat_unit but next_run_at is NULL — scheduler can\'t see it', kind: 'missing_next_run' as const })),
   ];
 
   if (allStale.length === 0) return;
@@ -772,6 +793,7 @@ function cleanupStaleRuns(): void {
     staleRunning: staleTasks.length,
     unassigned: unassigned.length,
     stuckOutOfSync: stuckOutOfSync.length,
+    missingNextRun: missingNextRun.length,
   });
 
   for (const task of allStale) {
@@ -792,6 +814,21 @@ function cleanupStaleRuns(): void {
           // Still try the direct force-reset as a fallback.
           try { forceResetStuckRecurringTask(task.id); } catch { /* swallow */ }
         });
+    } else if (task.kind === 'missing_next_run') {
+      // Recover a recurring task that has the repeat config but no
+      // next_run_at. forceResetStuckRecurringTask already does the
+      // recompute-or-finalize logic we want here; reuse it. It bails on
+      // non-in_progress rows by default, so for the missing-next-run
+      // case we recompute inline using the same calculateNextRun path
+      // and write the appropriate state directly.
+      try {
+        recoverMissingNextRun(task.id);
+      } catch (err) {
+        logger.error('Scheduler: missing-next-run recovery failed', {
+          taskId: task.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     } else {
       // stuck_out_of_sync: bypass onTaskRunComplete entirely.
       try {
@@ -804,6 +841,74 @@ function cleanupStaleRuns(): void {
       }
     }
   }
+}
+
+/**
+ * Recompute next_run_at on a recurring task whose row has the repeat
+ * config (repeat_interval + repeat_unit) but next_run_at is NULL. This
+ * happens when a legacy create/edit path wrote partial schedule fields
+ * before the dispatch gates were in place — the scheduler's
+ * `WHERE next_run_at <= now` filter excludes NULL, so these tasks sit
+ * permanently invisible until someone manually intervenes.
+ *
+ * If calculateNextRun returns a future time, restore the schedule. If
+ * it returns null (config is genuinely uncomputable or all runs are in
+ * the past with no future slot), mark the task complete so it stops
+ * being a zombie.
+ */
+function recoverMissingNextRun(taskId: string): void {
+  const db = getDb();
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as Record<string, unknown> | undefined;
+  if (!task) return;
+  if (task.next_run_at) return; // raced with another recovery path
+  if (task.is_paused) return;
+
+  const scheduledTask: ScheduledTask = {
+    id: task.id as string,
+    scheduled_start: task.scheduled_start as string | null,
+    repeat_interval: task.repeat_interval as number | null,
+    repeat_unit: task.repeat_unit as string | null,
+    repeat_end_type: task.repeat_end_type as string | null,
+    repeat_end_value: task.repeat_end_value as string | null,
+    run_count: (task.run_count as number) ?? 0,
+    is_paused: 0,
+    last_run_at: task.last_run_at as string | null,
+    next_run_at: null,
+    schedule_status: (task.schedule_status as string) ?? 'waiting',
+    repeat_days_of_week: task.repeat_days_of_week as string | null,
+    anchor_time: task.anchor_time as string | null,
+  };
+
+  const nextRun = calculateNextRun(scheduledTask);
+  if (nextRun) {
+    db.prepare(`
+      UPDATE tasks
+      SET next_run_at = ?,
+          schedule_status = 'waiting',
+          status = CASE WHEN status IN ('on_deck', 'in_progress') THEN status ELSE 'on_deck' END,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(nextRun, taskId);
+    logger.warn('Scheduler: recovered recurring task with missing next_run_at', {
+      taskId, title: task.title, nextRun,
+    });
+  } else {
+    db.prepare(`
+      UPDATE tasks
+      SET schedule_status = 'completed',
+          status = 'complete',
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(taskId);
+    logger.warn('Scheduler: recurring task had no recoverable next run, marked complete', {
+      taskId, title: task.title,
+    });
+  }
+
+  broadcast({
+    type: 'tracker:task_updated',
+    task: { id: taskId, status: nextRun ? 'on_deck' : 'complete' },
+  } as never);
 }
 
 /**

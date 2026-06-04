@@ -1562,19 +1562,24 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'healer_propose',
-    description: 'Create a proposal for the user to approve or deny in the dashboard. Use this for fixes that change configuration, switch models, or grant permissions — anything you are less than 70% confident about.',
+    description: 'Create a proposal for the user to approve or deny in the dashboard. Use this for fixes that change configuration, switch models, or grant permissions — anything you are less than 70% confident about.\n\nEvery proposal MUST include an `evidence` field listing the specific things you actually observed this cycle: tool results, audit_log entries, file contents, vault entries you read. The user sees this proposal in their dashboard and acts on it — if the evidence is invented (vault IDs you didn\'t read, "known bugs" you can\'t cite, file paths you didn\'t open) you will mislead them into approving a fix for a problem that doesn\'t exist. If you can\'t produce concrete evidence, do not propose — log with `healer_log_action` instead.',
     input_schema: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: 'Short title for the dashboard (e.g., "Switch Kelly to Claude Haiku")' },
-        description: { type: 'string', description: 'Full explanation of the problem' },
-        proposed_fix: { type: 'string', description: 'What you want to do (plain language)' },
-        confidence: { type: 'number', description: 'Your confidence in this fix (0-100)' },
+        title: { type: 'string', description: 'Short title for the dashboard (e.g., "Switch X to Claude Haiku"). Use the agent\'s role label, not invented "known bug" framing.' },
+        description: { type: 'string', description: 'Full explanation of the problem in neutral terms based on what you actually observed. Avoid speculation about platform-level bugs unless you can cite the evidence for them in the evidence field below.' },
+        proposed_fix: { type: 'string', description: 'What you want to do (plain language). Scope it narrowly to the specific agent or row in question — avoid "rules that apply to all agents" unless every persistent and non-persistent agent in the dojo would be safe under that rule (very rare; usually they are not).' },
+        evidence: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'REQUIRED. One short bullet per observation that backs the proposal. Each bullet should be specific enough that a reader could verify it — name the tool call you made, the agent_id you inspected, the file path you read, the audit_log code you saw, the vault entry id you found. Example: ["read messages table for agent abc12345 — last assistant message was 2026-06-04T04:00Z", "vault_search returned no prior healer notes about this agent", "audit_log shows 3 model_call errors with code RATE_LIMIT in the last 24h for agent abc12345"]. Do not include references to identifiers you have not actually read in this cycle. If your evidence list would be empty or vague ("the diagnostic says X is broken"), do not propose — log instead.',
+        },
+        confidence: { type: 'number', description: 'Your confidence in this fix (0-100). If your evidence list is thin, your confidence should be too.' },
         severity: { type: 'string', enum: ['critical', 'warning', 'info'], description: 'How urgent is this?' },
         category: { type: 'string', description: 'Category (model_switch, config_change, permission_grant, etc.)' },
-        agent_id: { type: 'string', description: 'Which agent this concerns (if applicable)' },
+        agent_id: { type: 'string', description: 'Which agent this concerns (if applicable). Required if the proposal targets a specific agent.' },
       },
-      required: ['title', 'description', 'proposed_fix', 'confidence', 'severity', 'category'],
+      required: ['title', 'description', 'proposed_fix', 'evidence', 'confidence', 'severity', 'category'],
     },
   },
   {
@@ -4116,6 +4121,69 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
           break;
         }
 
+        // Recurring-schedule integrity gate. Pre-fix the engine would
+        // accept partial schedules and write them straight to the row,
+        // producing silent failures:
+        //   - repeat_interval without repeat_unit → calculateNextRun
+        //     treats the task as one-shot (fires once, then nothing).
+        //   - repeat_unit without repeat_interval → same outcome.
+        //   - repeat_unit set to a value not in the enum → next_run_at
+        //     stays at scheduled_start, fires once, then dies.
+        //   - any repeat_* without scheduled_start → the entire
+        //     scheduling block in trackerCreateTask is skipped (no
+        //     next_run_at written) and hasFutureSchedule still suppresses
+        //     the assignment notification. Task created, never fires,
+        //     assignee never told.
+        // All three shapes match the symptom from the field report:
+        // "agent set up a recurring task and it never fired."
+        const VALID_REPEAT_UNITS = new Set([
+          'minutes', 'hours', 'days', 'weeks', 'months', 'years', 'weekdays', 'specific_days',
+        ]);
+        const hasInterval = args.repeat_interval !== undefined && args.repeat_interval !== null;
+        const hasUnit = args.repeat_unit !== undefined && args.repeat_unit !== null && args.repeat_unit !== '';
+        // Order matters here. Catch invalid unit FIRST — otherwise an
+        // agent passing repeat_unit="weekly" (the common wrong spelling)
+        // hits the "missing interval" branch first and gets a misleading
+        // hint telling it to add interval=1 to "every weekly". Validate
+        // the unit value before checking pairing.
+        if (hasUnit && !VALID_REPEAT_UNITS.has(args.repeat_unit as string)) {
+          content =
+            `Error: repeat_unit="${args.repeat_unit}" is not a valid unit. ` +
+            `Valid values: minutes, hours, days, weeks, months, years, weekdays, specific_days. ` +
+            `Common mistakes: "weekly" → repeat_interval=1, repeat_unit="weeks"; ` +
+            `"daily" → repeat_interval=1, repeat_unit="days"; ` +
+            `"every Mon/Wed/Fri" → repeat_unit="specific_days", repeat_days_of_week=["mon","wed","fri"].`;
+          isError = true;
+          break;
+        }
+        if (hasInterval && !hasUnit) {
+          content =
+            `Error: repeat_interval was set without repeat_unit. The task would fire once and then never again. ` +
+            `Add repeat_unit (one of: minutes, hours, days, weeks, months, years, weekdays, specific_days). ` +
+            `Example for a daily task: repeat_interval=1, repeat_unit="days".`;
+          isError = true;
+          break;
+        }
+        if (hasUnit && !hasInterval && args.repeat_unit !== 'specific_days') {
+          // specific_days legitimately ignores interval (handled below by
+          // the defaulting at trackerCreateTask). Every other unit needs
+          // an explicit number.
+          content =
+            `Error: repeat_unit="${args.repeat_unit}" was set without repeat_interval. ` +
+            `Add repeat_interval (e.g. repeat_interval=1 for "every ${(args.repeat_unit as string).replace(/s$/, '')}"). ` +
+            `Or, if you want a fixed set of weekdays, use repeat_unit="specific_days" with repeat_days_of_week=["mon","wed",...].`;
+          isError = true;
+          break;
+        }
+        if ((hasInterval || hasUnit) && !args.scheduled_start) {
+          content =
+            `Error: a recurring task needs a scheduled_start — the time of the FIRST run. ` +
+            `Without it the scheduler has no anchor, no next_run_at gets written, and the task will never fire. ` +
+            `Call get_current_time, ask the user when the first run should happen (or pick the next sensible slot — e.g. "tomorrow at 6 AM"), and re-call this tool with scheduled_start set to the resolved ISO 8601 timestamp.`;
+          isError = true;
+          break;
+        }
+
         try {
           content = trackerCreateTask(agentId, {
             projectId: args.project_id as string | undefined,
@@ -4168,6 +4236,50 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         const repeatDaysOfWeek: string | undefined = normalizedDays ?? undefined;
         if (args.repeat_unit === 'specific_days' && !repeatDaysOfWeek) {
           content = 'Error: repeat_unit="specific_days" requires repeat_days_of_week (e.g. ["mon","wed"]).';
+          isError = true;
+          break;
+        }
+
+        // Same recurring-schedule integrity gate as tracker_create_task.
+        // Reminders go through the same scheduler, so a partial config
+        // produces the same silent never-fires failure mode here.
+        const VALID_REMINDER_REPEAT_UNITS = new Set([
+          'minutes', 'hours', 'days', 'weeks', 'months', 'years', 'weekdays', 'specific_days',
+        ]);
+        const remHasInterval = args.repeat_interval !== undefined && args.repeat_interval !== null;
+        const remHasUnit = args.repeat_unit !== undefined && args.repeat_unit !== null && args.repeat_unit !== '';
+        // Same ordering rule as tracker_create_task: catch invalid unit
+        // first so a misspelled value ("weekly") produces a corrective
+        // hint instead of a misleading "missing interval" message.
+        if (remHasUnit && !VALID_REMINDER_REPEAT_UNITS.has(args.repeat_unit as string)) {
+          content =
+            `Error: repeat_unit="${args.repeat_unit}" is not a valid unit. ` +
+            `Valid values: minutes, hours, days, weeks, months, years, weekdays, specific_days. ` +
+            `Common mistakes: "weekly" → repeat_interval=1, repeat_unit="weeks"; ` +
+            `"daily" → repeat_interval=1, repeat_unit="days".`;
+          isError = true;
+          break;
+        }
+        if (remHasInterval && !remHasUnit) {
+          content =
+            `Error: repeat_interval was set without repeat_unit. The reminder would fire once and then never again. ` +
+            `Add repeat_unit (one of: minutes, hours, days, weeks, months, years, weekdays, specific_days). ` +
+            `Example for a daily reminder: repeat_interval=1, repeat_unit="days".`;
+          isError = true;
+          break;
+        }
+        if (remHasUnit && !remHasInterval && args.repeat_unit !== 'specific_days') {
+          content =
+            `Error: repeat_unit="${args.repeat_unit}" was set without repeat_interval. ` +
+            `Add repeat_interval (e.g. repeat_interval=1 for "every ${(args.repeat_unit as string).replace(/s$/, '')}"). ` +
+            `Or, for a fixed set of weekdays, use repeat_unit="specific_days" with repeat_days_of_week=["mon","wed",...].`;
+          isError = true;
+          break;
+        }
+        if ((remHasInterval || remHasUnit) && !args.when) {
+          content =
+            `Error: a recurring reminder needs \`when\` — the time of the FIRST fire. ` +
+            `Without it the scheduler has no anchor. Ask the user when the first reminder should fire and re-call with \`when\` set to the resolved ISO 8601 timestamp.`;
           isError = true;
           break;
         }
@@ -4551,12 +4663,35 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
           { name: 'confidence', value: args.confidence, type: 'number' },
         ]);
         if (hpErr) { content = hpErr; isError = true; break; }
+
+        // Evidence gate. Each bullet must be a non-empty string and the
+        // list itself must be non-empty. The point is to make it
+        // impossible for the healer to propose a fix backed by nothing
+        // (see migration 055 for the why).
+        const rawEvidence = args.evidence;
+        let evidenceList: string[] = [];
+        if (Array.isArray(rawEvidence)) {
+          evidenceList = rawEvidence
+            .filter((b) => typeof b === 'string' && b.trim().length > 0)
+            .map((b) => (b as string).trim());
+        }
+        if (evidenceList.length === 0) {
+          content =
+            `Error: \`evidence\` is required and must be a non-empty array of short strings, each describing a specific observation you made in this cycle. ` +
+            `Examples of valid bullets: "read messages table for agent abc12345 — last assistant message was 2026-06-04T04:00Z", ` +
+            `"audit_log shows 3 RATE_LIMIT model_call errors in the last 24h for agent abc12345", ` +
+            `"vault_search returned no prior healer notes about this agent". ` +
+            `If you cannot produce concrete observations to back the proposal, do not propose — log with healer_log_action instead.`;
+          isError = true;
+          break;
+        }
+
         const propDb = getDb();
         const propId = uuidv4();
         try {
           propDb.prepare(`
-            INSERT INTO healer_proposals (id, diagnostic_id, category, severity, title, description, proposed_fix, confidence, status, agent_id, created_at)
-            VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'))
+            INSERT INTO healer_proposals (id, diagnostic_id, category, severity, title, description, proposed_fix, confidence, status, agent_id, evidence_json, created_at)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'))
           `).run(
             propId,
             args.category as string,
@@ -4566,6 +4701,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
             args.proposed_fix as string,
             args.confidence as number,
             (args.agent_id as string) ?? null,
+            JSON.stringify(evidenceList),
           );
           broadcast({ type: 'healer:proposal', data: { id: propId, title: args.title, severity: args.severity } } as never);
           content = `[OK] proposal_id=${propId}\n\nProposal created: "${args.title}". The user will see this in the dashboard vitals panel and can approve or deny it.`;

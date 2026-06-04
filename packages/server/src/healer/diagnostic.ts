@@ -414,12 +414,23 @@ function getBulletproofToolHealth(): DiagnosticItem[] {
   //    auto-fixes new occurrences, so this catches legacy or post-restart
   //    stragglers — and any future regression where a non-apprentice path
   //    completes a task without terminating the agent.
+  //
+  //    Exclude persistent agents. An apprentice with config.persist=true
+  //    OR agent_type='persistent' is INTENTIONALLY kept alive after
+  //    complete_task so it can handle its next scheduled fire (think:
+  //    daily dispatcher, weekly delivery agent). Pre-fix this query
+  //    flagged a persistent dispatcher every day for 19 consecutive days
+  //    and the healer ended up proposing an "auto-terminate idle agents"
+  //    fix that would have broken the next day's run. The persist signal
+  //    lives in agents.config (JSON) so we extract it with json_extract.
   const splitBrain = db.prepare(`
     SELECT a.id, a.name, t.id as task_id, t.title as task_title
     FROM agents a
     JOIN tasks t ON t.assigned_to = a.id
     WHERE a.status IN ('idle', 'working')
       AND a.classification = 'apprentice'
+      AND COALESCE(a.agent_type, '') != 'persistent'
+      AND COALESCE(json_extract(a.config, '$.persist'), 0) != 1
       AND t.status = 'complete'
       AND t.completed_at > datetime('now', '-7 days')
   `).all() as Array<{ id: string; name: string; task_id: string; task_title: string }>;

@@ -66,10 +66,20 @@ const GLOBAL_FILE_DELETE_DENY = [
 // reads — those bypass the engine helpers that cap response size and
 // could choke the Healer's prompt. Use healer_recent_actions /
 // healer_action_detail instead.
+//
+// secrets.yaml is also denied globally. The file is encrypted at rest
+// per CLAUDE.md's architecture rules ("Secrets never enter the DB or
+// the memory DAG"), so a read returns ciphertext anyway — but the
+// permission layer should reflect that intent so no future code path
+// has to think about whether reading it was OK. Even the Healer, whose
+// job is to dig into anything, should never need the contents: secrets
+// are loaded into process memory at startup and exposed only as the
+// runtime needs them.
 const GLOBAL_FILE_READ_DENY = [
   '~/.dojo/logs/healer.log',
   '~/.dojo/logs/healer-report.log',
   '~/.dojo/logs/healer-archives/**',
+  '~/.dojo/secrets.yaml',
 ];
 
 const GLOBAL_EXEC_DENY = [

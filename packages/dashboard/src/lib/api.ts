@@ -1728,6 +1728,9 @@ export interface HealerProposal {
   // approved proposal has been carried out. Distinguishes "approved
   // (waiting for Healer to execute)" from "applied (done)".
   applied_at?: string | null;
+  // JSON-encoded array of evidence bullets the healer cited when
+  // proposing the fix. Required for new proposals; null for legacy rows.
+  evidence_json?: string | null;
 }
 
 export interface HealerAction {

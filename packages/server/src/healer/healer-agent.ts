@@ -299,9 +299,19 @@ const HEALER_TOOLS_POLICY = JSON.stringify({
     'vault_remember', 'vault_search', 'vault_forget',
     // Memory
     'memory_grep', 'memory_describe', 'memory_search',
-    // File operations (for reading configs only — Healer permissions
-    // below deny log-file paths to force the engine helpers).
-    'file_read', 'file_list',
+    // File + shell access. The Healer's whole purpose is to dig into
+    // arbitrary problems and produce evidence-backed proposals. The
+    // global denies in permissions.ts (healer log files, secrets.yaml)
+    // are the only off-limits paths; everything else — the SQLite
+    // database, audit logs, app logs, configs, agent message tables —
+    // is fair game and frequently necessary to verify what the
+    // diagnostic surfaced. `exec` is included so the Healer can run
+    // `sqlite3 ~/.dojo/data/dojo.sqlite "SELECT ..."` to look up
+    // structural fields (agent_type, config.persist, schedule_status)
+    // that no tool wrapper currently exposes. The exec deny substring
+    // 'secrets.yaml' still blocks `cat ~/.dojo/secrets.yaml` style
+    // reads via shell.
+    'file_read', 'file_list', 'exec',
     // Utility
     'load_tool_docs', 'get_current_time', 'complete_task',
   ],
