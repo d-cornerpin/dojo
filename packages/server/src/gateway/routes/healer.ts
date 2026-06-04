@@ -169,7 +169,7 @@ healerRouter.post('/report/send', async (c) => {
   try {
     const result = await sendHealerReport();
     if (!result.ok) {
-      const status = result.error === 'NO_EMAIL_CONFIGURED' ? 400 : 500;
+      const status = (result.error === 'NO_EMAIL_CONFIGURED' || result.error === 'NO_REPORT_RECIPIENT') ? 400 : 500;
       return c.json({ ok: false, error: result.error }, status);
     }
     return c.json({ ok: true, data: { message: 'Report sent and archived' } });

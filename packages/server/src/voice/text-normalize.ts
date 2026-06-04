@@ -109,9 +109,9 @@ const PATTERNS: Array<[RegExp, Replacer]> = [
   [/(\d+)\s*x\s*(\d+)\b/g, '$1 by $2'],
 
   // ── Email addresses ────────────────────────────────────────────────
-  // Run BEFORE TLD rules so "david@example.com" first becomes
-  // "david at example.com", then the .com rule turns it into
-  // "david at example dot com".
+  // Run BEFORE TLD rules so "jane@example.com" first becomes
+  // "jane at example.com", then the .com rule turns it into
+  // "jane at example dot com".
   [/([A-Za-z0-9._+-]+)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b/g, '$1 at $2'],
 
   // ── Plus-or-minus (before the math + rule below) ───────────────────

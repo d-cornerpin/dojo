@@ -451,7 +451,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
     const fromMatch = lastUserMessageContent.match(/^From:\s*(.+)$/im);
     const messageIdMatch = lastUserMessageContent.match(/^Message ID:\s*(\S+)/im);
     const isOutlook = lastUserMessageContent.includes('[SOURCE: OUTLOOK NOTIFICATION');
-    // Format: [SOURCE: GMAIL NOTIFICATION — kbrns66@gmail.com (agent)]
+    // Format: [SOURCE: GMAIL NOTIFICATION — <address> (agent)]
     // The parenthesized suffix is the slot. Default to 'agent' on parse
     // failure (most common slot for monitored inboxes).
     const slotMatch = lastUserMessageContent.match(/\[SOURCE: (?:GMAIL|OUTLOOK) NOTIFICATION[^()]*\(([^)]+)\)\]/i);
@@ -3665,8 +3665,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // route it through. The 2.7.22 "model must call imessage_send for
     // every reply" pattern failed in practice (the model defaults to
     // streaming text and can't reliably switch to tool mode for short
-    // conversational replies) — see /Users/dcliff9/Downloads/
-    // imessage_not_working.txt for the investigation.
+    // conversational replies) — historical investigation logged
+    // separately in the iMessage-routing fix notes.
     //
     // Routing rules (see reply-destination.ts):
     //   - inbound from channel X → reply auto-routes back to X

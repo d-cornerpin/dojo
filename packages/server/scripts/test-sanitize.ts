@@ -19,7 +19,7 @@ const cases: Array<[string, string]> = [
   ['(see https://github.com/foo, then continue)', '(see link, then continue)'],
   // File paths
   ['Saved to ~/dev-smarter.md', 'Saved to dev-smarter.md'],
-  ['Wrote /Users/dcliff9/Documents/foo.txt as the result', 'Wrote foo.txt as the result'],
+  ['Wrote /Users/jane/Documents/foo.txt as the result', 'Wrote foo.txt as the result'],
   ['Cleared /var/log/system', 'Cleared file'],
   // Headers + lists
   ['# Title\n- item one\n- item two', 'Title\nitem one\nitem two'],
@@ -62,7 +62,7 @@ const cases: Array<[string, string]> = [
   ['the N letter', 'the N letter'],
   ['point W on the map', 'point W on the map'],
   // Email
-  ['Email me at david@example.com', 'Email me at david at example dot com'],
+  ['Email me at jane@example.com', 'Email me at jane at example dot com'],
   ['Send to alex.smith+work@company.org', 'Send to alex.smith+work at company dot org'],
   // AM/PM
   ['Meeting at 3pm', 'Meeting at 3 p m'],

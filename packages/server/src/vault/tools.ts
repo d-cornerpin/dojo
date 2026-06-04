@@ -223,8 +223,8 @@ export async function executeVaultSearch(
   const limit = (args.limit as number) ?? 5;
   // v2.7.2 — explicit mode. 'semantic' (default) uses embedding similarity
   // which is great for conceptual recall but blind to exact strings —
-  // searching for an unusual literal substring like "corp erp.in" against
-  // the user's actual domain "cornerp.in" returns nothing relevant because
+  // searching for an unusual literal substring like a misspelled domain
+  // against the user's actual domain returns nothing relevant because
   // both embed to the same generic "email domain" cluster. 'exact' uses
   // SQL LIKE on the content field — use it for debugging memory poisoning
   // or finding entries that contain a specific phrase verbatim.

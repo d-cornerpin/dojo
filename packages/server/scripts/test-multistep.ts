@@ -30,7 +30,7 @@ const cases: Case[] = [
 
   // ── Single-step commands (one action, no conjunction) ──
   { query: 'Open the dashboard',                                 want: 'definitely_single' },
-  { query: 'Send an email to dcliff at gmail.com saying hello.', want: 'definitely_single', note: 'v2.5.46 — was fallback_multi' },
+  { query: 'Send an email to someone at example.com saying hello.', want: 'definitely_single', note: 'v2.5.46 — was fallback_multi' },
   { query: 'Schedule a meeting with John for Tuesday at 2pm.',   want: 'definitely_single' },
   { query: 'Delete the test files in /tmp',                      want: 'definitely_single' },
   { query: 'Generate a status report for the marketing team.',   want: 'definitely_single' },

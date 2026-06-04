@@ -42,7 +42,7 @@ export function sanitizeForSpeech(text: string): string {
   });
 
   // 6. Absolute / home-relative paths → basename (or "file").
-  //    Catches `/foo/bar.txt`, `~/dev-smarter.md`, `/Users/dcliff9/...`.
+  //    Catches `/foo/bar.txt`, `~/dev-smarter.md`, `/Users/<name>/...`.
   //    Intentionally does NOT catch relative paths like `src/foo` — those
   //    are usually spoken naturally in context.
   s = s.replace(ABSOLUTE_PATH_RE, (m) => {
