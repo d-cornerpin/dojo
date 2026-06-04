@@ -30,11 +30,11 @@ const toolsUnavailableNotified = new Set<string>();
 // Phase 6 (and was removed from runtime.ts in Phase 9 Stage 2 along with
 // the v1 catch path that called it).
 
-export function enforceModelCapabilities(
+export async function enforceModelCapabilities(
   agentId: string,
   modelId: string,
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
-): { useTools: boolean } {
+): Promise<{ useTools: boolean }> {
   const caps = getModelCapabilities(modelId);
 
   // Unknown capability set → don't gate. We'd rather optimistically try and
@@ -46,8 +46,14 @@ export function enforceModelCapabilities(
 
   // ── Vision gate ──
   // If the assembled messages contain image blocks and the model has no
-  // vision capability, strip the images (keeping any text) and warn the user
-  // via a banner so the turn can still proceed on the text alone.
+  // vision capability, two paths are possible:
+  //   (a) If the platform has a fallback vision model configured
+  //       (Settings → Dojo), route each image through the fallback for a
+  //       text description and inline that description in place of the
+  //       image. The agent gets to respond intelligently to what the
+  //       user actually sent.
+  //   (b) Otherwise strip the images (keeping any text) and warn the
+  //       agent so the turn can still proceed on the text alone.
   //
   // PDFs (`document` blocks) are NOT stripped here — every provider translator
   // handles them: Anthropic passes them through natively, the openai-compatible
@@ -55,31 +61,128 @@ export function enforceModelCapabilities(
   // into the user message. Stripping documents at this layer was overzealous
   // and broke PDF-on-non-vision-model entirely (fixed 2026-05-04).
   if (!caps.includes('vision')) {
-    let imagesStripped = 0;
+    // Resolve fallback vision model up front. We only need one resolution
+    // per call; the helper does its own validity check.
+    const { getEffectiveVisionModel } = await import('../services/vision-model.js');
+    const fallback = getEffectiveVisionModel(agentId);
+    // The agent's own model already lacks vision (we wouldn't be in this
+    // branch otherwise), so the helper can only return source='fallback'
+    // or null — but be defensive.
+    const fallbackUsable = !!fallback && fallback.source === 'fallback';
 
-    // Helper that strips images from a top-level block array AND
-    // recursively from any tool_result blocks. Pre-2026-04-30 this only
-    // checked top-level types, so an image returned by file_read (which
-    // arrives nested as tool_result.content[0].type='image') sailed past
-    // the strip unchanged. The provider 400'd, in-loop recovery fired,
-    // wakeup re-ran the same turn, the same nested image was still there,
-    // 400 again — runaway loop until something killed the server.
-    const stripBlocks = (blocks: Array<Record<string, unknown>>): Array<Record<string, unknown>> => {
+    let imagesStripped = 0;
+    let imagesCaptioned = 0;
+
+    // Pull the data URL / base64 out of an Anthropic-shape image block.
+    // We support the two common shapes we ourselves emit upstream:
+    //   { type: 'image', source: { type: 'base64', media_type, data } }
+    //   { type: 'image', source: { type: 'url', url } }
+    function extractImageSource(block: Record<string, unknown>): {
+      base64?: string; mediaType?: string; url?: string;
+    } | null {
+      const src = block.source as Record<string, unknown> | undefined;
+      if (!src) return null;
+      if (src.type === 'base64' && typeof src.data === 'string') {
+        return {
+          base64: src.data,
+          mediaType: typeof src.media_type === 'string' ? src.media_type : 'image/png',
+        };
+      }
+      if (src.type === 'url' && typeof src.url === 'string') {
+        return { url: src.url };
+      }
+      return null;
+    }
+
+    // Run one image through the fallback model and get a short text
+    // description back. Returns null on any failure — caller treats that
+    // as "fall through to strip" so a captioning glitch never blocks the
+    // turn entirely.
+    async function captionOne(block: Record<string, unknown>): Promise<string | null> {
+      if (!fallbackUsable || !fallback) return null;
+      const src = extractImageSource(block);
+      if (!src) return null;
+      try {
+        // Mutual recursion: callModel calls enforceModelCapabilities for
+        // its own gating, but with the fallback's own modelId — the
+        // fallback IS vision-capable so the vision branch won't re-enter.
+        // Keep the prompt short and focused — the calling agent will use
+        // this text to talk about the image to the user.
+        const { callModel } = await import('./model.js');
+        const captionMsg = [{
+          role: 'user' as const,
+          content: [
+            (src.base64
+              ? {
+                  type: 'image' as const,
+                  source: {
+                    type: 'base64' as const,
+                    media_type: (src.mediaType as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp') ?? 'image/png',
+                    data: src.base64,
+                  },
+                }
+              : {
+                  type: 'image' as const,
+                  source: { type: 'url' as const, url: src.url as string },
+                }
+            ) as Anthropic.ContentBlockParam,
+            {
+              type: 'text' as const,
+              text:
+                'Describe this image in detail for an assistant who cannot see it but will use your description to discuss it with the user. ' +
+                'Include: what is shown, notable text and signage, layout / composition, mood or context, anything else relevant. ' +
+                'Plain text only, no preamble like "This image shows" — just the description.',
+            },
+          ],
+        }];
+        const result = await callModel({
+          agentId,
+          modelId: fallback.modelId,
+          messages: captionMsg,
+          systemPrompt: 'You are an accessibility describer producing concise, useful image descriptions for a downstream agent.',
+          tools: false,
+        });
+        const text = (result.content ?? '').trim();
+        return text.length > 0 ? text : null;
+      } catch (err) {
+        logger.warn('Fallback vision caption failed — falling back to strip for this image', {
+          modelId, fallbackModelId: fallback.modelId,
+          error: err instanceof Error ? err.message : String(err),
+        }, agentId);
+        return null;
+      }
+    }
+
+    // Walk a block array. For each image block, try to caption via the
+    // fallback; if that returns null, strip it. Recurses into tool_result
+    // content the same way the pre-fallback strip used to. Returns the
+    // new block array.
+    async function processBlocks(blocks: Array<Record<string, unknown>>): Promise<Array<Record<string, unknown>>> {
       const kept: Array<Record<string, unknown>> = [];
       for (const b of blocks) {
-        if (b.type === 'image') { imagesStripped++; continue; }
+        if (b.type === 'image') {
+          const caption = await captionOne(b);
+          if (caption) {
+            kept.push({
+              type: 'text',
+              text: `[Image content (described by fallback vision model "${fallback?.apiModelId}"): ${caption}]`,
+            });
+            imagesCaptioned++;
+          } else {
+            imagesStripped++;
+          }
+          continue;
+        }
         if (b.type === 'tool_result' && Array.isArray(b.content)) {
-          // Recurse into the tool_result's content array.
-          const innerKept = stripBlocks(b.content as Array<Record<string, unknown>>);
-          // If the tool_result ends up with NO content after stripping
-          // (was image-only), replace with a text note. The model
-          // needs to know there was a result, just not what it contained.
+          const innerKept = await processBlocks(b.content as Array<Record<string, unknown>>);
           if (innerKept.length === 0) {
             kept.push({
               ...b,
               content: [{
                 type: 'text',
-                text: '(Image attachment removed — this model does not support vision input)',
+                text: fallbackUsable
+                  ? '(Image attachment could not be described — fallback vision model returned no useful text)'
+                  : '(Image attachment removed — this model does not support vision input)',
               }],
             });
           } else {
@@ -90,30 +193,27 @@ export function enforceModelCapabilities(
         kept.push(b);
       }
       return kept;
-    };
+    }
 
-    // Track the index of the LAST user message that had images stripped, so
+    // Track the index of the LAST user message that had images touched, so
     // we can inject a system-role nudge right after it. Without the nudge,
     // weak models often hallucinate about prior topics instead of telling
     // the user the image couldn't be processed.
-    let lastStrippedUserIdx = -1;
+    let lastTouchedUserIdx = -1;
 
     for (let i = 0; i < messages.length; i++) {
       const m = messages[i];
       if (m.role !== 'user' || typeof m.content === 'string' || !Array.isArray(m.content)) continue;
 
       const blocks = m.content as unknown as Array<Record<string, unknown>>;
-      const beforeImg = imagesStripped;
-      const kept = stripBlocks(blocks);
-      const changed = imagesStripped !== beforeImg;
+      const beforeTouches = imagesStripped + imagesCaptioned;
+      const kept = await processBlocks(blocks);
+      const changed = (imagesStripped + imagesCaptioned) !== beforeTouches;
       if (!changed) continue;
 
       // If nothing but text remains, collapse to a plain string so older call
       // paths that prefer strings don't choke. Otherwise preserve the array.
       if (kept.length === 0) {
-        // User sent ONLY an image. Use a minimal marker so the model knows
-        // the user attempted to send something but no caption text exists.
-        // The injected system note below carries the actionable instruction.
         messages[i] = { role: 'user', content: '(image attached — see system note)' };
       } else if (kept.every(b => b.type === 'text')) {
         const text = kept.map(b => (b.text as string) ?? '').join('\n');
@@ -121,32 +221,58 @@ export function enforceModelCapabilities(
       } else {
         messages[i] = { role: 'user', content: kept as unknown as Anthropic.ContentBlockParam[] };
       }
-      lastStrippedUserIdx = i;
+      lastTouchedUserIdx = i;
     }
 
-    if (imagesStripped > 0) {
-      // Inject a system-role nudge right after the user message that lost
-      // its image(s). Forces the model to respond to THIS specific event
-      // (couldn't see the image) instead of hallucinating about prior
-      // conversation topics. Transient — only in this turn's messages
-      // array, not persisted to the DB.
-      if (lastStrippedUserIdx >= 0) {
-        const nudge = (
-          `[System: The user just sent ${imagesStripped} image${imagesStripped === 1 ? '' : 's'} but your current model does NOT support vision input. ` +
-          `The image${imagesStripped === 1 ? '' : 's'} ${imagesStripped === 1 ? 'was' : 'were'} dropped — you literally cannot see ${imagesStripped === 1 ? 'it' : 'them'}. ` +
-          `Reply briefly telling the user you can't see images on this model and they need to switch to a vision-capable model in Settings → Models. ` +
-          `Do NOT try to describe the image. Do NOT continue any prior topic — respond ONLY about the image${imagesStripped === 1 ? '' : 's'} they just sent.]`
-        );
+    if (imagesStripped + imagesCaptioned > 0) {
+      if (lastTouchedUserIdx >= 0) {
+        let nudge: string;
+        if (imagesCaptioned > 0 && imagesStripped === 0) {
+          // Pure success: every image was captioned. Tell the agent how
+          // to use the captions — the description text is authoritative
+          // about what the image shows; don't go beyond it.
+          nudge = (
+            `[System: Your current model can't see images directly, but the user sent ${imagesCaptioned} image${imagesCaptioned === 1 ? '' : 's'} and the platform's fallback vision model (` +
+            `${fallback?.apiModelId}` +
+            `) described ${imagesCaptioned === 1 ? 'it' : 'them'} for you above. ` +
+            `Respond based on those descriptions. Treat them as the authoritative account of what the image${imagesCaptioned === 1 ? '' : 's'} contain${imagesCaptioned === 1 ? 's' : ''} — do NOT speculate about details outside what was described. ` +
+            `If the user asks something the description doesn't cover, say so and offer to ask the fallback for a more specific look (re-uploading helps).]`
+          );
+        } else if (imagesCaptioned > 0 && imagesStripped > 0) {
+          // Mixed: some captioned, some failed.
+          nudge = (
+            `[System: Your current model can't see images directly. The platform's fallback vision model (${fallback?.apiModelId}) described ${imagesCaptioned} of the user's image${imagesCaptioned === 1 ? '' : 's'} (you can see those descriptions in the messages above), but ${imagesStripped} other image${imagesStripped === 1 ? '' : 's'} could not be captioned (network or model error). ` +
+            `Respond based on the descriptions you DO have. For the missing one${imagesStripped === 1 ? '' : 's'}, tell the user you couldn't read ${imagesStripped === 1 ? 'it' : 'them'} and suggest they re-upload.]`
+          );
+        } else {
+          // Pure strip (no fallback configured or every caption failed).
+          nudge = (
+            `[System: The user just sent ${imagesStripped} image${imagesStripped === 1 ? '' : 's'} but your current model does NOT support vision input. ` +
+            `The image${imagesStripped === 1 ? '' : 's'} ${imagesStripped === 1 ? 'was' : 'were'} dropped — you literally cannot see ${imagesStripped === 1 ? 'it' : 'them'}. ` +
+            (fallbackUsable
+              ? `The platform's fallback vision model is configured but every caption attempt failed (network or provider error). `
+              : `The platform also has no fallback vision model configured — once one is set in Settings → Dojo, future uploads will be auto-captioned for you. `) +
+            `Reply briefly telling the user you couldn't read the image${imagesStripped === 1 ? '' : 's'} this turn. ` +
+            `Do NOT try to describe the image. Do NOT continue any prior topic — respond ONLY about the image${imagesStripped === 1 ? '' : 's'} they just sent.]`
+          );
+        }
         const sysMsg = { role: 'user' as const, content: nudge };
-        messages.splice(lastStrippedUserIdx + 1, 0, sysMsg);
+        messages.splice(lastTouchedUserIdx + 1, 0, sysMsg);
       }
 
-      const userMsg =
-        `This model can't see images. ${imagesStripped} image${imagesStripped === 1 ? '' : 's'} skipped — switch to a vision-capable model in Settings → Models to use image input.`;
-      logger.warn('Vision gate: stripped images from turn', {
-        modelId, imagesStripped,
-      }, agentId);
-      broadcast({ type: 'chat:error', agentId, error: userMsg, severity: 'warning', retryable: false });
+      if (imagesStripped > 0) {
+        const userMsg = fallbackUsable
+          ? `Couldn't describe ${imagesStripped} image${imagesStripped === 1 ? '' : 's'} via the fallback vision model — check Settings → Dojo and the model's provider status.`
+          : `This model can't see images. ${imagesStripped} image${imagesStripped === 1 ? '' : 's'} skipped — pick a fallback vision model in Settings → Dojo or switch this agent to a vision-capable model in Settings → Models.`;
+        logger.warn('Vision gate: stripped images from turn', {
+          modelId, imagesStripped, imagesCaptioned, fallbackUsable,
+        }, agentId);
+        broadcast({ type: 'chat:error', agentId, error: userMsg, severity: 'warning', retryable: false });
+      } else if (imagesCaptioned > 0) {
+        logger.info('Vision gate: captioned images via fallback', {
+          modelId, imagesCaptioned, fallbackModelId: fallback?.modelId,
+        }, agentId);
+      }
     }
   }
 

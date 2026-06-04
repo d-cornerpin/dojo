@@ -11,6 +11,8 @@ import { getAgentMicrosoftAccessLevel, getMsAccountType, getMicrosoftWorkspaceCo
 import { assembleGroupContext as _assembleGroupContext } from '../agent/groups.js';
 import { generateTechniqueIndex, generateDraftTechniqueContext } from '../techniques/index-builder.js';
 import { getContextWindow } from '../agent/model.js';
+import { getModelCapabilities } from '../services/capabilities.js';
+import { getEffectiveVisionModel } from '../services/vision-model.js';
 import { isIMBridgeRunning, addressesMatch } from '../services/imessage-bridge.js';
 import { getPresence, isImessageConfigured } from '../services/presence.js';
 import { resolveReplyDestination } from '../agent/v2/reply-destination.js';
@@ -527,6 +529,60 @@ export function assembleSystemPrompt(
   });
   const timeHeader = `**Current date/time: ${localStr}**\n\nUse this to judge the age and relevance of any context, vault entries, or summaries you see. Recent information is more reliable than old information.`;
 
+  // ── Vision-capability banner ──────────────────────────────────────
+  // If the agent's current model does NOT support image input, tell
+  // it that up front so it doesn't confidently call image-producing
+  // tools and then hallucinate descriptions of results it cannot see.
+  // Inbound user images and image content blocks in tool results are
+  // already stripped by enforceModelCapabilities at assembly time (see
+  // runtime.ts), but the strip is reactive — by the time it fires the
+  // model has already chosen to call screenshot/screen_read/etc. The
+  // banner is proactive: it tells the model upfront which vision-using
+  // tools work for it (those that return text via an internal vision
+  // pass) and which don't, and where to delegate.
+  //
+  // Skipped for models whose capability set is unknown (cap probe
+  // hasn't run or returned nothing) — we'd rather not gate optimistic
+  // use than block a working model on a guess.
+  let visionCapBanner: string | null = null;
+  try {
+    const caps = getModelCapabilities(modelId);
+    if (caps.length > 0 && !caps.includes('vision')) {
+      // The platform now has a single configurable fallback vision
+      // model (Settings → Dojo). Detect whether a usable fallback is
+      // wired up and tailor the advice accordingly — pointing the
+      // agent at `screen_read` / `web_browse` only works if the
+      // fallback actually exists; otherwise those tools will return
+      // their own "no vision model configured" error.
+      const fallback = getEffectiveVisionModel(agentId);
+      const fallbackUsable = !!fallback && fallback.source === 'fallback';
+      if (fallbackUsable) {
+        visionCapBanner = (
+          `**Your current model does NOT support image input directly — but the platform has a fallback vision model configured.**\n\n` +
+          `What this means for you:\n` +
+          `- When an image arrives in your context (user upload, tool result containing an image, attachment from another agent, etc.), the engine routes it through the fallback vision model and substitutes a text description in its place. The substituted block is clearly marked: \`[Image content (described by fallback vision model "..."): <description>]\`. Treat that description as your authoritative account of what the image shows — do NOT speculate beyond it.\n` +
+          `- For tasks where you intentionally need to "see" something on demand:\n` +
+          `  • \`screen_read\` grabs a screenshot of the host display and returns a text description.\n` +
+          `  • \`web_browse\` with action="screenshot" captures and describes a web page.\n` +
+          `  Both delegate the actual seeing to the same fallback vision model.\n` +
+          `- If you call \`image_create\` (the Imaginer), the generated image is delivered to the USER. You will not see the generated pixels directly — describe only what you instructed Imaginer to create, not what you "see" in the result.\n` +
+          `- For deep visual analysis (multi-image reasoning, fine-grained inspection), delegate to a vision-capable peer via \`send_to_agent\` — that gets you a model whose entire context can include the images natively, instead of a one-shot description.\n` +
+          `- Never claim to see anything beyond what a description explicitly states. The fallback's caption is the floor of what you know; everything else is hallucination.`
+        );
+      } else {
+        visionCapBanner = (
+          `**Your current model does NOT support image input — you cannot see images. There is also NO platform fallback vision model configured.**\n\n` +
+          `What this means for you:\n` +
+          `- If a tool returns an image (file_read on an image/PDF, an attachment delivered from another agent, etc.), the engine substitutes a text marker. The actual pixels never reach you. Do NOT pretend to see or describe images you cannot actually see.\n` +
+          `- \`screen_read\` and \`web_browse\` with action="screenshot" will currently return an error pointing the user at Settings → Dojo → Fallback vision model. They cannot do their job until a fallback is set.\n` +
+          `- If you call \`image_create\` (the Imaginer), the generated image is delivered to the USER — they will see it. You will NOT. Acknowledge the delivery, but do NOT describe what is "in" the image as if you can see it.\n` +
+          `- For tasks that genuinely require vision right now, tell the user one of two things must happen: (a) set a fallback vision model in Settings → Dojo, or (b) switch you to a vision-capable model in Settings → Models. Don't pretend to see anything in the meantime.\n` +
+          `- Never claim to "see" or "look at" something you cannot. Honesty about your capabilities beats a confident hallucination every time.`
+        );
+      }
+    }
+  } catch { /* capability lookup failed; skip banner */ }
+
   // ── Per-turn reply-destination tag (v2.7.23) ──────────────────────
   // The engine routes the model's terminal text based on inbound channel
   // (see reply-destination.ts). The model doesn't choose the channel —
@@ -610,7 +666,9 @@ export function assembleSystemPrompt(
     } catch { /* presence/resolver not available — proceed without tag */ }
   }
 
-  const parts = [...destinationTags, timeHeader, soul, tools];
+  const parts = [...destinationTags, timeHeader];
+  if (visionCapBanner) parts.push(visionCapBanner);
+  parts.push(soul, tools);
 
   // Conditionally include USER.md
   if (shouldShareUserProfile(agentId)) {

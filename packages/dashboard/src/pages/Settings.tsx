@@ -604,6 +604,7 @@ const PlatformTab = () => {
       <OllamaSettings />
       <RemoteAccessSettings />
       <SearchSettings />
+      <FallbackVisionModelCard />
       <MigrationSettings />
       <FengShuiSettings />
       <ServerControlSettings />
@@ -3441,6 +3442,145 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
         {saved && <span className="text-xs text-cp-teal">Saved!</span>}
         {testResult && <span className="text-xs text-ui/55">{testResult}</span>}
       </div>
+    </div>
+  );
+};
+
+// ── Fallback Vision Model Card ──
+//
+// Single platform-wide choice: which vision-capable model handles
+// vision work when the calling agent's own model can't see. Used by
+// screen_read, web_browse screenshots, and anywhere else the engine
+// needs to route an image through a vision model. Replaces the old
+// per-tool "cheapest vision-ish enabled model" auto-pick.
+
+// Self-contained: loads its own model list since it lives on the Dojo
+// tab, which doesn't otherwise need the model catalog. Keeps this card
+// pluggable wherever a future use suggests it should live.
+const FallbackVisionModelCard = () => {
+  const [models, setModels] = useState<Model[]>([]);
+  const [fallbackId, setFallbackId] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const visionModels = models.filter(m => m.isEnabled && m.capabilities.includes('vision'));
+
+  useEffect(() => {
+    const load = async () => {
+      const [settingResult, modelsResult] = await Promise.all([
+        api.getSetting('dojo_fallback_vision_model_id'),
+        api.getModels(),
+      ]);
+      if (settingResult.ok && settingResult.data.value) setFallbackId(settingResult.data.value);
+      if (modelsResult.ok) setModels(modelsResult.data);
+      setLoading(false);
+    };
+    load();
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    await api.setSetting('dojo_fallback_vision_model_id', fallbackId);
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const handleClear = async () => {
+    setSaving(true);
+    await api.setSetting('dojo_fallback_vision_model_id', '');
+    setFallbackId('');
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  if (loading) return null;
+
+  // If the configured fallback no longer resolves to an enabled
+  // vision-capable model (deleted, disabled, lost vision capability),
+  // surface that explicitly so the user can pick a new one.
+  const configuredButInvalid = fallbackId && !visionModels.some(m => m.id === fallbackId);
+
+  return (
+    <div className="glass-card p-4 space-y-4">
+      <div>
+        <h3 className="card-header">Fallback Vision Model</h3>
+        <p className="text-xs text-ui/40 mt-1">
+          Used whenever a tool needs to interpret an image but the calling agent's own model can't see —
+          <code className="mx-1 text-cp-amber">screen_read</code>, web page screenshots via{' '}
+          <code className="mx-1 text-cp-amber">web_browse</code>, and other vision-routing paths. If the
+          calling agent's own model is vision-capable, that's used directly and this fallback is skipped.
+        </p>
+      </div>
+
+      {visionModels.length === 0 ? (
+        <div className="alert-banner alert-warning">
+          No vision-capable models are enabled. Add one in Settings → Models (any Claude Sonnet/Opus/Haiku,
+          GPT-4o/5, Gemini 2.5, llava, or anything else with{' '}
+          <code className="mx-1 text-cp-amber">vision</code> in its capabilities) and come back here to
+          pick it. Until then, screen_read and web_browse screenshots will return a "no vision model
+          configured" error to the calling agent, and the agent will be told upfront that it cannot see.
+        </div>
+      ) : !fallbackId ? (
+        <div className="alert-banner alert-warning">
+          No fallback vision model selected. Tools that need vision will return an error to non-vision
+          agents until you pick one below.
+        </div>
+      ) : configuredButInvalid ? (
+        <div className="alert-banner alert-warning">
+          The previously-saved fallback is no longer usable (the model may have been disabled or had its
+          vision capability removed). Pick a new one below.
+        </div>
+      ) : null}
+
+      {visionModels.length > 0 && (
+        <>
+          <div>
+            <label className="form-label">Vision model</label>
+            <select
+              value={fallbackId}
+              onChange={(e) => setFallbackId(e.target.value)}
+              className="glass-input w-full"
+            >
+              <option value="">(none — agents on non-vision models cannot use screen_read / web_browse screenshots)</option>
+              {visionModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name} ({m.apiModelId})
+                  {typeof m.inputCostPerM === 'number' && m.inputCostPerM > 0 ? ` — $${m.inputCostPerM}/M in` : ''}
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] text-ui/40 mt-2">
+              Picked once, used everywhere. The cost shown is the model's input price per million tokens —
+              a useful proxy for how expensive each vision pass will be. Pick the smallest model whose
+              quality is good enough for the kind of images your agents will be reading (UI screenshots,
+              web pages, photos, etc.).
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-cp-amber/15 text-cp-amber border border-cp-amber/30 hover:bg-cp-amber/25 transition-colors disabled:opacity-40"
+            >
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+            {fallbackId && (
+              <button
+                onClick={handleClear}
+                disabled={saving}
+                className="px-4 py-2 text-sm font-medium rounded-lg bg-ui/[0.08] text-ui/55 border border-ui/[0.10] hover:border-ui/[0.15] hover:text-ui/70 transition-colors disabled:opacity-40"
+              >
+                Clear
+              </button>
+            )}
+            {saved && <span className="text-xs text-cp-teal">Saved!</span>}
+          </div>
+        </>
+      )}
     </div>
   );
 };

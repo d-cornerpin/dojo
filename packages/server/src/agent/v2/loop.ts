@@ -1598,10 +1598,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
       state = advance(state, { modelId, routerTier });
 
       // ── Pre-flight capability enforcement (matches v1 runtime.ts:995) ──
-      // Strips image/document blocks if model lacks vision (with banner).
-      // Returns useTools=false if model lacks tool support (with banner).
+      // Routes images through the fallback vision model when configured
+      // (replacing each image block with a text description), or strips
+      // them if no fallback is set. Returns useTools=false if model
+      // lacks tool support (with banner). Now async because the
+      // fallback caption call is a network round-trip.
       const { enforceModelCapabilities } = await import('../runtime.js');
-      const { useTools } = enforceModelCapabilities(agentId, modelId, messages);
+      const { useTools } = await enforceModelCapabilities(agentId, modelId, messages);
 
       // If tools are disabled, inject a one-shot note so the model knows it
       // can only respond with text. Only inject on first iteration when last

@@ -7,6 +7,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from 'playwrig
 import { createLogger } from '../logger.js';
 import { callModel } from './model.js';
 import { getDb } from '../db/connection.js';
+import { getEffectiveVisionModel } from '../services/vision-model.js';
 
 const logger = createLogger('browser');
 
@@ -41,29 +42,12 @@ function checkRateLimit(agentId: string): boolean {
   return true;
 }
 
-// ── Vision Model Lookup ──
-
-function findVisionModel(): { modelId: string } | null {
-  const db = getDb();
-  const row = db.prepare(`
-    SELECT m.id
-    FROM models m
-    JOIN providers p ON p.id = m.provider_id
-    WHERE m.is_enabled = 1
-    ORDER BY
-      CASE
-        WHEN m.capabilities LIKE '%vision%' THEN 0
-        WHEN m.api_model_id LIKE '%sonnet%' THEN 1
-        WHEN m.api_model_id LIKE '%opus%' THEN 2
-        WHEN m.api_model_id LIKE '%haiku%' THEN 3
-        ELSE 4
-      END,
-      COALESCE(m.input_cost_per_m, 999) ASC
-    LIMIT 1
-  `).get() as { id: string } | undefined;
-
-  return row ? { modelId: row.id } : null;
-}
+// Vision-model resolution now lives in services/vision-model.ts so a
+// single helper governs every place on the platform that needs to
+// route an image through a vision-capable model. See the rationale at
+// the top of that module: the old auto-pick heuristic that lived here
+// hid an important config decision (which model is doing the seeing?
+// at what cost?) and is replaced by an explicit user-set fallback.
 
 // ── Browser Session ──
 
@@ -137,12 +121,16 @@ class BrowserSession {
     const buffer = await this.page.screenshot({ type: 'png', fullPage: false });
     const base64 = buffer.toString('base64');
 
-    // Try to get a vision model description
-    const visionModel = findVisionModel();
+    // Try to get a vision model description. Uses the platform-wide
+    // resolution helper: agent's own model if vision-capable, otherwise
+    // the configured fallback vision model. If neither is available we
+    // return a degraded text response with a clear pointer at the
+    // Settings → Dojo control so the user can fix it.
+    const visionModel = getEffectiveVisionModel(agentId);
     if (!visionModel) {
       const currentUrl = this.page.url();
       const title = await this.page.title();
-      return `Screenshot captured of "${title}" (${currentUrl}). No vision model available to describe it — enable a model with vision support in Settings > Models.`;
+      return `Screenshot captured of "${title}" (${currentUrl}). No vision-capable model is configured to describe the page. Pick a fallback vision model in Settings → Dojo → Fallback vision model, or switch the calling agent to a vision-capable model in Settings → Models.`;
     }
 
     try {

@@ -57,6 +57,7 @@ import { officeToolDefinitions, executeOfficeTool } from '../microsoft/tools-off
 import { getAgentMicrosoftAccessLevel, getEnabledMsServices, isMicrosoftConnected, getMicrosoftWorkspaceConfig } from '../microsoft/auth.js';
 import { areOfficePackagesInstalled } from '../microsoft/office-packages.js';
 import { getTunnelStatus } from '../services/tunnel.js';
+import { getModelCapabilities } from '../services/capabilities.js';
 import type { ToolCall, ToolResult } from '@dojo/shared';
 
 const logger = createLogger('tools');
@@ -6722,11 +6723,23 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
               // making image deliveries read like an engineering manual to
               // the user. Slides/Drive integration details belong in the
               // relevant tool docs, not in every Imaginer delivery.
-              const deliveryPayload = `Image ready at ${deliveredPath} (also attached above for vision).
-
-Original request: "${description}"
-
-Thread is closed — respond to the user, not Imaginer.`;
+              // Pre-2.9.8 the payload included "Original request: '<desc>'"
+              // on its own line, which non-vision recipients regularly
+              // parsed as a NEW user request and called image_create
+              // again (observed in scenario testing — Kevin generated
+              // two coffee mugs back-to-back). Reframe the message so
+              // the completion state is explicit, the next action is
+              // explicit, and the original description is presented as
+              // historical context (a parenthetical, not a directive).
+              const deliveryPayload =
+                `IMAGE GENERATION COMPLETE. The image you requested ` +
+                `(originally: "${description}") has been generated and is already queued ` +
+                `as an attachment for your next reply.\n\n` +
+                `What to do now: write ONE short user-facing reply (e.g. "Here you go.", "Done — let me know if you want a variant.") ` +
+                `and end your turn. The image will auto-attach to that reply — you do NOT need to call show_to_user, and you do NOT need to call image_create again. ` +
+                `The work is finished.\n\n` +
+                `File path (for reference only, not for re-attachment): ${deliveredPath}\n\n` +
+                `Thread is closed — write your reply to the user, do NOT reply on this thread.`;
               const a2aResult = await deliverA2AMessage({
                 intent: 'DELIVERABLE',
                 threadId: makeThreadId(`image-${requestId}`),
@@ -6870,11 +6883,29 @@ Thread is closed — respond to the user, not Imaginer.`;
           }
         })();
 
+        // If the caller's model lacks vision, append a no-hallucination
+        // reminder. The image will land in the user's chat thumbnail
+        // regardless; only the agent's own ability to interpret what
+        // was generated changes.
+        let visionTail = '';
+        try {
+          const callerModel = db
+            .prepare('SELECT model_id FROM agents WHERE id = ?')
+            .get(agentId) as { model_id: string | null } | undefined;
+          const callerCaps = callerModel?.model_id ? getModelCapabilities(callerModel.model_id) : [];
+          if (callerCaps.length > 0 && !callerCaps.includes('vision')) {
+            visionTail =
+              `\n\nNote: your current model does NOT support image input. The image will be delivered to the user as an attachment and the user will see it; you will NOT see it. ` +
+              `Acknowledge delivery with a short message ("here's the image you asked for" or similar) but do NOT describe what is "in" the image as if you can see it — anything you write about its visual contents will be a hallucination.`;
+          }
+        } catch { /* skip tail on lookup failure */ }
+
         content =
           `Image generation started (request_id: ${requestId}). ` +
           `Imaginer will deliver the finished image to you via send_to_agent with intent=DELIVERABLE in 10-60 seconds. ` +
           `When the [A2A:DELIVERABLE from:Imaginer] message arrives, present the image to the user with any short commentary that fits — the image attachment will be on that message and will already appear in your chat as a thumbnail. ` +
-          `Just end your turn now. You'll be woken when the image is ready.`;
+          `Just end your turn now. You'll be woken when the image is ready.` +
+          visionTail;
         break;
       }
 

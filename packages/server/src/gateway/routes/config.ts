@@ -1232,6 +1232,14 @@ configRouter.post('/models/:id/refresh-capabilities', async (c) => {
     const caps = await probeAndStoreCapabilities(id);
     const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
     logger.info('Model capabilities refreshed', { modelId: id, capabilities: caps });
+    // A capability refresh might newly reveal a model as vision-capable
+    // (or revoke that capability). Re-run the obvious-fallback check so
+    // the platform-wide fallback stays sensible without the user having
+    // to manually intervene every time.
+    try {
+      const { autoConfigureFallbackVisionModelIfObvious } = await import('../../services/vision-model.js');
+      autoConfigureFallbackVisionModelIfObvious();
+    } catch { /* best-effort */ }
     return c.json({ ok: true, data: rowToModel(row), capabilities: caps });
   } catch (err) {
     return c.json({
@@ -1347,6 +1355,15 @@ configRouter.post('/models/enable', async (c) => {
 
   enableMany(modelIds);
   logger.info('Models enabled', { count: modelIds.length });
+
+  // If the platform now has exactly one enabled vision-capable model
+  // and no fallback is configured yet, opportunistically set it. Keeps
+  // the "I just enabled my first vision model" path from leaving the
+  // Settings → Dojo warning hanging around until the user notices.
+  try {
+    const { autoConfigureFallbackVisionModelIfObvious } = await import('../../services/vision-model.js');
+    autoConfigureFallbackVisionModelIfObvious();
+  } catch { /* best-effort */ }
 
   return c.json({ ok: true, data: { enabled: modelIds.length } });
 });

@@ -354,6 +354,15 @@ async function main(): Promise<void> {
       try {
         const { backfillEmptyCapabilities } = await import('./services/capabilities.js');
         await backfillEmptyCapabilities();
+        // Once the backfill finishes, a previously-unprobed model might
+        // now be known to be vision-capable. Re-run the obvious-fallback
+        // helper so the platform fallback gets set without the user
+        // having to visit Settings → Dojo manually. The earlier startup
+        // call (below, before the healer scheduler) handles the case
+        // where caps were already populated; this handles the
+        // background-probe-completed case.
+        const { autoConfigureFallbackVisionModelIfObvious } = await import('./services/vision-model.js');
+        autoConfigureFallbackVisionModelIfObvious();
       } catch (err) {
         logger.warn('Capability backfill failed', {
           error: err instanceof Error ? err.message : String(err),
@@ -426,6 +435,21 @@ async function main(): Promise<void> {
     scheduleDreamingCycle();
   } catch (err) {
     logger.warn('Failed to schedule dreaming cycle', { error: err instanceof Error ? err.message : String(err) });
+  }
+
+  // One-shot migration: if the platform has exactly one enabled
+  // vision-capable model and no fallback vision model is configured,
+  // silently set that single model as the fallback. Preserves working
+  // setups for users upgrading from the era when each tool auto-picked
+  // its own vision model. Multi-vision-model installs leave the config
+  // unset so the Settings → Dojo UI can prompt for an explicit choice.
+  try {
+    const { autoConfigureFallbackVisionModelIfObvious } = await import('./services/vision-model.js');
+    autoConfigureFallbackVisionModelIfObvious();
+  } catch (err) {
+    logger.warn('autoConfigureFallbackVisionModelIfObvious failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
   // Schedule the healer cycle (agent spawns on-demand when the cycle fires)
