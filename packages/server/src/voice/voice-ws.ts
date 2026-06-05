@@ -1063,11 +1063,62 @@ function startTtsForAgent(session: VoiceSession, initialContent?: string): void 
   // a stray ((deliver: ...)) cue we don't want it read aloud. Kokoro
   // discards the description; only the cloud path acts on it.
   const cueExtractor = createCueExtractor();
+  // Pending buffer for unclosed bracket markers. The model streams
+  // character-by-character, so a control marker like `[no-reply]` will
+  // rarely arrive as a single chat:chunk — it shows up as `[`, `no-`,
+  // `reply]` etc. A per-chunk regex strip can't see the full token and
+  // misses it, letting "no reply" leak through to TTS. We hold back
+  // any content from the last unmatched `[` onward until its `]`
+  // arrives, then strip the complete marker. Flushed verbatim at
+  // stream end so genuinely-orphan `[` text (rare) still gets spoken.
+  let bracketPending = '';
   const pushContent = (raw: string): void => {
-    const stripped = stripEngineControlMarkers(raw);
+    let combined = bracketPending + raw;
+    // Hold back any text from the last UNMATCHED `[` onward until we
+    // see its closing `]`. Track depth so nested brackets are handled
+    // correctly (rare in TTS-bound text but safe).
+    let cursor = 0;
+    let depth = 0;
+    let holdFrom = -1;
+    for (let i = 0; i < combined.length; i++) {
+      const ch = combined[i];
+      if (ch === '[') {
+        if (depth === 0) holdFrom = i;
+        depth++;
+      } else if (ch === ']') {
+        if (depth > 0) depth--;
+        if (depth === 0) {
+          holdFrom = -1;
+          cursor = i + 1;
+        }
+      }
+    }
+    if (holdFrom >= 0) {
+      bracketPending = combined.slice(holdFrom);
+      combined = combined.slice(0, holdFrom);
+    } else {
+      bracketPending = '';
+    }
+    void cursor; // silence unused — depth/holdFrom carry the logic
+    const stripped = stripEngineControlMarkers(combined);
     if (stripped.length === 0) return;
     const { content } = cueExtractor.consume(stripped);
     if (content.length === 0) return;
+    const clauses = sanitizer.pushClauses(content);
+    if (clauses.length > 0) {
+      splitter.push(...clauses);
+      startStreaming();
+    }
+  };
+  /** Flush any held-back bracket buffer through the strip + clauses pipeline. */
+  const flushBracketPending = (): void => {
+    if (!bracketPending) return;
+    const tail = bracketPending;
+    bracketPending = '';
+    const stripped = stripEngineControlMarkers(tail);
+    if (!stripped) return;
+    const { content } = cueExtractor.consume(stripped);
+    if (!content) return;
     const clauses = sanitizer.pushClauses(content);
     if (clauses.length > 0) {
       splitter.push(...clauses);
@@ -1093,15 +1144,24 @@ function startTtsForAgent(session: VoiceSession, initialContent?: string): void 
       if (event.content) {
         bubbleChars += event.content.length;
         bubbleDoneSeen = false;  // new content means this bubble isn't done anymore
-        // Stamp the assistant message as voice-delivered so the dashboard
-        // renders the "via voice" badge on the agent bubble (mirror of
-        // the user-side badge driven by the user message's source). No-op
-        // after the first call per messageId.
-        markAssistantMessageVoiced(session.agentId, event.messageId);
         pushContent(event.content);
       }
       if (event.done) {
         bubbleCount++;
+        // Stamp the assistant message as voice-delivered so the dashboard
+        // renders the "via voice" badge on the agent bubble. Done here
+        // (NOT in the content branch) because the messages row is
+        // INSERTed in loop.ts after streaming completes — during
+        // content chunks the row doesn't exist yet so the UPDATE
+        // silently matched 0 rows and no broadcast fired. By `done`
+        // the row is persisted.
+        markAssistantMessageVoiced(session.agentId, event.messageId);
+        // If the model ended mid-bracket (e.g. just emitted "[no") and
+        // never closed it, flush whatever we held back so the user
+        // hears it. Genuine control markers like `[no-reply]` always
+        // arrive complete and get stripped in pushContent before
+        // ever entering the splitter.
+        flushBracketPending();
         // Flush the tail of this bubble — anything past the last clause
         // boundary, sanitized with no boundary requirement, gets queued
         // as the final clause so audio for this bubble starts even when
@@ -1319,8 +1379,32 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     // Settings → Voice → Cloud → Baseline delivery field, which is the
     // intended fallback for cue-less replies. If they leave the field
     // blank, that's a deliberate choice and we don't substitute one.
+    // Same bracket-buffer fix as the local engine: hold back any text
+    // from an unmatched `[` onward until its `]` arrives so that split
+    // control markers like `[no-reply]` don't leak through. See the
+    // local engine's pushContent for the full rationale.
+    let bracketPending = '';
     const pushContent = (raw: string): void => {
-      const stripped = stripEngineControlMarkers(raw);
+      let combined = bracketPending + raw;
+      let depth = 0;
+      let holdFrom = -1;
+      for (let i = 0; i < combined.length; i++) {
+        const ch = combined[i];
+        if (ch === '[') {
+          if (depth === 0) holdFrom = i;
+          depth++;
+        } else if (ch === ']') {
+          if (depth > 0) depth--;
+          if (depth === 0) holdFrom = -1;
+        }
+      }
+      if (holdFrom >= 0) {
+        bracketPending = combined.slice(holdFrom);
+        combined = combined.slice(0, holdFrom);
+      } else {
+        bracketPending = '';
+      }
+      const stripped = stripEngineControlMarkers(combined);
       if (stripped.length === 0) return;
       const { content, description } = cueExtractor.consume(stripped);
       if (description) hume.setDescription(description);
@@ -1340,6 +1424,22 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
         startStreaming();
       }
     };
+    const flushBracketPending = (): void => {
+      if (!bracketPending) return;
+      const tail = bracketPending;
+      bracketPending = '';
+      const stripped = stripEngineControlMarkers(tail);
+      if (!stripped) return;
+      const { content, description } = cueExtractor.consume(stripped);
+      if (description) hume.setDescription(description);
+      if (!content) return;
+      const safe = sanitizer.push(content);
+      if (safe.length > 0) {
+        hume.push(safe);
+        hume.flush();
+        startStreaming();
+      }
+    };
 
     const handleEvent = (event: WsEvent): void => {
       if (abort.signal.aborted || finishing) return;
@@ -1349,13 +1449,18 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
         if (event.content) {
           bubbleChars += event.content.length;
           bubbleDoneSeen = false;
-          // Same voice-badge stamp as the local-engine burst — driven by
-          // the chat:chunk's DB messageId, not the internal TTS one.
-          markAssistantMessageVoiced(session.agentId, event.messageId);
           pushContent(event.content);
         }
         if (event.done) {
           bubbleCount++;
+          // Stamp the assistant message as voice-delivered. Done here
+          // (NOT in the content branch) because the row is INSERTed in
+          // loop.ts after streaming completes — by `done` it exists.
+          markAssistantMessageVoiced(session.agentId, event.messageId);
+          // Flush any held-back bracket buffer (mid-marker text that
+          // never got its closing bracket) so it isn't silently
+          // dropped on stream end.
+          flushBracketPending();
           const tail = sanitizer.flushUnsafe();
           if (tail) {
             hume.push(tail);
