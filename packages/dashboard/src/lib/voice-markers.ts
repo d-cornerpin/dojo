@@ -1,20 +1,25 @@
 /**
- * Strip the cloud voice-mode delivery cue and inline pause markers from
- * displayed text. Used by every AssistantBubble when wordyMode is off
- * so the chat reads like normal prose, while wordy mode shows the raw
- * agent output with the markers visible.
+ * Strip engine control markers + voice-mode cues from displayed text.
+ * Used by every AssistantBubble when wordyMode is off so the chat
+ * reads like normal prose, while wordy mode shows the raw agent
+ * output with the markers visible.
  *
  * Markers handled:
  *   - Leading ((deliver: ...)) cue line (matches case-insensitively)
  *   - Inline [pause] and [long pause] markers
+ *   - [no-reply] sentinel anywhere in the bubble (with optional
+ *     surrounding markdown wrappers like backticks or asterisks, same
+ *     shape the server's persistence layer strips at end-of-message)
  *
- * The functions also handle in-flight streaming: if a cue or pause
- * marker is still arriving mid-stream, the partial fragment is hidden
+ * The functions also handle in-flight streaming: if a cue or marker
+ * is still arriving mid-stream, the partial fragment is hidden
  * rather than briefly flashed to the user.
  */
 
 const DELIVER_CUE_RE = /^\s*\(\(\s*deliver\s*:\s*[^)]*?\s*\)\)\s*/i;
 const PAUSE_MARKER_RE = /\s*\[(?:long\s+)?pause\]\s*/gi;
+/** Engine-control `[no-reply]` sentinel, optionally wrapped in markdown emphasis (backtick / asterisk / underscore). */
+const NO_REPLY_MARKER_RE = /\s*[`*_]*\s*\[no-reply\]\s*[`*_]*\s*/gi;
 
 /**
  * Trailing partial pause-marker — matches a bracket that's started but
@@ -23,6 +28,14 @@ const PAUSE_MARKER_RE = /\s*\[(?:long\s+)?pause\]\s*/gi;
  */
 const TRAILING_PARTIAL_PAUSE_RE =
   /\s*\[(?:long(?:\s+(?:p(?:a(?:u(?:s(?:e)?)?)?)?)?)?|p(?:a(?:u(?:s(?:e)?)?)?)?)?$/i;
+/**
+ * Trailing partial `[no-reply]` — matches any unfinished prefix
+ * (e.g. "[n", "[no", "[no-", "[no-r", up through "[no-reply"). Used
+ * during streaming so the user doesn't see "[no" briefly flash before
+ * the rest of the marker arrives. Allows leading markdown wrappers.
+ */
+const TRAILING_PARTIAL_NO_REPLY_RE =
+  /\s*[`*_]*\s*\[n(?:o(?:-(?:r(?:e(?:p(?:l(?:y)?)?)?)?)?)?)?$/i;
 
 /**
  * Final-form strip (no streaming flicker handling). Suitable for fully
@@ -31,6 +44,10 @@ const TRAILING_PARTIAL_PAUSE_RE =
 export function stripVoiceMarkers(text: string): string {
   if (!text) return text;
   let out = text.replace(DELIVER_CUE_RE, '');
+  // Engine `[no-reply]` sentinel: never user-facing under any
+  // circumstance. Drop completely (no inserted space — the agent
+  // typically writes it on its own line or at end-of-message).
+  out = out.replace(NO_REPLY_MARKER_RE, '');
   // Replace each inline pause marker with a single space so words on
   // either side don't fuse together; collapse runs afterwards.
   out = out.replace(PAUSE_MARKER_RE, ' ');
@@ -59,5 +76,10 @@ export function stripVoiceMarkersForStream(text: string): string {
   // Trim a trailing partial pause-bracket so the user doesn't see
   // half-typed markers mid-stream.
   out = out.replace(TRAILING_PARTIAL_PAUSE_RE, '');
+  // Same for a trailing partial [no-reply] sentinel — hide every
+  // prefix from "[n" through "[no-reply" until the closing "]"
+  // arrives and the full-form strip above catches it. Without this,
+  // the user briefly sees "[no" before the rest streams in.
+  out = out.replace(TRAILING_PARTIAL_NO_REPLY_RE, '');
   return out.trimEnd();
 }
