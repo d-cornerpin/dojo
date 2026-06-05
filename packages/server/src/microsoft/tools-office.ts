@@ -3,6 +3,9 @@
 // Creates Word, Excel, PowerPoint files and uploads to OneDrive
 // ════════════════════════════════════════
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { ToolDefinition } from '../agent/tools.js';
 import { getValidAccessToken } from './auth.js';
 import { logMicrosoftActivity } from './activity-log.js';
@@ -345,26 +348,154 @@ function slideTitleFromXml(slideXml: string): string {
 export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_create_word_document',
-    description: 'Create a Word document (.docx) with formatted content and upload to OneDrive. Returns file ID and shareable link.',
+    description: 'Create a Word document (.docx) with formatted content. When Microsoft is connected, the file uploads to OneDrive and you get back a file ID + share link (and the file_id-driven edit tools — append, insert, replace, etc. — become usable). When Microsoft is NOT connected, the file is saved locally under your agent uploads dir and the result tells you the absolute path; edit tools aren\'t available against that path.\n\nThe document is composed of `content` blocks (paragraphs, headings, tables, lists, images, page breaks, table of contents). Optional top-level fields control page setup, default font, headers, footers, footnotes, and multi-column layouts.\n\nDefaults: US Letter, 1" margins, Arial 12pt, full-width tables with light-blue header row and grey borders. You only need to specify these if you want to override the default.\n\nKey rules the renderer follows for you (no manual handling needed):\n- Tables get proper widths and cell margins automatically — no more 1-character-wide columns.\n- Bullet/numbered lists use real Word list semantics, not unicode bullet characters.\n- Headings include outlineLevel so Word\'s navigation pane and Table of Contents work.\n- Page breaks are wrapped in valid paragraphs.',
     input_schema: {
       type: 'object',
       properties: {
         filename: { type: 'string', description: 'File name (e.g., "Project Report.docx")' },
         folder_id: { type: 'string', description: 'OneDrive folder ID (omit for root)' },
+        page_size: {
+          type: 'string',
+          enum: ['letter', 'a4', 'legal', 'tabloid'],
+          description: 'Page size. Default "letter" (US users). Use "a4" for international.',
+        },
+        orientation: {
+          type: 'string',
+          enum: ['portrait', 'landscape'],
+          description: 'Page orientation. Default "portrait".',
+        },
+        margin_in: {
+          type: 'number',
+          description: 'Page margin in inches, applied to all four sides uniformly. Default 1.',
+        },
+        default_font: {
+          type: 'string',
+          description: 'Default body font. Default "Arial". Common choices: "Arial", "Calibri", "Times New Roman", "Georgia".',
+        },
+        default_font_size_pt: {
+          type: 'number',
+          description: 'Default body font size in points. Default 12.',
+        },
+        header: {
+          type: 'array',
+          description: 'Content blocks rendered at the top of every page (same block schema as `content`). Common pattern: one centered paragraph with the document title.',
+          items: { type: 'object' },
+        },
+        footer: {
+          type: 'array',
+          description: 'Content blocks rendered at the bottom of every page (same block schema as `content`).',
+          items: { type: 'object' },
+        },
+        footer_includes_page_number: {
+          type: 'boolean',
+          description: 'When true, appends a centered "Page X of Y" line to the footer using live page-number fields. Default false.',
+        },
+        footnotes: {
+          type: 'object',
+          description: 'Footnote definitions keyed by id (e.g., {"1": "Source: Annual Report 2024"}). Reference them inline by adding a `paragraph_rich` block whose runs include {kind: "footnote_ref", footnote_id: 1}.',
+        },
+        columns: {
+          type: 'object',
+          description: 'Multi-column layout (newsletter / brochure). Example: {count: 2, space_dxa: 720, equal_width: true, separate: true}.',
+          properties: {
+            count: { type: 'number' },
+            space_dxa: { type: 'number', description: 'Gap between columns in DXA (1440 = 1 inch). Default 720 (0.5 inch).' },
+            equal_width: { type: 'boolean' },
+            separate: { type: 'boolean', description: 'Draw a vertical line between columns.' },
+          },
+        },
+        smart_quotes: {
+          type: 'boolean',
+          description: 'When true, converts straight quotes (\' and ") to smart curly quotes (‘ ’ “ ”) throughout the document body. Default false to preserve backward compatibility — set true for professional typography in memos, letters, and reports. Disable if you have code samples or other content where straight quotes must stay literal.',
+        },
+        revision_author: {
+          type: 'string',
+          description: 'Default author name for tracked-change runs (paragraph_rich runs of kind "tracked_insert" or "tracked_delete"). Default "Claude". Individual runs can override via revision_author.',
+        },
         content: {
           type: 'array',
-          description: 'Array of content blocks: heading, paragraph, table, bullet_list, page_break',
+          description: 'Ordered list of content blocks. Block types: heading, paragraph, paragraph_rich (mixed-formatting runs in one paragraph), table, bullet_list, numbered_list, page_break, image, toc.',
           items: {
             type: 'object',
             properties: {
-              type: { type: 'string', enum: ['heading', 'paragraph', 'table', 'bullet_list', 'page_break'] },
-              text: { type: 'string', description: 'Text content (for heading, paragraph)' },
-              level: { type: 'number', description: 'Heading level 1-3 (for heading type)' },
-              bold: { type: 'boolean', description: 'Bold text (for paragraph)' },
-              italic: { type: 'boolean', description: 'Italic text (for paragraph)' },
-              align: { type: 'string', enum: ['left', 'center', 'right'], description: 'Text alignment (for paragraph)' },
-              rows: { type: 'array', items: { type: 'array', items: { type: 'string' } }, description: '2D array of cell values, first row is header (for table)' },
-              items: { type: 'array', items: { type: 'string' }, description: 'List items (for bullet_list)' },
+              type: { type: 'string', enum: ['heading', 'paragraph', 'paragraph_rich', 'table', 'bullet_list', 'numbered_list', 'page_break', 'image', 'toc'] },
+
+              // shared / heading / paragraph / list items
+              text: { type: 'string', description: 'Text content. For paragraph_rich use `runs` instead. For table use `rows`. For bullet_list / numbered_list use `items`.' },
+              level: { type: 'number', description: 'Heading level 1-6 (for heading type). Default 1.' },
+
+              // paragraph styling
+              bold: { type: 'boolean' },
+              italic: { type: 'boolean' },
+              underline: { type: 'boolean' },
+              align: { type: 'string', enum: ['left', 'center', 'right', 'justified'] },
+              font: { type: 'string', description: 'Override default font for this paragraph.' },
+              size_pt: { type: 'number', description: 'Override default font size in points.' },
+              color: { type: 'string', description: 'Hex color without leading #, e.g. "2E75B6".' },
+              bookmark: { type: 'string', description: 'Anchor name. Other paragraphs can link here via a paragraph_rich run with {kind: "hyperlink", bookmark: <name>}.' },
+              tab_stops: {
+                type: 'array',
+                description: 'Tab stops for this paragraph. Use with embedded \\t in text or with paragraph_rich runs of kind "tab". Example for a right-aligned date: [{position: "right_margin", align: "right"}]. For a dot-leader TOC line: [{position: "right_margin", align: "right", leader: "dot"}].',
+                items: {
+                  type: 'object',
+                  properties: {
+                    position: { description: '"right_margin" or a DXA position number.' },
+                    align: { type: 'string', enum: ['left', 'right', 'center'] },
+                    leader: { type: 'string', enum: ['dot', 'hyphen', 'underscore', 'none'] },
+                  },
+                },
+              },
+
+              // paragraph_rich
+              runs: {
+                type: 'array',
+                description: 'Array of runs for paragraph_rich. Each run has a `kind`: "text" (styled text), "hyperlink" (external `url` or internal `bookmark`), "footnote_ref" (with footnote_id matching a key in `footnotes`), "page_number"/"page_count" (live fields for headers/footers), "line_break" (soft break), or "tab".',
+                items: {
+                  type: 'object',
+                  properties: {
+                    kind: { type: 'string', enum: ['text', 'hyperlink', 'footnote_ref', 'page_number', 'page_count', 'line_break', 'tab'] },
+                    text: { type: 'string' },
+                    bold: { type: 'boolean' },
+                    italic: { type: 'boolean' },
+                    underline: { type: 'boolean' },
+                    color: { type: 'string' },
+                    size_pt: { type: 'number' },
+                    font: { type: 'string' },
+                    url: { type: 'string', description: 'External hyperlink URL.' },
+                    bookmark: { type: 'string', description: 'Internal hyperlink anchor.' },
+                    footnote_id: { description: 'Footnote ID, matches a key in `footnotes`.' },
+                  },
+                },
+              },
+
+              // table
+              rows: {
+                type: 'array',
+                description: '2D array of cells. Each cell is either a plain string or an object {text, bold, italic, shading_hex, align}. First row is treated as the header (bold + shaded by default).',
+                items: { type: 'array', items: {} },
+              },
+              column_widths_dxa: {
+                type: 'array',
+                description: 'Optional column widths in DXA (1440 = 1 inch). If omitted, columns are sized evenly across the content area. Must sum to content width if provided.',
+                items: { type: 'number' },
+              },
+              header_shading_hex: { type: 'string', description: 'Header-row shading hex (default "D5E8F0"). Empty string disables.' },
+              border_color_hex: { type: 'string', description: 'Border color hex (default "CCCCCC"). Empty string disables borders.' },
+              first_row_bold: { type: 'boolean', description: 'Whether the first row is bold (default true).' },
+
+              // list items
+              items: { type: 'array', items: { type: 'string' }, description: 'List items for bullet_list / numbered_list.' },
+
+              // image
+              path: { type: 'string', description: 'Absolute path on disk to the image (for image block).' },
+              width_in: { type: 'number', description: 'Display width in inches (image). Default 3.' },
+              height_in: { type: 'number', description: 'Display height in inches (image). Default 3.' },
+              alt: { type: 'string', description: 'Alt text for accessibility (image).' },
+              image_type: { type: 'string', enum: ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'svg'], description: 'Image format override; defaults to file extension.' },
+
+              // toc
+              toc_title: { type: 'string', description: 'Title rendered above the auto-generated TOC. Default "Table of Contents".' },
+              toc_heading_levels: { type: 'string', description: 'Heading levels to include, e.g. "1-3" (default).' },
             },
           },
         },
@@ -524,7 +655,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'office_create_spreadsheet',
-    description: 'Create an Excel spreadsheet (.xlsx) with data and upload to OneDrive.',
+    description: 'Create an Excel spreadsheet (.xlsx). When Microsoft is connected, the file uploads to OneDrive (file_id + share link returned, file_id-driven workbook edit tools usable). When Microsoft is NOT connected, the file is saved locally under your agent uploads dir and the result tells you the absolute path; the Graph workbook tools aren\'t available against that path.\n\n**Cells, not columns.** Everything — values, formulas, styling, widths — goes through the `sheets[].rows` 2D array. There is NO sheet-level `formulas`, `columns`, `header_row`, or `currency_format` field — if you pass any of those, the call will be REJECTED with a corrective error. Column widths live on `sheets[].column_widths`; per-row / per-cell style lives inside the row cells.\n\nEach cell is either a plain primitive (string / number / boolean) OR an object with rich properties. Example: a formula cell looks like `{ formula: "=SUM(B2:B9)", number_format: "$#,##0" }`. A currency input looks like `{ value: 150000, number_format: "$#,##0", font: { color: "0070C0" } }` (blue inputs by financial-model convention). A percent looks like `{ formula: "=B4/B2", number_format: "0.0%" }`.\n\nCell object full surface: `{ value, formula, number_format, font: { name, size, bold, italic, underline, color }, fill_hex, align: "left"|"center"|"right"|"justified", v_align, border: "all"|"top"|"bottom"|"left"|"right"|"none", wrap_text, comment, hyperlink }`. Leading "=" on `formula` is optional.\n\nPer-sheet you can also set `column_widths` (array of numbers in Excel character units, e.g. [22, 14, 14, 14]), `freeze_rows`, `freeze_cols`, `default_header_row` (auto-styles row 1 with bold + light-blue fill — true by default), `zoom_pct`, `hidden`.\n\nKey defaults the renderer applies:\n- The first row gets bold + light-blue fill automatically unless `default_header_row: false` is passed.\n- Numbers stay numeric (SUM etc. work); strings stay text.\n- Common financial-model color convention: blue inputs (color "0070C0"), black formulas (default), green cross-sheet refs (color "00B050"), red external refs (color "C00000"), yellow assumption fill ("FFF2CC").\n- Number formats: "$#,##0;($#,##0);-" for currency, "0.0%" for percentages, "0.00x" for multiples, "yyyy-mm-dd" for dates.',
     input_schema: {
       type: 'object',
       properties: {
@@ -532,12 +663,26 @@ export const officeToolDefinitions: ToolDefinition[] = [
         folder_id: { type: 'string', description: 'OneDrive folder ID (omit for root)' },
         sheets: {
           type: 'array',
-          description: 'Array of sheet objects',
+          description: 'Array of sheet specs. Each sheet has a name, 2D rows array, and optional column widths / freeze rows / freeze cols / default_header_row / zoom_pct / hidden.',
           items: {
             type: 'object',
             properties: {
-              name: { type: 'string', description: 'Sheet name' },
-              rows: { type: 'array', items: { type: 'array', items: { type: 'string' } }, description: '2D array of cell values' },
+              name: { type: 'string', description: 'Sheet name (must be unique within the workbook, max 31 chars, cannot contain : \\ / ? * [ ]).' },
+              rows: {
+                type: 'array',
+                description: '2D array of cells. Each cell is either a plain value (string / number / boolean / null) or an object with: value, formula, number_format, font ({name, size, bold, italic, underline, color}), fill_hex, align (left/center/right/justified), v_align (top/middle/bottom), border (all/top/bottom/left/right/none), wrap_text, comment (cell note), hyperlink (URL).',
+                items: { type: 'array', items: {} },
+              },
+              column_widths: {
+                type: 'array',
+                items: { type: ['number', 'null'] },
+                description: 'Per-column widths in Excel character units (a value of 12 ≈ 12 characters wide). Use null to leave a column at default. Example: [20, 30, null, 12].',
+              },
+              freeze_rows: { type: 'number', description: 'Freeze the top N rows. Default 1 if default_header_row is true; 0 otherwise.' },
+              freeze_cols: { type: 'number', description: 'Freeze the left N columns. Default 0.' },
+              default_header_row: { type: 'boolean', description: 'When true (default), the first row is auto-styled as a header: bold text + light-blue fill, and the row gets frozen. Set to false to disable.' },
+              zoom_pct: { type: 'number', description: 'Default zoom percentage (e.g. 100, 125, 150).' },
+              hidden: { type: 'boolean', description: 'Create the sheet as hidden (still in the workbook, hidden in the Excel UI).' },
             },
             required: ['name', 'rows'],
           },
@@ -614,22 +759,86 @@ export const officeToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'office_create_presentation',
-    description: 'Create a PowerPoint presentation (.pptx) with slides and upload to OneDrive.',
+    description: 'Create a PowerPoint presentation (.pptx). When Microsoft is connected, the file uploads to OneDrive (file_id + share link returned, file_id-driven slide edit tools usable). When Microsoft is NOT connected, the file is saved locally under your agent uploads dir and the result tells you the absolute path; the file_id-driven edit tools aren\'t available against that path.\n\nThe deck has an optional `theme` (colors, fonts, slide size) and an array of `slides`. Each slide picks a `layout` preset (title / content / two_column / comparison / big_stat / image / blank) that auto-places common content (title, body, bullets), OR provides explicit `elements[]` (text boxes, shapes, images, tables) at exact x/y/w/h positions. Both can be mixed on the same slide — layout-driven content renders first, free-form elements go on top.\n\nLayouts:\n- `title`: centered hero title + subtitle. Use for the opening slide.\n- `content`: title at top + body underneath. If `body` is a string[], renders as bullets.\n- `two_column`: title + two side-by-side bodies (`body_left`, `body_right`). Both can be string[] for bullets.\n- `comparison`: like two_column but adds a vertical accent divider between columns. Use for pros/cons, before/after, option A vs B.\n- `big_stat`: huge centered statistic (`stat_value`, e.g. "$2.4M") with optional small `title` above and `stat_label` below.\n- `image`: title + centered image (path or URL) + optional caption (body).\n- `blank`: no auto-placed content; use `elements[]` exclusively for fully custom slides.\n\nText content fields (`title`, `body`, `body_left`, etc., and the `text` field of a text-element) accept three shapes: a plain string, an array of strings (renders as bullets / multiple lines depending on context), or an array of run objects `{text, bold, italic, underline, color, size, font, break, url}` for mixed formatting.\n\nSpeaker notes go on `notes` per slide. Slide background can be overridden via `background_hex`.',
     input_schema: {
       type: 'object',
       properties: {
         filename: { type: 'string', description: 'File name (e.g., "Pitch Deck.pptx")' },
         folder_id: { type: 'string', description: 'OneDrive folder ID (omit for root)' },
+        theme: {
+          type: 'object',
+          description: 'Deck-level theme. All fields optional. Colors are hex without #. Default: blue/grey palette, Calibri fonts, widescreen (16:9).',
+          properties: {
+            primary: { type: 'string', description: 'Primary brand color (titles, accents). Hex without #.' },
+            secondary: { type: 'string' },
+            accent: { type: 'string', description: 'Accent color (dividers, callouts).' },
+            background: { type: 'string', description: 'Default slide background.' },
+            text: { type: 'string', description: 'Default body text color.' },
+            title_font: { type: 'string', description: 'Font for titles (default Calibri).' },
+            body_font: { type: 'string', description: 'Font for body text (default Calibri).' },
+            slide_size: { type: 'string', enum: ['standard', 'wide'], description: '"wide" = 16:9 (default), "standard" = 4:3.' },
+          },
+        },
         slides: {
           type: 'array',
-          description: 'Array of slide objects',
+          description: 'Ordered list of slides.',
           items: {
             type: 'object',
             properties: {
-              title: { type: 'string', description: 'Slide title' },
-              body: { type: 'string', description: 'Slide body text' },
+              layout: { type: 'string', enum: ['title', 'content', 'two_column', 'comparison', 'big_stat', 'image', 'blank'], description: 'Layout preset. Defaults to "content" when title/body are set, "blank" when only `elements` is given.' },
+              title: { description: 'Slide title (string OR rich runs).' },
+              subtitle: { description: 'Subtitle for the title layout.' },
+              body: { description: 'Body content. For "content" layout: string or string[] (bullets). For "image": optional caption.' },
+              body_left: { description: 'Left-column body for two_column / comparison.' },
+              body_right: { description: 'Right-column body for two_column / comparison.' },
+              image_path: { type: 'string', description: 'Absolute path to a local image (for the "image" layout).' },
+              image_url: { type: 'string', description: 'Remote image URL (for the "image" layout).' },
+              stat_value: { type: 'string', description: 'Big centered statistic for big_stat layout (e.g. "$2.4M").' },
+              stat_label: { description: 'Caption under the stat (string or rich runs).' },
+              elements: {
+                type: 'array',
+                description: 'Free-form elements rendered on top of any layout content. Each has a `type`: "text", "shape", "image", or "table". All require explicit x/y/w/h in inches.',
+                items: {
+                  type: 'object',
+                  properties: {
+                    type: { type: 'string', enum: ['text', 'shape', 'image', 'table'] },
+                    // text
+                    text: { description: 'Text content for text elements / text-on-shape / table cells. String, string[], or run array.' },
+                    x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' },
+                    font_size: { type: 'number' },
+                    bold: { type: 'boolean' },
+                    italic: { type: 'boolean' },
+                    color: { type: 'string' },
+                    align: { type: 'string', enum: ['left', 'center', 'right', 'justify'] },
+                    v_align: { type: 'string', enum: ['top', 'middle', 'bottom'] },
+                    bullet: { description: 'true = unordered bullet, "numbered" = 1. 2. 3., omit = no bullets.' },
+                    fill_hex: { type: 'string' },
+                    font_face: { type: 'string' },
+                    // shape
+                    shape_type: { type: 'string', enum: ['rect', 'rounded_rect', 'ellipse', 'triangle', 'line', 'arrow'] },
+                    border_hex: { type: 'string' },
+                    border_pt: { type: 'number' },
+                    text_color: { type: 'string' },
+                    text_size: { type: 'number' },
+                    text_align: { type: 'string', enum: ['left', 'center', 'right'] },
+                    text_v_align: { type: 'string', enum: ['top', 'middle', 'bottom'] },
+                    // image
+                    path: { type: 'string', description: 'Absolute path for an image element.' },
+                    url: { type: 'string', description: 'Remote URL for an image element.' },
+                    data: { type: 'string', description: 'Base64-encoded data for an image element (no data: prefix).' },
+                    alt: { type: 'string' },
+                    sizing: { type: 'string', enum: ['contain', 'cover'] },
+                    // table
+                    rows: { type: 'array', description: '2D array of cells for table elements; each cell is a string or rich runs.', items: { type: 'array', items: {} } },
+                    header_row: { type: 'boolean' },
+                    header_fill_hex: { type: 'string' },
+                    col_widths: { type: 'array', items: { type: 'number' } },
+                  },
+                },
+              },
+              notes: { type: 'string', description: 'Speaker notes for this slide.' },
+              background_hex: { type: 'string', description: 'Override slide background color (hex without #).' },
             },
-            required: ['title'],
           },
         },
       },
@@ -640,15 +849,249 @@ export const officeToolDefinitions: ToolDefinition[] = [
 
 // ── Helpers ──
 
-interface ContentBlock {
-  type: 'heading' | 'paragraph' | 'table' | 'bullet_list' | 'page_break';
+// ── Word document schema ──
+//
+// The schema below is the canonical shape an agent passes to
+// office_create_word_document and the append/insert siblings. The shape
+// stayed backward-compatible across the v2.9.x rewrite — old callers
+// supplying { type: 'paragraph', text, bold, italic, align } still work
+// and produce the same paragraphs; new optional fields and block types
+// add expressiveness without breaking anything.
+//
+// Design rules followed throughout:
+//   - Use US Letter as default page size (most docx-js consumers expect
+//     this; the library's own default is A4).
+//   - Default font is Arial 12pt — universally rendered, readable.
+//   - Tables always set width + columnWidths + per-cell width in DXA,
+//     plus cell margins. Without all of these Word collapses columns to
+//     1-character wide for content that lacks spaces (the bug that
+//     drove this rewrite).
+//   - Heading paragraph styles include outlineLevel so Word's
+//     navigation pane and Table of Contents both work.
+//   - Bullet/numbered lists use docx-js numbering refs, not raw
+//     unicode bullet characters (the latter break list semantics in
+//     some Word versions and on screen readers).
+
+interface TextRunSpec {
+  /**
+   * Kind of run inside a rich paragraph.
+   * - text: plain styled text
+   * - hyperlink: clickable link (external `url` OR internal `bookmark`)
+   * - footnote_ref: superscript number referencing a footnote (must
+   *   match a key in WordDocOptions.footnotes)
+   * - page_number: live page number field (use only inside a footer/header)
+   * - page_count: live total page count field (use only inside footer/header)
+   * - line_break: soft break within the same paragraph
+   * - tab: tab character (use with paragraph.tab_stops for alignment)
+   * - tracked_insert: text marked as an insertion (tracked change). The
+   *   recipient sees it as an editorial insertion they can accept or
+   *   reject in Word.
+   * - tracked_delete: text marked as a deletion (tracked change).
+   *   Renders as strikethrough until the recipient accepts the change.
+   */
+  kind:
+    | 'text'
+    | 'hyperlink'
+    | 'footnote_ref'
+    | 'page_number'
+    | 'page_count'
+    | 'line_break'
+    | 'tab'
+    | 'tracked_insert'
+    | 'tracked_delete';
   text?: string;
-  level?: number;
   bold?: boolean;
   italic?: boolean;
-  align?: 'left' | 'center' | 'right';
-  rows?: string[][];
+  underline?: boolean;
+  /** Hex color without leading '#', e.g. '2E75B6' */
+  color?: string;
+  /** Font size in points (note: docx uses half-points internally, we convert). */
+  size_pt?: number;
+  font?: string;
+  /** External hyperlink target. */
+  url?: string;
+  /** Internal hyperlink anchor (use with a `bookmark` set somewhere in the doc). */
+  bookmark?: string;
+  /** Footnote ID matching a key in WordDocOptions.footnotes. */
+  footnote_id?: string | number;
+  /** Override the revision author (only for tracked_insert / tracked_delete). Falls back to WordDocOptions.revision_author or 'Claude'. */
+  revision_author?: string;
+  /** Override the revision date in ISO 8601 (only for tracked_insert / tracked_delete). Falls back to now. */
+  revision_date?: string;
+}
+
+interface TableCellSpec {
+  text?: string;
+  bold?: boolean;
+  italic?: boolean;
+  /** Cell background as hex, e.g. 'D5E8F0'. */
+  shading_hex?: string;
+  align?: 'left' | 'center' | 'right' | 'justified';
+}
+
+type TableCellInput = string | TableCellSpec;
+
+interface ContentBlock {
+  type:
+    | 'heading'
+    | 'paragraph'
+    | 'paragraph_rich'
+    | 'table'
+    | 'bullet_list'
+    | 'numbered_list'
+    | 'page_break'
+    | 'image'
+    | 'toc';
+
+  // ── shared ──
+  text?: string;
+
+  // ── heading ──
+  level?: number;
+
+  // ── paragraph + paragraph_rich + bullet/numbered list items ──
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  align?: 'left' | 'center' | 'right' | 'justified';
+  font?: string;
+  size_pt?: number;
+  color?: string;
+  /** Anchor name for internal hyperlinks targeting this paragraph. */
+  bookmark?: string;
+  /**
+   * Tab stops on this paragraph. Use with `runs` of kind 'tab' or with
+   * embedded \t in plain text to align content at the stop. `position`:
+   *   - 'right_margin' = MAX (typical for right-aligned dates etc.)
+   *   - number = DXA position
+   * `leader`: 'dot' produces a dot leader (chapter ......... 3).
+   */
+  tab_stops?: Array<{
+    position: 'right_margin' | number;
+    align?: 'left' | 'right' | 'center';
+    leader?: 'dot' | 'hyphen' | 'underscore' | 'none';
+  }>;
+
+  // ── paragraph_rich ──
+  runs?: TextRunSpec[];
+
+  // ── table ──
+  /** 2D rows. Each cell can be a plain string or a TableCellSpec. First row is treated as header (bold + shaded). */
+  rows?: TableCellInput[][];
+  /** Optional column-width override in DXA. If omitted, columns are sized evenly to fit the content area. Length MUST equal the column count. */
+  column_widths_dxa?: number[];
+  /** Header row shading as hex (default 'D5E8F0'). Set to '' to disable header shading. */
+  header_shading_hex?: string;
+  /** Border color hex (default 'CCCCCC'). Set to '' to disable borders. */
+  border_color_hex?: string;
+  /** First-row gets bold text (default true). */
+  first_row_bold?: boolean;
+
+  // ── bullet_list / numbered_list ──
   items?: string[];
+
+  // ── image ──
+  /** Absolute path on disk to the image file. */
+  path?: string;
+  /** Display width in inches. */
+  width_in?: number;
+  /** Display height in inches. */
+  height_in?: number;
+  /** Alt text for accessibility. */
+  alt?: string;
+  /** Image format (png/jpg/gif/bmp/svg). If omitted, derived from the file extension. */
+  image_type?: 'png' | 'jpg' | 'jpeg' | 'gif' | 'bmp' | 'svg';
+
+  // ── toc ──
+  /** Title rendered above the auto-generated table of contents. */
+  toc_title?: string;
+  /** Heading levels to include, e.g. '1-3' (default). */
+  toc_heading_levels?: string;
+}
+
+/** Top-level document options for office_create_word_document. */
+interface WordDocOptions {
+  /** Default 'letter'. */
+  page_size?: 'letter' | 'a4' | 'legal' | 'tabloid';
+  /** Default 'portrait'. */
+  orientation?: 'portrait' | 'landscape';
+  /** Page margin in inches (uniform on all sides). Default 1. */
+  margin_in?: number;
+  /** Default font, e.g. 'Arial' (default), 'Calibri', 'Times New Roman'. */
+  default_font?: string;
+  /** Default font size in points (default 12). */
+  default_font_size_pt?: number;
+  /** Content blocks rendered in the page header (top of every page). */
+  header?: ContentBlock[];
+  /** Content blocks rendered in the page footer (bottom of every page). */
+  footer?: ContentBlock[];
+  /** Shortcut: when true, appends a centered "Page X of Y" line to the footer. */
+  footer_includes_page_number?: boolean;
+  /** Footnote definitions keyed by id. Reference them in paragraph_rich runs via { kind: 'footnote_ref', footnote_id }. */
+  footnotes?: Record<string, string>;
+  /** Multi-column layout (newsletters/brochures). */
+  columns?: { count: number; equal_width?: boolean; space_dxa?: number; separate?: boolean };
+  /** Convert straight quotes ('", "") to smart quotes (', ', ", ") throughout the document. Default false (preserves backward compatibility). */
+  smart_quotes?: boolean;
+  /** Default author name for tracked-change runs. Default 'Claude'. */
+  revision_author?: string;
+}
+
+/**
+ * Smart-quote normalization. Converts straight quotes into their
+ * curly equivalents. Heuristic: a straight quote that follows
+ * whitespace, opening punctuation, or is at the start of a string is
+ * an opener; everything else is a closer. The skill recommends
+ * this for professional typography — disabled by default so code
+ * samples and technical content stay literal.
+ */
+function smartenQuotes(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(/(^|[\s(\[{<])"/g, '$1“')         // opening double
+    .replace(/"/g, '”')                            // closing double
+    .replace(/(^|[\s(\[{<])'/g, '$1‘')           // opening single
+    .replace(/'/g, '’');                           // closing single / apostrophe
+}
+
+/**
+ * Save an office document buffer in the right place for the calling
+ * agent's environment. When Microsoft is connected, upload to OneDrive
+ * (file_id + share link returned, plus all the existing edit tools
+ * work). When Microsoft is NOT connected, fall back to a local save
+ * under ~/.dojo/uploads/<agentId>/<filename> — same pattern as the PDF
+ * tools — so an agent on a local-only setup can still create Office
+ * files. The create tool returns a user-facing summary either way; the
+ * shape of what's available next (file_id-driven edits vs. just a
+ * local path) is named explicitly in the result so the agent knows.
+ */
+async function saveOfficeBuffer(
+  buffer: Buffer,
+  filename: string,
+  mimeType: string,
+  agentId: string,
+  folderId: string | undefined,
+  kind: 'word' | 'excel' | 'powerpoint',
+): Promise<string> {
+  const { isMicrosoftConnected } = await import('./auth.js');
+  if (isMicrosoftConnected('agent')) {
+    const result = await uploadToOneDrive(buffer, filename, mimeType, folderId);
+    const kindLabel = kind === 'word' ? 'Word document' : kind === 'excel' ? 'Excel spreadsheet' : 'PowerPoint presentation';
+    return `${kindLabel} "${result.name}" created on OneDrive.\nFile ID: ${result.id}\nOpen: ${result.webUrl}${result.shareLink ? `\nShare link: ${result.shareLink}` : ''}`;
+  }
+  // Local fallback. Mirror the PDF tools' uploads-dir pattern so every
+  // agent-generated file lives in one predictable place.
+  const dir = path.join(os.homedir(), '.dojo', 'uploads', agentId);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const safe = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const outPath = path.join(dir, safe);
+  fs.writeFileSync(outPath, buffer);
+  const kindLabel = kind === 'word' ? 'Word document' : kind === 'excel' ? 'Excel spreadsheet' : 'PowerPoint presentation';
+  return (
+    `${kindLabel} created locally at ${outPath} (${buffer.length} bytes). ` +
+    `To give the user a downloadable URL for this file, call share_file with path="${outPath}" — do NOT invent or guess a URL. ` +
+    `Microsoft is not connected, so this was saved to disk instead of OneDrive — the file_id-driven edit tools (append/insert/replace/etc.) are NOT available for it. To make the document editable via those tools later, connect Microsoft in Settings → Integrations and create it again.`
+  );
 }
 
 async function uploadToOneDrive(
@@ -701,119 +1144,1198 @@ async function uploadToOneDrive(
 // All Office packages are dynamically imported since they may not be installed yet.
 // TypeScript uses 'any' for these — the packages are optional runtime dependencies.
 
-async function generateWordBuffer(blocks: ContentBlock[]): Promise<Buffer> {
+/**
+ * Page dimensions in DXA (1440 DXA = 1 inch). Defaults to US Letter
+ * because docx-js's own default is A4, which silently produces wrong
+ * margins for US users.
+ */
+const PAGE_SIZES_DXA: Record<string, { width: number; height: number }> = {
+  letter:  { width: 12240, height: 15840 },
+  a4:      { width: 11906, height: 16838 },
+  legal:   { width: 12240, height: 20160 },
+  tabloid: { width: 17280, height: 22320 },
+};
+
+/**
+ * Reference for content-width math: page width minus left+right margin
+ * (in DXA). Used to size full-width tables and column-width arithmetic.
+ */
+function contentWidthDxa(pageW: number, marginInches: number): number {
+  return pageW - Math.round(marginInches * 1440 * 2);
+}
+
+/**
+ * Map the agent-friendly align string to docx-js AlignmentType.
+ */
+function resolveAlign(docx: any, align?: string): any { // eslint-disable-line @typescript-eslint/no-explicit-any
+  switch (align) {
+    case 'center':    return docx.AlignmentType.CENTER;
+    case 'right':     return docx.AlignmentType.RIGHT;
+    case 'justified': return docx.AlignmentType.JUSTIFIED;
+    case 'left':
+    default:          return docx.AlignmentType.LEFT;
+  }
+}
+
+/**
+ * Build the styles config that docx-js attaches to the Document. We
+ * override the built-in Heading 1/2/3 styles so they use the chosen
+ * default font and include outlineLevel (required for Word's
+ * navigation pane and Table of Contents to find them).
+ */
+function buildStylesConfig(docx: any, defaultFont: string, defaultSizeHalfPt: number): any { // eslint-disable-line @typescript-eslint/no-explicit-any
+  return {
+    default: {
+      document: { run: { font: defaultFont, size: defaultSizeHalfPt } },
+    },
+    paragraphStyles: [
+      {
+        id: 'Heading1', name: 'Heading 1', basedOn: 'Normal', next: 'Normal', quickFormat: true,
+        run: { size: 36, bold: true, font: defaultFont, color: '000000' },
+        paragraph: { spacing: { before: 240, after: 240 }, outlineLevel: 0 },
+      },
+      {
+        id: 'Heading2', name: 'Heading 2', basedOn: 'Normal', next: 'Normal', quickFormat: true,
+        run: { size: 32, bold: true, font: defaultFont, color: '000000' },
+        paragraph: { spacing: { before: 200, after: 200 }, outlineLevel: 1 },
+      },
+      {
+        id: 'Heading3', name: 'Heading 3', basedOn: 'Normal', next: 'Normal', quickFormat: true,
+        run: { size: 28, bold: true, font: defaultFont, color: '000000' },
+        paragraph: { spacing: { before: 160, after: 160 }, outlineLevel: 2 },
+      },
+    ],
+  };
+}
+
+/**
+ * Numbering config providing two refs: 'bullets' (•) and 'numbers' (1. 2. 3.).
+ * Both indented 0.5", hanging 0.25". docx-js requires this; raw unicode
+ * bullets in paragraph text break list semantics in some Word versions.
+ */
+function buildNumberingConfig(docx: any): any { // eslint-disable-line @typescript-eslint/no-explicit-any
+  return {
+    config: [
+      {
+        reference: 'bullets',
+        levels: [{
+          level: 0, format: docx.LevelFormat.BULLET, text: '•',
+          alignment: docx.AlignmentType.LEFT,
+          style: { paragraph: { indent: { left: 720, hanging: 360 } } },
+        }],
+      },
+      {
+        reference: 'numbers',
+        levels: [{
+          level: 0, format: docx.LevelFormat.DECIMAL, text: '%1.',
+          alignment: docx.AlignmentType.LEFT,
+          style: { paragraph: { indent: { left: 720, hanging: 360 } } },
+        }],
+      },
+    ],
+  };
+}
+
+/**
+ * Convert a TextRunSpec into a docx-js run object. Returns either a
+ * single object (TextRun, InternalHyperlink, ExternalHyperlink, etc.)
+ * or null if the spec is invalid for its kind.
+ */
+function buildRunFromSpec(
+  docx: any, // eslint-disable-line @typescript-eslint/no-explicit-any
+  spec: TextRunSpec,
+  defaultFont: string,
+  ctx?: { smartQuotes?: boolean; revisionAuthor?: string },
+): any { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const formatting = {
+    bold: spec.bold ?? false,
+    italics: spec.italic ?? false,
+    underline: spec.underline ? {} : undefined,
+    color: spec.color,
+    size: spec.size_pt ? Math.round(spec.size_pt * 2) : undefined,
+    font: spec.font ?? defaultFont,
+  };
+  const rawText = spec.text ?? '';
+  const text = ctx?.smartQuotes ? smartenQuotes(rawText) : rawText;
+  const revisionAuthor = spec.revision_author ?? ctx?.revisionAuthor ?? 'Claude';
+  const revisionDate = spec.revision_date ?? new Date().toISOString();
+  switch (spec.kind) {
+    case 'text':
+      return new docx.TextRun({ text, ...formatting });
+    case 'hyperlink': {
+      if (spec.url) {
+        return new docx.ExternalHyperlink({
+          link: spec.url,
+          children: [new docx.TextRun({ text: spec.text ?? spec.url, style: 'Hyperlink', ...formatting })],
+        });
+      }
+      if (spec.bookmark) {
+        return new docx.InternalHyperlink({
+          anchor: spec.bookmark,
+          children: [new docx.TextRun({ text: spec.text ?? '', style: 'Hyperlink', ...formatting })],
+        });
+      }
+      return null;
+    }
+    case 'footnote_ref':
+      if (spec.footnote_id === undefined) return null;
+      return new docx.FootnoteReferenceRun(Number(spec.footnote_id));
+    case 'page_number':
+      return new docx.TextRun({ children: [docx.PageNumber.CURRENT], ...formatting });
+    case 'page_count':
+      return new docx.TextRun({ children: [docx.PageNumber.TOTAL_PAGES], ...formatting });
+    case 'line_break':
+      return new docx.TextRun({ break: 1 });
+    case 'tab':
+      return new docx.TextRun({ children: ['\t'], ...formatting });
+    case 'tracked_insert':
+      // docx-js InsertedTextRun wraps a TextRun in a <w:ins> element
+      // with author + date attributes — Word reads it as an editorial
+      // insertion the recipient can accept or reject in the Review tab.
+      return new docx.InsertedTextRun({
+        text,
+        ...formatting,
+        author: revisionAuthor,
+        date: revisionDate,
+        id: 0, // docx auto-assigns IDs from this seed
+      });
+    case 'tracked_delete':
+      // DeletedTextRun emits <w:del> + <w:delText>; rendered as
+      // strikethrough until the recipient accepts the change.
+      return new docx.DeletedTextRun({
+        text,
+        ...formatting,
+        author: revisionAuthor,
+        date: revisionDate,
+        id: 0,
+      });
+    default:
+      return null;
+  }
+}
+
+/**
+ * Resolve a paragraph's tab stops into docx-js TabStop config.
+ */
+function buildTabStops(docx: any, stops: NonNullable<ContentBlock['tab_stops']>): any[] { // eslint-disable-line @typescript-eslint/no-explicit-any
+  return stops.map((s) => {
+    const typeMap: Record<string, any> = { // eslint-disable-line @typescript-eslint/no-explicit-any
+      left: docx.TabStopType.LEFT, right: docx.TabStopType.RIGHT, center: docx.TabStopType.CENTER,
+    };
+    const leaderMap: Record<string, any> = { // eslint-disable-line @typescript-eslint/no-explicit-any
+      dot: docx.LeaderType.DOT, hyphen: docx.LeaderType.HYPHEN, underscore: docx.LeaderType.UNDERSCORE,
+    };
+    return {
+      type: typeMap[s.align ?? 'left'],
+      position: s.position === 'right_margin' ? docx.TabStopPosition.MAX : s.position,
+      leader: s.leader && s.leader !== 'none' ? leaderMap[s.leader] : undefined,
+    };
+  });
+}
+
+/**
+ * Convert a heading level number into the docx-js HeadingLevel enum.
+ */
+function resolveHeadingLevel(docx: any, level?: number): any { // eslint-disable-line @typescript-eslint/no-explicit-any
+  switch (level) {
+    case 2: return docx.HeadingLevel.HEADING_2;
+    case 3: return docx.HeadingLevel.HEADING_3;
+    case 4: return docx.HeadingLevel.HEADING_4;
+    case 5: return docx.HeadingLevel.HEADING_5;
+    case 6: return docx.HeadingLevel.HEADING_6;
+    case 1:
+    default: return docx.HeadingLevel.HEADING_1;
+  }
+}
+
+/**
+ * Build one TableCell with proper width, margins, and optional shading.
+ */
+function buildTableCell(
+  docx: any, // eslint-disable-line @typescript-eslint/no-explicit-any
+  input: TableCellInput,
+  widthDxa: number,
+  defaults: { isHeader: boolean; headerShadingHex: string; borderColorHex: string; defaultFont: string; defaultSizeHalfPt: number; firstRowBold: boolean; smartQuotes: boolean },
+): any { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const rawSpec: TableCellSpec = typeof input === 'string' ? { text: input } : input;
+  const spec: TableCellSpec = { ...rawSpec, text: rawSpec.text };
+  const borderStyle = defaults.borderColorHex
+    ? { style: docx.BorderStyle.SINGLE, size: 1, color: defaults.borderColorHex }
+    : { style: docx.BorderStyle.NONE, size: 0, color: 'auto' };
+  const borders = { top: borderStyle, bottom: borderStyle, left: borderStyle, right: borderStyle };
+  const shadingHex = spec.shading_hex
+    ?? (defaults.isHeader && defaults.headerShadingHex ? defaults.headerShadingHex : undefined);
+  return new docx.TableCell({
+    width: { size: widthDxa, type: docx.WidthType.DXA },
+    borders,
+    margins: { top: 80, bottom: 80, left: 120, right: 120 },
+    shading: shadingHex ? { fill: shadingHex, type: docx.ShadingType.CLEAR, color: 'auto' } : undefined,
+    children: [new docx.Paragraph({
+      alignment: resolveAlign(docx, spec.align),
+      children: [new docx.TextRun({
+        text: defaults.smartQuotes ? smartenQuotes(spec.text ?? '') : (spec.text ?? ''),
+        bold: spec.bold ?? (defaults.isHeader && defaults.firstRowBold),
+        italics: spec.italic ?? false,
+        font: defaults.defaultFont,
+        size: defaults.defaultSizeHalfPt,
+      })],
+    })],
+  });
+}
+
+/**
+ * Render a single ContentBlock into one or more docx-js child objects
+ * (paragraphs, tables, TOC entries, etc.). Returns an array; most blocks
+ * produce a single element, lists produce one element per item, etc.
+ */
+function renderBlock(
+  docx: any, // eslint-disable-line @typescript-eslint/no-explicit-any
+  block: ContentBlock,
+  ctx: {
+    contentWidthDxa: number;
+    defaultFont: string;
+    defaultSizeHalfPt: number;
+    smartQuotes: boolean;
+    revisionAuthor: string;
+  },
+): unknown[] {
+  const smarten = (t: string): string => ctx.smartQuotes ? smartenQuotes(t) : t;
+  switch (block.type) {
+    case 'heading': {
+      const text = smarten(block.text ?? '');
+      const runs = [new docx.TextRun({ text, bold: true, font: block.font ?? ctx.defaultFont })];
+      return [new docx.Paragraph({
+        heading: resolveHeadingLevel(docx, block.level),
+        alignment: resolveAlign(docx, block.align),
+        children: runs,
+      })];
+    }
+    case 'paragraph': {
+      const sizeHalfPt = block.size_pt ? Math.round(block.size_pt * 2) : undefined;
+      const run = new docx.TextRun({
+        text: smarten(block.text ?? ''),
+        bold: block.bold ?? false,
+        italics: block.italic ?? false,
+        underline: block.underline ? {} : undefined,
+        color: block.color,
+        size: sizeHalfPt,
+        font: block.font ?? ctx.defaultFont,
+      });
+      // If this paragraph is meant to be an internal-link target, wrap
+      // the text run inside a Bookmark so the anchor is anchored to
+      // visible content (an empty Bookmark sibling doesn't reliably
+      // resolve in Word).
+      const children = block.bookmark
+        ? [new docx.Bookmark({ id: block.bookmark, children: [run] })]
+        : [run];
+      return [new docx.Paragraph({
+        alignment: resolveAlign(docx, block.align),
+        tabStops: block.tab_stops ? buildTabStops(docx, block.tab_stops) : undefined,
+        children,
+      })];
+    }
+    case 'paragraph_rich': {
+      const runs = (block.runs ?? [])
+        .map((r) => buildRunFromSpec(docx, r, block.font ?? ctx.defaultFont, { smartQuotes: ctx.smartQuotes, revisionAuthor: ctx.revisionAuthor }))
+        .filter((r) => r !== null);
+      // If the paragraph also defines a bookmark anchor, wrap the first
+      // text run in a Bookmark element so internal hyperlinks can target
+      // this paragraph.
+      const children = block.bookmark
+        ? [new docx.Bookmark({ id: block.bookmark, children: runs }) as unknown]
+        : runs;
+      return [new docx.Paragraph({
+        alignment: resolveAlign(docx, block.align),
+        tabStops: block.tab_stops ? buildTabStops(docx, block.tab_stops) : undefined,
+        children,
+      })];
+    }
+    case 'table': {
+      const rows = block.rows ?? [];
+      if (rows.length === 0) return [];
+      const cols = Math.max(...rows.map((r) => r.length));
+      if (cols === 0) return [];
+      // Default to full-width even-column distribution. Override via
+      // column_widths_dxa if the caller has a layout in mind.
+      let columnWidths: number[];
+      if (block.column_widths_dxa && block.column_widths_dxa.length === cols) {
+        columnWidths = block.column_widths_dxa;
+      } else {
+        const per = Math.floor(ctx.contentWidthDxa / cols);
+        columnWidths = new Array(cols).fill(per);
+        // Push leftover DXA into the last column so the total matches exactly.
+        columnWidths[cols - 1] += ctx.contentWidthDxa - per * cols;
+      }
+      const headerShadingHex = block.header_shading_hex === '' ? '' : (block.header_shading_hex ?? 'D5E8F0');
+      const borderColorHex = block.border_color_hex === '' ? '' : (block.border_color_hex ?? 'CCCCCC');
+      const firstRowBold = block.first_row_bold ?? true;
+      const tableRows = rows.map((row, rowIdx) => new docx.TableRow({
+        children: Array.from({ length: cols }).map((_, c) => buildTableCell(
+          docx,
+          row[c] ?? '',
+          columnWidths[c],
+          {
+            isHeader: rowIdx === 0,
+            headerShadingHex, borderColorHex,
+            defaultFont: ctx.defaultFont, defaultSizeHalfPt: ctx.defaultSizeHalfPt, firstRowBold,
+            smartQuotes: ctx.smartQuotes,
+          },
+        )),
+      }));
+      return [new docx.Table({
+        width: { size: ctx.contentWidthDxa, type: docx.WidthType.DXA },
+        columnWidths,
+        rows: tableRows,
+        layout: docx.TableLayoutType.FIXED,
+      })];
+    }
+    case 'bullet_list': {
+      const items = block.items ?? [];
+      return items.map((item) => new docx.Paragraph({
+        numbering: { reference: 'bullets', level: 0 },
+        children: [new docx.TextRun({ text: smarten(item), font: ctx.defaultFont })],
+      }));
+    }
+    case 'numbered_list': {
+      const items = block.items ?? [];
+      return items.map((item) => new docx.Paragraph({
+        numbering: { reference: 'numbers', level: 0 },
+        children: [new docx.TextRun({ text: smarten(item), font: ctx.defaultFont })],
+      }));
+    }
+    case 'page_break':
+      return [new docx.Paragraph({ children: [new docx.PageBreak()] })];
+    case 'image': {
+      const imgPath = block.path;
+      if (!imgPath) return [];
+      try {
+        if (!fs.existsSync(imgPath)) {
+          logger.warn('Word image block: file not found, skipping', { path: imgPath });
+          return [];
+        }
+        const data = fs.readFileSync(imgPath);
+        const ext = (block.image_type ?? path.extname(imgPath).slice(1).toLowerCase());
+        const widthPx = Math.round((block.width_in ?? 3) * 96); // 1in ≈ 96px
+        const heightPx = Math.round((block.height_in ?? 3) * 96);
+        const altTitle = block.alt ?? path.basename(imgPath);
+        return [new docx.Paragraph({
+          children: [new docx.ImageRun({
+            type: ext,
+            data,
+            transformation: { width: widthPx, height: heightPx },
+            altText: { title: altTitle, description: altTitle, name: altTitle },
+          })],
+        })];
+      } catch (err) {
+        logger.warn('Word image block render failed (non-fatal)', {
+          path: imgPath, error: err instanceof Error ? err.message : String(err),
+        });
+        return [];
+      }
+    }
+    case 'toc': {
+      const title = block.toc_title ?? 'Table of Contents';
+      const range = block.toc_heading_levels ?? '1-3';
+      return [
+        new docx.Paragraph({
+          heading: docx.HeadingLevel.HEADING_1,
+          children: [new docx.TextRun({ text: title, bold: true, font: ctx.defaultFont })],
+        }),
+        new docx.TableOfContents(title, { hyperlink: true, headingStyleRange: range }),
+      ];
+    }
+    default:
+      return [];
+  }
+}
+
+async function generateWordBuffer(blocks: ContentBlock[], options: WordDocOptions = {}): Promise<Buffer> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const docx: any = await (Function('return import("docx")')());
 
-  const children: unknown[] = [];
+  const pageKey = options.page_size ?? 'letter';
+  const pageDxa = PAGE_SIZES_DXA[pageKey] ?? PAGE_SIZES_DXA.letter;
+  const marginIn = options.margin_in ?? 1;
+  const marginDxa = Math.round(marginIn * 1440);
+  const defaultFont = options.default_font ?? 'Arial';
+  const defaultSizePt = options.default_font_size_pt ?? 12;
+  const defaultSizeHalfPt = Math.round(defaultSizePt * 2);
+  const orientation = options.orientation ?? 'portrait';
+  const contentDxa = orientation === 'landscape'
+    ? contentWidthDxa(pageDxa.height, marginIn) // landscape: use long edge as content width
+    : contentWidthDxa(pageDxa.width, marginIn);
 
+  const smartQuotes = options.smart_quotes ?? false;
+  const revisionAuthor = options.revision_author ?? 'Claude';
+  const renderCtx = { contentWidthDxa: contentDxa, defaultFont, defaultSizeHalfPt, smartQuotes, revisionAuthor };
+
+  // Render top-level body content.
+  const children: unknown[] = [];
   for (const block of blocks) {
-    switch (block.type) {
-      case 'heading': {
-        const headingMap: Record<number, unknown> = {
-          1: docx.HeadingLevel.HEADING_1,
-          2: docx.HeadingLevel.HEADING_2,
-          3: docx.HeadingLevel.HEADING_3,
-        };
-        children.push(new docx.Paragraph({
-          text: block.text ?? '',
-          heading: headingMap[block.level ?? 1] ?? docx.HeadingLevel.HEADING_1,
-        }));
-        break;
-      }
-      case 'paragraph': {
-        const alignMap: Record<string, unknown> = {
-          left: docx.AlignmentType.LEFT,
-          center: docx.AlignmentType.CENTER,
-          right: docx.AlignmentType.RIGHT,
-        };
-        children.push(new docx.Paragraph({
-          alignment: alignMap[block.align ?? 'left'] ?? docx.AlignmentType.LEFT,
-          children: [new docx.TextRun({
-            text: block.text ?? '',
-            bold: block.bold ?? false,
-            italics: block.italic ?? false,
-          })],
-        }));
-        break;
-      }
-      case 'table': {
-        if (block.rows && block.rows.length > 0) {
-          const tableRows = block.rows.map((row: string[], rowIdx: number) =>
-            new docx.TableRow({
-              children: row.map((cell: string) =>
-                new docx.TableCell({
-                  children: [new docx.Paragraph({
-                    children: [new docx.TextRun({
-                      text: cell,
-                      bold: rowIdx === 0,
-                    })],
-                  })],
-                }),
-              ),
-            }),
-          );
-          children.push(new docx.Table({ rows: tableRows }));
-        }
-        break;
-      }
-      case 'bullet_list': {
-        if (block.items) {
-          for (const item of block.items) {
-            children.push(new docx.Paragraph({
-              text: item,
-              bullet: { level: 0 },
-            }));
-          }
-        }
-        break;
-      }
-      case 'page_break': {
-        children.push(new docx.Paragraph({
-          children: [new docx.PageBreak()],
-        }));
-        break;
-      }
-    }
+    for (const node of renderBlock(docx, block, renderCtx)) children.push(node);
   }
 
-  const doc = new docx.Document({
-    sections: [{ children }],
-  });
+  // Render header / footer if supplied. Each becomes its own
+  // Paragraph/Table list. We render via the same renderBlock helper so
+  // every supported block type works inside headers and footers too.
+  const headerContent = options.header
+    ? options.header.flatMap((b) => renderBlock(docx, b, renderCtx))
+    : [];
+  const footerContent = options.footer
+    ? options.footer.flatMap((b) => renderBlock(docx, b, renderCtx))
+    : [];
+  if (options.footer_includes_page_number) {
+    footerContent.push(new docx.Paragraph({
+      alignment: docx.AlignmentType.CENTER,
+      children: [
+        new docx.TextRun({ text: 'Page ', font: defaultFont, size: defaultSizeHalfPt }),
+        new docx.TextRun({ children: [docx.PageNumber.CURRENT], font: defaultFont, size: defaultSizeHalfPt }),
+        new docx.TextRun({ text: ' of ', font: defaultFont, size: defaultSizeHalfPt }),
+        new docx.TextRun({ children: [docx.PageNumber.TOTAL_PAGES], font: defaultFont, size: defaultSizeHalfPt }),
+      ],
+    }));
+  }
 
+  // Footnotes: docx-js expects them keyed by id.
+  const footnotes: Record<string, unknown> | undefined = options.footnotes
+    ? Object.fromEntries(
+      Object.entries(options.footnotes).map(([id, text]) => [
+        id,
+        { children: [new docx.Paragraph({ children: [new docx.TextRun({ text, font: defaultFont, size: defaultSizeHalfPt })] })] },
+      ]),
+    )
+    : undefined;
+
+  // Multi-column section configuration.
+  const columnsCfg = options.columns
+    ? {
+      count: options.columns.count,
+      space: options.columns.space_dxa ?? 720,
+      equalWidth: options.columns.equal_width ?? true,
+      separate: options.columns.separate ?? false,
+    }
+    : undefined;
+
+  // Section page setup. Landscape: docx-js swaps width/height
+  // internally, so pass portrait dimensions and set orientation.
+  const pageSize = {
+    width: pageDxa.width,
+    height: pageDxa.height,
+    orientation: orientation === 'landscape' ? docx.PageOrientation.LANDSCAPE : docx.PageOrientation.PORTRAIT,
+  };
+
+  const sectionProps: Record<string, unknown> = {
+    page: {
+      size: pageSize,
+      margin: { top: marginDxa, right: marginDxa, bottom: marginDxa, left: marginDxa },
+    },
+  };
+  if (columnsCfg) sectionProps.column = columnsCfg;
+
+  const section: Record<string, unknown> = { properties: sectionProps, children };
+  if (headerContent.length > 0) {
+    section.headers = { default: new docx.Header({ children: headerContent }) };
+  }
+  if (footerContent.length > 0) {
+    section.footers = { default: new docx.Footer({ children: footerContent }) };
+  }
+
+  const docConfig: Record<string, unknown> = {
+    styles: buildStylesConfig(docx, defaultFont, defaultSizeHalfPt),
+    numbering: buildNumberingConfig(docx),
+    sections: [section],
+  };
+  if (footnotes) docConfig.footnotes = footnotes;
+
+  const doc = new docx.Document(docConfig);
   return Buffer.from(await docx.Packer.toBuffer(doc));
 }
 
 // ── Excel Generation ──
+//
+// Pre-rewrite this used SheetJS (xlsx) and accepted only plain string
+// values. That gave the agent no way to write formulas, number formats,
+// colors, comments, or column widths — every spreadsheet came out as
+// undifferentiated grey text. Switching to ExcelJS opens the full
+// styling surface without adding native dependencies.
+//
+// The schema stays backward-compatible: rows of plain strings still
+// work and render exactly as before. Anywhere a cell can be a string,
+// it can now alternatively be a CellSpec object with formula / style /
+// number_format / etc.
 
-async function generateExcelBuffer(sheets: Array<{ name: string; rows: string[][] }>): Promise<Buffer> {
+/** One cell in a sheet. Plain primitives are rendered as values; objects unlock styling. */
+type ExcelCellInput = string | number | boolean | null | undefined | ExcelCellSpec;
+
+interface ExcelCellFont {
+  name?: string;
+  size?: number;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  /** Hex without leading '#', e.g. '2E75B6'. */
+  color?: string;
+}
+
+interface ExcelCellSpec {
+  /** Literal value. Numbers stay numeric; strings stay text; booleans stay boolean. */
+  value?: string | number | boolean | null;
+  /** Excel formula. Leading '=' is optional — the renderer adds it if missing. */
+  formula?: string;
+  /** Excel number format string. Examples: "$#,##0.00", "0.0%", "yyyy-mm-dd", "[Red](#,##0)". */
+  number_format?: string;
+  font?: ExcelCellFont;
+  /** Cell background fill as hex. */
+  fill_hex?: string;
+  align?: 'left' | 'center' | 'right' | 'justified';
+  v_align?: 'top' | 'middle' | 'bottom';
+  /** Add a thin black border on the named side(s). */
+  border?: 'all' | 'top' | 'bottom' | 'left' | 'right' | 'none';
+  /** Wrap long text. Default false. */
+  wrap_text?: boolean;
+  /** Cell comment (note). Useful for documenting assumptions on hardcoded inputs. */
+  comment?: string;
+  /** External hyperlink URL. */
+  hyperlink?: string;
+}
+
+interface ExcelSheetSpec {
+  name: string;
+  rows: ExcelCellInput[][];
+  /** Per-column widths in character units (Excel's native unit). null/omitted = auto. */
+  column_widths?: Array<number | null>;
+  /** Number of rows from the top to freeze (e.g. 1 to freeze the header row). */
+  freeze_rows?: number;
+  /** Number of columns from the left to freeze. */
+  freeze_cols?: number;
+  /** Apply bold + light-blue fill to the first row automatically. Default true. */
+  default_header_row?: boolean;
+  /** Sheet zoom level (e.g. 100, 125, 150). */
+  zoom_pct?: number;
+  /** When true, the sheet is created as hidden (still in the workbook, hidden in the UI). */
+  hidden?: boolean;
+}
+
+/** Resolve an ExcelCellInput into the value and style pieces ExcelJS expects. */
+function applyExcelCell(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const XLSX: any = await (Function('return import("xlsx")')());
-  const wb = XLSX.utils.book_new();
-
-  for (const sheet of sheets) {
-    const ws = XLSX.utils.aoa_to_sheet(sheet.rows);
-    XLSX.utils.book_append_sheet(wb, ws, sheet.name);
+  cell: any,
+  input: ExcelCellInput,
+  headerDefault: boolean,
+): void {
+  // Primitive path: plain string/number/boolean → just set value.
+  if (input === undefined || input === null) {
+    if (headerDefault) {
+      cell.font = { bold: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD5E8F0' } };
+    }
+    return;
+  }
+  if (typeof input !== 'object') {
+    cell.value = input;
+    if (headerDefault) {
+      cell.font = { bold: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD5E8F0' } };
+    }
+    return;
   }
 
-  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  return Buffer.from(buf);
+  const spec = input as ExcelCellSpec;
+  if (spec.formula) {
+    // ExcelJS expects `formula` without the leading '='. Strip if the
+    // agent passes it the natural Excel way.
+    cell.value = { formula: spec.formula.replace(/^=/, ''), result: undefined };
+  } else if (spec.value !== undefined) {
+    cell.value = spec.value;
+  }
+  if (spec.hyperlink) {
+    cell.value = { text: typeof spec.value === 'string' ? spec.value : (spec.hyperlink), hyperlink: spec.hyperlink };
+  }
+  if (spec.number_format) cell.numFmt = spec.number_format;
+
+  const fontMerge: Record<string, unknown> = {};
+  if (headerDefault) fontMerge.bold = true;
+  if (spec.font) {
+    if (spec.font.name) fontMerge.name = spec.font.name;
+    if (spec.font.size) fontMerge.size = spec.font.size;
+    if (spec.font.bold !== undefined) fontMerge.bold = spec.font.bold;
+    if (spec.font.italic !== undefined) fontMerge.italic = spec.font.italic;
+    if (spec.font.underline !== undefined) fontMerge.underline = spec.font.underline;
+    if (spec.font.color) fontMerge.color = { argb: 'FF' + spec.font.color.replace(/^#/, '').toUpperCase() };
+  }
+  if (Object.keys(fontMerge).length > 0) cell.font = fontMerge;
+
+  const fillHex = spec.fill_hex ?? (headerDefault ? 'D5E8F0' : undefined);
+  if (fillHex) {
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF' + fillHex.replace(/^#/, '').toUpperCase() },
+    };
+  }
+
+  if (spec.align || spec.v_align || spec.wrap_text) {
+    cell.alignment = {
+      horizontal: spec.align,
+      vertical: spec.v_align,
+      wrapText: spec.wrap_text ?? false,
+    };
+  }
+
+  if (spec.border && spec.border !== 'none') {
+    const line = { style: 'thin', color: { argb: 'FF000000' } };
+    const borders: Record<string, unknown> = {};
+    if (spec.border === 'all') Object.assign(borders, { top: line, bottom: line, left: line, right: line });
+    else borders[spec.border] = line;
+    cell.border = borders;
+  }
+
+  if (spec.comment) {
+    cell.note = { texts: [{ text: spec.comment }] };
+  }
+}
+
+async function generateExcelBuffer(sheets: ExcelSheetSpec[]): Promise<Buffer> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ExcelJSMod: any = await (Function('return import("exceljs")')());
+  const ExcelJS = ExcelJSMod.default ?? ExcelJSMod;
+
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'DOJO';
+  wb.created = new Date();
+
+  for (const sheet of sheets) {
+    const ws = wb.addWorksheet(sheet.name, {
+      properties: { defaultRowHeight: 15 },
+      state: sheet.hidden ? 'hidden' : 'visible',
+      views: [{
+        zoomScale: sheet.zoom_pct,
+        state: 'frozen',
+        xSplit: sheet.freeze_cols ?? 0,
+        ySplit: sheet.freeze_rows ?? (sheet.default_header_row !== false && sheet.rows.length > 0 ? 1 : 0),
+      }],
+    });
+
+    // Apply column widths up front. ExcelJS sets these per-column via
+    // worksheet.columns or worksheet.getColumn(idx).width.
+    if (sheet.column_widths) {
+      sheet.column_widths.forEach((w, i) => {
+        if (w !== null && w !== undefined) ws.getColumn(i + 1).width = w;
+      });
+    }
+
+    // Default-header-row sentinel: when true (the default), the first
+    // row's cells get bold + light-blue fill unless the cell spec
+    // overrides those properties explicitly.
+    const headerRow = sheet.default_header_row !== false;
+
+    sheet.rows.forEach((row, rIdx) => {
+      const wsRow = ws.getRow(rIdx + 1);
+      row.forEach((cellInput, cIdx) => {
+        const cell = wsRow.getCell(cIdx + 1);
+        applyExcelCell(cell, cellInput, headerRow && rIdx === 0);
+      });
+      wsRow.commit();
+    });
+  }
+
+  const buf = await wb.xlsx.writeBuffer();
+  return Buffer.from(buf as ArrayBuffer);
 }
 
 // ── PowerPoint Generation ──
+//
+// Pre-rewrite this generated single-layout title+body slides with hard-
+// coded x/y positioning. Every deck looked identical and there was no
+// way to add shapes, images, tables, or speaker notes. The rewrite adds:
+//   - A deck-level theme (colors + font pair + 4:3 vs 16:9 slide size)
+//   - Seven layout presets (title, content, two_column, comparison,
+//     big_stat, image, blank) that auto-place common content
+//   - Free-form `elements[]` per slide for shapes, images, text boxes,
+//     tables — each with explicit x/y/w/h
+//   - Rich text runs with per-run formatting
+//   - Bullet + numbered lists
+//   - Speaker notes
+//   - Slide background overrides
+//
+// Backward compatible: a slide with only `{ title, body }` still
+// renders exactly like before, with no theme changes.
 
-async function generatePptxBuffer(slides: Array<{ title: string; body?: string }>): Promise<Buffer> {
+interface PptxTheme {
+  /** Brand primary color (hex without #). Used for titles + accent shapes when nothing more specific is set. */
+  primary?: string;
+  /** Secondary color. */
+  secondary?: string;
+  /** Accent color (e.g. for callouts, dividers). */
+  accent?: string;
+  /** Slide background color. */
+  background?: string;
+  /** Body text color. */
+  text?: string;
+  /** Title font. */
+  title_font?: string;
+  /** Body font. */
+  body_font?: string;
+  /** Slide size. 'wide' = 16:9 (LAYOUT_WIDE), 'standard' = 4:3 (LAYOUT_4x3). Default 'wide'. */
+  slide_size?: 'standard' | 'wide';
+}
+
+type PptxTextRun = string | {
+  text: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  color?: string;
+  size?: number;
+  font?: string;
+  /** When true, this run starts on a new line. */
+  break?: boolean;
+  /** Hyperlink URL. */
+  url?: string;
+};
+
+/** Plain string or array of runs for mixed-formatting text. */
+type PptxTextContent = string | string[] | PptxTextRun[];
+
+interface PptxTextBox {
+  type: 'text';
+  text: PptxTextContent;
+  /** Inches. If omitted, the slide layout's defaults apply. */
+  x?: number; y?: number; w?: number; h?: number;
+  font_size?: number;
+  bold?: boolean;
+  italic?: boolean;
+  color?: string;
+  align?: 'left' | 'center' | 'right' | 'justify';
+  v_align?: 'top' | 'middle' | 'bottom';
+  /** Bullet rendering: true = unordered bullet, 'numbered' = 1. 2. 3., false/omitted = no bullets. */
+  bullet?: boolean | 'numbered';
+  fill_hex?: string;
+  font_face?: string;
+}
+
+interface PptxShape {
+  type: 'shape';
+  shape_type: 'rect' | 'rounded_rect' | 'ellipse' | 'triangle' | 'line' | 'arrow';
+  x: number; y: number; w: number; h: number;
+  fill_hex?: string;
+  border_hex?: string;
+  border_pt?: number;
+  /** Optional text rendered inside the shape. */
+  text?: PptxTextContent;
+  text_color?: string;
+  text_size?: number;
+  text_align?: 'left' | 'center' | 'right';
+  text_v_align?: 'top' | 'middle' | 'bottom';
+}
+
+interface PptxImage {
+  type: 'image';
+  /** Absolute path to a local file. */
+  path?: string;
+  /** Remote URL. */
+  url?: string;
+  /** Base64-encoded data (no data: prefix). */
+  data?: string;
+  x: number; y: number; w: number; h: number;
+  alt?: string;
+  /** 'contain' fits inside w/h preserving aspect; 'cover' fills (may crop); default lets pptxgenjs handle it. */
+  sizing?: 'contain' | 'cover';
+}
+
+interface PptxTable {
+  type: 'table';
+  rows: PptxTextContent[][];
+  x: number; y: number; w: number; h: number;
+  /** Apply bold + accent fill to the first row. Default true. */
+  header_row?: boolean;
+  /** Header row fill hex; defaults to theme.primary or a light grey. */
+  header_fill_hex?: string;
+  /** Per-column widths in inches. Must sum to roughly w. */
+  col_widths?: number[];
+}
+
+type PptxElement = PptxTextBox | PptxShape | PptxImage | PptxTable;
+
+interface PptxSlide {
+  /** Layout preset. 'blank' = no auto-placed content; use `elements` directly. Default 'content' when title+body are present, 'blank' when only `elements` is given. */
+  layout?: 'title' | 'content' | 'two_column' | 'comparison' | 'big_stat' | 'image' | 'blank';
+  // Layout-driven content (auto-placed):
+  title?: PptxTextContent;
+  subtitle?: PptxTextContent;
+  /** Body content. For 'content' layout: string or string[] (bullets). For 'comparison'/'two_column': use body_left/body_right instead. */
+  body?: PptxTextContent;
+  body_left?: PptxTextContent;
+  body_right?: PptxTextContent;
+  /** Image source for the 'image' layout. */
+  image_path?: string;
+  image_url?: string;
+  /** Large centered statistic for the 'big_stat' layout. */
+  stat_value?: string;
+  stat_label?: string;
+  // Free-form override path:
+  elements?: PptxElement[];
+  /** Speaker notes for this slide. */
+  notes?: string;
+  /** Override the slide background color. */
+  background_hex?: string;
+}
+
+interface PptxOptions {
+  theme?: PptxTheme;
+}
+
+/** Resolved theme with defaults applied. */
+interface ResolvedTheme {
+  primary: string;
+  secondary: string;
+  accent: string;
+  background: string;
+  text: string;
+  titleFont: string;
+  bodyFont: string;
+  slideSize: 'standard' | 'wide';
+}
+
+function resolveTheme(theme: PptxTheme | undefined): ResolvedTheme {
+  return {
+    primary:    theme?.primary    ?? '2E75B6',
+    secondary:  theme?.secondary  ?? '4F81BD',
+    accent:     theme?.accent     ?? 'C0504D',
+    background: theme?.background ?? 'FFFFFF',
+    text:       theme?.text       ?? '262626',
+    titleFont:  theme?.title_font ?? 'Calibri',
+    bodyFont:   theme?.body_font  ?? 'Calibri',
+    slideSize:  theme?.slide_size ?? 'wide',
+  };
+}
+
+/** Map our agent-facing align value to pptxgenjs's string. */
+function pptxAlign(a?: 'left' | 'center' | 'right' | 'justify'): 'left' | 'center' | 'right' | 'justify' | undefined {
+  return a;
+}
+
+/** Convert PptxTextContent → array of runs that pptxgenjs.addText understands. */
+function pptxRuns(content: PptxTextContent | undefined, defaultColor: string, defaultFont: string): unknown {
+  if (content === undefined || content === null) return '';
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return String(content);
+  // Array of strings → each becomes a line with break:true
+  if ((content as unknown[]).every((c) => typeof c === 'string')) {
+    return (content as string[]).map((s, i) => ({
+      text: s,
+      options: { breakLine: i < content.length - 1, color: defaultColor, fontFace: defaultFont },
+    }));
+  }
+  // Array of run objects.
+  return (content as PptxTextRun[]).map((r) => {
+    if (typeof r === 'string') return { text: r, options: { color: defaultColor, fontFace: defaultFont } };
+    return {
+      text: r.text,
+      options: {
+        bold: r.bold,
+        italic: r.italic,
+        underline: r.underline ? { style: 'sng' } : undefined,
+        color: r.color ?? defaultColor,
+        fontSize: r.size,
+        fontFace: r.font ?? defaultFont,
+        breakLine: r.break,
+        hyperlink: r.url ? { url: r.url } : undefined,
+      },
+    };
+  });
+}
+
+/** Map shape_type → pptxgenjs ShapeType. Tolerant of pptxgenjs version differences. */
+function pptxShapeType(docx: any, kind: PptxShape['shape_type']): unknown { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const map: Record<string, string> = {
+    rect: 'rect',
+    rounded_rect: 'roundRect',
+    ellipse: 'ellipse',
+    triangle: 'triangle',
+    line: 'line',
+    arrow: 'rightArrow',
+  };
+  // pptxgenjs exposes shape constants on the constructor as `ShapeType`.
+  return docx.ShapeType?.[map[kind]] ?? map[kind];
+}
+
+/**
+ * Render one PptxElement onto a slide. `s` is the pptxgenjs slide handle.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function renderPptxElement(PptxGenJS: any, s: any, el: PptxElement, theme: ResolvedTheme): void {
+  switch (el.type) {
+    case 'text': {
+      const runs = pptxRuns(el.text, el.color ?? theme.text, el.font_face ?? theme.bodyFont);
+      s.addText(runs, {
+        x: el.x ?? 0.5, y: el.y ?? 0.5, w: el.w ?? 9, h: el.h ?? 1,
+        fontSize: el.font_size,
+        bold: el.bold,
+        italic: el.italic,
+        color: el.color ?? theme.text,
+        align: pptxAlign(el.align),
+        valign: el.v_align,
+        bullet: el.bullet === true ? true : el.bullet === 'numbered' ? { type: 'number' } : undefined,
+        fill: el.fill_hex ? { color: el.fill_hex } : undefined,
+        fontFace: el.font_face ?? theme.bodyFont,
+      });
+      return;
+    }
+    case 'shape': {
+      const shapeKind = pptxShapeType(PptxGenJS, el.shape_type);
+      s.addShape(shapeKind, {
+        x: el.x, y: el.y, w: el.w, h: el.h,
+        fill: el.fill_hex ? { color: el.fill_hex } : undefined,
+        line: el.border_hex ? { color: el.border_hex, width: el.border_pt ?? 1 } : undefined,
+      });
+      if (el.text !== undefined) {
+        // Text-in-shape is implemented by overlaying a text box at the
+        // same coordinates — pptxgenjs supports text on shapes only when
+        // the text is supplied at addShape time as the second arg of the
+        // newer API. Overlay works across versions.
+        s.addText(pptxRuns(el.text, el.text_color ?? theme.text, theme.bodyFont), {
+          x: el.x, y: el.y, w: el.w, h: el.h,
+          fontSize: el.text_size,
+          color: el.text_color ?? theme.text,
+          align: pptxAlign(el.text_align),
+          valign: el.text_v_align,
+        });
+      }
+      return;
+    }
+    case 'image': {
+      const opts: Record<string, unknown> = { x: el.x, y: el.y, w: el.w, h: el.h };
+      if (el.path) opts.path = el.path;
+      else if (el.url) opts.path = el.url;
+      else if (el.data) opts.data = `data:image/png;base64,${el.data}`;
+      if (el.alt) opts.altText = el.alt;
+      if (el.sizing === 'contain') opts.sizing = { type: 'contain', w: el.w, h: el.h };
+      else if (el.sizing === 'cover') opts.sizing = { type: 'cover', w: el.w, h: el.h };
+      try {
+        s.addImage(opts);
+      } catch (err) {
+        logger.warn('PPTX image element failed to render', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+    case 'table': {
+      const headerRow = el.header_row !== false;
+      const headerFill = el.header_fill_hex ?? theme.primary;
+      const rows = el.rows.map((row, rIdx) => row.map((cell) => {
+        const isHeader = headerRow && rIdx === 0;
+        const cellRuns = pptxRuns(cell, isHeader ? 'FFFFFF' : theme.text, theme.bodyFont);
+        // pptxgenjs cell format: { text, options }
+        return {
+          text: cellRuns,
+          options: {
+            bold: isHeader || undefined,
+            fill: isHeader ? { color: headerFill } : undefined,
+            color: isHeader ? 'FFFFFF' : theme.text,
+            fontFace: theme.bodyFont,
+            valign: 'middle' as const,
+          },
+        };
+      }));
+      s.addTable(rows, {
+        x: el.x, y: el.y, w: el.w, h: el.h,
+        colW: el.col_widths,
+        border: { type: 'solid', pt: 1, color: 'CCCCCC' },
+      });
+      return;
+    }
+  }
+}
+
+/**
+ * Auto-place layout-driven content (title, body, etc.) before any
+ * free-form `elements[]` get rendered on top.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function placeLayoutContent(PptxGenJS: any, s: any, slide: PptxSlide, theme: ResolvedTheme, slideW: number): void {
+  // The seven layouts each have a default content placement. Anything
+  // the slide also supplies via `elements` gets rendered AFTER, on top.
+  const layout = slide.layout ?? (slide.elements && slide.title === undefined ? 'blank' : 'content');
+  const midX = slideW / 2;
+  switch (layout) {
+    case 'blank':
+      return;
+    case 'title': {
+      if (slide.title !== undefined) {
+        s.addText(pptxRuns(slide.title, theme.primary, theme.titleFont), {
+          x: 0.5, y: 2.2, w: slideW - 1, h: 1.5,
+          fontSize: 44, bold: true, align: 'center', color: theme.primary, fontFace: theme.titleFont,
+        });
+      }
+      if (slide.subtitle !== undefined) {
+        s.addText(pptxRuns(slide.subtitle, theme.text, theme.bodyFont), {
+          x: 0.5, y: 3.8, w: slideW - 1, h: 0.8,
+          fontSize: 22, align: 'center', color: theme.text, fontFace: theme.bodyFont,
+        });
+      }
+      return;
+    }
+    case 'content': {
+      if (slide.title !== undefined) {
+        s.addText(pptxRuns(slide.title, theme.primary, theme.titleFont), {
+          x: 0.5, y: 0.3, w: slideW - 1, h: 0.9,
+          fontSize: 32, bold: true, color: theme.primary, fontFace: theme.titleFont,
+        });
+      }
+      if (slide.body !== undefined) {
+        const isBullets = Array.isArray(slide.body) && slide.body.every((b) => typeof b === 'string');
+        s.addText(pptxRuns(slide.body, theme.text, theme.bodyFont), {
+          x: 0.5, y: 1.3, w: slideW - 1, h: 4.5,
+          fontSize: 18, color: theme.text, fontFace: theme.bodyFont,
+          bullet: isBullets ? true : undefined,
+        });
+      }
+      return;
+    }
+    case 'two_column': {
+      if (slide.title !== undefined) {
+        s.addText(pptxRuns(slide.title, theme.primary, theme.titleFont), {
+          x: 0.5, y: 0.3, w: slideW - 1, h: 0.9,
+          fontSize: 32, bold: true, color: theme.primary, fontFace: theme.titleFont,
+        });
+      }
+      const colW = (slideW - 1.5) / 2;
+      const isLeftBullets = Array.isArray(slide.body_left) && (slide.body_left as unknown[]).every((b) => typeof b === 'string');
+      const isRightBullets = Array.isArray(slide.body_right) && (slide.body_right as unknown[]).every((b) => typeof b === 'string');
+      if (slide.body_left !== undefined) {
+        s.addText(pptxRuns(slide.body_left, theme.text, theme.bodyFont), {
+          x: 0.5, y: 1.3, w: colW, h: 4.5, fontSize: 18, color: theme.text, fontFace: theme.bodyFont,
+          bullet: isLeftBullets ? true : undefined,
+        });
+      }
+      if (slide.body_right !== undefined) {
+        s.addText(pptxRuns(slide.body_right, theme.text, theme.bodyFont), {
+          x: 0.5 + colW + 0.5, y: 1.3, w: colW, h: 4.5, fontSize: 18, color: theme.text, fontFace: theme.bodyFont,
+          bullet: isRightBullets ? true : undefined,
+        });
+      }
+      return;
+    }
+    case 'comparison': {
+      // Same as two_column but with column headers and a vertical
+      // divider line drawn between the two halves.
+      if (slide.title !== undefined) {
+        s.addText(pptxRuns(slide.title, theme.primary, theme.titleFont), {
+          x: 0.5, y: 0.3, w: slideW - 1, h: 0.9,
+          fontSize: 32, bold: true, color: theme.primary, fontFace: theme.titleFont,
+        });
+      }
+      const colW = (slideW - 1.5) / 2;
+      s.addShape(pptxShapeType(PptxGenJS, 'line'), {
+        x: midX, y: 1.3, w: 0, h: 4.5,
+        line: { color: theme.accent, width: 1 },
+      });
+      if (slide.body_left !== undefined) {
+        const isLeftBullets = Array.isArray(slide.body_left) && (slide.body_left as unknown[]).every((b) => typeof b === 'string');
+        s.addText(pptxRuns(slide.body_left, theme.text, theme.bodyFont), {
+          x: 0.5, y: 1.3, w: colW, h: 4.5, fontSize: 18, color: theme.text, fontFace: theme.bodyFont,
+          bullet: isLeftBullets ? true : undefined,
+        });
+      }
+      if (slide.body_right !== undefined) {
+        const isRightBullets = Array.isArray(slide.body_right) && (slide.body_right as unknown[]).every((b) => typeof b === 'string');
+        s.addText(pptxRuns(slide.body_right, theme.text, theme.bodyFont), {
+          x: 0.5 + colW + 0.5, y: 1.3, w: colW, h: 4.5, fontSize: 18, color: theme.text, fontFace: theme.bodyFont,
+          bullet: isRightBullets ? true : undefined,
+        });
+      }
+      return;
+    }
+    case 'big_stat': {
+      if (slide.title !== undefined) {
+        s.addText(pptxRuns(slide.title, theme.text, theme.bodyFont), {
+          x: 0.5, y: 0.3, w: slideW - 1, h: 0.7,
+          fontSize: 20, align: 'center', color: theme.text, fontFace: theme.bodyFont,
+        });
+      }
+      if (slide.stat_value !== undefined) {
+        s.addText(slide.stat_value, {
+          x: 0.5, y: 1.5, w: slideW - 1, h: 2.5,
+          fontSize: 120, bold: true, align: 'center', color: theme.primary, fontFace: theme.titleFont,
+        });
+      }
+      if (slide.stat_label !== undefined) {
+        s.addText(pptxRuns(slide.stat_label, theme.text, theme.bodyFont), {
+          x: 0.5, y: 4.2, w: slideW - 1, h: 0.8,
+          fontSize: 24, align: 'center', color: theme.text, fontFace: theme.bodyFont,
+        });
+      }
+      return;
+    }
+    case 'image': {
+      if (slide.title !== undefined) {
+        s.addText(pptxRuns(slide.title, theme.primary, theme.titleFont), {
+          x: 0.5, y: 0.3, w: slideW - 1, h: 0.7,
+          fontSize: 28, bold: true, color: theme.primary, fontFace: theme.titleFont,
+        });
+      }
+      if (slide.image_path || slide.image_url) {
+        s.addImage({
+          path: slide.image_path ?? slide.image_url,
+          x: 1, y: 1.2, w: slideW - 2, h: 4.5,
+          sizing: { type: 'contain', w: slideW - 2, h: 4.5 },
+        });
+      }
+      if (slide.body !== undefined) {
+        s.addText(pptxRuns(slide.body, theme.text, theme.bodyFont), {
+          x: 0.5, y: 6, w: slideW - 1, h: 0.8,
+          fontSize: 16, align: 'center', color: theme.text, fontFace: theme.bodyFont,
+        });
+      }
+      return;
+    }
+  }
+}
+
+async function generatePptxBuffer(
+  slides: PptxSlide[],
+  options: PptxOptions = {},
+): Promise<Buffer> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pptxMod: any = await (Function('return import("pptxgenjs")')());
-  const PptxGenJS: any = pptxMod.default;
+  // pptxgenjs ships as a CJS module with a default export class. The
+  // ESM/CJS interop can layer the class one or two levels deep depending
+  // on the loader (tsx differs from plain Node here). Unwrap until we
+  // hit a constructor.
+  let PptxGenJS: any = pptxMod; // eslint-disable-line @typescript-eslint/no-explicit-any
+  for (let i = 0; i < 3 && typeof PptxGenJS !== 'function'; i++) {
+    PptxGenJS = PptxGenJS?.default ?? PptxGenJS;
+  }
+  if (typeof PptxGenJS !== 'function') {
+    throw new Error('pptxgenjs did not expose a constructor — module shape changed?');
+  }
   const pptx = new PptxGenJS();
+  pptx.author = 'DOJO';
+  pptx.company = '';
+  pptx.title = '';
+
+  const theme = resolveTheme(options.theme);
+  pptx.layout = theme.slideSize === 'standard' ? 'LAYOUT_4x3' : 'LAYOUT_WIDE';
+
+  // pptxgenjs maps LAYOUT_4x3 to 10x7.5 and LAYOUT_WIDE to 13.333x7.5.
+  const slideW = theme.slideSize === 'standard' ? 10 : 13.333;
 
   for (const slide of slides) {
     const s = pptx.addSlide();
-    s.addText(slide.title, { x: 0.5, y: 0.5, w: 9, h: 1, fontSize: 28, bold: true });
-    if (slide.body) {
-      s.addText(slide.body, { x: 0.5, y: 1.75, w: 9, h: 4.5, fontSize: 16 });
+    if (slide.background_hex) {
+      s.background = { color: slide.background_hex };
+    } else if (theme.background && theme.background !== 'FFFFFF') {
+      s.background = { color: theme.background };
     }
+    placeLayoutContent(PptxGenJS, s, slide, theme, slideW);
+    if (slide.elements) {
+      for (const el of slide.elements) {
+        renderPptxElement(PptxGenJS, s, el, theme);
+      }
+    }
+    if (slide.notes) s.addNotes(slide.notes);
   }
 
   const arrayBuffer = await pptx.write({ outputType: 'arraybuffer' }) as ArrayBuffer;
@@ -823,6 +2345,22 @@ async function generatePptxBuffer(slides: Array<{ title: string; body?: string }
 // ── Tool Execution ──
 
 const officeToolDefByName = new Map(officeToolDefinitions.map(t => [t.name, t]));
+
+/**
+ * The three CREATE tools work locally — they only need the npm packages
+ * (docx, exceljs, pptxgenjs) and write to disk. The Microsoft connection
+ * is required for the *file_id-driven* edit tools (append/insert/read/
+ * replace/etc.) because those operate on existing OneDrive items via
+ * Graph. Surfaces them separately so the filter in agent/tools.ts can
+ * grant the creates without granting the edits.
+ */
+const OFFICE_CREATE_TOOL_NAMES = new Set([
+  'office_create_word_document',
+  'office_create_spreadsheet',
+  'office_create_presentation',
+]);
+export const officeCreateToolDefinitions: ToolDefinition[] = officeToolDefinitions.filter(t => OFFICE_CREATE_TOOL_NAMES.has(t.name));
+export const officeEditToolDefinitions: ToolDefinition[] = officeToolDefinitions.filter(t => !OFFICE_CREATE_TOOL_NAMES.has(t.name));
 
 export async function executeOfficeTool(
   name: string,
@@ -843,12 +2381,28 @@ export async function executeOfficeTool(
         const blocks = args.content as ContentBlock[];
         const folderId = args.folder_id as string | undefined;
 
-        const buffer = await generateWordBuffer(blocks);
-        const result = await uploadToOneDrive(buffer, filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', folderId);
-
+        // Top-level document options (page setup, default font,
+        // headers/footers, footnotes, columns). Anything omitted falls
+        // back to the renderer's sensible defaults (US Letter, 1"
+        // margins, Arial 12pt, full-width tables).
+        const docOptions: WordDocOptions = {
+          page_size: args.page_size as WordDocOptions['page_size'],
+          orientation: args.orientation as WordDocOptions['orientation'],
+          margin_in: args.margin_in as number | undefined,
+          default_font: args.default_font as string | undefined,
+          default_font_size_pt: args.default_font_size_pt as number | undefined,
+          header: args.header as ContentBlock[] | undefined,
+          footer: args.footer as ContentBlock[] | undefined,
+          footer_includes_page_number: args.footer_includes_page_number as boolean | undefined,
+          footnotes: args.footnotes as Record<string, string> | undefined,
+          columns: args.columns as WordDocOptions['columns'],
+          smart_quotes: args.smart_quotes as boolean | undefined,
+          revision_author: args.revision_author as string | undefined,
+        };
+        const buffer = await generateWordBuffer(blocks, docOptions);
+        const summary = await saveOfficeBuffer(buffer, filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', agentId, folderId, 'word');
         logMicrosoftActivity({ agentId, agentName, action: 'office_create_word_document', actionType: 'write', details: JSON.stringify({ filename }), apiEndpoint: 'drive/upload', success: true });
-
-        return `Word document "${result.name}" created.\nFile ID: ${result.id}\nOpen: ${result.webUrl}${result.shareLink ? `\nShare link: ${result.shareLink}` : ''}`;
+        return summary;
       } catch (err) {
         return `Error creating Word document: ${err instanceof Error ? err.message : String(err)}`;
       }
@@ -1246,15 +2800,44 @@ export async function executeOfficeTool(
       try {
         let filename = args.filename as string;
         if (!filename.endsWith('.xlsx')) filename += '.xlsx';
-        const sheets = args.sheets as Array<{ name: string; rows: string[][] }>;
+        const sheets = args.sheets as ExcelSheetSpec[];
         const folderId = args.folder_id as string | undefined;
 
+        // Schema-mismatch detection. The unknownArgsWarning gate at
+        // tools.ts only checks top-level args, so nested wrong patterns
+        // (sheet-level `formulas`, `columns`, `header_row`, etc.) used
+        // to slip through silently and the agent's intended formatting
+        // or formulas would be dropped without any indication. This
+        // explicit check refuses the call with a corrective example
+        // pointing at the right per-cell pattern.
+        const KNOWN_SHEET_KEYS = new Set([
+          'name', 'rows', 'column_widths', 'freeze_rows', 'freeze_cols',
+          'default_header_row', 'zoom_pct', 'hidden',
+        ]);
+        const WRONG_TO_RIGHT: Record<string, string> = {
+          formulas: 'Each formula belongs INSIDE its cell, not in a sheet-level array. Use `{ formula: "=SUM(B2:B9)", number_format: "$#,##0" }` as the cell value in your rows.',
+          columns: 'Column widths live in `column_widths` (an array of numbers in Excel character units). Per-column styling lives in the cells of that column, not a separate columns array.',
+          header_row: 'The first row is auto-styled as a header (bold + light-blue fill) when `default_header_row: true` (the default). To override, style the cells in row 0 directly.',
+          currency_format: 'There is no sheet-level number format. Apply per-cell via `{ value: 150000, number_format: "$#,##0" }`.',
+          column_styles: 'Per-column styling goes on the cells in that column. Use a cell object like `{ value: 0.12, number_format: "0.0%" }`.',
+        };
+        for (const sheet of sheets ?? []) {
+          if (!sheet || typeof sheet !== 'object') continue;
+          const wrong = Object.keys(sheet).filter((k) => !KNOWN_SHEET_KEYS.has(k));
+          if (wrong.length > 0) {
+            const hints = wrong.map((k) => `  - \`${k}\`: ${WRONG_TO_RIGHT[k] ?? 'not a recognized sheet field.'}`).join('\n');
+            return (
+              `Error: sheet "${sheet.name ?? '(unnamed)'}" used field(s) that are not part of the office_create_spreadsheet schema: ${wrong.map((w) => `\`${w}\``).join(', ')}. ` +
+              `These fields were going to be silently dropped — refusing to write the file so you can fix them.\n\n${hints}\n\n` +
+              `Allowed sheet fields: ${[...KNOWN_SHEET_KEYS].join(', ')}. Re-call this tool with the corrections.`
+            );
+          }
+        }
+
         const buffer = await generateExcelBuffer(sheets);
-        const result = await uploadToOneDrive(buffer, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', folderId);
-
+        const summary = await saveOfficeBuffer(buffer, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', agentId, folderId, 'excel');
         logMicrosoftActivity({ agentId, agentName, action: 'office_create_spreadsheet', actionType: 'write', details: JSON.stringify({ filename, sheetCount: sheets.length }), apiEndpoint: 'drive/upload', success: true });
-
-        return `Spreadsheet "${result.name}" created.\nFile ID: ${result.id}\nOpen: ${result.webUrl}${result.shareLink ? `\nShare link: ${result.shareLink}` : ''}`;
+        return summary;
       } catch (err) {
         return `Error creating spreadsheet: ${err instanceof Error ? err.message : String(err)}`;
       }
@@ -1559,15 +3142,14 @@ export async function executeOfficeTool(
       try {
         let filename = args.filename as string;
         if (!filename.endsWith('.pptx')) filename += '.pptx';
-        const slides = args.slides as Array<{ title: string; body?: string }>;
+        const slides = args.slides as PptxSlide[];
         const folderId = args.folder_id as string | undefined;
+        const pptxOptions: PptxOptions = { theme: args.theme as PptxTheme | undefined };
 
-        const buffer = await generatePptxBuffer(slides);
-        const result = await uploadToOneDrive(buffer, filename, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', folderId);
-
+        const buffer = await generatePptxBuffer(slides, pptxOptions);
+        const summary = await saveOfficeBuffer(buffer, filename, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', agentId, folderId, 'powerpoint');
         logMicrosoftActivity({ agentId, agentName, action: 'office_create_presentation', actionType: 'write', details: JSON.stringify({ filename, slideCount: slides.length }), apiEndpoint: 'drive/upload', success: true });
-
-        return `Presentation "${result.name}" created.\nFile ID: ${result.id}\nOpen: ${result.webUrl}${result.shareLink ? `\nShare link: ${result.shareLink}` : ''}`;
+        return summary;
       } catch (err) {
         return `Error creating presentation: ${err instanceof Error ? err.message : String(err)}`;
       }

@@ -1,6 +1,6 @@
 {
   "name": "@dojo/server",
-  "version": "2.9.8",
+  "version": "2.9.9",
   "private": true,
   "type": "module",
   "scripts": {
@@ -22,11 +22,13 @@
     "bcrypt": "^5.1.1",
     "better-sqlite3": "^11.8.1",
     "docx": "^9.6.1",
+    "exceljs": "^4.4.0",
     "hono": "^4.7.4",
     "hume": "^0.15.17",
     "jsonwebtoken": "^9.0.2",
     "kokoro-js": "^1.2.1",
     "openai": "^6.32.0",
+    "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.6.205",
     "pptxgenjs": "^4.0.1",
     "uuid": "^11.1.0",

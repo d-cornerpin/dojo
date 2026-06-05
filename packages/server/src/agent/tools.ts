@@ -46,6 +46,7 @@ import { executeVaultRemember, executeVaultSearch, executeVaultForget, executeVa
 import { googleReadToolDefinitions, executeGoogleReadTool } from '../google/tools-read.js';
 import { googleWriteToolDefinitions, executeGoogleWriteTool } from '../google/tools-write.js';
 import { slidesToolDefinitions, slidesToolNames, executeGoogleSlidesTool } from '../google/tools-slides.js';
+import { pdfToolDefinitions, pdfToolNames, executePdfTool } from './pdf-tools.js';
 import { formsToolDefinitions, formsToolNames, executeGoogleFormsTool } from '../google/tools-forms.js';
 import { getAgentGoogleAccessLevel, getEnabledServices, isGoogleConnected, getGoogleWorkspaceConfig } from '../google/auth.js';
 import { microsoftReadToolDefinitions, executeMicrosoftReadTool } from '../microsoft/tools-read.js';
@@ -53,7 +54,7 @@ import { plaudReadToolDefinitions, executePlaudTool } from '../plaud/tools-read.
 import { isPlaudConnected } from '../plaud/auth.js';
 import { credentialsToolDefinitions, executeCredentialTool } from '../credentials/tools.js';
 import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../microsoft/tools-write.js';
-import { officeToolDefinitions, executeOfficeTool } from '../microsoft/tools-office.js';
+import { officeCreateToolDefinitions, officeEditToolDefinitions, executeOfficeTool } from '../microsoft/tools-office.js';
 import { getAgentMicrosoftAccessLevel, getEnabledMsServices, isMicrosoftConnected, getMicrosoftWorkspaceConfig } from '../microsoft/auth.js';
 import { areOfficePackagesInstalled } from '../microsoft/office-packages.js';
 import { getTunnelStatus } from '../services/tunnel.js';
@@ -131,7 +132,10 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
     } catch { /* ignore */ }
   }
 
-  let filtered = [...toolDefinitions];
+  // Base toolkit includes the static `toolDefinitions` plus the PDF
+  // creation/manipulation tools, which require no external auth and
+  // are safe for every agent classification.
+  let filtered = [...toolDefinitions, ...pdfToolDefinitions];
 
   // 1. Tools policy deny list — remove denied tools
   if (toolsPolicy.deny.length > 0) {
@@ -358,9 +362,19 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   }
   // msAccess === 'none': no Microsoft tools added
 
-  // ── Office document tools (primary agent only, requires npm packages) ──
+  // ── Office document tools ──
+  // Split into two halves with different gating:
+  //   - CREATE tools (Word / Excel / PowerPoint generation) are local-
+  //     only when Microsoft isn't connected — they write to disk under
+  //     ~/.dojo/uploads/<agentId>/ just like pdf_create. We expose them
+  //     to every agent whose Office npm packages are present.
+  //   - EDIT/READ tools operate on OneDrive file_ids and genuinely need
+  //     the Graph connection. They stay gated behind msAccess === 'full'.
+  if (areOfficePackagesInstalled()) {
+    filtered.push(...officeCreateToolDefinitions);
+  }
   if (msAccess === 'full' && areOfficePackagesInstalled()) {
-    filtered.push(...officeToolDefinitions);
+    filtered.push(...officeEditToolDefinitions);
   }
 
   // ── Plaud (meeting recordings) ──
@@ -3435,6 +3449,13 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
   }
 
   try {
+    // ── PDF tools (creation + manipulation, no external auth) ──
+    if (pdfToolNames.includes(name)) {
+      content = await executePdfTool(name, args, agentId);
+      isError = content.startsWith('Error');
+      return { toolCallId: id, name, content, isError };
+    }
+
     // ── Google Slides tools (many — dispatched before switch to avoid enumerating every case) ──
     // Available to both primary AND read-level agents (Ronin/Apprentice). PM agents
     // (googleAccess === 'none') are blocked because the tool isn't in their registry
