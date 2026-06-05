@@ -21,6 +21,7 @@ export const DEFAULT_ALWAYS_LOADED_TOOLS = [
   'complete_task',
   'get_current_time',
   'convert_time',
+  'channel_inspect',
 ];
 
 // Primary agent: needs file/exec + tracker + vault + communication basics.

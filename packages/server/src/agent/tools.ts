@@ -2481,6 +2481,13 @@ export const toolDefinitions: ToolDefinition[] = [
     concurrency: 'safe',
     maxResultTokens: 1500,
   },
+  {
+    name: 'channel_inspect',
+    description: 'Snapshot of every communication channel you have active right now: which mailboxes you monitor, which you can send from, which the owner uses personally, iMessage/Teams reachability, safe-sender counts, account types. Call this when you need to answer "what mailbox should I send from?" or "do I have access to <channel>?" or when the per-turn [Channel landscape] block from a non-dashboard trigger isn\'t enough detail. Cheap, no args. On dashboard turns the landscape block is omitted to save tokens, so this is the way to look up the same info on demand.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+    concurrency: 'safe',
+    maxResultTokens: 1500,
+  },
 ];
 
 // Phase 3 (2026-05-04) â€” register definition-level concurrency overrides
@@ -7361,6 +7368,13 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent â
           content = `Failed to start dream cycle: ${err instanceof Error ? err.message : String(err)}`;
           isError = true;
         }
+        break;
+      }
+
+      case 'channel_inspect': {
+        const { buildChannelInspectReport } = await import('../services/channel-inspect.js');
+        content = buildChannelInspectReport();
+        isError = false;
         break;
       }
 
