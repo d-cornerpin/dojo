@@ -374,7 +374,10 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
           </button>
         )}
 
-        {/* Voice Mode toggle */}
+        {/* Voice Mode toggle (turns voice mode on/off entirely).
+            Uses a speaker icon so it's visually distinct from the mic
+            icon used by the mute toggle — speaker-muted when voice mode
+            is off, speaker-with-waves when it's on. */}
         <button
           type="button"
           onPointerDown={(e) => e.preventDefault()}
@@ -383,22 +386,60 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
           className={`shrink-0 flex items-center justify-center w-9 h-9 rounded-full transition-all ${voiceButtonClasses(voice.state)}`}
         >
           {voice.state === 'idle' || voice.state === 'error' ? (
+            // Volume off — speaker cone with an X (Lucide volume-x)
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-              <line x1="12" y1="19" x2="12" y2="23" />
-              <line x1="8" y1="23" x2="16" y2="23" />
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+              <line x1="22" y1="9" x2="16" y2="15" />
+              <line x1="16" y1="9" x2="22" y2="15" />
             </svg>
           ) : (
+            // Volume on — speaker cone with two sound-wave arcs (Lucide volume-2)
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-              <line x1="12" y1="19" x2="12" y2="23" />
-              <line x1="8" y1="23" x2="16" y2="23" />
-              <circle cx="20" cy="4" r="2" fill="currentColor" />
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
             </svg>
           )}
         </button>
+
+        {/* Mic mute toggle — only visible when voice mode is ON. Mutes
+            the microphone at the OS level (browser silences the audio
+            track, recording indicator goes away, no data reaches our
+            VAD/STT) without turning voice mode off. The agent's TTS
+            playback keeps working so it can still talk to the user. */}
+        {voice.enabled && (
+          <button
+            type="button"
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={() => { void voice.toggleMute(); }}
+            title={voice.muted ? 'Mic muted — click to unmute' : 'Mute microphone'}
+            aria-pressed={voice.muted}
+            className={`shrink-0 flex items-center justify-center w-9 h-9 rounded-full transition-all ${
+              voice.muted
+                ? 'bg-cp-coral/20 text-cp-coral'
+                : 'bg-ui/[0.08] text-ui/55 hover:text-ui/90 hover:bg-ui/[0.12]'
+            }`}
+          >
+            {voice.muted ? (
+              // Slashed mic
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="1" y1="1" x2="23" y2="23" />
+                <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+                <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
+                <line x1="12" y1="19" x2="12" y2="23" />
+                <line x1="8" y1="23" x2="16" y2="23" />
+              </svg>
+            ) : (
+              // Open mic
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                <line x1="12" y1="19" x2="12" y2="23" />
+                <line x1="8" y1="23" x2="16" y2="23" />
+              </svg>
+            )}
+          </button>
+        )}
 
         {/* Wordy Mode toggle */}
         {onToggleWordyMode && (
@@ -440,22 +481,27 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
         )}
       </div>
 
-      {/* Voice mode status banner */}
+      {/* Voice mode status banner. When muted, the banner switches to a
+          distinct coral "Mic muted" message so the user always has a
+          visible indication of why the agent isn't responding to them. */}
       {voice.enabled && voice.state !== 'idle' && (
         <div className={`mt-2 flex items-center gap-2 text-xs px-3 py-1.5 rounded-full ${
-          voice.state === 'error'
+          voice.muted
             ? 'bg-cp-coral/15 text-cp-coral'
-            : voice.state === 'speaking'
+            : voice.state === 'error'
               ? 'bg-cp-coral/15 text-cp-coral'
-              : 'bg-cp-teal/15 text-cp-teal'
+              : voice.state === 'speaking'
+                ? 'bg-cp-coral/15 text-cp-coral'
+                : 'bg-cp-teal/15 text-cp-teal'
         }`}>
           <span className={`inline-block w-2 h-2 rounded-full ${
-            voice.state === 'capturing' || voice.state === 'speaking' ? 'bg-current animate-pulse' : 'bg-current'
+            !voice.muted && (voice.state === 'capturing' || voice.state === 'speaking') ? 'bg-current animate-pulse' : 'bg-current'
           }`} />
-          <span>{voiceStatusLabel(voice.state, voice.wakePhrase, voice.bargeInEnabled)}</span>
+          <span>{voice.muted ? 'Mic muted — agent can still talk' : voiceStatusLabel(voice.state, voice.wakePhrase, voice.bargeInEnabled)}</span>
           {/* Live volume meter — 5 bars that bounce with mic input level. Only shown
-              while we're listening/capturing (it's misleading during transcribe/speaking). */}
-          {(voice.state === 'listening' || voice.state === 'capturing') && (
+              while we're listening/capturing (it's misleading during transcribe/speaking)
+              and only when the mic isn't muted (audioLevel will be 0 anyway). */}
+          {!voice.muted && (voice.state === 'listening' || voice.state === 'capturing') && (
             <span className="inline-flex items-end gap-0.5 h-3 ml-1">
               {[0.2, 0.45, 0.65, 0.85, 1.0].map((threshold, i) => {
                 const active = voice.audioLevel >= threshold * 0.6; // give it some life — peak at 0.6 lights everything

@@ -34,6 +34,12 @@ export interface UseVoiceModeResult {
   soundEffectsEnabled: boolean;
   /** 0..1 live audio level from the VAD frame processor (updates ~30ms). */
   audioLevel: number;
+  /** Whether the user has muted the microphone (separate from voice mode on/off). */
+  muted: boolean;
+  /** Mute or unmute the mic. Silences audio at the OS level, pauses the VAD, but leaves TTS playback intact. */
+  setMuted: (muted: boolean) => Promise<void>;
+  /** Convenience: flip the current mute state. */
+  toggleMute: () => Promise<void>;
   toggle: () => Promise<void>;
   stop: () => Promise<void>;
   /**
@@ -114,6 +120,7 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
   const [setupNeeded, setSetupNeeded] = useState<{ whisperModelId: string } | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
   const [partialTranscript, setPartialTranscript] = useState<string | null>(null);
+  const [muted, setMutedState] = useState(false);
   const [resolvedWakeWordEnabled, setResolvedWakeWordEnabled] = useState(false);
   const [resolvedBargeInEnabled, setResolvedBargeInEnabled] = useState(false);
   const [resolvedSoundEffectsEnabled, setResolvedSoundEffectsEnabled] = useState(true);
@@ -183,6 +190,7 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
         setPartialTranscript(null);
       });
       client.on('audio-level', (level) => setAudioLevel(level));
+      client.on('muted-change', (m) => setMutedState(m));
       clientRef.current = client;
     }
     return clientRef.current;
@@ -233,9 +241,18 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
     if (clientRef.current) await clientRef.current.stop();
   }, []);
 
+  const setMuted = useCallback(async (next: boolean) => {
+    if (clientRef.current) await clientRef.current.setMuted(next);
+  }, []);
+
+  const toggleMute = useCallback(async () => {
+    if (clientRef.current) await clientRef.current.setMuted(!clientRef.current.isMuted());
+  }, []);
+
   const enabled = state !== 'idle' && state !== 'error';
   return {
     enabled, state, error, lastTranscript, partialTranscript, audioLevel,
+    muted, setMuted, toggleMute,
     wakeWordEnabled: resolvedWakeWordEnabled,
     wakePhrase: resolvedWakePhrase,
     bargeInEnabled: resolvedBargeInEnabled,

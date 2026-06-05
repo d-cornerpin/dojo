@@ -74,6 +74,8 @@ export interface VoiceClientEvents {
   'wake': (info: { phrase: string; remainder: string | null }) => void;
   /** Sleep phrase heard — session is back to passive. */
   'sleep': (info: { phrase: string }) => void;
+  /** Mic mute state changed (user-driven via setMuted). */
+  'muted-change': (muted: boolean) => void;
   error: (message: string) => void;
 }
 
@@ -181,6 +183,14 @@ export class VoiceClient {
   private listeners: { [K in keyof VoiceClientEvents]?: Set<any> } = {};
   private lastError: string | null = null;
 
+  // User-driven mute. When true, the input MediaStreamTrack is disabled
+  // (browser silences the audio; the OS-level "recording" indicator goes
+  // away on macOS, iOS, Windows; no audio data reaches the VAD or the
+  // server) AND the VAD frame processor is paused so we're not spinning
+  // CPU on silence. TTS playback is unaffected — the agent can still
+  // talk to the user while their mic is muted.
+  private muted = false;
+
   constructor(opts: VoiceClientOptions) {
     this.agentId = opts.agentId;
     this.voice = opts.voice ?? 'am_michael';
@@ -239,10 +249,47 @@ export class VoiceClient {
       if (next === 'speaking' && prev !== 'speaking') {
         this.setMicTrackEnabled(false);
       } else if (prev === 'speaking' && next !== 'speaking') {
-        this.setMicTrackEnabled(true);
+        // Don't re-enable the mic when leaving the speaking state if the
+        // user has muted manually — their mute takes priority over the
+        // half-duplex auto-toggle. Without this guard, the agent
+        // finishing speaking would silently un-mute the mic the user
+        // explicitly turned off.
+        if (!this.muted) this.setMicTrackEnabled(true);
       }
     }
   }
+
+  /**
+   * Hardware-equivalent mute for the input microphone. Sets
+   * `MediaStreamTrack.enabled = false` on every audio track of the VAD's
+   * underlying stream — the browser silences the audio at the OS level
+   * (recording indicators disappear on macOS / iOS / Windows; the tab
+   * indicator dot also goes away), no audio data flows into the VAD,
+   * STT, or the WebSocket. Also pauses the VAD's frame processor so
+   * we're not spinning CPU on silence.
+   *
+   * Unmute reverses both: re-enables the track and resumes the VAD. No
+   * `getUserMedia` round-trip, no permission re-prompt, instant.
+   *
+   * TTS playback is untouched — the agent can still speak to the user
+   * while their mic is muted. Muting also turns off wake-word
+   * processing for the duration of the mute (no audio frames = no wake
+   * detection); on unmute, wake-word resumes if enabled.
+   */
+  async setMuted(muted: boolean): Promise<void> {
+    if (this.muted === muted) return;
+    this.muted = muted;
+    if (muted) {
+      this.setMicTrackEnabled(false);
+      try { await this.vad?.pause(); } catch (err) { console.warn('[voice] vad.pause failed', err); }
+    } else {
+      this.setMicTrackEnabled(true);
+      try { await this.vad?.start(); } catch (err) { console.warn('[voice] vad.start failed', err); }
+    }
+    this.emit('muted-change', muted);
+  }
+
+  isMuted(): boolean { return this.muted; }
 
   /**
    * Toggle the input MediaStreamTrack on the VAD's underlying stream.
@@ -275,6 +322,14 @@ export class VoiceClient {
   async start(): Promise<void> {
     if (this.isActive()) return;
     this.lastError = null;
+    // Each voice session starts unmuted regardless of how the last one
+    // ended. Carrying mute state across an on/off cycle would be
+    // counter-intuitive — turning voice mode off then back on should
+    // feel like a fresh session, not "wait, why can't the agent hear me?"
+    if (this.muted) {
+      this.muted = false;
+      this.emit('muted-change', false);
+    }
     this.setState('connecting');
 
     // Surface insecure-context up front instead of letting getUserMedia fail
