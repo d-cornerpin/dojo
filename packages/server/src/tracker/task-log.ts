@@ -23,6 +23,7 @@ export type TaskLogEntryKind =
   | 'poke'
   | 'auto_sweep'
   | 'smell_flag'
+  | 'closeout_miss'
   | 'user_verdict_request'
   | 'user_verdict_applied'
   | 'legacy_note';

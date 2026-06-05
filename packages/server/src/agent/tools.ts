@@ -1429,6 +1429,19 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'tracker_retask',
+    description: '**PM AGENT ONLY.** Send a task back to its assigned agent with explicit corrective instructions. Use when the agent\'s outcome is wrong (work skipped, wrong channel, evidence doesn\'t match goal, claim doesn\'t match actual artifact) and you want them to redo it — instead of just confirming a pause or rejecting a complete. Works from any non-terminal status (in_progress, on_deck, paused, blocked, complete). Resets validation flags, increments revert_count, delivers the directive over A2A. directive must be at least 30 chars and concrete (what they did wrong + what to do instead). Distinct from validate_pause(valid=false): that\'s reactive (PM adjudicating an existing pause); retask is proactive (PM redirecting the agent\'s effort).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'Task ID (full or 8-char prefix).' },
+        directive: { type: 'string', description: 'At least 30 characters. Tell the agent concretely what they did wrong and what to do instead (e.g. "you posted the brief in chat but the task specifies email delivery; call send_email with the same content").' },
+        target_status: { type: 'string', enum: ['in_progress', 'on_deck'], description: 'Optional. Where to land the task after retask. Default in_progress.' },
+      },
+      required: ['task_id', 'directive'],
+    },
+  },
+  {
     name: 'tracker_validate_complete',
     description: '**PM AGENT ONLY.** Adjudicate whether an agent\'s claim of complete is legitimate by comparing the goal against the result and evidence. Read the file/audit-log/output named in evidence before validating — do not validate on prose alone (see your skepticism guidance). For recurring tasks, valid=true on a per-run completion archives result/evidence to task_log and resets the task to on_deck for the next fire. For one-shot tasks, valid=true fires the dependency cascade and notifies the parent. Pass valid=false when the evidence does not actually demonstrate the goal was met; the task reverts to target_status and the agent gets a one-sentence directive.',
     input_schema: {
@@ -3389,7 +3402,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
     }
   }
 
-  if (name === 'tracker_validate_pause' || name === 'tracker_validate_complete' || name === 'tracker_validate_blocked' || name === 'tracker_override') {
+  if (name === 'tracker_validate_pause' || name === 'tracker_validate_complete' || name === 'tracker_validate_blocked' || name === 'tracker_override' || name === 'tracker_retask') {
     if (!isPMAgent(agentId)) {
       auditLog(agentId, name, null, 'denied', `${name} is restricted to the PM agent`);
       return { toolCallId: id, name, content: `Permission denied: only the PM agent can call ${name}. If you think the engine or PM got it wrong, call tracker_request_override with a justification instead.`, isError: true };
@@ -4542,6 +4555,21 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
           reject_reason: args.reject_reason as string | undefined,
           target_status: args.target_status as string | undefined,
         });
+        break;
+      }
+      case 'tracker_retask': {
+        const trErr = checkRequired([
+          { name: 'task_id', value: args.task_id, type: 'string' },
+          { name: 'directive', value: args.directive, type: 'string' },
+        ]);
+        if (trErr) { content = trErr; isError = true; break; }
+        const { trackerRetask } = await import('../tracker/tools.js');
+        content = await trackerRetask(agentId, {
+          task_id: args.task_id as string,
+          directive: args.directive as string,
+          target_status: args.target_status as string | undefined,
+        });
+        isError = content.startsWith('Error');
         break;
       }
       case 'tracker_validate_complete': {

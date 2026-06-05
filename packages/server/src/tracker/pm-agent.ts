@@ -366,6 +366,116 @@ export function noteTransitionForReview(taskId: string, toStatus: string): void 
 }
 
 /**
+ * Engine-to-PM escalation for close-out misses.
+ *
+ * When the engine's close-out gate or idle-with-in_progress hardcap
+ * fires, the danglers are still auto-paused (existing behavior) BUT we
+ * additionally:
+ *   - write a `closeout_miss` entry into task_log per affected task
+ *   - send a direct A2A message to the PM with the suppressed text,
+ *     the task goals, and the explicit verb menu
+ *     (validate_pause / retask / override-complete)
+ *
+ * Before this, the PM only learned about close-out misses indirectly
+ * via the periodic situation report — which surfaced the pause as
+ * "UNVALIDATED_PAUSE" with no context about what the agent actually
+ * said or what they should have done. PM had no real basis to do
+ * anything except validate the pause, which is exactly the rubber-
+ * stamp behavior the user called out.
+ *
+ * Fire-and-forget: PM acting takes a real LLM call; if PM is offline
+ * or capped the task stays paused and the user can resolve from the
+ * dashboard.
+ */
+export async function escalateCloseoutMissToPM(ctx: {
+  agentId: string;
+  pausedTaskIds: string[];
+  suppressedText: string;
+  source: 'idle-hardcap' | 'pre-turn-gate';
+}): Promise<void> {
+  if (!ctx.pausedTaskIds || ctx.pausedTaskIds.length === 0) return;
+
+  const pmId = getPMAgentId();
+  if (!pmId) {
+    logger.info('Closeout-miss escalation skipped: no PM configured', { source: ctx.source, taskCount: ctx.pausedTaskIds.length });
+    return;
+  }
+  if (pmId === ctx.agentId) {
+    logger.info('Closeout-miss escalation skipped: dangler agent IS the PM', { agentId: ctx.agentId, source: ctx.source });
+    return;
+  }
+
+  const db = getDb();
+  const rows = ctx.pausedTaskIds
+    .map((id) => db.prepare(`SELECT id, title, goal FROM tasks WHERE id = ?`).get(id) as { id: string; title: string; goal: string | null } | undefined)
+    .filter((r): r is { id: string; title: string; goal: string | null } => Boolean(r));
+  if (rows.length === 0) return;
+
+  const sourceLabel = ctx.source === 'idle-hardcap' ? 'idle-with-in_progress hardcap' : 'pre-turn close-out gate';
+
+  try {
+    const { writeTaskLog } = await import('./task-log.js');
+    for (const r of rows) {
+      writeTaskLog({
+        taskId: r.id,
+        fromEntity: 'engine',
+        entryKind: 'closeout_miss',
+        actionTaken: `escalated to PM via ${sourceLabel}`,
+        reason: 'agent produced user-facing text without calling tracker_update_status; bubble suppressed and task auto-paused pending PM review',
+        note: ctx.suppressedText.slice(0, 4000),
+      });
+    }
+  } catch (err) {
+    logger.warn('Failed to write closeout_miss task_log entries', {
+      error: err instanceof Error ? err.message : String(err), taskCount: rows.length,
+    });
+  }
+
+  const taskLines = rows
+    .map((r) => `  - ${r.id.slice(0, 8)} "${r.title}" (goal: ${r.goal ?? '(none recorded)'})`)
+    .join('\n');
+  const truncatedSaid = ctx.suppressedText.length > 1500
+    ? ctx.suppressedText.slice(0, 1500) + '...'
+    : ctx.suppressedText;
+
+  const payload =
+    `[Engine notice - CLOSEOUT MISS]\n\n` +
+    `Agent "${ctx.agentId}" finished a turn without calling tracker_update_status / tracker_complete_step. The engine ` +
+    `auto-paused the one-shot dangling task(s) below as a temporary measure. Your job: don't rubber-stamp. Decide per task.\n\n` +
+    `Paused task(s):\n${taskLines}\n\n` +
+    `What the agent said (suppressed from the user — they did NOT see this):\n` +
+    `> ${truncatedSaid.split('\n').join('\n> ')}\n\n` +
+    `Trigger: ${sourceLabel}\n\n` +
+    `Your verbs:\n` +
+    `  (a) tracker_retask(task_id, directive) — push the agent back at it with concrete corrective guidance ` +
+    `(e.g. "you wrote the brief in chat but the task spec is email; call send_email with this same content to <recipient>"). USE THIS WHEN the agent did the wrong thing and you can name what they should do instead. This is the default.\n` +
+    `  (b) tracker_validate_pause(task_id, valid=true) — confirm the pause stands. USE THIS WHEN the work genuinely can't proceed without user input you can name, or when the task is no longer relevant.\n` +
+    `  (c) tracker_override(...) or tracker_validate_complete(...) — accept as complete. USE THIS WHEN you can verify (via the suppressed text + a quick tracker_get_status / file check / etc.) that the work actually got done and the agent just forgot to close the tracker.\n\n` +
+    `Inspect the goal against what the agent said. If they delivered the wrong artifact OR in the wrong channel, retask. ` +
+    `Rubber-stamping the pause means the recurring task / user-promised work dies silently — that's the exact failure mode the user yelled about. Be a PM, not a status forwarder.`;
+
+  try {
+    const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
+    await deliverA2AMessage({
+      intent: 'QUESTION',
+      threadId: uuidv4(),
+      requiresResponse: true,
+      payload,
+      toAgent: pmId,
+      fromAgent: 'system',
+    });
+    logger.info('Closeout-miss escalated to PM', {
+      pmId, agentId: ctx.agentId, taskCount: rows.length, source: ctx.source,
+    });
+  } catch (err) {
+    logger.warn('Failed to deliver closeout-miss escalation to PM', {
+      error: err instanceof Error ? err.message : String(err),
+      pmId, taskCount: rows.length,
+    });
+  }
+}
+
+/**
  * Smell-pattern detector. Writes signal entries into task_log and sets
  * tasks.last_smell_flag for PM to read as context. Never blocks the
  * transition (that's the engine hard-gate's job) — this is purely an

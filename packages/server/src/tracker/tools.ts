@@ -1907,6 +1907,122 @@ export async function trackerValidatePause(
   );
 }
 
+// ── trackerRetask ──
+//
+// PM-only forward-leaning verb. Use when an agent's outcome on a task is
+// wrong (work skipped, channel wrong, evidence missing, claim doesn't
+// match goal) and you want them to redo it with specific guidance —
+// instead of just confirming a pause or rejecting a complete.
+//
+// Works from any status except 'cancelled'. Resets validation flags so
+// the engine treats the next pass as fresh. Increments revert_count
+// (this is functionally a PM revert). Delivers the directive over A2A
+// to the assigned agent. May trigger stalemate if PM and agent are
+// ping-ponging the same task.
+//
+// Required: directive >= 30 chars so PM can't fire a one-liner.
+
+export async function trackerRetask(
+  pmAgentId: string,
+  args: { task_id: string; directive: string; target_status?: string },
+): Promise<string> {
+  const rawTaskId = args.task_id;
+  if (!rawTaskId) return 'Error: task_id is required.';
+
+  const directive = (args.directive ?? '').trim();
+  if (directive.length < 30) {
+    return 'Error: directive must be at least 30 characters. Tell the agent concretely what they did wrong and what to do instead (e.g. "you posted the brief in chat but the task specifies email delivery; please call send_email with the same content to david@cornerp.in").';
+  }
+
+  const resolved = resolveTaskId(rawTaskId);
+  if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
+  const taskId = resolved.id;
+
+  const db = getDb();
+  const task = db.prepare(
+    "SELECT id, title, status, assigned_to, goal FROM tasks WHERE id = ?",
+  ).get(taskId) as { id: string; title: string; status: string; assigned_to: string | null; goal: string | null } | undefined;
+
+  if (!task) return `Error: task ${taskId} not found.`;
+  if (task.status === 'cancelled') {
+    return `Error: task "${task.title}" (${taskId}) is cancelled. Cancelled tasks cannot be retasked. Create a new task instead.`;
+  }
+  if (!task.assigned_to) {
+    return `Error: task "${task.title}" (${taskId}) has no assigned agent. Use tracker_reassign_task first, then retask.`;
+  }
+
+  const targetStatus = args.target_status ?? 'in_progress';
+  const ALLOWED_TARGETS = new Set(['in_progress', 'on_deck']);
+  if (!ALLOWED_TARGETS.has(targetStatus)) {
+    return `Error: target_status="${targetStatus}" is not allowed for retask. Use 'in_progress' (default) or 'on_deck'.`;
+  }
+
+  // Drive status through updateTask so is_paused / pause fields reset
+  // correctly when retasking out of paused.
+  const updated = updateTask(taskId, { status: targetStatus });
+  if (!updated) return `Error: task ${taskId} was deleted before retask could land.`;
+
+  // Reset validation flags so engine and PM treat the next pass as
+  // fresh, and bump revert_count (a retask is a PM revert of the
+  // agent's outcome). Done in one statement.
+  db.prepare(`
+    UPDATE tasks
+    SET pause_validated = 0,
+        complete_validated = 0,
+        blocked_validated = 0,
+        revert_count = revert_count + 1,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(taskId);
+
+  const fresh = getTask(taskId);
+  if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
+
+  writeTaskLog({
+    taskId,
+    fromEntity: 'pm',
+    entryKind: 'directive',
+    fromStatus: task.status,
+    toStatus: targetStatus,
+    actionTaken: 'tracker_retask',
+    reason: directive,
+  });
+
+  await maybeTriggerStalemate(taskId, pmAgentId);
+
+  // Deliver the PM's directive to the assigned agent as a system-injected
+  // user turn (same transport as validate_pause's reject path). Fire-
+  // and-forget; PM has already moved the status.
+  try {
+    const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
+    const body =
+      `PM retask on "${task.title}" (${taskId.slice(0, 8)}). Task is back to ${targetStatus}.\n\n` +
+      `PM directive: ${directive}\n\n` +
+      `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
+      `Do the work the directive describes, then close out (tracker_update_status with status="complete", a clear result, and evidence pointing at the concrete artifact — file path, message id, tool_call_ref, etc.). Don't just acknowledge; do the thing.`;
+    const { v4: uuidv4 } = await import('uuid');
+    await deliverA2AMessage({
+      intent: 'QUESTION',
+      threadId: uuidv4(),
+      requiresResponse: true,
+      payload: body,
+      toAgent: task.assigned_to,
+      fromAgent: pmAgentId,
+    });
+  } catch (err) {
+    logger.warn('Failed to deliver retask directive to agent', {
+      taskId, assignedTo: task.assigned_to,
+      error: err instanceof Error ? err.message : String(err),
+    }, pmAgentId);
+  }
+
+  logger.info('Task retasked by PM', { taskId, pmAgentId, targetStatus, directiveLength: directive.length }, pmAgentId);
+  return (
+    `[OK] Retasked "${task.title}" (${taskId}) from ${task.status} to ${targetStatus}. ` +
+    `Directive delivered to ${task.assigned_to}. revert_count incremented.`
+  );
+}
+
 // ── trackerPauseSchedule ──
 
 export function trackerPauseSchedule(agentId: string, args: Record<string, unknown>): string {

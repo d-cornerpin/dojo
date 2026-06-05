@@ -2346,10 +2346,27 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   pause_validated = 0,
                   updated_at = datetime('now')
               WHERE id = ? AND status = 'in_progress'
+                AND repeat_interval IS NULL
             `);
+            // RECURRING TASKS CARVE-OUT.
+            // Pre-fix this UPDATE matched every in_progress task without
+            // checking repeat_interval, so a single missed close-out on
+            // a daily recurring task (Tomorrow Brief, the user's
+            // example) silently paused the WHOLE recurring schedule —
+            // is_paused=1 makes the scheduler skip it forever. The
+            // right behavior for recurring tasks is: fail THIS run,
+            // recompute next_run_at, let the schedule fire normally
+            // tomorrow. forceResetStuckRecurringTask does exactly that.
+            const { forceResetStuckRecurringTask } = await import('../../scheduler/runner.js');
+            const recurringResetIds: string[] = [];
             let pausedCount = 0;
             const pausedIds: string[] = [];
             for (const r of danglerRows) {
+              const isRecurring = db.prepare(`SELECT repeat_interval FROM tasks WHERE id = ?`).get(r.id) as { repeat_interval: number | null } | undefined;
+              if (isRecurring?.repeat_interval) {
+                try { forceResetStuckRecurringTask(r.id); recurringResetIds.push(r.id); } catch { /* best effort */ }
+                continue;
+              }
               const res = pauseStmt.run(r.id);
               if (res.changes > 0) {
                 pausedCount++;
@@ -2371,9 +2388,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
               }
             }
 
+            const parts: string[] = [];
+            if (pausedCount > 0) {
+              parts.push(`${pausedCount} one-shot dangling task${pausedCount === 1 ? '' : 's'} auto-paused (ids: ${pausedIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ')}${pausedIds.length > 5 ? '...' : ''})`);
+            }
+            if (recurringResetIds.length > 0) {
+              parts.push(`${recurringResetIds.length} recurring task${recurringResetIds.length === 1 ? '' : 's'} reset to fire on schedule (ids: ${recurringResetIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ')}${recurringResetIds.length > 5 ? '...' : ''}) — your missed close-out failed THIS run, not the whole schedule`);
+            }
             const escMsg = (
-              `[System: idle-with-in_progress nudge was unsatisfied AND you produced user-facing text — your reply was suppressed (the bubble was removed from the user's view) and ${pausedCount} dangling in_progress task${pausedCount === 1 ? '' : 's'} auto-paused (ids: ${pausedIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ')}${pausedIds.length > 5 ? '...' : ''}). ` +
-              `Next time you finish a task, the FIRST action of your final turn must be tracker_update_status(status="complete", result="...", evidence=[...]). The user did not see your closeout; there is nothing to reply to. PM will re-validate the paused state and may revert.]`
+              `[System: idle-with-in_progress nudge was unsatisfied AND you produced user-facing text — your reply was suppressed (the bubble was removed from the user's view). ${parts.join('; ')}. ` +
+              `Next time you finish a task, the FIRST action of your final turn must be tracker_update_status(status="complete", result="...", evidence=[...]). The user did not see your closeout; there is nothing to reply to.${pausedCount > 0 ? ' PM will re-validate the paused one-shot state and may revert.' : ''}]`
             );
             const escId = uuidv4();
             try {
@@ -2400,8 +2424,27 @@ export async function runV2Turn(agentId: string): Promise<void> {
               }
             } catch { /* best effort */ }
             logger.warn('v2 idle-with-in_progress hardcap fired — auto-paused + suppressed reply', {
-              agentId, pausedCount, pausedIds,
+              agentId, pausedCount, pausedIds, recurringResetCount: recurringResetIds.length, recurringResetIds,
             }, agentId);
+            // v2.9.13: actively escalate to PM with full context (the
+            // suppressed text, the goals, the verb menu) so PM can
+            // retask the agent instead of rubber-stamping the pause
+            // via the next periodic situation report.
+            if (pausedIds.length > 0) {
+              try {
+                const { escalateCloseoutMissToPM } = await import('../../tracker/pm-agent.js');
+                await escalateCloseoutMissToPM({
+                  agentId,
+                  pausedTaskIds: pausedIds,
+                  suppressedText: persistedContent ?? '',
+                  source: 'idle-hardcap',
+                });
+              } catch (escErr) {
+                logger.warn('v2: idle hardcap closeout-miss escalation failed (non-fatal)', {
+                  agentId, error: escErr instanceof Error ? escErr.message : String(escErr),
+                }, agentId);
+              }
+            }
             setAgentStatus(agentId, 'idle');
             break;
           }
@@ -2573,19 +2616,38 @@ export async function runV2Turn(agentId: string): Promise<void> {
                     notes = COALESCE(notes, '') || ? || char(10),
                     updated_at = datetime('now')
                 WHERE id = ? AND status = 'in_progress'
+                  AND repeat_interval IS NULL
               `);
+              // Same recurring carve-out as the going-idle hardcap above.
+              // Single missed close-out on a recurring task fails THIS
+              // run via forceResetStuckRecurringTask, not the whole
+              // schedule.
+              const { forceResetStuckRecurringTask } = await import('../../scheduler/runner.js');
+              const recurringResetIds: string[] = [];
               let pausedCount = 0;
+              const pausedIds: string[] = [];
               for (const tid of inProgressIds.map((r) => r.id)) {
+                const isRecurring = db.prepare(`SELECT repeat_interval FROM tasks WHERE id = ?`).get(tid) as { repeat_interval: number | null } | undefined;
+                if (isRecurring?.repeat_interval) {
+                  try { forceResetStuckRecurringTask(tid); recurringResetIds.push(tid); } catch { /* best effort */ }
+                  continue;
+                }
                 const res = updateStmt.run(noteTemplate, tid);
-                if (res.changes > 0) pausedCount++;
+                if (res.changes > 0) {
+                  pausedCount++;
+                  pausedIds.push(tid);
+                }
               }
 
-              if (pausedCount > 0 || onDeckIds.length > 0) {
+              if (pausedCount > 0 || recurringResetIds.length > 0 || onDeckIds.length > 0) {
                 const parts: string[] = [];
                 if (pausedCount > 0) {
                   parts.push(
-                    `${pausedCount} in_progress dangler${pausedCount === 1 ? '' : 's'} auto-paused (ids: ${inProgressIds.slice(0, 5).map((r) => r.id.slice(0, 8)).join(', ')}${inProgressIds.length > 5 ? '...' : ''})`,
+                    `${pausedCount} one-shot in_progress dangler${pausedCount === 1 ? '' : 's'} auto-paused (ids: ${inProgressIds.slice(0, 5).map((r) => r.id.slice(0, 8)).join(', ')}${inProgressIds.length > 5 ? '...' : ''})`,
                   );
+                }
+                if (recurringResetIds.length > 0) {
+                  parts.push(`${recurringResetIds.length} recurring task${recurringResetIds.length === 1 ? '' : 's'} reset to fire on schedule (ids: ${recurringResetIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ')}${recurringResetIds.length > 5 ? '...' : ''}) — your missed close-out failed THIS run, not the whole schedule`);
                 }
                 if (onDeckIds.length > 0) {
                   parts.push(
@@ -2625,6 +2687,22 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 logger.warn('v2: close-out one-shot escalation — auto-paused + suppressed reply', {
                   agentId, pausedCount, onDeckCount: onDeckIds.length, totalDangling: state.danglingTaskIds.length,
                 }, agentId);
+                // v2.9.13: notify PM with the suppressed text + verbs.
+                if (pausedIds.length > 0) {
+                  try {
+                    const { escalateCloseoutMissToPM } = await import('../../tracker/pm-agent.js');
+                    await escalateCloseoutMissToPM({
+                      agentId,
+                      pausedTaskIds: pausedIds,
+                      suppressedText: persistedContent ?? '',
+                      source: 'pre-turn-gate',
+                    });
+                  } catch (escErr) {
+                    logger.warn('v2: pre-turn gate closeout-miss escalation failed (non-fatal)', {
+                      agentId, error: escErr instanceof Error ? escErr.message : String(escErr),
+                    }, agentId);
+                  }
+                }
               }
             } catch (escErr) {
               logger.error('v2: close-out one-shot escalation failed', {
