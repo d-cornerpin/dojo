@@ -111,6 +111,14 @@ interface VoiceSession {
   cloudDescription: string | null;
   /** Speed multiplier for cloud TTS. */
   cloudSpeed: number;
+  /**
+   * Engine-agnostic handle for pushing text into the currently active
+   * TTS burst. Set by whichever burst is running (local Kokoro pushes
+   * into its ClauseQueue; cloud Hume pushes via hume.push()). Cleared
+   * in the burst's finally block. Used by `pushVoiceFiller` so the
+   * filler-phrase feature works regardless of TTS engine choice.
+   */
+  activeBurstPush: ((text: string) => void) | null;
 }
 
 /**
@@ -327,6 +335,32 @@ function findPhrase(transcript: string, phrase: string): { matched: boolean; rem
 
 const sessions = new Map<WSContext, VoiceSession>();
 
+/**
+ * Push a short filler phrase into the active TTS burst for the named
+ * agent. Used by the v2 loop when a voice-triggered turn is about to
+ * run tools and the model produced no pre-tool acknowledgment of its
+ * own - the filler keeps the user from sitting in silence while tools
+ * execute.
+ *
+ * Engine-agnostic: routes through `session.activeBurstPush`, which the
+ * active burst (local Kokoro or cloud Hume) sets when it starts and
+ * clears in its finally block. Returns false when no voice session is
+ * open for this agent, or no burst is currently active.
+ */
+export function pushVoiceFiller(agentId: string, phrase: string): boolean {
+  for (const session of sessions.values()) {
+    if (session.agentId !== agentId) continue;
+    if (!session.activeBurstPush) return false;
+    try {
+      session.activeBurstPush(phrase);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 function sendJson(ws: WSContext, payload: object): void {
   try { ws.send(JSON.stringify(payload)); } catch { /* ignore */ }
 }
@@ -388,6 +422,7 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
       cloudVoiceProvider: saved.cloudVoiceProvider,
       cloudDescription: saved.cloudDescription,
       cloudSpeed: saved.cloudSpeed,
+      activeBurstPush: null,
     };
     sessions.set(ws, session);
     // Heartbeat every 25s — under Cloudflare Tunnel's default WS idle timeout
@@ -938,6 +973,12 @@ function startTtsForAgent(session: VoiceSession, initialContent?: string): void 
   // instead of waiting for a full sentence boundary.
   const splitter = createClauseQueue();
   session.splitter = splitter;
+  // v2.9.16: expose engine-agnostic push handle so the v2 loop's
+  // voice-filler trigger can inject "on it" style acknowledgments
+  // through whichever TTS engine is active. Cleared in finally.
+  session.activeBurstPush = (text: string) => {
+    try { splitter.push(text); } catch { /* burst already torn down */ }
+  };
   const sanitizer = new StreamingSpeechBuffer();
 
   const abort = new AbortController();
@@ -998,6 +1039,7 @@ function startTtsForAgent(session: VoiceSession, initialContent?: string): void 
           session.activeTts = null;
         }
         if (session.splitter === splitter) session.splitter = null;
+        session.activeBurstPush = null;
         if (session.unsubscribeChunk) {
           session.unsubscribeChunk();
           session.unsubscribeChunk = null;
@@ -1255,6 +1297,27 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     description: session.cloudDescription ?? undefined,
     speed: session.cloudSpeed,
   });
+  // v2.9.16: engine-agnostic push handle (same pattern as the local
+  // path). Lets pushVoiceFiller inject acknowledgments regardless of
+  // which TTS engine is active. Cleared in the finally blocks below.
+  //
+  // Hume isn't open yet at this point - `await hume.open()` runs
+  // inside the IIFE below and has a 100-300ms window where calling
+  // hume.push() would silently drop the text (same window the
+  // existing chat:chunk handler buffers via pendingEvents). The
+  // filler trigger from the v2 loop can fire INSIDE this window when
+  // a voice-triggered turn goes straight to tools, so we buffer
+  // pre-open pushes here and drain after open() resolves. Without
+  // this the cloud-TTS user would silently lose the filler.
+  let humeOpened = false;
+  const preOpenBuffer: string[] = [];
+  session.activeBurstPush = (text: string) => {
+    if (!humeOpened) {
+      preOpenBuffer.push(text);
+      return;
+    }
+    try { hume.push(text); } catch { /* burst already closing */ }
+  };
 
   let started = false;
   const startStreaming = (): void => {
@@ -1301,11 +1364,30 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
       sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'error', detail: 'cloud_tts_open_failed' });
       unsubscribe();
       if (session.activeTts && session.activeTts.abort === abort) session.activeTts = null;
+      session.activeBurstPush = null;
       // Re-arm the proactive watcher so the next burst attempt can fire.
       if (sessions.has(session.ws) && !session.unsubscribeProactive) {
         session.unsubscribeProactive = subscribeProactiveWatcher(session);
       }
       return;
+    }
+
+    // Hume is now open. Drain any pushes that arrived during the
+    // open() handshake (e.g. the v2 loop's voice-filler trigger when
+    // tools fire immediately after the turn starts). Without this
+    // drain those pushes vanished silently. From this point on,
+    // activeBurstPush goes directly to hume.push.
+    humeOpened = true;
+    for (const buffered of preOpenBuffer) {
+      try { hume.push(buffered); } catch { /* ignore */ }
+    }
+    preOpenBuffer.length = 0;
+    if (preOpenBuffer.length === 0 && session.activeBurstPush) {
+      // Replace the buffering wrapper with a direct passthrough now
+      // that the open window is closed.
+      session.activeBurstPush = (text: string) => {
+        try { hume.push(text); } catch { /* burst already closing */ }
+      };
     }
 
     let bubbleCount = 0;
@@ -1347,6 +1429,7 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
         if (session.activeTts && session.activeTts.abort === abort) {
           session.activeTts = null;
         }
+        session.activeBurstPush = null;
         if (session.unsubscribeChunk) {
           session.unsubscribeChunk();
           session.unsubscribeChunk = null;

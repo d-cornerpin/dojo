@@ -11,10 +11,11 @@ import { VaultEntryCard } from '../components/VaultEntryCard';
 import { VaultStats } from '../components/VaultStats';
 import { ForensicSearchPanel } from '../components/ForensicSearchPanel';
 import { CredentialsPanel } from '../components/CredentialsPanel';
+import { ContactsPanel } from '../components/ContactsPanel';
 import { formatDate } from '../lib/dates';
 
 type RightPanel = 'detail' | 'search' | 'briefing' | 'none';
-type MainTab = 'dag' | 'vault' | 'dreams' | 'forensic' | 'credentials';
+type MainTab = 'dag' | 'vault' | 'dreams' | 'forensic' | 'credentials' | 'contacts';
 
 export const Memory = () => {
   // Agent selection — default to 'primary' alias (server resolves to actual ID)
@@ -197,23 +198,27 @@ export const Memory = () => {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Top bar */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-ui/[0.06]">
-        <div className="flex items-center gap-4">
-          <h2 className="text-lg font-semibold text-ui">Vault</h2>
+      {/* Top bar. flex-wrap lets the toolbar split onto a second row
+          on narrow viewports (the existing 6-tab strip + agent selector
+          + search input together overflow a phone-width container).
+          The tab strip itself scrolls horizontally so it never clips
+          on the smallest screens. */}
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 sm:px-6 py-3 sm:py-4 border-b border-ui/[0.06]">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-4 min-w-0">
+          <h2 className="text-lg font-semibold text-ui shrink-0">Vault</h2>
           {/* Tabs */}
-          <div className="flex items-center gap-1 bg-ui/[0.03] rounded-lg p-0.5">
-            {(['vault', 'dag', 'dreams', 'forensic', 'credentials'] as MainTab[]).map((tab) => (
+          <div className="flex items-center gap-1 bg-ui/[0.03] rounded-lg p-0.5 overflow-x-auto max-w-full">
+            {(['vault', 'dag', 'dreams', 'forensic', 'contacts', 'credentials'] as MainTab[]).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setMainTab(tab)}
-                className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                className={`shrink-0 px-3 py-1 text-xs rounded-md transition-colors whitespace-nowrap ${
                   mainTab === tab
                     ? 'bg-ui/[0.12] text-ui'
                     : 'text-ui/40 hover:text-ui/70'
                 }`}
               >
-                {tab === 'vault' ? 'Entries' : tab === 'dag' ? 'DAG' : tab === 'dreams' ? 'Dreams' : tab === 'forensic' ? 'Forensic' : 'Credentials'}
+                {tab === 'vault' ? 'Entries' : tab === 'dag' ? 'DAG' : tab === 'dreams' ? 'Dreams' : tab === 'forensic' ? 'Forensic' : tab === 'contacts' ? 'Contacts' : 'Credentials'}
               </button>
             ))}
           </div>
@@ -356,6 +361,7 @@ export const Memory = () => {
         {mainTab === 'forensic' && <ForensicSearchPanel />}
 
         {/* Credentials Tab */}
+        {mainTab === 'contacts' && <ContactsPanel />}
         {mainTab === 'credentials' && <CredentialsPanel />}
 
         {/* Dreams Tab */}

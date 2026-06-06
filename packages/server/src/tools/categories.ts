@@ -20,6 +20,14 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     tools: ['web_search', 'web_fetch', 'web_browse'],
   },
   {
+    label: 'DOJO Contacts (people the owner interacts with - persistent, agent-authored)',
+    tools: ['contact_remember', 'contact_search', 'contact_list', 'contact_get', 'contact_update', 'contact_forget', 'contact_describe'],
+  },
+  {
+    label: 'Agent Credentials (encrypted API keys / tokens the agent uses to call services)',
+    tools: ['credential_list', 'credential_get', 'credential_add', 'credential_update', 'credential_delete'],
+  },
+  {
     label: 'Vault (Long-Term Memory)',
     tools: ['vault_remember', 'vault_search', 'vault_forget', 'vault_describe', 'vault_expand'],
   },
@@ -128,6 +136,10 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   {
     label: 'Outlook',
     tools: ['outlook_search', 'outlook_read', 'outlook_inbox', 'outlook_send', 'outlook_reply', 'outlook_forward'],
+  },
+  {
+    label: 'Microsoft Contacts (read-only escape hatch into the Microsoft directory)',
+    tools: ['contacts_search', 'contacts_list', 'contacts_get', 'contacts_create', 'contacts_update', 'contacts_delete'],
   },
   {
     label: 'Microsoft Calendar',

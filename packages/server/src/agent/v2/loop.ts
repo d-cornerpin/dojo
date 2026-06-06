@@ -405,6 +405,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
   }
   const triggeredByIMessage = lastUserMessageContent?.includes('[SOURCE: IMESSAGE FROM') ?? false;
   const imFlagSetAtRunStart = isAwaitingIMResponse(agentId);
+  // v2.9.16: once-per-turn latch for the voice-mode filler phrase.
+  // Flipped true the first time we push a filler into the active TTS
+  // burst so subsequent tool-using iterations in the same turn don't
+  // double-fire ("on it ... checking ... give me a sec ...").
+  let voiceFillerFired = false;
 
   // v2.7.23 — structural inbound channel binding. Parse the source tag from
   // the most recent user message to determine which channel the turn was
@@ -2055,6 +2060,35 @@ export async function runV2Turn(agentId: string): Promise<void> {
         state.modelId === '__auto__' ? configuredModelId : state.modelId;
 
       if (result.toolCalls.length > 0 && !hasXmlFallbackTools) {
+        // v2.9.16: voice-mode filler. When a voice-triggered turn is
+        // about to run tools AND the model produced no pre-tool text
+        // of its own ("let me check that"), push a short random
+        // acknowledgment into the active TTS burst so the user doesn't
+        // sit in silence while tools execute. Once per turn, works
+        // with both local (Kokoro) and cloud (Hume) TTS engines via
+        // the engine-agnostic push handle on the voice session.
+        if (
+          !voiceFillerFired &&
+          latestUserSource === 'voice' &&
+          (persistedContent ?? '').trim().length === 0
+        ) {
+          try {
+            const { pickFillerPhrase } = await import('../../voice/filler-phrases.js');
+            const { pushVoiceFiller } = await import('../../voice/voice-ws.js');
+            const phrase = pickFillerPhrase();
+            const pushed = pushVoiceFiller(agentId, phrase);
+            if (pushed) {
+              voiceFillerFired = true;
+              logger.info('Voice filler pushed before tool execution', {
+                agentId, phrase, toolCount: result.toolCalls.length,
+              }, agentId);
+            }
+          } catch (err) {
+            logger.warn('Voice filler push failed (non-fatal)', {
+              agentId, error: err instanceof Error ? err.message : String(err),
+            }, agentId);
+          }
+        }
         const assistantContent: Anthropic.ContentBlockParam[] = [];
         if (persistedContent) {
           assistantContent.push({ type: 'text', text: persistedContent });

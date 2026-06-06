@@ -164,6 +164,12 @@ For each batch:
    - **Anything the agent could rederive in five seconds** from `vault_search`, `file_read`, or the tracker.
    - **Anything specific to a single agent's single task.** Memory should be about the *user* and the *project*, not the agent's process.
 
+   **Route to the right store.** You have three: vault (general semantic memory), contacts (person-as-entity records), credentials (encrypted secrets the dojo uses to call APIs). For every piece of durable signal you decided to keep, ask which store it belongs in BEFORE writing.
+
+   - **Person-as-entity observations → `contact_remember`.** Anything that is fundamentally a fact about a specific person: their channel preferences ("Josh prefers iMessage over email"), how the user met them ("introduced by Marcus 2026-06-05"), their role/company ("Sarah Chen at Acme — the buyer"), a new email or phone they mentioned, a relationship label. `contact_remember` upserts — if the person is already in the store, your observation gets appended with a timestamp; if not, a new record is created. Always include `display_name`. If you have an email/phone/iMessage handle, include it — that's how the upsert finds matches. Skip the vault entirely for these; the contacts store is the structured home.
+   - **Credentials with the value present → `credential_add`.** If an archive contains an actual credential value the user wanted persisted (an API key pasted in chat, an OAuth token the agent received and the user said to save, an integration token an agent set up), check `credential_list` first to see if the service is already tracked, and if not, add it. Do this ONLY when the VALUE is in the archive — never invent or guess. Skip bank passwords, SSNs, anything that looks personal-financial rather than service-credential. When uncertain, skip — the user will add it deliberately through Settings if they wanted it. Never call `credential_get` (no value reads needed for curation) or `credential_update`/`credential_delete` (mutation is the user's call, not yours). When you DO add a credential, also drop a short vault `fact` entry noting "credential for X added" so the dojo's general memory knows; do NOT echo the value into the vault entry.
+   - **Everything else → `vault_remember`.** Decisions, procedures, project facts, events — the existing vault flow.
+
 3. **Format every entry**:
    - Start with the date in brackets, e.g. `[2026-04-30] …`
    - Telegraphic shorthand, not prose

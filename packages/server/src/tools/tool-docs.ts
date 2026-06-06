@@ -51,6 +51,13 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'recall_recent_thread',
   'scratchpad_set',
   'technique_read',
+  // v2.9.16: DOJO contacts store. Primary uses these on nearly every
+  // person-mentioning turn (lookup before sending, append-observation
+  // after a conversation). Pre-loading avoids a load_tool_docs
+  // round-trip on what should be a one-call flow.
+  'contact_search',
+  'contact_remember',
+  'contact_get',
 ];
 
 // PM agent: tracker-focused, monitors tasks and sends messages to other agents.
@@ -75,6 +82,13 @@ export const PM_AGENT_ALWAYS_LOADED = [
 ];
 
 // Dreamer agent: vault-focused, extracts knowledge from conversation archives.
+// v2.9.16 — also routes person-as-entity observations into the DOJO
+// contacts store and persists credentials that appear verbatim in
+// archives. Contact verbs: append-and-read only (no forget/update/get -
+// the owner edits via dashboard). Credential verbs: list (check for
+// duplicates) and add (when the value is in the archive); no get (no
+// value reads needed during curation), no update/delete (mutation is
+// explicit user action).
 export const DREAMER_AGENT_ALWAYS_LOADED = [
   ...DEFAULT_ALWAYS_LOADED_TOOLS,
   'vault_remember',
@@ -82,6 +96,11 @@ export const DREAMER_AGENT_ALWAYS_LOADED = [
   'vault_forget',
   'vault_update',
   'vault_describe',
+  'contact_remember',
+  'contact_search',
+  'contact_describe',
+  'credential_list',
+  'credential_add',
   'send_to_agent',
 ];
 

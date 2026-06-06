@@ -2437,6 +2437,105 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
 
+  // ── DOJO Contacts (v2.9.16) ──
+  // DOJO-native person records, separate from Microsoft/Google contact
+  // directories. Agents write to this store as they learn about people
+  // the owner interacts with; the owner can read and edit through the
+  // dashboard's Vault → Contacts tab.
+  {
+    name: 'contact_remember',
+    description: 'Record or update a contact in the DOJO contacts store. Upserts: if any provided email/phone/imessage handle (or display_name) matches an existing record, the new fields APPEND to that record - emails/phones/handles/tags merge with dedup; notes get timestamped and appended. If no match, a new contact is created (display_name required in that case). Use this whenever you learn something about a person the owner interacts with: "introduced by Marcus 2026-06-05", "prefers iMessage over email", "works at Acme as the buyer", a new email address, etc. Different from vault_remember because contacts is structured person-as-entity storage; use vault_remember for general facts and decisions that aren\'t about a specific person.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        contact_id: { type: 'string', description: 'Existing contact ID (full or 8-char prefix). Optional - if omitted, the tool matches on email/phone/imessage/display_name.' },
+        display_name: { type: 'string', description: 'Full name. Required when creating a new contact.' },
+        preferred_name: { type: 'string', description: 'Nickname / short form / what the owner actually calls them.' },
+        emails: { type: 'array', items: { type: 'string' }, description: 'Email addresses. Merge-appended on existing records.' },
+        phones: { type: 'array', items: { type: 'string' }, description: 'Phone numbers. Merge-appended on existing records.' },
+        imessage_handles: { type: 'array', items: { type: 'string' }, description: 'iMessage handles (typically a phone or Apple ID email). Merge-appended on existing records.' },
+        company: { type: 'string', description: 'Organization / company.' },
+        role: { type: 'string', description: 'Title or relationship label ("buyer", "neighbor", "agent\'s contact at vendor X").' },
+        notes: { type: 'string', description: 'Freeform observation. On an existing record this is appended with a timestamp; on a new record it is the initial notes body.' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Short tags like "family", "client", "vendor", "personal". Merge-appended on existing records.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'contact_search',
+    description: 'Search the DOJO contacts store by partial match across name, preferred_name, company, role, emails, phones, imessage_handles, tags, and notes. Returns a compact one-line-per-contact list; call contact_get for the full record. Empty query returns the most recently updated contacts.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search term. Matched case-insensitively across all searchable fields.' },
+        limit: { type: 'number', description: 'Maximum results (default 20, capped at 200).' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'contact_list',
+    description: 'List contacts in the DOJO store. Sort options: "updated" (default, newest activity first), "name" (display_name A-Z), "company". Useful for browsing rather than targeted lookup; for lookup prefer contact_search.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        sort_by: { type: 'string', enum: ['updated', 'name', 'company'], description: 'Sort key. Default "updated".' },
+        limit: { type: 'number', description: 'Page size (default 50).' },
+        offset: { type: 'number', description: 'Skip this many records (for pagination).' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'contact_get',
+    description: 'Fetch a single contact\'s full record: all addresses, tags, notes, and provenance. Pass the contact_id from contact_search or contact_list (full UUID or 8-char prefix).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        contact_id: { type: 'string', description: 'Contact ID (full or 8-char prefix).' },
+      },
+      required: ['contact_id'],
+    },
+  },
+  {
+    name: 'contact_update',
+    description: 'Explicit field-level edit of a contact, distinct from the upsert-semantics of contact_remember. Pass mode="replace" (default) to overwrite list fields and notes with the new values, or mode="append" to merge into the existing values (same merge semantics as contact_remember).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        contact_id: { type: 'string', description: 'Contact ID (full or 8-char prefix).' },
+        display_name: { type: 'string' },
+        preferred_name: { type: 'string' },
+        emails: { type: 'array', items: { type: 'string' } },
+        phones: { type: 'array', items: { type: 'string' } },
+        imessage_handles: { type: 'array', items: { type: 'string' } },
+        company: { type: 'string' },
+        role: { type: 'string' },
+        notes: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' } },
+        mode: { type: 'string', enum: ['replace', 'append'], description: 'Default "replace". Use "append" when adding to existing lists/notes without losing what was there.' },
+      },
+      required: ['contact_id'],
+    },
+  },
+  {
+    name: 'contact_forget',
+    description: 'Delete a contact from the DOJO store. Irreversible. Use only when the owner has explicitly asked to drop a contact, or for cleanup of a record you mistakenly created.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        contact_id: { type: 'string', description: 'Contact ID (full or 8-char prefix).' },
+      },
+      required: ['contact_id'],
+    },
+  },
+  {
+    name: 'contact_describe',
+    description: 'Quick orientation: how many contacts the DOJO has on file, the top tags, and the top companies. Cheap, no args.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+
   // ── Squad Coordination (Phase 7 / Part X) ──
   // Shared memory for agents in the same group_id. Faster than A2A messages
   // for handing structured context between squad members.
@@ -7261,6 +7360,59 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         break;
       }
 
+      // ── DOJO Contacts (v2.9.16) ──
+
+      case 'contact_remember': {
+        const { executeContactRemember } = await import('../contacts/tools.js');
+        content = executeContactRemember(agentId, args);
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'contact_search': {
+        const csErr = checkRequired([{ name: 'query', value: args.query, type: 'string' }]);
+        if (csErr) { content = csErr; isError = true; break; }
+        const { executeContactSearch } = await import('../contacts/tools.js');
+        content = executeContactSearch(args);
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'contact_list': {
+        const { executeContactList } = await import('../contacts/tools.js');
+        content = executeContactList(args);
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'contact_get': {
+        const cgErr = checkRequired([{ name: 'contact_id', value: args.contact_id, type: 'string' }]);
+        if (cgErr) { content = cgErr; isError = true; break; }
+        const { executeContactGet } = await import('../contacts/tools.js');
+        content = executeContactGet(args);
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'contact_update': {
+        const cuErr = checkRequired([{ name: 'contact_id', value: args.contact_id, type: 'string' }]);
+        if (cuErr) { content = cuErr; isError = true; break; }
+        const { executeContactUpdate } = await import('../contacts/tools.js');
+        content = executeContactUpdate(agentId, args);
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'contact_forget': {
+        const cfErr = checkRequired([{ name: 'contact_id', value: args.contact_id, type: 'string' }]);
+        if (cfErr) { content = cfErr; isError = true; break; }
+        const { executeContactForget } = await import('../contacts/tools.js');
+        content = executeContactForget(args);
+        isError = content.startsWith('Error');
+        break;
+      }
+      case 'contact_describe': {
+        const { executeContactDescribe } = await import('../contacts/tools.js');
+        content = executeContactDescribe();
+        isError = false;
+        break;
+      }
+
       // ── Squad Coordination (Phase 7 / Part X) ──
 
       case 'squad_share': {
@@ -7543,6 +7695,9 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
       case 'teams_list_teams':
       case 'teams_list_channels':
       case 'teams_read_channel_messages':
+      case 'contacts_search':
+      case 'contacts_list':
+      case 'contacts_get':
       // v2.7.0 — user-slot variants of Microsoft reads (multi-account).
       // executeMicrosoftReadTool strips the prefix and routes to the
       // user slot's credentials.
@@ -7590,7 +7745,10 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
       case 'online_meeting_delete':
       case 'teams_create_chat':
       case 'teams_send_message':
-      case 'teams_send_channel_message': {
+      case 'teams_send_channel_message':
+      case 'contacts_create':
+      case 'contacts_update':
+      case 'contacts_delete': {
         if (!isPrimaryAgent(agentId)) {
           content = 'Permission denied: only the primary agent can use Microsoft 365 write tools.';
           isError = true;

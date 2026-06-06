@@ -509,6 +509,79 @@ export const deleteCredential = async (id: string): Promise<ApiResponse<{ delete
   return request<{ deleted: boolean }>(`/credentials/${encodeURIComponent(id)}`, { method: 'DELETE' });
 };
 
+// Contacts (v2.9.16): DOJO-native people store.
+export interface ContactDto {
+  id: string;
+  display_name: string;
+  preferred_name: string | null;
+  emails: string[];
+  phones: string[];
+  imessage_handles: string[];
+  company: string | null;
+  role: string | null;
+  notes: string | null;
+  tags: string[];
+  created_by_agent_id: string | null;
+  last_updated_by_agent_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface ContactInputDto {
+  display_name?: string;
+  preferred_name?: string | null;
+  emails?: string[];
+  phones?: string[];
+  imessage_handles?: string[];
+  company?: string | null;
+  role?: string | null;
+  notes?: string | null;
+  tags?: string[];
+}
+export const listContactsApi = async (params: { q?: string; sort_by?: 'updated' | 'name' | 'company'; sort_dir?: 'asc' | 'desc'; limit?: number; offset?: number } = {}): Promise<ApiResponse<{ count: number; total: number; contacts: ContactDto[] }>> => {
+  const qs = new URLSearchParams();
+  if (params.q) qs.set('q', params.q);
+  if (params.sort_by) qs.set('sort_by', params.sort_by);
+  if (params.sort_dir) qs.set('sort_dir', params.sort_dir);
+  if (params.limit) qs.set('limit', String(params.limit));
+  if (params.offset) qs.set('offset', String(params.offset));
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  return request<{ count: number; total: number; contacts: ContactDto[] }>(`/contacts${suffix}`);
+};
+export const getContactApi = async (id: string): Promise<ApiResponse<ContactDto>> => {
+  return request<ContactDto>(`/contacts/${encodeURIComponent(id)}`);
+};
+export const createContactApi = async (input: ContactInputDto): Promise<ApiResponse<ContactDto>> => {
+  return request<ContactDto>('/contacts', { method: 'POST', body: JSON.stringify(input) });
+};
+/**
+ * Update a contact. Pass `expectedUpdatedAt` for optimistic locking:
+ * if the server's current updated_at doesn't match, the response is
+ * a 409 with `data.current` containing the server-side record so the
+ * UI can show a conflict resolution prompt.
+ */
+export const updateContactApi = async (
+  id: string,
+  input: ContactInputDto,
+  expectedUpdatedAt?: string,
+): Promise<ApiResponse<ContactDto> & { conflictCurrent?: ContactDto }> => {
+  const body = expectedUpdatedAt ? { ...input, expected_updated_at: expectedUpdatedAt } : input;
+  const res = await request<ContactDto>(`/contacts/${encodeURIComponent(id)}`, {
+    method: 'PATCH', body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    // The server includes the current record in data.current on 409 so
+    // the UI can re-seed the edit form without an extra GET.
+    const errData = (res as { data?: { code?: string; current?: ContactDto } }).data;
+    if (errData?.code === 'conflict' && errData.current) {
+      return { ...res, conflictCurrent: errData.current };
+    }
+  }
+  return res;
+};
+export const deleteContactApi = async (id: string): Promise<ApiResponse<{ deleted: boolean }>> => {
+  return request<{ deleted: boolean }>(`/contacts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+};
+
 // V2CutoverNotice (Part XI) — bulk-reset every idle agent's session.
 // Returns count breakdown { reset, busy, errors, total }.
 export interface ResetIdleSessionsResponse {

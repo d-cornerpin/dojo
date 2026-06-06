@@ -28,6 +28,7 @@ import { googleRouter } from './routes/google.js';
 import { microsoftRouter } from './routes/microsoft.js';
 import { plaudRouter } from './routes/plaud.js';
 import { credentialsRouter } from './routes/credentials.js';
+import { contactsRouter } from './routes/contacts.js';
 import { migrationRouter } from './routes/migration.js';
 import { healerRouter } from './routes/healer.js';
 import { verifyAndTrackClient, removeClient, handleClientMessage } from './ws.js';
@@ -218,6 +219,7 @@ export function createServer() {
   app.route('/api/microsoft', microsoftRouter); // /api/microsoft/status, /api/microsoft/callback, etc.
   app.route('/api/plaud', plaudRouter);     // /api/plaud/status, /api/plaud/connect, etc.
   app.route('/api/credentials', credentialsRouter); // agent credentials vault CRUD
+  app.route('/api/contacts', contactsRouter); // DOJO contacts store CRUD
   app.route('/api/migration', migrationRouter); // /api/migration/export, /api/migration/import, etc.
   app.route('/api/setup/migration', migrationRouter); // Same routes, public for OOBE import
   app.route('/api/healer', healerRouter);   // /api/healer/config, /api/healer/proposals, etc.
