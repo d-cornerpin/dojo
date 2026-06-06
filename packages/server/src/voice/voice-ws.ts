@@ -737,6 +737,55 @@ function isBackchannel(transcript: string): boolean {
   return BACKCHANNELS.has(cleaned);
 }
 
+/**
+ * Carve-out for the backchannel filter: if the agent just asked the
+ * user a question (most recent assistant message in the last 60s
+ * ends with `?`), short answers like "yes", "no", "yeah", "nope" are
+ * legitimate replies, not mid-thought acknowledgments. We bypass the
+ * backchannel filter in that window.
+ *
+ * Time window stops a stale question from years-ago staying open
+ * forever (e.g. agent asked an hour ago, user mumbles "yeah" while
+ * unrelated). Most natural Q&A lands within a couple of seconds; 60s
+ * is generous.
+ */
+function lastAssistantWasQuestion(agentId: string): boolean {
+  try {
+    const row = getDb().prepare(`
+      SELECT content, created_at
+      FROM messages
+      WHERE agent_id = ?
+        AND role = 'assistant'
+        AND content IS NOT NULL
+        AND content <> ''
+      ORDER BY created_at DESC, rowid DESC
+      LIMIT 1
+    `).get(agentId) as { content: string; created_at: string } | undefined;
+    if (!row?.content) return false;
+    // Stored as either plain text or a JSON array of content blocks
+    // (text + tool_use). Pull just the text.
+    let text = row.content;
+    if (text.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) {
+          text = parsed
+            .filter((b: { type?: string }) => b?.type === 'text')
+            .map((b: { text?: string }) => b.text ?? '')
+            .join(' ');
+        }
+      } catch { /* not JSON, treat as text */ }
+    }
+    const cleaned = text.trim();
+    if (!cleaned.endsWith('?')) return false;
+    // created_at is stored as UTC datetime string without timezone marker.
+    const ageMs = Date.now() - new Date(row.created_at + (row.created_at.includes('Z') ? '' : 'Z')).getTime();
+    return ageMs >= 0 && ageMs < 60_000;
+  } catch {
+    return false;
+  }
+}
+
 async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
   const chunks = session.pcmChunks;
   session.pcmChunks = [];
@@ -840,7 +889,12 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
   // barge-in (if any) already cancelled in-flight TTS. Just go back to
   // listening — no LLM call, no token spend, no spurious "you said yeah"
   // entry in the chat history.
-  if (isBackchannel(transcript)) {
+  //
+  // EXCEPTION: if the agent JUST asked a question (most recent assistant
+  // message in the last 60s ends with `?`), short answers ARE the
+  // actual answer. Without this carve-out, the agent would ask "should
+  // I email Sarah?" and the user's "yes" would silently disappear.
+  if (isBackchannel(transcript) && !lastAssistantWasQuestion(session.agentId)) {
     logger.debug('Backchannel detected — not submitting as prompt', { agentId: session.agentId, transcript });
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
     return;
