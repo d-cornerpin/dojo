@@ -161,9 +161,16 @@ ${groupInfo ? `- ${groupInfo}` : ''}
 function isIMessageTurn(agentId: string): boolean {
   try {
     const db = getDb();
+    // v2.9.15: same channel-detection predicate as the loop's
+    // preflight - skip A2A and synthetic-system rows so this query
+    // sees the actual user-channel inbound for the turn.
     const row = db.prepare(
       `SELECT content FROM messages
-       WHERE agent_id = ? AND role = 'user'
+       WHERE agent_id = ?
+         AND role = 'user'
+         AND content NOT LIKE '[SOURCE: SYSTEM%'
+         AND content NOT LIKE '[A2A:%'
+         AND content NOT LIKE '[SOURCE: AGENT MESSAGE FROM%'
        ORDER BY created_at DESC, rowid DESC
        LIMIT 1`,
     ).get(agentId) as { content: string } | undefined;
@@ -680,8 +687,19 @@ export function assembleSystemPrompt(
       // as the loop's preflight). Cheap heuristic here so the assembler
       // doesn't depend on turn state being threaded through.
       const db = getDb();
+      // v2.9.15: same predicate as the loop's preflight - skip rows
+      // that share `role='user'` but aren't actual user-channel
+      // inbounds (A2A sub-agent replies, synthetic system notices),
+      // so the [Reply destination:] tag doesn't get computed against
+      // a poisoned "most recent user message."
       const lastRow = db.prepare(
-        "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        `SELECT content FROM messages
+           WHERE agent_id = ?
+             AND role = 'user'
+             AND content NOT LIKE '[SOURCE: SYSTEM%'
+             AND content NOT LIKE '[A2A:%'
+             AND content NOT LIKE '[SOURCE: AGENT MESSAGE FROM%'
+           ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       ).get(agentId) as { content: string } | undefined;
       const lastContent = lastRow?.content ?? '';
       let inboundChannel: 'imessage' | 'teams' | 'email' | 'dashboard' | null = null;

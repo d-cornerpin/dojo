@@ -121,6 +121,38 @@ const ToolOnlyPill = ({ msg }: { msg: ChatMessage }) => {
   );
 };
 
+// Horizontal flex-wrap row of tool pills. Mirrors Chat.tsx's
+// ToolPillRow - renders when several consecutive assistant turns
+// were tool-only so the pills pack left-to-right with wrap instead
+// of stacking one per row.
+const ToolPillRow = ({ messages }: { messages: ChatMessage[] }) => {
+  const items = messages
+    .map(msg => {
+      const { blocks } = parseMessageContent(msg.content);
+      const toolUses = (blocks ?? []).filter(b => b.type === 'tool_use');
+      if (toolUses.length === 0) return null;
+      const label = toolUses.length === 1
+        ? toolUses[0].name ?? 'tool'
+        : `${toolUses.length} tools`;
+      return { id: msg.id, label };
+    })
+    .filter((item): item is { id: string; label: string } => item !== null);
+  if (items.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 justify-start">
+      {items.map(item => (
+        <div
+          key={item.id}
+          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[11px] font-mono"
+        >
+          <span className="text-ui/40">⚙</span>
+          <span>{item.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
 // v2.7.23 — when the agent calls a channel-send tool directly (imessage_send,
 // teams_send_message), render the outbound message content + channel pill
 // rather than the generic tool-only pill. Mirrors the inbound channel
@@ -818,6 +850,50 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
     return m;
   }, [messages]);
 
+  // Group adjacent tool-only assistant messages into a single
+  // horizontal flex-wrap row of pills. Mirrors Chat.tsx's
+  // toolPillGrouping; see that file for the full rationale.
+  const toolPillGrouping = useMemo(() => {
+    const groupByFirstId = new Map<string, ChatMessage[]>();
+    const skipIds = new Set<string>();
+    if (wordyMode) return { groupByFirstId, skipIds };
+    const isToolOnlyPill = (msg: ChatMessage): boolean => {
+      if (msg.role !== 'assistant') return false;
+      const { text, blocks } = parseMessageContent(msg.content);
+      if (text) return false;
+      const hasToolUse = blocks?.some(b => b.type === 'tool_use');
+      if (!hasToolUse) return false;
+      const channelSend = blocks?.find(
+        b => b.type === 'tool_use' && b.name && CHANNEL_SEND_TOOLS[b.name],
+      );
+      const channelSendErrored = channelSend?.id
+        ? toolResultErrorById.get(channelSend.id) === true
+        : false;
+      if (channelSend && !channelSendErrored) return false;
+      return true;
+    };
+    let currentGroup: ChatMessage[] = [];
+    const closeGroup = () => {
+      if (currentGroup.length > 1) {
+        groupByFirstId.set(currentGroup[0].id, [...currentGroup]);
+        for (let i = 1; i < currentGroup.length; i++) {
+          skipIds.add(currentGroup[i].id);
+        }
+      }
+      currentGroup = [];
+    };
+    for (const msg of messages) {
+      if (msg.role === 'tool') continue;
+      if (isToolOnlyPill(msg)) {
+        currentGroup.push(msg);
+      } else {
+        closeGroup();
+      }
+    }
+    closeGroup();
+    return { groupByFirstId, skipIds };
+  }, [messages, wordyMode, toolResultErrorById]);
+
   // Attach channel routing markers ([Reply routed via iMessage to X], etc.)
   // to the preceding assistant message instead of rendering them as a
   // standalone right-aligned badge below. See Chat.tsx for the same
@@ -892,6 +968,9 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             would falsely render "sent via iMessage" + the message text
             even though nothing was actually delivered. */}
         {messages.map((msg) => {
+          // Group-render: subsequent members of a tool-pill group are
+          // skipped here; the group renders at the first member below.
+          if (toolPillGrouping.skipIds.has(msg.id)) return null;
           // Hide inter-agent and system messages unless wordy mode is on.
           // iMessage-sourced user messages stay visible (they're a real
           // channel, not internal routing) — UserBubble strips the framing
@@ -1006,7 +1085,12 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             }
             // Tool-only turns become a compact pill (rather than disappearing)
             // so the user still sees that the agent did something.
-            if (!parsed.text && hasToolUse) return <ToolOnlyPill key={msg.id} msg={msg} />;
+            if (!parsed.text && hasToolUse) {
+              const group = toolPillGrouping.groupByFirstId.get(msg.id);
+              return group
+                ? <ToolPillRow key={msg.id} messages={group} />
+                : <ToolOnlyPill key={msg.id} msg={msg} />;
+            }
           }
           if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} />;
           return <AssistantBubble key={msg.id} msg={msg} wordyMode={wordyMode} outboundChannel={outboundChannelByAssistantId.get(msg.id) ?? null} />;

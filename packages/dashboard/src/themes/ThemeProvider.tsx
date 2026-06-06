@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import { ThemeContext, THEMES, DEFAULT_THEME } from './index';
 import * as api from '../lib/api';
+import { useAuth } from '../hooks/useAuth';
 
 const THEME_LINK_ID = 'dojo-feng-shui-theme';
 const SETTING_KEY = 'feng_shui_theme';
@@ -34,12 +35,27 @@ interface ThemeProviderProps {
 
 export const ThemeProvider = ({ children }: ThemeProviderProps) => {
   const [themeId, setThemeId] = useState(DEFAULT_THEME);
+  const { isAuthenticated } = useAuth();
 
-  // Load saved theme on mount — but only if we have an auth token.
-  // Without this check, the API call returns 401 on the login page,
-  // the API client's 401 handler does window.location.href = '/login',
-  // and the page reloads in an infinite loop.
+  // Load saved theme whenever auth flips to true. The dep on
+  // isAuthenticated means: on a fresh browser (no token at mount), we
+  // don't try the API yet, but the moment the user logs in we fetch
+  // the saved theme. Same path runs on session-expired re-login and on
+  // every initial mount where the token is already present (returning
+  // user). Without this, the saved theme only loaded on a hard refresh
+  // taken while already authenticated.
+  //
+  // The token check is still belt-and-suspenders for the brief window
+  // between auth context flip and localStorage write.
   useEffect(() => {
+    if (!isAuthenticated) {
+      // Reset to default on logout / session expiry so the next user
+      // on this browser starts from a clean slate (their own theme
+      // will load when they authenticate).
+      setThemeId(DEFAULT_THEME);
+      loadThemeCSS(DEFAULT_THEME);
+      return;
+    }
     const token = localStorage.getItem('dojo_token');
     if (!token) return;
 
@@ -54,7 +70,7 @@ export const ThemeProvider = ({ children }: ThemeProviderProps) => {
     }).catch(() => {
       // Network error — use default theme
     });
-  }, []);
+  }, [isAuthenticated]);
 
   const setTheme = useCallback((id: string) => {
     if (!THEMES.some(t => t.id === id)) return;

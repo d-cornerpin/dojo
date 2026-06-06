@@ -1992,7 +1992,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'imessage_send',
-    description: 'Send an iMessage from YOUR OWN iMessage account (the DOJO bridge). **As of v2.7.23, replies to inbound iMessages auto-route via the engine — you do NOT need to call this tool to reply. Just write your reply text; engine delivers it.**\n\n**HARD RULE — When the primary user is actively talking to you on dashboard, DO NOT call this tool to message them.** The user is in the dashboard right now; your reply belongs in the dashboard, full stop. Calling imessage_send to "also share this on their phone" or "make sure they see it" is wrong — they\'re looking at the dashboard. The engine will refuse the call anyway; do not even try. (Engine guard fires when the most recent inbound was a dashboard message within the last 60 seconds and the recipient is the primary user.)\n\nThis tool is reserved for exactly these three cases:\n\n- **PROACTIVE outreach** = the turn was NOT triggered by a user message at all. Examples: a scheduled task fires and you decide to text the user about it, a watchdog event needs surfacing while the user is offline, a long-running job you started yesterday completes and you proactively let the user know. "PROACTIVE" does NOT mean "I am choosing to additionally send via another channel" — if the user just messaged you (on any channel), this is a REPLY turn, not a proactive turn.\n- **CROSS-RECIPIENT sends** = the recipient is someone OTHER than the primary user. Texting the user\'s spouse, a colleague, a third-party contact on the safe-sender list. The dashboard-active guard does not apply when the recipient is not the primary user.\n- **RICH actions** = sending with attachments (image, PDF, etc.). The text rides with the first file via the imsg CLI. Use only when an attachment is genuinely needed — sending a link as a "rich action" is still a regular text and does not qualify.\n\nVOICE: write like an actual text message. No markdown, no headers, no bullet lists. Short and conversational.\n\nRecipient rule: pass `recipient` explicitly when proactively messaging someone or when sending to a non-default address. The value MUST exactly match a safe-sender address. If you only know the person by name (e.g. user said "text <contact-name>"), call `imessage_list_contacts` first to look up the address. Passing an unknown address is refused. For attachments, pass any local path (e.g. ~/.dojo/uploads/<agent-id>/photo.jpg).',
+    description: 'Send an iMessage from YOUR OWN iMessage account (the DOJO bridge). **As of v2.7.23, replies to inbound iMessages auto-route via the engine — you do NOT need to call this tool to reply. Just write your reply text; engine delivers it.**\n\n**DEFAULT-CHANNEL RULE — When the primary user is actively talking to you on dashboard, the default is "reply in dashboard."** Do NOT additionally text them on iMessage to "also share on their phone" or "make sure they see it." Their reply belongs in the dashboard they are looking at.\n\n**Exceptions where you SHOULD call imessage_send even though the user is in dashboard:**\n\n- **The user explicitly named iMessage in this turn\'s request.** e.g. "text me the meeting list," "iMessage me when that finishes," "send the summary to my phone." The user choosing the channel overrides the default-channel rule.\n- **A task you are working on explicitly specifies iMessage as the delivery channel.** Tasks frequently encode delivery preferences in their goal or notes ("when this completes, iMessage David with the result," "deliver via iMessage, not chat"). The task directive is the authoritative source for that work item; the default-channel rule is for the absence of a task directive, not in addition to it.\n- **The recipient is someone OTHER than the primary user.** Texting the user\'s spouse, a colleague, a third-party contact on the safe-sender list — the default-channel rule is only about the primary user.\n\n**Beyond those exceptions, this tool is for:**\n\n- **PROACTIVE outreach** = the turn was NOT triggered by a user message at all. Examples: a scheduled task fires and you decide to text the user, a watchdog event needs surfacing while the user is offline, a long-running job you started yesterday completes and you let the user know.\n- **RICH actions** = sending with attachments (image, PDF, etc.). The text rides with the first file via the imsg CLI. Use only when an attachment is genuinely needed; sending a link as a "rich action" does not qualify.\n\nVOICE: write like an actual text message. No markdown, no headers, no bullet lists. Short and conversational.\n\nRecipient rule: pass `recipient` explicitly when proactively messaging someone or when sending to a non-default address. The value MUST exactly match a safe-sender address. If you only know the person by name (e.g. user said "text <contact-name>"), call `imessage_list_contacts` first to look up the address. Passing an unknown address is refused. For attachments, pass any local path (e.g. ~/.dojo/uploads/<agent-id>/photo.jpg).',
     input_schema: {
       type: 'object',
       properties: {
@@ -6320,45 +6320,20 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
 
         const recipientRecord = findSafeSenderByAddress(safeRecords, recipient);
 
-        // ── v2.7.24: channel-context guard ──────────────────────────
-        // If the most recent user message arrived via dashboard (no
-        // [SOURCE: IMESSAGE FROM] tag) AND that message was recent (< 60s),
-        // the user is actively chatting with the agent in dashboard. Sending
-        // an iMessage to the primary user in that situation is the textbook
-        // failure mode (user types in dashboard → agent texts them on phone).
-        // Refuse with a redirect telling the model to just write a reply.
-        //
-        // The 60s window distinguishes "reply to a dashboard chat" from
-        // "proactive send while the user happens to have used dashboard
-        // recently." Proactive sends (scheduled tasks, etc.) and replies
-        // to iMessage threads remain fully supported.
-        try {
-          const lastUserRow = getDb().prepare(
-            "SELECT content, created_at FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1",
-          ).get(agentId) as { content: string; created_at: string } | undefined;
-          if (lastUserRow) {
-            const lastInboundWasImessage = lastUserRow.content.includes('[SOURCE: IMESSAGE FROM');
-            // created_at is stored as UTC datetime string without timezone marker
-            const inboundAgeMs = Date.now() - new Date(lastUserRow.created_at + 'Z').getTime();
-            const recentInbound = inboundAgeMs >= 0 && inboundAgeMs < 60_000;
-            if (recentInbound && !lastInboundWasImessage) {
-              const primary = safeRecords.find(s => s.is_primary);
-              if (primary && primary.address.toLowerCase() === recipient.toLowerCase()) {
-                content =
-                  'iMessage NOT sent — the user is currently active on the dashboard ' +
-                  '(just sent you a dashboard message). Reply by writing your text directly; ' +
-                  'the engine delivers dashboard replies automatically. ' +
-                  '`imessage_send` is reserved for: (a) PROACTIVE sends when no inbound ' +
-                  'triggered this turn, (b) sending to someone OTHER than the primary user, ' +
-                  'or (c) rich actions like attachments. Do not call this tool to reply to ' +
-                  'the primary user when they are actively talking to you in dashboard.';
-                isError = true;
-                auditLog(agentId, 'imessage_send', recipient, 'denied', 'inbound channel was dashboard');
-                break;
-              }
-            }
-          }
-        } catch { /* DB error — fall through, don't block on diagnostic */ }
+        // v2.9.15 — removed the "dashboard-active" channel-context guard
+        // that used to refuse imessage_send when the most recent user-role
+        // message lacked the iMessage source tag and was less than 60s
+        // old. The guard's intent was to prevent the model from texting
+        // the user while they were typing in dashboard, but in practice
+        // it (a) treated every non-iMessage inbound (email, Teams, A2A,
+        // task wake-ups stored as user-role) as "dashboard activity" and
+        // refused legitimate sends, (b) blocked explicit user requests
+        // like "iMessage me X" issued from the dashboard, and (c) blocked
+        // task-directed sends ("when work completes, iMessage the user
+        // with the result") whenever those tasks finished within 60s of
+        // any other inbound. The default-channel hint stays in the tool
+        // description (HARD RULE), but the engine no longer second-
+        // guesses an explicit imessage_send call.
 
         // ── Attachment pre-flight ────────────────────────────────────
         // Fail-fast on any missing file before any bytes go over the

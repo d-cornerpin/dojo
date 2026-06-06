@@ -362,9 +362,25 @@ export async function runV2Turn(agentId: string): Promise<void> {
   setAgentStatus(agentId, 'working');
   startStatusHeartbeat(agentId);
 
-  // Trigger context — read once at preflight (Part XIX preservation)
+  // Trigger context — read once at preflight (Part XIX preservation).
+  //
+  // v2.9.15: filter out rows that share `role='user'` but are NOT
+  // actual user-channel inbounds. Without this, an A2A reply from a
+  // sub-agent or a synthetic rate-limit-recovery notice shows up as
+  // "the most recent user message" and the engine misattributes the
+  // current turn's inbound channel - the canonical failure shape is:
+  // user iMessages primary, primary delegates to a sub-agent, the
+  // sub-agent's A2A reply lands as `role='user'` with content starting
+  // `[A2A:`, and the primary's next-turn reply auto-routes to
+  // dashboard instead of back to the original iMessage thread.
   const triggerRow = db.prepare(
-    "SELECT content, source FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+    `SELECT content, source FROM messages
+       WHERE agent_id = ?
+         AND role = 'user'
+         AND content NOT LIKE '[SOURCE: SYSTEM%'
+         AND content NOT LIKE '[A2A:%'
+         AND content NOT LIKE '[SOURCE: AGENT MESSAGE FROM%'
+       ORDER BY created_at DESC, rowid DESC LIMIT 1`,
   ).get(agentId) as { content: string; source: string | null } | undefined;
   const lastUserMessageContent = triggerRow?.content ?? null;
   // Phase 3 — bind the inbound source for the whole turn. Computed once

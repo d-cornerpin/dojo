@@ -376,6 +376,40 @@ const ToolOnlyPill = ({ msg }: { msg: ChatMessage }) => {
   );
 };
 
+// Horizontal flex-wrap row of tool pills. Renders when several
+// consecutive assistant turns were tool-only - instead of stacking
+// one pill per row (which sprawls vertically when an agent does a
+// long tool sequence), we pack them left-to-right with wrap. Each
+// underlying assistant message still gets its own pill so the count
+// and the tool names stay legible; only the layout changes.
+const ToolPillRow = ({ messages }: { messages: ChatMessage[] }) => {
+  const items = messages
+    .map(msg => {
+      const { blocks } = parseMessageContent(msg.content);
+      const toolUses = (blocks ?? []).filter(b => b.type === 'tool_use');
+      if (toolUses.length === 0) return null;
+      const label = toolUses.length === 1
+        ? toolUses[0].name ?? 'tool'
+        : `${toolUses.length} tools`;
+      return { id: msg.id, label };
+    })
+    .filter((item): item is { id: string; label: string } => item !== null);
+  if (items.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 justify-start">
+      {items.map(item => (
+        <div
+          key={item.id}
+          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[11px] font-mono"
+        >
+          <span className="text-ui/40">⚙</span>
+          <span>{item.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
 // v2.7.23 — mirror AgentDetail.tsx: render channel-send tool calls as
 // outbound message bubbles with the channel pill, not generic gear icons.
 const CHANNEL_SEND_TOOLS: Record<string, { label: string; emoji: string }> = {
@@ -1002,6 +1036,55 @@ export const Chat = () => {
     return m;
   }, [messages]);
 
+  // Group adjacent tool-only assistant messages so their pills render
+  // in one horizontal flex-wrap row instead of stacking vertically.
+  // role='tool' rows are filtered to null in non-wordy mode, so they
+  // don't break a visual run between two consecutive tool-only
+  // assistant messages - the walk below skips them. Anything else
+  // that renders visibly (user bubble, response bubble, divider,
+  // routing marker) closes the current group.
+  const toolPillGrouping = useMemo(() => {
+    const groupByFirstId = new Map<string, ChatMessage[]>();
+    const skipIds = new Set<string>();
+    if (wordyMode) return { groupByFirstId, skipIds };
+    const isToolOnlyPill = (msg: ChatMessage): boolean => {
+      if (msg.role !== 'assistant') return false;
+      const { text, blocks } = parseMessageContent(msg.content);
+      if (text) return false;
+      const hasToolUse = blocks?.some(b => b.type === 'tool_use');
+      if (!hasToolUse) return false;
+      const channelSend = blocks?.find(
+        b => b.type === 'tool_use' && b.name && CHANNEL_SEND_TOOLS[b.name],
+      );
+      const channelSendErrored = channelSend?.id
+        ? toolResultErrorById.get(channelSend.id) === true
+        : false;
+      // A non-errored channel-send renders as ChannelSendBubble, not a pill.
+      if (channelSend && !channelSendErrored) return false;
+      return true;
+    };
+    let currentGroup: ChatMessage[] = [];
+    const closeGroup = () => {
+      if (currentGroup.length > 1) {
+        groupByFirstId.set(currentGroup[0].id, [...currentGroup]);
+        for (let i = 1; i < currentGroup.length; i++) {
+          skipIds.add(currentGroup[i].id);
+        }
+      }
+      currentGroup = [];
+    };
+    for (const msg of messages) {
+      if (msg.role === 'tool') continue;
+      if (isToolOnlyPill(msg)) {
+        currentGroup.push(msg);
+      } else {
+        closeGroup();
+      }
+    }
+    closeGroup();
+    return { groupByFirstId, skipIds };
+  }, [messages, wordyMode, toolResultErrorById]);
+
   // Channel routing markers ([Reply routed via iMessage to NAME], etc.)
   // arrive as standalone system messages AFTER the assistant reply they
   // describe. The old rendering left those as their own right-aligned
@@ -1074,6 +1157,9 @@ export const Chat = () => {
         )}
 
         {messages.map((msg) => {
+          // Group-render: subsequent members of a tool-pill group are
+          // skipped here; the group renders at the first member below.
+          if (toolPillGrouping.skipIds.has(msg.id)) return null;
           // Hide inter-agent messages and system nudges unless wordy mode is on
           if (!wordyMode && msg.role === 'user' && (
             msg.content.startsWith('[A2A:') ||
@@ -1205,7 +1291,12 @@ export const Chat = () => {
               );
               if (otherToolUses.length === 0) return null;
             }
-            if (!text && hasToolUse) return <ToolOnlyPill key={msg.id} msg={msg} />;
+            if (!text && hasToolUse) {
+              const group = toolPillGrouping.groupByFirstId.get(msg.id);
+              return group
+                ? <ToolPillRow key={msg.id} messages={group} />
+                : <ToolOnlyPill key={msg.id} msg={msg} />;
+            }
           }
           return <AssistantBubble key={msg.id} msg={msg} wordyMode={wordyMode} modelNames={modelNames} outboundChannel={outboundChannelByAssistantId.get(msg.id) ?? null} />;
         })}
