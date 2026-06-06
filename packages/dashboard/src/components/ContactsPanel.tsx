@@ -338,7 +338,7 @@ const ContactEditDrawer = ({ contact, onClose, onSaved }: DrawerProps) => {
   return (
     <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50" onClick={onClose}>
       <div
-        className="bg-bg-surface w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-t-xl sm:rounded-xl border border-ui/[0.08] shadow-xl"
+        className="glass-modal-bg w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-t-xl sm:rounded-xl border border-ui/[0.08] shadow-xl"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-ui/[0.06]">
@@ -426,7 +426,7 @@ const ContactEditDrawer = ({ contact, onClose, onSaved }: DrawerProps) => {
           onClick={() => setConflictCurrent(null)}
         >
           <div
-            className="bg-bg-surface max-w-md w-[92vw] rounded-xl border border-ui/[0.12] shadow-2xl p-5 space-y-3"
+            className="glass-modal-bg max-w-md w-[92vw] rounded-xl border border-ui/[0.12] shadow-2xl p-5 space-y-3"
             onClick={e => e.stopPropagation()}
           >
             <h4 className="text-sm font-semibold text-ui">Contact changed while you were editing</h4>

@@ -191,7 +191,46 @@ routerRouter.post('/test', async (c) => {
 
   const result = scoreQuery(systemPrompt, messages);
 
-  return c.json({ ok: true, data: result });
+  // v2.9.17: shape the response for the Settings → Router test panel.
+  // The dashboard's RouterTest component reads `score` on each
+  // dimension entry (and crashes on .toFixed() of undefined when the
+  // field is missing) and expects a `selectedModel` string. The
+  // scorer returns `raw` and doesn't run the selector. Mirror the
+  // real routing decision here by aliasing raw → score on every
+  // dimension and calling selectModel(tier, ...) to fill in the
+  // selected-model card. selectModel can return null if every tier
+  // is exhausted (rate-limited, no enabled models, budget cap hit);
+  // surface that explicitly instead of leaving the field undefined.
+  const { selectModel } = await import('../../router/selector.js');
+  let selectedModel = '(no model available)';
+  try {
+    const sel = selectModel(result.tier, 'router-test');
+    if (sel) {
+      selectedModel = sel.fallbackUsed ? `${sel.modelId} (fallback)` : sel.modelId;
+    }
+  } catch (err) {
+    // Don't fail the test on a selector hiccup - the scoring result
+    // is still useful for the user even if model lookup misbehaved.
+    selectedModel = `(selector error: ${err instanceof Error ? err.message : String(err)})`;
+  }
+
+  return c.json({
+    ok: true,
+    data: {
+      scores: result.scores.map(s => ({
+        dimension: s.dimension,
+        score: s.raw,
+        raw: s.raw,
+        weight: s.weight,
+        weighted: s.weighted,
+      })),
+      rawScore: result.rawScore,
+      confidence: result.confidence,
+      tier: result.tier,
+      latencyMs: result.latencyMs,
+      selectedModel,
+    },
+  });
 });
 
 // GET /stats — routing statistics
