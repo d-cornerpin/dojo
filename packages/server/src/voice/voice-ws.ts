@@ -973,12 +973,6 @@ function startTtsForAgent(session: VoiceSession, initialContent?: string): void 
   // instead of waiting for a full sentence boundary.
   const splitter = createClauseQueue();
   session.splitter = splitter;
-  // v2.9.16: expose engine-agnostic push handle so the v2 loop's
-  // voice-filler trigger can inject "on it" style acknowledgments
-  // through whichever TTS engine is active. Cleared in finally.
-  session.activeBurstPush = (text: string) => {
-    try { splitter.push(text); } catch { /* burst already torn down */ }
-  };
   const sanitizer = new StreamingSpeechBuffer();
 
   const abort = new AbortController();
@@ -1167,6 +1161,22 @@ function startTtsForAgent(session: VoiceSession, initialContent?: string): void 
       startStreaming();
     }
   };
+  // v2.9.16 (fix v2.9.18): expose engine-agnostic push handle. Must
+  // route through pushContent (NOT splitter.push directly): splitter
+  // is just a queue, and the TTS for-await loop only fires when
+  // startStreaming() is called - which happens inside pushContent
+  // when the first content arrives. The previous wiring did
+  // `splitter.push(text)` straight from activeBurstPush, which queued
+  // the filler but never started TTS. Result: the filler audio sat
+  // buffered until the agent's real response arrived, at which point
+  // it played glued to the response instead of during the wait.
+  // pushContent also runs the sanitizer + bracket buffer so an
+  // accidental control marker in the filler phrase doesn't leak
+  // through.
+  session.activeBurstPush = (text: string) => {
+    try { pushContent(text); } catch { /* burst already torn down */ }
+  };
+
   // Proactive watcher path: the watcher captures the FIRST chat:chunk
   // content and hands it to us as `initialContent`. We push it through
   // sanitizer+splitter here BEFORE subscribing the burst listener, so
@@ -1309,16 +1319,6 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
   // a voice-triggered turn goes straight to tools, so we buffer
   // pre-open pushes here and drain after open() resolves. Without
   // this the cloud-TTS user would silently lose the filler.
-  let humeOpened = false;
-  const preOpenBuffer: string[] = [];
-  session.activeBurstPush = (text: string) => {
-    if (!humeOpened) {
-      preOpenBuffer.push(text);
-      return;
-    }
-    try { hume.push(text); } catch { /* burst already closing */ }
-  };
-
   let started = false;
   const startStreaming = (): void => {
     if (started) return;
@@ -1328,6 +1328,24 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     });
     sendJson(session.ws, { type: 'voice:tts_start', agentId: session.agentId, messageId });
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'speaking' });
+  };
+
+  let humeOpened = false;
+  const preOpenBuffer: string[] = [];
+  session.activeBurstPush = (text: string) => {
+    // v2.9.16 (fix v2.9.18): also fire startStreaming so the
+    // dashboard moves into 'speaking' state when the filler plays.
+    // Without this, hume.push generates audio that the client plays,
+    // but the UI still shows the 'thinking' indicator because the
+    // voice:tts_start event was never sent.
+    if (!humeOpened) {
+      preOpenBuffer.push(text);
+      return;
+    }
+    try {
+      hume.push(text);
+      startStreaming();
+    } catch { /* burst already closing */ }
   };
 
   hume.onWav = (wav) => {
@@ -1378,15 +1396,26 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
     // drain those pushes vanished silently. From this point on,
     // activeBurstPush goes directly to hume.push.
     humeOpened = true;
+    const hadBuffered = preOpenBuffer.length > 0;
     for (const buffered of preOpenBuffer) {
       try { hume.push(buffered); } catch { /* ignore */ }
     }
     preOpenBuffer.length = 0;
-    if (preOpenBuffer.length === 0 && session.activeBurstPush) {
+    // If we drained pre-open content (e.g. a filler the loop pushed
+    // during the open handshake), fire startStreaming so the
+    // dashboard moves into 'speaking' state. Without this the audio
+    // would play but the UI would stay on 'thinking'.
+    if (hadBuffered) startStreaming();
+    if (session.activeBurstPush) {
       // Replace the buffering wrapper with a direct passthrough now
-      // that the open window is closed.
+      // that the open window is closed. Still fires startStreaming
+      // so any subsequent filler / proactive push surfaces the
+      // 'speaking' state.
       session.activeBurstPush = (text: string) => {
-        try { hume.push(text); } catch { /* burst already closing */ }
+        try {
+          hume.push(text);
+          startStreaming();
+        } catch { /* burst already closing */ }
       };
     }
 
