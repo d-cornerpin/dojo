@@ -23,17 +23,49 @@ export interface PendingAttachment {
 
 const buffers = new Map<string, PendingAttachment[]>();
 
-export function queuePendingAttachments(agentId: string, attachments: PendingAttachment[]): void {
+// v2.9.20 — captions parallel to the attachment buffer. show_to_user's
+// `caption` arg was previously discarded (the model was expected to
+// re-write it as its reply text). Now we capture each call's caption
+// so that if the loop ends without the model writing terminal text,
+// the engine's end-of-turn safety net can synthesize a final message
+// using the caption(s) as the bubble text + the attached files.
+const captionBuffers = new Map<string, string[]>();
+
+export function queuePendingAttachments(
+  agentId: string,
+  attachments: PendingAttachment[],
+  caption?: string,
+): void {
   if (attachments.length === 0) return;
   const existing = buffers.get(agentId) ?? [];
   buffers.set(agentId, [...existing, ...attachments]);
+  if (caption && caption.trim().length > 0) {
+    const existingCaps = captionBuffers.get(agentId) ?? [];
+    captionBuffers.set(agentId, [...existingCaps, caption.trim()]);
+  }
 }
 
 export function drainPendingAttachments(agentId: string): PendingAttachment[] {
   const out = buffers.get(agentId) ?? [];
   if (out.length === 0) return [];
   buffers.delete(agentId);
+  captionBuffers.delete(agentId);
   return out;
+}
+
+/**
+ * Drain attachments AND any captions captured from show_to_user
+ * calls in this turn. Used by the engine's end-of-turn safety net
+ * when the model finished without writing terminal text.
+ */
+export function drainPendingAttachmentsWithCaptions(
+  agentId: string,
+): { attachments: PendingAttachment[]; captions: string[] } {
+  const attachments = buffers.get(agentId) ?? [];
+  const captions = captionBuffers.get(agentId) ?? [];
+  buffers.delete(agentId);
+  captionBuffers.delete(agentId);
+  return { attachments, captions };
 }
 
 export function peekPendingAttachmentCount(agentId: string): number {
@@ -42,4 +74,5 @@ export function peekPendingAttachmentCount(agentId: string): number {
 
 export function clearPendingAttachments(agentId: string): void {
   buffers.delete(agentId);
+  captionBuffers.delete(agentId);
 }

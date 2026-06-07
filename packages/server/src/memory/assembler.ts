@@ -202,17 +202,55 @@ export async function assembleContext(
   // single combined ack at the end (instead of one ack per section).
   let injectedAnyScaffolding = false;
 
-  // ── v2 scaffolding gating (Part V + Part XVIII §C) ──
+  // ── v2 scaffolding gating (Part V + Part XVIII §C; v2.9.20 post-
+  // compaction re-fire) ──
+  //
   // In v1, scaffolding (briefing/vault/tracker/continuity) injects every
   // turn — costing 5–10K tokens per turn even when nothing is new. In v2,
   // scaffolding injects ONLY on session-start turns (first turn after a
   // session reset, or first turn ever for an agent). Mid-session turns
   // skip scaffolding entirely. The agent retrieves anything they need
   // on demand via vault_search / tracker_get_status / etc.
+  //
+  // v2.9.20: that original design assumed the agent would *know* to
+  // retrieve. After compaction, the live tail can lose enough
+  // procedural context that the agent doesn't realize it should
+  // re-establish — Mike's 2026-06-06 photo-album incident showed the
+  // agent literally "felt like a brand new session" when scaffolding
+  // had last fired 30 turns earlier despite multiple compactions in
+  // between. So now we ALSO fire scaffolding for a window after each
+  // compaction. The window expires (we don't pay v1's per-turn cost
+  // forever) but covers enough turns for the agent to re-internalise
+  // its project context.
   const isSessionStartTurn = isV2SessionStart(agentId);
+  const isWithinPostCompactionScaffoldingWindow = (() => {
+    try {
+      const configRow = getDb().prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
+      if (!configRow?.config) return false;
+      const cfg = JSON.parse(configRow.config) as Record<string, unknown>;
+      const validUntil = cfg.continuityBriefValidUntilTurn as number | undefined;
+      if (typeof validUntil !== 'number' || validUntil <= 0) return false;
+      const turnRow = getDb()
+        .prepare('SELECT MAX(turn_number) AS max_turn FROM messages WHERE agent_id = ?')
+        .get(agentId) as { max_turn: number | null } | undefined;
+      const currentTurn = (turnRow?.max_turn ?? 0) + 1;
+      // Brief itself injects through turn `validUntil` (3 turns by
+      // default). We re-fire the wider scaffolding for an additional
+      // 5 turns past that, giving the agent ~8 turns of full context
+      // post-compaction to re-establish.
+      const SCAFFOLDING_EXTRA_TURNS = 5;
+      return currentTurn < validUntil + SCAFFOLDING_EXTRA_TURNS;
+    } catch {
+      return false;
+    }
+  })();
+  const shouldFireScaffolding = isSessionStartTurn || isWithinPostCompactionScaffoldingWindow;
+  if (isWithinPostCompactionScaffoldingWindow && !isSessionStartTurn) {
+    logger.info('Re-firing scaffolding within post-compaction window', { agentId }, agentId);
+  }
 
   // 2. Morning briefing — session-start only
-  if (isSessionStartTurn) {
+  if (shouldFireScaffolding) {
     const briefing = getLatestBriefing(agentId);
     if (briefing) {
       const briefingText = `<briefing generated="${new Date().toISOString().split('T')[0]}">\n${briefing.content}\n</briefing>`;
@@ -239,7 +277,7 @@ export async function assembleContext(
   // This is additive: existing users get their pinned + relevance behavior;
   // new users can opt into the Claude Code pattern by tagging entries
   // `session_context` and pinning the truly always-load ones.
-  if (isSessionStartTurn) {
+  if (shouldFireScaffolding) {
     try {
       const recentForQuery = getRecentMessages(agentId, 3);
       let queryText = recentForQuery.map(m => m.content).join(' ').slice(0, 500);
@@ -319,7 +357,7 @@ export async function assembleContext(
   // table). The skip avoids re-injecting the same task block when the agent
   // is already actively discussing those tasks — common right after a
   // session reset where they immediately picked up the work.
-  if (isSessionStartTurn) try {
+  if (shouldFireScaffolding) try {
     const { listTasks } = await import('../tracker/schema.js');
     const activeTasks = listTasks({ status: 'in_progress', assignedTo: agentId });
     if (activeTasks.length > 0) {

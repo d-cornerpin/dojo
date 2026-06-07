@@ -2049,9 +2049,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // in this turn. The runtime owns assistant-message persistence, so
       // we attach here rather than letting the tool insert a synthetic
       // message (which would break tool_use/tool_result alternation).
-      // Mirrors v1 runtime.ts:1242-1248.
+      //
+      // v2.9.20: ONLY drain on text-bearing iterations. Tool-only
+      // iterations (no text + tool_use blocks) render as compact tool
+      // pills in non-wordy mode and have no slot to display
+      // attachments - draining onto them silently swallowed the files.
+      // The 2026-06-06 JJ-report incident lost the deliverable this
+      // way: show_to_user → tracker_complete_step → end. Attachments
+      // drained onto the tracker_complete_step pill and vanished. Now
+      // the queue persists across tool iterations and only drains
+      // when text accompanies the persist - and an end-of-turn safety
+      // net catches anything still queued so files can't be lost.
       const { drainPendingAttachments } = await import('../pending-attachments.js');
-      const queuedAttachments = drainPendingAttachments(agentId);
+      const hasTerminalTextThisIter = !!(persistedContent && persistedContent.trim().length > 0);
+      const queuedAttachments = hasTerminalTextThisIter ? drainPendingAttachments(agentId) : [];
       const queuedAttachmentsJson =
         queuedAttachments.length > 0 ? JSON.stringify(queuedAttachments) : null;
 
@@ -3932,6 +3943,56 @@ export async function runV2Turn(agentId: string): Promise<void> {
       }
     }
     if (imFlagSetAtRunStart) clearIMResponseFlag(agentId);
+
+    // v2.9.20 — show_to_user end-of-turn safety net.
+    //
+    // If the turn ended with attachments still queued from
+    // show_to_user calls (the model didn't write terminal text
+    // after queuing - common failure mode that lost JJ's report on
+    // 2026-06-06), surface them now as a final assistant message
+    // so they reach the user instead of vanishing. Uses any caption
+    // strings the model passed to show_to_user as the bubble text;
+    // falls back to a generic "Here are the files for you." when
+    // no caption was provided.
+    try {
+      const { drainPendingAttachmentsWithCaptions } = await import('../pending-attachments.js');
+      const stranded = drainPendingAttachmentsWithCaptions(agentId);
+      if (stranded.attachments.length > 0) {
+        const captionText = stranded.captions.length > 0
+          ? stranded.captions.join('\n\n')
+          : 'Here are the files for you.';
+        const synthId = uuidv4();
+        db.prepare(`
+          INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, turn_number, created_at)
+          VALUES (?, ?, 'assistant', ?, ?, ?, datetime('now'))
+        `).run(synthId, agentId, captionText, JSON.stringify(stranded.attachments), turnNumber);
+        broadcast({
+          type: 'chat:message',
+          agentId,
+          message: {
+            id: synthId,
+            agentId,
+            role: 'assistant' as Message['role'],
+            content: captionText,
+            tokenCount: null, modelId: null, cost: null, latencyMs: null,
+            createdAt: new Date().toISOString(),
+            attachments: stranded.attachments,
+          },
+        });
+        logger.warn('show_to_user safety net fired - surfaced stranded attachments', {
+          agentId,
+          fileCount: stranded.attachments.length,
+          captionCount: stranded.captions.length,
+        }, agentId);
+        if (stranded.attachments.length > 0) {
+          state = advance(state, { lastAssistantTextForIM: captionText });
+        }
+      }
+    } catch (err) {
+      logger.warn('show_to_user safety net failed (non-fatal)', {
+        agentId, error: err instanceof Error ? err.message : String(err),
+      }, agentId);
+    }
 
     stopStatusHeartbeat(agentId);
 

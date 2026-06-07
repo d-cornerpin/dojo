@@ -4052,10 +4052,51 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
 
         // Check if target is injured — healer bypass
         const sendDb = getDb();
-        let targetCheck = sendDb.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(agentRef) as { id: string; name: string; status: string } | undefined;
+        let targetCheck = sendDb.prepare('SELECT id, name, status, created_at FROM agents WHERE id = ?').get(agentRef) as { id: string; name: string; status: string; created_at: string } | undefined;
         if (!targetCheck) {
-          targetCheck = sendDb.prepare("SELECT id, name, status FROM agents WHERE name = ? AND status != 'terminated' ORDER BY created_at DESC LIMIT 1")
-            .get(agentRef) as { id: string; name: string; status: string } | undefined;
+          targetCheck = sendDb.prepare("SELECT id, name, status, created_at FROM agents WHERE name = ? AND status != 'terminated' ORDER BY created_at DESC LIMIT 1")
+            .get(agentRef) as { id: string; name: string; status: string; created_at: string } | undefined;
+        }
+        if (targetCheck && (targetCheck.status === 'error' || targetCheck.status === 'paused')) {
+          // v2.9.20 — spawn-race auto-recover. When a newly-spawned
+          // sub-agent's initial turn fails (any preflight error: model
+          // not ready, network blip, rate limit, etc.), its status
+          // flips to 'error' before the parent's first send_to_agent
+          // arrives. The parent would then see "Agent INJURED, Message
+          // NOT delivered" and be forced to chain spawn → kill →
+          // spawn → reset_session manually. The 2026-06-06 vision-
+          // delegate workflow hit this on ~80% of spawn attempts.
+          //
+          // Detect by: agent in error, created in the last 60 seconds.
+          // Auto-heal back to idle and let delivery proceed. If the
+          // agent had time to do real work and crash (created > 60s
+          // ago), this isn't a spawn race - keep the existing
+          // rejection so the parent intervenes.
+          if (targetCheck.status === 'error') {
+            const createdAtMs = new Date(
+              targetCheck.created_at + (targetCheck.created_at.includes('Z') ? '' : 'Z'),
+            ).getTime();
+            const ageMs = Date.now() - createdAtMs;
+            if (ageMs >= 0 && ageMs < 60_000) {
+              try {
+                sendDb.prepare(
+                  "UPDATE agents SET status = 'idle', last_error = NULL, last_error_at = NULL, updated_at = datetime('now') WHERE id = ?",
+                ).run(targetCheck.id);
+                broadcast({ type: 'agent:status', agentId: targetCheck.id, status: 'idle' });
+                const { onAgentRecovered } = await import('../healer/injury-recovery.js');
+                onAgentRecovered(targetCheck.id);
+                logger.warn('send_to_agent auto-healed newly-spawned error-state target', {
+                  callerAgentId: agentId, targetAgentId: targetCheck.id, name: targetCheck.name, ageMs,
+                }, agentId);
+                targetCheck = { ...targetCheck, status: 'idle' };
+              } catch (recErr) {
+                logger.warn('send_to_agent auto-heal failed', {
+                  callerAgentId: agentId, targetAgentId: targetCheck.id,
+                  error: recErr instanceof Error ? recErr.message : String(recErr),
+                }, agentId);
+              }
+            }
+          }
         }
         if (targetCheck && (targetCheck.status === 'error' || targetCheck.status === 'paused')) {
           let isHealerSender = false;
@@ -6015,7 +6056,15 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
       case 'show_to_user': {
         const filePaths = args.file_paths as string[] | undefined;
         const caption = (args.caption as string | undefined) ?? '';
-        void caption; // caption is the agent's responsibility — they'll write it as their reply text
+        // v2.9.20: caption is now captured alongside the queued
+        // attachments. If the model writes terminal text after this
+        // call (the documented happy path), that text becomes the
+        // bubble caption and this one is ignored. If the model
+        // finishes the turn WITHOUT writing terminal text (the
+        // failure mode that lost JJ's report in the 2026-06-06
+        // incident), the engine's end-of-turn safety net surfaces
+        // the captured caption as the bubble text so the files
+        // don't vanish silently.
         if (!Array.isArray(filePaths) || filePaths.length === 0) {
           content = 'Error: file_paths is required and must be a non-empty array of absolute file paths.';
           isError = true;
@@ -6113,7 +6162,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         // when it persists the agent's next assistant write — the user sees
         // a single bubble with the agent's text reply AND the thumbnails.
         const { queuePendingAttachments } = await import('./pending-attachments.js');
-        queuePendingAttachments(agentId, attachments);
+        queuePendingAttachments(agentId, attachments, caption);
 
         const fileList = attachments.map(a => `${a.filename} (${a.category})`).join(', ');
         content = `Queued ${attachments.length} file(s) for your next reply: ${fileList}. Now write your reply text in your next assistant message — the DOJO will attach these files to whatever you say next so the user sees one chat bubble with your text + thumbnails. Do NOT call show_to_user again for these same files.`;
@@ -6598,7 +6647,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         }
         break;
       }
-
       // ── Image Generation ──
       //
       // image_create: Any agent calls this. The tool returns immediately

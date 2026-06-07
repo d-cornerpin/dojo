@@ -1,18 +1,31 @@
 // ════════════════════════════════════════
-// Image preparation for vision-capable models (v2.3.18)
+// Image preparation for vision-capable models (v2.3.18; v2.9.20 vision-
+// context optimization)
 //
-// Anthropic's API rejects any image whose base64 payload exceeds 5MB
-// (5,242,880 bytes), and a single rejected request injures the agent.
-// Phone photos (especially HEIC/JPEG from modern iPhones) routinely land
-// at 6-12MB raw, which after base64 inflation blows the cap.
+// Two failure modes this module guards against:
 //
-// Strategy: at injection time, check raw bytes against a safe threshold.
-// If over budget, downscale + JPEG-recompress with macOS's built-in
-// `sips` tool (no native npm dep). Cache the resized variant on disk
-// next to the original so we only do the work once per upload — not on
-// every turn. If sips fails or isn't available (non-macOS), fall back
-// to the raw bytes; the API will still reject, but the agent error path
-// already surfaces "image too large" to the user.
+//   1. **Anthropic 5 MB cap** (v2.3.18 — original purpose). The API
+//      rejects any image whose base64 payload exceeds 5 MB
+//      (5,242,880 bytes), and a single rejected request injures the
+//      agent. Phone photos (HEIC/JPEG from modern iPhones) routinely
+//      land at 6-12 MB raw, which after base64 inflation blows the cap.
+//
+//   2. **Vision-token context blowup** (v2.9.20 addition). Even when
+//      the byte payload fits, an unshrunk 4032×3024 iPhone photo
+//      consumes ~6,000 vision tokens per turn. A handful of those
+//      in a conversation pushes the agent into compaction silently,
+//      eating context the agent needs to track its task. Anthropic
+//      explicitly says images larger than 1568 px on the long side
+//      get server-side resized anyway, so doing it on our end loses
+//      nothing for them and saves tokens on every subsequent retrieval.
+//      Mike's 2026-06-06 vision-delegate incident traced back to this.
+//
+// Strategy: probe dimensions cheaply with `sips -g`. If either the
+// byte budget is overshot OR the longest edge exceeds 1568 px, resize
+// + JPEG-recompress via macOS's built-in `sips` (no native npm dep).
+// Cache the variant on disk next to the original so we only do the
+// work once per upload — not on every turn. If sips fails or isn't
+// available (non-macOS), fall back to the raw bytes.
 // ════════════════════════════════════════
 
 import { execFileSync } from 'node:child_process';
@@ -26,15 +39,21 @@ const logger = createLogger('image-prep');
 // leave headroom for JSON envelope overhead.
 export const SAFE_RAW_BYTES = Math.floor(3.7 * 1024 * 1024);
 
-// Vision tasks rarely benefit from raw 12MP detail. 2000px on the long
-// side preserves enough fidelity for "what's in this picture", "read this
-// receipt", or "describe this scene" while shedding the bulk of the bytes.
-const MAX_LONG_SIDE = 2000;
-const PRIMARY_QUALITY = 85;
+// v2.9.20: Vision-context target. Anthropic's docs say images larger
+// than this get resized server-side anyway. By shrinking BEFORE we
+// send, we save ~75% of vision tokens per turn on a typical iPhone
+// photo (4032 px → 1568 px is a 6.6x area reduction). For receipts
+// or screenshots where small text matters, the original stays on
+// disk and the agent can call file_read for the full-res bytes.
+const VISION_LONG_SIDE = 1568;
+const VISION_QUALITY = 80;
+
+// Larger-than-VISION cascade for the byte-budget safety case. Used
+// when 1568/q80 isn't enough to fit under the Anthropic 5 MB cap
+// (rare; only triggers on huge panoramas or already-mangled JPEGs).
+const FALLBACK_LONG_SIDE = 1400;
 const FALLBACK_QUALITY = 70;
-// Last-resort: if even quality 70 at 2000px is still over budget (rare, but
-// possible for very wide panoramas), downsize harder.
-const LAST_RESORT_LONG_SIDE = 1400;
+const LAST_RESORT_LONG_SIDE = 1024;
 const LAST_RESORT_QUALITY = 60;
 
 export type ModelSafeMediaType =
@@ -79,8 +98,16 @@ export function prepareImageForModel(
   const originalSize = stat.size;
   const declaredType = normalizeMediaType(mediaType);
 
-  // Under-budget passthrough — the common case, no work to do.
-  if (originalSize <= SAFE_RAW_BYTES) {
+  // v2.9.20: probe dimensions. If longest edge ≤ VISION_LONG_SIDE AND
+  // bytes ≤ SAFE_RAW_BYTES, the image is already context-friendly —
+  // passthrough with no work to do. Probe failure (non-macOS, broken
+  // file) skips the dimension check and falls back to byte-only logic.
+  const dims = probeImageDimensions(filePath);
+  const longSidePx = dims ? Math.max(dims.width, dims.height) : null;
+  const needsResizeForBytes = originalSize > SAFE_RAW_BYTES;
+  const needsResizeForDims = longSidePx !== null && longSidePx > VISION_LONG_SIDE;
+
+  if (!needsResizeForBytes && !needsResizeForDims) {
     let data: Buffer;
     try { data = fs.readFileSync(filePath); }
     catch { return null; }
@@ -95,6 +122,9 @@ export function prepareImageForModel(
   }
 
   // Cache check: if we've already resized this exact file, reuse it.
+  // Accept the cache as long as it was built AFTER the source's last
+  // modification AND fits under the byte cap. (The cache is always
+  // ≤ VISION_LONG_SIDE because we set that as the first cascade target.)
   const cachePath = `${filePath}.modelsafe.jpg`;
   let cacheStat: fs.Stats | null = null;
   try { cacheStat = fs.statSync(cachePath); } catch { /* no cache yet */ }
@@ -112,10 +142,12 @@ export function prepareImageForModel(
     };
   }
 
-  // Need to (re)build the cache. Try progressively more aggressive settings.
+  // Need to (re)build the cache. First attempt targets the
+  // vision-context budget; subsequent attempts cascade more
+  // aggressively in case we're still over the byte cap.
   const attempts: Array<{ longSide: number; quality: number }> = [
-    { longSide: MAX_LONG_SIDE, quality: PRIMARY_QUALITY },
-    { longSide: MAX_LONG_SIDE, quality: FALLBACK_QUALITY },
+    { longSide: VISION_LONG_SIDE, quality: VISION_QUALITY },
+    { longSide: FALLBACK_LONG_SIDE, quality: FALLBACK_QUALITY },
     { longSide: LAST_RESORT_LONG_SIDE, quality: LAST_RESORT_QUALITY },
   ];
 
@@ -166,6 +198,27 @@ export function prepareImageForModel(
     originalSize,
     finalSize: originalSize,
   };
+}
+
+/**
+ * Probe an image's pixel dimensions via sips. Returns null on failure
+ * (non-macOS, broken file, unsupported format). Cheap (~50-100 ms);
+ * we only call this once per source path per turn.
+ */
+function probeImageDimensions(src: string): { width: number; height: number } | null {
+  try {
+    const out = execFileSync(
+      '/usr/bin/sips',
+      ['-g', 'pixelWidth', '-g', 'pixelHeight', src],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 },
+    );
+    const wMatch = out.match(/pixelWidth:\s*(\d+)/);
+    const hMatch = out.match(/pixelHeight:\s*(\d+)/);
+    if (!wMatch || !hMatch) return null;
+    return { width: Number(wMatch[1]), height: Number(hMatch[1]) };
+  } catch {
+    return null;
+  }
 }
 
 function runSips(src: string, dest: string, longSide: number, quality: number): boolean {

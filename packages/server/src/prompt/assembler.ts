@@ -806,6 +806,60 @@ export function assembleSystemPrompt(
     } catch { /* PM may not be configured */ }
   }
 
+  // v2.9.20 — Post-compaction awareness signal.
+  //
+  // The existing continuity-brief mechanism (memory/compaction.ts +
+  // memory/assembler.ts) injects a 3-4K-token brief for the 3 turns
+  // immediately after compaction, then the brief expires. After that
+  // window the agent runs on fresh tail + compressed summaries with
+  // NO standing signal that compaction happened.
+  //
+  // Mike's 2026-06-06 incident: long multi-step photo-album task,
+  // compaction fired multiple times, the brief expired between
+  // compactions, the agent had only summaries to work from, and the
+  // summaries had lost the procedural detail. Agent "felt like a
+  // brand new session" because nothing in the live prompt told it
+  // older history existed - or what to do if the fresh tail didn't
+  // reveal current task state.
+  //
+  // This section is a cheap (~120 token), persistent system-prompt
+  // signal that activates whenever the agent's continuityBriefAt is
+  // within the last 24 hours - i.e. compaction has fired sometime
+  // recently. Doesn't auto-call any tools (the v2.7.10 spiral was
+  // caused by auto-calling recall_recent_thread). Just tells the
+  // agent: compaction happened, here's where to look if you're lost.
+  try {
+    const db = getDb();
+    const configRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
+    if (configRow?.config) {
+      const cfg = JSON.parse(configRow.config) as Record<string, unknown>;
+      const at = cfg.continuityBriefAt as string | undefined;
+      if (at) {
+        const atMs = new Date(at).getTime();
+        const ageMs = Date.now() - atMs;
+        if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 24 * 60 * 60 * 1000) {
+          const minutesAgo = Math.max(1, Math.round(ageMs / 60_000));
+          const friendly =
+            minutesAgo < 60 ? `${minutesAgo} minute${minutesAgo === 1 ? '' : 's'} ago`
+            : minutesAgo < 60 * 24 ? `${Math.round(minutesAgo / 60)} hour${Math.round(minutesAgo / 60) === 1 ? '' : 's'} ago`
+            : 'recently';
+          parts.push(`## Recent Memory Compaction
+
+Your conversation was compacted ${friendly}. Older raw messages were summarized into the COMPRESSED HISTORY block above (if any) and archived to the vault. Anything in the live conversation tail below is fresh; anything older lives only in summaries.
+
+**If you can't tell what you're mid-doing from the live tail**, do not guess - the most reliable sources are (in order):
+
+1. \`tracker_list_active\` — your active tasks. Tracker entries survive compaction unchanged and are the source of truth for "what am I working on."
+2. \`scratchpad_set\` (called with no value, or read via the assistant message log) — your own in-flight working notes.
+3. \`recall_recent_thread\` — pull raw messages from before the compaction. Use sparingly (it costs tokens) but call it when you need the actual words rather than a summary.
+4. \`vault_search\` / \`memory_grep\` — specific facts, decisions, or instructions you remember being said but can't find.
+
+The COMPRESSED HISTORY summaries above (if any) capture key facts but DROP procedural detail. If your task involves a specific workflow ("for each photo, ask the user for a caption, then add to album"), the summary may have collapsed that into "user and agent are building an album." Verify against the tracker before assuming.`);
+        }
+      }
+    }
+  } catch { /* config not readable — proceed without the signal */ }
+
   // Message source awareness — minimal source-tag reference. Routing /
   // separation is engine logic.
   parts.push(`## Message Sources

@@ -79,6 +79,14 @@ export const PM_AGENT_ALWAYS_LOADED = [
   'tracker_retask',
   'send_to_agent',
   'list_agents',
+  // v2.9.20: validator dereference tools. PM-SOUL tells PM to verify
+  // evidence by dereferencing vault entry IDs and file paths before
+  // rejecting work as "evidence insufficient." Those tools have to be
+  // one call away, not gated behind load_tool_docs, or PM falls back
+  // to the lazy reject pattern that triggered the JJ-report incident.
+  'vault_search',
+  'vault_expand',
+  'file_read',
 ];
 
 // Dreamer agent: vault-focused, extracts knowledge from conversation archives.
