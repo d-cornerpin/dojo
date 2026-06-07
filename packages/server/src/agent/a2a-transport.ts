@@ -486,10 +486,23 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
       (effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'ANSWER');
     if (targetIsPrimary && !senderIsOps && isDeliverableShape) {
       const ownerName = getOwnerName();
+      // v2.9.21 — Engine hint, not Engine order. The previous wording
+      // ("[Engine: Send ... unless they're already actively in this
+      // conversation]") was read by the model as a system-level
+      // override of explicit user instructions (task/technique/vault
+      // saying "always deliver via iMessage" got ignored because the
+      // bracketed Engine string felt more authoritative). The
+      // "actively in this conversation" carve-out was intended to
+      // mean "this very deliverable's topic is already live in
+      // dashboard chat" - i.e., don't yank a real conversation onto
+      // another channel - but the agent read it as "any dashboard
+      // chatting at all wins over the iMessage rule." Reworded to
+      // make the precedence explicit and the carve-out specific.
       primaryDeliverableHint =
-        `\n\n[Engine: ${senderName} just shipped a deliverable for ${ownerName}. ` +
-        `Send ${ownerName} an iMessage with the gist (title + link if present), ` +
-        `unless they're already actively in this conversation in the dashboard.]`;
+        `\n\n[Engine hint: ${senderName} just shipped a deliverable for ${ownerName}. ` +
+        `If a task, project, technique, vault entry, or live user message specifies a delivery channel, follow that. ` +
+        `Otherwise the engine's default suggestion is: send ${ownerName} an iMessage with the gist (title + link if present) so it doesn't get lost in dashboard scroll. ` +
+        `Skip the iMessage only if you and ${ownerName} are actively going back and forth in dashboard chat about THIS specific deliverable right now (in which case dashboard is the natural place to surface it).]`;
     }
   } catch { /* best effort */ }
 

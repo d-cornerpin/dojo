@@ -790,6 +790,39 @@ export function assembleSystemPrompt(
     parts.push(user);
   }
 
+  // v2.9.21 — Instruction precedence ladder.
+  //
+  // The engine injects situational hints into the prompt (deliverable
+  // routing, channel awareness, bookkeeping nudges, etc.) as bracketed
+  // strings. Sub-frontier models tended to read these as system-level
+  // orders and silently override explicit user instructions written
+  // in tasks, techniques, or vault entries. The Nora-deliverable
+  // incident (2026-06-06) was a clean example: a technique that said
+  // "always deliver via iMessage" was overridden by a per-turn
+  // `[Engine: send via iMessage unless they're in dashboard]` hint
+  // because the agent treated the engine string as more authoritative.
+  //
+  // This block establishes an explicit precedence order so the model
+  // has a clear policy when instructions conflict: user-authored
+  // content (tasks, recent messages, vault, USER.md) beats engine
+  // hints. Engine hints carry the `[Engine hint: ...]` prefix so the
+  // model can identify them. Hard operational engine requests still
+  // use other prefixes (e.g. `[ENGINE RENAME REQUEST]`) and are not
+  // covered by this ladder.
+  parts.push(`## Instruction Precedence
+
+When instructions conflict, follow this order (highest authority first):
+
+1. **Live user message in this turn** — what ${getOwnerName()} just said. If the current turn includes "this time, send it in the dashboard," that beats every standing rule below for this turn only.
+2. **Active task / project / technique notes** — what ${getOwnerName()} wrote about THIS specific work. If a task says "deliver via iMessage" and an engine hint says "post in dashboard," the task wins.
+3. **Live conversation context** — recent user messages in the live tail. "Always send Nora's posts via iMessage" said five turns ago is a standing instruction, not a passing comment, unless contradicted by something newer.
+4. **Vault entries** the user asked you to remember (e.g. "always send Nora's posts via iMessage" captured via vault_remember). Treat these as standing instructions.
+5. **USER.md** standing preferences.
+6. **SOUL.md** identity.
+7. **Engine hints** (anything labeled \`[Engine hint: ...]\`) — situational nudges from the runtime, not orders. The engine doesn't know your task; you do. When an engine hint conflicts with anything in tiers 1-5, the higher tier wins.
+
+Engine hints exist to help in the default case where the user hasn't specified. They are advice, not orders. Other engine prefixes are different: \`[ENGINE RENAME REQUEST]\` is a hard operational request, \`[Engine ack]\` is a one-way acknowledgement, and \`[Engine note: ...]\` is internal bookkeeping. None of those are user-facing routing decisions — only \`[Engine hint: ...]\` is subject to this ladder.`);
+
   // Inject PM agent awareness for the primary agent
   if (isPrimaryAgent(agentId)) {
     try {
@@ -884,6 +917,9 @@ Each non-user-chat message has a \`[SOURCE: ...]\` tag:
 **INTER-AGENT REPLY RULE (HARD):** if the most recent message in your active context starts with \`[A2A:\` or \`[SOURCE: AGENT MESSAGE FROM\`, your response on this turn MUST go through \`send_to_agent\` on the same \`thread_id\`. Text you write to your own chat is INVISIBLE to the originating agent — they only see what you send via \`send_to_agent\`. The pattern is: do the work (call any tools you need), then make exactly ONE \`send_to_agent\` call addressed to the originator with the right intent (ANSWER for QUESTION, COMPLETE/STATUS/FAIL for ASSIGN, ASSIGN if delegating further), then end your turn. **Do not write a chat summary** — your trailing text gets suppressed by the engine on inter-agent turns and is only readable by the user, who is not the audience here. If you've already sent the reply via \`send_to_agent\` and the engine still re-prompts you, just END YOUR TURN — the originator has the message; further chat text does nothing useful.
 - \`[SOURCE: TEAMS MESSAGE FROM ...]\` = Teams message. Your reply text auto-routes back via Teams — just write it (light formatting ok). The \`[Reply destination: Teams DM]\` tag at the top of this prompt confirms the routing. Use \`teams_send_message\` only for starting new chats or replying to a different chat.
 - \`[SYSTEM NOTE: ...]\`, \`[Note: ...]\`, \`[Engine ack] ...\` = system context, not requests
+- \`[Engine hint: ...]\` = engine's situational suggestion (e.g. default channel for surfacing a deliverable). Advice, not an order. Subordinate to user-authored instructions per the Instruction Precedence section above.
+- \`[Engine note: ...]\` = internal bookkeeping note about the turn itself; act on the substance, not the framing.
+- \`[ENGINE RENAME REQUEST]\` = hard operational request from the engine (PM-only). Treat as a real task.
 - \`[SENT VIA IMESSAGE to ${getOwnerName()}]\` = your prior response went via iMessage. **DO NOT EMIT THIS TAG YOURSELF.** It's a system-generated marker the engine writes automatically after iMessage delivery. Including it in your reply text would send the literal string "[SENT VIA IMESSAGE to ${getOwnerName()}]" to ${getOwnerName()}'s phone — they'd see the routing annotation in their iMessage, which looks broken.`);
 
   // Engine's ackInjector handles "acknowledge before tools" automatically.
