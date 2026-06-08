@@ -130,6 +130,20 @@ export class CallSession {
   private ttsTimer: ReturnType<typeof setTimeout> | null = null;
   private ttsCarry: Buffer = Buffer.alloc(0);
 
+  // v2.10.1 — serial sentence-text queue. Streaming TTS feeds text
+  // here one sentence at a time; a single drain worker pulls texts
+  // in FIFO order, runs synth, and pushes the PCM to ttsQueue
+  // strictly in submission order. Replaces the fire-and-forget
+  // per-sentence IIFE that landed in 2.10.0 and produced
+  // out-of-order audio whenever Hume socket-open jitter delayed
+  // any single sentence.
+  private pendingSpeechTexts: Array<{ text: string; generation: number }> = [];
+  private speechSynthRunning = false;
+  // Generation counter — incremented on barge-in so any sentence
+  // still being synthesized OR still in pendingSpeechTexts gets
+  // dropped instead of being played seconds after the caller spoke.
+  private speechGeneration = 0;
+
   // Running transcript stitched at the end into twilio_call_log.transcript.
   private transcript: Array<{ at: string; speaker: 'caller' | 'agent'; text: string }> = [];
 
@@ -307,17 +321,36 @@ export class CallSession {
         // of our outbound audio and let them go. Pre-fix the agent
         // talked over the caller until the queue drained, which is the
         // most robotic-feeling phone behavior possible.
-        if (this.ttsQueue.length > 0 || this.ttsCarry.length > 0) {
+        //
+        // v2.10.1 — also bump the speech generation counter and clear
+        // pendingSpeechTexts. Any sentence still queued for synth (or
+        // in-flight inside drainSpeechTexts) gets dropped instead of
+        // playing after the caller has gone again. Pre-fix, the model
+        // kept generating sentences into the worker queue and those
+        // played AFTER barge-in completed — caller would speak, brief
+        // silence, then a stale sentence from the prior turn.
+        if (
+          this.ttsQueue.length > 0 ||
+          this.ttsCarry.length > 0 ||
+          this.pendingSpeechTexts.length > 0
+        ) {
           const drained = this.ttsQueue.length;
           const carryBytes = this.ttsCarry.length;
+          const droppedTexts = this.pendingSpeechTexts.length;
           this.ttsQueue = [];
           this.ttsCarry = Buffer.alloc(0);
+          this.pendingSpeechTexts = [];
+          this.speechGeneration += 1;
           if (this.ttsTimer) {
             clearTimeout(this.ttsTimer);
             this.ttsTimer = null;
           }
           logger.info('Barge-in: yielded TTS to caller', {
-            callSid: this.callSid, droppedChunks: drained, droppedCarryBytes: carryBytes,
+            callSid: this.callSid,
+            droppedChunks: drained,
+            droppedCarryBytes: carryBytes,
+            droppedPendingTexts: droppedTexts,
+            newGeneration: this.speechGeneration,
           });
         }
         // v2.9.23 — soft hangup cancellation. If a hangup was pending
@@ -533,19 +566,70 @@ export class CallSession {
     if (!trimmed) return;
     this.transcript.push({ at: new Date().toISOString(), speaker: 'agent', text: trimmed });
     logger.info('Agent says', { callSid: this.callSid, text: trimmed.slice(0, 200) });
+    // v2.10.1 — enqueue text + current generation, then kick the
+    // single-flight drain worker. The worker pulls items in FIFO
+    // order and runs synth serially so the PCM lands in ttsQueue
+    // in submission order. Sentences submitted with an older
+    // generation than the current one (i.e. before a barge-in)
+    // get skipped by the worker.
+    this.pendingSpeechTexts.push({ text: trimmed, generation: this.speechGeneration });
+    void this.drainSpeechTexts();
+  }
+
+  /**
+   * Single-flight drain over `pendingSpeechTexts`. Runs synth one
+   * sentence at a time and pushes resulting PCM strictly in order.
+   * Generation gating drops any sentence enqueued before the most
+   * recent barge-in. TTS failures (e.g. Hume socket error) skip
+   * that sentence rather than falling back to a different engine,
+   * to avoid mid-reply voice swaps.
+   */
+  private async drainSpeechTexts(): Promise<void> {
+    if (this.speechSynthRunning) return;
+    this.speechSynthRunning = true;
     try {
-      const { synthesizeForTwilio } = await import('./tts-bridge.js');
-      const pcm = await synthesizeForTwilio(trimmed);
-      this.ttsQueue.push(pcm);
-      // Only start pacing once the WS has attached and `start` fired
-      // (otherwise the frames go to a no-op placeholder send). Use
-      // kickTtsPump so the first frame ships on this tick rather than
-      // waiting for the 20 ms timer.
-      if (this.started && !this.ttsTimer) this.kickTtsPump();
-    } catch (err) {
-      logger.warn('TTS for call utterance failed', {
-        callSid: this.callSid, error: err instanceof Error ? err.message : String(err),
-      });
+      while (this.pendingSpeechTexts.length > 0 && !this.ended) {
+        const item = this.pendingSpeechTexts.shift()!;
+        if (item.generation < this.speechGeneration) {
+          logger.info('TTS skipped (stale generation, post-barge-in)', {
+            callSid: this.callSid, textPreview: item.text.slice(0, 60),
+            itemGeneration: item.generation, current: this.speechGeneration,
+          });
+          continue;
+        }
+        try {
+          const { synthesizeForTwilio } = await import('./tts-bridge.js');
+          const pcm = await synthesizeForTwilio(item.text);
+          if (!pcm) {
+            // Engine reported a real failure (Hume socket error,
+            // missing voice config, etc.). Log + skip — do NOT swap
+            // to a different engine for this sentence. Mid-reply
+            // voice swaps are worse than a brief gap.
+            logger.warn('TTS produced no audio for sentence (skipped)', {
+              callSid: this.callSid, textPreview: item.text.slice(0, 60),
+            });
+            continue;
+          }
+          // Re-check generation AFTER synth — the caller may have
+          // started speaking during synth, in which case we drop
+          // the resulting audio instead of playing it.
+          if (item.generation < this.speechGeneration) {
+            logger.info('TTS dropped post-synth (stale generation)', {
+              callSid: this.callSid, textPreview: item.text.slice(0, 60),
+            });
+            continue;
+          }
+          this.ttsQueue.push(pcm);
+          if (this.started && !this.ttsTimer) this.kickTtsPump();
+        } catch (err) {
+          logger.warn('TTS for call utterance failed (skipped, no fallback)', {
+            callSid: this.callSid, error: err instanceof Error ? err.message : String(err),
+            textPreview: item.text.slice(0, 60),
+          });
+        }
+      }
+    } finally {
+      this.speechSynthRunning = false;
     }
   }
 

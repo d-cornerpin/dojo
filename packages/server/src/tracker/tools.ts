@@ -719,9 +719,38 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // accurate from→to pair (we cannot read it AFTER updateTask, the row
     // already moved by then).
     const db = getDb();
-    const taskRow = db.prepare('SELECT schedule_status, repeat_interval, status as prior_status FROM tasks WHERE id = ?').get(taskId) as { schedule_status: string; repeat_interval: number | null; prior_status: string } | undefined;
+    const taskRow = db.prepare('SELECT title, schedule_status, repeat_interval, status as prior_status FROM tasks WHERE id = ?').get(taskId) as { title: string; schedule_status: string; repeat_interval: number | null; prior_status: string } | undefined;
     const isScheduledRecurring = taskRow && taskRow.schedule_status !== 'unscheduled' && taskRow.repeat_interval;
     const priorStatus = taskRow?.prior_status ?? null;
+
+    // v2.10.1 — idempotency check. When the agent calls
+    // tracker_update_status with a status that the task is already at,
+    // do nothing and tell the agent clearly. Pre-fix the call still ran
+    // the full update + emitted "[OK] Task updated" + sent the success
+    // notification, which read to the agent as "I did real work" and
+    // encouraged re-closing already-complete tasks based on stale
+    // scheduler triggers still in its context window
+    // (production incident 2026-06-08: agent close-loop on already-
+    // complete recurring emails). Skip only when status is the only
+    // requested change; if the call also changes assignedTo or
+    // priority, fall through to the normal update so those land.
+    if (
+      status &&
+      !assignedTo &&
+      !priority &&
+      priorStatus === status &&
+      // For recurring per-run completion, "complete" is a real
+      // transition every run even when the row currently reads
+      // complete (the prior run's terminal state). Let the normal
+      // path handle it so the scheduler advances.
+      !(status === 'complete' && isScheduledRecurring)
+    ) {
+      return (
+        `[NO-OP] task_id=${taskId} | status=${status} — already at this status, no change made.\n\n` +
+        `Task: ${taskRow?.title ?? '(unknown title)'}\n\n` +
+        `If a scheduler trigger for this task is showing in your recent context but the task is already ${status}, that is a STALE trigger left over from when the run actually fired — the scheduler is NOT re-firing it. Skip it silently and move on; you do not need to "re-close" already-closed work.`
+      );
+    }
 
     const updates: Record<string, string | null> = {};
     if (status) updates.status = status;

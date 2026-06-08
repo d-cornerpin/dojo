@@ -5,7 +5,7 @@ import { DEFAULT_SOUL_MD, DEFAULT_USER_MD, DEFAULT_PM_SOUL_MD, DEFAULT_TRAINER_S
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { toolDefinitions, getFilteredTools } from '../agent/tools.js';
-import { isPrimaryAgent, isPMAgent, isTrainerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName } from '../config/platform.js';
+import { isPrimaryAgent, isPMAgent, isTrainerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName } from '../config/platform.js';
 import { getAgentGoogleAccessLevel, getGoogleWorkspaceConfig, isGoogleConnected, isEmailMonitoringEnabled, isEmailSendingEnabled } from '../google/auth.js';
 import { getAgentMicrosoftAccessLevel, getMsAccountType, getMicrosoftWorkspaceConfig, isMicrosoftConnected, isMsEmailMonitoringEnabled, isMsEmailSendingEnabled } from '../microsoft/auth.js';
 import { assembleGroupContext as _assembleGroupContext } from '../agent/groups.js';
@@ -1032,6 +1032,39 @@ Engine hints exist to help in the default case where the user hasn't specified. 
         parts.push(`## Project Manager: ${pmName}\n\n${pmName} (ID: ${pmId}) is the dedicated PM agent — monitors tasks, pokes idle agents, escalates if needed. Don't create monitoring/pulse-check agents yourself; ${pmName} already does that. Message via \`send_to_agent(agent_id="${pmId}", ...)\`.`);
       }
     } catch { /* PM may not be configured */ }
+
+    // v2.10.1 — Trainer agent awareness. Tools like `save_technique` and
+    // `update_technique` are reserved for the Trainer; non-trainer callers
+    // get refused with "send to the Trainer instead." Pre-fix the primary
+    // had to either guess "trainer" by string (fails — the trainer agent's
+    // ID and display name are configurable), call list_agents and
+    // grep, or hit the refusal message just to find out who the Trainer
+    // is. Surface name + id here so the first message lands.
+    try {
+      if (isTrainerEnabled()) {
+        const trainerName = getTrainerAgentName();
+        const trainerId = getTrainerAgentId();
+        const db = getDb();
+        const trainerAgent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(trainerId) as { id: string; status: string } | undefined;
+        if (trainerAgent && trainerAgent.status !== 'terminated') {
+          parts.push(`## Trainer: ${trainerName}\n\n${trainerName} (ID: ${trainerId}) is the dedicated Trainer agent — owns the technique library. \`save_technique\` and \`update_technique\` are reserved for ${trainerName}; if you want a technique created or edited, send ${trainerName} a message describing what you want and they'll do it. Message via \`send_to_agent(agent_id="${trainerId}", ...)\`.`);
+        }
+      }
+    } catch { /* Trainer may not be configured */ }
+
+    // v2.10.1 — Healer agent awareness. Same pattern: Healer handles
+    // injury triage and diagnostic recovery; primary doesn't need to do
+    // anything with Healer day-to-day, but if a sub-agent is broken and
+    // needs intervention, name + id help.
+    try {
+      const healerName = getHealerAgentName();
+      const healerId = getHealerAgentId();
+      const db = getDb();
+      const healerAgent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(healerId) as { id: string; status: string } | undefined;
+      if (healerAgent && healerAgent.status !== 'terminated') {
+        parts.push(`## Healer: ${healerName}\n\n${healerName} (ID: ${healerId}) is the dedicated Healer agent — auto-triages injured agents (status=error / stuck loops) and can reset sessions. Operates autonomously most of the time; you rarely need to message them directly. If you do: \`send_to_agent(agent_id="${healerId}", ...)\`.`);
+      }
+    } catch { /* Healer may not be configured */ }
   }
 
   // v2.9.20 — Post-compaction awareness signal.

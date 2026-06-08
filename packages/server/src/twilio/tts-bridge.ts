@@ -72,35 +72,46 @@ async function loadSettings(): Promise<TtsSettings> {
 
 /**
  * Synthesize one utterance. Returns mono Float32 PCM ready for the
- * call session's μ-law encoder + 8 kHz downsample.
+ * call session's μ-law encoder + 8 kHz downsample, or `null` if the
+ * configured engine failed for this sentence.
+ *
+ * v2.10.1 — no cross-engine fallback. Pre-fix, a Hume failure on a
+ * single sentence silently fell back to Kokoro, which produced a
+ * jarring mid-reply voice swap once we started streaming TTS
+ * sentence-by-sentence (every Hume hiccup became an audible Kokoro
+ * insert). Now: if the configured engine fails for a sentence we
+ * return null and the caller (CallSession.drainSpeechTexts) skips
+ * that sentence and moves on. Brief gap is better than mixed voice.
  */
-export async function synthesizeForTwilio(text: string): Promise<{ pcm: Float32Array; sampleRate: number }> {
+export async function synthesizeForTwilio(
+  text: string,
+): Promise<{ pcm: Float32Array; sampleRate: number } | null> {
   const settings = await loadSettings();
   if (settings.engine === 'cloud') {
     try {
       return await synthesizeCloud(text, settings);
     } catch (err) {
-      // Cloud failure on a live call is unacceptable - fall back to
-      // local so the user at least hears SOMETHING. Log loudly so
-      // a misconfigured cloud setup is visible in the audit log.
-      logger.error('Hume TTS failed on live call, falling back to local Kokoro', {
+      logger.error('Hume TTS failed on live call (sentence skipped, no fallback)', {
         error: err instanceof Error ? err.message : String(err),
+        textPreview: text.slice(0, 60),
       });
+      return null;
     }
   }
   return synthesizeLocal(text, settings);
 }
 
-async function synthesizeLocal(text: string, settings: TtsSettings): Promise<{ pcm: Float32Array; sampleRate: number }> {
+async function synthesizeLocal(text: string, settings: TtsSettings): Promise<{ pcm: Float32Array; sampleRate: number } | null> {
   try {
     const { synthesizeOnce } = await import('../voice/tts-service.js');
     const result = await synthesizeOnce(text, settings.voice, settings.speed);
     return { pcm: result.pcm, sampleRate: result.sampleRate };
   } catch (err) {
-    logger.warn('Kokoro synthesis failed; returning silence', {
+    logger.warn('Kokoro synthesis failed (sentence skipped)', {
       error: err instanceof Error ? err.message : String(err),
+      textPreview: text.slice(0, 60),
     });
-    return { pcm: new Float32Array(0), sampleRate: 24_000 };
+    return null;
   }
 }
 

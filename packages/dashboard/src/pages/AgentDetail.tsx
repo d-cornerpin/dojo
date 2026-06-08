@@ -444,6 +444,23 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
   const { subscribe } = useWebSocket();
   const currentToolCallsRef = useRef<ToolCallData[]>([]);
 
+  // v2.10.1 — detect whether the agent in view is the PM. PM's whole
+  // conversation is engine-injected ("Tracker review --") and A2A
+  // messages from other agents; the standard non-wordy filter (which
+  // hides those for noise reduction on Kevin's chat) collapses PM's
+  // history to blank. When viewing PM specifically, skip those
+  // exclusions so the kanban-style messages render.
+  const [isPMAgent, setIsPMAgent] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    api.getSetting('pm_agent_id').then(r => {
+      if (cancelled) return;
+      if (r.ok && r.data.value && r.data.value === agentId) setIsPMAgent(true);
+      else setIsPMAgent(false);
+    });
+    return () => { cancelled = true; };
+  }, [agentId]);
+
   const lastMessageIdRef = useRef<string | null>(null);
   const scrollToBottom = useCallback((instant?: boolean) => {
     if (instant) {
@@ -1007,7 +1024,15 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
           // iMessage-sourced user messages stay visible (they're a real
           // channel, not internal routing) — UserBubble strips the framing
           // and surfaces a "via iMessage" badge.
-          if (!wordyMode && msg.role === 'user' && (
+          //
+          // v2.10.1 — PM exemption. PM's whole conversation is engine-
+          // injected ("Tracker review --") situation reports and inbound
+          // A2A messages from other agents. Applying the standard
+          // exclusions hides all of those and leaves PM's chat blank
+          // until something live arrives. When viewing PM specifically
+          // we skip the exclusions so the kanban-style messages stay
+          // visible.
+          if (!isPMAgent && !wordyMode && msg.role === 'user' && (
             msg.content.startsWith('[A2A:') ||
             (msg.content.includes('[SOURCE:') && !msg.content.startsWith('[SOURCE: IMESSAGE FROM')) ||
             msg.content.startsWith('[System:') ||

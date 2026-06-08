@@ -1738,9 +1738,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
               if (phoneStreamCallSid) {
                 phoneStreamBuffer += chunk;
                 // Boundary: sentence-end punctuation followed by
-                // whitespace or end of string. Commas / clause breaks
-                // could be added later but sentence-level keeps the
-                // synth boundary clean for both Kokoro and Hume.
+                // whitespace. Sentence-level keeps the synth boundary
+                // clean for both Kokoro and Hume.
                 const flushParts: string[] = [];
                 let last = 0;
                 const re = /[.!?\n]+\s+/g;
@@ -1753,6 +1752,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 }
                 if (last > 0) phoneStreamBuffer = phoneStreamBuffer.slice(last);
                 if (flushParts.length > 0) {
+                  // v2.10.1 — queueAgentSay is now just an enqueue
+                  // (the CallSession runs a single-flight drain
+                  // worker), so synchronous push is fine and order
+                  // is preserved by the worker. No IIFE / no
+                  // parallel synths.
                   void (async () => {
                     try {
                       const { getCallSession } = await import('../../twilio/call-session.js');
@@ -1760,7 +1764,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
                       if (!session || session.isEnded()) return;
                       for (const part of flushParts) {
                         if (abortController.signal.aborted) return;
-                        await session.queueAgentSay(part);
+                        // Fire-and-forget: queueAgentSay enqueues
+                        // and returns; the drain worker handles
+                        // serial synthesis.
+                        void session.queueAgentSay(part);
                       }
                       phoneStreamFlushedAny = true;
                     } catch { /* best effort; one-shot fallback runs at turn end */ }
