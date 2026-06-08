@@ -3,6 +3,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { writeTaskLog } from './task-log.js';
+import { isDashboardHiddenAgent } from '../config/platform.js';
 import type { Project, ProjectDetail, Task, PokeEntry } from '@dojo/shared';
 
 const logger = createLogger('tracker-schema');
@@ -564,6 +565,21 @@ export function autoCreateAssignTask(params: {
 }): { taskId: string; isNew: boolean } | null {
   const db = getDb();
   try {
+    // v2.9.22 — never auto-create tracker rows for system agents
+    // (PM/Healer/Dreamer). Their roles are meta and they don't own
+    // user-facing work tasks. ASSIGN to a system agent is still a
+    // valid wake-the-agent signal; the message delivers, just no
+    // tracker row is created. Pre-fix, every ASSIGN to PM (typical
+    // close-out escalation pattern) auto-created a task assigned
+    // to PM, which then became invisible to the user but kept
+    // firing PM validation loops (production incident 2026-06-07).
+    if (isDashboardHiddenAgent(params.receiverId)) {
+      logger.info('autoCreateAssignTask skipped — receiver is a system agent', {
+        receiverId: params.receiverId, senderId: params.senderId, threadId: params.threadId,
+      }, params.senderId);
+      return null;
+    }
+
     // Reuse if a task already exists for this thread.
     const existing = db
       .prepare('SELECT id FROM tasks WHERE a2a_thread_id = ? LIMIT 1')

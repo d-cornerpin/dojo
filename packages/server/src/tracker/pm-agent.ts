@@ -904,9 +904,17 @@ async function runPMReview(): Promise<void> {
   // attached to this task in task_log, with fallback to the legacy notes
   // column for tasks that pre-date the migration backfill. Once the
   // backfill has run on this DB the legacy fallback should rarely hit.
+  //
+  // v2.9.22 — also accept 'auto_sweep' entries so engine-initiated pauses
+  // surface a real reason. Pre-fix, engine auto-pauses wrote auto_sweep
+  // entries that this filter missed, so PM saw "(EMPTY)" and rejected
+  // every engine-paused task as gaming. The primary fix (engine auto-pause
+  // setting pause_validated=1) makes this filter irrelevant for engine
+  // pauses going forward, but if any other code path leaves an
+  // unvalidated auto-pause in the world, PM at least sees the reason.
   const recentObservation = db.prepare(`
     SELECT note FROM task_log
-    WHERE task_id = ? AND entry_kind IN ('observation', 'legacy_note')
+    WHERE task_id = ? AND entry_kind IN ('observation', 'legacy_note', 'auto_sweep')
     ORDER BY created_at DESC, rowid DESC LIMIT 1
   `);
   const legacyNotesStmt = db.prepare(`SELECT notes FROM tasks WHERE id = ?`);

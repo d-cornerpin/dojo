@@ -432,10 +432,15 @@ export function terminateAgent(agentId: string, reason?: string): void {
     `).all(agentId) as Array<{ id: string; title: string }>;
     if (danglers.length > 0) {
       const note = `[${new Date().toISOString()}] Auto-paused: assigned agent "${agent.name}" was terminated (reason: ${reason ?? 'manual'}). Reassign or close from the dashboard.`;
+      // v2.9.22 — pause_validated=1 because the engine, not the agent,
+      // initiated the pause (agent termination). PM doesn't need to
+      // re-validate; the user resolves these from the dashboard.
+      // Same loop-prevention as the v2 close-out paths.
       for (const dt of danglers) {
         db.prepare(`
           UPDATE tasks
           SET status = 'paused', is_paused = 1, status_before_pause = 'in_progress',
+              pause_validated = 1,
               notes = COALESCE(notes, '') || ? || char(10),
               updated_at = datetime('now')
           WHERE id = ?

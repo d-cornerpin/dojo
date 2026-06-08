@@ -14,7 +14,7 @@ import {
 } from '../../tracker/schema.js';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
-import { getPrimaryAgentId, getPMAgentId } from '../../config/platform.js';
+import { getPrimaryAgentId, getPMAgentId, getDashboardHiddenAgentIds } from '../../config/platform.js';
 
 const logger = createLogger('tracker-routes');
 const trackerRouter = new Hono();
@@ -41,34 +41,11 @@ const trackerRouter = new Hono();
 //       platform spec.
 //
 // Override with ?includeSystem=true for debugging.
-const HIDDEN_AGENT_NAMES = ['Dreamer', 'Healer'];
-const HIDDEN_SYSTEM_CONFIG_KEYS = ['pm_agent_id', 'healer_agent_id', 'dreamer_agent_id'];
-
+// v2.9.22: the actual hidden-agent set lives in config/platform.ts as
+// getDashboardHiddenAgentIds() so the same definition is also reachable
+// from non-route code (the auto-create gate in schema.ts uses it).
 function hiddenAgentIdSet(): Set<string> {
-  const ids = new Set<string>();
-  try {
-    const db = getDb();
-    // (1) Config-driven system IDs — present-tense source of truth.
-    const configPlaceholders = HIDDEN_SYSTEM_CONFIG_KEYS.map(() => '?').join(',');
-    const configRows = db.prepare(
-      `SELECT value FROM config WHERE key IN (${configPlaceholders})`,
-    ).all(...HIDDEN_SYSTEM_CONFIG_KEYS) as Array<{ value: string }>;
-    for (const r of configRows) {
-      if (r.value) ids.add(r.value);
-    }
-    // (2) Legacy name match — catches historical agents whose IDs
-    // aren't current but whose projects/tasks still exist.
-    const namePlaceholders = HIDDEN_AGENT_NAMES.map(() => '?').join(',');
-    const nameRows = db.prepare(
-      `SELECT id FROM agents WHERE name IN (${namePlaceholders})`,
-    ).all(...HIDDEN_AGENT_NAMES) as Array<{ id: string }>;
-    for (const r of nameRows) ids.add(r.id);
-  } catch (err) {
-    logger.warn('hiddenAgentIdSet lookup failed; not hiding anything', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-  return ids;
+  return getDashboardHiddenAgentIds();
 }
 
 // ── Projects ──
@@ -162,9 +139,43 @@ trackerRouter.get('/tasks', (c) => {
   const all = listTasks(Object.keys(filter).length > 0 ? filter : undefined);
   if (includeSystem) return c.json({ ok: true, data: all });
   const hidden = hiddenAgentIdSet();
+
+  // v2.9.22: tasks assigned to system agents (PM/Healer/Dreamer) are
+  // hidden by default because they're platform mechanics the user
+  // shouldn't see in their kanban. BUT if such a task is in dispute
+  // (PM has rejected it before, or it's been escalated to user
+  // verdict, or it's an auto-created STALEMATE task), surface it so
+  // the user can intervene. Otherwise these get stuck in pause/
+  // in_progress loops with no user-visible surface to resolve them
+  // (production incident 2026-06-07).
+  //
+  // revertCount and awaitingUserVerdict aren't on the Task shared
+  // type, so pull the disputed-IDs in a single side query.
+  const disputedSystemTaskIds = new Set<string>();
+  if (hidden.size > 0) {
+    try {
+      const hiddenArr = Array.from(hidden);
+      const placeholders = hiddenArr.map(() => '?').join(',');
+      const rows = getDb().prepare(
+        `SELECT id FROM tasks
+         WHERE assigned_to IN (${placeholders})
+           AND (revert_count > 0
+                OR awaiting_user_verdict = 1
+                OR title LIKE 'STALEMATE on %')`,
+      ).all(...hiddenArr) as Array<{ id: string }>;
+      for (const r of rows) disputedSystemTaskIds.add(r.id);
+    } catch (err) {
+      logger.warn('disputed-system-task lookup failed; surfacing none', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   const tasks = all.filter(t => {
-    if (t.assignedTo && hidden.has(t.assignedTo)) return false;
     if (t.createdBy && hidden.has(t.createdBy)) return false;
+    if (t.assignedTo && hidden.has(t.assignedTo)) {
+      if (!disputedSystemTaskIds.has(t.id)) return false;
+    }
     return true;
   });
   return c.json({ ok: true, data: tasks });

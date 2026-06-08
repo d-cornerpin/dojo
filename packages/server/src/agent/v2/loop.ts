@@ -2401,10 +2401,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
             } catch { /* best effort */ }
 
             const note = `[${new Date().toISOString()}] Auto-paused by engine: agent "${agentId}" ignored the going-idle-with-in_progress nudge (produced closeout text without calling tracker_update_status). User: reassign or resolve manually from the dashboard.`;
+            // v2.9.22 — engine-initiated pause is authoritative; PM does
+            // not need to re-validate it via UNVALIDATED_PAUSE. The
+            // dedicated escalateCloseoutMissToPM A2A below already gives
+            // PM the verb menu (retask / override / validate). Pre-fix
+            // (pause_validated=0), PM would re-flag the auto-pause every
+            // tick, reject as "empty reason" (because PM read pause
+            // reasons from observation/legacy_note entries, not auto_sweep),
+            // revert to in_progress, and the cycle started over until
+            // someone killed the agent (production incident 2026-06-07).
             const pauseStmt = db.prepare(`
               UPDATE tasks
               SET status = 'paused', is_paused = 1, status_before_pause = 'in_progress',
-                  pause_validated = 0,
+                  pause_validated = 1,
                   updated_at = datetime('now')
               WHERE id = ? AND status = 'in_progress'
                 AND repeat_interval IS NULL
@@ -2671,9 +2680,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
               );
 
               const noteTemplate = `[${new Date().toISOString()}] Auto-paused by engine: agent "${agentId}" ignored the pre-turn close-out gate (produced a user-facing response without calling tracker_update_status / tracker_complete_step / tracker_add_notes / tracker_close_project). User: reassign or resolve manually from the dashboard.`;
+              // v2.9.22 — pause_validated=1 for the same reason as the
+              // going-idle hardcap path above. Engine pause is the
+              // authority; PM gets a dedicated closeout_miss A2A
+              // (below) and doesn't need to re-flag via UNVALIDATED_PAUSE.
               const updateStmt = db.prepare(`
                 UPDATE tasks
                 SET status = 'paused', is_paused = 1, status_before_pause = 'in_progress',
+                    pause_validated = 1,
                     notes = COALESCE(notes, '') || ? || char(10),
                     updated_at = datetime('now')
                 WHERE id = ? AND status = 'in_progress'

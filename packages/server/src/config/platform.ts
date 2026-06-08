@@ -201,3 +201,44 @@ export function getSystemServiceAgentIds(): string[] {
     getImaginerAgentId(),
   ];
 }
+
+/**
+ * Agents whose tasks are hidden from the dashboard tracker view by default
+ * because their roles are meta (PM monitors tasks; Healer/Dreamer run
+ * platform mechanics). v2.9.22 closes the loop where send_to_agent(ASSIGN)
+ * auto-created tracker rows for these agents — those rows then became
+ * invisible to the user but kept triggering PM validation loops. The
+ * autoCreateAssignTask path now refuses to create rows for these agents,
+ * and the dashboard's tracker view carves out an exception to SHOW
+ * disputed tasks assigned to them (so the user can intervene if any
+ * legacy or future code path drops one in).
+ *
+ * Trainer and Imaginer are intentionally NOT in this set — Trainer tasks
+ * (technique builds) ARE user-visible in the tracker, and Imaginer never
+ * uses the tracker at all.
+ */
+export function getDashboardHiddenAgentIds(): Set<string> {
+  const ids = new Set<string>();
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      `SELECT value FROM config WHERE key IN ('pm_agent_id', 'healer_agent_id', 'dreamer_agent_id')`,
+    ).all() as Array<{ value: string }>;
+    for (const r of rows) {
+      if (r.value) ids.add(r.value);
+    }
+    // Legacy name match — catches historical agents whose IDs aren't current
+    // but whose projects/tasks may still exist in the DB.
+    const nameRows = db.prepare(
+      `SELECT id FROM agents WHERE name IN ('Dreamer', 'Healer')`,
+    ).all() as Array<{ id: string }>;
+    for (const r of nameRows) ids.add(r.id);
+  } catch {
+    /* DB may not be ready; return empty set so nothing gets hidden */
+  }
+  return ids;
+}
+
+export function isDashboardHiddenAgent(agentId: string): boolean {
+  return getDashboardHiddenAgentIds().has(agentId);
+}
