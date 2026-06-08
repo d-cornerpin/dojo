@@ -3,7 +3,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { writeTaskLog } from './task-log.js';
-import { isDashboardHiddenAgent } from '../config/platform.js';
+import { isDashboardHiddenAgent, isPMAgent } from '../config/platform.js';
 import type { Project, ProjectDetail, Task, PokeEntry } from '@dojo/shared';
 
 const logger = createLogger('tracker-schema');
@@ -576,6 +576,25 @@ export function autoCreateAssignTask(params: {
     if (isDashboardHiddenAgent(params.receiverId)) {
       logger.info('autoCreateAssignTask skipped — receiver is a system agent', {
         receiverId: params.receiverId, senderId: params.senderId, threadId: params.threadId,
+      }, params.senderId);
+      return null;
+    }
+
+    // v2.10.2 — never auto-create tracker rows when the SENDER is the
+    // PM agent. PM's remediation flow is supposed to re-open the
+    // existing task via tracker_retask (or close it via tracker_override
+    // / tracker_validate_complete), NOT fork a new task. Pre-fix, PM
+    // sending send_to_agent(intent='ASSIGN') to remediate a close-out
+    // miss spawned a duplicate task and left the original abandoned —
+    // producing two tasks for one unit of work and, for non-idempotent
+    // tools (gmail_send, sms_send, voice_call, exec hitting live APIs),
+    // a duplicate side effect. Production incident 2026-06-08: Email
+    // 08 (Mariana Vázquez task) duplicated when PM rerouted Kevin
+    // after an auto-pause. The ASSIGN message itself still delivers
+    // and wakes the receiver; just no fork.
+    if (isPMAgent(params.senderId)) {
+      logger.info('autoCreateAssignTask skipped — sender is PM (remediation should use tracker_retask)', {
+        senderId: params.senderId, receiverId: params.receiverId, threadId: params.threadId,
       }, params.senderId);
       return null;
     }

@@ -438,6 +438,42 @@ export async function escalateCloseoutMissToPM(ctx: {
     ? ctx.suppressedText.slice(0, 1500) + '...'
     : ctx.suppressedText;
 
+  // v2.10.2 — receipts in the A2A body. Pre-fix, PM only saw the
+  // agent's suppressed text ("08 done"), not the tool-call rows from
+  // task_log. That made it easy for PM to conclude "no evidence,
+  // re-run" when the audit log actually had the [SENT] success row.
+  // Pull the last few tool_use audit entries for each paused task
+  // and embed them inline so PM has the receipts in the same
+  // message as the question.
+  let receiptsBlock = '';
+  try {
+    const receiptLines: string[] = [];
+    for (const r of rows) {
+      const auditRows = db.prepare(`
+        SELECT action_taken, reason, note, created_at
+        FROM task_log
+        WHERE task_id = ?
+          AND entry_kind IN ('tool_use', 'transition', 'observation')
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT 6
+      `).all(r.id) as Array<{ action_taken: string | null; reason: string | null; note: string | null; created_at: string }>;
+      if (auditRows.length === 0) continue;
+      receiptLines.push(`  ${r.id.slice(0, 8)} recent audit (newest first):`);
+      for (const a of auditRows) {
+        const action = a.action_taken ?? '(no action recorded)';
+        const detail = [a.reason, a.note].filter(Boolean).join(' / ').slice(0, 180);
+        receiptLines.push(`    [${a.created_at}] ${action}${detail ? ` — ${detail}` : ''}`);
+      }
+    }
+    if (receiptLines.length > 0) {
+      receiptsBlock = `Audit log excerpts (the actual receipts — read these BEFORE deciding):\n${receiptLines.join('\n')}\n\n`;
+    }
+  } catch (err) {
+    logger.warn('Failed to assemble audit-log receipts for closeout-miss A2A (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err), taskCount: rows.length,
+    });
+  }
+
   const payload =
     `[Engine notice - CLOSEOUT MISS]\n\n` +
     `Agent "${ctx.agentId}" finished a turn without calling tracker_update_status / tracker_complete_step. The engine ` +
@@ -445,14 +481,20 @@ export async function escalateCloseoutMissToPM(ctx: {
     `Paused task(s):\n${taskLines}\n\n` +
     `What the agent said (suppressed from the user — they did NOT see this):\n` +
     `> ${truncatedSaid.split('\n').join('\n> ')}\n\n` +
+    receiptsBlock +
     `Trigger: ${sourceLabel}\n\n` +
     `Your verbs:\n` +
     `  (a) tracker_retask(task_id, directive) — push the agent back at it with concrete corrective guidance ` +
-    `(e.g. "you wrote the brief in chat but the task spec is email; call send_email with this same content to <recipient>"). USE THIS WHEN the agent did the wrong thing and you can name what they should do instead. This is the default.\n` +
+    `(e.g. "you wrote the brief in chat but the task spec is email; call send_email with this same content to <recipient>"). USE THIS WHEN the agent did the wrong thing and you can name what they should do instead.\n` +
     `  (b) tracker_validate_pause(task_id, valid=true) — confirm the pause stands. USE THIS WHEN the work genuinely can't proceed without user input you can name, or when the task is no longer relevant.\n` +
-    `  (c) tracker_override(...) or tracker_validate_complete(...) — accept as complete. USE THIS WHEN you can verify (via the suppressed text + a quick tracker_get_status / file check / etc.) that the work actually got done and the agent just forgot to close the tracker.\n\n` +
-    `Inspect the goal against what the agent said. If they delivered the wrong artifact OR in the wrong channel, retask. ` +
-    `Rubber-stamping the pause means the recurring task / user-promised work dies silently — that's the exact failure mode the user yelled about. Be a PM, not a status forwarder.`;
+    `  (c) tracker_override(...) or tracker_validate_complete(...) — accept as complete. USE THIS WHEN you can verify (via the audit-log excerpts above + the suppressed text + a quick tracker_get_status / file check / etc.) that the work actually got done and the agent just forgot to close the tracker.\n\n` +
+    `**Non-idempotent tools demand option (c), not (a).** If the audit log shows a successful call to gmail_send, outlook_send, ` +
+    `imessage_send, sms_send, teams_send_message, voice_call, calendar_create, drive_upload, docs_create, sheets_create, share_publicly, ` +
+    `or an exec that hit a live external API — the action already happened. Re-running it would duplicate the side effect (double email, ` +
+    `double text, double charge). Accept as complete via tracker_override / tracker_validate_complete, citing the audit row as evidence. ` +
+    `Do NOT use tracker_retask on these; that produces duplicates.\n\n` +
+    `For everything else, inspect the goal against what the agent said. If they delivered the wrong artifact OR in the wrong channel, retask. ` +
+    `Rubber-stamping the pause means the recurring task / user-promised work dies silently. Be a PM, not a status forwarder.`;
 
   try {
     const { deliverA2AMessage } = await import('../agent/a2a-transport.js');

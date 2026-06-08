@@ -2451,18 +2451,57 @@ export async function runV2Turn(agentId: string): Promise<void> {
           );
 
           if (openTasks.length > 0 && !transitionedThisTurn) {
+            // v2.10.2 — detect scheduler-triggered turns AND scan this
+            // turn's tool_results for side-effecting calls that
+            // returned success. Pre-fix, the agent had to read a
+            // 4-option menu and construct result+evidence themselves,
+            // and frequently just emitted "08 done" as text. When
+            // we can see "you just ran gmail_send and got [SENT]",
+            // surfacing that inline makes the close-out mechanical.
+            //
+            // Signal source is `state.toolResults` (in-memory, this
+            // turn) rather than task_log — most tools don't write
+            // per-task log entries when called, so a task_log scan
+            // would almost always come up empty.
+            const isSchedulerTriggered = (lastUserMessageContent ?? '').includes('[SOURCE: SCHEDULER');
+            const NON_IDEMPOTENT_TOOLS = new Set([
+              'gmail_send', 'outlook_send', 'gmail_reply', 'outlook_reply',
+              'imessage_send', 'sms_send', 'teams_send_message',
+              'voice_call', 'calendar_create', 'calendar_update',
+              'drive_upload', 'docs_create', 'sheets_create', 'slides_create',
+              'share_publicly', 'exec',
+            ]);
+            const recentSideEffects: Array<{ name: string; preview: string }> = [];
+            for (let i = state.toolResults.length - 1; i >= 0 && recentSideEffects.length < 4; i--) {
+              const tr = state.toolResults[i];
+              if (!tr.name || !NON_IDEMPOTENT_TOOLS.has(tr.name)) continue;
+              if (tr.isError) continue;
+              const preview = (tr.content ?? '').replace(/\s+/g, ' ').slice(0, 160);
+              recentSideEffects.push({ name: tr.name, preview });
+            }
             const taskList = openTasks
               .map(t => `  - "${t.title.slice(0, 60)}" (${t.id.slice(0, 8)})`)
               .join('\n');
+            const schedulerHint = isSchedulerTriggered
+              ? `\n**This turn was scheduler-triggered.** Scheduler-fired tasks rarely need option (1) KEEP GOING — the scheduler does the repetition, not you. The right answer here is almost always option (2) DONE.\n`
+              : '';
+            const auditHint = recentSideEffects.length > 0
+              ? `\nYou successfully called ${recentSideEffects.length === 1 ? 'a side-effecting tool' : 'side-effecting tools'} this turn:\n` +
+                recentSideEffects.map(s => `  - \`${s.name}\` returned: ${s.preview}`).join('\n') + `\n\n` +
+                `These are NON-IDEMPOTENT actions that already executed. Re-running them would duplicate the side effect (double email, double text, double charge). The work is done. Close the task NOW:\n` +
+                `\`tracker_update_status(task_id="${openTasks[0].id}", status="complete", result="<one-line summary of what landed>", evidence=[{kind: "tool_call_ref", claim: "${recentSideEffects[0].name} succeeded"}])\`\n`
+              : '';
             const nudgeText = (
               `[System: you are about to end this turn with ${openTasks.length} task${openTasks.length === 1 ? '' : 's'} still in_progress and assigned to you:\n` +
-              `${taskList}\n\n` +
-              `Pick exactly one of these before ending the turn:\n\n` +
+              `${taskList}\n` +
+              schedulerHint +
+              auditHint +
+              `\nPick exactly one of these before ending the turn:\n\n` +
               `  1. KEEP GOING - call your next tool NOW to continue from EXACTLY where you stopped. Long file reads, batch operations, multi-step processes — don't restart, don't re-read content you already processed, just advance to the next line / next item / next step.\n` +
               `  2. DONE - tracker_update_status(task_id, status="complete", result="...", evidence=[...]) (or tracker_complete_step for multi-step projects).\n` +
               `  3. WAITING ON USER (already asked them) - tracker_update_status(task_id, status="paused", notes="waiting for X"). PM will ignore this task entirely; no pokes.\n` +
               `  4. BLOCKED (needs escalation - user does not know yet) - tracker_update_status(task_id, status="blocked", notes="why"). PM will surface this to the primary user.\n\n` +
-              `If you go idle with a task still in_progress, the PM will poke you in ~2 minutes assuming you stalled. Skip the noise by either advancing the work or transitioning the task now.]`
+              `If you go idle with a task still in_progress, the engine will auto-pause it and escalate to PM. Pre-fix for non-idempotent tasks (gmail_send, sms_send, voice_call, exec hitting live APIs), PM was then forced into a re-run remediation that duplicated the side effect. Save everyone the work: close the task now.]`
             );
             const nudgeId = uuidv4();
             db.prepare(`
