@@ -411,6 +411,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // double-fire ("on it ... checking ... give me a sec ...").
   let voiceFillerFired = false;
 
+  // v2.9.23 — phone-call streaming TTS state. When this turn is
+  // triggered by a live phone call, we keep a sentence-splitting
+  // buffer attached to the model's onChunk callback. Each completed
+  // sentence (or comma-separated clause for short replies) goes to
+  // `CallSession.queueAgentSay` ASAP so audio starts playing on the
+  // first sentence instead of waiting for the whole model output.
+  // Cuts perceived latency by ~70 % on multi-sentence replies.
+  let phoneStreamCallSid: string | null = null;
+  let phoneStreamBuffer = '';
+  let phoneStreamFlushedAny = false;
+
   // v2.7.23 — structural inbound channel binding. Parse the source tag from
   // the most recent user message to determine which channel the turn was
   // triggered from. The reply-destination resolver reads these at end of
@@ -419,7 +430,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // iMessage thread, the bridge sets pendingIMResponseMap[agentId] with
   // the inbound sender — we read it via getInboundSenderFor so the agent
   // doesn't have to embed the recipient in its reply.
-  let inboundChannel: 'imessage' | 'teams' | 'email' | 'dashboard' | null = null;
+  let inboundChannel: 'imessage' | 'teams' | 'email' | 'sms' | 'phone' | 'dashboard' | null = null;
   let inboundContext: import('./state.js').ChannelInboundContext | null = null;
   if (triggeredByIMessage) {
     inboundChannel = 'imessage';
@@ -496,6 +507,49 @@ export async function runV2Turn(agentId: string): Promise<void> {
         emailService: isOutlook ? 'outlook' : 'gmail',
         emailSubject: subject,
         recipientAddress: fromAddress,
+      };
+    } else {
+      inboundChannel = 'dashboard';
+    }
+  } else if (lastUserMessageContent?.includes('[SOURCE: PHONE CALL FROM')) {
+    // v2.9.18 — Twilio phone call inbound utterance. The agent's
+    // terminal text auto-routes back via TTS over the active
+    // CallSession.
+    const fromMatch = lastUserMessageContent.match(/\[SOURCE: PHONE CALL FROM ([^\]]+)\]/);
+    const callSidMatch = lastUserMessageContent.match(/Call SID:\s*(\S+)/);
+    if (fromMatch?.[1] && callSidMatch?.[1]) {
+      inboundChannel = 'phone';
+      inboundContext = {
+        phoneCallSid: callSidMatch[1].trim(),
+        phoneFromNumber: fromMatch[1].trim(),
+        recipientAddress: fromMatch[1].trim(),
+      };
+      // v2.9.23 — bind the streaming TTS sink for this turn. The
+      // onChunk callback on the model call writes text into
+      // phoneStreamBuffer as it arrives; sentence-complete chunks
+      // flush to the CallSession's queueAgentSay immediately, so
+      // audio starts playing while the model is still generating.
+      phoneStreamCallSid = callSidMatch[1].trim();
+    } else {
+      inboundChannel = 'dashboard';
+    }
+  } else if (lastUserMessageContent?.includes('[SOURCE: SMS FROM')) {
+    // v2.9.18 - Twilio SMS inbound routing. Same auto-route-on-known-
+    // sender pattern as Teams: known sender → auto-route reply via
+    // Twilio; unknown sender → notification flow, agent decides.
+    // sms-inbound.ts already gates on the safe-sender list when
+    // building the source tag, so anything tagged `[SOURCE: SMS FROM`
+    // here is from a known sender. Unknown senders carry the
+    // `[SOURCE: SMS NOTIFICATION` tag instead and fall through to
+    // dashboard.
+    const fromMatch = lastUserMessageContent.match(/\[SOURCE: SMS FROM ([^\]]+)\]/);
+    const toMatch = lastUserMessageContent.match(/^To:\s*(\S+)/im);
+    if (fromMatch?.[1]) {
+      inboundChannel = 'sms';
+      inboundContext = {
+        smsFromNumber: fromMatch[1].trim(),
+        smsToNumber: toMatch?.[1]?.trim(),
+        recipientAddress: fromMatch[1].trim(),
       };
     } else {
       inboundChannel = 'dashboard';
@@ -1673,6 +1727,46 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 content: chunk,
                 done: false,
               });
+              // v2.9.23 — phone-call streaming TTS. Accumulate chunks
+              // into a buffer and flush each completed sentence to
+              // CallSession.queueAgentSay as it appears. Effect: audio
+              // starts playing on the first sentence, instead of
+              // waiting for the full model response. Same idea as
+              // voice mode's clause splitter but landing on the
+              // Twilio CallSession's TTS queue instead of the voice
+              // WS stream.
+              if (phoneStreamCallSid) {
+                phoneStreamBuffer += chunk;
+                // Boundary: sentence-end punctuation followed by
+                // whitespace or end of string. Commas / clause breaks
+                // could be added later but sentence-level keeps the
+                // synth boundary clean for both Kokoro and Hume.
+                const flushParts: string[] = [];
+                let last = 0;
+                const re = /[.!?\n]+\s+/g;
+                let m: RegExpExecArray | null;
+                while ((m = re.exec(phoneStreamBuffer)) !== null) {
+                  const end = m.index + m[0].length;
+                  const part = phoneStreamBuffer.slice(last, end).trim();
+                  if (part) flushParts.push(part);
+                  last = end;
+                }
+                if (last > 0) phoneStreamBuffer = phoneStreamBuffer.slice(last);
+                if (flushParts.length > 0) {
+                  void (async () => {
+                    try {
+                      const { getCallSession } = await import('../../twilio/call-session.js');
+                      const session = getCallSession(phoneStreamCallSid as string);
+                      if (!session || session.isEnded()) return;
+                      for (const part of flushParts) {
+                        if (abortController.signal.aborted) return;
+                        await session.queueAgentSay(part);
+                      }
+                      phoneStreamFlushedAny = true;
+                    } catch { /* best effort; one-shot fallback runs at turn end */ }
+                  })();
+                }
+              }
             },
             // Reasoning / thinking chunks (DeepSeek native, OpenRouter
             // unified). The dashboard renders these in a collapsible
@@ -2096,6 +2190,39 @@ export async function runV2Turn(agentId: string): Promise<void> {
             }
           } catch (err) {
             logger.warn('Voice filler push failed (non-fatal)', {
+              agentId, error: err instanceof Error ? err.message : String(err),
+            }, agentId);
+          }
+        }
+
+        // v2.9.23 — same filler logic for live phone calls. Tool calls
+        // are the only path that produces noticeable latency on phone
+        // (a plain text reply now streams sentence-by-sentence via the
+        // onChunk pipe above). When the model jumps straight to tools
+        // with no opener text, push a short filler to the CallSession
+        // so the caller hears something instead of dead air. Caller
+        // hears "On it" / "One sec" / "Let me check" within ~150 ms
+        // of finishing their utterance.
+        if (
+          !voiceFillerFired &&
+          phoneStreamCallSid &&
+          inboundChannel === 'phone' &&
+          (persistedContent ?? '').trim().length === 0
+        ) {
+          try {
+            const { pickFillerPhrase } = await import('../../voice/filler-phrases.js');
+            const { getCallSession } = await import('../../twilio/call-session.js');
+            const phrase = pickFillerPhrase();
+            const session = getCallSession(phoneStreamCallSid);
+            if (session && !session.isEnded()) {
+              await session.queueAgentSay(phrase);
+              voiceFillerFired = true;
+              logger.info('Phone filler pushed before tool execution', {
+                agentId, callSid: phoneStreamCallSid, phrase, toolCount: result.toolCalls.length,
+              }, agentId);
+            }
+          } catch (err) {
+            logger.warn('Phone filler push failed (non-fatal)', {
               agentId, error: err instanceof Error ? err.message : String(err),
             }, agentId);
           }
@@ -3261,6 +3388,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
               state = advance(state, {
                 explicitSendThisTurn: { ...state.explicitSendThisTurn, email: true },
               });
+            } else if (tc.name === 'sms_send') {
+              state = advance(state, {
+                explicitSendThisTurn: { ...state.explicitSendThisTurn, sms: true },
+              });
             }
           }
 
@@ -3945,6 +4076,91 @@ export async function runV2Turn(agentId: string): Promise<void> {
             }
           } catch (err) {
             logger.warn('v2.7.24: email auto-reply crashed', {
+              agentId, error: err instanceof Error ? err.message : String(err),
+            }, agentId);
+          }
+        } else if (destination === 'phone' && !state.explicitSendThisTurn.phone && state.inboundContext?.phoneCallSid) {
+          // v2.9.18 - phone call reply routing. The agent just emitted
+          // text in response to a caller utterance during an active
+          // phone call. Push the text into the call's TTS pipeline so
+          // it gets spoken back over the same call.
+          // v2.9.23 — if streaming TTS already flushed sentences via
+          // onChunk above, we ONLY queue whatever tail remains in
+          // phoneStreamBuffer. If nothing was streamed (e.g. the
+          // model returned in one shot, or onChunk never fired) we
+          // fall back to the original one-shot push so we never
+          // silently drop the reply.
+          try {
+            const { getCallSession } = await import('../../twilio/call-session.js');
+            const session = getCallSession(state.inboundContext.phoneCallSid);
+            if (!session) {
+              logger.warn('v2.9.18: phone auto-reply skipped - no active session for callSid', {
+                agentId, callSid: state.inboundContext.phoneCallSid,
+              }, agentId);
+            } else if (session.isEnded()) {
+              logger.warn('v2.9.18: phone auto-reply skipped - call already ended', {
+                agentId, callSid: state.inboundContext.phoneCallSid,
+              }, agentId);
+            } else if (phoneStreamFlushedAny) {
+              // Streaming path took care of the body. Flush the
+              // remaining tail (final sentence without trailing
+              // punctuation-plus-whitespace) if any.
+              const tail = phoneStreamBuffer.trim();
+              if (tail) {
+                await session.queueAgentSay(tail);
+                phoneStreamBuffer = '';
+              }
+              persistRoutingMarker(`phone call to ${state.inboundContext.phoneFromNumber ?? '(unknown)'}`);
+              logger.info('v2.9.23: routed reply via phone TTS (streamed)', {
+                agentId,
+                callSid: state.inboundContext.phoneCallSid,
+                to: state.inboundContext.phoneFromNumber,
+                tailLength: tail.length,
+                totalTextLength: state.lastAssistantTextForIM.length,
+              }, agentId);
+            } else {
+              await session.queueAgentSay(state.lastAssistantTextForIM);
+              persistRoutingMarker(`phone call to ${state.inboundContext.phoneFromNumber ?? '(unknown)'}`);
+              logger.info('v2.9.18: routed reply via phone TTS', {
+                agentId,
+                callSid: state.inboundContext.phoneCallSid,
+                to: state.inboundContext.phoneFromNumber,
+                textLength: state.lastAssistantTextForIM.length,
+              }, agentId);
+            }
+          } catch (err) {
+            logger.warn('v2.9.18: phone auto-reply crashed', {
+              agentId, error: err instanceof Error ? err.message : String(err),
+            }, agentId);
+          }
+        } else if (destination === 'sms' && !state.explicitSendThisTurn.sms && state.inboundContext?.smsFromNumber) {
+          // v2.9.18 - SMS reply routing. Inbound SMS from a known
+          // sender → agent's terminal text auto-routes back via
+          // Twilio sendSms to the original sender. From-number is
+          // the same Twilio number that received the inbound (so
+          // the thread looks continuous on the recipient's phone).
+          try {
+            const { sendSms } = await import('../../twilio/client.js');
+            const { getDefaultFromNumber } = await import('../../twilio/auth.js');
+            const fromNumber = state.inboundContext.smsToNumber ?? getDefaultFromNumber();
+            if (!fromNumber) {
+              logger.warn('v2.9.18: sms auto-reply skipped - no from-number available', { agentId }, agentId);
+            } else {
+              const r = await sendSms(state.inboundContext.smsFromNumber, state.lastAssistantTextForIM, fromNumber);
+              if (!r.ok) {
+                logger.warn('v2.9.18: sms auto-reply failed', { agentId, error: r.error }, agentId);
+              } else {
+                persistRoutingMarker(`SMS to ${state.inboundContext.smsFromNumber}`);
+                logger.info('v2.9.18: routed reply via SMS', {
+                  agentId,
+                  to: state.inboundContext.smsFromNumber,
+                  from: fromNumber,
+                  textLength: state.lastAssistantTextForIM.length,
+                }, agentId);
+              }
+            }
+          } catch (err) {
+            logger.warn('v2.9.18: sms auto-reply crashed', {
               agentId, error: err instanceof Error ? err.message : String(err),
             }, agentId);
           }

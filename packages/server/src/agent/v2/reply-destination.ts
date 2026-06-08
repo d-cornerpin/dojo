@@ -31,7 +31,7 @@
 
 import type { AgentTurnState } from './state.js';
 
-export type ReplyDestination = 'imessage' | 'teams' | 'email' | 'dashboard';
+export type ReplyDestination = 'imessage' | 'teams' | 'email' | 'sms' | 'phone' | 'dashboard';
 
 export interface ResolveReplyDestinationParams {
   state: Pick<AgentTurnState, 'inboundChannel'>;
@@ -48,6 +48,8 @@ export function resolveReplyDestination(params: ResolveReplyDestinationParams): 
   if (state.inboundChannel === 'imessage') return 'imessage';
   if (state.inboundChannel === 'teams') return 'teams';
   if (state.inboundChannel === 'email') return 'email';
+  if (state.inboundChannel === 'sms') return 'sms';
+  if (state.inboundChannel === 'phone') return 'phone';
 
   // Layer 2: dashboard inbound or proactive turn → default to dashboard,
   // then apply the away override if applicable. (Away override only

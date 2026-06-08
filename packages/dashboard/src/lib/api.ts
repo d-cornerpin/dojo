@@ -1864,4 +1864,115 @@ export const sendHealerReport = async (): Promise<ApiResponse<{ message: string 
   return request<{ message: string }>('/healer/report/send', { method: 'POST' });
 };
 
+// ── Twilio (v2.9.18) ──
+
+export interface TwilioNumberDto {
+  number: string;
+  label: string | null;
+  isDefault: boolean;
+  smsEnabled: boolean;
+  voiceEnabled: boolean;
+}
+
+export interface TwilioConfigDto {
+  configured: boolean;
+  enabled: boolean;
+  smsEnabled: boolean;
+  voiceEnabled: boolean;
+  accountSid: string | null;
+  defaultFromNumber: string | null;
+  voiceMaxMinutesPerCall: number;
+  voiceUnknownCallerAction: 'reject' | 'voicemail' | 'agent';
+  voiceVoicemailGreeting: string;
+  numbers: TwilioNumberDto[];
+  webhooks: { sms: string; voice: string; voiceStatus: string } | null;
+  webhookError: string | null;
+}
+
+export interface TwilioSafeSenderDto {
+  address: string;
+  name: string;
+  description?: string;
+  is_primary: boolean;
+  sharing_level: 'open_book' | 'dont_overshare' | 'cautious' | 'project_only';
+}
+
+export const getTwilioConfigApi = async (): Promise<ApiResponse<TwilioConfigDto>> => {
+  return request<TwilioConfigDto>('/twilio/config');
+};
+
+export const saveTwilioCredentialsApi = async (account_sid: string, auth_token: string): Promise<ApiResponse<{ accountSid: string; friendlyName: string | null }>> => {
+  return request<{ accountSid: string; friendlyName: string | null }>('/twilio/credentials', {
+    method: 'POST',
+    body: JSON.stringify({ account_sid, auth_token }),
+  });
+};
+
+export const clearTwilioCredentialsApi = async (): Promise<ApiResponse<{ cleared: boolean }>> => {
+  return request<{ cleared: boolean }>('/twilio/credentials', { method: 'DELETE' });
+};
+
+export const testTwilioConnectionApi = async (account_sid?: string, auth_token?: string): Promise<ApiResponse<{ friendlyName: string | null }>> => {
+  const body = account_sid && auth_token ? JSON.stringify({ account_sid, auth_token }) : '{}';
+  return request<{ friendlyName: string | null }>('/twilio/test-connection', { method: 'POST', body });
+};
+
+export interface TwilioSettingsPatchDto {
+  enabled?: boolean;
+  smsEnabled?: boolean;
+  voiceEnabled?: boolean;
+  defaultFromNumber?: string | null;
+  voiceMaxMinutesPerCall?: number;
+  voiceUnknownCallerAction?: 'reject' | 'voicemail' | 'agent';
+  voiceVoicemailGreeting?: string;
+}
+
+export const patchTwilioSettingsApi = async (patch: TwilioSettingsPatchDto): Promise<ApiResponse<TwilioConfigDto>> => {
+  return request<TwilioConfigDto>('/twilio/settings', {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+};
+
+export const upsertTwilioNumberApi = async (number: string, opts: { label?: string | null; is_default?: boolean; sms_enabled?: boolean; voice_enabled?: boolean } = {}): Promise<ApiResponse<TwilioNumberDto[]>> => {
+  return request<TwilioNumberDto[]>('/twilio/numbers', {
+    method: 'POST',
+    body: JSON.stringify({ number, ...opts }),
+  });
+};
+
+export const removeTwilioNumberApi = async (number: string): Promise<ApiResponse<TwilioNumberDto[]>> => {
+  return request<TwilioNumberDto[]>(`/twilio/numbers/${encodeURIComponent(number)}`, { method: 'DELETE' });
+};
+
+export const listTwilioSmsSafeSendersApi = async (): Promise<ApiResponse<TwilioSafeSenderDto[]>> => {
+  return request<TwilioSafeSenderDto[]>('/twilio/safe-senders/sms');
+};
+
+export const addTwilioSmsSafeSenderApi = async (sender: { name: string; address: string; is_primary?: boolean; sharing_level?: string }): Promise<ApiResponse<{ added: boolean; totalSenders: number }>> => {
+  return request<{ added: boolean; totalSenders: number }>('/twilio/safe-senders/sms', {
+    method: 'POST',
+    body: JSON.stringify(sender),
+  });
+};
+
+export const removeTwilioSmsSafeSenderApi = async (address: string): Promise<ApiResponse<{ totalSenders: number }>> => {
+  return request<{ totalSenders: number }>(`/twilio/safe-senders/sms/${encodeURIComponent(address)}`, { method: 'DELETE' });
+};
+
+export const listTwilioVoiceSafeCallersApi = async (): Promise<ApiResponse<TwilioSafeSenderDto[]>> => {
+  return request<TwilioSafeSenderDto[]>('/twilio/safe-senders/voice');
+};
+
+export const addTwilioVoiceSafeCallerApi = async (sender: { name: string; address: string; is_primary?: boolean; sharing_level?: string }): Promise<ApiResponse<{ added: boolean; totalSenders: number }>> => {
+  return request<{ added: boolean; totalSenders: number }>('/twilio/safe-senders/voice', {
+    method: 'POST',
+    body: JSON.stringify(sender),
+  });
+};
+
+export const removeTwilioVoiceSafeCallerApi = async (address: string): Promise<ApiResponse<{ totalSenders: number }>> => {
+  return request<{ totalSenders: number }>(`/twilio/safe-senders/voice/${encodeURIComponent(address)}`, { method: 'DELETE' });
+};
+
 export { getToken, clearToken };

@@ -18,6 +18,8 @@ const PUBLIC_PREFIXES = [
   '/api/setup/',  // All setup routes are public (only useful during first run)
   '/api/upload/download/',  // File downloads use unguessable UUIDs as auth
   '/api/voice/assets/',  // Voice-mode runtime assets (VAD model, ORT wasm) — static files
+  '/api/twilio/webhook/',  // Twilio inbound webhooks — auth is Twilio's X-Twilio-Signature, not JWT
+  '/api/twilio/voice-stream',  // Twilio Media Streams WS — opened by Twilio, no JWT
 ];
 
 export interface JwtPayload {

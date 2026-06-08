@@ -75,6 +75,17 @@ export interface ChannelInboundContext {
   emailMessageId?: string;
   emailService?: 'outlook' | 'gmail';
   emailSubject?: string;
+  // v2.9.18: Twilio SMS reply context. Set when inboundChannel is
+  // 'sms' so the terminal-text auto-route knows which number to
+  // send to (the original sender) and which of our Twilio numbers
+  // to send from (whichever one received the inbound).
+  smsFromNumber?: string;
+  smsToNumber?: string;
+  // v2.9.18: Twilio Voice call reply context. Set when inboundChannel
+  // is 'phone' so the terminal-text auto-route can queue the agent's
+  // reply text into the active CallSession's TTS pipeline.
+  phoneCallSid?: string;
+  phoneFromNumber?: string;
 }
 
 export interface AgentTurnState {
@@ -155,7 +166,7 @@ export interface AgentTurnState {
   // 2.7.22 "model must call imessage_send for every reply" pattern,
   // which the model couldn't follow reliably for short conversational
   // replies (per imessage_not_working.txt investigation).
-  readonly inboundChannel: 'imessage' | 'teams' | 'email' | 'dashboard' | null;
+  readonly inboundChannel: 'imessage' | 'teams' | 'email' | 'sms' | 'phone' | 'dashboard' | null;
   readonly inboundContext: ChannelInboundContext | null;
 
   // ── Engine-tracked turn flags ──
@@ -168,7 +179,7 @@ export interface AgentTurnState {
   // get delivered twice — once via the tool call, once via the auto-
   // route). Multiple channels can be tracked if the agent crosses
   // them in one turn (rare).
-  explicitSendThisTurn: { imessage?: boolean; teams?: boolean; email?: boolean };
+  explicitSendThisTurn: { imessage?: boolean; teams?: boolean; email?: boolean; sms?: boolean; phone?: boolean };
   trackerToolCalledThisTurn: boolean;
   nonTrackerToolCalls: number;
   /**
@@ -338,7 +349,7 @@ export interface InitStateParams {
   imFlagSetAtRunStart: boolean;
   lastUserMessageContent: string | null;
   // v2.7.23 — structural inbound channel binding; see AgentTurnState fields
-  inboundChannel: 'imessage' | 'teams' | 'email' | 'dashboard' | null;
+  inboundChannel: 'imessage' | 'teams' | 'email' | 'sms' | 'phone' | 'dashboard' | null;
   inboundContext: ChannelInboundContext | null;
   shouldNudgeTracker: boolean;
   /**

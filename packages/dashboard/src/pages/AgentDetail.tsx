@@ -231,12 +231,32 @@ function stripAttachmentTags(content: string): string {
     .trim();
 }
 
-const UserBubble = ({ msg }: { msg: ChatMessage }) => {
+// v2.9.23 — phone-call inbound (Twilio voice). Same treatment as
+// iMessage: strip the SOURCE header so the bubble shows just what
+// the caller said. Hide the Call SID + To: trailer the engine
+// appends unless wordy mode is on.
+const PHONE_SOURCE_RE = /^\[SOURCE: PHONE CALL FROM [^\]]+\]\s*/;
+const PHONE_TRAILER_RE = /\n+Call SID:\s*\S+(?:\n(?:To|Direction|Voicemail|Disclosures|Their Name|Purpose|Callback):\s*[^\n]*)*\s*$/;
+
+function extractPhoneCaller(content: string): string | null {
+  const m = content.match(/^\[SOURCE: PHONE CALL FROM ([^\]]+)\]/);
+  if (!m) return null;
+  const inside = m[1].trim();
+  return inside && inside !== '(unknown)' ? inside : null;
+}
+
+const UserBubble = ({ msg, wordyMode = false }: { msg: ChatMessage; wordyMode?: boolean }) => {
   const fromIMessage = IMESSAGE_SOURCE_RE.test(msg.content);
+  const fromPhone = PHONE_SOURCE_RE.test(msg.content);
   const fromVoice = msg.source === 'voice';
-  const stripped = fromIMessage ? msg.content.replace(IMESSAGE_SOURCE_RE, '') : msg.content;
+  let stripped = fromIMessage ? msg.content.replace(IMESSAGE_SOURCE_RE, '') : msg.content;
+  if (fromPhone) {
+    stripped = stripped.replace(PHONE_SOURCE_RE, '');
+    if (!wordyMode) stripped = stripped.replace(PHONE_TRAILER_RE, '').trimEnd();
+  }
   const displayContent = msg.attachments?.length ? stripAttachmentTags(stripped) : stripped;
   const iMessageSender = fromIMessage ? extractIMessageSender(msg.content) : null;
+  const phoneCaller = fromPhone ? extractPhoneCaller(msg.content) : null;
 
   return (
     <div className="flex flex-col items-end">
@@ -246,7 +266,15 @@ const UserBubble = ({ msg }: { msg: ChatMessage }) => {
           <span>{iMessageSender ? `from ${iMessageSender} via iMessage` : 'via iMessage'}</span>
         </div>
       )}
-      {fromVoice && !fromIMessage && (
+      {fromPhone && !fromIMessage && (
+        <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-cp-teal/10 text-cp-teal text-[10px] font-mono mb-1 mr-1">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.86.34 1.7.62 2.51a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.57-1.57a2 2 0 0 1 2.11-.45c.81.28 1.65.49 2.51.62A2 2 0 0 1 22 16.92z" />
+          </svg>
+          <span>{phoneCaller ? `from ${phoneCaller} via phone call` : 'via phone call'}</span>
+        </div>
+      )}
+      {fromVoice && !fromIMessage && !fromPhone && (
         <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-cp-teal/10 text-cp-teal text-[10px] font-mono mb-1 mr-1">
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
@@ -898,7 +926,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
   // to the preceding assistant message instead of rendering them as a
   // standalone right-aligned badge below. See Chat.tsx for the same
   // mechanism in detail.
-  const ROUTING_MARKER_RE = /^\[(?:SENT VIA IMESSAGE to .+|Reply routed via (iMessage|Teams|email)[^\]]*)\]$/;
+  const ROUTING_MARKER_RE = /^\[(?:SENT VIA IMESSAGE to .+|Reply routed via (iMessage|Teams|email|phone call)[^\]]*)\]$/;
   const { outboundChannelByAssistantId, hiddenRoutingMarkerIds } = useMemo(() => {
     const byAssistant = new Map<string, OutboundChannelInfo>();
     const hidden = new Set<string>();
@@ -921,6 +949,8 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
         recipient = trimmed.match(/to ([^\]]+?)\]$/)?.[1]?.trim() ?? null;
       } else if (channel === 'Teams') {
         recipient = trimmed.match(/to chat ([^\]]+?)\]$/)?.[1]?.trim() ?? null;
+      } else if (channel === 'phone call') {
+        recipient = trimmed.match(/phone call to ([^\]]+?)\]$/)?.[1]?.trim() ?? null;
       }
       const channelName = channel.toLowerCase() === 'imessage' ? 'iMessage' : channel;
       const label = channel.toLowerCase() === 'email'
@@ -930,7 +960,9 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
           : `sent via ${channelName}`;
       const emoji = channel.toLowerCase() === 'email'
         ? '\u{2709}\u{FE0F}'
-        : channel === 'Teams' ? '\u{1F4DD}' : '\u{1F4AC}';
+        : channel === 'Teams' ? '\u{1F4DD}'
+        : channel === 'phone call' ? '\u{260E}\u{FE0F}'
+        : '\u{1F4AC}';
       byAssistant.set(assistantId, { label, emoji });
       hidden.add(m.id);
     }
@@ -1006,7 +1038,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             // we couldn't attach (no preceding assistant) still fall
             // through to the original right-aligned rendering.
             if (hiddenRoutingMarkerIds.has(msg.id)) return null;
-            const routingMatch = msg.content.trim().match(/^\[(?:SENT VIA IMESSAGE to .+|Reply routed via (iMessage|Teams|email)[^\]]*)\]$/);
+            const routingMatch = msg.content.trim().match(/^\[(?:SENT VIA IMESSAGE to .+|Reply routed via (iMessage|Teams|email|phone call)[^\]]*)\]$/);
             if (routingMatch) {
               const channel = routingMatch[1] ?? 'iMessage';
               // Extract recipient name so the badge can show "to <name>
@@ -1092,7 +1124,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
                 : <ToolOnlyPill key={msg.id} msg={msg} />;
             }
           }
-          if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} />;
+          if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} wordyMode={wordyMode} />;
           return <AssistantBubble key={msg.id} msg={msg} wordyMode={wordyMode} outboundChannel={outboundChannelByAssistantId.get(msg.id) ?? null} />;
         })}
         {isWorking && !messages.some(m => m.isStreaming) && <ThinkingBubble />}

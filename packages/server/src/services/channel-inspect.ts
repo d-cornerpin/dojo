@@ -14,6 +14,8 @@ import {
 } from '../microsoft/auth.js';
 import { isImessageConfigured } from '../services/presence.js';
 import { isIMBridgeRunning } from '../services/imessage-bridge.js';
+import { getTwilioConfig } from '../twilio/auth.js';
+import { getTwilioSmsSafeSenders, getTwilioVoiceSafeCallers } from '../services/channel-safe-senders.js';
 import {
   getGmailSafeSenders,
   getOutlookSafeSenders,
@@ -126,6 +128,42 @@ export function buildChannelInspectReport(): string {
     }
   } catch {
     lines.push('Teams: status unknown.');
+  }
+  lines.push('');
+
+  // ── Twilio SMS + Voice ──
+  try {
+    const cfg = getTwilioConfig();
+    if (cfg.configured && cfg.enabled) {
+      const smsCount = (() => { try { return getTwilioSmsSafeSenders().length; } catch { return 0; } })();
+      const voiceCount = (() => { try { return getTwilioVoiceSafeCallers().length; } catch { return 0; } })();
+      const numbersStr = cfg.numbers.length === 0
+        ? '(no numbers configured)'
+        : cfg.numbers.map(n => `${n.number}${n.label ? ` (${n.label})` : ''}${n.isDefault ? ' [default]' : ''}`).join(', ');
+      lines.push('Twilio:');
+      lines.push(`  - Numbers: ${numbersStr}`);
+      if (cfg.smsEnabled) {
+        lines.push(`  - SMS reachable. ${smsCount} safe sender(s) on the auto-reply allowlist. Replies to inbound SMS auto-route via the engine; \`sms_send\` for proactive sends and cross-recipient texts.`);
+      } else {
+        lines.push('  - SMS disabled.');
+      }
+      if (cfg.voiceEnabled) {
+        const policy = cfg.voiceUnknownCallerAction === 'agent'
+          ? 'unknown callers connect to agent'
+          : cfg.voiceUnknownCallerAction === 'voicemail'
+            ? 'unknown callers go to voicemail (transcript-only, no audio kept)'
+            : 'unknown callers rejected';
+        lines.push(`  - Voice reachable (max ${cfg.voiceMaxMinutesPerCall} min/call). ${voiceCount} safe caller(s) on the allowlist. Policy: ${policy}. \`voice_call\` to initiate outbound; \`voice_call_end\` / \`voice_call_status\` for management.`);
+      } else {
+        lines.push('  - Voice disabled.');
+      }
+    } else if (cfg.configured) {
+      lines.push('Twilio: configured but master switch is off.');
+    } else {
+      lines.push('Twilio: not configured.');
+    }
+  } catch {
+    lines.push('Twilio: status unknown.');
   }
   lines.push('');
 

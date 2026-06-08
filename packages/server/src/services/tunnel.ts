@@ -88,12 +88,56 @@ function createOutputBuffer() {
 function formatTunnelExitError(code: number, tail: string): string {
   const base = `cloudflared exited with code ${code}`;
   if (!tail) return base;
+  // First try to recognize specific failure shapes and surface a
+  // human-readable one-liner instead of a wall of cloudflared log
+  // spew. Falls through to the raw-tail fallback if no pattern hits.
+  const friendly = recognizeKnownTunnelFailure(tail);
+  if (friendly) return friendly;
   // Pull the most informative line(s) — typically the last error/warning
   // entries. We pick the last 6 non-empty lines, which is usually enough
   // context to read what went wrong without flooding the dashboard.
   const lines = tail.split('\n').map(l => l.trim()).filter(Boolean);
   const recent = lines.slice(-6).join('\n');
   return `${base}\n${recent}`;
+}
+
+/**
+ * Map common cloudflared failure modes to short user-readable strings.
+ * Returns null when no pattern matches so the raw tail fallback runs.
+ *
+ * Pattern recognition is intentionally narrow: each entry maps a
+ * specific log signature to ONE message. If cloudflared rewords its
+ * error in a future release, the pattern misses and we fall back to
+ * showing the raw tail — no silent mis-translation.
+ */
+function recognizeKnownTunnelFailure(tail: string): string | null {
+  // Quick tunnel rate limit. Shows up as "status_code=\"429 Too Many
+  // Requests\"" inside the QuickTunnel response error. Cloudflare's
+  // account-less tunnel pool throttles aggressively when restarted
+  // frequently or shared from one IP.
+  if (/QuickTunnel/.test(tail) && /429\s*Too\s*Many\s*Requests/i.test(tail)) {
+    return 'Quick tunnel rate-limited (429 Too Many Requests). Cloudflare throttles account-less trycloudflare.com tunnels when restarted often. Wait a few minutes and try again, or set up a named tunnel in Settings → Remote Access for a permanent URL.';
+  }
+  // Generic 1015 (Cloudflare global rate limit).
+  if (/error code:\s*1015/i.test(tail)) {
+    return 'Cloudflare rate-limited this connection (error 1015). Wait a few minutes and try again. If it keeps happening, switch to a named tunnel.';
+  }
+  // No cloudflared binary on PATH at exec time (rare; install checker
+  // usually catches this first, but the binary can disappear mid-session
+  // if Homebrew removes it).
+  if (/cloudflared.*not found|command not found/i.test(tail)) {
+    return 'cloudflared binary is missing. Install it from Settings → Remote Access (Install cloudflared button) and try again.';
+  }
+  // Connector failed to register — usually auth/cert problem on a named
+  // tunnel. Quick tunnels never hit this path.
+  if (/Connector registration error|Failed to fetch tunnel/i.test(tail)) {
+    return 'Could not register the tunnel connector with Cloudflare. Your tunnel credentials or cert may have expired — re-run "cloudflared tunnel login" and recreate the tunnel.';
+  }
+  // Port already in use (cloudflared can't bind its metrics endpoint).
+  if (/address already in use|bind: address already in use/i.test(tail)) {
+    return 'A cloudflared process is already running on this machine. Stop the other one (or kill it from Activity Monitor) and try again.';
+  }
+  return null;
 }
 
 // ── cloudflared detection ──

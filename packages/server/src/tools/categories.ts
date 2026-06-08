@@ -138,6 +138,10 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     tools: ['outlook_search', 'outlook_read', 'outlook_inbox', 'outlook_send', 'outlook_reply', 'outlook_forward'],
   },
   {
+    label: 'Twilio (SMS + Voice phone calls)',
+    tools: ['sms_send', 'voice_call', 'voice_call_end', 'voice_call_status'],
+  },
+  {
     label: 'Microsoft Contacts (read-only escape hatch into the Microsoft directory)',
     tools: ['contacts_search', 'contacts_list', 'contacts_get', 'contacts_create', 'contacts_update', 'contacts_delete'],
   },

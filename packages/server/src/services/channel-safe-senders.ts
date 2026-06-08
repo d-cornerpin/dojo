@@ -41,6 +41,13 @@ function outlookConfigKey(slot: AccountSlot): string {
   return `outlook_approved_senders_${slot}`;
 }
 const TEAMS_CONFIG_KEY = 'teams_approved_senders';
+// v2.9.18 — Twilio SMS senders and Voice callers. Single-keyed
+// (not per-number) because a personal Twilio account typically has
+// one or two numbers and the granular "is Sarah's phone trusted on
+// Twilio number A but not B?" distinction isn't a real user need.
+// Same shape as Teams.
+const TWILIO_SMS_CONFIG_KEY = 'twilio_sms_approved_senders';
+const TWILIO_VOICE_CONFIG_KEY = 'twilio_voice_approved_callers';
 
 function readByKey(key: string): SafeSender[] {
   try {
@@ -64,6 +71,14 @@ export function getOutlookSafeSenders(slot: AccountSlot): SafeSender[] {
 
 export function getTeamsSafeSenders(): SafeSender[] {
   return readByKey(TEAMS_CONFIG_KEY);
+}
+
+export function getTwilioSmsSafeSenders(): SafeSender[] {
+  return readByKey(TWILIO_SMS_CONFIG_KEY);
+}
+
+export function getTwilioVoiceSafeCallers(): SafeSender[] {
+  return readByKey(TWILIO_VOICE_CONFIG_KEY);
 }
 
 // v2.7.24 — append a sender to a channel's safe-sender list and persist.
@@ -99,4 +114,10 @@ export function appendOutlookSafeSender(slot: AccountSlot, sender: SafeSender): 
 }
 export function appendTeamsSafeSender(sender: SafeSender): AppendChannelSenderResult {
   return appendToKey(TEAMS_CONFIG_KEY, sender);
+}
+export function appendTwilioSmsSafeSender(sender: SafeSender): AppendChannelSenderResult {
+  return appendToKey(TWILIO_SMS_CONFIG_KEY, sender);
+}
+export function appendTwilioVoiceSafeCaller(sender: SafeSender): AppendChannelSenderResult {
+  return appendToKey(TWILIO_VOICE_CONFIG_KEY, sender);
 }

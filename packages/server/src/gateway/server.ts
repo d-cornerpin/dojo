@@ -29,10 +29,16 @@ import { microsoftRouter } from './routes/microsoft.js';
 import { plaudRouter } from './routes/plaud.js';
 import { credentialsRouter } from './routes/credentials.js';
 import { contactsRouter } from './routes/contacts.js';
+import { twilioRouter } from './routes/twilio.js';
 import { migrationRouter } from './routes/migration.js';
 import { healerRouter } from './routes/healer.js';
 import { verifyAndTrackClient, removeClient, handleClientMessage } from './ws.js';
 import { verifyAndOpenVoiceSession, closeVoiceSession, handleVoiceMessage } from '../voice/voice-ws.js';
+import {
+  handleVoiceStreamOpen,
+  handleVoiceStreamMessage,
+  handleVoiceStreamClose,
+} from '../twilio/voice-stream.js';
 import { voiceAssetsRouter } from '../voice/voice-assets.js';
 import { voiceRouter } from '../voice/voice-routes.js';
 import { getPrimaryAgentId, getPMAgentId } from '../config/platform.js';
@@ -169,6 +175,31 @@ export function createServer() {
     };
   }));
 
+  // Twilio Media Streams WebSocket — Twilio opens this when a call
+  // is connected to <Stream>. Carries μ-law audio frames in both
+  // directions. Public path (Twilio doesn't have a JWT) - auth is
+  // enforced by the fact that Twilio only knows the URL after we
+  // returned it in TwiML from a signature-verified webhook.
+  app.get('/api/twilio/voice-stream', upgradeWebSocket(() => {
+    return {
+      onOpen: (_event, ws) => {
+        handleVoiceStreamOpen(ws);
+      },
+      onMessage: (event, ws) => {
+        void handleVoiceStreamMessage(ws, event.data as string | ArrayBuffer | Buffer);
+      },
+      onClose: (_event, ws) => {
+        handleVoiceStreamClose(ws);
+      },
+      onError: (error, ws) => {
+        logger.error('Twilio voice-stream WebSocket error', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        handleVoiceStreamClose(ws);
+      },
+    };
+  }));
+
   // Rewrite "primary" and "pm" agent ID aliases to actual configured IDs
   // This lets the dashboard use 'primary' as a default before loading the real ID
   app.use('/api/*', async (c, next) => {
@@ -220,6 +251,7 @@ export function createServer() {
   app.route('/api/plaud', plaudRouter);     // /api/plaud/status, /api/plaud/connect, etc.
   app.route('/api/credentials', credentialsRouter); // agent credentials vault CRUD
   app.route('/api/contacts', contactsRouter); // DOJO contacts store CRUD
+  app.route('/api/twilio', twilioRouter); // Twilio SMS + Voice (webhooks + config + numbers)
   app.route('/api/migration', migrationRouter); // /api/migration/export, /api/migration/import, etc.
   app.route('/api/setup/migration', migrationRouter); // Same routes, public for OOBE import
   app.route('/api/healer', healerRouter);   // /api/healer/config, /api/healer/proposals, etc.

@@ -2013,6 +2013,86 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['message'],
     },
   },
+  {
+    name: 'sms_send',
+    description: 'Send a text message via Twilio SMS. **Replies to inbound SMS auto-route via the engine - you do NOT need to call this tool to reply. Just write your reply text; the engine delivers it.**\n\n**DEFAULT-CHANNEL RULE - When the primary user is actively talking to you on dashboard, the default is "reply in dashboard."** Do NOT also text them via SMS to "make sure they see it."\n\n**Exceptions where you SHOULD call sms_send even when the user is in dashboard:**\n\n- **The user explicitly named SMS / text in this turn\'s request** (e.g. "text Sarah that the meeting moved," "SMS me when that finishes").\n- **A task you are working on explicitly specifies SMS delivery.**\n- **The recipient is someone OTHER than the primary user** (texting a family member, colleague, vendor contact on the safe-sender list).\n\n**Beyond those, this tool is for:**\n\n- **PROACTIVE outreach** = the turn was NOT triggered by a user message at all (scheduled task, watchdog event, long-running job completion).\n\nVOICE: write like an actual text message. No markdown, no headers, no bullet lists. Short and conversational.\n\nRecipient rule: pass `to` as a phone number in E.164 format (e.g. `+15551234567`). The recipient MUST be on the Twilio SMS safe-sender allowlist - sending to an unknown number is refused. Per-number `from` argument is optional; defaults to the configured default Twilio number.\n\nLimits: 1600 character maximum per send (carrier limit). Personal Twilio accounts have throughput caps; high-volume sends may be deferred or rejected by Twilio.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        to: {
+          type: 'string',
+          description: 'Recipient phone number in E.164 format (+15551234567). Must be on the Twilio SMS safe-sender allowlist.',
+        },
+        body: {
+          type: 'string',
+          description: 'The text message body. Max 1600 characters.',
+        },
+        from: {
+          type: 'string',
+          description: 'Optional. Specific Twilio number to send from (must be one the owner has configured). Defaults to the configured default number.',
+        },
+      },
+      required: ['to', 'body'],
+    },
+  },
+  {
+    name: 'voice_call',
+    description: 'Place a phone call via Twilio. The agent (you) holds the call: the caller speaks, Twilio streams audio to the dojo, your STT transcribes, you generate a reply, your TTS speaks back over the same call. **Use sparingly** — voice calls are real-time, costly, and demand immediate attention. Prefer SMS or iMessage unless the user asked for a phone call or the situation needs it (urgent, complex back-and-forth, hands-free).\n\nThe recipient MUST be on the Twilio Voice safe-caller allowlist; sending to an unknown number is refused. Personal Twilio accounts only — no robocalls, no campaign sends. The active Cloudflare tunnel must be running so Twilio can connect the audio back to the dojo.\n\n**HOW THE CALL OPENS — IMPORTANT.** When you place an outbound call, the called party answers and speaks FIRST (usually "Hello?"). That is normal human phone etiquette. You wait, hear their hello, and THEN identify yourself and state your purpose on the very next turn (the dojo will give you a turn the moment they speak). **Do NOT pass `opening_message`** in the standard case — it gets spoken the instant the call connects, before they say anything, which makes you sound like a robocall. Leaving silence on the line until they say "Hello?" is the right move. Real people do this on every outbound call.\n\nThe `opening_message` arg is reserved for unusual cases where you really do need audio queued up at connect time — for example, when you know the recipient has asked you to leave a voicemail directly, or when answering machine detection has already resolved to "voicemail" and you are dropping a pre-composed message. In normal person-to-person calling, leave it blank.\n\n`purpose` is a short string describing why you are calling (e.g. "scheduling the Tuesday demo", "following up on the buyer meeting"). It is shown to you in the system prompt on each turn of the call so you can stay on track, and it shapes your opening self-ID once the callee says hello. Provide it for any outbound call with a specific reason.\n\nMax call duration is capped (Settings → Integrations → Twilio → Voice). Calls exceeding the cap are hung up automatically.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        to: {
+          type: 'string',
+          description: 'Recipient phone number in E.164 format (+15551234567). Must be on the Voice safe-caller allowlist.',
+        },
+        opening_message: {
+          type: 'string',
+          description: 'OPTIONAL and usually OMITTED. Text spoken the instant the call connects, before the recipient says anything. In normal person-to-person calling this is wrong: the recipient says "Hello?" first and YOU respond after. Only set this when you specifically need pre-composed audio at connect time (known voicemail drop, etc.). Leave blank for standard calls.',
+        },
+        purpose: {
+          type: 'string',
+          description: 'Short, specific reason for the call (e.g. "scheduling the Tuesday demo", "following up on the buyer meeting"). Surfaced to you in the phone-mode system prompt on every turn so you stay on track, and used in your self-ID when the callee picks up. Strongly recommended on any outbound call with a defined goal.',
+        },
+        from: {
+          type: 'string',
+          description: 'Optional. Specific Twilio number to call from. Defaults to the configured default number.',
+        },
+      },
+      required: ['to'],
+    },
+  },
+  {
+    name: 'voice_call_end',
+    description: 'Hang up an active phone call you initiated (or are participating in). Use after the conversation has reached a natural conclusion or when the call needs to be terminated (recipient ended verbally but didn\'t hang up, escalating off-topic, etc.). Returns whether the hang-up succeeded.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        call_id: {
+          type: 'string',
+          description: 'The Twilio Call SID returned from voice_call or shown in voice_call_status.',
+        },
+        reason: {
+          type: 'string',
+          description: 'Optional short reason string for the call log.',
+        },
+      },
+      required: ['call_id'],
+    },
+  },
+  {
+    name: 'voice_call_status',
+    description: 'Check the status of an active phone call, or list all active calls when no call_id is given. Useful for orienting if you\'re unsure whether a call you placed is still active.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        call_id: {
+          type: 'string',
+          description: 'Optional. Specific Twilio Call SID to look up. Omit to list all active calls.',
+        },
+      },
+      required: [],
+    },
+  },
   // ── Image Generation Tools ──
   {
     name: 'image_create',
@@ -6647,6 +6727,92 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         }
         break;
       }
+
+      // ── Twilio SMS ──
+      case 'sms_send': {
+        if (!isPrimaryAgent(agentId)) {
+          content = 'Permission denied: only the primary agent can use sms_send.';
+          isError = true;
+          auditLog(agentId, 'sms_send', null, 'denied', 'sms_send restricted to primary agent');
+          break;
+        }
+        const smsErr = checkRequired([
+          { name: 'to', value: args.to, type: 'string' },
+          { name: 'body', value: args.body, type: 'string' },
+        ]);
+        if (smsErr) { content = smsErr; isError = true; break; }
+        const { executeSmsSend } = await import('../twilio/sms-outbound.js');
+        const result = await executeSmsSend({
+          to: args.to as string,
+          body: args.body as string,
+          from: args.from as string | undefined,
+        }, agentId);
+        content = result.message;
+        isError = !result.ok;
+        // Mark explicit sms send so the auto-route at end-of-turn
+        // doesn't ALSO send the agent's terminal text.
+        if (result.ok) {
+          try {
+            // state isn't directly accessible from here; the loop's
+            // explicitSendThisTurn.sms flag is set by the v2 dispatcher
+            // wrapper instead. Audit log captures the explicit send.
+            auditLog(agentId, 'sms_send', args.to as string, 'success', `sid=${result.sid ?? '(none)'}`);
+          } catch { /* best effort */ }
+        } else {
+          auditLog(agentId, 'sms_send', args.to as string, 'error', result.message.slice(0, 200));
+        }
+        break;
+      }
+
+      // ── Twilio Voice ──
+      case 'voice_call': {
+        if (!isPrimaryAgent(agentId)) {
+          content = 'Permission denied: only the primary agent can use voice_call.';
+          isError = true;
+          auditLog(agentId, 'voice_call', null, 'denied', 'voice_call restricted to primary agent');
+          break;
+        }
+        const vErr = checkRequired([{ name: 'to', value: args.to, type: 'string' }]);
+        if (vErr) { content = vErr; isError = true; break; }
+        const { executeVoiceCall } = await import('../twilio/voice-outbound.js');
+        const result = await executeVoiceCall({
+          to: args.to as string,
+          opening_message: args.opening_message as string | undefined,
+          purpose: args.purpose as string | undefined,
+          from: args.from as string | undefined,
+        });
+        content = result.message;
+        isError = !result.ok;
+        auditLog(agentId, 'voice_call', args.to as string, result.ok ? 'success' : 'error', result.callSid ?? '(no sid)');
+        break;
+      }
+      case 'voice_call_end': {
+        if (!isPrimaryAgent(agentId)) {
+          content = 'Permission denied: only the primary agent can use voice_call_end.';
+          isError = true;
+          break;
+        }
+        const veErr = checkRequired([{ name: 'call_id', value: args.call_id, type: 'string' }]);
+        if (veErr) { content = veErr; isError = true; break; }
+        const { executeVoiceCallEnd } = await import('../twilio/voice-outbound.js');
+        const r = executeVoiceCallEnd({ call_id: args.call_id as string, reason: args.reason as string | undefined });
+        content = r.message;
+        isError = !r.ok;
+        break;
+      }
+      case 'voice_call_status': {
+        if (!isPrimaryAgent(agentId)) {
+          content = 'Permission denied: only the primary agent can use voice_call_status.';
+          isError = true;
+          break;
+        }
+        const { executeVoiceCallStatus } = await import('../twilio/voice-outbound.js');
+        const r = executeVoiceCallStatus({ call_id: args.call_id as string | undefined });
+        content = r.message;
+        isError = false;
+        break;
+      }
+
       // ── Image Generation ──
       //
       // image_create: Any agent calls this. The tool returns immediately

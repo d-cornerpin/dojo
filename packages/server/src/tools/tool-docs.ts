@@ -46,6 +46,10 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'list_agents',
   'imessage_send',
   'imessage_list_contacts',
+  // v2.9.18: Twilio SMS is daily-use for primary (mirror of iMessage).
+  // Voice tools are NOT pre-loaded - phone calls are rare enough that
+  // the load_tool_docs round-trip is cheap when actually needed.
+  'sms_send',
   'image_create',
   'show_to_user',
   'recall_recent_thread',

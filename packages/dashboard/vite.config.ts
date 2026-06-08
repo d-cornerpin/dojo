@@ -41,6 +41,13 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:3001',
         changeOrigin: true,
+        // xfwd forwards x-forwarded-* headers (host, proto, for, port)
+        // through to the backend. Without this, Twilio webhook signature
+        // verification fails in dev mode: cloudflared sets
+        // x-forwarded-host to the public trycloudflare URL, but Vite
+        // drops it on proxy. The server then signs against
+        // localhost:3001 instead of the public hostname Twilio used.
+        xfwd: true,
         ws: true,
         configure: (proxy) => {
           // Suppress http-proxy errors (ECONNREFUSED before server is up, EPIPE on disconnect)

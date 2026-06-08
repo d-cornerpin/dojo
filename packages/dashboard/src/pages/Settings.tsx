@@ -9,6 +9,7 @@ import { RouterTest } from '../components/RouterTest';
 import { GoogleWorkspaceSettings } from '../components/GoogleWorkspaceSettings';
 import { MicrosoftWorkspaceSettings } from '../components/MicrosoftWorkspaceSettings';
 import { PlaudSettings } from '../components/PlaudSettings';
+import { TwilioSettings } from '../components/TwilioSettings';
 import { formatDate } from '../lib/dates';
 import { MigrationExport } from '../components/MigrationExport';
 import { MigrationImport } from '../components/MigrationImport';
@@ -125,6 +126,7 @@ export const Settings = () => {
         <div className="max-w-4xl">
           <div className="columns-1 lg:columns-2 gap-6 [&>*]:mb-6 [&>*]:break-inside-avoid">
             <PlaudSettings />
+            <TwilioSettings />
           </div>
         </div>
       )}
