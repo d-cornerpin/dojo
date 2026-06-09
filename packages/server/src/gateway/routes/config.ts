@@ -1105,10 +1105,21 @@ configRouter.post('/providers/:id/add-model', async (c) => {
     ? body.capabilities.filter((c: unknown) => typeof c === 'string')
     : null;
 
+  // Megapixel pricing path: when the caller passes pricingUnit='megapixel'
+  // (used by the Manual Add UI for OpenRouter image-gen SKUs that bill
+  // per output MP), we ignore inputCostPerM / outputCostPerM and store
+  // costPerMegapixel instead. Token-priced rows behave exactly as before.
+  const pricingUnit: 'token' | 'megapixel' =
+    body.pricingUnit === 'megapixel' ? 'megapixel' : 'token';
+  const costPerMegapixel =
+    pricingUnit === 'megapixel' && typeof body.costPerMegapixel === 'number' && body.costPerMegapixel >= 0
+      ? body.costPerMegapixel
+      : null;
+
   const modelId = uuidv4();
   db.prepare(`
-    INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, is_enabled, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+    INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, pricing_unit, cost_per_megapixel, is_enabled, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
   `).run(
     modelId, providerId,
     body.name ?? body.apiModelId,
@@ -1116,8 +1127,10 @@ configRouter.post('/providers/:id/add-model', async (c) => {
     JSON.stringify(explicitCapabilities ?? []),
     body.contextWindow ?? null,
     body.maxOutputTokens ?? null,
-    body.inputCostPerM ?? null,
-    body.outputCostPerM ?? null,
+    pricingUnit === 'megapixel' ? null : (body.inputCostPerM ?? null),
+    pricingUnit === 'megapixel' ? null : (body.outputCostPerM ?? null),
+    pricingUnit,
+    costPerMegapixel,
   );
 
   // Probe capabilities from the provider catalog — but only if the caller
@@ -1360,12 +1373,26 @@ configRouter.put('/models/:id/pricing', async (c) => {
 
   const inputCost = typeof body.inputCostPerM === 'number' ? body.inputCostPerM : undefined;
   const outputCost = typeof body.outputCostPerM === 'number' ? body.outputCostPerM : undefined;
+  const pricingUnit =
+    body.pricingUnit === 'token' || body.pricingUnit === 'megapixel' ? body.pricingUnit : undefined;
+  const costPerMegapixel =
+    body.costPerMegapixel === null
+      ? null
+      : typeof body.costPerMegapixel === 'number' && body.costPerMegapixel >= 0
+        ? body.costPerMegapixel
+        : undefined;
 
   if (inputCost !== undefined) {
     db.prepare("UPDATE models SET input_cost_per_m = ?, updated_at = datetime('now') WHERE id = ?").run(inputCost, id);
   }
   if (outputCost !== undefined) {
     db.prepare("UPDATE models SET output_cost_per_m = ?, updated_at = datetime('now') WHERE id = ?").run(outputCost, id);
+  }
+  if (pricingUnit !== undefined) {
+    db.prepare("UPDATE models SET pricing_unit = ?, updated_at = datetime('now') WHERE id = ?").run(pricingUnit, id);
+  }
+  if (costPerMegapixel !== undefined) {
+    db.prepare("UPDATE models SET cost_per_megapixel = ?, updated_at = datetime('now') WHERE id = ?").run(costPerMegapixel, id);
   }
 
   const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
@@ -1756,6 +1783,16 @@ function rowToModel(row: Record<string, unknown>): Model {
   const numCtxRecommendedRaw = row.num_ctx_recommended;
   const numCtxRecommended = typeof numCtxRecommendedRaw === 'number' ? numCtxRecommendedRaw : null;
 
+  // Default to 'token' for backward compat — older rows pre-migration
+  // 060 won't have the column at all, and the default keeps every
+  // existing model behaving exactly as it did before the change.
+  const pricingUnitRaw = row.pricing_unit;
+  const pricingUnit: 'token' | 'megapixel' =
+    pricingUnitRaw === 'megapixel' ? 'megapixel' : 'token';
+  const costPerMegapixelRaw = row.cost_per_megapixel;
+  const costPerMegapixel =
+    typeof costPerMegapixelRaw === 'number' ? costPerMegapixelRaw : null;
+
   return {
     id: row.id as string,
     providerId: row.provider_id as string,
@@ -1766,6 +1803,8 @@ function rowToModel(row: Record<string, unknown>): Model {
     maxOutputTokens: row.max_output_tokens as number | null,
     inputCostPerM: row.input_cost_per_m as number | null,
     outputCostPerM: row.output_cost_per_m as number | null,
+    pricingUnit,
+    costPerMegapixel,
     isEnabled: Boolean(row.is_enabled),
     thinkingEnabled,
     numCtxOverride,

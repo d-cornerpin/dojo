@@ -53,6 +53,12 @@ export interface GenerateImageSuccess {
   filename: string;    // just the <uuid>.png part
   mimeType: string;    // always 'image/png' for now
   sizeBytes: number;
+  // Decoded pixel dimensions of the saved image. Null for formats we
+  // couldn't parse (rare). Used by the cost tracker for megapixel-priced
+  // image-gen models so we can compute `(W * H / 1e6) * $/MP` instead of
+  // falling back to bogus token math.
+  width: number | null;
+  height: number | null;
   apiModelId: string;  // which model actually served the request
   providerId: string;
   costUsd: number | null;
@@ -86,6 +92,67 @@ function resolveChatCompletionsEndpoint(baseUrl: string | null): string {
   if (root.toLowerCase().endsWith('/api/v1')) return `${root}/chat/completions`;
   if (root.toLowerCase().endsWith('/api')) return `${root}/v1/chat/completions`;
   return `${root}/v1/chat/completions`;
+}
+
+// Parse pixel dimensions from a raw image buffer by sniffing the file
+// magic. Used by the cost tracker for megapixel-priced models.
+// Returns null for unrecognized formats — caller falls back to token
+// math in that case.
+function getImageDimensions(bytes: Buffer): { width: number; height: number } | null {
+  // PNG: 8-byte signature 89 50 4E 47 0D 0A 1A 0A, then IHDR chunk with
+  // width at offset 16 and height at offset 20 (both big-endian uint32).
+  if (
+    bytes.length >= 24 &&
+    bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+  ) {
+    return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+  }
+  // JPEG: starts with FF D8. Scan segments for an SOFn marker
+  // (FF C0..CF, excluding C4/C8/CC which are DHT/JPG/DAC). The 5 bytes
+  // after the marker are: 1 byte precision, 2 bytes height, 2 bytes
+  // width — all big-endian.
+  if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    let i = 2;
+    while (i < bytes.length - 9) {
+      if (bytes[i] !== 0xff) { i++; continue; }
+      const marker = bytes[i + 1];
+      const isSof = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+      if (isSof) {
+        return { width: bytes.readUInt16BE(i + 7), height: bytes.readUInt16BE(i + 5) };
+      }
+      const segLen = bytes.readUInt16BE(i + 2);
+      if (segLen < 2) break;
+      i += 2 + segLen;
+    }
+  }
+  // WebP: RIFF....WEBPVP8?
+  if (
+    bytes.length >= 30 &&
+    bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    bytes.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    const fourcc = bytes.subarray(12, 16).toString('ascii');
+    if (fourcc === 'VP8X') {
+      // Extended: 4-byte flags @ offset 20, then 3-byte (width-1) LE, 3-byte (height-1) LE.
+      const w = 1 + (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16));
+      const h = 1 + (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16));
+      return { width: w, height: h };
+    }
+    if (fourcc === 'VP8L') {
+      // Lossless: 1 byte signature 0x2F at offset 20, then 14-bit (width-1), 14-bit (height-1).
+      const b1 = bytes[21], b2 = bytes[22], b3 = bytes[23], b4 = bytes[24];
+      const w = 1 + ((b1 | (b2 << 8)) & 0x3fff);
+      const h = 1 + (((b2 >> 6) | (b3 << 2) | (b4 << 10)) & 0x3fff);
+      return { width: w, height: h };
+    }
+    if (fourcc === 'VP8 ') {
+      // Lossy: dimensions at offset 26 (frame tag + start code already past).
+      const w = bytes.readUInt16LE(26) & 0x3fff;
+      const h = bytes.readUInt16LE(28) & 0x3fff;
+      return { width: w, height: h };
+    }
+  }
+  return null;
 }
 
 function capabilitiesInclude(capsJson: string | null, capability: string): boolean {
@@ -278,6 +345,7 @@ export async function generateImage(req: GenerateImageRequest): Promise<Generate
   const latencyMs = Date.now() - startTime;
   const sizeBytes = decoded.bytes.length;
   const notes: string[] = [];
+  const dimensions = getImageDimensions(decoded.bytes);
 
   // Surface cases where the source MIME wasn't PNG — we saved as PNG
   // regardless (browsers and Anthropic accept the extension/content
@@ -290,6 +358,8 @@ export async function generateImage(req: GenerateImageRequest): Promise<Generate
     modelId: req.modelId,
     filePath,
     sizeBytes,
+    width: dimensions?.width ?? null,
+    height: dimensions?.height ?? null,
     latencyMs,
     cost: data.usage?.cost ?? null,
     promptTokens: data.usage?.prompt_tokens ?? 0,
@@ -302,6 +372,8 @@ export async function generateImage(req: GenerateImageRequest): Promise<Generate
     filename,
     mimeType: 'image/png',
     sizeBytes,
+    width: dimensions?.width ?? null,
+    height: dimensions?.height ?? null,
     apiModelId: row.api_model_id,
     providerId: row.provider_id,
     costUsd: typeof data.usage?.cost === 'number' ? data.usage.cost : null,

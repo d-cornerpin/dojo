@@ -6999,7 +6999,10 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent â
               return;
             }
 
-            // Success â€” record cost under the calling agent.
+            // Success â€” record cost under the calling agent. For models
+            // priced per megapixel the tracker uses width Ã— height; for
+            // token-priced models it uses the prompt/completion counts
+            // returned by the provider.
             try {
               const { recordCost } = await import('../costs/tracker.js');
               recordCost({
@@ -7010,6 +7013,8 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent â
                 outputTokens: result.outputTokens,
                 latencyMs: result.latencyMs,
                 requestType: 'image_generation',
+                imageWidth: result.width ?? undefined,
+                imageHeight: result.height ?? undefined,
               });
             } catch { /* best effort */ }
 

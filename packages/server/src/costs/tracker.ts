@@ -19,28 +19,65 @@ export interface RecordCostParams {
   outputTokens: number;
   latencyMs?: number;
   requestType?: string;
+  // For megapixel-priced image-gen models. Both must be present and the
+  // model must have pricing_unit='megapixel' + a non-null cost_per_megapixel
+  // for the megapixel branch to kick in; otherwise we fall back to token math.
+  imageWidth?: number;
+  imageHeight?: number;
 }
 
-function getModelPricing(modelId: string): { inputCostPerM: number; outputCostPerM: number } {
+interface ModelPricing {
+  unit: 'token' | 'megapixel';
+  inputCostPerM: number;     // token mode, defaults to Sonnet rate when null
+  outputCostPerM: number;    // token mode, defaults to Sonnet rate when null
+  costPerMegapixel: number | null; // null when unknown or token-priced
+}
+
+function getModelPricing(modelId: string): ModelPricing {
   const db = getDb();
   const row = db.prepare(`
-    SELECT input_cost_per_m, output_cost_per_m FROM models WHERE id = ?
-  `).get(modelId) as { input_cost_per_m: number | null; output_cost_per_m: number | null } | undefined;
+    SELECT input_cost_per_m, output_cost_per_m, pricing_unit, cost_per_megapixel FROM models WHERE id = ?
+  `).get(modelId) as {
+    input_cost_per_m: number | null;
+    output_cost_per_m: number | null;
+    pricing_unit: string | null;
+    cost_per_megapixel: number | null;
+  } | undefined;
 
   return {
+    unit: row?.pricing_unit === 'megapixel' ? 'megapixel' : 'token',
     inputCostPerM: row?.input_cost_per_m ?? 3.0,
     outputCostPerM: row?.output_cost_per_m ?? 15.0,
+    costPerMegapixel: row?.cost_per_megapixel ?? null,
   };
 }
 
 export function recordCost(params: RecordCostParams): void {
-  const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType } = params;
+  const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType, imageWidth, imageHeight } = params;
 
   try {
     const pricing = getModelPricing(modelId);
-    const inputCost = (inputTokens / 1_000_000) * pricing.inputCostPerM;
-    const outputCost = (outputTokens / 1_000_000) * pricing.outputCostPerM;
-    const costUsd = inputCost + outputCost;
+
+    // Megapixel branch: only when the model is configured for it AND
+    // we know both the output image's pixel dimensions AND the operator
+    // has entered a $/MP price. Any missing piece falls through to the
+    // token math so we never silently record $0.
+    let costUsd: number;
+    let costMode: 'token' | 'megapixel' = 'token';
+    if (
+      pricing.unit === 'megapixel' &&
+      pricing.costPerMegapixel !== null &&
+      typeof imageWidth === 'number' && imageWidth > 0 &&
+      typeof imageHeight === 'number' && imageHeight > 0
+    ) {
+      const megapixels = (imageWidth * imageHeight) / 1_000_000;
+      costUsd = megapixels * pricing.costPerMegapixel;
+      costMode = 'megapixel';
+    } else {
+      const inputCost = (inputTokens / 1_000_000) * pricing.inputCostPerM;
+      const outputCost = (outputTokens / 1_000_000) * pricing.outputCostPerM;
+      costUsd = inputCost + outputCost;
+    }
 
     const db = getDb();
     db.prepare(`
@@ -62,9 +99,12 @@ export function recordCost(params: RecordCostParams): void {
     // Invalidate daily spend cache so next budget check gets fresh data
     invalidateDailySpendCache();
 
-    logger.info(`Cost recorded: $${costUsd.toFixed(4)} for agent ${agentId}`, {
+    logger.info(`Cost recorded: $${costUsd.toFixed(4)} for agent ${agentId} (${costMode})`, {
       agentId,
       modelId,
+      costMode,
+      imageWidth: imageWidth ?? null,
+      imageHeight: imageHeight ?? null,
       inputTokens,
       outputTokens,
       costUsd: costUsd.toFixed(6),

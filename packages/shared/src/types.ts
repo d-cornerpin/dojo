@@ -30,6 +30,12 @@ export interface Model {
   maxOutputTokens: number | null;
   inputCostPerM: number | null;
   outputCostPerM: number | null;
+  // 'token' (default) or 'megapixel'. Some image-gen providers price
+  // per output megapixel instead of per token; setting this to
+  // 'megapixel' tells the UI to read/write costPerMegapixel and skip
+  // the token cost fields.
+  pricingUnit: 'token' | 'megapixel';
+  costPerMegapixel: number | null;
   isEnabled: boolean;
   // Per-model thinking/reasoning toggle. Defaults to true. Only meaningful
   // when the capabilities array includes 'thinking'; for non-thinking

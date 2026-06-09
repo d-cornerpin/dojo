@@ -2173,8 +2173,15 @@ const ModelRow = ({
   const toast = useToast();
   const [inputCost, setInputCost] = useState(String(model.inputCostPerM ?? 0));
   const [outputCost, setOutputCost] = useState(String(model.outputCostPerM ?? 0));
+  const [mpCost, setMpCost] = useState(
+    model.costPerMegapixel === null || model.costPerMegapixel === undefined
+      ? ''
+      : String(model.costPerMegapixel),
+  );
+  const [pricingUnit, setPricingUnit] = useState<'token' | 'megapixel'>(model.pricingUnit ?? 'token');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const supportsImageGen = model.capabilities.includes('image_generation');
 
   // Local optimistic state for the thinking toggle. Mirrors the prop but
   // flips instantly on click while the PATCH is in flight.
@@ -2194,21 +2201,45 @@ const ModelRow = ({
   const [ctxSaved, setCtxSaved] = useState(false);
   const [ctxError, setCtxError] = useState<string | null>(null);
 
-  const hasChanges =
+  // Parse the megapixel cost input. Empty string → null (unknown).
+  const parsedMp = mpCost.trim() === '' ? null : Number(mpCost);
+  const mpHasChanges = parsedMp !== (model.costPerMegapixel ?? null);
+  const tokenHasChanges =
     Number(inputCost) !== (model.inputCostPerM ?? 0) ||
     Number(outputCost) !== (model.outputCostPerM ?? 0);
+  const hasChanges =
+    pricingUnit !== (model.pricingUnit ?? 'token') ||
+    (pricingUnit === 'token' ? tokenHasChanges : mpHasChanges);
 
   const handleSave = async () => {
     setSaving(true);
-    const result = await api.updateModelPricing(model.id, {
-      inputCostPerM: Number(inputCost) || 0,
-      outputCostPerM: Number(outputCost) || 0,
-    });
+    const payload: Parameters<typeof api.updateModelPricing>[1] = {
+      pricingUnit,
+    };
+    if (pricingUnit === 'token') {
+      payload.inputCostPerM = Number(inputCost) || 0;
+      payload.outputCostPerM = Number(outputCost) || 0;
+    } else {
+      // null is meaningful (unknown), so send it through explicitly.
+      payload.costPerMegapixel = parsedMp;
+    }
+    const result = await api.updateModelPricing(model.id, payload);
     if (result.ok) {
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
       onPricingChange();
     }
+    setSaving(false);
+  };
+
+  const handleUnitToggle = async (next: 'token' | 'megapixel') => {
+    if (next === pricingUnit) return;
+    setPricingUnit(next);
+    // Persist the mode change immediately so the model is consistent
+    // even if the user navigates away without typing a new number.
+    setSaving(true);
+    const result = await api.updateModelPricing(model.id, { pricingUnit: next });
+    if (result.ok) onPricingChange();
     setSaving(false);
   };
 
@@ -2339,31 +2370,76 @@ const ModelRow = ({
       </div>
 
       {/* Pricing fields */}
-      <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2">
-          <label className="text-xs text-ui/40 w-20">Input $/M</label>
-          <input
-            type="number"
-            step="0.01"
-            min="0"
-            value={inputCost}
-            onChange={(e) => setInputCost(e.target.value)}
-            onBlur={() => hasChanges && handleSave()}
-            className="glass-input w-24 font-mono text-right"
-          />
+      {supportsImageGen && (
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-[11px] text-ui/40">Priced by</span>
+          <div className="flex rounded-md overflow-hidden border border-ui/[0.10] text-[11px] font-medium">
+            <button
+              onClick={() => handleUnitToggle('token')}
+              className={`px-2.5 py-1 transition-colors ${
+                pricingUnit === 'token'
+                  ? 'bg-cp-amber/20 text-cp-amber'
+                  : 'bg-ui/[0.03] text-ui/40 hover:text-ui/70'
+              }`}
+            >
+              Token
+            </button>
+            <button
+              onClick={() => handleUnitToggle('megapixel')}
+              className={`px-2.5 py-1 transition-colors ${
+                pricingUnit === 'megapixel'
+                  ? 'bg-cp-amber/20 text-cp-amber'
+                  : 'bg-ui/[0.03] text-ui/40 hover:text-ui/70'
+              }`}
+            >
+              Megapixel
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <label className="text-xs text-ui/40 w-20">Output $/M</label>
-          <input
-            type="number"
-            step="0.01"
-            min="0"
-            value={outputCost}
-            onChange={(e) => setOutputCost(e.target.value)}
-            onBlur={() => hasChanges && handleSave()}
-            className="glass-input w-24 font-mono text-right"
-          />
-        </div>
+      )}
+      <div className="flex items-center gap-4 flex-wrap">
+        {pricingUnit === 'token' ? (
+          <>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-ui/40 w-20">Input $/M</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={inputCost}
+                onChange={(e) => setInputCost(e.target.value)}
+                onBlur={() => hasChanges && handleSave()}
+                className="glass-input w-24 font-mono text-right"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-ui/40 w-20">Output $/M</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={outputCost}
+                onChange={(e) => setOutputCost(e.target.value)}
+                onBlur={() => hasChanges && handleSave()}
+                className="glass-input w-24 font-mono text-right"
+              />
+            </div>
+          </>
+        ) : (
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-ui/40 w-20" title="Dollars per output megapixel">$/MP</label>
+            <input
+              type="number"
+              step="0.001"
+              min="0"
+              value={mpCost}
+              onChange={(e) => setMpCost(e.target.value)}
+              onBlur={() => hasChanges && handleSave()}
+              placeholder="leave blank if unknown"
+              className="glass-input w-40 font-mono text-right"
+            />
+          </div>
+        )}
         {hasChanges && (
           <button
             onClick={handleSave}
@@ -2531,10 +2607,14 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
   const [modelId, setModelId] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [selectedCaps, setSelectedCaps] = useState<Set<string>>(new Set());
+  const [pricingUnit, setPricingUnit] = useState<'token' | 'megapixel'>('token');
   const [inputPrice, setInputPrice] = useState('');
   const [outputPrice, setOutputPrice] = useState('');
+  const [megapixelPrice, setMegapixelPrice] = useState('');
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const supportsImageGen = selectedCaps.has('image_generation');
 
   const toggleCap = (key: string) => {
     setSelectedCaps(prev => {
@@ -2560,13 +2640,20 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
     setError(null);
     setAdding(true);
 
+    // Only image-gen models can use megapixel pricing — defensively
+    // fall back to token if the user toggled MP then cleared the cap.
+    const effectiveUnit: 'token' | 'megapixel' =
+      supportsImageGen && pricingUnit === 'megapixel' ? 'megapixel' : 'token';
+
     const result = await api.addProviderModel(providerId, {
       apiModelId: trimmedId,
       name: displayName.trim() || trimmedId,
       contextWindow: null,
       maxOutputTokens: null,
-      inputCostPerM: parsePrice(inputPrice),
-      outputCostPerM: parsePrice(outputPrice),
+      inputCostPerM: effectiveUnit === 'token' ? parsePrice(inputPrice) : null,
+      outputCostPerM: effectiveUnit === 'token' ? parsePrice(outputPrice) : null,
+      pricingUnit: effectiveUnit,
+      costPerMegapixel: effectiveUnit === 'megapixel' ? parsePrice(megapixelPrice) : null,
       capabilities: Array.from(selectedCaps),
     } as api.BrowseModelResult & { capabilities?: string[] });
 
@@ -2577,6 +2664,8 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
       setSelectedCaps(new Set());
       setInputPrice('');
       setOutputPrice('');
+      setMegapixelPrice('');
+      setPricingUnit('token');
       setExpanded(false);
       onModelAdded();
     } else {
@@ -2639,30 +2728,77 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
           </div>
 
           <div>
-            <label className="form-label mb-2">Pricing ($ per million tokens, optional)</label>
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={inputPrice}
-                onChange={(e) => setInputPrice(e.target.value)}
-                placeholder="Input — leave blank if unknown"
-                className="glass-input w-full"
-              />
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={outputPrice}
-                onChange={(e) => setOutputPrice(e.target.value)}
-                placeholder="Output — leave blank if unknown"
-                className="glass-input w-full"
-              />
+            <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+              <label className="form-label">Pricing (optional)</label>
+              {supportsImageGen && (
+                <div className="flex rounded-md overflow-hidden border border-ui/[0.10] text-[11px] font-medium">
+                  <button
+                    onClick={() => setPricingUnit('token')}
+                    className={`px-2.5 py-1 transition-colors ${
+                      pricingUnit === 'token'
+                        ? 'bg-cp-amber/20 text-cp-amber'
+                        : 'bg-ui/[0.03] text-ui/40 hover:text-ui/70'
+                    }`}
+                    type="button"
+                  >
+                    Token
+                  </button>
+                  <button
+                    onClick={() => setPricingUnit('megapixel')}
+                    className={`px-2.5 py-1 transition-colors ${
+                      pricingUnit === 'megapixel'
+                        ? 'bg-cp-amber/20 text-cp-amber'
+                        : 'bg-ui/[0.03] text-ui/40 hover:text-ui/70'
+                    }`}
+                    type="button"
+                  >
+                    Megapixel
+                  </button>
+                </div>
+              )}
             </div>
-            <p className="text-[10px] text-ui/25 mt-1">
-              Enter 0 for free models. Leave blank if you don't know; pricing will show as "not listed".
-            </p>
+            {pricingUnit === 'token' || !supportsImageGen ? (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={inputPrice}
+                    onChange={(e) => setInputPrice(e.target.value)}
+                    placeholder="Input $/M — blank if unknown"
+                    className="glass-input w-full"
+                  />
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={outputPrice}
+                    onChange={(e) => setOutputPrice(e.target.value)}
+                    placeholder="Output $/M — blank if unknown"
+                    className="glass-input w-full"
+                  />
+                </div>
+                <p className="text-[10px] text-ui/25 mt-1">
+                  Per million tokens. Enter 0 for free; blank for unknown.
+                </p>
+              </>
+            ) : (
+              <>
+                <input
+                  type="number"
+                  step="0.001"
+                  min="0"
+                  value={megapixelPrice}
+                  onChange={(e) => setMegapixelPrice(e.target.value)}
+                  placeholder="$ per output megapixel — blank if unknown"
+                  className="glass-input w-full"
+                />
+                <p className="text-[10px] text-ui/25 mt-1">
+                  Per output megapixel. Useful for OpenRouter image-gen SKUs that don't price by token.
+                </p>
+              </>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
@@ -2807,10 +2943,12 @@ const ModelsTab = () => {
       )}
 
       {/* Platform-level model pickers — placed below the provider
-          catalogs. Two-column on md+ viewports, stacks on narrow screens. */}
+          catalogs. Two-column on md+ viewports, stacks on narrow screens.
+          Receive the live models list as a prop so newly-added models
+          show up in the dropdowns without a page reload. */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3">
-        <FallbackVisionModelCard />
-        <ImageGenModelCard />
+        <FallbackVisionModelCard models={models} />
+        <ImageGenModelCard models={models} />
       </div>
     </div>
   );
@@ -3520,6 +3658,24 @@ const formatPrice = (n: number | null): string | null => {
 
 const ModelCostLine = ({ model }: { model: Model | null }) => {
   if (!model) return null;
+
+  // Megapixel-priced models (image-gen SKUs that charge per output MP).
+  if (model.pricingUnit === 'megapixel') {
+    if (model.costPerMegapixel === null || typeof model.costPerMegapixel !== 'number') {
+      return (
+        <p className="text-[11px] text-ui/35 mt-2">
+          Pricing not listed for this model.
+        </p>
+      );
+    }
+    const label = model.costPerMegapixel === 0 ? 'Free' : `$${model.costPerMegapixel}/MP`;
+    return (
+      <p className="text-[11px] text-ui/55 mt-2">
+        Cost: <span className="text-ui/80">{label}</span>
+      </p>
+    );
+  }
+
   const inLabel = formatPrice(model.inputCostPerM);
   const outLabel = formatPrice(model.outputCostPerM);
   if (inLabel === null && outLabel === null) {
@@ -3543,8 +3699,10 @@ const ModelCostLine = ({ model }: { model: Model | null }) => {
   );
 };
 
-const FallbackVisionModelCard = () => {
-  const [models, setModels] = useState<Model[]>([]);
+// Receives the full models list from its parent so the dropdown auto-
+// updates when a new vision-capable model is added (previously this
+// card fetched once on mount and went stale until the page reloaded).
+const FallbackVisionModelCard = ({ models }: { models: Model[] }) => {
   const [fallbackId, setFallbackId] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -3554,12 +3712,8 @@ const FallbackVisionModelCard = () => {
 
   useEffect(() => {
     const load = async () => {
-      const [settingResult, modelsResult] = await Promise.all([
-        api.getSetting('dojo_fallback_vision_model_id'),
-        api.getModels(),
-      ]);
+      const settingResult = await api.getSetting('dojo_fallback_vision_model_id');
       if (settingResult.ok && settingResult.data.value) setFallbackId(settingResult.data.value);
-      if (modelsResult.ok) setModels(modelsResult.data);
       setLoading(false);
     };
     load();
@@ -3663,8 +3817,9 @@ const FallbackVisionModelCard = () => {
 // generation is a model capability not an agent role, so it lives at
 // the platform-config level. Any agent with the `image_create` tool
 // permission calls this model directly (no Imaginer middleman).
-const ImageGenModelCard = () => {
-  const [models, setModels] = useState<Model[]>([]);
+// Receives the full models list from its parent so the dropdown auto-
+// updates when a new image-gen-capable model is added.
+const ImageGenModelCard = ({ models }: { models: Model[] }) => {
   const [modelId, setModelId] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -3674,12 +3829,8 @@ const ImageGenModelCard = () => {
 
   useEffect(() => {
     const load = async () => {
-      const [settingResult, modelsResult] = await Promise.all([
-        api.getSetting('dojo_image_gen_model_id'),
-        api.getModels(),
-      ]);
+      const settingResult = await api.getSetting('dojo_image_gen_model_id');
       if (settingResult.ok && settingResult.data.value) setModelId(settingResult.data.value);
-      if (modelsResult.ok) setModels(modelsResult.data);
       setLoading(false);
     };
     load();

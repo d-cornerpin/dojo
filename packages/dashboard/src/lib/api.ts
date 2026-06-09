@@ -182,6 +182,11 @@ export interface BrowseModelResult {
   // Optional: when provided via manual add, these are stored directly
   // instead of probing the provider catalog.
   capabilities?: string[];
+  // Optional: per-megapixel pricing for image-gen SKUs that don't use
+  // token-based billing. When pricingUnit is 'megapixel' the server
+  // ignores inputCostPerM/outputCostPerM and stores costPerMegapixel.
+  pricingUnit?: 'token' | 'megapixel';
+  costPerMegapixel?: number | null;
 }
 
 export const browseProviderModels = async (providerId: string, query: string): Promise<ApiResponse<BrowseModelResult[]>> => {
@@ -242,7 +247,12 @@ export const runPricingSync = async (): Promise<ApiResponse<LitellmSyncStatus>> 
 
 export const updateModelPricing = async (
   modelId: string,
-  pricing: { inputCostPerM?: number; outputCostPerM?: number },
+  pricing: {
+    inputCostPerM?: number;
+    outputCostPerM?: number;
+    pricingUnit?: 'token' | 'megapixel';
+    costPerMegapixel?: number | null;
+  },
 ): Promise<ApiResponse<unknown>> => {
   return request(`/config/models/${modelId}/pricing`, {
     method: 'PUT',
