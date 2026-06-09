@@ -1210,6 +1210,7 @@ export const Chat = () => {
             msg.content.includes('[SOURCE: TRACKER TASK') ||
             msg.content.includes('[SOURCE: SCHEDULER') ||
             msg.content.includes('[SOURCE: HEALER') ||
+            msg.content.includes('[SOURCE: ENGINE') ||
             msg.content.includes('[SOURCE: SUB-AGENT COMPLETION') ||
             msg.content.includes('[SOURCE: SYSTEM') ||
             msg.content.startsWith('[System:') ||

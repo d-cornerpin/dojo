@@ -2096,13 +2096,17 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Image Generation Tools ──
   {
     name: 'image_create',
-    description: 'Generate an image from a text description. The image appears automatically in the chat when ready. When calling this tool, include a brief acknowledgment IN YOUR TEXT BEFORE the tool call — something like "On it, I\'ll generate that image for you." Do NOT send a separate follow-up message after the tool returns. Do NOT mention "Imaginer" or any internal system to the user.',
+    description: 'Generate an image from a text description. The engine handles the ENTIRE delivery flow — DO NOT write any user-facing text around this tool. When you call it, the engine immediately posts a short acknowledgment ("On it.") to the chat. 10-60 s later when the image is ready, the engine posts the image directly with a short caption ("Here you go."). You do NOT need a second turn. Just call this tool and end your turn — anything you write will duplicate what the engine already posted. Do NOT mention the image generation model or any internal system to the user.',
     input_schema: {
       type: 'object',
       properties: {
         description: {
           type: 'string',
           description: 'A detailed plain-English description of what you want the image to show. Include subject, setting, composition, mood, style, lighting, colors, and any specific details. The more specific you are, the better the result. Example: "A cozy coffee shop interior at sunset, warm golden light streaming through large windows, vintage leather chairs, exposed brick walls, steam rising from a latte on a wooden table in the foreground, cinematic lighting, photorealistic". Do NOT use image-model flags like "--ar 16:9" — just describe what you want.',
+        },
+        title: {
+          type: 'string',
+          description: 'A short, descriptive title for the image — 2 to 6 words that summarize the subject. Used as the file name when the user downloads it. Examples: "coffee shop sunset", "golden retriever puppy", "fantasy castle at dusk". Plain words only — no extensions, no quotes, no special characters. Strongly recommended; if omitted, the file name will fall back to a generic id.',
         },
         aspect_ratio: {
           type: 'string',
@@ -2111,7 +2115,7 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         style_hint: {
           type: 'string',
-          description: 'Optional style override like "photorealistic", "illustration", "watercolor", "3D render", "pixel art", "line drawing". If omitted, Imaginer picks the best style for the description.',
+          description: 'Optional style override like "photorealistic", "illustration", "watercolor", "3D render", "pixel art", "line drawing". If omitted, the image model picks the best style for the description.',
         },
       },
       required: ['description'],
@@ -6819,12 +6823,23 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
       // with an ack, then spawns a background async operation that calls
       // the configured image model directly (no LLM orchestration — image
       // models don't support tool calling). When the image is ready, the
-      // tool programmatically sends a delivery message from Imaginer to
-      // the requesting agent via send_to_agent with the file attached.
+      // tool drops the image into the caller's uploads dir, pre-queues
+      // it as a pending attachment, and injects a synthetic user-role
+      // wake message into the caller's chat so the runtime fires once
+      // more and the agent's reply text attaches the image.
+      //
+      // v2.10.3 — Imaginer agent retirement. Pre-fix this tool routed
+      // every image_create call through an Imaginer Sensei agent
+      // (separate process, separate chat history, A2A delivery back
+      // to caller). The Imaginer agent was a wrap of one model call;
+      // image generation is a model capability not an agent role.
+      // Settings → Dojo → Image Generation Model now picks the model
+      // directly, parallel to the fallback vision model picker.
       case 'image_create': {
         const description = (args.description as string | undefined)?.trim();
         const aspectRatio = ((args.aspect_ratio as string | undefined) ?? '1:1').trim();
         const styleHint = ((args.style_hint as string | undefined) ?? '').trim();
+        const rawTitle = (args.title as string | undefined)?.trim() ?? '';
 
         if (!description) {
           content = 'Error: description is required';
@@ -6832,47 +6847,24 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
           break;
         }
 
+        // Slugify the agent-provided title into a safe filename stem.
+        // Lowercase, drop non-alphanumerics, collapse runs of hyphens,
+        // cap at 50 chars so the final filename stays reasonable.
+        const slugify = (s: string): string =>
+          s.toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '')
+            .slice(0, 50);
+        const titleSlug = rawTitle ? slugify(rawTitle) : '';
 
-        const { getImaginerAgentId, getImaginerAgentName, isImaginerEnabled } = await import('../config/platform.js');
-
-        if (!isImaginerEnabled()) {
-          content =
-            'Image generation is disabled. An administrator can enable Imaginer in Settings → Dojo → Imaginer. ' +
-            'You do not need to retry; inform the user that image generation is currently unavailable.';
-          isError = true;
-          break;
-        }
-
-        const imaginerId = getImaginerAgentId();
-        const imaginerName = getImaginerAgentName();
         const db = getDb();
 
-        const imaginer = db.prepare(
-          'SELECT id, status FROM agents WHERE id = ?',
-        ).get(imaginerId) as { id: string; status: string } | undefined;
-        if (!imaginer) {
+        const { getEffectiveImageGenModel } = await import('../services/image-gen-model.js');
+        const modelChoice = getEffectiveImageGenModel();
+        if (!modelChoice) {
           content =
-            `Imaginer agent does not exist yet. Ask the administrator to check server logs and restart.`;
-          isError = true;
-          break;
-        }
-        if (imaginer.status === 'terminated') {
-          content = `Imaginer has been terminated. Image generation is unavailable until it's restored.`;
-          isError = true;
-          break;
-        }
-
-        // The image model is Imaginer's own model_id (set in Settings →
-        // Dojo → Imaginer or on Imaginer's agent detail page). Image
-        // models don't support tool calling so Imaginer never runs through
-        // the normal LLM runtime — this tool does the generation directly.
-        const imageModelRow = db.prepare(
-          "SELECT value FROM config WHERE key = 'imaginer_image_model'",
-        ).get() as { value: string } | undefined;
-        if (!imageModelRow?.value) {
-          content =
-            `No image generation model is configured for Imaginer yet. ` +
-            `Go to Settings → Dojo → Imaginer and pick an image-capable model (e.g. Gemini 2.5 Flash Image on OpenRouter). ` +
+            `No image-generation model is configured. ` +
+            `Go to Settings → Dojo → Image Generation Model and pick an image-capable model (e.g. Gemini 2.5 Flash Image on OpenRouter). ` +
             `Tell the user image generation is unavailable until this is configured — do not retry.`;
           isError = true;
           break;
@@ -6886,42 +6878,62 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
           ? `${description}\n\nStyle: ${styleHint}`
           : description;
 
-        // Get requester name for the delivery message header
-        const senderRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as
-          | { name: string }
-          | undefined;
-        const senderName = senderRow?.name ?? agentId;
-
         // Capture whether this request originated from iMessage BEFORE the
         // runtime clears the flag after sending the ack. The background task
         // needs this to know whether to send the finished image back via
         // iMessage when it's done — the flag will be long gone by then.
         const triggeredByIMessage = isAwaitingIMResponse(agentId);
 
-        auditLog(agentId, 'image_create', imaginerId, 'success',
+        auditLog(agentId, 'image_create', null, 'success',
           `Request ${requestId} queued (aspect ${aspectRatio}${styleHint ? `, style ${styleHint}` : ''})`,
         );
 
+        // v2.10.3 — synthetic acknowledgment. Image generation takes
+        // 10-60 s; without an immediate user-visible ack, the user
+        // sees their request, the agent's tool-call pill, and then a
+        // long silence before the image arrives. Inject a short
+        // assistant-role ack from the calling agent right now so the
+        // user always sees "On it." / "Working on it." / etc. as
+        // soon as image_create fires. Uses the existing voice-mode
+        // filler pool for variety so it doesn't always say the same
+        // thing.
+        try {
+          const { pickFillerPhrase } = await import('../voice/filler-phrases.js');
+          const ackPhrase = pickFillerPhrase();
+          const ackMsgId = uuidv4();
+          getDb().prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+            VALUES (?, ?, 'assistant', ?, datetime('now'))
+          `).run(ackMsgId, agentId, ackPhrase);
+          broadcast({
+            type: 'chat:message', agentId,
+            message: {
+              id: ackMsgId, agentId, role: 'assistant' as const, content: ackPhrase,
+              tokenCount: null, modelId: null, cost: null, latencyMs: null,
+              createdAt: new Date().toISOString(),
+            },
+          });
+          broadcast({
+            type: 'chat:chunk', agentId,
+            messageId: ackMsgId, content: '', done: true, modelId: null,
+          });
+        } catch (ackErr) {
+          // Best effort — if the ack injection fails, the rest of the
+          // flow still works, just with no immediate ack visible.
+          logger.warn('image_create: synthetic ack injection failed (non-fatal)', {
+            requestId, error: ackErr instanceof Error ? ackErr.message : String(ackErr),
+          });
+        }
+
         // ── Async background generation — fire and forget ──
         // The tool returns the ack text below IMMEDIATELY. The generation
-        // runs in the background. When done, a programmatic send_to_agent
-        // delivers the result (or the error) to the requesting agent.
-        const imageModelId = imageModelRow.value;
+        // runs in the background. On completion the file is copied into
+        // the caller's uploads dir, pre-queued as a pending attachment,
+        // and a synthetic wake message wakes the caller's runtime so the
+        // agent's next assistant reply auto-attaches the image.
+        const imageModelId = modelChoice.modelId;
         void (async () => {
           try {
-            // Mark Imaginer as working so the UI shows the status badge
-            db.prepare("UPDATE agents SET status = 'working', updated_at = datetime('now') WHERE id = ?").run(imaginerId);
-            broadcast({ type: 'agent:status', agentId: imaginerId, status: 'working' });
-
-            // Log the request in Imaginer's chat for audit trail
-            const reqMsgId = uuidv4();
-            db.prepare(`
-              INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-              VALUES (?, ?, 'user', ?, datetime('now'))
-            `).run(reqMsgId, imaginerId,
-              `[IMAGE_CREATE request_id=${requestId} from=${senderName} aspect=${aspectRatio}]\n${description}`,
-            );
-
             // Wait for the requesting agent to finish its current turn
             // before we start generating. This prevents the delivery message
             // from landing in the middle of the agent's still-in-progress
@@ -6944,7 +6956,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
             db.prepare("UPDATE agents SET status = 'working', updated_at = datetime('now') WHERE id = ?").run(agentId);
             broadcast({ type: 'agent:status', agentId, status: 'working' });
 
-            logger.info('Imaginer: generating image', {
+            logger.info('image_create: generating image', {
               requestId, requesterId: agentId, modelId: imageModelId, aspectRatio,
               waitedForIdleMs: Date.now() - waitStart,
             });
@@ -6957,21 +6969,12 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
             });
 
             if (!result.ok) {
-              logger.error('Imaginer: generation failed', {
+              logger.error('image_create: generation failed', {
                 requestId, code: result.code, error: result.error,
               });
 
-              // Log failure in Imaginer's chat
-              db.prepare(`
-                INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-                VALUES (?, ?, 'assistant', ?, datetime('now'))
-              `).run(uuidv4(), imaginerId,
-                `[FAILED request_id=${requestId}] ${result.code}: ${result.error}`,
-              );
-
-              // Deliver error directly as an assistant message from the
-              // requesting agent — no second LLM turn, same pattern as
-              // the success path.
+              // Deliver error directly as an assistant message in the
+              // requesting agent's own chat. No second LLM turn.
               const errMsgId = uuidv4();
               const errContent =
                 `I wasn't able to generate that image:\n\n` +
@@ -6996,20 +6999,11 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
               return;
             }
 
-            // Success! Log in Imaginer's chat
-            const costLine = result.costUsd !== null ? ` cost=$${result.costUsd.toFixed(4)}` : '';
-            db.prepare(`
-              INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-              VALUES (?, ?, 'assistant', ?, datetime('now'))
-            `).run(uuidv4(), imaginerId,
-              `[DONE request_id=${requestId}] ${result.filename} (${result.sizeBytes}B, ${result.latencyMs}ms${costLine})`,
-            );
-
-            // Record cost under Imaginer's agent ID
+            // Success — record cost under the calling agent.
             try {
               const { recordCost } = await import('../costs/tracker.js');
               recordCost({
-                agentId: imaginerId,
+                agentId,
                 modelId: imageModelId,
                 providerId: result.providerId,
                 inputTokens: result.inputTokens,
@@ -7019,159 +7013,116 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
               });
             } catch { /* best effort */ }
 
-            // ── Deliver the image via A2A DELIVERABLE from Imaginer ──
-            // Pre-2026-04-30 we synthesized a fake assistant message in the
-            // requesting agent's own chat. That had three problems:
-            //   1. The agent had false memory of "delivering" content they
-            //      never actually generated.
-            //   2. The agent was never woken to react to or comment on the
-            //      image — it just sat idle.
-            //   3. Silent failures in copy/insert left the chat blank with
-            //      no error surface.
-            // Now Imaginer programmatically sends a real A2A message with
-            // intent=DELIVERABLE, which (a) gives the agent true memory of
-            // an inbound delivery, (b) wakes them to respond/forward to the
-            // user, and (c) carries the image attachment via the standard
-            // A2A pipeline that already handles attachments + broadcasts.
-            // Pre-copy the generated image into the requester's uploads dir
-            // at a deterministic path so we can tell the agent EXACTLY where
-            // to find the file. Without this, the agent gets the image via
-            // vision but doesn't know the on-disk path — which they need
-            // for downstream tools like drive_upload + slides_add_image_from_drive.
-            // a2a-transport.ts now skips its own re-copy when the source is
-            // already in the recipient's uploads dir, so no duplicate file.
+            // ── Deliver the image ──
+            // v2.10.3 — no more A2A from a separate Imaginer agent.
+            // We copy the file into the caller's uploads dir for a
+            // stable on-disk path, pre-queue it as a pending attachment
+            // so the agent's next assistant reply auto-attaches it,
+            // and inject a synthetic user-role wake message into the
+            // caller's chat. The runtime fires once more, the agent's
+            // one-line reply ("Here you go!") lands with the image
+            // thumbnail, and we're done.
             const fs = (await import('node:fs')).default;
             const path = (await import('node:path')).default;
             const os = (await import('node:os')).default;
             const recipientDir = path.join(os.homedir(), '.dojo', 'uploads', agentId);
             if (!fs.existsSync(recipientDir)) fs.mkdirSync(recipientDir, { recursive: true });
-            const stableFilename = `imaginer_${requestId}_${result.filename}`;
+            // Build a human-friendly on-disk filename. Prefer the agent-
+            // provided slug (e.g. "coffee-shop-sunset") and append a short
+            // id chunk for uniqueness. Falls back to the legacy
+            // image_create_<reqId>_<uuid>.png shape when no title given.
+            const sourceExt = path.extname(result.filename) || '.png';
+            const shortId = requestId.replace(/^img_/, '').slice(0, 8);
+            const stableFilename = titleSlug
+              ? `${titleSlug}-${shortId}${sourceExt}`
+              : `image_create_${requestId}_${result.filename}`;
             const stablePath = path.join(recipientDir, stableFilename);
             let deliveredPath = result.filePath;
             try {
               fs.copyFileSync(result.filePath, stablePath);
               deliveredPath = stablePath;
             } catch (copyErr) {
-              logger.warn('Imaginer: pre-copy to requester uploads dir failed — falling back to original path', {
+              logger.warn('image_create: pre-copy to caller uploads dir failed — falling back to original path', {
                 requestId, src: result.filePath, dest: stablePath,
                 error: copyErr instanceof Error ? copyErr.message : String(copyErr),
               });
             }
 
             try {
-              const { deliverA2AMessage, makeThreadId } = await import('./a2a-transport.js');
-              // Keep this payload minimal. The previous version was a
-              // multi-line tutorial with slides/drive recipes and behavior
-              // instructions ("present to the user with short commentary",
-              // etc.) that the recipient agent often echoed verbatim,
-              // making image deliveries read like an engineering manual to
-              // the user. Slides/Drive integration details belong in the
-              // relevant tool docs, not in every Imaginer delivery.
-              // Pre-2.9.8 the payload included "Original request: '<desc>'"
-              // on its own line, which non-vision recipients regularly
-              // parsed as a NEW user request and called image_create
-              // again (observed in scenario testing — Kevin generated
-              // two coffee mugs back-to-back). Reframe the message so
-              // the completion state is explicit, the next action is
-              // explicit, and the original description is presented as
-              // historical context (a parenthetical, not a directive).
-              const deliveryPayload =
-                `IMAGE GENERATION COMPLETE. The image you requested ` +
-                `(originally: "${description}") has been generated and is already queued ` +
-                `as an attachment for your next reply.\n\n` +
-                `What to do now: write ONE short user-facing reply (e.g. "Here you go.", "Done — let me know if you want a variant.") ` +
-                `and end your turn. The image will auto-attach to that reply — you do NOT need to call show_to_user, and you do NOT need to call image_create again. ` +
-                `The work is finished.\n\n` +
-                `File path (for reference only, not for re-attachment): ${deliveredPath}\n\n` +
-                `Thread is closed — write your reply to the user, do NOT reply on this thread.`;
-              const a2aResult = await deliverA2AMessage({
-                intent: 'DELIVERABLE',
-                threadId: makeThreadId(`image-${requestId}`),
-                requiresResponse: true, // wakes the receiver
-                payload: deliveryPayload,
-                toAgent: agentId,
-                fromAgent: imaginerId,
-                attachPaths: [deliveredPath],
+              // v2.10.3 — direct synthetic-delivery pattern. Pre-fix,
+              // the success path injected a user-role wake message
+              // and fired runtime.handleMessage so the model would
+              // wake up, see "image ready" and write a contextual
+              // reply with the auto-attached image. That looped:
+              // Kevin's fresh model turn saw the original user
+              // prompt still in scope ("make me a giant banana"),
+              // didn't reliably parse the wake message as the
+              // completion signal, and re-called image_create.
+              // Production incident 2026-06-09: four images
+              // generated from one prompt.
+              //
+              // Now we just write a synthetic assistant message
+              // with a short delivery caption and the image inline,
+              // no model call. The user sees ONE clean bubble with
+              // "Here you go." and the image thumbnail. Loop killed.
+              const stat = fs.statSync(deliveredPath);
+              const filename = path.basename(deliveredPath);
+              const ext = path.extname(filename).toLowerCase();
+              const mimeType =
+                ext === '.png' ? 'image/png'
+                : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
+                : ext === '.webp' ? 'image/webp'
+                : ext === '.gif' ? 'image/gif'
+                : 'application/octet-stream';
+              const attachment = {
+                fileId: uuidv4(),
+                filename,
+                mimeType,
+                size: stat.size,
+                path: deliveredPath,
+                category: 'image' as const,
+              };
+
+              // Small pool of delivery captions — generic enough to
+              // fit any image request without sounding contextual.
+              const DELIVERY_CAPTIONS = [
+                'Here you go.',
+                'Here it is.',
+                'All done.',
+                'Done.',
+                'Got it for you.',
+              ];
+              const caption = DELIVERY_CAPTIONS[
+                Math.floor(Math.random() * DELIVERY_CAPTIONS.length)
+              ];
+
+              const deliveryMsgId = uuidv4();
+              const attachmentsJson = JSON.stringify([attachment]);
+              db.prepare(`
+                INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)
+                VALUES (?, ?, 'assistant', ?, ?, datetime('now'))
+              `).run(deliveryMsgId, agentId, caption, attachmentsJson);
+              broadcast({
+                type: 'chat:message', agentId,
+                message: {
+                  id: deliveryMsgId, agentId, role: 'assistant' as const,
+                  content: caption,
+                  attachments: [attachment],
+                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                  createdAt: new Date().toISOString(),
+                },
+              });
+              broadcast({
+                type: 'chat:chunk', agentId,
+                messageId: deliveryMsgId, content: '', done: true, modelId: null,
               });
 
-              if (a2aResult.delivered) {
-                logger.info('Imaginer: image delivered to requester via A2A DELIVERABLE', {
-                  requestId, requesterId: agentId, filePath: result.filePath,
-                  sizeBytes: result.sizeBytes, latencyMs: result.latencyMs,
-                  threadId: a2aResult.threadId,
-                });
-
-                // ── Pre-queue the image as a pending attachment ──
-                // The A2A DELIVERABLE wakes the agent and gives them
-                // proper memory of the inbound, but the user sees that
-                // message as a hidden [A2A:...] user-role row in
-                // non-wordy mode. Without this queue, the user would
-                // never see the image unless the agent remembered to
-                // call show_to_user — which they often don't.
-                //
-                // queuePendingAttachments drops the file into the
-                // runtime's attachment buffer; the very next assistant
-                // message the agent writes (their text reaction to
-                // the delivery) auto-attaches the image. User sees
-                // one clean bubble with the agent's text + the image
-                // thumbnail, exactly like show_to_user would produce.
-                try {
-                  const { queuePendingAttachments } = await import('./pending-attachments.js');
-                  const stat = fs.statSync(deliveredPath);
-                  const filename = path.basename(deliveredPath);
-                  const ext = path.extname(filename).toLowerCase();
-                  const mimeType =
-                    ext === '.png' ? 'image/png'
-                    : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
-                    : ext === '.webp' ? 'image/webp'
-                    : ext === '.gif' ? 'image/gif'
-                    : 'application/octet-stream';
-                  queuePendingAttachments(agentId, [{
-                    fileId: uuidv4(),
-                    filename,
-                    mimeType,
-                    size: stat.size,
-                    path: deliveredPath,
-                    category: 'image',
-                  }]);
-                } catch (queueErr) {
-                  // Best-effort — if the queue fails, the agent's
-                  // text reply still goes through (just without the
-                  // auto-attached image). They can still call
-                  // show_to_user manually.
-                  logger.warn('Imaginer: failed to pre-queue image as pending attachment', {
-                    requestId, requesterId: agentId,
-                    error: queueErr instanceof Error ? queueErr.message : String(queueErr),
-                  });
-                }
-              } else {
-                // A2A delivery itself failed (semantic dedup, hop limit,
-                // agent terminated, etc.). Fall back to writing an error
-                // message to the requesting agent's chat so the user isn't
-                // left staring at silence.
-                logger.error('Imaginer: A2A delivery failed — writing fallback message', {
-                  requestId, requesterId: agentId, reason: a2aResult.reason,
-                });
-                const fallbackId = uuidv4();
-                const fallbackContent = `Image was generated successfully but the delivery failed: ${a2aResult.reason}. The image file is at ${deliveredPath}.`;
-                db.prepare(`
-                  INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-                  VALUES (?, ?, 'system', ?, datetime('now'))
-                `).run(fallbackId, agentId, fallbackContent);
-                broadcast({
-                  type: 'chat:message', agentId,
-                  message: {
-                    id: fallbackId, agentId, role: 'system' as const, content: fallbackContent,
-                    tokenCount: null, modelId: null, cost: null, latencyMs: null,
-                    createdAt: new Date().toISOString(),
-                  },
-                });
-              }
+              logger.info('image_create: image delivered via synthetic assistant message', {
+                requestId, requesterId: agentId, filePath: deliveredPath,
+                sizeBytes: result.sizeBytes, latencyMs: result.latencyMs,
+              });
             } catch (deliveryErr) {
-              // Anything unexpected in the delivery path — file copy throws,
-              // module import fails, etc. Surface as a fallback chat message
-              // so silent fails are gone.
-              logger.error('Imaginer: image delivery threw — writing fallback message', {
+              logger.error('image_create: image delivery threw — writing fallback message', {
                 requestId, requesterId: agentId,
                 error: deliveryErr instanceof Error ? deliveryErr.message : String(deliveryErr),
               });
@@ -7215,13 +7166,13 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
             } catch { /* iMessage not available — fine */ }
 
           } catch (err) {
-            logger.error('Imaginer: unexpected error in background generation', {
+            logger.error('image_create: unexpected error in background generation', {
               requestId, error: err instanceof Error ? err.message : String(err),
             });
           } finally {
-            // Set both Imaginer and the requesting agent back to idle
-            db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(imaginerId);
-            broadcast({ type: 'agent:status', agentId: imaginerId, status: 'idle' });
+            // Set the caller back to idle (the runtime wake fired by
+            // the success path will re-enter 'working' immediately
+            // when the new turn picks up).
             db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(agentId);
             broadcast({ type: 'agent:status', agentId, status: 'idle' });
           }
@@ -7245,10 +7196,8 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         } catch { /* skip tail on lookup failure */ }
 
         content =
-          `Image generation started (request_id: ${requestId}). ` +
-          `Imaginer will deliver the finished image to you via send_to_agent with intent=DELIVERABLE in 10-60 seconds. ` +
-          `When the [A2A:DELIVERABLE from:Imaginer] message arrives, present the image to the user with any short commentary that fits — the image attachment will be on that message and will already appear in your chat as a thumbnail. ` +
-          `Just end your turn now. You'll be woken when the image is ready.` +
+          `Image generation kicked off (request_id: ${requestId}). The engine has already posted a brief acknowledgment to the user; you do NOT need to write any text. When the image is ready in 10-60 s, the engine will post it directly to the chat with a short caption — no second turn from you. ` +
+          `End your turn now.` +
           visionTail;
         break;
       }

@@ -222,6 +222,24 @@ export const getModels = async (): Promise<ApiResponse<ModelsListResponse>> => {
   return request<ModelsListResponse>('/config/models');
 };
 
+// ── LiteLLM pricing sync (Anthropic/OpenAI/DeepSeek refresh) ──
+
+export interface LitellmSyncStatus {
+  lastStatus: 'success' | 'failure' | null;
+  lastRunAt: string | null;
+  lastUpdatedCount: number | null;
+  lastProvidersTouched: number | null;
+  lastError: string | null;
+}
+
+export const getPricingSyncStatus = async (): Promise<ApiResponse<LitellmSyncStatus>> => {
+  return request<LitellmSyncStatus>('/config/pricing-sync/status');
+};
+
+export const runPricingSync = async (): Promise<ApiResponse<LitellmSyncStatus>> => {
+  return request<LitellmSyncStatus>('/config/pricing-sync/run', { method: 'POST' });
+};
+
 export const updateModelPricing = async (
   modelId: string,
   pricing: { inputCostPerM?: number; outputCostPerM?: number },

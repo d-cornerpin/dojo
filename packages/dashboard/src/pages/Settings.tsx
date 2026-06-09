@@ -606,7 +606,6 @@ const PlatformTab = () => {
       <OllamaSettings />
       <RemoteAccessSettings />
       <SearchSettings />
-      <FallbackVisionModelCard />
       <MigrationSettings />
       <FengShuiSettings />
       <ServerControlSettings />
@@ -1650,7 +1649,7 @@ const ProvidersTab = () => {
                   disabled={syncing === provider.id}
                   className="text-xs text-cp-teal hover:text-cp-teal/80 disabled:text-ui/25 transition-colors"
                 >
-                  {syncing === provider.id ? 'Syncing...' : 'Sync Models'}
+                  {syncing === provider.id ? 'Syncing...' : 'Sync Models and Pricing'}
                 </button>
                 <button
                   onClick={() => handleDelete(provider.id)}
@@ -1959,7 +1958,9 @@ const ProviderModelGroup = ({
   onPricingChange: () => void;
   browseSection?: React.ReactNode;
 }) => {
-  const [open, setOpen] = useState(true);
+  // Collapsed by default — long catalogs (OpenRouter etc.) make the page
+  // unwieldy when every group expands on load. User clicks to drill in.
+  const [open, setOpen] = useState(false);
   const enabledCount = models.filter(m => m.isEnabled).length;
 
   return (
@@ -2530,6 +2531,8 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
   const [modelId, setModelId] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [selectedCaps, setSelectedCaps] = useState<Set<string>>(new Set());
+  const [inputPrice, setInputPrice] = useState('');
+  const [outputPrice, setOutputPrice] = useState('');
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -2540,6 +2543,15 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
       else next.add(key);
       return next;
     });
+  };
+
+  // Parse a "$/M tokens" input. Empty → null (unknown). "0" → 0 (free).
+  // Anything else → number, or null if not parseable.
+  const parsePrice = (s: string): number | null => {
+    const trimmed = s.trim();
+    if (trimmed === '') return null;
+    const n = parseFloat(trimmed);
+    return Number.isFinite(n) && n >= 0 ? n : null;
   };
 
   const handleAdd = async () => {
@@ -2553,8 +2565,8 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
       name: displayName.trim() || trimmedId,
       contextWindow: null,
       maxOutputTokens: null,
-      inputCostPerM: null,
-      outputCostPerM: null,
+      inputCostPerM: parsePrice(inputPrice),
+      outputCostPerM: parsePrice(outputPrice),
       capabilities: Array.from(selectedCaps),
     } as api.BrowseModelResult & { capabilities?: string[] });
 
@@ -2563,6 +2575,8 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
       setModelId('');
       setDisplayName('');
       setSelectedCaps(new Set());
+      setInputPrice('');
+      setOutputPrice('');
       setExpanded(false);
       onModelAdded();
     } else {
@@ -2622,6 +2636,33 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
                 </button>
               ))}
             </div>
+          </div>
+
+          <div>
+            <label className="form-label mb-2">Pricing ($ per million tokens, optional)</label>
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={inputPrice}
+                onChange={(e) => setInputPrice(e.target.value)}
+                placeholder="Input — leave blank if unknown"
+                className="glass-input w-full"
+              />
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={outputPrice}
+                onChange={(e) => setOutputPrice(e.target.value)}
+                placeholder="Output — leave blank if unknown"
+                className="glass-input w-full"
+              />
+            </div>
+            <p className="text-[10px] text-ui/25 mt-1">
+              Enter 0 for free models. Leave blank if you don't know; pricing will show as "not listed".
+            </p>
           </div>
 
           <div className="flex items-center gap-3">
@@ -2764,6 +2805,13 @@ const ModelsTab = () => {
           );
         })
       )}
+
+      {/* Platform-level model pickers — placed below the provider
+          catalogs. Two-column on md+ viewports, stacks on narrow screens. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3">
+        <FallbackVisionModelCard />
+        <ImageGenModelCard />
+      </div>
     </div>
   );
 };
@@ -3459,6 +3507,42 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
 // Self-contained: loads its own model list since it lives on the Dojo
 // tab, which doesn't otherwise need the model catalog. Keeps this card
 // pluggable wherever a future use suggests it should live.
+// Small cost display rendered below a model dropdown. Tri-state per field:
+//   number > 0 → "$X/M"
+//   exactly 0 → "Free"
+//   null      → unknown (collapses the whole line to a quiet hint
+//               only if BOTH fields are unknown)
+const formatPrice = (n: number | null): string | null => {
+  if (n === null || typeof n !== 'number') return null;
+  if (n === 0) return 'Free';
+  return `$${n}/M`;
+};
+
+const ModelCostLine = ({ model }: { model: Model | null }) => {
+  if (!model) return null;
+  const inLabel = formatPrice(model.inputCostPerM);
+  const outLabel = formatPrice(model.outputCostPerM);
+  if (inLabel === null && outLabel === null) {
+    return (
+      <p className="text-[11px] text-ui/35 mt-2">
+        Pricing not listed for this model.
+      </p>
+    );
+  }
+  return (
+    <p className="text-[11px] text-ui/55 mt-2">
+      Cost:{' '}
+      {inLabel !== null && (
+        <span className="text-ui/80">{inLabel} in</span>
+      )}
+      {inLabel !== null && outLabel !== null && <span className="text-ui/35"> &middot; </span>}
+      {outLabel !== null && (
+        <span className="text-ui/80">{outLabel} out</span>
+      )}
+    </p>
+  );
+};
+
 const FallbackVisionModelCard = () => {
   const [models, setModels] = useState<Model[]>([]);
   const [fallbackId, setFallbackId] = useState('');
@@ -3505,35 +3589,28 @@ const FallbackVisionModelCard = () => {
   // surface that explicitly so the user can pick a new one.
   const configuredButInvalid = fallbackId && !visionModels.some(m => m.id === fallbackId);
 
+  const selectedVisionModel = visionModels.find(m => m.id === fallbackId) ?? null;
+
   return (
     <div className="glass-card p-4 space-y-4">
       <div>
         <h3 className="card-header">Fallback Vision Model</h3>
         <p className="text-xs text-ui/40 mt-1">
-          Used whenever a tool needs to interpret an image but the calling agent's own model can't see —
-          <code className="mx-1 text-cp-amber">screen_read</code>, web page screenshots via{' '}
-          <code className="mx-1 text-cp-amber">web_browse</code>, and other vision-routing paths. If the
-          calling agent's own model is vision-capable, that's used directly and this fallback is skipped.
+          The model used to look at images when your agent's own model can't see.
         </p>
       </div>
 
       {visionModels.length === 0 ? (
         <div className="alert-banner alert-warning">
-          No vision-capable models are enabled. Add one in Settings → Models (any Claude Sonnet/Opus/Haiku,
-          GPT-4o/5, Gemini 2.5, llava, or anything else with{' '}
-          <code className="mx-1 text-cp-amber">vision</code> in its capabilities) and come back here to
-          pick it. Until then, screen_read and web_browse screenshots will return a "no vision model
-          configured" error to the calling agent, and the agent will be told upfront that it cannot see.
+          No vision-capable models are enabled. Enable one above and come back here to pick it.
         </div>
       ) : !fallbackId ? (
         <div className="alert-banner alert-warning">
-          No fallback vision model selected. Tools that need vision will return an error to non-vision
-          agents until you pick one below.
+          No vision model selected. Pick one below.
         </div>
       ) : configuredButInvalid ? (
         <div className="alert-banner alert-warning">
-          The previously-saved fallback is no longer usable (the model may have been disabled or had its
-          vision capability removed). Pick a new one below.
+          The saved model is no longer available. Pick a new one below.
         </div>
       ) : null}
 
@@ -3546,20 +3623,14 @@ const FallbackVisionModelCard = () => {
               onChange={(e) => setFallbackId(e.target.value)}
               className="glass-input w-full"
             >
-              <option value="">(none — agents on non-vision models cannot use screen_read / web_browse screenshots)</option>
+              <option value="">(none)</option>
               {visionModels.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.name} ({m.apiModelId})
-                  {typeof m.inputCostPerM === 'number' && m.inputCostPerM > 0 ? ` — $${m.inputCostPerM}/M in` : ''}
                 </option>
               ))}
             </select>
-            <p className="text-[11px] text-ui/40 mt-2">
-              Picked once, used everywhere. The cost shown is the model's input price per million tokens —
-              a useful proxy for how expensive each vision pass will be. Pick the smallest model whose
-              quality is good enough for the kind of images your agents will be reading (UI screenshots,
-              web pages, photos, etc.).
-            </p>
+            <ModelCostLine model={selectedVisionModel} />
           </div>
 
           <div className="flex items-center gap-3">
@@ -3571,6 +3642,122 @@ const FallbackVisionModelCard = () => {
               {saving ? 'Saving...' : 'Save'}
             </button>
             {fallbackId && (
+              <button
+                onClick={handleClear}
+                disabled={saving}
+                className="px-4 py-2 text-sm font-medium rounded-lg bg-ui/[0.08] text-ui/55 border border-ui/[0.10] hover:border-ui/[0.15] hover:text-ui/70 transition-colors disabled:opacity-40"
+              >
+                Clear
+              </button>
+            )}
+            {saved && <span className="text-xs text-cp-teal">Saved!</span>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+// v2.10.3 — Image-generation model picker. Mirrors FallbackVisionModelCard.
+// Replaces the Imaginer agent's per-agent image_model config: image
+// generation is a model capability not an agent role, so it lives at
+// the platform-config level. Any agent with the `image_create` tool
+// permission calls this model directly (no Imaginer middleman).
+const ImageGenModelCard = () => {
+  const [models, setModels] = useState<Model[]>([]);
+  const [modelId, setModelId] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const imageGenModels = models.filter(m => m.isEnabled && m.capabilities.includes('image_generation'));
+
+  useEffect(() => {
+    const load = async () => {
+      const [settingResult, modelsResult] = await Promise.all([
+        api.getSetting('dojo_image_gen_model_id'),
+        api.getModels(),
+      ]);
+      if (settingResult.ok && settingResult.data.value) setModelId(settingResult.data.value);
+      if (modelsResult.ok) setModels(modelsResult.data);
+      setLoading(false);
+    };
+    load();
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    await api.setSetting('dojo_image_gen_model_id', modelId);
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const handleClear = async () => {
+    setSaving(true);
+    await api.setSetting('dojo_image_gen_model_id', '');
+    setModelId('');
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  if (loading) return null;
+
+  const configuredButInvalid = modelId && !imageGenModels.some(m => m.id === modelId);
+  const selectedImageGenModel = imageGenModels.find(m => m.id === modelId) ?? null;
+
+  return (
+    <div className="glass-card p-4 space-y-4">
+      <div>
+        <h3 className="card-header">Image Generation Model</h3>
+        <p className="text-xs text-ui/40 mt-1">
+          The model used when an agent creates an image.
+        </p>
+      </div>
+
+      {imageGenModels.length === 0 ? (
+        <div className="alert-banner alert-warning">
+          No image-generation models are enabled. Enable one above and come back here to pick it.
+        </div>
+      ) : !modelId ? (
+        <div className="alert-banner alert-warning">
+          No image-generation model selected. Pick one below.
+        </div>
+      ) : configuredButInvalid ? (
+        <div className="alert-banner alert-warning">
+          The saved model is no longer available. Pick a new one below.
+        </div>
+      ) : null}
+
+      {imageGenModels.length > 0 && (
+        <>
+          <div>
+            <label className="form-label">Image-gen model</label>
+            <select
+              value={modelId}
+              onChange={(e) => setModelId(e.target.value)}
+              className="glass-input w-full"
+            >
+              <option value="">(none)</option>
+              {imageGenModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name} ({m.apiModelId})
+                </option>
+              ))}
+            </select>
+            <ModelCostLine model={selectedImageGenModel} />
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-cp-amber/15 text-cp-amber border border-cp-amber/30 hover:bg-cp-amber/25 transition-colors disabled:opacity-40"
+            >
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+            {modelId && (
               <button
                 onClick={handleClear}
                 disabled={saving}

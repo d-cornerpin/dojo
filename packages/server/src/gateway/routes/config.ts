@@ -766,11 +766,18 @@ configRouter.post('/providers/:id/validate', async (c) => {
       });
       logger.info('Provider validation: Anthropic API call succeeded', { providerId: id });
 
-      // Sync model metadata (max_output_tokens, context_window) from the API
+      // Sync model metadata (max_output_tokens, context_window, pricing) from the API.
+      // Pricing fields use COALESCE so a temporary gap in the API response
+      // doesn't wipe out known prices.
       try {
         const freshModels = await fetchAnthropicModels(client);
         const updateModel = db.prepare(`
-          UPDATE models SET max_output_tokens = ?, context_window = ?, updated_at = datetime('now')
+          UPDATE models SET
+            max_output_tokens = ?,
+            context_window = ?,
+            input_cost_per_m = COALESCE(?, input_cost_per_m),
+            output_cost_per_m = COALESCE(?, output_cost_per_m),
+            updated_at = datetime('now')
           WHERE provider_id = ? AND api_model_id = ?
         `);
         const insertModel = db.prepare(`
@@ -780,7 +787,7 @@ configRouter.post('/providers/:id/validate', async (c) => {
         for (const m of freshModels) {
           const existing = db.prepare('SELECT id FROM models WHERE provider_id = ? AND api_model_id = ?').get(id, m.apiModelId);
           if (existing) {
-            updateModel.run(m.maxOutputTokens, m.contextWindow, id, m.apiModelId);
+            updateModel.run(m.maxOutputTokens, m.contextWindow, m.inputCostPerM ?? null, m.outputCostPerM ?? null, id, m.apiModelId);
           } else {
             insertModel.run(uuidv4(), id, m.name, m.apiModelId, JSON.stringify(m.capabilities), m.contextWindow, m.maxOutputTokens, m.inputCostPerM, m.outputCostPerM);
           }
@@ -882,12 +889,29 @@ configRouter.post('/providers/:id/validate', async (c) => {
         const apiModels = modelsData.data ?? [];
         const apiMap = new Map(apiModels.map(m => [m.id, m]));
 
-        // Update existing models (ones the user previously added)
+        // Update existing models (ones the user previously added).
+        // Pricing semantics: COALESCE(?, current) — only overwrite when the
+        // API actually gave us a number. Old behaviour wrote `0` whenever
+        // the API didn't list pricing, which silently clobbered any
+        // previously-known prices and also made unknown-pricing models
+        // indistinguishable from actually-free ones. Now: `"0"` from the
+        // API → store 0 (truly free), missing/empty → null (unknown).
         const existingModels = db.prepare('SELECT id, api_model_id FROM models WHERE provider_id = ?').all(id) as Array<{ id: string; api_model_id: string }>;
         const updateModel = db.prepare(`
-          UPDATE models SET context_window = ?, max_output_tokens = ?, input_cost_per_m = ?, output_cost_per_m = ?, updated_at = datetime('now')
+          UPDATE models SET
+            context_window = ?,
+            max_output_tokens = ?,
+            input_cost_per_m = COALESCE(?, input_cost_per_m),
+            output_cost_per_m = COALESCE(?, output_cost_per_m),
+            updated_at = datetime('now')
           WHERE id = ?
         `);
+
+        const parsePrice = (s: string | undefined | null): number | null => {
+          if (s === undefined || s === null || s === '') return null;
+          const n = parseFloat(s) * 1_000_000;
+          return Number.isFinite(n) ? n : null;
+        };
 
         let updated = 0;
         for (const existing of existingModels) {
@@ -895,8 +919,8 @@ configRouter.post('/providers/:id/validate', async (c) => {
           if (apiModel) {
             const contextWindow = apiModel.context_length ?? apiModel.top_provider?.context_length ?? 128000;
             const maxOutputTokens = apiModel.top_provider?.max_completion_tokens ?? Math.min(Math.floor(contextWindow / 4), 16384);
-            const inputCostPerM = apiModel.pricing?.prompt ? parseFloat(apiModel.pricing.prompt) * 1_000_000 : 0;
-            const outputCostPerM = apiModel.pricing?.completion ? parseFloat(apiModel.pricing.completion) * 1_000_000 : 0;
+            const inputCostPerM = parsePrice(apiModel.pricing?.prompt);
+            const outputCostPerM = parsePrice(apiModel.pricing?.completion);
             updateModel.run(contextWindow, maxOutputTokens, inputCostPerM, outputCostPerM, existing.id);
             updated++;
           }
@@ -956,6 +980,22 @@ configRouter.get('/models', (c) => {
   const models: Model[] = rows.map(rowToModel);
 
   return c.json({ ok: true, data: models });
+});
+
+// GET /pricing-sync/status — last LiteLLM price-index run (success/failure,
+// timestamp, count). Powers the status pill on the Costs page.
+configRouter.get('/pricing-sync/status', async (c) => {
+  const { getLitellmSyncStatus } = await import('../../services/litellm-pricing-sync.js');
+  return c.json({ ok: true, data: getLitellmSyncStatus() });
+});
+
+// POST /pricing-sync/run — kick off a LiteLLM refresh on demand. Returns
+// the fresh status when the run completes (synchronous, but it's a single
+// HTTP fetch + a small loop so well under HTTP timeouts).
+configRouter.post('/pricing-sync/run', async (c) => {
+  const { syncLitellmPricing } = await import('../../services/litellm-pricing-sync.js');
+  const status = await syncLitellmPricing();
+  return c.json({ ok: true, data: status });
 });
 
 // GET /providers/:id/browse-models?q=search — live search of provider's model catalog (not stored in DB)

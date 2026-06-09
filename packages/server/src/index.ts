@@ -203,23 +203,14 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4c3. Ensure Imaginer agent exists (if enabled and setup is complete)
-  {
-    const { isImaginerEnabled, isSetupCompleted: isSetupDone } = await import('./config/platform.js');
-    if (isSetupDone() && isImaginerEnabled()) {
-      try {
-        const { ensureImaginerAgentRunning } = await import('./imaginer/imaginer-agent.js');
-        ensureImaginerAgentRunning();
-        logger.info('Imaginer agent ensured on server startup');
-      } catch (err) {
-        logger.error('Failed to ensure Imaginer agent', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-  }
+  // v2.10.3 — Imaginer agent retired. Image generation is now a
+  // platform-config model picker (Settings → Dojo → Image Generation
+  // Model) and the `image_create` tool calls that model directly.
+  // Migration 059 terminates the legacy Imaginer agent row. This
+  // step intentionally left empty for the gap.
+  // 4c3. (Removed — Imaginer agent no longer auto-spawned)
 
-  // 4c4. Ensure Healer agent exists (permanent resident, like Trainer and Imaginer)
+  // 4c4. Ensure Healer agent exists (permanent resident)
   {
     const { isSetupCompleted: isSetupDone } = await import('./config/platform.js');
     if (isSetupDone()) {
@@ -381,6 +372,40 @@ async function main(): Promise<void> {
         await backfillRecommendedNumCtx();
       } catch (err) {
         logger.warn('num_ctx backfill failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+  }
+
+  // 4k. Refresh model pricing for providers whose live API exposes it
+  // (primarily OpenRouter). Background so it doesn't block HTTP boot.
+  // COALESCE semantics: missing API prices preserve what we already have.
+  {
+    void (async () => {
+      try {
+        const { syncAllProviderPricing } = await import('./services/pricing-sync.js');
+        await syncAllProviderPricing();
+      } catch (err) {
+        logger.warn('Pricing sync failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+  }
+
+  // 4l. Refresh Anthropic / OpenAI / DeepSeek pricing from the LiteLLM
+  // community price index. Their own APIs don't return pricing, so this
+  // is how we stay current as providers re-price. Background, COALESCE
+  // semantics. Status (success/failure + timestamp) is persisted into
+  // the config table and surfaced on the Costs page.
+  {
+    void (async () => {
+      try {
+        const { syncLitellmPricing } = await import('./services/litellm-pricing-sync.js');
+        await syncLitellmPricing();
+      } catch (err) {
+        logger.warn('LiteLLM pricing sync failed', {
           error: err instanceof Error ? err.message : String(err),
         });
       }

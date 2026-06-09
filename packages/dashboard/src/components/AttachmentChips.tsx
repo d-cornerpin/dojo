@@ -109,43 +109,51 @@ const ImageLightbox = ({
       style={{ background: 'var(--overlay-dark)' }}
       onClick={onClose}
     >
-      {/* Top-right controls — stopPropagation so clicking buttons
-          doesn't also close the modal via the backdrop click. */}
+      {/* Image + overlay controls wrapper. `relative inline-block`
+          sizes the wrapper to the image so the absolutely-positioned
+          buttons land on the image's top-right corner instead of the
+          viewport corner (where they previously sat over empty
+          dark space and were nearly invisible). */}
       <div
-        className="absolute top-4 right-4 flex items-center gap-2"
+        className="relative inline-block"
         onClick={(e) => e.stopPropagation()}
+        style={{ lineHeight: 0 /* kill the inline-block baseline gap below the img */ }}
       >
-        <button
-          onClick={handleDownload}
-          title="Download image (D)"
-          className="px-3 py-1.5 rounded-lg bg-ui/[0.08] hover:bg-ui/[0.12] border border-ui/[0.15] text-xs text-ui/90 font-medium backdrop-blur transition-colors"
-        >
-          <span aria-hidden>⬇</span> Download
-        </button>
-        <button
-          onClick={onClose}
-          title="Close (Esc)"
-          className="w-9 h-9 flex items-center justify-center rounded-lg bg-ui/[0.08] hover:bg-ui/[0.12] border border-ui/[0.15] text-ui/90 backdrop-blur transition-colors"
-          aria-label="Close"
-        >
-          <span className="text-xl leading-none">×</span>
-        </button>
-      </div>
+        <img
+          src={src}
+          alt={alt}
+          style={{
+            maxWidth: '90vw',
+            maxHeight: caption ? '80vh' : '88vh',
+            objectFit: 'contain',
+            borderRadius: '8px',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
+            cursor: 'default',
+            display: 'block',
+          }}
+        />
 
-      {/* Image — scaled to ~90% viewport, preserve aspect ratio */}
-      <img
-        src={src}
-        alt={alt}
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          maxWidth: '90vw',
-          maxHeight: caption ? '80vh' : '88vh',
-          objectFit: 'contain',
-          borderRadius: '8px',
-          boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
-          cursor: 'default',
-        }}
-      />
+        {/* Top-right controls overlaid on the image itself. Solid
+            backdrop + white text gives high contrast against any
+            image content (light, dark, busy). */}
+        <div className="absolute top-3 right-3 flex items-center gap-2">
+          <button
+            onClick={handleDownload}
+            title="Download image (D)"
+            className="px-3 py-1.5 rounded-lg bg-black/60 hover:bg-black/75 border border-white/20 text-xs text-white font-medium backdrop-blur transition-colors"
+          >
+            <span aria-hidden>⬇</span> Download
+          </button>
+          <button
+            onClick={onClose}
+            title="Close (Esc)"
+            className="w-9 h-9 flex items-center justify-center rounded-lg bg-black/60 hover:bg-black/75 border border-white/20 text-white backdrop-blur transition-colors"
+            aria-label="Close"
+          >
+            <span className="text-xl leading-none">×</span>
+          </button>
+        </div>
+      </div>
 
       {/* Optional caption */}
       {caption && (

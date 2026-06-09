@@ -250,6 +250,87 @@ const DeepSeekBudget = () => {
   );
 };
 
+// Status pill for the LiteLLM price index refresh that runs on boot
+// (and on-demand via the Refresh button). Green check = last run pulled
+// fresh prices for Anthropic / OpenAI / DeepSeek; red x = the fetch
+// failed and we're still on the previously-saved numbers.
+const PricingSyncBadge = () => {
+  const [status, setStatus] = useState<api.LitellmSyncStatus | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = useCallback(async () => {
+    const result = await api.getPricingSyncStatus();
+    if (result.ok) setStatus(result.data);
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    const result = await api.runPricingSync();
+    if (result.ok) setStatus(result.data);
+    setRefreshing(false);
+  };
+
+  const ok = status?.lastStatus === 'success';
+  const failed = status?.lastStatus === 'failure';
+  const when = status?.lastRunAt ? formatDate(status.lastRunAt) : null;
+
+  return (
+    <div className="glass-card p-3 sm:p-4 mb-4 sm:mb-6 flex items-center justify-between gap-3 flex-wrap">
+      <div className="flex items-center gap-3 min-w-0">
+        {ok && (
+          <span
+            className="w-7 h-7 rounded-full flex items-center justify-center bg-cp-teal/15 text-cp-teal font-bold shrink-0"
+            title="Last sync succeeded"
+            aria-label="success"
+          >
+            ✓
+          </span>
+        )}
+        {failed && (
+          <span
+            className="w-7 h-7 rounded-full flex items-center justify-center bg-cp-coral/15 text-cp-coral font-bold shrink-0"
+            title={status?.lastError ?? 'Last sync failed'}
+            aria-label="failure"
+          >
+            ✗
+          </span>
+        )}
+        {!ok && !failed && (
+          <span
+            className="w-7 h-7 rounded-full flex items-center justify-center bg-ui/[0.08] text-ui/40 font-bold shrink-0"
+            aria-label="never run"
+          >
+            ?
+          </span>
+        )}
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-ui truncate">Pricing Index</p>
+          <p className="text-xs text-ui/40 truncate">
+            {ok && when && `Updated ${when}`}
+            {ok && status?.lastUpdatedCount !== null && status?.lastUpdatedCount !== undefined && (
+              <span className="ml-1">&middot; {status.lastUpdatedCount} model{status.lastUpdatedCount === 1 ? '' : 's'} refreshed</span>
+            )}
+            {failed && when && `Failed ${when}`}
+            {failed && status?.lastError && (
+              <span className="ml-1 text-cp-coral/70">&middot; {status.lastError}</span>
+            )}
+            {!ok && !failed && 'Has not run yet'}
+          </p>
+        </div>
+      </div>
+      <button
+        onClick={handleRefresh}
+        disabled={refreshing}
+        className="px-3 py-1.5 text-xs font-medium rounded-lg bg-ui/[0.08] hover:bg-ui/[0.12] border border-ui/[0.15] text-ui/80 transition-colors disabled:opacity-40 shrink-0"
+      >
+        {refreshing ? 'Refreshing…' : 'Refresh'}
+      </button>
+    </div>
+  );
+};
+
 export const Costs = () => {
   const [period, setPeriod] = useState<Period>('24h');
   const [summary, setSummary] = useState<CostSummary | null>(null);
@@ -391,6 +472,9 @@ export const Costs = () => {
           ))}
         </div>
       </div>
+
+      {/* Pricing-index sync status — boot-time + on-demand LiteLLM refresh */}
+      <PricingSyncBadge />
 
       {/* Summary cards */}
       <div className="grid grid-cols-1 xs:grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4 mb-4 sm:mb-6">
