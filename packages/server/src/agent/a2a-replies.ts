@@ -45,17 +45,39 @@ export interface UnrepliedAssign {
  * Scans the most recent N user-role messages and checks each one's
  * `[A2A:...]` header. Stops at the first one that's not in the replies
  * table — that's the open ASSIGN.
+ *
+ * v2.11.0 — Scoped to the current session. Before this fix the
+ * lookback walked across session boundaries, so a QUESTION from a
+ * prior session (or weeks ago) would resurface as "unreplied" forever,
+ * firing the missed-reply nudge on every turn. The session-reset code
+ * already stamps agents.session_started_at when the user resets; we
+ * use that as the lower bound. Threads that genuinely span sessions
+ * (rare — most A2A questions resolve within a single session) get a
+ * graceful "no longer owed" outcome from the user's perspective, which
+ * matches the user expectation of "session reset = clean slate."
  */
 export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 20): UnrepliedAssign | null {
   const db = getDb();
+
+  // Look up the session boundary. If null (never reset), there's no
+  // floor and we fall back to the old all-time behavior.
+  const sessionRow = db
+    .prepare('SELECT session_started_at FROM agents WHERE id = ?')
+    .get(agentId) as { session_started_at: string | null } | undefined;
+  const sessionStartedAt = sessionRow?.session_started_at ?? null;
+
+  const baseSql = `SELECT id, content, created_at FROM messages
+                   WHERE agent_id = ? AND role = 'user'`;
+  const sql = sessionStartedAt
+    ? `${baseSql} AND created_at >= ? ORDER BY created_at DESC, rowid DESC LIMIT ?`
+    : `${baseSql} ORDER BY created_at DESC, rowid DESC LIMIT ?`;
+  const params: unknown[] = sessionStartedAt
+    ? [agentId, sessionStartedAt, lookback]
+    : [agentId, lookback];
+
   const rows = db
-    .prepare(
-      `SELECT id, content, created_at FROM messages
-       WHERE agent_id = ? AND role = 'user'
-       ORDER BY created_at DESC, rowid DESC
-       LIMIT ?`,
-    )
-    .all(agentId, lookback) as Array<{ id: string; content: string; created_at: string }>;
+    .prepare(sql)
+    .all(...params) as Array<{ id: string; content: string; created_at: string }>;
 
   for (const row of rows) {
     const match = row.content?.match(/^\[A2A:([A-Z]+)\s+thread:([0-9a-f]{8})\s+from:([^\]]+)\]/);

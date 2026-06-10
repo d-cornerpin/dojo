@@ -30,11 +30,17 @@ export interface Model {
   maxOutputTokens: number | null;
   inputCostPerM: number | null;
   outputCostPerM: number | null;
-  // 'token' (default) or 'megapixel'. Some image-gen providers price
-  // per output megapixel instead of per token; setting this to
-  // 'megapixel' tells the UI to read/write costPerMegapixel and skip
-  // the token cost fields.
-  pricingUnit: 'token' | 'megapixel';
+  // The pricing unit this model bills in. Token uses input/output
+  // $/M-tokens columns. Every other unit reads costPerUnit and the
+  // unit string disambiguates what that number means:
+  //   megapixel  — $ per output megapixel (image gen)
+  //   second     — $ per second of generated media (video / audio gen)
+  //   character  — $ per character of input text (TTS)
+  //   minute     — $ per minute of input audio (transcription)
+  pricingUnit: 'token' | 'megapixel' | 'second' | 'character' | 'minute';
+  costPerUnit: number | null;
+  // @deprecated since v2.11.0 — use costPerUnit instead. Kept for one
+  // release as a fallback read path so older clients don't break.
   costPerMegapixel: number | null;
   isEnabled: boolean;
   // Per-model thinking/reasoning toggle. Defaults to true. Only meaningful
@@ -133,7 +139,7 @@ export interface Message {
     mimeType: string;
     size: number;
     path: string;
-    category: 'image' | 'pdf' | 'text' | 'office' | 'unknown';
+    category: 'image' | 'pdf' | 'text' | 'office' | 'audio' | 'video' | 'unknown';
   }>;
   /**
    * Where this message came from. Currently only set for user messages

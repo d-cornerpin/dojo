@@ -45,7 +45,7 @@ export interface AckInjectorResult {
 const SELF_ACKNOWLEDGING_TOOLS = new Set([
   'show_to_user',       // displays a file directly
   'imessage_send',      // proactive iMessage IS the response
-  'image_create',       // ack message goes inline ("On it, generating now")
+  'image_create',       // engine posts ack + image directly
   'send_to_agent',      // agent-to-agent — not a user-facing turn anyway
   'broadcast_to_group',
 ]);

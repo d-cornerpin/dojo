@@ -13,7 +13,7 @@ import type { Message } from '@dojo/shared';
 
 const logger = createLogger('chat-routes');
 
-function buildContentWithAttachments(text: string, attachments: Array<{ filename: string; size: number; path: string; category: string }>): string {
+function buildContentWithAttachments(text: string, attachments: Array<{ fileId: string; filename: string; size: number; path: string; category: string }>): string {
   const parts: string[] = [text];
 
   for (const att of attachments) {
@@ -24,6 +24,17 @@ function buildContentWithAttachments(text: string, attachments: Array<{ filename
       parts.push(`\n[File attached: ${att.filename} (${att.size} bytes)]\nPath: ${att.path}\nUse file_read with this path to read the file contents.`);
     } else if (att.category === 'office') {
       parts.push(`\n[Office file attached: ${att.filename} (${att.size} bytes). Convert to PDF or text for better analysis.]`);
+    } else if (att.category === 'audio') {
+      // Audio attachments aren't injectable as content blocks (no
+      // provider accepts audio in chat completions yet for the
+      // primary agent loop). Surface the fileId so the agent can
+      // route it through transcribe_audio.
+      parts.push(`\n[Audio attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nTo hear what the user said, call transcribe_audio with attachment_id="${att.fileId}". Do NOT pass `+'`path`'+` or a file:// URL; the tool only accepts attachment_id or an https URL.`);
+    } else if (att.category === 'video') {
+      // Same as audio — surface the fileId so the agent can
+      // transcribe the soundtrack if a video_create-style tool ever
+      // wants to interrogate it. For now, point at the path.
+      parts.push(`\n[Video attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nTo transcribe the audio track, call transcribe_audio with attachment_id="${att.fileId}".`);
     }
     // Images and PDFs are handled at the model call layer via content blocks
   }
@@ -46,7 +57,7 @@ export interface SubmitUserMessageResult {
  * any inflight model call, and triggers the runtime. Does not block on the agent's
  * response — chat:chunk events will fire as the response streams.
  */
-type AttachmentCategory = 'unknown' | 'text' | 'image' | 'pdf' | 'office';
+type AttachmentCategory = 'unknown' | 'text' | 'image' | 'pdf' | 'office' | 'audio' | 'video';
 type ChatAttachment = { fileId: string; filename: string; mimeType: string; size: number; path: string; category: AttachmentCategory };
 
 export async function submitUserMessage(

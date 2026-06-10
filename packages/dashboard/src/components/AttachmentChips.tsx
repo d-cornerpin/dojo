@@ -11,6 +11,18 @@ interface Attachment {
 }
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+const AUDIO_TYPES = new Set(['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/wave',
+  'audio/x-wav', 'audio/ogg', 'audio/opus', 'audio/webm', 'audio/aac', 'audio/m4a',
+  'audio/x-m4a', 'audio/mp4']);
+const VIDEO_TYPES = new Set(['video/mp4', 'video/quicktime', 'video/webm',
+  'video/x-matroska', 'video/x-msvideo']);
+
+function isAudio(mime: string): boolean {
+  return AUDIO_TYPES.has(mime) || mime.startsWith('audio/');
+}
+function isVideo(mime: string): boolean {
+  return VIDEO_TYPES.has(mime) || mime.startsWith('video/');
+}
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
@@ -18,11 +30,13 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-function getFileIcon(category: string, ext: string): string {
+function getFileIcon(category: string, _ext: string): string {
   switch (category) {
     case 'pdf': return '\uD83D\uDCC4';
     case 'text': return '\uD83D\uDCDD';
     case 'office': return '\uD83D\uDCCA';
+    case 'audio': return '\uD83C\uDFB5';  // musical note
+    case 'video': return '\uD83C\uDFAC';  // clapper board
     default: return '\uD83D\uDCCE';
   }
 }
@@ -176,13 +190,57 @@ const ImageLightbox = ({
   );
 };
 
+// Inline audio chip. Compact filename + size header above a native
+// <audio controls> element. The /api/upload/file route streams with
+// Range support so seek scrubbing works without buffering the whole
+// clip first.
+const AudioChip = ({ att }: { att: Attachment }) => {
+  const url = getImageUrl(att); // same path-derivation as images
+  return (
+    <div className="flex flex-col gap-1 px-2 py-1.5 rounded-lg bg-ui/[0.08] border border-ui/[0.10] min-w-[260px] max-w-[420px]">
+      <div className="flex items-center gap-1.5 text-[11px]">
+        <span>🎵</span>
+        <span className="text-ui/70 truncate flex-1">{att.filename}</span>
+        <span className="text-ui/25">{formatSize(att.size)}</span>
+      </div>
+      <audio controls preload="metadata" src={url} className="w-full h-8" />
+    </div>
+  );
+};
+
+// Inline video chip. Browser handles its own playback controls and
+// poster frame. Constrained to a reasonable max-width so a single
+// chip doesn't dominate the chat column.
+const VideoChip = ({ att }: { att: Attachment }) => {
+  const url = getImageUrl(att);
+  return (
+    <div className="flex flex-col gap-1 rounded-lg overflow-hidden bg-ui/[0.06] border border-ui/[0.10] max-w-[480px]">
+      <video
+        controls
+        preload="metadata"
+        src={url}
+        className="w-full max-h-[360px] bg-black/30"
+      />
+      <div className="flex items-center gap-1.5 px-2 py-1 text-[11px]">
+        <span>🎬</span>
+        <span className="text-ui/70 truncate flex-1">{att.filename}</span>
+        <span className="text-ui/25">{formatSize(att.size)}</span>
+      </div>
+    </div>
+  );
+};
+
 export const AttachmentChips = ({ attachments }: { attachments: Attachment[] }) => {
   const [lightboxSrc, setLightboxSrc] = useState<{ src: string; alt: string } | null>(null);
 
   if (!attachments || attachments.length === 0) return null;
 
   const images = attachments.filter(a => IMAGE_TYPES.has(a.mimeType));
-  const files = attachments.filter(a => !IMAGE_TYPES.has(a.mimeType));
+  const audios = attachments.filter(a => !IMAGE_TYPES.has(a.mimeType) && isAudio(a.mimeType));
+  const videos = attachments.filter(a => !IMAGE_TYPES.has(a.mimeType) && isVideo(a.mimeType));
+  const files = attachments.filter(a =>
+    !IMAGE_TYPES.has(a.mimeType) && !isAudio(a.mimeType) && !isVideo(a.mimeType)
+  );
 
   return (
     <>
@@ -222,6 +280,16 @@ export const AttachmentChips = ({ attachments }: { attachments: Attachment[] }) 
             })}
           </div>
         )}
+
+        {/* Audio chips */}
+        {audios.map((att, i) => (
+          <AudioChip key={att.fileId || `a-${i}`} att={att} />
+        ))}
+
+        {/* Video chips */}
+        {videos.map((att, i) => (
+          <VideoChip key={att.fileId || `v-${i}`} att={att} />
+        ))}
 
         {/* File chips */}
         {files.map((att, i) => {

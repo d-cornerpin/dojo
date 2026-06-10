@@ -11,6 +11,8 @@ const logger = createLogger('costs');
 
 // ── Record Cost ──
 
+export type PricingUnit = 'token' | 'megapixel' | 'second' | 'character' | 'minute';
+
 export interface RecordCostParams {
   agentId: string;
   modelId: string;
@@ -19,60 +21,93 @@ export interface RecordCostParams {
   outputTokens: number;
   latencyMs?: number;
   requestType?: string;
-  // For megapixel-priced image-gen models. Both must be present and the
-  // model must have pricing_unit='megapixel' + a non-null cost_per_megapixel
-  // for the megapixel branch to kick in; otherwise we fall back to token math.
+  // For megapixel-priced image-gen models. The unit count is derived
+  // from (imageWidth * imageHeight) / 1_000_000 so the caller passes the
+  // raw dimensions and we compute MP here.
   imageWidth?: number;
   imageHeight?: number;
+  // Generic per-unit count for every other non-token pricing unit:
+  //   second    — duration of generated media (video / audio gen)
+  //   character — characters of input text (TTS)
+  //   minute    — minutes of input audio (transcription)
+  // The model row's pricing_unit field disambiguates what this number
+  // means. If unset, the recorder falls through to token math.
+  units?: number;
 }
 
 interface ModelPricing {
-  unit: 'token' | 'megapixel';
+  unit: PricingUnit;
   inputCostPerM: number;     // token mode, defaults to Sonnet rate when null
   outputCostPerM: number;    // token mode, defaults to Sonnet rate when null
-  costPerMegapixel: number | null; // null when unknown or token-priced
+  costPerUnit: number | null; // any non-token unit; null when unknown or token-priced
 }
 
 function getModelPricing(modelId: string): ModelPricing {
   const db = getDb();
   const row = db.prepare(`
-    SELECT input_cost_per_m, output_cost_per_m, pricing_unit, cost_per_megapixel FROM models WHERE id = ?
+    SELECT input_cost_per_m, output_cost_per_m, pricing_unit, cost_per_unit, cost_per_megapixel
+    FROM models WHERE id = ?
   `).get(modelId) as {
     input_cost_per_m: number | null;
     output_cost_per_m: number | null;
     pricing_unit: string | null;
+    cost_per_unit: number | null;
     cost_per_megapixel: number | null;
   } | undefined;
 
+  const rawUnit = row?.pricing_unit;
+  const unit: PricingUnit =
+    rawUnit === 'megapixel' || rawUnit === 'second' ||
+    rawUnit === 'character' || rawUnit === 'minute'
+      ? rawUnit
+      : 'token';
+
+  // Prefer cost_per_unit (post-migration 061). For megapixel rows added
+  // pre-061, cost_per_unit may still be null but cost_per_megapixel
+  // holds the legacy value — keep the fallback during the compat window.
+  const costPerUnit =
+    typeof row?.cost_per_unit === 'number'
+      ? row.cost_per_unit
+      : unit === 'megapixel' && typeof row?.cost_per_megapixel === 'number'
+        ? row.cost_per_megapixel
+        : null;
+
   return {
-    unit: row?.pricing_unit === 'megapixel' ? 'megapixel' : 'token',
+    unit,
     inputCostPerM: row?.input_cost_per_m ?? 3.0,
     outputCostPerM: row?.output_cost_per_m ?? 15.0,
-    costPerMegapixel: row?.cost_per_megapixel ?? null,
+    costPerUnit,
   };
 }
 
 export function recordCost(params: RecordCostParams): void {
-  const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType, imageWidth, imageHeight } = params;
+  const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType, imageWidth, imageHeight, units } = params;
 
   try {
     const pricing = getModelPricing(modelId);
 
-    // Megapixel branch: only when the model is configured for it AND
-    // we know both the output image's pixel dimensions AND the operator
-    // has entered a $/MP price. Any missing piece falls through to the
-    // token math so we never silently record $0.
+    // Resolve the unit count for this call based on the model's
+    // pricing_unit. For megapixel we compute from the image dimensions
+    // the caller passed; for every other non-token unit we read the
+    // generic `units` param. If anything is missing (no rate, no count)
+    // we fall through to token math so a misconfigured row still
+    // produces a sensible record rather than silently $0.
+    let unitCount: number | null = null;
+    if (pricing.unit === 'megapixel') {
+      if (typeof imageWidth === 'number' && imageWidth > 0 && typeof imageHeight === 'number' && imageHeight > 0) {
+        unitCount = (imageWidth * imageHeight) / 1_000_000;
+      }
+    } else if (pricing.unit === 'second' || pricing.unit === 'character' || pricing.unit === 'minute') {
+      if (typeof units === 'number' && units > 0) {
+        unitCount = units;
+      }
+    }
+
     let costUsd: number;
-    let costMode: 'token' | 'megapixel' = 'token';
-    if (
-      pricing.unit === 'megapixel' &&
-      pricing.costPerMegapixel !== null &&
-      typeof imageWidth === 'number' && imageWidth > 0 &&
-      typeof imageHeight === 'number' && imageHeight > 0
-    ) {
-      const megapixels = (imageWidth * imageHeight) / 1_000_000;
-      costUsd = megapixels * pricing.costPerMegapixel;
-      costMode = 'megapixel';
+    let costMode: PricingUnit = 'token';
+    if (pricing.unit !== 'token' && unitCount !== null && pricing.costPerUnit !== null) {
+      costUsd = unitCount * pricing.costPerUnit;
+      costMode = pricing.unit;
     } else {
       const inputCost = (inputTokens / 1_000_000) * pricing.inputCostPerM;
       const outputCost = (outputTokens / 1_000_000) * pricing.outputCostPerM;
@@ -103,8 +138,10 @@ export function recordCost(params: RecordCostParams): void {
       agentId,
       modelId,
       costMode,
+      unitCount: unitCount ?? null,
       imageWidth: imageWidth ?? null,
       imageHeight: imageHeight ?? null,
+      units: units ?? null,
       inputTokens,
       outputTokens,
       costUsd: costUsd.toFixed(6),

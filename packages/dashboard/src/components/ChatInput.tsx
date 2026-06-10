@@ -4,9 +4,13 @@ import type { AttachmentInfo } from '../lib/api';
 import { useVoiceMode } from '../hooks/useVoiceMode';
 import { VoiceFirstRunModal } from './VoiceFirstRunModal';
 
-const ACCEPTED_EXTENSIONS = '.png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md,.csv,.json,.xml,.doc,.docx,.xls,.xlsx,.pptx,.js,.ts,.tsx,.jsx,.py,.html,.css,.sh,.yaml,.yml,.toml,.env,.sql,.rs,.go,.java,.rb,.php,.swift,.kt,.c,.cpp,.h';
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB per file
-const MAX_TOTAL_SIZE = 20 * 1024 * 1024; // 20MB total
+const ACCEPTED_EXTENSIONS = '.png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md,.csv,.json,.xml,.doc,.docx,.xls,.xlsx,.pptx,.js,.ts,.tsx,.jsx,.py,.html,.css,.sh,.yaml,.yml,.toml,.env,.sql,.rs,.go,.java,.rb,.php,.swift,.kt,.c,.cpp,.h,.mp3,.wav,.m4a,.aac,.ogg,.opus,.flac,.webm,.mp4,.mov,.mkv,.avi';
+// 1 GB per file, 2 GB per message. Big files ride the chunked upload
+// path under the hood so they survive the Cloudflare tunnel's 100 MB
+// per-request limit. Caps live here for early UI feedback ("file too
+// big" before we start streaming) and are mirrored server-side.
+const MAX_FILE_SIZE = 1024 * 1024 * 1024;
+const MAX_TOTAL_SIZE = 2 * 1024 * 1024 * 1024;
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 
@@ -116,12 +120,12 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
 
     for (const file of fileArray) {
       if (file.size > MAX_FILE_SIZE) {
-        setError(`"${file.name}" exceeds the 10MB file size limit.`);
+        setError(`"${file.name}" exceeds the 1GB file size limit.`);
         continue;
       }
       totalSize += file.size;
       if (totalSize > MAX_TOTAL_SIZE) {
-        setError('Total file size exceeds 20MB limit.');
+        setError('Total file size exceeds the 2GB per-message limit.');
         break;
       }
 

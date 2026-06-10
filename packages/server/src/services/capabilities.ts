@@ -23,7 +23,16 @@ import { getProviderCredential } from '../config/loader.js';
 
 const logger = createLogger('capabilities');
 
-export type Capability = 'tools' | 'vision' | 'thinking' | 'embedding' | 'image_generation' | 'text';
+export type Capability =
+  | 'tools'
+  | 'vision'
+  | 'thinking'
+  | 'embedding'
+  | 'image_generation'
+  | 'video_generation'
+  | 'audio_generation'
+  | 'transcription'
+  | 'text';
 
 export interface ProbeInput {
   providerId: string;
@@ -266,18 +275,44 @@ async function probeOpenRouter(baseUrl: string, providerId: string, apiModelId: 
     caps.push('thinking');
   }
 
-  // Image generation: check `architecture.output_modalities` for 'image',
-  // which OpenRouter populates for models like Gemini 2.5 Flash Image,
-  // GPT-5 Image, and the Gemini 3 image previews. These models return
-  // images inline in the chat completion response when the request
-  // includes `modalities: ['image', 'text']`.
+  // Output-modality detection. OpenRouter populates `output_modalities`
+  // for media-generating models (image, video, audio). The free-form
+  // `modality` string ("text+image->text", "text->video", etc.) is the
+  // legacy fallback for older catalog entries.
   const outputModalities = Array.isArray(entry.architecture?.output_modalities)
     ? entry.architecture!.output_modalities!
     : [];
+
+  // Image generation: Gemini 2.5 Flash Image, GPT-5 Image, etc.
   const hasImageOutput = outputModalities.includes('image') ||
     /->.*(^|\+|\s)image/.test(modalityString);
   if (hasImageOutput) {
     caps.push('image_generation');
+  }
+
+  // Video generation: Sora 2, Veo 3, Runway, etc.
+  const hasVideoOutput = outputModalities.includes('video') ||
+    /->.*(^|\+|\s)video/.test(modalityString);
+  if (hasVideoOutput) {
+    caps.push('video_generation');
+  }
+
+  // Audio generation (TTS) and transcription (STT) both touch audio,
+  // but they're opposite directions. The distinction is which side of
+  // the modality arrow audio appears on. TTS = text in, audio out.
+  // STT = audio in, text out.
+  const hasAudioOutput = outputModalities.includes('audio') ||
+    /->.*(^|\+|\s)audio/.test(modalityString);
+  if (hasAudioOutput) {
+    caps.push('audio_generation');
+  }
+
+  const hasAudioInput = inputModalities.includes('audio') ||
+    /(^|\+|\s)audio.*->/.test(modalityString);
+  // Transcription only when audio goes in AND text comes out (and audio
+  // doesn't come out, which would be a voice-conversion model, not STT).
+  if (hasAudioInput && !hasAudioOutput) {
+    caps.push('transcription');
   }
 
   return caps;
@@ -462,7 +497,16 @@ export async function probeAndStoreCapabilities(modelId: string): Promise<Capabi
 // This replaces the earlier length-only check that was passing Anthropic
 // models through unchanged.
 
-const MODERN_CAPABILITY_VOCAB = new Set<string>(['tools', 'vision', 'thinking', 'embedding', 'image_generation']);
+const MODERN_CAPABILITY_VOCAB = new Set<string>([
+  'tools',
+  'vision',
+  'thinking',
+  'embedding',
+  'image_generation',
+  'video_generation',
+  'audio_generation',
+  'transcription',
+]);
 
 export async function backfillEmptyCapabilities(): Promise<void> {
   const db = getDb();

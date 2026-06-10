@@ -2126,9 +2126,37 @@ const CAPABILITY_LABELS: Record<string, { label: string; className: string; titl
   image_generation: {
     label: 'Image Gen',
     className: 'bg-cp-amber/15 text-cp-amber border-cp-amber/30',
-    title: 'Can generate images — available to Imaginer for image_create requests',
+    title: 'Can generate images via the image_create tool',
+  },
+  video_generation: {
+    label: 'Video Gen',
+    className: 'bg-cp-coral/15 text-cp-coral border-cp-coral/30',
+    title: 'Can generate video via the video_create tool',
+  },
+  audio_generation: {
+    label: 'Audio Gen',
+    className: 'bg-cp-teal/15 text-cp-teal border-cp-teal/30',
+    title: 'Can generate spoken audio via the audio_create tool',
+  },
+  transcription: {
+    label: 'Transcription',
+    className: 'bg-cp-blue/15 text-cp-blue border-cp-blue/30',
+    title: 'Can convert audio to text via the transcribe_audio tool',
   },
 };
+
+// Capability keys the user can manually toggle in the edit UI. Matches
+// the MANUAL_ADD_CAPABILITIES set above, but kept separately so we can
+// independently evolve either without coupling the two flows.
+const EDITABLE_CAPABILITIES = [
+  { key: 'tools', label: 'Tools' },
+  { key: 'vision', label: 'Vision' },
+  { key: 'thinking', label: 'Thinking' },
+  { key: 'image_generation', label: 'Image Gen' },
+  { key: 'video_generation', label: 'Video Gen' },
+  { key: 'audio_generation', label: 'Audio Gen' },
+  { key: 'transcription', label: 'Transcription' },
+] as const;
 
 const CapabilityBadges = ({ capabilities }: { capabilities: string[] }) => {
   const known = capabilities.filter(c => CAPABILITY_LABELS[c]);
@@ -2173,20 +2201,87 @@ const ModelRow = ({
   const toast = useToast();
   const [inputCost, setInputCost] = useState(String(model.inputCostPerM ?? 0));
   const [outputCost, setOutputCost] = useState(String(model.outputCostPerM ?? 0));
-  const [mpCost, setMpCost] = useState(
-    model.costPerMegapixel === null || model.costPerMegapixel === undefined
-      ? ''
-      : String(model.costPerMegapixel),
+  const [unitCost, setUnitCost] = useState(
+    model.costPerUnit === null || model.costPerUnit === undefined
+      ? (model.costPerMegapixel === null || model.costPerMegapixel === undefined
+        ? ''
+        : String(model.costPerMegapixel))
+      : String(model.costPerUnit),
   );
-  const [pricingUnit, setPricingUnit] = useState<'token' | 'megapixel'>(model.pricingUnit ?? 'token');
+  type PricingUnitChoice = 'token' | 'megapixel' | 'second' | 'character' | 'minute';
+  const [pricingUnit, setPricingUnit] = useState<PricingUnitChoice>(model.pricingUnit ?? 'token');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const supportsImageGen = model.capabilities.includes('image_generation');
+  const supportsVideoGen = model.capabilities.includes('video_generation');
+  const supportsAudioGen = model.capabilities.includes('audio_generation');
+  const supportsTranscription = model.capabilities.includes('transcription');
+
+  // Which pricing units make sense for this model's capability set.
+  // Token is always offered. Each other unit appears only when the
+  // matching capability is on the model.
+  const availableUnits: PricingUnitChoice[] = ['token'];
+  if (supportsImageGen) availableUnits.push('megapixel');
+  if (supportsVideoGen || supportsAudioGen) availableUnits.push('second');
+  if (supportsAudioGen) availableUnits.push('character');
+  if (supportsTranscription) availableUnits.push('minute');
+  const showUnitToggle = availableUnits.length > 1;
+
+  const UNIT_LABEL: Record<PricingUnitChoice, string> = {
+    token: 'Token',
+    megapixel: 'Megapixel',
+    second: 'Second',
+    character: 'Character',
+    minute: 'Minute',
+  };
+  const UNIT_PLACEHOLDER: Record<PricingUnitChoice, string> = {
+    token: '',
+    megapixel: '$ per output megapixel',
+    second: '$ per second of output',
+    character: '$ per character of input',
+    minute: '$ per minute of input',
+  };
+  const UNIT_INPUT_LABEL: Record<PricingUnitChoice, string> = {
+    token: '$/M',
+    megapixel: '$/MP',
+    second: '$/sec',
+    character: '$/char',
+    minute: '$/min',
+  };
 
   // Local optimistic state for the thinking toggle. Mirrors the prop but
   // flips instantly on click while the PATCH is in flight.
   const [thinkingEnabled, setThinkingEnabled] = useState(model.thinkingEnabled);
   const supportsThinking = model.capabilities.includes('thinking');
+
+  // Inline capability editor — opens when the user clicks Edit next to
+  // the capability badges. Lets the user overwrite the probed
+  // capabilities directly. Useful when a provider doesn't advertise a
+  // newly-launched SKU's true output modality (e.g. OpenRouter not
+  // tagging google/lyria-3-clip-preview as audio_generation).
+  const [editingCaps, setEditingCaps] = useState(false);
+  const [draftCaps, setDraftCaps] = useState<Set<string>>(new Set(model.capabilities));
+  const [savingCaps, setSavingCaps] = useState(false);
+  const capsChanged =
+    editingCaps && (
+      draftCaps.size !== model.capabilities.length ||
+      model.capabilities.some(c => !draftCaps.has(c))
+    );
+  const handleCapsSave = async () => {
+    setSavingCaps(true);
+    const result = await api.updateModelCapabilities(model.id, Array.from(draftCaps));
+    setSavingCaps(false);
+    if (result.ok) {
+      setEditingCaps(false);
+      onPricingChange(); // reload models so badges + downstream pickers refresh
+    } else {
+      toast.error(result.error ?? 'Failed to save capabilities');
+    }
+  };
+  const handleCapsCancel = () => {
+    setDraftCaps(new Set(model.capabilities));
+    setEditingCaps(false);
+  };
 
   // Ollama-only: per-model num_ctx control. The input box shows
   // `override ?? recommended`. When the user types, it becomes an
@@ -2201,15 +2296,16 @@ const ModelRow = ({
   const [ctxSaved, setCtxSaved] = useState(false);
   const [ctxError, setCtxError] = useState<string | null>(null);
 
-  // Parse the megapixel cost input. Empty string → null (unknown).
-  const parsedMp = mpCost.trim() === '' ? null : Number(mpCost);
-  const mpHasChanges = parsedMp !== (model.costPerMegapixel ?? null);
+  // Parse the per-unit cost input. Empty string → null (unknown).
+  const parsedUnit = unitCost.trim() === '' ? null : Number(unitCost);
+  const currentSavedUnitValue = model.costPerUnit ?? model.costPerMegapixel ?? null;
+  const unitHasChanges = parsedUnit !== currentSavedUnitValue;
   const tokenHasChanges =
     Number(inputCost) !== (model.inputCostPerM ?? 0) ||
     Number(outputCost) !== (model.outputCostPerM ?? 0);
   const hasChanges =
     pricingUnit !== (model.pricingUnit ?? 'token') ||
-    (pricingUnit === 'token' ? tokenHasChanges : mpHasChanges);
+    (pricingUnit === 'token' ? tokenHasChanges : unitHasChanges);
 
   const handleSave = async () => {
     setSaving(true);
@@ -2221,7 +2317,7 @@ const ModelRow = ({
       payload.outputCostPerM = Number(outputCost) || 0;
     } else {
       // null is meaningful (unknown), so send it through explicitly.
-      payload.costPerMegapixel = parsedMp;
+      payload.costPerUnit = parsedUnit;
     }
     const result = await api.updateModelPricing(model.id, payload);
     if (result.ok) {
@@ -2232,7 +2328,7 @@ const ModelRow = ({
     setSaving(false);
   };
 
-  const handleUnitToggle = async (next: 'token' | 'megapixel') => {
+  const handleUnitToggle = async (next: PricingUnitChoice) => {
     if (next === pricingUnit) return;
     setPricingUnit(next);
     // Persist the mode change immediately so the model is consistent
@@ -2325,7 +2421,63 @@ const ModelRow = ({
             {model.contextWindow ? ` | ${Math.round(model.contextWindow / 1000)}k context` : ''}
             {' | '}{model.providerId}
           </p>
-          <CapabilityBadges capabilities={model.capabilities} />
+          {editingCaps ? (
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              {EDITABLE_CAPABILITIES.map((cap) => {
+                const checked = draftCaps.has(cap.key);
+                return (
+                  <button
+                    key={cap.key}
+                    type="button"
+                    onClick={() => {
+                      const next = new Set(draftCaps);
+                      if (checked) next.delete(cap.key);
+                      else next.add(cap.key);
+                      setDraftCaps(next);
+                    }}
+                    className={`px-2 py-0.5 rounded text-[10px] font-medium border transition-colors ${
+                      checked
+                        ? 'bg-cp-amber/20 text-cp-amber border-cp-amber/40'
+                        : 'bg-ui/[0.03] text-ui/40 border-ui/[0.10] hover:border-ui/[0.15]'
+                    }`}
+                  >
+                    {cap.label}
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                onClick={handleCapsSave}
+                disabled={savingCaps || !capsChanged}
+                className="px-2 py-0.5 text-[10px] glass-btn-primary rounded transition-colors disabled:opacity-40"
+              >
+                {savingCaps ? '...' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={handleCapsCancel}
+                disabled={savingCaps}
+                className="px-2 py-0.5 text-[10px] text-ui/40 hover:text-ui/70 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+              <CapabilityBadges capabilities={model.capabilities} />
+              <button
+                type="button"
+                onClick={() => {
+                  setDraftCaps(new Set(model.capabilities));
+                  setEditingCaps(true);
+                }}
+                className="text-[10px] text-ui/40 hover:text-ui/70 underline transition-colors"
+                title="Override the probed capabilities. Use when the provider didn't advertise a real capability of this model."
+              >
+                Edit
+              </button>
+            </div>
+          )}
           {supportsThinking && (
             <label
               className="mt-2 inline-flex items-center gap-2 cursor-pointer select-none"
@@ -2369,31 +2521,27 @@ const ModelRow = ({
         </div>
       </div>
 
-      {/* Pricing fields */}
-      {supportsImageGen && (
+      {/* Pricing fields — segmented control for "priced by" appears
+          only when the model has more than one applicable unit. Token
+          is always one option; capability-specific units appear when
+          the relevant capability is on the model. */}
+      {showUnitToggle && (
         <div className="flex items-center gap-2 mb-2">
           <span className="text-[11px] text-ui/40">Priced by</span>
           <div className="flex rounded-md overflow-hidden border border-ui/[0.10] text-[11px] font-medium">
-            <button
-              onClick={() => handleUnitToggle('token')}
-              className={`px-2.5 py-1 transition-colors ${
-                pricingUnit === 'token'
-                  ? 'bg-cp-amber/20 text-cp-amber'
-                  : 'bg-ui/[0.03] text-ui/40 hover:text-ui/70'
-              }`}
-            >
-              Token
-            </button>
-            <button
-              onClick={() => handleUnitToggle('megapixel')}
-              className={`px-2.5 py-1 transition-colors ${
-                pricingUnit === 'megapixel'
-                  ? 'bg-cp-amber/20 text-cp-amber'
-                  : 'bg-ui/[0.03] text-ui/40 hover:text-ui/70'
-              }`}
-            >
-              Megapixel
-            </button>
+            {availableUnits.map((unit) => (
+              <button
+                key={unit}
+                onClick={() => handleUnitToggle(unit)}
+                className={`px-2.5 py-1 transition-colors ${
+                  pricingUnit === unit
+                    ? 'bg-cp-amber/20 text-cp-amber'
+                    : 'bg-ui/[0.03] text-ui/40 hover:text-ui/70'
+                }`}
+              >
+                {UNIT_LABEL[unit]}
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -2427,13 +2575,15 @@ const ModelRow = ({
           </>
         ) : (
           <div className="flex items-center gap-2">
-            <label className="text-xs text-ui/40 w-20" title="Dollars per output megapixel">$/MP</label>
+            <label className="text-xs text-ui/40 w-20" title={UNIT_PLACEHOLDER[pricingUnit]}>
+              {UNIT_INPUT_LABEL[pricingUnit]}
+            </label>
             <input
               type="number"
               step="0.001"
               min="0"
-              value={mpCost}
-              onChange={(e) => setMpCost(e.target.value)}
+              value={unitCost}
+              onChange={(e) => setUnitCost(e.target.value)}
               onBlur={() => hasChanges && handleSave()}
               placeholder="leave blank if unknown"
               className="glass-input w-40 font-mono text-right"
@@ -2600,21 +2750,55 @@ const MANUAL_ADD_CAPABILITIES = [
   { key: 'vision', label: 'Vision', desc: 'Image input' },
   { key: 'thinking', label: 'Thinking', desc: 'Extended reasoning' },
   { key: 'image_generation', label: 'Image Gen', desc: 'Image output' },
+  { key: 'video_generation', label: 'Video Gen', desc: 'Video output' },
+  { key: 'audio_generation', label: 'Audio Gen', desc: 'Audio / TTS output' },
+  { key: 'transcription', label: 'Transcription', desc: 'Speech-to-text' },
 ] as const;
+
+type ManualAddPricingUnit = 'token' | 'megapixel' | 'second' | 'character' | 'minute';
 
 const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onModelAdded: () => void }) => {
   const [expanded, setExpanded] = useState(false);
   const [modelId, setModelId] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [selectedCaps, setSelectedCaps] = useState<Set<string>>(new Set());
-  const [pricingUnit, setPricingUnit] = useState<'token' | 'megapixel'>('token');
+  const [pricingUnit, setPricingUnit] = useState<ManualAddPricingUnit>('token');
   const [inputPrice, setInputPrice] = useState('');
   const [outputPrice, setOutputPrice] = useState('');
-  const [megapixelPrice, setMegapixelPrice] = useState('');
+  const [unitPrice, setUnitPrice] = useState('');
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Which units are available given the capability checkboxes the
+  // user has ticked. Token is always allowed; the others mirror the
+  // ModelRow rules.
   const supportsImageGen = selectedCaps.has('image_generation');
+  const supportsVideoGen = selectedCaps.has('video_generation');
+  const supportsAudioGen = selectedCaps.has('audio_generation');
+  const supportsTranscription = selectedCaps.has('transcription');
+  const availableUnits: ManualAddPricingUnit[] = ['token'];
+  if (supportsImageGen) availableUnits.push('megapixel');
+  if (supportsVideoGen || supportsAudioGen) availableUnits.push('second');
+  if (supportsAudioGen) availableUnits.push('character');
+  if (supportsTranscription) availableUnits.push('minute');
+
+  // If the user untoggled a capability that the current unit depended
+  // on, snap back to token so we don't submit an invalid combo.
+  useEffect(() => {
+    if (!availableUnits.includes(pricingUnit)) setPricingUnit('token');
+  }, [availableUnits, pricingUnit]);
+
+  const UNIT_LABEL: Record<ManualAddPricingUnit, string> = {
+    token: 'Token', megapixel: 'Megapixel', second: 'Second',
+    character: 'Character', minute: 'Minute',
+  };
+  const UNIT_HINT: Record<ManualAddPricingUnit, string> = {
+    token: 'Per million tokens. Enter 0 for free; blank for unknown.',
+    megapixel: 'Per output megapixel. Useful for OpenRouter image-gen SKUs that don\'t price by token.',
+    second: 'Per second of generated media. Typical for video and some audio models.',
+    character: 'Per character of input text. Common for TTS providers.',
+    minute: 'Per minute of input audio. Common for transcription providers.',
+  };
 
   const toggleCap = (key: string) => {
     setSelectedCaps(prev => {
@@ -2625,7 +2809,7 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
     });
   };
 
-  // Parse a "$/M tokens" input. Empty → null (unknown). "0" → 0 (free).
+  // Parse a price input. Empty → null (unknown). "0" → 0 (free).
   // Anything else → number, or null if not parseable.
   const parsePrice = (s: string): number | null => {
     const trimmed = s.trim();
@@ -2640,10 +2824,11 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
     setError(null);
     setAdding(true);
 
-    // Only image-gen models can use megapixel pricing — defensively
-    // fall back to token if the user toggled MP then cleared the cap.
-    const effectiveUnit: 'token' | 'megapixel' =
-      supportsImageGen && pricingUnit === 'megapixel' ? 'megapixel' : 'token';
+    // Defensively snap back to token if the chosen unit no longer
+    // matches a selected capability (e.g. the user toggled MP, then
+    // unchecked image_generation before submitting).
+    const effectiveUnit: ManualAddPricingUnit =
+      availableUnits.includes(pricingUnit) ? pricingUnit : 'token';
 
     const result = await api.addProviderModel(providerId, {
       apiModelId: trimmedId,
@@ -2653,9 +2838,9 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
       inputCostPerM: effectiveUnit === 'token' ? parsePrice(inputPrice) : null,
       outputCostPerM: effectiveUnit === 'token' ? parsePrice(outputPrice) : null,
       pricingUnit: effectiveUnit,
-      costPerMegapixel: effectiveUnit === 'megapixel' ? parsePrice(megapixelPrice) : null,
+      costPerUnit: effectiveUnit === 'token' ? null : parsePrice(unitPrice),
       capabilities: Array.from(selectedCaps),
-    } as api.BrowseModelResult & { capabilities?: string[] });
+    } as api.BrowseModelResult & { capabilities?: string[]; pricingUnit?: ManualAddPricingUnit; costPerUnit?: number | null });
 
     setAdding(false);
     if (result.ok) {
@@ -2664,7 +2849,7 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
       setSelectedCaps(new Set());
       setInputPrice('');
       setOutputPrice('');
-      setMegapixelPrice('');
+      setUnitPrice('');
       setPricingUnit('token');
       setExpanded(false);
       onModelAdded();
@@ -2730,34 +2915,26 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
           <div>
             <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
               <label className="form-label">Pricing (optional)</label>
-              {supportsImageGen && (
+              {availableUnits.length > 1 && (
                 <div className="flex rounded-md overflow-hidden border border-ui/[0.10] text-[11px] font-medium">
-                  <button
-                    onClick={() => setPricingUnit('token')}
-                    className={`px-2.5 py-1 transition-colors ${
-                      pricingUnit === 'token'
-                        ? 'bg-cp-amber/20 text-cp-amber'
-                        : 'bg-ui/[0.03] text-ui/40 hover:text-ui/70'
-                    }`}
-                    type="button"
-                  >
-                    Token
-                  </button>
-                  <button
-                    onClick={() => setPricingUnit('megapixel')}
-                    className={`px-2.5 py-1 transition-colors ${
-                      pricingUnit === 'megapixel'
-                        ? 'bg-cp-amber/20 text-cp-amber'
-                        : 'bg-ui/[0.03] text-ui/40 hover:text-ui/70'
-                    }`}
-                    type="button"
-                  >
-                    Megapixel
-                  </button>
+                  {availableUnits.map((unit) => (
+                    <button
+                      key={unit}
+                      onClick={() => setPricingUnit(unit)}
+                      className={`px-2.5 py-1 transition-colors ${
+                        pricingUnit === unit
+                          ? 'bg-cp-amber/20 text-cp-amber'
+                          : 'bg-ui/[0.03] text-ui/40 hover:text-ui/70'
+                      }`}
+                      type="button"
+                    >
+                      {UNIT_LABEL[unit]}
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
-            {pricingUnit === 'token' || !supportsImageGen ? (
+            {pricingUnit === 'token' ? (
               <>
                 <div className="grid grid-cols-2 gap-2">
                   <input
@@ -2779,9 +2956,7 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
                     className="glass-input w-full"
                   />
                 </div>
-                <p className="text-[10px] text-ui/25 mt-1">
-                  Per million tokens. Enter 0 for free; blank for unknown.
-                </p>
+                <p className="text-[10px] text-ui/25 mt-1">{UNIT_HINT.token}</p>
               </>
             ) : (
               <>
@@ -2789,14 +2964,12 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
                   type="number"
                   step="0.001"
                   min="0"
-                  value={megapixelPrice}
-                  onChange={(e) => setMegapixelPrice(e.target.value)}
-                  placeholder="$ per output megapixel — blank if unknown"
+                  value={unitPrice}
+                  onChange={(e) => setUnitPrice(e.target.value)}
+                  placeholder={`$ per ${pricingUnit} — blank if unknown`}
                   className="glass-input w-full"
                 />
-                <p className="text-[10px] text-ui/25 mt-1">
-                  Per output megapixel. Useful for OpenRouter image-gen SKUs that don't price by token.
-                </p>
+                <p className="text-[10px] text-ui/25 mt-1">{UNIT_HINT[pricingUnit]}</p>
               </>
             )}
           </div>
@@ -2943,12 +3116,15 @@ const ModelsTab = () => {
       )}
 
       {/* Platform-level model pickers — placed below the provider
-          catalogs. Two-column on md+ viewports, stacks on narrow screens.
-          Receive the live models list as a prop so newly-added models
-          show up in the dropdowns without a page reload. */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3">
+          catalogs. Up to 3 columns on lg+ viewports, 2 on md, 1 on
+          mobile. Receive the live models list as a prop so newly-
+          added models show up in the dropdowns without a page reload. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 pt-3">
         <FallbackVisionModelCard models={models} />
         <ImageGenModelCard models={models} />
+        <VideoGenModelCard models={models} />
+        <AudioGenModelCard models={models} />
+        <TranscriptionModelCard models={models} />
       </div>
     </div>
   );
@@ -3644,31 +3820,51 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
 
 // Self-contained: loads its own model list since it lives on the Dojo
 // tab, which doesn't otherwise need the model catalog. Keeps this card
-// pluggable wherever a future use suggests it should live.
-// Small cost display rendered below a model dropdown. Tri-state per field:
-//   number > 0 → "$X/M"
+// Small cost display rendered below a model dropdown. Tri-state per
+// unit field:
+//   number > 0 → formatted "$X / <unit>"
 //   exactly 0 → "Free"
-//   null      → unknown (collapses the whole line to a quiet hint
-//               only if BOTH fields are unknown)
-const formatPrice = (n: number | null): string | null => {
+//   null      → unknown (line collapses to a quiet hint when nothing
+//               is known about pricing)
+const formatTokenPrice = (n: number | null): string | null => {
   if (n === null || typeof n !== 'number') return null;
   if (n === 0) return 'Free';
   return `$${n}/M`;
 };
 
+// Per-unit formatting for the non-token pricing units. Returns null
+// when the value is null or invalid. Returns the literal "Free" when
+// zero. Character pricing displays per-thousand (rates are tiny,
+// per-character would render as fractions of a cent).
+const formatUnitPrice = (
+  n: number | null,
+  unit: 'megapixel' | 'second' | 'character' | 'minute',
+): string | null => {
+  if (n === null || typeof n !== 'number') return null;
+  if (n === 0) return 'Free';
+  switch (unit) {
+    case 'megapixel': return `$${n}/MP`;
+    case 'second':    return `$${n}/second`;
+    case 'minute':    return `$${n}/minute`;
+    case 'character': return `$${n * 1000} / 1k chars`;
+  }
+};
+
 const ModelCostLine = ({ model }: { model: Model | null }) => {
   if (!model) return null;
 
-  // Megapixel-priced models (image-gen SKUs that charge per output MP).
-  if (model.pricingUnit === 'megapixel') {
-    if (model.costPerMegapixel === null || typeof model.costPerMegapixel !== 'number') {
+  // Non-token units: read costPerUnit (falls back to costPerMegapixel
+  // during the v2.11.0 compat window for image-gen rows added pre-061).
+  if (model.pricingUnit !== 'token') {
+    const value = model.costPerUnit ?? model.costPerMegapixel;
+    const label = formatUnitPrice(value, model.pricingUnit);
+    if (label === null) {
       return (
         <p className="text-[11px] text-ui/35 mt-2">
           Pricing not listed for this model.
         </p>
       );
     }
-    const label = model.costPerMegapixel === 0 ? 'Free' : `$${model.costPerMegapixel}/MP`;
     return (
       <p className="text-[11px] text-ui/55 mt-2">
         Cost: <span className="text-ui/80">{label}</span>
@@ -3676,8 +3872,9 @@ const ModelCostLine = ({ model }: { model: Model | null }) => {
     );
   }
 
-  const inLabel = formatPrice(model.inputCostPerM);
-  const outLabel = formatPrice(model.outputCostPerM);
+  // Token: separate input and output rates.
+  const inLabel = formatTokenPrice(model.inputCostPerM);
+  const outLabel = formatTokenPrice(model.outputCostPerM);
   if (inLabel === null && outLabel === null) {
     return (
       <p className="text-[11px] text-ui/35 mt-2">
@@ -3699,29 +3896,62 @@ const ModelCostLine = ({ model }: { model: Model | null }) => {
   );
 };
 
-// Receives the full models list from its parent so the dropdown auto-
-// updates when a new vision-capable model is added (previously this
-// card fetched once on mount and went stale until the page reloaded).
-const FallbackVisionModelCard = ({ models }: { models: Model[] }) => {
-  const [fallbackId, setFallbackId] = useState('');
+// Generic platform-capability model picker card. Same shape every
+// picker has: a dropdown over enabled-and-capability-matching models,
+// a Save / Clear button, a configured-but-invalid warning, and a
+// ModelCostLine under the dropdown.
+//
+// `extraOptions` lets a caller inject pseudo entries that aren't in
+// the models table (used by the transcription card to expose
+// `local:whisper` and `local:moonshine`). When one of those is
+// selected, the picker calls `renderExtraCostLine` for the cost
+// display instead of ModelCostLine.
+interface ExtraOption {
+  id: string;
+  label: string;
+  costLine?: React.ReactNode;
+}
+const CapabilityModelCard = ({
+  title,
+  description,
+  settingKey,
+  capability,
+  selectorLabel,
+  noModelsMessage,
+  noSelectionMessage,
+  models,
+  extraOptions = [],
+}: {
+  title: string;
+  description: string;
+  settingKey: string;
+  capability: string;
+  selectorLabel: string;
+  noModelsMessage: string;
+  noSelectionMessage: string;
+  models: Model[];
+  extraOptions?: ExtraOption[];
+}) => {
+  const [selectedId, setSelectedId] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  const visionModels = models.filter(m => m.isEnabled && m.capabilities.includes('vision'));
+  const matchingModels = models.filter(m => m.isEnabled && m.capabilities.includes(capability));
+  const hasAnyOption = matchingModels.length > 0 || extraOptions.length > 0;
 
   useEffect(() => {
     const load = async () => {
-      const settingResult = await api.getSetting('dojo_fallback_vision_model_id');
-      if (settingResult.ok && settingResult.data.value) setFallbackId(settingResult.data.value);
+      const settingResult = await api.getSetting(settingKey);
+      if (settingResult.ok && settingResult.data.value) setSelectedId(settingResult.data.value);
       setLoading(false);
     };
     load();
-  }, []);
+  }, [settingKey]);
 
   const handleSave = async () => {
     setSaving(true);
-    await api.setSetting('dojo_fallback_vision_model_id', fallbackId);
+    await api.setSetting(settingKey, selectedId);
     setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -3729,8 +3959,8 @@ const FallbackVisionModelCard = ({ models }: { models: Model[] }) => {
 
   const handleClear = async () => {
     setSaving(true);
-    await api.setSetting('dojo_fallback_vision_model_id', '');
-    setFallbackId('');
+    await api.setSetting(settingKey, '');
+    setSelectedId('');
     setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -3738,53 +3968,60 @@ const FallbackVisionModelCard = ({ models }: { models: Model[] }) => {
 
   if (loading) return null;
 
-  // If the configured fallback no longer resolves to an enabled
-  // vision-capable model (deleted, disabled, lost vision capability),
-  // surface that explicitly so the user can pick a new one.
-  const configuredButInvalid = fallbackId && !visionModels.some(m => m.id === fallbackId);
-
-  const selectedVisionModel = visionModels.find(m => m.id === fallbackId) ?? null;
+  const isExtra = extraOptions.some(o => o.id === selectedId);
+  const selectedModel = matchingModels.find(m => m.id === selectedId) ?? null;
+  const configuredButInvalid = selectedId !== '' && !isExtra && !selectedModel;
+  const selectedExtra = extraOptions.find(o => o.id === selectedId) ?? null;
 
   return (
     <div className="glass-card p-4 space-y-4">
       <div>
-        <h3 className="card-header">Fallback Vision Model</h3>
-        <p className="text-xs text-ui/40 mt-1">
-          The model used to look at images when your agent's own model can't see.
-        </p>
+        <h3 className="card-header">{title}</h3>
+        <p className="text-xs text-ui/40 mt-1">{description}</p>
       </div>
 
-      {visionModels.length === 0 ? (
-        <div className="alert-banner alert-warning">
-          No vision-capable models are enabled. Enable one above and come back here to pick it.
-        </div>
-      ) : !fallbackId ? (
-        <div className="alert-banner alert-warning">
-          No vision model selected. Pick one below.
-        </div>
+      {!hasAnyOption ? (
+        <div className="alert-banner alert-warning">{noModelsMessage}</div>
+      ) : !selectedId ? (
+        <div className="alert-banner alert-warning">{noSelectionMessage}</div>
       ) : configuredButInvalid ? (
         <div className="alert-banner alert-warning">
           The saved model is no longer available. Pick a new one below.
         </div>
       ) : null}
 
-      {visionModels.length > 0 && (
+      {hasAnyOption && (
         <>
           <div>
-            <label className="form-label">Vision model</label>
+            <label className="form-label">{selectorLabel}</label>
             <select
-              value={fallbackId}
-              onChange={(e) => setFallbackId(e.target.value)}
+              value={selectedId}
+              onChange={(e) => setSelectedId(e.target.value)}
               className="glass-input w-full"
             >
               <option value="">(none)</option>
-              {visionModels.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name} ({m.apiModelId})
-                </option>
-              ))}
+              {extraOptions.length > 0 && (
+                <optgroup label="Local">
+                  {extraOptions.map((o) => (
+                    <option key={o.id} value={o.id}>{o.label}</option>
+                  ))}
+                </optgroup>
+              )}
+              {matchingModels.length > 0 && (
+                <optgroup label={extraOptions.length > 0 ? 'Cloud' : ''}>
+                  {matchingModels.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name} ({m.apiModelId})
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
-            <ModelCostLine model={selectedVisionModel} />
+            {selectedExtra
+              ? (selectedExtra.costLine ?? (
+                  <p className="text-[11px] text-ui/55 mt-2">Cost: <span className="text-ui/80">Free</span> <span className="text-ui/35">(runs on this machine)</span></p>
+                ))
+              : <ModelCostLine model={selectedModel} />}
           </div>
 
           <div className="flex items-center gap-3">
@@ -3795,7 +4032,7 @@ const FallbackVisionModelCard = ({ models }: { models: Model[] }) => {
             >
               {saving ? 'Saving...' : 'Save'}
             </button>
-            {fallbackId && (
+            {selectedId && (
               <button
                 onClick={handleClear}
                 disabled={saving}
@@ -3812,120 +4049,84 @@ const FallbackVisionModelCard = ({ models }: { models: Model[] }) => {
   );
 };
 
-// v2.10.3 — Image-generation model picker. Mirrors FallbackVisionModelCard.
-// Replaces the Imaginer agent's per-agent image_model config: image
-// generation is a model capability not an agent role, so it lives at
-// the platform-config level. Any agent with the `image_create` tool
-// permission calls this model directly (no Imaginer middleman).
-// Receives the full models list from its parent so the dropdown auto-
-// updates when a new image-gen-capable model is added.
-const ImageGenModelCard = ({ models }: { models: Model[] }) => {
-  const [modelId, setModelId] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
+// Thin wrappers around CapabilityModelCard. Each gives the generic
+// component its title, description, setting key, and capability flag.
+// The two existing cards (vision + image gen) replace ~120 lines each
+// of nearly identical boilerplate; the three new cards (video, audio
+// gen, transcription) come online for free.
+const FallbackVisionModelCard = ({ models }: { models: Model[] }) => (
+  <CapabilityModelCard
+    title="Fallback Vision Model"
+    description="The model used to look at images when your agent's own model can't see."
+    settingKey="dojo_fallback_vision_model_id"
+    capability="vision"
+    selectorLabel="Vision model"
+    noModelsMessage="No vision-capable models are enabled. Enable one above and come back here to pick it."
+    noSelectionMessage="No vision model selected. Pick one below."
+    models={models}
+  />
+);
 
-  const imageGenModels = models.filter(m => m.isEnabled && m.capabilities.includes('image_generation'));
+const ImageGenModelCard = ({ models }: { models: Model[] }) => (
+  <CapabilityModelCard
+    title="Image Generation Model"
+    description="The model used when an agent creates an image."
+    settingKey="dojo_image_gen_model_id"
+    capability="image_generation"
+    selectorLabel="Image-gen model"
+    noModelsMessage="No image-generation models are enabled. Enable one above and come back here to pick it."
+    noSelectionMessage="No image-generation model selected. Pick one below."
+    models={models}
+  />
+);
 
-  useEffect(() => {
-    const load = async () => {
-      const settingResult = await api.getSetting('dojo_image_gen_model_id');
-      if (settingResult.ok && settingResult.data.value) setModelId(settingResult.data.value);
-      setLoading(false);
-    };
-    load();
-  }, []);
+const VideoGenModelCard = ({ models }: { models: Model[] }) => (
+  <CapabilityModelCard
+    title="Video Generation Model"
+    description="The model used when an agent creates a video. Video can take a few minutes to generate."
+    settingKey="dojo_video_gen_model_id"
+    capability="video_generation"
+    selectorLabel="Video-gen model"
+    noModelsMessage="No video-generation models are enabled. Enable one above and come back here to pick it."
+    noSelectionMessage="No video-generation model selected. Pick one below."
+    models={models}
+  />
+);
 
-  const handleSave = async () => {
-    setSaving(true);
-    await api.setSetting('dojo_image_gen_model_id', modelId);
-    setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  };
+const AudioGenModelCard = ({ models }: { models: Model[] }) => (
+  <CapabilityModelCard
+    title="Audio Generation Model"
+    description="The model used when an agent creates spoken audio from text."
+    settingKey="dojo_audio_gen_model_id"
+    capability="audio_generation"
+    selectorLabel="Audio-gen model"
+    noModelsMessage="No audio-generation models are enabled. Enable one above and come back here to pick it."
+    noSelectionMessage="No audio-generation model selected. Pick one below."
+    models={models}
+  />
+);
 
-  const handleClear = async () => {
-    setSaving(true);
-    await api.setSetting('dojo_image_gen_model_id', '');
-    setModelId('');
-    setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  };
+// Transcription is special: it exposes two local engines (Whisper,
+// Moonshine) that don't live in the models table. Those surface
+// through the extraOptions prop as `local:whisper` and
+// `local:moonshine` and run on this machine for free.
+const TranscriptionModelCard = ({ models }: { models: Model[] }) => (
+  <CapabilityModelCard
+    title="Transcription Model"
+    description="The model used when an agent converts audio to text. Local engines run on this machine."
+    settingKey="dojo_transcription_model_id"
+    capability="transcription"
+    selectorLabel="Transcription model"
+    noModelsMessage="Pick a local engine, or enable a transcription-capable cloud model above."
+    noSelectionMessage="No transcription model selected. Pick one below."
+    models={models}
+    extraOptions={[
+      { id: 'local:whisper', label: 'Whisper (local, via whisper.cpp)' },
+      { id: 'local:moonshine', label: 'Moonshine (local, default)' },
+    ]}
+  />
+);
 
-  if (loading) return null;
-
-  const configuredButInvalid = modelId && !imageGenModels.some(m => m.id === modelId);
-  const selectedImageGenModel = imageGenModels.find(m => m.id === modelId) ?? null;
-
-  return (
-    <div className="glass-card p-4 space-y-4">
-      <div>
-        <h3 className="card-header">Image Generation Model</h3>
-        <p className="text-xs text-ui/40 mt-1">
-          The model used when an agent creates an image.
-        </p>
-      </div>
-
-      {imageGenModels.length === 0 ? (
-        <div className="alert-banner alert-warning">
-          No image-generation models are enabled. Enable one above and come back here to pick it.
-        </div>
-      ) : !modelId ? (
-        <div className="alert-banner alert-warning">
-          No image-generation model selected. Pick one below.
-        </div>
-      ) : configuredButInvalid ? (
-        <div className="alert-banner alert-warning">
-          The saved model is no longer available. Pick a new one below.
-        </div>
-      ) : null}
-
-      {imageGenModels.length > 0 && (
-        <>
-          <div>
-            <label className="form-label">Image-gen model</label>
-            <select
-              value={modelId}
-              onChange={(e) => setModelId(e.target.value)}
-              className="glass-input w-full"
-            >
-              <option value="">(none)</option>
-              {imageGenModels.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name} ({m.apiModelId})
-                </option>
-              ))}
-            </select>
-            <ModelCostLine model={selectedImageGenModel} />
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-cp-amber/15 text-cp-amber border border-cp-amber/30 hover:bg-cp-amber/25 transition-colors disabled:opacity-40"
-            >
-              {saving ? 'Saving...' : 'Save'}
-            </button>
-            {modelId && (
-              <button
-                onClick={handleClear}
-                disabled={saving}
-                className="px-4 py-2 text-sm font-medium rounded-lg bg-ui/[0.08] text-ui/55 border border-ui/[0.10] hover:border-ui/[0.15] hover:text-ui/70 transition-colors disabled:opacity-40"
-              >
-                Clear
-              </button>
-            )}
-            {saved && <span className="text-xs text-cp-teal">Saved!</span>}
-          </div>
-        </>
-      )}
-    </div>
-  );
-};
-
-// ── Healer Settings Card ──
 
 const HealerCard = ({ models }: { models: Model[] }) => {
   const [healerModelId, setHealerModelId] = useState('');

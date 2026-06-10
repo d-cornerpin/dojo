@@ -52,13 +52,15 @@ interface UploadedFile {
   mimeType: string;
   size: number;
   path: string;
-  category: 'image' | 'pdf' | 'text' | 'office' | 'unknown';
+  category: 'image' | 'pdf' | 'text' | 'office' | 'audio' | 'video' | 'unknown';
 }
 
 const DOJO_UPLOAD_DIR = path.join(os.homedir(), '.dojo', 'uploads');
 const IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const HEIC_MIMES = new Set(['image/heic', 'image/heif']);
 const PDF_MIMES = new Set(['application/pdf']);
+const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.flac', '.webm', '.caf', '.amr']);
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.mkv', '.avi', '.3gp']);
 
 // ── Attachment-readiness race ────────────────────────────────────────────
 //
@@ -281,6 +283,32 @@ function fetchImessageAttachments(
           fileId, filename: displayName, mimeType, size, path: destPath, category: 'pdf',
         });
         logger.info('iMessage PDF attached', { fileId, displayName, size });
+        continue;
+      }
+
+      // ── Tier 1b: audio / video — copy bytes so the receiving agent can
+      // route them through transcribe_audio. iPhone voice memos arrive as
+      // .caf or .m4a; standard mp3/wav also flow through here.
+      const isAudioByMime = mimeType.startsWith('audio/');
+      const isVideoByMime = mimeType.startsWith('video/');
+      const isAudioByExt = AUDIO_EXTENSIONS.has(ext);
+      const isVideoByExt = VIDEO_EXTENSIONS.has(ext);
+      if (isAudioByMime || isAudioByExt || isVideoByMime || isVideoByExt) {
+        const category: UploadedFile['category'] = (isAudioByMime || isAudioByExt) ? 'audio' : 'video';
+        const storedName = `imessage_${timestamp}_${safeFilenamePart(displayName)}`;
+        const destPath = path.join(dir, storedName);
+        fs.copyFileSync(srcPath, destPath);
+        const size = fs.statSync(destPath).size;
+        // Best-effort MIME backfill when iMessage didn't give us one.
+        const inferredMime =
+          mimeType
+          || (category === 'audio'
+            ? (ext === '.mp3' ? 'audio/mpeg' : ext === '.wav' ? 'audio/wav' : ext === '.m4a' ? 'audio/mp4' : 'audio/mpeg')
+            : (ext === '.mp4' ? 'video/mp4' : ext === '.mov' ? 'video/quicktime' : 'video/mp4'));
+        result.uploadedFiles.push({
+          fileId, filename: displayName, mimeType: inferredMime, size, path: destPath, category,
+        });
+        logger.info(`iMessage ${category} attached`, { fileId, displayName, size, mimeType: inferredMime });
         continue;
       }
 
@@ -821,6 +849,24 @@ async function pollMessages(): Promise<void> {
 
           if (attachmentResult.inlinedTextBlocks.length > 0) {
             bodyParts.push(attachmentResult.inlinedTextBlocks.join('\n\n'));
+          }
+
+          // Audio / video uploads need an inline pointer to the fileId
+          // so the agent knows how to call transcribe_audio. The
+          // attachment chips render in the dashboard regardless; this
+          // is purely the agent-facing hint.
+          const audioOrVideoUploads = attachmentResult.uploadedFiles.filter(
+            (f) => f.category === 'audio' || f.category === 'video',
+          );
+          if (audioOrVideoUploads.length > 0) {
+            const lines = audioOrVideoUploads.map((f) => {
+              const label = f.category === 'audio' ? 'Audio' : 'Video';
+              return (
+                `[${label} attached: ${f.filename} (${f.size} bytes), fileId: ${f.fileId}]\n` +
+                `To transcribe what was said, call transcribe_audio with attachment_id="${f.fileId}".`
+              );
+            });
+            bodyParts.push(lines.join('\n\n'));
           }
 
           if (attachmentResult.mentionedAttachments.length > 0) {

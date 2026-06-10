@@ -129,6 +129,11 @@ export function stripAttachmentTags(content: string): string {
   return content
     .replace(/\n\[File attached:[^\]]+\]\nPath:[^\n]+\nUse file_read with this path to read the file contents\.?/g, '')
     .replace(/\n\[Office file attached:[^\]]+\][^\n]*/g, '')
+    // Audio attachments: the server appends a hint telling the agent
+    // how to call transcribe_audio with the fileId. The audio chip
+    // renders the file itself; this tag is engine-only metadata.
+    .replace(/\n\[Audio attached:[^\]]+\]\n[^\n]*transcribe_audio[\s\S]*?(?=\n\n|\n\[|$)/g, '')
+    .replace(/\n\[Video attached:[^\]]+\]\n[^\n]*transcribe_audio[\s\S]*?(?=\n\n|\n\[|$)/g, '')
     // Legacy === File: === blocks from older message persistence (kept so
     // pre-2026-04-30 rows in the messages table still render cleanly).
     .replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '')

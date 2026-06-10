@@ -196,6 +196,20 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
     maxResultTokens: 1500,
   },
   {
+    name: 'teams_list_attachments',
+    description: 'List attachments on a Microsoft Teams chat message — name, contentType, and attachment ID for each. Requires a Microsoft work/school account (Entra ID). Use teams_download_attachment with one of these IDs to save to local disk.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'Teams chat ID (from teams_list_chats)' },
+        message_id: { type: 'string', description: 'Teams message ID (from teams_read_messages)' },
+      },
+      required: ['chat_id', 'message_id'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 1500,
+  },
+  {
     name: 'onedrive_search',
     description: 'Search for files and folders by name or content. Defaults to your personal OneDrive; pass drive_id to search a shared drive or SharePoint library.',
     input_schema: {
@@ -854,6 +868,28 @@ export async function executeMicrosoftReadTool(
       });
 
       return `Teams messages:\n\n${messages.join('\n\n')}`;
+    }
+
+    case 'teams_list_attachments': {
+      const chatId = args.chat_id as string;
+      const messageId = args.message_id as string;
+      // Teams message attachments live on the message body, not at a
+      // separate /attachments collection like Outlook. Fetch the
+      // message and surface its attachments array.
+      const result = await msGraphRead(
+        `chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}?$select=id,attachments`,
+        agentId, agentName, 'teams_list_attachments', { chatId, messageId }, slot,
+      );
+      if (!result.ok) return `Error listing Teams attachments: ${result.error}`;
+      const data = result.data as {
+        attachments?: Array<{ id: string; name?: string; contentType?: string; contentUrl?: string }>;
+      };
+      const atts = data?.attachments ?? [];
+      if (atts.length === 0) return 'No attachments on this Teams message.';
+      const items = atts.map(a =>
+        `- ${a.name ?? '(unnamed)'} (${a.contentType ?? 'unknown type'})\n  ID: ${a.id}`,
+      );
+      return `Attachments (${atts.length}):\n\n${items.join('\n\n')}\n\nUse teams_download_attachment with the chat_id, message_id, and attachment_id to save to local disk.`;
     }
 
     case 'outlook_list_attachments': {

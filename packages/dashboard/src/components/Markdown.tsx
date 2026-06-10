@@ -42,7 +42,9 @@ function parseMarkdown(text: string): React.ReactNode[] {
   const nonCodeText: string[] = [];
 
   while (i < lines.length) {
-    // Fenced code block: ```lang\n...\n```
+    // Fenced block: ```lang\n...\n```. `lang === 'source'` (with an
+    // optional /subtype, e.g. `source/transcript`) routes to the
+    // word-wrapped SourceBlock; everything else is a normal CodeBlock.
     if (lines[i].startsWith('```')) {
       const lang = lines[i].slice(3).trim();
       const codeLines: string[] = [];
@@ -53,9 +55,22 @@ function parseMarkdown(text: string): React.ReactNode[] {
       }
       if (i < lines.length) i++; // skip closing ```
 
-      result.push(
-        <CodeBlock key={key++} code={codeLines.join('\n')} language={lang} />,
-      );
+      const langLower = lang.toLowerCase();
+      const isSource = langLower === 'source' || langLower.startsWith('source/');
+      if (isSource) {
+        const subtype = langLower.startsWith('source/') ? lang.slice('source/'.length) : null;
+        result.push(
+          <SourceBlock
+            key={key++}
+            body={codeLines.join('\n')}
+            label={subtype || 'source'}
+          />,
+        );
+      } else {
+        result.push(
+          <CodeBlock key={key++} code={codeLines.join('\n')} language={lang} />,
+        );
+      }
     } else {
       // Regular line — collect consecutive non-code lines into a paragraph
       const paraLines: string[] = [];
@@ -133,6 +148,44 @@ const CodeBlock = ({ code, language }: { code: string; language: string }) => {
       <pre className="px-3 py-2 text-xs font-mono text-ui/70 overflow-x-auto whitespace-pre">
         {code}
       </pre>
+    </div>
+  );
+};
+
+// ── Source Block ──
+//
+// Same shell as CodeBlock (header + copy button) but renders the body
+// in the default sans font with word-wrapping. Use for transcripts,
+// document quotations, long captions — anything that's content (not
+// code) but that the user might want to copy as a single unit.
+//
+// Agents trigger it with ```source ... ``` in their markdown output.
+// Subtype labels are accepted (e.g. ```source/transcript) and surface
+// in the header.
+const SourceBlock = ({ body, label }: { body: string; label?: string }) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(body).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
+  return (
+    <div className="my-2 rounded-lg bg-transparent border border-ui/[0.10] overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-ui/[0.05] border-b border-ui/[0.10]">
+        <span className="text-xs text-ui/40">{label || 'source'}</span>
+        <button
+          onClick={handleCopy}
+          className="text-xs text-ui/40 hover:text-ui/70 transition-colors"
+        >
+          {copied ? 'Copied!' : 'Copy'}
+        </button>
+      </div>
+      <div className="px-3 py-2 text-xs sm:text-sm text-ui/80 whitespace-pre-wrap break-words leading-relaxed">
+        {body}
+      </div>
     </div>
   );
 };

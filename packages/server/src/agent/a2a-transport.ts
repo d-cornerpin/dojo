@@ -523,7 +523,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
     mimeType: string;
     size: number;
     path: string;
-    category: 'unknown' | 'text' | 'image' | 'pdf' | 'office';
+    category: 'unknown' | 'text' | 'image' | 'pdf' | 'office' | 'audio' | 'video';
   }
   let attachmentsList: UploadedFile[] = [];
   if (envelope.attachPaths && envelope.attachPaths.length > 0) {
@@ -538,6 +538,17 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
       }
 
       const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
+      const AUDIO_EXTS = ['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.flac', '.webm'];
+      const VIDEO_EXTS = ['.mp4', '.mov', '.mkv', '.avi'];
+      const AUDIO_MIME: Record<string, string> = {
+        '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4',
+        '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.opus': 'audio/ogg',
+        '.flac': 'audio/flac', '.webm': 'audio/webm',
+      };
+      const VIDEO_MIME: Record<string, string> = {
+        '.mp4': 'video/mp4', '.mov': 'video/quicktime',
+        '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo',
+      };
 
       for (const srcPath of envelope.attachPaths) {
         if (!fs.existsSync(srcPath)) {
@@ -545,7 +556,11 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
           continue;
         }
         const stat = fs.statSync(srcPath);
-        if (stat.size > 20 * 1024 * 1024) {
+        // 1 GB cap aligns with the chat upload + URL fetch caps. Single-
+        // user local install — A2A attachments are file paths, not
+        // network requests, so there's no per-request body limit to
+        // worry about here. Cap exists to catch obviously-wrong inputs.
+        if (stat.size > 1024 * 1024 * 1024) {
           logger.warn('A2A attachment too large — skipping', { srcPath, size: stat.size });
           continue;
         }
@@ -570,13 +585,27 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
           fs.copyFileSync(srcPath, destPath);
         }
 
+        const isImage = IMAGE_EXTS.includes(ext);
+        const isAudio = AUDIO_EXTS.includes(ext);
+        const isVideo = VIDEO_EXTS.includes(ext);
+        const category: UploadedFile['category'] = isImage
+          ? 'image'
+          : isAudio ? 'audio'
+          : isVideo ? 'video'
+          : 'unknown';
+        const mimeType = isImage
+          ? `image/${ext.slice(1)}`
+          : isAudio ? AUDIO_MIME[ext]
+          : isVideo ? VIDEO_MIME[ext]
+          : 'application/octet-stream';
+
         attachmentsList.push({
           fileId: uuidv4(),
           filename: path.basename(srcPath),
-          mimeType: IMAGE_EXTS.includes(ext) ? `image/${ext.slice(1)}` : 'application/octet-stream',
+          mimeType,
           size: stat.size,
           path: destPath,
-          category: IMAGE_EXTS.includes(ext) ? 'image' as const : 'unknown' as const,
+          category,
         });
       }
     } catch (err) {

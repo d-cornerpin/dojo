@@ -2121,6 +2121,33 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['description'],
     },
   },
+  // ── Audio Transcription Tool ──
+  {
+    name: 'transcribe_audio',
+    description: 'Convert speech in an audio file to text. Pass ONE of: attachment_id (the fileId from a recent chat attachment, preferred when the user just shared the file), path (an absolute local path inside ~/.dojo/uploads/), or url (https only). Common input formats: mp3, wav, m4a, opus, webm, ogg, aac. Returns the transcribed text inline (no new attachment is created). The platform posts a short acknowledgment automatically; you do not need to announce that you are transcribing.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        attachment_id: {
+          type: 'string',
+          description: 'The fileId of an audio attachment from a recent chat message. Preferred when the user just shared a file in chat (the file pointer was surfaced to you as `[Audio attached: ..., fileId: ...]`).',
+        },
+        path: {
+          type: 'string',
+          description: 'Absolute local path to an audio file. Must be inside ~/.dojo/uploads/. Use this only when you have a path but no fileId.',
+        },
+        url: {
+          type: 'string',
+          description: 'An https URL pointing directly at an audio file. Use this when the user gave you a link. Max 50 MB; non-https URLs are rejected.',
+        },
+        language: {
+          type: 'string',
+          description: 'Optional 2-letter ISO language hint (e.g. "en", "es", "ja"). Improves accuracy on non-English audio. If omitted, the engine auto-detects.',
+        },
+      },
+      required: [],
+    },
+  },
   // ── System Control Tools (Phase 5A) ──
   {
     name: 'mouse_click',
@@ -6177,17 +6204,21 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
           if (ext === '.pptx') return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
           return 'application/octet-stream';
         };
-        const categorize = (mimeType: string, filename: string): 'image' | 'pdf' | 'text' | 'office' | 'unknown' => {
+        const categorize = (mimeType: string, filename: string): 'image' | 'pdf' | 'text' | 'office' | 'audio' | 'video' | 'unknown' => {
           if (['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mimeType)) return 'image';
           if (mimeType === 'application/pdf') return 'pdf';
+          if (mimeType.startsWith('audio/')) return 'audio';
+          if (mimeType.startsWith('video/')) return 'video';
           const ext = path.extname(filename).toLowerCase();
+          if (['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.flac', '.webm'].includes(ext)) return 'audio';
+          if (['.mp4', '.mov', '.mkv', '.avi'].includes(ext)) return 'video';
           if (['.txt', '.md', '.csv', '.json', '.xml', '.html', '.js', '.ts', '.py', '.sh', '.yaml', '.yml'].includes(ext)) return 'text';
           if (['.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'].includes(ext)) return 'office';
           if (mimeType.startsWith('text/')) return 'text';
           return 'unknown';
         };
 
-        const attachments: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: 'image' | 'pdf' | 'text' | 'office' | 'unknown' }> = [];
+        const attachments: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: 'image' | 'pdf' | 'text' | 'office' | 'audio' | 'video' | 'unknown' }> = [];
         for (const srcPath of filePaths) {
           try {
             // Permission check — agents can only show files they're allowed to read.
@@ -7207,6 +7238,169 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         break;
       }
 
+      // ── Audio Transcription ──
+      case 'transcribe_audio': {
+        const attachmentId = (args.attachment_id as string | undefined)?.trim();
+        let pathArg = (args.path as string | undefined)?.trim();
+        const urlArgRaw = (args.url as string | undefined)?.trim();
+        const language = (args.language as string | undefined)?.trim() || undefined;
+
+        // Be forgiving: a file:// URL is just a path with a scheme.
+        // Strip the scheme and treat it as a path.
+        let urlArg = urlArgRaw;
+        if (urlArg?.startsWith('file://')) {
+          try {
+            pathArg = pathArg ?? new URL(urlArg).pathname;
+            urlArg = undefined;
+          } catch { /* fall through to validation error below */ }
+        }
+
+        const sources = [attachmentId, pathArg, urlArg].filter((v) => v && v.length > 0);
+        if (sources.length === 0) {
+          content = 'Error: pass one of attachment_id (preferred), path, or url (https only).';
+          isError = true;
+          break;
+        }
+        if (sources.length > 1) {
+          content = 'Error: pass only ONE of attachment_id, path, or url, not multiple.';
+          isError = true;
+          break;
+        }
+
+        // Resolve to a buffer + mime + filename.
+        const { resolveAttachmentPath, fetchAudioUrl, transcribeAudio } = await import('../services/transcription.js');
+        const fs = (await import('node:fs')).default;
+        const pathModule = (await import('node:path')).default;
+        const os = (await import('node:os')).default;
+        let audio: Buffer;
+        let mimeType: string;
+        let filename: string;
+        if (attachmentId) {
+          const resolved = resolveAttachmentPath(attachmentId);
+          if (!resolved) {
+            content = `Error: no attachment found with id ${attachmentId}. The file may have been deleted or the id may be stale.`;
+            isError = true;
+            break;
+          }
+          try {
+            audio = fs.readFileSync(resolved.path);
+          } catch (err) {
+            content = `Error: failed to read attachment from disk: ${err instanceof Error ? err.message : String(err)}`;
+            isError = true;
+            break;
+          }
+          mimeType = resolved.mimeType || 'audio/mpeg';
+          filename = resolved.filename;
+        } else if (pathArg) {
+          // Sandbox the path to the dojo uploads dir to prevent the
+          // agent from accidentally (or maliciously) reading arbitrary
+          // files off disk.
+          const uploadsRoot = pathModule.join(os.homedir(), '.dojo', 'uploads');
+          const resolvedPath = pathModule.resolve(pathArg);
+          if (!resolvedPath.startsWith(uploadsRoot + pathModule.sep)) {
+            content = `Error: path must be inside ~/.dojo/uploads/ (got ${resolvedPath}).`;
+            isError = true;
+            break;
+          }
+          if (!fs.existsSync(resolvedPath)) {
+            content = `Error: no file at ${resolvedPath}.`;
+            isError = true;
+            break;
+          }
+          try {
+            audio = fs.readFileSync(resolvedPath);
+          } catch (err) {
+            content = `Error: failed to read file: ${err instanceof Error ? err.message : String(err)}`;
+            isError = true;
+            break;
+          }
+          filename = pathModule.basename(resolvedPath);
+          const ext = pathModule.extname(filename).toLowerCase();
+          mimeType =
+            ext === '.mp3' ? 'audio/mpeg' :
+            ext === '.wav' ? 'audio/wav' :
+            ext === '.m4a' || ext === '.mp4' ? 'audio/mp4' :
+            ext === '.ogg' || ext === '.opus' ? 'audio/ogg' :
+            ext === '.webm' ? 'audio/webm' :
+            ext === '.aac' ? 'audio/aac' :
+            ext === '.flac' ? 'audio/flac' :
+            'audio/mpeg';
+        } else {
+          const fetched = await fetchAudioUrl(urlArg!);
+          if ('error' in fetched) {
+            content = `Error: ${fetched.error}`;
+            isError = true;
+            break;
+          }
+          audio = fetched.buffer;
+          mimeType = fetched.mimeType;
+          filename = fetched.filename;
+        }
+
+        auditLog(agentId, 'transcribe_audio', null, 'success',
+          `Source ${attachmentId ? `attachment ${attachmentId}` : `url ${urlArg}`}, ${audio.length} bytes`);
+
+        const result = await transcribeAudio({ audio, mimeType, filename, language });
+        if (!result.ok) {
+          content = `Transcription failed: ${result.error}`;
+          isError = true;
+          break;
+        }
+
+        // Cost recording. Local engines are free; cloud rides on the
+        // unified per-minute pricing path. We skip recordCost entirely
+        // for local rather than passing a synthetic modelId — the cost
+        // tracker keys off the row, so writing $0 against a synthetic
+        // id would just clutter the ledger.
+        if (result.costMode === 'cloud') {
+          try {
+            const { getEffectiveTranscriptionModel } = await import('../services/transcription-model.js');
+            const choice = getEffectiveTranscriptionModel();
+            if (choice && choice.kind === 'cloud') {
+              const { recordCost } = await import('../costs/tracker.js');
+              recordCost({
+                agentId,
+                modelId: choice.modelId,
+                providerId: choice.providerId,
+                inputTokens: 0,
+                outputTokens: 0,
+                latencyMs: result.latencyMs,
+                requestType: 'transcription',
+                units: result.durationSeconds !== null ? result.durationSeconds / 60 : undefined,
+              });
+            }
+          } catch { /* best effort */ }
+        }
+
+        logger.info('transcribe_audio: success', {
+          requesterId: agentId,
+          mode: result.costMode,
+          providerId: result.providerId,
+          apiModelId: result.apiModelId,
+          textLength: result.text.length,
+          durationSeconds: result.durationSeconds,
+          latencyMs: result.latencyMs,
+        });
+
+        // Return the transcript as a normal tool result. The agent
+        // decides what to do with it — summarize, write to a file,
+        // compare to another transcript, reply verbatim, whatever.
+        // Pre-wrap in a fenced `source/transcript` block so when the
+        // agent pastes verbatim the user gets a word-wrapped,
+        // sans-serif "source" container with a Copy button (rendered
+        // by the dashboard's Markdown component). Not a code block —
+        // transcripts shouldn't horizontal-scroll.
+        if (result.text.length > 0) {
+          content =
+            `Transcription of "${filename}" (engine: ${result.apiModelId}).\n` +
+            `If you paste the transcript to the user, paste it verbatim INSIDE a fenced \`\`\`source/transcript ... \`\`\` block. Do not paraphrase the words unless the user asks for a summary.\n\n` +
+            `\`\`\`source/transcript\n${result.text}\n\`\`\``;
+        } else {
+          content = `Transcription of "${filename}" (engine: ${result.apiModelId}): no detectable speech.`;
+        }
+        break;
+      }
+
       // ── Technique Tools ──
       case 'save_technique': {
         const stErr = checkRequired([
@@ -7863,6 +8057,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
       case 'teams_list_teams':
       case 'teams_list_channels':
       case 'teams_read_channel_messages':
+      case 'teams_list_attachments':
       case 'contacts_search':
       case 'contacts_list':
       case 'contacts_get':
@@ -7914,6 +8109,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
       case 'teams_create_chat':
       case 'teams_send_message':
       case 'teams_send_channel_message':
+      case 'teams_download_attachment':
       case 'contacts_create':
       case 'contacts_update':
       case 'contacts_delete': {

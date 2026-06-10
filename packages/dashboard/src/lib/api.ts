@@ -250,7 +250,9 @@ export const updateModelPricing = async (
   pricing: {
     inputCostPerM?: number;
     outputCostPerM?: number;
-    pricingUnit?: 'token' | 'megapixel';
+    pricingUnit?: 'token' | 'megapixel' | 'second' | 'character' | 'minute';
+    costPerUnit?: number | null;
+    /** @deprecated since v2.11.0 - send costPerUnit instead. */
     costPerMegapixel?: number | null;
   },
 ): Promise<ApiResponse<unknown>> => {
@@ -262,6 +264,16 @@ export const updateModelPricing = async (
 
 export const deleteModel = async (modelId: string): Promise<ApiResponse<unknown>> => {
   return request(`/config/models/${modelId}`, { method: 'DELETE' });
+};
+
+export const updateModelCapabilities = async (
+  modelId: string,
+  capabilities: string[],
+): Promise<ApiResponse<unknown>> => {
+  return request(`/config/models/${modelId}/capabilities`, {
+    method: 'PUT',
+    body: JSON.stringify({ capabilities }),
+  });
 };
 
 export const updateModelThinking = async (
@@ -329,35 +341,134 @@ export interface AttachmentInfo {
   mimeType: string;
   size: number;
   path: string;
-  category: 'image' | 'pdf' | 'text' | 'office' | 'unknown';
+  category: 'image' | 'pdf' | 'text' | 'office' | 'audio' | 'video' | 'unknown';
+}
+
+// Files smaller than this threshold ride the one-shot multipart endpoint.
+// Anything bigger gets streamed via the chunked endpoint so a Cloudflare
+// tunnel's 100 MB per-request body limit doesn't drop the upload.
+const CHUNKED_UPLOAD_THRESHOLD = 25 * 1024 * 1024;   // 25 MB
+const UPLOAD_CHUNK_SIZE = 25 * 1024 * 1024;          // chunk size to send
+
+async function uploadFileChunked(
+  agentId: string,
+  file: File,
+): Promise<{ ok: true; data: AttachmentInfo } | { ok: false; error: string }> {
+  const token = getToken();
+  const csrfToken = getCsrfToken();
+  const baseHeaders: Record<string, string> = {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+  };
+
+  // 1. Start a session — server allocates uploadId + a .part file.
+  let startResp: Response;
+  try {
+    startResp = await fetch(`${BASE_URL}/upload/start/${agentId}`, {
+      method: 'POST',
+      headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        size: file.size,
+      }),
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Failed to start chunked upload' };
+  }
+  const startJson = await startResp.json().catch(() => null) as { ok?: boolean; data?: { uploadId?: string }; error?: string } | null;
+  if (!startResp.ok || !startJson?.ok || !startJson.data?.uploadId) {
+    return { ok: false, error: startJson?.error ?? 'Failed to start chunked upload' };
+  }
+  const uploadId = startJson.data.uploadId;
+
+  // 2. Send chunks sequentially. Chunks must arrive in order; any
+  //    failure aborts the whole upload (server-side .part stays on disk
+  //    and gets cleaned up by the 1h idle-session reaper).
+  const totalChunks = Math.max(1, Math.ceil(file.size / UPLOAD_CHUNK_SIZE));
+  for (let i = 0; i < totalChunks; i++) {
+    const offset = i * UPLOAD_CHUNK_SIZE;
+    const end = Math.min(offset + UPLOAD_CHUNK_SIZE, file.size);
+    const slice = file.slice(offset, end);
+    const form = new FormData();
+    form.append('chunk', slice, file.name);
+    try {
+      const chunkResp = await fetch(`${BASE_URL}/upload/chunk/${agentId}/${uploadId}/${i}`, {
+        method: 'POST',
+        headers: baseHeaders,
+        body: form,
+      });
+      const chunkJson = await chunkResp.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (!chunkResp.ok || !chunkJson?.ok) {
+        return { ok: false, error: chunkJson?.error ?? `Chunk ${i + 1}/${totalChunks} failed` };
+      }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : `Chunk ${i + 1}/${totalChunks} failed` };
+    }
+  }
+
+  // 3. Finalize. Server validates assembled size, renames .part → final.
+  let finishResp: Response;
+  try {
+    finishResp = await fetch(`${BASE_URL}/upload/finish/${agentId}/${uploadId}`, {
+      method: 'POST',
+      headers: baseHeaders,
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Failed to finalize upload' };
+  }
+  const finishJson = await finishResp.json().catch(() => null) as { ok?: boolean; data?: AttachmentInfo; error?: string } | null;
+  if (!finishResp.ok || !finishJson?.ok || !finishJson.data) {
+    return { ok: false, error: finishJson?.error ?? 'Failed to finalize upload' };
+  }
+  return { ok: true, data: finishJson.data };
 }
 
 export const uploadFiles = async (agentId: string, files: File[]): Promise<ApiResponse<AttachmentInfo[]>> => {
-  const token = getToken();
-  const formData = new FormData();
-  for (const file of files) {
-    formData.append('files', file);
-  }
+  // Route large files through the chunked path so they survive the
+  // Cloudflare tunnel's 100 MB per-request body limit. Small files keep
+  // using the one-shot multipart endpoint — fewer round trips.
+  const largeFiles = files.filter(f => f.size >= CHUNKED_UPLOAD_THRESHOLD);
+  const smallFiles = files.filter(f => f.size < CHUNKED_UPLOAD_THRESHOLD);
+  const results: AttachmentInfo[] = [];
 
-  try {
-    const csrfToken = getCsrfToken();
-    const response = await fetch(`${BASE_URL}/upload/${agentId}`, {
-      method: 'POST',
-      headers: {
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-        ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
-      },
-      body: formData,
-    });
-
-    const data = await response.json();
-    if (!response.ok || !data.ok) {
-      return { ok: false as const, error: data.error ?? 'Upload failed' };
+  for (const file of largeFiles) {
+    const result = await uploadFileChunked(agentId, file);
+    if (!result.ok) {
+      return { ok: false as const, error: `Chunked upload failed for "${file.name}": ${result.error}` };
     }
-    return { ok: true as const, data: data.data as AttachmentInfo[] };
-  } catch (err) {
-    return { ok: false as const, error: err instanceof Error ? err.message : 'Upload failed' };
+    results.push(result.data);
   }
+
+  if (smallFiles.length > 0) {
+    const token = getToken();
+    const formData = new FormData();
+    for (const file of smallFiles) {
+      formData.append('files', file);
+    }
+
+    try {
+      const csrfToken = getCsrfToken();
+      const response = await fetch(`${BASE_URL}/upload/${agentId}`, {
+        method: 'POST',
+        headers: {
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+          ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+        },
+        body: formData,
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        return { ok: false as const, error: data.error ?? 'Upload failed' };
+      }
+      results.push(...(data.data as AttachmentInfo[]));
+    } catch (err) {
+      return { ok: false as const, error: err instanceof Error ? err.message : 'Upload failed' };
+    }
+  }
+
+  return { ok: true as const, data: results };
 };
 
 export const sendMessage = async (

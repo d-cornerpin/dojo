@@ -918,7 +918,19 @@ export async function executeGoogleWriteTool(
 
       const content = Buffer.from(att.data, 'base64url');
       fs.writeFileSync(outPath, content);
-      return `Attachment saved to ${outPath} (${Math.round(content.length / 1024)}KB). Use file_read or show_to_user with this path.`;
+      const ext = nodePath.extname(outPath).toLowerCase();
+      const isAudio = ['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.flac', '.webm'].includes(ext);
+      const isVideo = ['.mp4', '.mov', '.mkv', '.avi'].includes(ext);
+      const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext);
+      let hint: string;
+      if (isAudio || isVideo) {
+        hint = `Use transcribe_audio with path="${outPath}" to get the spoken content as text.`;
+      } else if (isImage) {
+        hint = `Use show_to_user with this path to attach the image to your reply, or screen_read / vision tools to interpret it.`;
+      } else {
+        hint = `Use file_read or show_to_user with this path.`;
+      }
+      return `Attachment saved to ${outPath} (${Math.round(content.length / 1024)}KB). ${hint}`;
     }
 
     case 'gmail_label': {

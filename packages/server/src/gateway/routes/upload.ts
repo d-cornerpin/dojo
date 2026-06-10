@@ -8,12 +8,27 @@ import { createLogger } from '../../logger.js';
 const logger = createLogger('upload');
 
 const UPLOAD_DIR = path.join(os.homedir(), '.dojo', 'uploads');
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB per file
-const MAX_TOTAL_SIZE = 20 * 1024 * 1024; // 20MB total per message
+// 1 GB per file / 2 GB per message. Single-user local install — caps are
+// to catch obviously-wrong inputs, not to defend against abuse. Memory
+// note: Hono's formData() parser buffers the whole body in memory before
+// our handler runs, so a 1 GB upload over the localhost path stages 1 GB
+// of RAM. For tunnel uploads, use the chunked endpoints below to stay
+// under Cloudflare's per-request 100 MB body limit.
+const MAX_FILE_SIZE = 1024 * 1024 * 1024;       // 1 GB
+const MAX_TOTAL_SIZE = 2 * 1024 * 1024 * 1024;  // 2 GB
+// Chunked upload knobs. Cloudflare's free / Pro plans reject HTTP request
+// bodies over 100 MB, so the dashboard splits anything bigger than this
+// threshold into chunks and assembles them server-side. Picked 25 MB to
+// give ~75 MB of headroom under Cloudflare's cap (multipart envelope +
+// other request overhead) and to keep the per-chunk memory footprint low.
+const CHUNK_THRESHOLD_BYTES = 25 * 1024 * 1024;
+const CHUNK_SESSION_IDLE_MS = 60 * 60 * 1000;   // sessions auto-expire after 1h idle
 
 // File type categories
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const PDF_TYPES = new Set(['application/pdf']);
+const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.flac', '.webm']);
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.mkv', '.avi']);
 const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.csv', '.json', '.xml', '.js', '.ts', '.py', '.html', '.css', '.sh', '.yaml', '.yml', '.toml', '.env', '.tsx', '.jsx', '.sql', '.rs', '.go', '.java', '.rb', '.php', '.swift', '.kt', '.c', '.cpp', '.h']);
 
 export interface UploadedFile {
@@ -22,7 +37,7 @@ export interface UploadedFile {
   mimeType: string;
   size: number;
   path: string;
-  category: 'image' | 'pdf' | 'text' | 'office' | 'unknown';
+  category: 'image' | 'pdf' | 'text' | 'office' | 'audio' | 'video' | 'unknown';
 }
 
 function ensureUploadDir(agentId: string): string {
@@ -36,7 +51,11 @@ function ensureUploadDir(agentId: string): string {
 function getFileCategory(mimeType: string, filename: string): UploadedFile['category'] {
   if (IMAGE_TYPES.has(mimeType)) return 'image';
   if (PDF_TYPES.has(mimeType)) return 'pdf';
+  if (mimeType.startsWith('audio/')) return 'audio';
+  if (mimeType.startsWith('video/')) return 'video';
   const ext = path.extname(filename).toLowerCase();
+  if (AUDIO_EXTENSIONS.has(ext)) return 'audio';
+  if (VIDEO_EXTENSIONS.has(ext)) return 'video';
   if (TEXT_EXTENSIONS.has(ext)) return 'text';
   if (['.doc', '.docx', '.xls', '.xlsx', '.pptx'].includes(ext)) return 'office';
   // Fallback: check if mime suggests text
@@ -62,12 +81,12 @@ uploadRouter.post('/:agentId', async (c) => {
     let totalSize = 0;
     for (const file of files) {
       if (file.size > MAX_FILE_SIZE) {
-        return c.json({ ok: false, error: `File "${file.name}" exceeds 10MB limit` }, 400);
+        return c.json({ ok: false, error: `File "${file.name}" exceeds the ${MAX_FILE_SIZE / (1024 * 1024 * 1024)}GB single-file limit. For uploads through the tunnel, use the chunked upload path instead.` }, 400);
       }
       totalSize += file.size;
     }
     if (totalSize > MAX_TOTAL_SIZE) {
-      return c.json({ ok: false, error: 'Total file size exceeds 20MB limit' }, 400);
+      return c.json({ ok: false, error: `Total upload size exceeds ${MAX_TOTAL_SIZE / (1024 * 1024 * 1024)}GB per message.` }, 400);
     }
 
     const dir = ensureUploadDir(agentId);
@@ -104,6 +123,186 @@ uploadRouter.post('/:agentId', async (c) => {
     logger.error('Upload failed', { agentId, error: msg });
     return c.json({ ok: false, error: `Upload failed: ${msg}` }, 500);
   }
+});
+
+// ── Chunked upload (for files larger than ~100MB, mainly through the
+// Cloudflare tunnel which rejects single requests larger than that) ──
+//
+// Flow:
+//   1. POST /upload/start/:agentId  →  body { filename, mimeType, size }
+//      Server allocates a session, returns { uploadId }.
+//   2. POST /upload/chunk/:agentId/:uploadId/:chunkIndex
+//      Server appends the chunk bytes to the session's `.part` file.
+//      Chunks must arrive in order — client sends them sequentially.
+//   3. POST /upload/finish/:agentId/:uploadId
+//      Server validates the assembled file matches the declared size,
+//      renames `.part` → final stored name, registers the attachment,
+//      and returns the same UploadedFile shape as the one-shot endpoint.
+//
+// Memory footprint: one chunk at a time per session, capped by the
+// CHUNK_THRESHOLD_BYTES the dashboard sends. The .part file lives on
+// disk; only the active chunk is buffered.
+//
+// Session expiry: idle sessions are dropped after 1h. If the dashboard
+// disconnects mid-upload, the `.part` file is cleaned up by the same
+// older-than-7-days sweep that cleans up regular uploads — no
+// dedicated GC pass for chunked sessions.
+interface ChunkSession {
+  agentId: string;
+  filename: string;
+  mimeType: string;
+  declaredSize: number;
+  partPath: string;
+  bytesWritten: number;
+  expectedNextChunk: number; // sequential index, 0-based
+  createdAt: number;
+  lastActivityAt: number;
+}
+
+const chunkSessions = new Map<string, ChunkSession>();
+
+function reapStaleChunkSessions(): void {
+  const now = Date.now();
+  for (const [id, session] of chunkSessions) {
+    if (now - session.lastActivityAt > CHUNK_SESSION_IDLE_MS) {
+      try { if (fs.existsSync(session.partPath)) fs.unlinkSync(session.partPath); } catch { /* ignore */ }
+      chunkSessions.delete(id);
+      logger.info('Chunk session expired', { uploadId: id, agentId: session.agentId });
+    }
+  }
+}
+
+// POST /upload/start/:agentId — register a chunked upload session.
+uploadRouter.post('/start/:agentId', async (c) => {
+  const agentId = c.req.param('agentId');
+  const body = await c.req.json().catch(() => null) as
+    | { filename?: string; mimeType?: string; size?: number }
+    | null;
+  if (!body?.filename || typeof body.size !== 'number') {
+    return c.json({ ok: false, error: 'filename and size are required' }, 400);
+  }
+  if (body.size > MAX_FILE_SIZE) {
+    return c.json({ ok: false, error: `File exceeds ${MAX_FILE_SIZE / (1024 * 1024 * 1024)}GB limit.` }, 400);
+  }
+
+  reapStaleChunkSessions();
+
+  const uploadId = uuidv4();
+  const dir = ensureUploadDir(agentId);
+  const safeFilename = body.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const partPath = path.join(dir, `${Date.now()}_${safeFilename}.part`);
+
+  // Open and immediately close so the file exists on disk for appends.
+  fs.writeFileSync(partPath, '');
+
+  chunkSessions.set(uploadId, {
+    agentId,
+    filename: body.filename,
+    mimeType: body.mimeType || 'application/octet-stream',
+    declaredSize: body.size,
+    partPath,
+    bytesWritten: 0,
+    expectedNextChunk: 0,
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+  });
+
+  logger.info('Chunk session started', { uploadId, agentId, filename: body.filename, size: body.size });
+  return c.json({ ok: true, data: { uploadId } });
+});
+
+// POST /upload/chunk/:agentId/:uploadId/:chunkIndex — append a chunk.
+uploadRouter.post('/chunk/:agentId/:uploadId/:chunkIndex', async (c) => {
+  const agentId = c.req.param('agentId');
+  const uploadId = c.req.param('uploadId');
+  const chunkIndex = Number(c.req.param('chunkIndex'));
+
+  const session = chunkSessions.get(uploadId);
+  if (!session || session.agentId !== agentId) {
+    return c.json({ ok: false, error: 'Unknown or mismatched uploadId' }, 404);
+  }
+  if (chunkIndex !== session.expectedNextChunk) {
+    return c.json({
+      ok: false,
+      error: `Out-of-order chunk: got index ${chunkIndex}, expected ${session.expectedNextChunk}`,
+    }, 409);
+  }
+
+  try {
+    const formData = await c.req.formData();
+    const chunk = formData.get('chunk') as File | null;
+    if (!chunk) {
+      return c.json({ ok: false, error: 'chunk field required (multipart File)' }, 400);
+    }
+    const bytes = Buffer.from(await chunk.arrayBuffer());
+    if (session.bytesWritten + bytes.length > session.declaredSize) {
+      return c.json({
+        ok: false,
+        error: `Chunk would overshoot declared size (declared ${session.declaredSize}, would write ${session.bytesWritten + bytes.length}).`,
+      }, 400);
+    }
+
+    await fs.promises.appendFile(session.partPath, bytes);
+    session.bytesWritten += bytes.length;
+    session.expectedNextChunk++;
+    session.lastActivityAt = Date.now();
+
+    return c.json({
+      ok: true,
+      data: {
+        bytesWritten: session.bytesWritten,
+        nextChunk: session.expectedNextChunk,
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Chunk write failed', { uploadId, chunkIndex, error: msg });
+    return c.json({ ok: false, error: `Chunk write failed: ${msg}` }, 500);
+  }
+});
+
+// POST /upload/finish/:agentId/:uploadId — close the session, register attachment.
+uploadRouter.post('/finish/:agentId/:uploadId', async (c) => {
+  const agentId = c.req.param('agentId');
+  const uploadId = c.req.param('uploadId');
+
+  const session = chunkSessions.get(uploadId);
+  if (!session || session.agentId !== agentId) {
+    return c.json({ ok: false, error: 'Unknown or mismatched uploadId' }, 404);
+  }
+  if (session.bytesWritten !== session.declaredSize) {
+    return c.json({
+      ok: false,
+      error: `Assembled size ${session.bytesWritten} does not match declared ${session.declaredSize}`,
+    }, 400);
+  }
+
+  // Rename .part → final stored name. Drops the .part suffix.
+  const finalPath = session.partPath.replace(/\.part$/, '');
+  try {
+    fs.renameSync(session.partPath, finalPath);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Chunk session rename failed', { uploadId, error: msg });
+    return c.json({ ok: false, error: `Failed to finalize upload: ${msg}` }, 500);
+  }
+
+  chunkSessions.delete(uploadId);
+
+  const category = getFileCategory(session.mimeType, session.filename);
+  const uploaded: UploadedFile = {
+    fileId: uuidv4(),
+    filename: session.filename,
+    mimeType: session.mimeType,
+    size: session.declaredSize,
+    path: finalPath,
+    category,
+  };
+
+  logger.info('Chunked upload finished', {
+    uploadId, agentId, filename: session.filename, size: session.declaredSize, category,
+  });
+  return c.json({ ok: true, data: uploaded });
 });
 
 // Cleanup job: delete uploads older than 7 days

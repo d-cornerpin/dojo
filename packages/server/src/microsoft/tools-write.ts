@@ -215,9 +215,23 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
       properties: {
         message_id: { type: 'string', description: 'Outlook message ID' },
         attachment_id: { type: 'string', description: 'Attachment ID (from outlook_list_attachments)' },
-        save_path: { type: 'string', description: 'Local path to save the file (defaults to ~/Downloads/{filename})' },
+        save_path: { type: 'string', description: 'Local path to save the file (defaults to ~/.dojo/uploads/<agent>/{filename})' },
       },
       required: ['message_id', 'attachment_id'],
+    },
+  },
+  {
+    name: 'teams_download_attachment',
+    description: 'Download a Teams chat-message attachment to local disk. Most Teams attachments are SharePoint-backed file references; this tool resolves the share link and saves the bytes. Use teams_list_attachments first to discover the attachment ID. Returns the saved path plus a follow-up hint based on file type.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'Teams chat ID (from teams_list_chats)' },
+        message_id: { type: 'string', description: 'Teams message ID (from teams_read_messages)' },
+        attachment_id: { type: 'string', description: 'Attachment ID (from teams_list_attachments)' },
+        save_path: { type: 'string', description: 'Local path to save the file (defaults to ~/.dojo/uploads/<agent>/{filename})' },
+      },
+      required: ['chat_id', 'message_id', 'attachment_id'],
     },
   },
   {
@@ -1281,11 +1295,142 @@ export async function executeMicrosoftWriteTool(
       const nodePath = await import('node:path');
 
       const fileName = att.name ?? 'attachment';
-      const outPath = (args.save_path as string | undefined) ?? nodePath.join(os.homedir(), 'Downloads', fileName);
+      // Default save location is the agent's uploads dir (was
+      // ~/Downloads/, which is OUTSIDE the transcribe_audio sandbox).
+      // Lets the agent immediately pipe audio attachments through
+      // transcribe_audio without an extra move step.
+      const defaultDir = nodePath.join(os.homedir(), '.dojo', 'uploads', agentId);
+      fs.mkdirSync(defaultDir, { recursive: true });
+      const outPath = (args.save_path as string | undefined) ?? nodePath.join(defaultDir, fileName);
       const content = Buffer.from(att.contentBytes, 'base64');
       fs.writeFileSync(outPath, content);
 
-      return `Attachment "${fileName}" saved to ${outPath} (${Math.round(content.length / 1024)}KB)`;
+      const ext = nodePath.extname(outPath).toLowerCase();
+      const isAudio = ['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.flac', '.webm'].includes(ext);
+      const isVideo = ['.mp4', '.mov', '.mkv', '.avi'].includes(ext);
+      const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext);
+      let hint: string;
+      if (isAudio || isVideo) {
+        hint = `Use transcribe_audio with path="${outPath}" to get the spoken content as text.`;
+      } else if (isImage) {
+        hint = `Use show_to_user with this path to attach the image to your reply, or screen_read / vision tools to interpret it.`;
+      } else {
+        hint = `Use file_read or show_to_user with this path.`;
+      }
+      return `Attachment "${fileName}" saved to ${outPath} (${Math.round(content.length / 1024)}KB). ${hint}`;
+    }
+
+    case 'teams_download_attachment': {
+      const chatId = args.chat_id as string;
+      const messageId = args.message_id as string;
+      const attachmentId = args.attachment_id as string;
+
+      // 1. Fetch the message to find the attachment metadata. Teams
+      //    attachments live as an array on the message body, not at a
+      //    dedicated /attachments collection.
+      const { msGraphRead } = await import('./client.js');
+      const msgResult = await msGraphRead(
+        `chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}?$select=id,attachments`,
+        agentId, agentName, 'teams_download_attachment',
+        { chatId, messageId, attachmentId, stage: 'lookup' },
+      );
+      if (!msgResult.ok) return `Error fetching Teams message: ${msgResult.error}`;
+      const msgData = msgResult.data as {
+        attachments?: Array<{ id: string; name?: string; contentType?: string; contentUrl?: string }>;
+      };
+      const atts = msgData?.attachments ?? [];
+      const att = atts.find(a => a.id === attachmentId);
+      if (!att) {
+        return `Error: no attachment ${attachmentId} on message ${messageId}. Use teams_list_attachments to see available IDs.`;
+      }
+      if (!att.contentUrl) {
+        return `Error: attachment "${att.name ?? attachmentId}" has no contentUrl (may be an inline card or unsupported type).`;
+      }
+
+      // 2. Resolve to bytes. Most Teams file attachments are SharePoint
+      //    references (contentType: "reference"). For those, hit Graph's
+      //    /shares endpoint to translate the sharing URL into a drive
+      //    item we can read /content from. For other contentTypes (e.g.
+      //    inline messages) fall back to fetching the contentUrl with
+      //    the access token directly.
+      const { getValidAccessToken } = await import('./auth.js');
+      const token = await getValidAccessToken('agent');
+      if (!token) return 'Error: not authenticated with Microsoft (agent account).';
+
+      const fs = await import('node:fs');
+      const os = await import('node:os');
+      const nodePath = await import('node:path');
+
+      const isSharePointReference =
+        (att.contentType ?? '').toLowerCase() === 'reference' ||
+        att.contentUrl.includes('sharepoint.com') ||
+        att.contentUrl.includes('1drv.ms');
+
+      let bytes: Buffer;
+      try {
+        if (isSharePointReference) {
+          // Encode the sharing URL into a base64url-safe "u!" share id
+          // and resolve through Graph. This works regardless of whether
+          // the underlying file lives in OneDrive or SharePoint.
+          const shareId = `u!${Buffer.from(att.contentUrl)
+            .toString('base64')
+            .replace(/=+$/, '')
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')}`;
+          const resp = await fetch(
+            `https://graph.microsoft.com/v1.0/shares/${shareId}/driveItem/content`,
+            {
+              method: 'GET',
+              headers: { Authorization: `Bearer ${token}` },
+              redirect: 'follow',
+            },
+          );
+          if (!resp.ok) {
+            const errText = await resp.text().catch(() => '');
+            return `Error downloading via Graph share resolver: HTTP ${resp.status} ${errText.slice(0, 200)}`;
+          }
+          bytes = Buffer.from(await resp.arrayBuffer());
+        } else {
+          // Non-SharePoint attachment — try a direct GET with the auth
+          // header. Inline message cards usually live at a Graph URL
+          // that accepts the token.
+          const resp = await fetch(att.contentUrl, {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (!resp.ok) {
+            const errText = await resp.text().catch(() => '');
+            return `Error downloading attachment: HTTP ${resp.status} ${errText.slice(0, 200)}`;
+          }
+          bytes = Buffer.from(await resp.arrayBuffer());
+        }
+      } catch (err) {
+        return `Error downloading attachment: ${err instanceof Error ? err.message : String(err)}`;
+      }
+
+      // 3. Save to disk in the agent's uploads dir by default (matching
+      //    gmail_read_attachment / outlook_download_attachment), so
+      //    transcribe_audio can read the path directly without a move.
+      const fileName = att.name ?? `teams-attachment-${attachmentId.slice(0, 12)}.bin`;
+      const defaultDir = nodePath.join(os.homedir(), '.dojo', 'uploads', agentId);
+      fs.mkdirSync(defaultDir, { recursive: true });
+      const outPath = (args.save_path as string | undefined) ?? nodePath.join(defaultDir, fileName);
+      fs.writeFileSync(outPath, bytes);
+
+      // 4. Type-aware follow-up hint. Same shape as Gmail / Outlook.
+      const ext = nodePath.extname(outPath).toLowerCase();
+      const isAudio = ['.mp3', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.flac', '.webm'].includes(ext);
+      const isVideo = ['.mp4', '.mov', '.mkv', '.avi'].includes(ext);
+      const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext);
+      let hint: string;
+      if (isAudio || isVideo) {
+        hint = `Use transcribe_audio with path="${outPath}" to get the spoken content as text.`;
+      } else if (isImage) {
+        hint = `Use show_to_user with this path to attach the image to your reply, or screen_read / vision tools to interpret it.`;
+      } else {
+        hint = `Use file_read or show_to_user with this path.`;
+      }
+      return `Teams attachment "${fileName}" saved to ${outPath} (${Math.round(bytes.length / 1024)}KB). ${hint}`;
     }
 
     case 'calendar_respond_invite_ms': {

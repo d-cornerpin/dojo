@@ -1265,6 +1265,49 @@ configRouter.delete('/models/:id', async (c) => {
   return c.json({ ok: true });
 });
 
+// PUT /models/:id/capabilities — write capabilities directly. Used by
+// the dashboard's Edit Capabilities UI when a probe missed a model's
+// true capabilities (e.g. OpenRouter not advertising an audio-output
+// modality on a newly-launched SKU). Body: { capabilities: string[] }.
+// Validates each string against the known vocabulary; unknown entries
+// are dropped silently. Returns the updated model row.
+configRouter.put('/models/:id/capabilities', async (c) => {
+  const id = c.req.param('id');
+  const db = getDb();
+  const exists = db.prepare('SELECT id FROM models WHERE id = ?').get(id);
+  if (!exists) return c.json({ ok: false, error: 'Model not found' }, 404);
+
+  const body = await c.req.json().catch(() => null);
+  const raw = Array.isArray(body?.capabilities) ? body.capabilities : null;
+  if (!raw) {
+    return c.json({ ok: false, error: 'Request body must include `capabilities` as an array of strings' }, 400);
+  }
+  const VALID = new Set([
+    'tools', 'vision', 'thinking', 'embedding',
+    'image_generation', 'video_generation', 'audio_generation', 'transcription',
+    'text',
+  ]);
+  const filtered = Array.from(new Set(
+    raw.filter((v: unknown): v is string => typeof v === 'string' && VALID.has(v)),
+  )).sort();
+
+  db.prepare(`
+    UPDATE models SET capabilities = ?, updated_at = datetime('now') WHERE id = ?
+  `).run(JSON.stringify(filtered), id);
+
+  const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
+  logger.info('Model capabilities set manually', { modelId: id, capabilities: filtered });
+
+  // Newly granted vision capability may make this model the sole obvious
+  // fallback. Same auto-config call refresh-capabilities makes.
+  try {
+    const { autoConfigureFallbackVisionModelIfObvious } = await import('../../services/vision-model.js');
+    autoConfigureFallbackVisionModelIfObvious();
+  } catch { /* best-effort */ }
+
+  return c.json({ ok: true, data: rowToModel(row), capabilities: filtered });
+});
+
 // POST /models/:id/refresh-capabilities — force a fresh capability probe
 // for one model. Useful when a new capability vocabulary is added (e.g.
 // image_generation in v1.12) and the user's existing rows are stale.
@@ -1373,8 +1416,20 @@ configRouter.put('/models/:id/pricing', async (c) => {
 
   const inputCost = typeof body.inputCostPerM === 'number' ? body.inputCostPerM : undefined;
   const outputCost = typeof body.outputCostPerM === 'number' ? body.outputCostPerM : undefined;
-  const pricingUnit =
-    body.pricingUnit === 'token' || body.pricingUnit === 'megapixel' ? body.pricingUnit : undefined;
+  const VALID_UNITS = ['token', 'megapixel', 'second', 'character', 'minute'] as const;
+  const pricingUnit = VALID_UNITS.includes(body.pricingUnit)
+    ? (body.pricingUnit as typeof VALID_UNITS[number])
+    : undefined;
+  // costPerUnit is the new unified column. null is meaningful (unknown).
+  // Negative numbers and non-numerics are silently ignored.
+  const costPerUnit =
+    body.costPerUnit === null
+      ? null
+      : typeof body.costPerUnit === 'number' && body.costPerUnit >= 0
+        ? body.costPerUnit
+        : undefined;
+  // costPerMegapixel is the legacy field. Accept it during the compat
+  // window; new clients should send costPerUnit instead.
   const costPerMegapixel =
     body.costPerMegapixel === null
       ? null
@@ -1391,8 +1446,16 @@ configRouter.put('/models/:id/pricing', async (c) => {
   if (pricingUnit !== undefined) {
     db.prepare("UPDATE models SET pricing_unit = ?, updated_at = datetime('now') WHERE id = ?").run(pricingUnit, id);
   }
+  if (costPerUnit !== undefined) {
+    db.prepare("UPDATE models SET cost_per_unit = ?, updated_at = datetime('now') WHERE id = ?").run(costPerUnit, id);
+  }
   if (costPerMegapixel !== undefined) {
     db.prepare("UPDATE models SET cost_per_megapixel = ?, updated_at = datetime('now') WHERE id = ?").run(costPerMegapixel, id);
+    // Mirror the legacy field into cost_per_unit too so megapixel rows
+    // stay in sync regardless of which field a client wrote.
+    if (costPerUnit === undefined) {
+      db.prepare("UPDATE models SET cost_per_unit = ? WHERE id = ?").run(costPerMegapixel, id);
+    }
   }
 
   const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
@@ -1787,11 +1850,31 @@ function rowToModel(row: Record<string, unknown>): Model {
   // 060 won't have the column at all, and the default keeps every
   // existing model behaving exactly as it did before the change.
   const pricingUnitRaw = row.pricing_unit;
-  const pricingUnit: 'token' | 'megapixel' =
-    pricingUnitRaw === 'megapixel' ? 'megapixel' : 'token';
+  const pricingUnit: 'token' | 'megapixel' | 'second' | 'character' | 'minute' =
+    pricingUnitRaw === 'megapixel' || pricingUnitRaw === 'second' ||
+    pricingUnitRaw === 'character' || pricingUnitRaw === 'minute'
+      ? pricingUnitRaw
+      : 'token';
+
+  // Read cost_per_unit (new in migration 061). For megapixel rows added
+  // pre-061 the column will be null but cost_per_megapixel still holds
+  // the value; fall back to it so the dashboard / cost tracker see the
+  // right number during the compat window.
+  const costPerUnitRaw = row.cost_per_unit;
   const costPerMegapixelRaw = row.cost_per_megapixel;
+  const costPerUnit =
+    typeof costPerUnitRaw === 'number'
+      ? costPerUnitRaw
+      : pricingUnit === 'megapixel' && typeof costPerMegapixelRaw === 'number'
+        ? costPerMegapixelRaw
+        : null;
+  // Keep costPerMegapixel populated alongside costPerUnit during the
+  // compat window. Drop in a future migration once we're confident no
+  // readers depend on it.
   const costPerMegapixel =
-    typeof costPerMegapixelRaw === 'number' ? costPerMegapixelRaw : null;
+    pricingUnit === 'megapixel'
+      ? (typeof costPerMegapixelRaw === 'number' ? costPerMegapixelRaw : costPerUnit)
+      : null;
 
   return {
     id: row.id as string,
@@ -1804,6 +1887,7 @@ function rowToModel(row: Record<string, unknown>): Model {
     inputCostPerM: row.input_cost_per_m as number | null,
     outputCostPerM: row.output_cost_per_m as number | null,
     pricingUnit,
+    costPerUnit,
     costPerMegapixel,
     isEnabled: Boolean(row.is_enabled),
     thinkingEnabled,

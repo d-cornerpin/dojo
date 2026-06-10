@@ -629,8 +629,16 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
         numCtxRecommended: typeof modelRow.num_ctx_recommended === 'number'
           ? modelRow.num_ctx_recommended
           : null,
-        pricingUnit: modelRow.pricing_unit === 'megapixel' ? 'megapixel' : 'token',
-        costPerMegapixel: typeof modelRow.cost_per_megapixel === 'number'
+        pricingUnit: (modelRow.pricing_unit === 'megapixel' || modelRow.pricing_unit === 'second' ||
+                      modelRow.pricing_unit === 'character' || modelRow.pricing_unit === 'minute')
+          ? modelRow.pricing_unit as 'megapixel' | 'second' | 'character' | 'minute'
+          : 'token',
+        costPerUnit: typeof modelRow.cost_per_unit === 'number'
+          ? modelRow.cost_per_unit
+          : (modelRow.pricing_unit === 'megapixel' && typeof modelRow.cost_per_megapixel === 'number'
+            ? modelRow.cost_per_megapixel
+            : null),
+        costPerMegapixel: modelRow.pricing_unit === 'megapixel' && typeof modelRow.cost_per_megapixel === 'number'
           ? modelRow.cost_per_megapixel
           : null,
         createdAt: modelRow.created_at as string,

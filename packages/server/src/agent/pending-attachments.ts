@@ -18,7 +18,7 @@ export interface PendingAttachment {
   mimeType: string;
   size: number;
   path: string;
-  category: 'image' | 'pdf' | 'text' | 'office' | 'unknown';
+  category: 'image' | 'pdf' | 'text' | 'office' | 'audio' | 'video' | 'unknown';
 }
 
 const buffers = new Map<string, PendingAttachment[]>();

@@ -1271,7 +1271,7 @@ function budgetFreshTail(messages: Message[], availableTokens: number): Message[
  * immediately following user/tool message, and vice versa.
  */
 function sanitizeToolPairs(messages: Message[]): Message[] {
-  // Build list with parsed tool IDs for each message
+  // Build list with parsed tool IDs for each message.
   interface Annotated {
     msg: Message;
     toolUseIds: string[];   // IDs from tool_use blocks (assistant messages)
@@ -1301,50 +1301,103 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
     return { msg, toolUseIds, toolResultIds };
   });
 
-  // Iterate and keep only valid pairs.
-  // An assistant message with tool_use must be immediately followed by a tool message
-  // with matching tool_result IDs. If either is missing, drop BOTH.
+  // Bug history: the old version of this function required the tool_use
+  // message to be IMMEDIATELY followed by its tool_result message
+  // (next.role === 'tool', next.toolResultIds matches). Any intruder
+  // in between (an engine ack, a tool's synthetic-delivery assistant
+  // message, a mid-turn system note) caused BOTH the valid tool_use
+  // AND its tool_result to be dropped — the model lost all record of
+  // having called the tool, and naturally called it again on the next
+  // iteration. Every subsequent loop appended another broken pair,
+  // producing the "agent repeats itself" behavior seen on image_create,
+  // transcribe_audio, and any other tool that delivers mid-turn.
+  //
+  // The new behavior: instead of dropping the pair, drop the
+  // intruders between them. We walk forward from each unmatched
+  // tool_use, search for the first tool message whose resultIds
+  // satisfy the use, and mark any non-tool messages we pass through
+  // for removal. This preserves the model's tool-call context while
+  // still producing API-valid adjacency.
+
   const keep = new Array<boolean>(annotated.length).fill(true);
 
   for (let i = 0; i < annotated.length; i++) {
     const entry = annotated[i];
+    if (entry.toolUseIds.length === 0) continue;
 
-    if (entry.toolUseIds.length > 0) {
-      // This is an assistant message with tool_use. Check the next message.
-      const next = i + 1 < annotated.length ? annotated[i + 1] : null;
-      if (!next || next.msg.role !== 'tool') {
-        // No tool_result follows — drop this assistant message
-        keep[i] = false;
+    const useIdSet = new Set(entry.toolUseIds);
+
+    // Walk forward looking for the matching tool_result.
+    let resultIdx = -1;
+    const intrudersBetween: number[] = [];
+    for (let j = i + 1; j < annotated.length; j++) {
+      const cand = annotated[j];
+      if (cand.msg.role === 'tool' && cand.toolResultIds.length > 0) {
+        const matched = cand.toolResultIds.some((id) => useIdSet.has(id));
+        if (matched) {
+          resultIdx = j;
+          break;
+        }
+        // A tool message with non-matching ids is itself broken (an
+        // orphaned tool_result for some other use). Treat it as an
+        // intruder and keep searching.
+        intrudersBetween.push(j);
         continue;
       }
-
-      // Check that every tool_use ID has a matching tool_result
-      const resultIdSet = new Set(next.toolResultIds);
-      const allMatched = entry.toolUseIds.every((id) => resultIdSet.has(id));
-      if (!allMatched) {
-        // Mismatch — drop both
-        keep[i] = false;
-        keep[i + 1] = false;
-      }
+      // Non-tool message between the use and its result — must be
+      // dropped from the context fed to the model so the
+      // assistant-tool_use / user-tool_result adjacency the API
+      // requires is preserved.
+      intrudersBetween.push(j);
     }
 
-    if (entry.toolResultIds.length > 0 && entry.msg.role === 'tool') {
-      // This is a tool_result message. Check the previous message.
-      const prev = i > 0 ? annotated[i - 1] : null;
-      if (!prev || prev.toolUseIds.length === 0) {
-        // No preceding tool_use — drop this tool_result
-        keep[i] = false;
-        continue;
-      }
+    if (resultIdx === -1) {
+      // No matching tool_result anywhere ahead. The tool_use is
+      // genuinely unanswered (in-progress turn that hasn't reached
+      // tool execution yet, or a real broken state). Drop the
+      // tool_use itself; leave the intruders alone.
+      keep[i] = false;
+      continue;
+    }
 
-      // Check that every tool_result ID has a matching tool_use
+    // Verify EVERY use_id has a matching result_id in the chosen
+    // tool message. Partial matches mean the model expected N
+    // parallel results but only got M; treating that as a mismatch
+    // is the conservative choice.
+    const resultIdSet = new Set(annotated[resultIdx].toolResultIds);
+    const allMatched = entry.toolUseIds.every((id) => resultIdSet.has(id));
+    if (!allMatched) {
+      keep[i] = false;
+      keep[resultIdx] = false;
+      continue;
+    }
+
+    // Pair valid. Mark intruders for removal so the tool_use and
+    // tool_result land adjacent in the final array.
+    for (const idx of intrudersBetween) keep[idx] = false;
+  }
+
+  // Second pass: drop orphaned tool_result messages that never paired
+  // with anything in the loop above (the loop only walked forward
+  // from tool_use messages, so a leading tool_result with no
+  // preceding tool_use never got considered).
+  for (let i = 0; i < annotated.length; i++) {
+    if (!keep[i]) continue;
+    const entry = annotated[i];
+    if (entry.msg.role !== 'tool' || entry.toolResultIds.length === 0) continue;
+    // Scan backward for the matching tool_use that's still kept.
+    let matchedToKeptUse = false;
+    for (let j = i - 1; j >= 0; j--) {
+      if (!keep[j]) continue;
+      const prev = annotated[j];
+      if (prev.toolUseIds.length === 0) continue;
       const useIdSet = new Set(prev.toolUseIds);
-      const allMatched = entry.toolResultIds.every((id) => useIdSet.has(id));
-      if (!allMatched) {
-        keep[i] = false;
-        keep[i - 1] = false;
+      if (entry.toolResultIds.some((id) => useIdSet.has(id))) {
+        matchedToKeptUse = true;
       }
+      break;
     }
+    if (!matchedToKeptUse) keep[i] = false;
   }
 
   const result = annotated.filter((_, i) => keep[i]).map((a) => a.msg);
@@ -1354,7 +1407,7 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
     const droppedDetails = annotated
       .map((a, i) => keep[i] ? null : `[${i}] role=${a.msg.role} useIds=${a.toolUseIds.join(',')} resultIds=${a.toolResultIds.join(',')}`)
       .filter(Boolean);
-    logger.warn(`Dropped ${dropped} messages with broken tool_use/tool_result pairs from context`, {
+    logger.warn(`Dropped ${dropped} messages while sanitizing tool pairs (intruders between tool_use/tool_result, or genuinely orphaned)`, {
       details: droppedDetails.slice(0, 10),
     });
   }
