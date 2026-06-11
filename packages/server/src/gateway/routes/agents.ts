@@ -641,6 +641,18 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
         costPerMegapixel: modelRow.pricing_unit === 'megapixel' && typeof modelRow.cost_per_megapixel === 'number'
           ? modelRow.cost_per_megapixel
           : null,
+        generationParams: (() => {
+          if (typeof modelRow.generation_params !== 'string' || !modelRow.generation_params) return null;
+          try { return JSON.parse(modelRow.generation_params) as Model['generationParams']; }
+          catch { return null; }
+        })(),
+        voiceCatalog: (() => {
+          if (typeof modelRow.voice_catalog !== 'string' || !modelRow.voice_catalog) return null;
+          try {
+            const parsed = JSON.parse(modelRow.voice_catalog);
+            return Array.isArray(parsed) ? (parsed as Model['voiceCatalog']) : null;
+          } catch { return null; }
+        })(),
         createdAt: modelRow.created_at as string,
         updatedAt: modelRow.updated_at as string,
       };

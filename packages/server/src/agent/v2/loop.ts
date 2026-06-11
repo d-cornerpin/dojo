@@ -111,6 +111,19 @@ import { listTechniques } from '../../techniques/store.js';
 
 const logger = createLogger('v2-loop');
 
+// Fire-and-forget media generators. Each posts a "started" ack and delivers
+// the finished asset later as a synthetic message (from a background worker
+// or poller), so the agent must NOT get a second turn — the loop exits
+// immediately after one of these is called. This is the engine-enforced
+// version of the tool result's "end your turn now" instruction, so a
+// disobedient model can't retry-storm.
+const FIRE_AND_FORGET_GEN_TOOLS = new Set([
+  'image_create',
+  'tts_create',
+  'music_create',
+  'video_create',
+]);
+
 // v2.5.9 — Just-in-time visibility hint helper.
 //
 // When a tool result contains content the user will not see (URLs the
@@ -3086,7 +3099,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
       let stoppedMidBatch = false;
       let calledCompleteTask = false;
-      let calledImageCreate = false;
+      let calledFireAndForgetGen = false;
       let recentSigs = state.recentToolSignatures;
 
       outer: for (const batch of batches) {
@@ -3572,7 +3585,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
             });
           } catch { /* best effort */ }
           if (tc.name === 'complete_task') calledCompleteTask = true;
-          if (tc.name === 'image_create') calledImageCreate = true;
+          // Only a SUCCESSFUL generator call is terminal (the job started and
+          // the asset arrives later via async delivery). An error result —
+          // e.g. the param validator kicking the call back for a missing or
+          // out-of-range value — must NOT exit the loop, or the agent never
+          // gets the turn it needs to re-call with corrected values.
+          if (FIRE_AND_FORGET_GEN_TOOLS.has(tc.name) && !toolResult.isError) calledFireAndForgetGen = true;
           return toolResult;
         };
 
@@ -3787,13 +3805,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }
       }
 
-      // ── complete_task / image_create exit conditions (Part XIX) ──
+      // ── complete_task / fire-and-forget generator exit conditions (Part XIX) ──
       if (calledCompleteTask) {
         logger.info('v2: complete_task called, exiting loop', { agentId }, agentId);
         break;
       }
-      if (calledImageCreate) {
-        logger.info('v2: image_create called, exiting loop (async delivery)', { agentId }, agentId);
+      if (calledFireAndForgetGen) {
+        logger.info('v2: fire-and-forget generator called, exiting loop (async delivery)', { agentId }, agentId);
         break;
       }
 
@@ -4015,7 +4033,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
       try {
         const { resolveReplyDestination } = await import('./reply-destination.js');
         const { getPresence, isImessageConfigured } = await import('../../services/presence.js');
-        const { sendResponseViaIMessage } = await import('../../services/imessage-bridge.js');
+        const {
+          sendResponseViaIMessage, getInboundSenderFor,
+          isAgentInitiatedContact, clearAgentInitiatedContact, clearIMResponseFlag,
+        } = await import('../../services/imessage-bridge.js');
 
         const destination = resolveReplyDestination({
           state,
@@ -4046,16 +4067,44 @@ export async function runV2Turn(agentId: string): Promise<void> {
           });
         };
 
-        if (destination === 'imessage' && !state.explicitSendThisTurn.imessage && isImessageConfigured()) {
-          sendResponseViaIMessage(state.lastAssistantTextForIM, agentId);
-          const { getOwnerName } = await import('../../config/platform.js');
-          persistRoutingMarker(`iMessage to ${getOwnerName()}`);
-          logger.info('v2.7.23: routed reply via iMessage', {
+        // Option B relay guard: if this inbound came from someone the agent
+        // proactively reached out to (a relay — "David asked me to ask
+        // Mike"), the agent's end-of-turn text is a report for the original
+        // requester, NOT an auto-reply to that contact. Suppress iMessage
+        // routing and leave the text in the dashboard. Consume-once: clear
+        // the relay flag so a genuine later exchange auto-routes normally.
+        const relaySender = getInboundSenderFor(agentId);
+        const isRelayReply =
+          destination === 'imessage' && !!relaySender && isAgentInitiatedContact(agentId, relaySender);
+
+        if (isRelayReply && relaySender) {
+          clearAgentInitiatedContact(agentId, relaySender);
+          clearIMResponseFlag(agentId);
+          logger.info('Option B: suppressed iMessage auto-route on relay reply (kept in dashboard)', {
             agentId,
-            inboundChannel: state.inboundChannel,
-            presence: getPresence(),
-            textLength: state.lastAssistantTextForIM.length,
+            inboundSender: relaySender,
           }, agentId);
+        } else if (destination === 'imessage' && !state.explicitSendThisTurn.imessage && isImessageConfigured()) {
+          // Label the badge with the recipient the bridge ACTUALLY delivered
+          // to, never a hardcoded default. If the send was suppressed (sender
+          // no longer authorized, empty body), skip the marker entirely so we
+          // don't claim a delivery that didn't happen.
+          const delivered = sendResponseViaIMessage(state.lastAssistantTextForIM, agentId);
+          if (delivered) {
+            persistRoutingMarker(`iMessage to ${delivered.name}`);
+            logger.info('v2.7.23: routed reply via iMessage', {
+              agentId,
+              inboundChannel: state.inboundChannel,
+              recipient: delivered.name,
+              presence: getPresence(),
+              textLength: state.lastAssistantTextForIM.length,
+            }, agentId);
+          } else {
+            logger.info('v2.7.23: iMessage auto-reply suppressed (no valid recipient)', {
+              agentId,
+              inboundChannel: state.inboundChannel,
+            }, agentId);
+          }
         } else if (destination === 'teams' && !state.explicitSendThisTurn.teams && state.inboundContext?.chatId) {
           // v2.7.24 — Teams reply routing. Inbound Teams DM → reply
           // auto-routes back to the same chat_id via teams_send_message.

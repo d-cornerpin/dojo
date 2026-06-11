@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useSearchParams } from 'react-router-dom';
-import type { Provider, Model } from '@dojo/shared';
+import type { Provider, Model, GenerationParamSpec, VoiceOption } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
 import { RouterConfig } from '../components/RouterConfig';
@@ -2134,9 +2134,14 @@ const CAPABILITY_LABELS: Record<string, { label: string; className: string; titl
     title: 'Can generate video via the video_create tool',
   },
   audio_generation: {
-    label: 'Audio Gen',
+    label: 'TTS',
     className: 'bg-cp-teal/15 text-cp-teal border-cp-teal/30',
-    title: 'Can generate spoken audio via the audio_create tool',
+    title: 'Text-to-speech: reads text aloud as a voice. Drives the tts_create tool.',
+  },
+  music_generation: {
+    label: 'Music Gen',
+    className: 'bg-cp-purple/15 text-cp-purple border-cp-purple/30',
+    title: 'Composes music or sound effects from a creative prompt. Different from TTS — does NOT read text aloud.',
   },
   transcription: {
     label: 'Transcription',
@@ -2154,7 +2159,8 @@ const EDITABLE_CAPABILITIES = [
   { key: 'thinking', label: 'Thinking' },
   { key: 'image_generation', label: 'Image Gen' },
   { key: 'video_generation', label: 'Video Gen' },
-  { key: 'audio_generation', label: 'Audio Gen' },
+  { key: 'audio_generation', label: 'TTS' },
+  { key: 'music_generation', label: 'Music Gen' },
   { key: 'transcription', label: 'Transcription' },
 ] as const;
 
@@ -2208,23 +2214,26 @@ const ModelRow = ({
         : String(model.costPerMegapixel))
       : String(model.costPerUnit),
   );
-  type PricingUnitChoice = 'token' | 'megapixel' | 'second' | 'character' | 'minute';
+  type PricingUnitChoice = 'token' | 'megapixel' | 'second' | 'character' | 'minute' | 'item';
   const [pricingUnit, setPricingUnit] = useState<PricingUnitChoice>(model.pricingUnit ?? 'token');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const supportsImageGen = model.capabilities.includes('image_generation');
   const supportsVideoGen = model.capabilities.includes('video_generation');
   const supportsAudioGen = model.capabilities.includes('audio_generation');
+  const supportsMusicGen = model.capabilities.includes('music_generation');
   const supportsTranscription = model.capabilities.includes('transcription');
 
   // Which pricing units make sense for this model's capability set.
   // Token is always offered. Each other unit appears only when the
-  // matching capability is on the model.
+  // matching capability is on the model. 'item' (flat per-song / image /
+  // clip) applies to any generation capability.
   const availableUnits: PricingUnitChoice[] = ['token'];
   if (supportsImageGen) availableUnits.push('megapixel');
-  if (supportsVideoGen || supportsAudioGen) availableUnits.push('second');
+  if (supportsVideoGen || supportsAudioGen || supportsMusicGen) availableUnits.push('second');
   if (supportsAudioGen) availableUnits.push('character');
   if (supportsTranscription) availableUnits.push('minute');
+  if (supportsImageGen || supportsVideoGen || supportsAudioGen || supportsMusicGen) availableUnits.push('item');
   const showUnitToggle = availableUnits.length > 1;
 
   const UNIT_LABEL: Record<PricingUnitChoice, string> = {
@@ -2233,6 +2242,7 @@ const ModelRow = ({
     second: 'Second',
     character: 'Character',
     minute: 'Minute',
+    item: 'Item',
   };
   const UNIT_PLACEHOLDER: Record<PricingUnitChoice, string> = {
     token: '',
@@ -2240,6 +2250,7 @@ const ModelRow = ({
     second: '$ per second of output',
     character: '$ per character of input',
     minute: '$ per minute of input',
+    item: '$ per generated item (song / image / clip)',
   };
   const UNIT_INPUT_LABEL: Record<PricingUnitChoice, string> = {
     token: '$/M',
@@ -2247,6 +2258,7 @@ const ModelRow = ({
     second: '$/sec',
     character: '$/char',
     minute: '$/min',
+    item: '$/item',
   };
 
   // Local optimistic state for the thinking toggle. Mirrors the prop but
@@ -2646,6 +2658,374 @@ const ModelRow = ({
           </span>
         </div>
       )}
+
+      {supportsVideoGen && (
+        <GenerationParamsEditor model={model} onSaved={onPricingChange} />
+      )}
+
+      {supportsAudioGen && (
+        <VoiceCatalogEditor model={model} onSaved={onPricingChange} />
+      )}
+    </div>
+  );
+};
+
+// ── Generation Params Editor ──
+// Per-model editor for the canonical generation params the agent must
+// supply (video: duration / aspect_ratio / resolution). Each param maps to
+// the model's accepted values/range plus the provider wire field it
+// translates to. This is the user-confirmed override layer (decision: make
+// the per-model spec editable on the card); blank or no edits leave the
+// family-seeded default in place.
+type ParamFieldDraft = {
+  accepted: boolean;
+  values: string;   // comma-separated, edited as text
+  min: string;
+  max: string;
+  default: string;
+  wireField: string;
+  wireType: 'string' | 'number';
+};
+
+const specToDraft = (spec: GenerationParamSpec): Record<string, ParamFieldDraft> => {
+  const out: Record<string, ParamFieldDraft> = {};
+  for (const [name, f] of Object.entries(spec)) {
+    out[name] = {
+      accepted: f.accepted,
+      values: f.values.map((v) => String(v)).join(', '),
+      min: f.min === undefined ? '' : String(f.min),
+      max: f.max === undefined ? '' : String(f.max),
+      default: String(f.default),
+      wireField: f.wireField,
+      wireType: f.wireType,
+    };
+  }
+  return out;
+};
+
+const GenerationParamsEditor = ({ model, onSaved }: { model: Model; onSaved: () => void }) => {
+  const toast = useToast();
+  const spec = model.generationParams;
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<Record<string, ParamFieldDraft>>(
+    spec ? specToDraft(spec) : {},
+  );
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  if (!spec) {
+    return (
+      <div className="mt-3 text-[10px] text-ui/25 italic">
+        Generation params not seeded yet — restart the server to backfill, then edit here.
+      </div>
+    );
+  }
+
+  const paramNames = Object.keys(draft);
+
+  const setField = (name: string, key: keyof ParamFieldDraft, value: string | boolean) => {
+    setDraft((prev) => ({ ...prev, [name]: { ...prev[name], [key]: value } }));
+  };
+
+  const handleSave = async () => {
+    // Rebuild a GenerationParamSpec from the draft. Numeric values are
+    // coerced when the underlying wireType is number; otherwise kept as
+    // strings (the agent-facing enum is matched by string equality).
+    const next: GenerationParamSpec = {};
+    for (const [name, d] of Object.entries(draft)) {
+      const isNumeric = d.wireType === 'number';
+      const values = d.values
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+        .map((s) => (isNumeric ? Number(s) : s));
+      const min = d.min.trim() === '' ? undefined : Number(d.min);
+      const max = d.max.trim() === '' ? undefined : Number(d.max);
+      const def = isNumeric && d.default.trim() !== '' && Number.isFinite(Number(d.default))
+        ? Number(d.default)
+        : d.default;
+      next[name] = {
+        accepted: d.accepted,
+        values,
+        ...(min !== undefined && Number.isFinite(min) ? { min } : {}),
+        ...(max !== undefined && Number.isFinite(max) ? { max } : {}),
+        default: def,
+        wireField: d.wireField.trim(),
+        wireType: d.wireType,
+      };
+    }
+    setSaving(true);
+    const result = await api.updateModelGenerationParams(model.id, next);
+    setSaving(false);
+    if (result.ok) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+      onSaved();
+    } else {
+      toast.error(result.error ?? 'Failed to save generation params');
+    }
+  };
+
+  const handleReset = async () => {
+    if (!confirm('Reset to the seeded defaults? Your edits will be cleared.')) return;
+    setSaving(true);
+    const result = await api.updateModelGenerationParams(model.id, null);
+    setSaving(false);
+    if (result.ok) {
+      onSaved();
+    } else {
+      toast.error(result.error ?? 'Failed to reset generation params');
+    }
+  };
+
+  return (
+    <div className="mt-3 border-t border-ui/[0.08] pt-2.5">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="text-[11px] text-ui/55 hover:text-ui/80 transition-colors flex items-center gap-1"
+        title="The agent must supply these params to use video_create. Edit the accepted values and how each maps to this model's request body."
+      >
+        <span>{open ? '▾' : '▸'}</span>
+        Generation parameters
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2">
+          <div className="grid grid-cols-[80px_1fr_52px_52px_64px_84px_70px] gap-1.5 text-[9px] uppercase tracking-wide text-ui/30 px-0.5">
+            <span>Param</span>
+            <span>Allowed values</span>
+            <span>Min</span>
+            <span>Max</span>
+            <span>Default</span>
+            <span>Wire field</span>
+            <span>Wire type</span>
+          </div>
+          {paramNames.map((name) => {
+            const d = draft[name];
+            return (
+              <div key={name} className="grid grid-cols-[80px_1fr_52px_52px_64px_84px_70px] gap-1.5 items-center">
+                <label className="inline-flex items-center gap-1 text-[11px] text-ui/60" title="Uncheck to drop this param from the request body for this model (the agent still must supply it).">
+                  <input
+                    type="checkbox"
+                    checked={d.accepted}
+                    onChange={(e) => setField(name, 'accepted', e.target.checked)}
+                    className="h-3 w-3 rounded border-ui/[0.15] bg-ui/[0.05] accent-amber-500"
+                  />
+                  <span className="truncate">{name}</span>
+                </label>
+                <input
+                  type="text"
+                  value={d.values}
+                  onChange={(e) => setField(name, 'values', e.target.value)}
+                  placeholder="comma-separated; blank = use min/max"
+                  className="glass-input text-[11px] font-mono"
+                />
+                <input
+                  type="text"
+                  value={d.min}
+                  onChange={(e) => setField(name, 'min', e.target.value)}
+                  className="glass-input text-[11px] font-mono text-right"
+                />
+                <input
+                  type="text"
+                  value={d.max}
+                  onChange={(e) => setField(name, 'max', e.target.value)}
+                  className="glass-input text-[11px] font-mono text-right"
+                />
+                <input
+                  type="text"
+                  value={d.default}
+                  onChange={(e) => setField(name, 'default', e.target.value)}
+                  className="glass-input text-[11px] font-mono text-right"
+                />
+                <input
+                  type="text"
+                  value={d.wireField}
+                  onChange={(e) => setField(name, 'wireField', e.target.value)}
+                  className="glass-input text-[11px] font-mono"
+                />
+                <select
+                  value={d.wireType}
+                  onChange={(e) => setField(name, 'wireType', e.target.value as 'string' | 'number')}
+                  className="glass-input text-[11px]"
+                >
+                  <option value="string">string</option>
+                  <option value="number">number</option>
+                </select>
+              </div>
+            );
+          })}
+          <div className="flex items-center gap-3 pt-1">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="px-2 py-1 text-xs glass-btn-primary rounded transition-colors"
+            >
+              {saving ? '...' : 'Save'}
+            </button>
+            <button
+              onClick={handleReset}
+              disabled={saving}
+              className="text-[10px] text-ui/40 hover:text-ui/70 underline transition-colors"
+              title="Clear your edits and re-apply the family-seeded defaults."
+            >
+              reset to defaults
+            </button>
+            {saved && <span className="text-xs text-cp-teal">Saved</span>}
+            <span className="text-[10px] text-ui/25 italic">
+              aspect_ratio + resolution compose the size field
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ── Voice Catalog Editor ──
+// Per-model editor for the TTS voice list the agent may pick from (the
+// tts_create tool). Each entry is an id (base timbre), a description (the
+// vibe shown to the agent), and a perceived gender. Seeded from a code
+// family registry; this is the user-confirmed override layer. Reset clears
+// to null and lets the family seed re-apply on the next backfill.
+type VoiceDraft = { id: string; description: string; gender: 'male' | 'female' | 'neutral' };
+
+const VoiceCatalogEditor = ({ model, onSaved }: { model: Model; onSaved: () => void }) => {
+  const toast = useToast();
+  const catalog = model.voiceCatalog;
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<VoiceDraft[]>(
+    catalog ? catalog.map((v) => ({ id: v.id, description: v.description, gender: v.gender })) : [],
+  );
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  if (!catalog) {
+    return (
+      <div className="mt-3 text-[10px] text-ui/25 italic">
+        Voice catalog not seeded yet — restart the server to backfill, then edit here.
+      </div>
+    );
+  }
+
+  const setVoice = (i: number, key: keyof VoiceDraft, value: string) => {
+    setDraft((prev) => prev.map((v, idx) => (idx === i ? { ...v, [key]: value } : v)));
+  };
+  const addVoice = () => setDraft((prev) => [...prev, { id: '', description: '', gender: 'neutral' }]);
+  const removeVoice = (i: number) => setDraft((prev) => prev.filter((_, idx) => idx !== i));
+
+  const handleSave = async () => {
+    const next: VoiceOption[] = draft
+      .map((v) => ({ id: v.id.trim(), description: v.description.trim(), gender: v.gender }))
+      .filter((v) => v.id.length > 0);
+    setSaving(true);
+    const result = await api.updateModelVoiceCatalog(model.id, next);
+    setSaving(false);
+    if (result.ok) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+      onSaved();
+    } else {
+      toast.error(result.error ?? 'Failed to save voice catalog');
+    }
+  };
+
+  const handleReset = async () => {
+    if (!confirm('Reset to the seeded voices? Your edits will be cleared.')) return;
+    setSaving(true);
+    const result = await api.updateModelVoiceCatalog(model.id, null);
+    setSaving(false);
+    if (result.ok) {
+      onSaved();
+    } else {
+      toast.error(result.error ?? 'Failed to reset voice catalog');
+    }
+  };
+
+  return (
+    <div className="mt-3 border-t border-ui/[0.08] pt-2.5">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="text-[11px] text-ui/55 hover:text-ui/80 transition-colors flex items-center gap-1"
+        title="The voices the agent may pick from for tts_create. The id sets the base timbre; the description is the vibe the agent matches against a request."
+      >
+        <span>{open ? '▾' : '▸'}</span>
+        Voices ({draft.length})
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2">
+          <div className="grid grid-cols-[96px_1fr_84px_28px] gap-1.5 text-[9px] uppercase tracking-wide text-ui/30 px-0.5">
+            <span>Voice id</span>
+            <span>Character</span>
+            <span>Gender</span>
+            <span></span>
+          </div>
+          {draft.map((v, i) => (
+            <div key={i} className="grid grid-cols-[96px_1fr_84px_28px] gap-1.5 items-center">
+              <input
+                type="text"
+                value={v.id}
+                onChange={(e) => setVoice(i, 'id', e.target.value)}
+                placeholder="onyx"
+                className="glass-input text-[11px] font-mono"
+              />
+              <input
+                type="text"
+                value={v.description}
+                onChange={(e) => setVoice(i, 'description', e.target.value)}
+                placeholder="deep and authoritative"
+                className="glass-input text-[11px]"
+              />
+              <select
+                value={v.gender}
+                onChange={(e) => setVoice(i, 'gender', e.target.value)}
+                className="glass-input text-[11px]"
+              >
+                <option value="male">male</option>
+                <option value="female">female</option>
+                <option value="neutral">neutral</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => removeVoice(i)}
+                className="text-ui/30 hover:text-red-400 transition-colors text-sm"
+                title="Remove this voice"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={addVoice}
+            className="text-[10px] text-ui/40 hover:text-ui/70 underline transition-colors"
+          >
+            + add voice
+          </button>
+          <div className="flex items-center gap-3 pt-1">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="px-2 py-1 text-xs glass-btn-primary rounded transition-colors"
+            >
+              {saving ? '...' : 'Save'}
+            </button>
+            <button
+              onClick={handleReset}
+              disabled={saving}
+              className="text-[10px] text-ui/40 hover:text-ui/70 underline transition-colors"
+              title="Clear your edits and re-apply the family-seeded voices."
+            >
+              reset to defaults
+            </button>
+            {saved && <span className="text-xs text-cp-teal">Saved</span>}
+            <span className="text-[10px] text-ui/25 italic">
+              character/accent/emotion goes in the spoken text, not the id
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -2656,8 +3036,10 @@ const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: 
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<api.BrowseModelResult[]>([]);
   const [searching, setSearching] = useState(false);
-  const [adding, setAdding] = useState<string | null>(null);
   const [searched, setSearched] = useState(false);
+  // The model the user clicked "Add" on; drives the pricing modal. Adding
+  // is confirmed from inside the modal so the user can pull/enter a price.
+  const [pricingModalModel, setPricingModalModel] = useState<api.BrowseModelResult | null>(null);
 
   const handleSearch = async () => {
     if (!query.trim()) return;
@@ -2669,14 +3051,10 @@ const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: 
     setSearching(false);
   };
 
-  const handleAdd = async (model: api.BrowseModelResult) => {
-    setAdding(model.apiModelId);
-    const result = await api.addProviderModel(providerId, model);
-    if (result.ok) {
-      setResults(prev => prev.filter(r => r.apiModelId !== model.apiModelId));
-      onModelAdded();
-    }
-    setAdding(null);
+  const handleAdded = (apiModelId: string) => {
+    setResults(prev => prev.filter(r => r.apiModelId !== apiModelId));
+    setPricingModalModel(null);
+    onModelAdded();
   };
 
   const formatCost = (cost: number | null) => {
@@ -2717,16 +3095,21 @@ const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: 
                   <span className="truncate">{model.apiModelId}</span>
                   {model.contextWindow && <span>{(model.contextWindow / 1000).toFixed(0)}k ctx</span>}
                   {model.maxOutputTokens && <span>{(model.maxOutputTokens / 1000).toFixed(0)}k out</span>}
-                  <span>In: {formatCost(model.inputCostPerM)}/M</span>
-                  <span>Out: {formatCost(model.outputCostPerM)}/M</span>
+                  {model.priceAvailable === false ? (
+                    <span className="text-cp-coral font-medium">No price from API (set on add)</span>
+                  ) : (
+                    <>
+                      <span>In: {formatCost(model.inputCostPerM)}/M</span>
+                      <span>Out: {formatCost(model.outputCostPerM)}/M</span>
+                    </>
+                  )}
                 </div>
               </div>
               <button
-                onClick={() => handleAdd(model)}
-                disabled={adding === model.apiModelId}
-                className="ml-2 px-3 py-1 text-xs bg-cp-teal/20 text-cp-teal hover:bg-cp-teal/30 disabled:bg-ui/[0.05] disabled:text-ui/25 rounded-lg transition-colors shrink-0"
+                onClick={() => setPricingModalModel(model)}
+                className="ml-2 px-3 py-1 text-xs bg-cp-teal/20 text-cp-teal hover:bg-cp-teal/30 rounded-lg transition-colors shrink-0"
               >
-                {adding === model.apiModelId ? 'Adding...' : 'Add'}
+                Add
               </button>
             </div>
           ))}
@@ -2737,8 +3120,197 @@ const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: 
         <p className="text-xs text-ui/25 text-center py-2">No models found matching "{query}"</p>
       )}
 
+      {pricingModalModel && (
+        <AddModelPricingModal
+          providerId={providerId}
+          model={pricingModalModel}
+          onClose={() => setPricingModalModel(null)}
+          onAdded={() => handleAdded(pricingModalModel.apiModelId)}
+        />
+      )}
+
       {/* Manual Add — for models not in the catalog */}
       <ManualAddModel providerId={providerId} onModelAdded={onModelAdded} />
+    </div>
+  );
+};
+
+// ── Add-from-catalog pricing modal ──
+//
+// Opens when the user clicks "Add" on a browse result. If the catalog
+// reported a price we pre-fill it; if not (media-only generators that
+// OpenRouter lists as free), we say so in red and let the user enter one
+// or leave it blank. Every pricing unit is offered so per-song / per-clip
+// models can be priced correctly at add time.
+
+type AddModalUnit = 'token' | 'megapixel' | 'second' | 'character' | 'minute' | 'item';
+
+const ADD_MODAL_UNITS: { unit: AddModalUnit; label: string; inputLabel: string; hint: string }[] = [
+  { unit: 'token', label: 'Token', inputLabel: '$ / M tokens', hint: 'Per million input/output tokens.' },
+  { unit: 'item', label: 'Item', inputLabel: '$ / item', hint: 'Flat price per generated item (a song, an image, a clip).' },
+  { unit: 'second', label: 'Second', inputLabel: '$ / second', hint: 'Per second of generated media (video / audio).' },
+  { unit: 'megapixel', label: 'Megapixel', inputLabel: '$ / megapixel', hint: 'Per output megapixel (image gen).' },
+  { unit: 'minute', label: 'Minute', inputLabel: '$ / minute', hint: 'Per minute of input audio (transcription).' },
+  { unit: 'character', label: 'Character', inputLabel: '$ / character', hint: 'Per character of input text (TTS).' },
+];
+
+const AddModelPricingModal = ({
+  providerId,
+  model,
+  onClose,
+  onAdded,
+}: {
+  providerId: string;
+  model: api.BrowseModelResult;
+  onClose: () => void;
+  onAdded: () => void;
+}) => {
+  const priceAvailable = model.priceAvailable !== false;
+
+  // Default unit: token when the catalog gave us a price; otherwise guess
+  // from the model's output modality so media generators land on a
+  // sensible unit (video → second, image → megapixel, audio → item).
+  const guessUnit = (): AddModalUnit => {
+    if (priceAvailable) return 'token';
+    const mods = model.outputModalities ?? [];
+    if (mods.includes('video')) return 'second';
+    if (mods.includes('audio')) return 'item';
+    if (mods.includes('image')) return 'megapixel';
+    return 'token';
+  };
+
+  const [unit, setUnit] = useState<AddModalUnit>(guessUnit());
+  const [inputPrice, setInputPrice] = useState(
+    model.inputCostPerM !== null && model.inputCostPerM !== undefined ? String(model.inputCostPerM) : '',
+  );
+  const [outputPrice, setOutputPrice] = useState(
+    model.outputCostPerM !== null && model.outputCostPerM !== undefined ? String(model.outputCostPerM) : '',
+  );
+  const [unitPrice, setUnitPrice] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const parsePrice = (s: string): number | null => {
+    const trimmed = s.trim();
+    if (trimmed === '') return null;
+    const n = parseFloat(trimmed);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+
+  const handleConfirm = async () => {
+    setAdding(true);
+    setError(null);
+    const result = await api.addProviderModel(providerId, {
+      ...model,
+      pricingUnit: unit,
+      inputCostPerM: unit === 'token' ? parsePrice(inputPrice) : null,
+      outputCostPerM: unit === 'token' ? parsePrice(outputPrice) : null,
+      costPerUnit: unit === 'token' ? null : parsePrice(unitPrice),
+    });
+    setAdding(false);
+    if (result.ok) onAdded();
+    else setError(result.error ?? 'Failed to add model');
+  };
+
+  const activeHint = ADD_MODAL_UNITS.find(u => u.unit === unit)?.hint ?? '';
+  const activeInputLabel = ADD_MODAL_UNITS.find(u => u.unit === unit)?.inputLabel ?? '$ / unit';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/50" />
+      <div
+        className="glass-modal-bg relative z-10 w-full max-w-md p-5 rounded-2xl shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-sm font-semibold text-ui/90">Add model</h3>
+        <p className="text-xs text-ui/50 mt-0.5 truncate">{model.name}</p>
+        <p className="text-[10px] text-ui/35 truncate">{model.apiModelId}</p>
+
+        {priceAvailable ? (
+          <p className="mt-3 text-[11px] text-ui/45">Pricing was pulled from the provider catalog. Adjust if needed.</p>
+        ) : (
+          <p className="mt-3 text-[11px] text-cp-coral">
+            This provider's catalog doesn't expose a price for this model. Enter one below, or leave it blank to set it later.
+          </p>
+        )}
+
+        <div className="mt-4">
+          <label className="block text-[11px] font-medium text-ui/60 mb-1">Priced by</label>
+          <div className="flex flex-wrap gap-1.5">
+            {ADD_MODAL_UNITS.map(({ unit: u, label }) => (
+              <button
+                key={u}
+                type="button"
+                onClick={() => setUnit(u)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors ${
+                  unit === u
+                    ? 'bg-cp-teal/25 text-cp-teal'
+                    : 'bg-ui/[0.05] text-ui/50 hover:bg-ui/[0.08]'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1.5 text-[10px] text-ui/35">{activeHint}</p>
+        </div>
+
+        <div className="mt-4">
+          {unit === 'token' ? (
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <label className="block text-[10px] text-ui/45 mb-1">Input $ / M</label>
+                <input
+                  type="number" min="0" step="any" value={inputPrice}
+                  onChange={(e) => setInputPrice(e.target.value)}
+                  placeholder="blank = unknown"
+                  className="glass-input w-full text-sm"
+                />
+              </div>
+              <div className="flex-1">
+                <label className="block text-[10px] text-ui/45 mb-1">Output $ / M</label>
+                <input
+                  type="number" min="0" step="any" value={outputPrice}
+                  onChange={(e) => setOutputPrice(e.target.value)}
+                  placeholder="blank = unknown"
+                  className="glass-input w-full text-sm"
+                />
+              </div>
+            </div>
+          ) : (
+            <div>
+              <label className="block text-[10px] text-ui/45 mb-1">{activeInputLabel}</label>
+              <input
+                type="number" min="0" step="any" value={unitPrice}
+                onChange={(e) => setUnitPrice(e.target.value)}
+                placeholder="blank = unknown"
+                className="glass-input w-full text-sm"
+              />
+            </div>
+          )}
+        </div>
+
+        {error && <p className="mt-3 text-[11px] text-cp-coral">{error}</p>}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={adding}
+            className="px-3 py-1.5 rounded-lg text-xs text-ui/60 hover:text-ui/90 hover:bg-ui/[0.06] transition-colors disabled:opacity-40"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleConfirm}
+            disabled={adding}
+            className="px-4 py-1.5 rounded-lg text-xs font-medium bg-cp-teal/20 text-cp-teal hover:bg-cp-teal/30 transition-colors disabled:opacity-40"
+          >
+            {adding ? 'Adding…' : 'Add model'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 };
@@ -2751,11 +3323,12 @@ const MANUAL_ADD_CAPABILITIES = [
   { key: 'thinking', label: 'Thinking', desc: 'Extended reasoning' },
   { key: 'image_generation', label: 'Image Gen', desc: 'Image output' },
   { key: 'video_generation', label: 'Video Gen', desc: 'Video output' },
-  { key: 'audio_generation', label: 'Audio Gen', desc: 'Audio / TTS output' },
+  { key: 'audio_generation', label: 'TTS', desc: 'Text-to-speech: reads text aloud' },
+  { key: 'music_generation', label: 'Music Gen', desc: 'Composes music / sound effects from a prompt' },
   { key: 'transcription', label: 'Transcription', desc: 'Speech-to-text' },
 ] as const;
 
-type ManualAddPricingUnit = 'token' | 'megapixel' | 'second' | 'character' | 'minute';
+type ManualAddPricingUnit = 'token' | 'megapixel' | 'second' | 'character' | 'minute' | 'item';
 
 const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onModelAdded: () => void }) => {
   const [expanded, setExpanded] = useState(false);
@@ -2775,12 +3348,14 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
   const supportsImageGen = selectedCaps.has('image_generation');
   const supportsVideoGen = selectedCaps.has('video_generation');
   const supportsAudioGen = selectedCaps.has('audio_generation');
+  const supportsMusicGen = selectedCaps.has('music_generation');
   const supportsTranscription = selectedCaps.has('transcription');
   const availableUnits: ManualAddPricingUnit[] = ['token'];
   if (supportsImageGen) availableUnits.push('megapixel');
-  if (supportsVideoGen || supportsAudioGen) availableUnits.push('second');
+  if (supportsVideoGen || supportsAudioGen || supportsMusicGen) availableUnits.push('second');
   if (supportsAudioGen) availableUnits.push('character');
   if (supportsTranscription) availableUnits.push('minute');
+  if (supportsImageGen || supportsVideoGen || supportsAudioGen || supportsMusicGen) availableUnits.push('item');
 
   // If the user untoggled a capability that the current unit depended
   // on, snap back to token so we don't submit an invalid combo.
@@ -2790,7 +3365,7 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
 
   const UNIT_LABEL: Record<ManualAddPricingUnit, string> = {
     token: 'Token', megapixel: 'Megapixel', second: 'Second',
-    character: 'Character', minute: 'Minute',
+    character: 'Character', minute: 'Minute', item: 'Item',
   };
   const UNIT_HINT: Record<ManualAddPricingUnit, string> = {
     token: 'Per million tokens. Enter 0 for free; blank for unknown.',
@@ -2798,6 +3373,7 @@ const ManualAddModel = ({ providerId, onModelAdded }: { providerId: string; onMo
     second: 'Per second of generated media. Typical for video and some audio models.',
     character: 'Per character of input text. Common for TTS providers.',
     minute: 'Per minute of input audio. Common for transcription providers.',
+    item: 'Flat price per generated item (a song, an image, a clip). Common for music models that bill per track.',
   };
 
   const toggleCap = (key: string) => {
@@ -3124,6 +3700,7 @@ const ModelsTab = () => {
         <ImageGenModelCard models={models} />
         <VideoGenModelCard models={models} />
         <AudioGenModelCard models={models} />
+        <MusicGenModelCard models={models} />
         <TranscriptionModelCard models={models} />
       </div>
     </div>
@@ -3838,7 +4415,7 @@ const formatTokenPrice = (n: number | null): string | null => {
 // per-character would render as fractions of a cent).
 const formatUnitPrice = (
   n: number | null,
-  unit: 'megapixel' | 'second' | 'character' | 'minute',
+  unit: 'megapixel' | 'second' | 'character' | 'minute' | 'item',
 ): string | null => {
   if (n === null || typeof n !== 'number') return null;
   if (n === 0) return 'Free';
@@ -3847,6 +4424,7 @@ const formatUnitPrice = (
     case 'second':    return `$${n}/second`;
     case 'minute':    return `$${n}/minute`;
     case 'character': return `$${n * 1000} / 1k chars`;
+    case 'item':      return `$${n}/item`;
   }
 };
 
@@ -4095,13 +4673,26 @@ const VideoGenModelCard = ({ models }: { models: Model[] }) => (
 
 const AudioGenModelCard = ({ models }: { models: Model[] }) => (
   <CapabilityModelCard
-    title="Audio Generation Model"
-    description="The model used when an agent creates spoken audio from text."
+    title="Text-to-Speech (TTS) Model"
+    description="The model used to generate spoken-audio reads of text on request (the tts_create tool). Separate from the Voice tab, which is how you talk with the agent live. Music / sound-effect models have their own picker below."
     settingKey="dojo_audio_gen_model_id"
     capability="audio_generation"
-    selectorLabel="Audio-gen model"
-    noModelsMessage="No audio-generation models are enabled. Enable one above and come back here to pick it."
-    noSelectionMessage="No audio-generation model selected. Pick one below."
+    selectorLabel="TTS model"
+    noModelsMessage="No TTS models are enabled. Enable one above and come back here to pick it. (Tip: untag music models from this capability via the Edit button on their row.)"
+    noSelectionMessage="No TTS model selected. Pick one below."
+    models={models}
+  />
+);
+
+const MusicGenModelCard = ({ models }: { models: Model[] }) => (
+  <CapabilityModelCard
+    title="Music Generation Model"
+    description="The model used when an agent composes music or sound effects from a prompt. Different from TTS, which reads text aloud."
+    settingKey="dojo_music_gen_model_id"
+    capability="music_generation"
+    selectorLabel="Music-gen model"
+    noModelsMessage="No music-generation models are enabled. Enable one above (e.g. Google Lyria) and come back here to pick it."
+    noSelectionMessage="No music-generation model selected. Pick one below."
     models={models}
   />
 );

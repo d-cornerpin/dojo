@@ -604,6 +604,43 @@ export function getInboundSenderFor(agentId: string): string | null {
   return pendingIMResponseMap.get(agentId)?.sender ?? null;
 }
 
+// ── Agent-initiated (relay) contact tracking ──
+//
+// When the agent proactively texts someone who ISN'T the person who
+// triggered the current turn (a relay: "David asked me to ask Mike"), we
+// record that contact here. When that contact later REPLIES, the agent's
+// end-of-turn text is a report back to the original requester (the
+// dashboard user), NOT an auto-reply to the contact — so the v2.7.23
+// auto-router suppresses iMessage routing for that inbound turn and leaves
+// the text in the dashboard. Consume-once: cleared the first time the
+// relay reply is handled, so a genuine later exchange isn't suppressed.
+const agentInitiatedContacts = new Map<string, Set<string>>(); // agentId -> Set<canonical address>
+
+// Resolve to the stored safe-sender address so a marked recipient and a
+// later inbound sender compare equal despite formatting differences (phone
+// punctuation, email case). Falls back to a lowercased raw address.
+function canonicalContactAddress(address: string): string {
+  const match = findSafeSenderByAddress(getSafeSenders(), address);
+  return (match?.address ?? address).trim().toLowerCase();
+}
+
+export function markAgentInitiatedContact(agentId: string, address: string): void {
+  let set = agentInitiatedContacts.get(agentId);
+  if (!set) {
+    set = new Set<string>();
+    agentInitiatedContacts.set(agentId, set);
+  }
+  set.add(canonicalContactAddress(address));
+}
+
+export function isAgentInitiatedContact(agentId: string, address: string): boolean {
+  return agentInitiatedContacts.get(agentId)?.has(canonicalContactAddress(address)) ?? false;
+}
+
+export function clearAgentInitiatedContact(agentId: string, address: string): void {
+  agentInitiatedContacts.get(agentId)?.delete(canonicalContactAddress(address));
+}
+
 /**
  * v2.5.7 — strip system routing tags the LLM may have copied from prior
  * conversation history into its own reply (most commonly the
@@ -630,7 +667,18 @@ export function stripSystemTags(text: string): string {
     .trim();
 }
 
-export function sendResponseViaIMessage(text: string, agentId?: string): void {
+/**
+ * Auto-deliver the agent's terminal text back over iMessage. Returns the
+ * recipient that actually received it ({ address, name }) so the caller can
+ * label the dashboard routing badge with the TRUE recipient, or null when
+ * the send was suppressed (no valid recipient / empty after sanitization).
+ * The badge must never be derived from a hardcoded default — it has to
+ * reflect who the message really went to.
+ */
+export function sendResponseViaIMessage(
+  text: string,
+  agentId?: string,
+): { address: string; name: string } | null {
   if (!agentId) agentId = getPrimaryAgentId();
   const entry = pendingIMResponseMap.get(agentId);
   // Two safety rails on the fallback path:
@@ -643,10 +691,12 @@ export function sendResponseViaIMessage(text: string, agentId?: string): void {
   //      drop the auto-reply instead of texting someone no longer
   //      authorized.
   let sender: string | null = null;
+  let recipientName: string | null = null;
   if (entry?.sender) {
     const stillAllowed = findSafeSenderByAddress(getSafeSenders(), entry.sender);
     if (stillAllowed) {
       sender = entry.sender;
+      recipientName = stillAllowed.name;
     } else {
       logger.warn('Auto-reply suppressed: inbound sender no longer on safe-sender list', {
         agentId,
@@ -655,12 +705,14 @@ export function sendResponseViaIMessage(text: string, agentId?: string): void {
     }
   } else {
     sender = getDefaultSender();
-  }
-  if (sender) {
-    const cleaned = stripSystemTags(text);
-    if (cleaned) sendIMessage(sender, cleaned); // sanitization happens inside sendIMessage
+    if (sender) recipientName = findSafeSenderByAddress(getSafeSenders(), sender)?.name ?? null;
   }
   pendingIMResponseMap.delete(agentId);
+  if (!sender) return null;
+  const cleaned = stripSystemTags(text);
+  if (!cleaned) return null;
+  sendIMessage(sender, cleaned); // sanitization happens inside sendIMessage
+  return { address: sender, name: recipientName ?? sender };
 }
 const CHAT_DB_PATH = path.join(os.homedir(), 'Library', 'Messages', 'chat.db');
 

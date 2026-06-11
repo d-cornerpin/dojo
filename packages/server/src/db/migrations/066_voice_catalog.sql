@@ -1,0 +1,27 @@
+-- v2.11.1 — Per-model TTS voice catalog.
+--
+-- The tts_create tool lets the agent pick a voice by id. The valid voice
+-- set is model-specific and NOT discoverable at runtime: OpenRouter's
+-- /v1/models returns supported_voices: null for the gpt-audio family. We
+-- seed the catalog from a code family registry on add (and a boot
+-- backfill), store it per model here as JSON, and let the user edit it on
+-- the Settings model card.
+--
+-- Two engine uses for the stored catalog:
+--   1. getFilteredTools() injects the configured model's voices (id +
+--      gender + character) into the tts_create description so the agent
+--      picks a real voice by vibe instead of guessing.
+--   2. The tts_create dispatcher validates the agent's chosen voice and
+--      kicks the call back when it isn't in the model's set.
+--
+-- Shape (array of voice options):
+--   [ { "id": "onyx", "description": "deep and authoritative",
+--       "gender": "male" }, ... ]
+--
+-- NULL means "no catalog yet" — the boot backfill seeds it from the family
+-- registry for audio_generation models. The registry is only the seed
+-- source; we never clobber a stored catalog (it may contain user edits).
+--
+-- Idempotent: applied once via _migrations tracking.
+
+ALTER TABLE models ADD COLUMN voice_catalog TEXT;

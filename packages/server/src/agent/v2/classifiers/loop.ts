@@ -92,6 +92,8 @@ const SEARCH_TOOL_PROSE_FIELDS = (() => {
  */
 const GENERATION_TOOLS = new Set([
   'image_create',
+  'video_create',
+  'music_create',
 ]);
 
 const GENERATION_TOOL_PROSE_FIELDS = (() => {

@@ -46,6 +46,9 @@ const SELF_ACKNOWLEDGING_TOOLS = new Set([
   'show_to_user',       // displays a file directly
   'imessage_send',      // proactive iMessage IS the response
   'image_create',       // engine posts ack + image directly
+  'tts_create',         // engine posts ack + audio chip directly
+  'music_create',       // engine posts "started" ack + delivers from worker
+  'video_create',       // engine posts "started" ack + delivers from poller
   'send_to_agent',      // agent-to-agent — not a user-facing turn anyway
   'broadcast_to_group',
 ]);

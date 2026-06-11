@@ -59,6 +59,8 @@ import { getAgentMicrosoftAccessLevel, getEnabledMsServices, isMicrosoftConnecte
 import { areOfficePackagesInstalled } from '../microsoft/office-packages.js';
 import { getTunnelStatus } from '../services/tunnel.js';
 import { getModelCapabilities } from '../services/capabilities.js';
+import { getEffectiveAudioGenModel } from '../services/audio-gen-model.js';
+import { getModelVoiceCatalog, defaultVoiceCatalogFor, formatVoiceCatalog } from '../services/voice-catalog.js';
 import type { ToolCall, ToolResult } from '@dojo/shared';
 
 const logger = createLogger('tools');
@@ -240,6 +242,31 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
         description: `Write a file. You can only write to: ${allowedPaths}. Other paths will be blocked.`,
       };
     });
+  }
+
+  // ── tts_create voice catalog ──
+  // Inject the configured TTS model's known voices (id + character) into the
+  // tool description so the agent picks a real voice by vibe instead of
+  // guessing. OpenRouter returns null for supported_voices on gpt-audio, so
+  // the catalog is seeded in voice-catalog.ts. Models with no seed keep the
+  // generic static description (and skip dispatcher voice validation).
+  if (filtered.some(t => t.name === 'tts_create')) {
+    try {
+      const audioModel = getEffectiveAudioGenModel();
+      const catalog = audioModel
+        ? getModelVoiceCatalog(audioModel.modelId) ?? defaultVoiceCatalogFor(audioModel.apiModelId)
+        : null;
+      if (catalog && catalog.length > 0) {
+        const list = formatVoiceCatalog(catalog);
+        filtered = filtered.map(t => {
+          if (t.name !== 'tts_create') return t;
+          return {
+            ...t,
+            description: `${t.description}\n\nVOICES for the configured model — pass one of these ids in \`voice\`, picking the closest when the user asks for a specific sound (e.g. "a deep male voice" -> onyx): ${list}. The voice id only sets the base timbre. For character, accent, age, or emotion (gravelly, elderly, excited, pirate, etc.), keep a base voice id AND write the delivery style into the \`text\` as natural narration — the id alone cannot produce it. A voice id not in this list is rejected.`,
+          };
+        });
+      }
+    } catch { /* best-effort enrichment — fall back to the static description */ }
   }
 
   // ── Google Workspace tools (access-level gated) ──
@@ -2146,6 +2173,87 @@ export const toolDefinitions: ToolDefinition[] = [
         },
       },
       required: [],
+    },
+  },
+  // ── Text-to-Speech Tool ──
+  // (Music / sound-effect generation is a different operation and will
+  // get its own `music_create` tool when implemented.)
+  {
+    name: 'tts_create',
+    description: 'Generate spoken audio from text — text-to-speech (TTS). The engine handles delivery — DO NOT write any user-facing text around this tool. When you call it, the engine posts a short acknowledgment immediately. ~2-10 s later the engine delivers the audio file directly to the chat with an inline player. Just call this tool and end your turn. Do NOT mention the TTS model or any internal system to the user. This tool reads text aloud verbatim — it does NOT compose music or sound effects.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description: 'The text to read aloud. Plain prose. The engine will speak it verbatim, so write what you want the user to HEAR — no stage directions, no bracketed asides. Punctuation guides pacing.',
+        },
+        voice: {
+          type: 'string',
+          description: 'Optional voice id. The valid ids depend on the configured TTS model and are listed in this tool description under VOICES (with each voice\'s character) when known. Pick the closest match to what the user asked for. If omitted, the model uses its default. Pass only when the user requested a specific voice or the conversation established one.',
+        },
+        title: {
+          type: 'string',
+          description: 'A short, descriptive title for the audio — 2 to 6 words that summarize what was said. Used as the file name when the user downloads it. Examples: "weekly recap", "rude grocery joke", "good morning kevin". Plain words only — no extensions, no quotes, no special characters. Strongly recommended; if omitted, the file name falls back to a generic id.',
+        },
+      },
+      required: ['text'],
+    },
+  },
+  // ── Music Generation Tool ──
+  {
+    name: 'music_create',
+    description: 'Compose original music or a sound piece from a text description. This is NOT text-to-speech (use tts_create to read words aloud). music_create generates an instrumental/musical composition from a creative brief. The engine handles the ENTIRE flow: when you call it, the engine posts a brief acknowledgment to the user and returns immediately. ~10-40 s later when the track is ready, the engine posts the audio file directly to the chat with an inline player. You do NOT get a second turn — just call this tool once and end your turn. Do NOT call it again to check progress. Do NOT mention the music model or any internal system to the user.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        description: {
+          type: 'string',
+          description: 'A detailed plain-English description of the music: genre, mood, instrumentation, tempo, structure, and any reference style. Example: "An upbeat lo-fi hip-hop beat with a mellow Rhodes piano, soft vinyl crackle, a relaxed boom-bap drum groove around 85 BPM, and a warm sub bass. Chill and nostalgic." The more specific, the better. Do NOT include lyrics unless you want them sung.',
+        },
+        title: {
+          type: 'string',
+          description: 'A short, descriptive title — 2 to 6 words summarizing the track. Used as the file name when the user downloads it. Examples: "lofi study beat", "epic battle theme". Plain words only — no extensions or special characters. Strongly recommended; if omitted, the file name falls back to a generic id.',
+        },
+      },
+      required: ['description'],
+    },
+  },
+  // ── Video Generation Tool ──
+  {
+    name: 'video_create',
+    description: 'Generate a short video from a text description. Video generation is SLOW — it runs asynchronously in the background and usually takes 1 to 10 minutes. The engine handles the ENTIRE flow: when you call this tool it posts a brief acknowledgment to the user ("I\'ve started the video, I\'ll send it when it\'s ready") and returns immediately. When the video finishes, the engine posts it directly to the chat with an inline player — you do NOT get a second turn and you do NOT need to write anything. Just call this tool once and end your turn. Do NOT call it again to check progress — the user can watch progress via the indicator next to the chat input. Do NOT mention the video model or any internal system to the user.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        description: {
+          type: 'string',
+          description: 'A detailed plain-English description of the video: subject, action, setting, camera movement, mood, lighting, style. Example: "A golden retriever puppy running across a sunlit meadow in slow motion, camera tracking alongside, warm afternoon light, shallow depth of field, cinematic". The more specific, the better. Do NOT use model flags like "--ar 16:9".',
+        },
+        title: {
+          type: 'string',
+          description: 'A short, descriptive title — 2 to 6 words summarizing the clip. Used as the file name when the user downloads it. Examples: "puppy in meadow", "city timelapse". Plain words only — no extensions or special characters. Strongly recommended.',
+        },
+        duration_seconds: {
+          type: 'number',
+          description: 'REQUIRED. Clip length in seconds. If the user named a length (e.g. "a 2 second clip"), pass that exact number here — do NOT bury it in the description. Different models accept different lengths; if your value is out of range the engine tells you the valid options so you can re-pick. Keep it short unless the user asks for longer (longer = costlier and slower).',
+        },
+        aspect_ratio: {
+          type: 'string',
+          enum: ['16:9', '9:16', '1:1'],
+          description: 'REQUIRED. Frame shape. 16:9 landscape, 9:16 vertical/portrait (good for phones / social), 1:1 square. Pick what suits the request; default to 16:9 if unspecified.',
+        },
+        resolution: {
+          type: 'string',
+          enum: ['480p', '720p', '1080p'],
+          description: 'REQUIRED. Output resolution. Higher is sharper but costlier and slower. Default to 720p if the user did not specify. Not every model supports every resolution; the engine tells you the valid options if yours is unsupported.',
+        },
+        ref_image_attachment_id: {
+          type: 'string',
+          description: 'Optional. The fileId of an image attachment to use as the first frame / reference for the video. Use when the user wants the video to start from or match a specific image they shared.',
+        },
+      },
+      required: ['description', 'duration_seconds', 'aspect_ratio', 'resolution'],
     },
   },
   // ── System Control Tools (Phase 5A) ──
@@ -6511,7 +6619,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         // and use the dashboard chat instead.
         const {
           getIMBridgeStatus, getSafeSenders, findSafeSenderByAddress,
-          getInboundSenderFor, sendIMessageWithAttachments,
+          getInboundSenderFor, sendIMessageWithAttachments, markAgentInitiatedContact,
         } = await import('../services/imessage-bridge.js');
         const bridgeStatus = getIMBridgeStatus();
         if (!bridgeStatus.running) {
@@ -6673,6 +6781,16 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
             agentId,
             recipient,
           });
+        }
+
+        // Relay tracking (Option B): when this send targets someone OTHER
+        // than the person who triggered this turn — a proactive outreach
+        // (no inbound sender) or an explicit switch — record them as an
+        // agent-initiated contact. When they reply, the engine won't
+        // auto-route the agent's report back to them; it stays in the
+        // dashboard for the original requester.
+        if (!inboundSender || switchedFromInbound) {
+          markAgentInitiatedContact(agentId, recipient);
         }
 
         // ── Success string (with recipient-switching warning) ────────
@@ -6903,6 +7021,21 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
 
         const requestId = `img_${uuidv4().replace(/-/g, '').slice(0, 12)}`;
 
+        // Track this image generation as a generation_job so it shows up in
+        // the dashboard's ActiveJobsIndicator alongside audio/music/video.
+        // image_create keeps its own delivery path below; we just drive the
+        // job's lifecycle (queued -> running -> succeeded/failed) around it.
+        const { createGenerationJob: createImgJob, setRunning: setImgRunning, setSucceeded: setImgSucceeded, setFailed: setImgFailed } =
+          await import('../services/generation-jobs.js');
+        const imgJobId = createImgJob({
+          kind: 'image',
+          agentId,
+          modelId: modelChoice.modelId,
+          providerId: modelChoice.providerId,
+          prompt: description,
+          title: rawTitle || null,
+        });
+
         // Build the full prompt. Append the style hint if the user provided
         // one, so the image model gets stylistic direction inline.
         const fullPrompt = styleHint
@@ -6987,6 +7120,8 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
             db.prepare("UPDATE agents SET status = 'working', updated_at = datetime('now') WHERE id = ?").run(agentId);
             broadcast({ type: 'agent:status', agentId, status: 'working' });
 
+            setImgRunning(imgJobId);
+
             logger.info('image_create: generating image', {
               requestId, requesterId: agentId, modelId: imageModelId, aspectRatio,
               waitedForIdleMs: Date.now() - waitStart,
@@ -7003,6 +7138,8 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
               logger.error('image_create: generation failed', {
                 requestId, code: result.code, error: result.error,
               });
+
+              setImgFailed(imgJobId, result.error);
 
               // Deliver error directly as an assistant message in the
               // requesting agent's own chat. No second LLM turn.
@@ -7153,6 +7290,8 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
                 messageId: deliveryMsgId, content: '', done: true, modelId: null,
               });
 
+              setImgSucceeded(imgJobId, { assetPath: deliveredPath, assetMime: mimeType });
+
               logger.info('image_create: image delivered via synthetic assistant message', {
                 requestId, requesterId: agentId, filePath: deliveredPath,
                 sizeBytes: result.sizeBytes, latencyMs: result.latencyMs,
@@ -7205,6 +7344,8 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
             logger.error('image_create: unexpected error in background generation', {
               requestId, error: err instanceof Error ? err.message : String(err),
             });
+            // No-op if the job already reached a terminal state.
+            setImgFailed(imgJobId, err instanceof Error ? err.message : String(err));
           } finally {
             // Set the caller back to idle (the runtime wake fired by
             // the success path will re-enter 'working' immediately
@@ -7235,6 +7376,243 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
           `Image generation kicked off (request_id: ${requestId}). The engine has already posted a brief acknowledgment to the user; you do NOT need to write any text. When the image is ready in 10-60 s, the engine will post it directly to the chat with a short caption — no second turn from you. ` +
           `End your turn now.` +
           visionTail;
+        break;
+      }
+
+      // ── Text-to-Speech (TTS) ──
+      case 'tts_create':
+      case 'music_create': {
+        const isMusic = name === 'music_create';
+        const promptText = isMusic
+          ? (args.description as string | undefined)?.trim()
+          : (args.text as string | undefined)?.trim();
+        const voice = isMusic ? undefined : ((args.voice as string | undefined)?.trim() || undefined);
+        const rawTitle = (args.title as string | undefined)?.trim() || undefined;
+
+        if (!promptText) {
+          content = `Error: ${isMusic ? 'description' : 'text'} is required.`;
+          isError = true;
+          break;
+        }
+
+        const db = getDb();
+        const modelChoice = isMusic
+          ? (await import('../services/music-gen-model.js')).getEffectiveMusicGenModel()
+          : (await import('../services/audio-gen-model.js')).getEffectiveAudioGenModel();
+        if (!modelChoice) {
+          content = isMusic
+            ? `No music-generation model is configured. Go to Settings → Models → Music Generation Model and pick a music-capable model (e.g. Google Lyria). Tell the user music generation is unavailable until this is configured — do not retry.`
+            : `No audio-generation model is configured. Go to Settings → Models → Audio Generation Model and pick an audio-capable model. Tell the user audio generation is unavailable until this is configured — do not retry.`;
+          isError = true;
+          break;
+        }
+
+        // Validate the requested voice against the model's catalog and kick
+        // the call back if it's not a real voice id. This stops the agent
+        // from passing a freeform character description (e.g. "gravelly
+        // elderly man") into the provider's closed voice enum, which 400s.
+        if (!isMusic && voice) {
+          const { getModelVoiceCatalog, defaultVoiceCatalogFor, isKnownVoice, formatVoiceCatalog } =
+            await import('../services/voice-catalog.js');
+          const catalog =
+            getModelVoiceCatalog(modelChoice.modelId) ?? defaultVoiceCatalogFor(modelChoice.apiModelId);
+          if (catalog && !isKnownVoice(catalog, voice)) {
+            content = `"${voice}" is not a valid voice for this TTS model. Pick the closest id from: ${formatVoiceCatalog(catalog)}. The voice id sets only the base timbre — put character, accent, age, or emotion (gravelly, elderly, etc.) into the spoken text instead. Re-call tts_create with a valid voice id.`;
+            isError = true;
+            break;
+          }
+        }
+
+        const { createGenerationJob, enqueueAudioOrMusicJob } =
+          await import('../services/generation-jobs.js');
+        const kind = isMusic ? 'music' : 'audio';
+        const jobId = createGenerationJob({
+          kind,
+          agentId,
+          modelId: modelChoice.modelId,
+          providerId: modelChoice.providerId,
+          prompt: promptText,
+          title: rawTitle,
+          voice,
+        });
+
+        auditLog(agentId, name, null, 'success',
+          `Job ${jobId} queued (${kind}, ${promptText.length} chars)`);
+
+        // Synthetic "started" ack. The worker delivers the asset later.
+        try {
+          const ackMsgId = uuidv4();
+          const ackPhrase = isMusic
+            ? "On it, composing that now. I'll send it over when it's ready."
+            : "On it, I'll send the audio over in a moment.";
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+            VALUES (?, ?, 'assistant', ?, datetime('now'))
+          `).run(ackMsgId, agentId, ackPhrase);
+          broadcast({
+            type: 'chat:message', agentId,
+            message: {
+              id: ackMsgId, agentId, role: 'assistant' as const, content: ackPhrase,
+              tokenCount: null, modelId: null, cost: null, latencyMs: null,
+              createdAt: new Date().toISOString(),
+            },
+          });
+          broadcast({ type: 'chat:chunk', agentId, messageId: ackMsgId, content: '', done: true, modelId: null });
+        } catch (ackErr) {
+          logger.warn(`${name}: ack injection failed (non-fatal)`, {
+            jobId, error: ackErr instanceof Error ? ackErr.message : String(ackErr),
+          });
+        }
+
+        enqueueAudioOrMusicJob(jobId);
+
+        content =
+          `${isMusic ? 'Music' : 'Audio'} generation started (job_id: ${jobId}). The engine has already posted a "started" acknowledgment to the user and is generating the asset in the background. When it's ready the engine will post it directly to the chat. You do NOT get a second turn and must NOT call ${name} again. End your turn now without writing any further text.`;
+        break;
+      }
+
+      // ── Video Generation ──
+      // Async, unlike image/tts. We submit the job, post a "started" ack,
+      // and return immediately. The boot-time poller (video-job-poller.ts)
+      // owns polling, download, cost, and the final chat delivery — the
+      // agent does NOT get a second turn.
+      case 'video_create': {
+        const description = (args.description as string | undefined)?.trim();
+        const rawTitle = (args.title as string | undefined)?.trim() || undefined;
+        const refImageAttachmentId = (args.ref_image_attachment_id as string | undefined)?.trim() || undefined;
+
+        if (!description) {
+          content = 'Error: description is required.';
+          isError = true;
+          break;
+        }
+
+        const db = getDb();
+
+        const { getEffectiveVideoGenModel } = await import('../services/video-gen-model.js');
+        const modelChoice = getEffectiveVideoGenModel();
+        if (!modelChoice) {
+          content =
+            `No video-generation model is configured. ` +
+            `Go to Settings → Models → Video Generation Model and pick a video-capable model. ` +
+            `Tell the user video generation is unavailable until this is configured — do not retry.`;
+          isError = true;
+          break;
+        }
+
+        // Engine-enforced canonical params (agent → tool boundary). The agent
+        // must supply duration / aspect_ratio / resolution; on a missing or
+        // out-of-range value we kick the call back so it re-picks.
+        const {
+          getModelGenerationParams,
+          defaultVideoSpecFor,
+          validateCanonicalParams,
+          VIDEO_CANONICAL_PARAMS,
+        } = await import('../services/generation-params.js');
+        const paramSpec =
+          getModelGenerationParams(modelChoice.modelId) ?? defaultVideoSpecFor(modelChoice.apiModelId);
+        const validation = validateCanonicalParams(paramSpec, VIDEO_CANONICAL_PARAMS, {
+          duration: args.duration_seconds,
+          aspect_ratio: args.aspect_ratio,
+          resolution: args.resolution,
+        });
+        if (!validation.ok) {
+          content =
+            `Video parameters need fixing before I can start:\n- ${validation.errors.join('\n- ')}\n\n` +
+            `Re-call video_create with corrected values.`;
+          isError = true;
+          break;
+        }
+
+        // Resolve an optional reference image to an absolute path.
+        let refImagePath: string | undefined;
+        if (refImageAttachmentId) {
+          try {
+            const { resolveAttachmentPath } = await import('../services/transcription.js');
+            const resolved = resolveAttachmentPath(refImageAttachmentId);
+            if (!resolved) {
+              content = `Error: no attachment found with id ${refImageAttachmentId} for the reference image. The file may be stale or deleted.`;
+              isError = true;
+              break;
+            }
+            refImagePath = resolved.path;
+          } catch (err) {
+            content = `Error: failed to resolve reference image: ${err instanceof Error ? err.message : String(err)}`;
+            isError = true;
+            break;
+          }
+        }
+
+        const { submitVideoJob } = await import('../services/video-generation.js');
+        const submit = await submitVideoJob({
+          modelId: modelChoice.modelId,
+          agentId,
+          prompt: description,
+          title: rawTitle,
+          paramSpec,
+          canonicalParams: validation.normalized,
+          refImagePath,
+        });
+
+        if (!submit.ok) {
+          auditLog(agentId, 'video_create', null, 'error', submit.error);
+          content =
+            `Video generation could not be started: ${submit.error}\n\n` +
+            `Tell the user briefly that the video couldn't be started. Do not retry automatically.`;
+          isError = true;
+          break;
+        }
+
+        auditLog(agentId, 'video_create', null, 'success',
+          `Job ${submit.jobId} queued (provider ${submit.providerJobId})`);
+
+        // Synthetic "started" ack — video takes minutes, so the user needs
+        // to know it's in progress. Mirrors image_create's ack injection.
+        try {
+          const ackMsgId = uuidv4();
+          const ackPhrase = "I've started the video — this usually takes a few minutes. I'll send it as soon as it's ready.";
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+            VALUES (?, ?, 'assistant', ?, datetime('now'))
+          `).run(ackMsgId, agentId, ackPhrase);
+          broadcast({
+            type: 'chat:message', agentId,
+            message: {
+              id: ackMsgId, agentId, role: 'assistant' as const, content: ackPhrase,
+              tokenCount: null, modelId: null, cost: null, latencyMs: null,
+              createdAt: new Date().toISOString(),
+            },
+          });
+          broadcast({ type: 'chat:chunk', agentId, messageId: ackMsgId, content: '', done: true, modelId: null });
+        } catch (ackErr) {
+          logger.warn('video_create: ack injection failed (non-fatal)', {
+            jobId: submit.jobId, error: ackErr instanceof Error ? ackErr.message : String(ackErr),
+          });
+        }
+
+        // Broadcast the initial queued state so the dashboard indicator
+        // appears immediately, then start polling.
+        try {
+          const activeRow = db.prepare(
+            "SELECT COUNT(*) AS n FROM video_jobs WHERE status IN ('queued','polling')"
+          ).get() as { n: number };
+          broadcast({
+            type: 'video_job:update',
+            data: { id: submit.jobId, agentId, status: 'queued', prompt: description, activeCount: activeRow.n },
+          });
+        } catch { /* best effort */ }
+
+        try {
+          const { enqueueVideoJob } = await import('../services/video-job-poller.js');
+          enqueueVideoJob(submit.jobId);
+        } catch (err) {
+          logger.error('video_create: failed to enqueue poller (job will resume on next boot)', {
+            jobId: submit.jobId, error: err instanceof Error ? err.message : String(err),
+          });
+        }
+
+        content =
+          `Video generation started (job_id: ${submit.jobId}). The engine has already posted a "started" acknowledgment to the user and is generating the video in the background (1 to 10 min). When it's ready the engine will post it directly to the chat — you do NOT get a second turn and must NOT call video_create again. End your turn now without writing any further text.`;
         break;
       }
 

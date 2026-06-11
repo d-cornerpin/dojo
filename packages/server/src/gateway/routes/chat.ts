@@ -23,20 +23,29 @@ function buildContentWithAttachments(text: string, attachments: Array<{ fileId: 
       // size limit and keeps the message layer thin.
       parts.push(`\n[File attached: ${att.filename} (${att.size} bytes)]\nPath: ${att.path}\nUse file_read with this path to read the file contents.`);
     } else if (att.category === 'office') {
-      parts.push(`\n[Office file attached: ${att.filename} (${att.size} bytes). Convert to PDF or text for better analysis.]`);
+      parts.push(`\n[Office file attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nPath: ${att.path}\nConvert to PDF or text for better analysis.`);
     } else if (att.category === 'audio') {
       // Audio attachments aren't injectable as content blocks (no
       // provider accepts audio in chat completions yet for the
       // primary agent loop). Surface the fileId so the agent can
       // route it through transcribe_audio.
-      parts.push(`\n[Audio attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nTo hear what the user said, call transcribe_audio with attachment_id="${att.fileId}". Do NOT pass `+'`path`'+` or a file:// URL; the tool only accepts attachment_id or an https URL.`);
+      parts.push(`\n[Audio attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nPath: ${att.path}\nTo hear what the user said, call transcribe_audio with attachment_id="${att.fileId}". Do NOT pass `+'`path`'+` to transcribe_audio; that tool only accepts attachment_id or an https URL. The Path above is for forwarding the file (e.g. imessage_send).`);
     } else if (att.category === 'video') {
       // Same as audio — surface the fileId so the agent can
       // transcribe the soundtrack if a video_create-style tool ever
-      // wants to interrogate it. For now, point at the path.
-      parts.push(`\n[Video attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nTo transcribe the audio track, call transcribe_audio with attachment_id="${att.fileId}".`);
+      // wants to interrogate it. The path lets it forward the file.
+      parts.push(`\n[Video attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nPath: ${att.path}\nTo transcribe the audio track, call transcribe_audio with attachment_id="${att.fileId}". To forward the file (e.g. imessage_send), use the Path above.`);
+    } else if (att.category === 'image') {
+      // The image is already visible to the agent as a vision content block, but
+      // the model has no way to know where the file lives on disk. Surface the
+      // path and fileId so it can forward the file (e.g. imessage_send) or use it
+      // as a reference image without shelling out to find/ls to locate it.
+      parts.push(`\n[Image attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nPath: ${att.path}\nThe image is already visible to you. To send or forward the file (e.g. imessage_send), use the Path above. To use it as a reference image for video_create, pass attachment_id="${att.fileId}".`);
+    } else if (att.category === 'pdf') {
+      // The PDF is rendered to the model as content blocks, but as with images
+      // the model needs the on-disk path to forward or operate on the file.
+      parts.push(`\n[PDF attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nPath: ${att.path}\nThe PDF contents are already visible to you. To forward the file (e.g. imessage_send), use the Path above.`);
     }
-    // Images and PDFs are handled at the model call layer via content blocks
   }
 
   return parts.join('\n');

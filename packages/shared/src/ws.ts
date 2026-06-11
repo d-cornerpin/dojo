@@ -210,8 +210,49 @@ export interface SystemDepInstalledEvent {
   };
 }
 
+/**
+ * Emitted whenever a video generation job changes state (created, polling,
+ * succeeded, failed, cancelled). The dashboard's ActiveJobsIndicator
+ * listens for this to show/hide the in-flight spinner and refresh the
+ * modal without re-polling. `activeCount` is the number of jobs still in
+ * 'queued' or 'polling' across all agents, so the indicator can render a
+ * badge straight from the event.
+ */
+export interface VideoJobUpdateEvent {
+  type: 'video_job:update';
+  data: {
+    id: string;
+    agentId: string;
+    status: 'queued' | 'polling' | 'succeeded' | 'failed' | 'cancelled';
+    prompt: string;
+    activeCount: number;
+  };
+}
+
+/**
+ * Emitted by the generation-jobs worker as an image / audio / music job
+ * changes state. The same ActiveJobsIndicator that listens for video job
+ * updates also listens for this, so the spinning-icon + popup covers every
+ * media generator. `kind` lets the indicator pick the right icon/label.
+ * `activeCount` here is the count of in-flight generation_jobs only; the
+ * indicator merges it with the video count for its badge.
+ */
+export interface GenerationJobUpdateEvent {
+  type: 'generation_job:update';
+  data: {
+    id: string;
+    agentId: string;
+    kind: 'image' | 'audio' | 'music';
+    status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+    prompt: string;
+    activeCount: number;
+  };
+}
+
 export type WsEvent =
   | AgentStatusEvent
+  | VideoJobUpdateEvent
+  | GenerationJobUpdateEvent
   | ChatChunkEvent
   | ChatReasoningChunkEvent
   | ChatMessageEvent

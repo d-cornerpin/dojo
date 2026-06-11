@@ -345,6 +345,16 @@ async function main(): Promise<void> {
       try {
         const { backfillEmptyCapabilities } = await import('./services/capabilities.js');
         await backfillEmptyCapabilities();
+        // Seed generation parameter specs for video models now that
+        // capabilities are populated (the seed keys off video_generation).
+        // No-op for models that already carry a spec.
+        const { backfillGenerationParams } = await import('./services/generation-params.js');
+        backfillGenerationParams();
+        // Seed TTS voice catalogs for audio-generation models now that
+        // capabilities are populated. No-op for models that already carry a
+        // catalog or have no family seed.
+        const { backfillVoiceCatalog } = await import('./services/voice-catalog.js');
+        backfillVoiceCatalog();
         // Once the backfill finishes, a previously-unprobed model might
         // now be known to be vision-capable. Re-run the obvious-fallback
         // helper so the platform fallback gets set without the user
@@ -410,6 +420,36 @@ async function main(): Promise<void> {
         });
       }
     })();
+  }
+
+  // 4m. Resume in-flight video generation jobs. Video is async (1 to 10
+  // min); a job submitted before a restart still has a live provider job
+  // we need to keep polling. The poller picks up every row still in
+  // 'queued'/'polling' and drives it to delivery. Synchronous scan, async
+  // poll loops — doesn't block boot.
+  {
+    try {
+      const { startVideoJobPoller } = await import('./services/video-job-poller.js');
+      startVideoJobPoller();
+    } catch (err) {
+      logger.warn('Video job poller failed to start', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Run-once generation jobs (image / audio / music) can't resume
+  // mid-flight after a restart, so this clears any leftover queued/running
+  // rows instead of resuming them — keeps the dashboard indicator honest.
+  {
+    try {
+      const { startGenerationJobsWorker } = await import('./services/generation-jobs.js');
+      startGenerationJobsWorker();
+    } catch (err) {
+      logger.warn('Generation jobs worker failed to start', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   // 5. Set up log broadcast

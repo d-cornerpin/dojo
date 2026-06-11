@@ -67,7 +67,15 @@ async function syncOpenAiCompatibleProvider(provider: ProviderRow): Promise<{ up
   }
 
   const baseUrl = (provider.base_url || 'https://openrouter.ai/api').replace(/\/+$/, '');
-  const response = await fetch(`${baseUrl}/v1/models`, {
+  // OpenRouter's /v1/models defaults to output_modalities=text, which omits
+  // image / video / audio-only generators. Request the full modality union
+  // so media-gen models the user added (flux, seedance, etc.) are visible
+  // here and get their prices refreshed too, not just chat/LLMs. Harmless
+  // for other OpenAI-compatible providers, but only OpenRouter honours it.
+  const modelsUrl = baseUrl.includes('openrouter.ai')
+    ? `${baseUrl}/v1/models?output_modalities=text,image,audio,video`
+    : `${baseUrl}/v1/models`;
+  const response = await fetch(modelsUrl, {
     headers: {
       Authorization: `Bearer ${credential}`,
       'HTTP-Referer': 'https://dojo.dev',

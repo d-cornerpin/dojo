@@ -982,6 +982,169 @@ configRouter.get('/models', (c) => {
   return c.json({ ok: true, data: models });
 });
 
+// GET /video-jobs?status=active — list video generation jobs. With
+// status=active returns only in-flight jobs (queued/polling) for the
+// ActiveJobsIndicator; otherwise returns the most recent jobs for history.
+configRouter.get('/video-jobs', (c) => {
+  const db = getDb();
+  const statusFilter = c.req.query('status');
+  const rows = statusFilter === 'active'
+    ? db.prepare(
+        "SELECT id, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM video_jobs WHERE status IN ('queued','polling') ORDER BY started_at DESC"
+      ).all()
+    : db.prepare(
+        "SELECT id, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM video_jobs ORDER BY started_at DESC LIMIT 50"
+      ).all();
+  const data = (rows as Array<Record<string, unknown>>).map((r) => ({
+    id: r.id,
+    agentId: r.agent_id,
+    modelId: r.model_id,
+    providerId: r.provider_id,
+    prompt: r.prompt,
+    title: r.title,
+    status: r.status,
+    startedAt: r.started_at,
+    updatedAt: r.updated_at,
+    finishedAt: r.finished_at,
+    durationSeconds: r.duration_seconds,
+    costUsd: r.cost_usd,
+    error: r.error,
+  }));
+  return c.json({ ok: true, data });
+});
+
+// POST /video-jobs/:id/cancel — stop an in-flight job. Best-effort
+// provider cancel, then mark the row 'cancelled'. The poller drops the
+// job on its next tick.
+configRouter.post('/video-jobs/:id/cancel', async (c) => {
+  const db = getDb();
+  const id = c.req.param('id');
+  const row = db.prepare(
+    'SELECT id, agent_id, provider_id, provider_job_id, prompt, status FROM video_jobs WHERE id = ?'
+  ).get(id) as { id: string; agent_id: string; provider_id: string; provider_job_id: string | null; prompt: string; status: string } | undefined;
+  if (!row) {
+    return c.json({ ok: false, error: 'Video job not found.' }, 404);
+  }
+  if (row.status !== 'queued' && row.status !== 'polling') {
+    return c.json({ ok: false, error: `Job is already ${row.status}; nothing to cancel.` }, 409);
+  }
+
+  if (row.provider_job_id) {
+    try {
+      const { cancelProviderVideo } = await import('../../services/video-generation.js');
+      await cancelProviderVideo(row.provider_id, row.provider_job_id);
+    } catch { /* best effort — we still mark it cancelled locally */ }
+  }
+
+  db.prepare(
+    "UPDATE video_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now') WHERE id = ? AND status IN ('queued','polling')"
+  ).run(id);
+
+  try {
+    const { broadcast } = await import('../ws.js');
+    const active = db.prepare("SELECT COUNT(*) AS n FROM video_jobs WHERE status IN ('queued','polling')").get() as { n: number };
+    broadcast({
+      type: 'video_job:update',
+      data: { id: row.id, agentId: row.agent_id, status: 'cancelled', prompt: row.prompt, activeCount: active.n },
+    });
+  } catch { /* best effort */ }
+
+  return c.json({ ok: true, data: { id, status: 'cancelled' } });
+});
+
+// GET /generation-jobs?status=active — list run-once media generation jobs
+// (image / audio / music). MERGED with video_jobs so the ActiveJobsIndicator
+// can fetch one list covering every generator. Each row is normalized with a
+// `kind` field; video rows are tagged kind='video'.
+configRouter.get('/generation-jobs', (c) => {
+  const db = getDb();
+  const statusFilter = c.req.query('status');
+  const activeOnly = statusFilter === 'active';
+
+  let genRows: Array<Record<string, unknown>> = [];
+  try {
+    genRows = (activeOnly
+      ? db.prepare(
+          "SELECT id, kind, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM generation_jobs WHERE status IN ('queued','running') ORDER BY started_at DESC"
+        ).all()
+      : db.prepare(
+          "SELECT id, kind, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM generation_jobs ORDER BY started_at DESC LIMIT 50"
+        ).all()) as Array<Record<string, unknown>>;
+  } catch { /* table may not exist on a pre-migration DB */ }
+
+  let vidRows: Array<Record<string, unknown>> = [];
+  try {
+    vidRows = (activeOnly
+      ? db.prepare(
+          "SELECT id, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM video_jobs WHERE status IN ('queued','polling') ORDER BY started_at DESC"
+        ).all()
+      : db.prepare(
+          "SELECT id, agent_id, model_id, provider_id, prompt, title, status, started_at, updated_at, finished_at, duration_seconds, cost_usd, error FROM video_jobs ORDER BY started_at DESC LIMIT 50"
+        ).all()) as Array<Record<string, unknown>>;
+  } catch { /* table may not exist on a pre-migration DB */ }
+
+  const normalize = (r: Record<string, unknown>, kind: string) => ({
+    id: r.id,
+    kind: (r.kind as string | undefined) ?? kind,
+    agentId: r.agent_id,
+    modelId: r.model_id,
+    providerId: r.provider_id,
+    prompt: r.prompt,
+    title: r.title,
+    status: r.status,
+    startedAt: r.started_at,
+    updatedAt: r.updated_at,
+    finishedAt: r.finished_at,
+    durationSeconds: r.duration_seconds,
+    costUsd: r.cost_usd,
+    error: r.error,
+  });
+
+  const data = [...genRows.map((r) => normalize(r, 'image')), ...vidRows.map((r) => normalize(r, 'video'))]
+    .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+
+  return c.json({ ok: true, data });
+});
+
+// POST /generation-jobs/:id/cancel — stop an in-flight run-once job. The
+// worker honors the cancel via CAS on its next state transition (and skips
+// delivery if the asset finishes after the cancel lands).
+configRouter.post('/generation-jobs/:id/cancel', async (c) => {
+  const db = getDb();
+  const id = c.req.param('id');
+  const row = db.prepare(
+    'SELECT id, kind, agent_id, prompt, status FROM generation_jobs WHERE id = ?'
+  ).get(id) as { id: string; kind: string; agent_id: string; prompt: string; status: string } | undefined;
+  if (!row) {
+    return c.json({ ok: false, error: 'Generation job not found.' }, 404);
+  }
+  if (row.status !== 'queued' && row.status !== 'running') {
+    return c.json({ ok: false, error: `Job is already ${row.status}; nothing to cancel.` }, 409);
+  }
+
+  db.prepare(
+    "UPDATE generation_jobs SET status='cancelled', finished_at=datetime('now'), updated_at=datetime('now') WHERE id = ? AND status IN ('queued','running')"
+  ).run(id);
+
+  try {
+    const { broadcast } = await import('../ws.js');
+    const { countActiveGenerationJobs } = await import('../../services/generation-jobs.js');
+    broadcast({
+      type: 'generation_job:update',
+      data: {
+        id: row.id,
+        agentId: row.agent_id,
+        kind: row.kind as 'image' | 'audio' | 'music',
+        status: 'cancelled',
+        prompt: row.prompt,
+        activeCount: countActiveGenerationJobs(),
+      },
+    });
+  } catch { /* best effort */ }
+
+  return c.json({ ok: true, data: { id, status: 'cancelled' } });
+});
+
 // GET /pricing-sync/status — last LiteLLM price-index run (success/failure,
 // timestamp, count). Powers the status pill on the Costs page.
 configRouter.get('/pricing-sync/status', async (c) => {
@@ -1018,8 +1181,17 @@ configRouter.get('/providers/:id/browse-models', async (c) => {
 
   const baseUrl = (provider.baseUrl || 'https://openrouter.ai/api').replace(/\/+$/, '');
 
+  // OpenRouter's /v1/models defaults to output_modalities=text, so image /
+  // video / audio-only generators (flux, seedance, etc.) are absent unless we
+  // ask for them explicitly. Request the full modality union so the catalog
+  // search can surface media-generation models, not just chat/LLMs. Harmless
+  // for plain OpenAI-compatible providers, but only OpenRouter honours it.
+  const modelsUrl = baseUrl.includes('openrouter.ai')
+    ? `${baseUrl}/v1/models?output_modalities=text,image,audio,video`
+    : `${baseUrl}/v1/models`;
+
   try {
-    const response = await fetch(`${baseUrl}/v1/models`, {
+    const response = await fetch(modelsUrl, {
       headers: {
         'Authorization': `Bearer ${credential}`,
         'HTTP-Referer': 'https://dojo.dev',
@@ -1037,8 +1209,8 @@ configRouter.get('/providers/:id/browse-models', async (c) => {
         name?: string;
         context_length?: number;
         top_provider?: { max_completion_tokens?: number; context_length?: number };
-        pricing?: { prompt?: string; completion?: string };
-        architecture?: { modality?: string };
+        pricing?: Record<string, string | undefined>;
+        architecture?: { modality?: string; output_modalities?: string[] };
       }>;
     };
 
@@ -1066,6 +1238,16 @@ configRouter.get('/providers/:id/browse-models', async (c) => {
         const inputCostPerM = m.pricing?.prompt ? parseFloat(m.pricing.prompt) * 1_000_000 : null;
         const outputCostPerM = m.pricing?.completion ? parseFloat(m.pricing.completion) * 1_000_000 : null;
 
+        // priceAvailable = the catalog reports at least one nonzero price
+        // for this model. OpenRouter lists media-only generators (seedance,
+        // lyria, flux) with all-zero pricing, so they surface as
+        // price-unavailable and the Add modal asks the user to enter one.
+        const priceAvailable = Object.values(m.pricing ?? {}).some(v => {
+          const n = parseFloat(String(v));
+          return Number.isFinite(n) && n > 0;
+        });
+        const outputModalities = m.architecture?.output_modalities ?? [];
+
         return {
           apiModelId: m.id,
           name: m.name || m.id.split('/').pop() || m.id,
@@ -1073,6 +1255,8 @@ configRouter.get('/providers/:id/browse-models', async (c) => {
           maxOutputTokens,
           inputCostPerM,
           outputCostPerM,
+          priceAvailable,
+          outputModalities,
         };
       });
 
@@ -1105,21 +1289,32 @@ configRouter.post('/providers/:id/add-model', async (c) => {
     ? body.capabilities.filter((c: unknown) => typeof c === 'string')
     : null;
 
-  // Megapixel pricing path: when the caller passes pricingUnit='megapixel'
-  // (used by the Manual Add UI for OpenRouter image-gen SKUs that bill
-  // per output MP), we ignore inputCostPerM / outputCostPerM and store
-  // costPerMegapixel instead. Token-priced rows behave exactly as before.
-  const pricingUnit: 'token' | 'megapixel' =
-    body.pricingUnit === 'megapixel' ? 'megapixel' : 'token';
-  const costPerMegapixel =
-    pricingUnit === 'megapixel' && typeof body.costPerMegapixel === 'number' && body.costPerMegapixel >= 0
-      ? body.costPerMegapixel
-      : null;
+  // Pricing path: token rows use the input/output $/M-token columns;
+  // every other unit (megapixel / second / minute / character / item)
+  // stores a single cost_per_unit value and leaves the token columns
+  // null. The browse "Add" modal and Manual Add both send pricingUnit +
+  // costPerUnit. A null cost_per_unit is meaningful ("unknown" — the user
+  // chose to leave it blank). costPerMegapixel is still mirrored into the
+  // legacy column during the compat window.
+  const ADD_VALID_UNITS = ['token', 'megapixel', 'second', 'character', 'minute', 'item'] as const;
+  const pricingUnit: typeof ADD_VALID_UNITS[number] =
+    ADD_VALID_UNITS.includes(body.pricingUnit) ? body.pricingUnit : 'token';
+  const isTokenPriced = pricingUnit === 'token';
+  // Prefer the unified costPerUnit; fall back to the legacy
+  // costPerMegapixel when a client still sends that for megapixel rows.
+  const rawUnitCost =
+    typeof body.costPerUnit === 'number' && body.costPerUnit >= 0
+      ? body.costPerUnit
+      : pricingUnit === 'megapixel' && typeof body.costPerMegapixel === 'number' && body.costPerMegapixel >= 0
+        ? body.costPerMegapixel
+        : null;
+  const costPerUnit = isTokenPriced ? null : rawUnitCost;
+  const costPerMegapixel = pricingUnit === 'megapixel' ? rawUnitCost : null;
 
   const modelId = uuidv4();
   db.prepare(`
-    INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, pricing_unit, cost_per_megapixel, is_enabled, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+    INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, max_output_tokens, input_cost_per_m, output_cost_per_m, pricing_unit, cost_per_unit, cost_per_megapixel, is_enabled, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
   `).run(
     modelId, providerId,
     body.name ?? body.apiModelId,
@@ -1127,9 +1322,10 @@ configRouter.post('/providers/:id/add-model', async (c) => {
     JSON.stringify(explicitCapabilities ?? []),
     body.contextWindow ?? null,
     body.maxOutputTokens ?? null,
-    pricingUnit === 'megapixel' ? null : (body.inputCostPerM ?? null),
-    pricingUnit === 'megapixel' ? null : (body.outputCostPerM ?? null),
+    isTokenPriced ? (body.inputCostPerM ?? null) : null,
+    isTokenPriced ? (body.outputCostPerM ?? null) : null,
     pricingUnit,
+    costPerUnit,
     costPerMegapixel,
   );
 
@@ -1158,6 +1354,34 @@ configRouter.post('/providers/:id/add-model', async (c) => {
     await computeAndStoreRecommendedNumCtx(modelId);
   } catch (err) {
     logger.warn('num_ctx recommendation failed on add-model', {
+      providerId,
+      apiModelId: body.apiModelId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Seed the generation parameter spec from the family registry. Runs after
+  // the capability probe (it keys off video_generation) and is a no-op for
+  // non-video models or rows that already carry a spec.
+  try {
+    const { seedGenerationParams } = await import('../../services/generation-params.js');
+    seedGenerationParams(modelId);
+  } catch (err) {
+    logger.warn('Generation-params seed failed on add-model', {
+      providerId,
+      apiModelId: body.apiModelId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Seed the TTS voice catalog from the family registry. No-op for
+  // non-audio-generation models, models with no family seed, or rows that
+  // already carry a catalog.
+  try {
+    const { seedVoiceCatalog } = await import('../../services/voice-catalog.js');
+    seedVoiceCatalog(modelId);
+  } catch (err) {
+    logger.warn('Voice-catalog seed failed on add-model', {
       providerId,
       apiModelId: body.apiModelId,
       error: err instanceof Error ? err.message : String(err),
@@ -1284,7 +1508,7 @@ configRouter.put('/models/:id/capabilities', async (c) => {
   }
   const VALID = new Set([
     'tools', 'vision', 'thinking', 'embedding',
-    'image_generation', 'video_generation', 'audio_generation', 'transcription',
+    'image_generation', 'video_generation', 'audio_generation', 'music_generation', 'transcription',
     'text',
   ]);
   const filtered = Array.from(new Set(
@@ -1306,6 +1530,127 @@ configRouter.put('/models/:id/capabilities', async (c) => {
   } catch { /* best-effort */ }
 
   return c.json({ ok: true, data: rowToModel(row), capabilities: filtered });
+});
+
+// PUT /models/:id/generation-params — write the per-model generation param
+// spec (the editable model-card panel for image/video/audio generators).
+// Body: { generationParams: GenerationParamSpec } — a record of canonical
+// param name -> field config. We validate the field shape and store it as
+// JSON; this is the user-confirmed source of truth that overrides the
+// family-seeded defaults and is never clobbered by the boot backfill.
+configRouter.put('/models/:id/generation-params', async (c) => {
+  const id = c.req.param('id');
+  const db = getDb();
+  const exists = db.prepare('SELECT id FROM models WHERE id = ?').get(id);
+  if (!exists) return c.json({ ok: false, error: 'Model not found' }, 404);
+
+  const body = await c.req.json().catch(() => null);
+  const raw = body?.generationParams;
+  if (raw === null) {
+    // Explicit null clears the spec and lets the family seed re-apply.
+    db.prepare("UPDATE models SET generation_params = NULL, updated_at = datetime('now') WHERE id = ?").run(id);
+    const cleared = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
+    logger.info('Model generation params cleared', { modelId: id });
+    return c.json({ ok: true, data: rowToModel(cleared) });
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return c.json({ ok: false, error: '`generationParams` must be an object keyed by param name (or null to clear)' }, 400);
+  }
+
+  const errors: string[] = [];
+  const spec: Record<string, unknown> = {};
+  for (const [name, field] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof field !== 'object' || field === null || Array.isArray(field)) {
+      errors.push(`${name}: field must be an object`);
+      continue;
+    }
+    const f = field as Record<string, unknown>;
+    if (typeof f.accepted !== 'boolean') errors.push(`${name}.accepted must be a boolean`);
+    if (!Array.isArray(f.values) || !f.values.every((v) => typeof v === 'string' || typeof v === 'number')) {
+      errors.push(`${name}.values must be an array of strings or numbers`);
+    }
+    if (f.min !== undefined && typeof f.min !== 'number') errors.push(`${name}.min must be a number`);
+    if (f.max !== undefined && typeof f.max !== 'number') errors.push(`${name}.max must be a number`);
+    if (typeof f.default !== 'string' && typeof f.default !== 'number') errors.push(`${name}.default must be a string or number`);
+    if (typeof f.wireField !== 'string' || f.wireField.trim() === '') errors.push(`${name}.wireField must be a non-empty string`);
+    if (f.wireType !== 'string' && f.wireType !== 'number') errors.push(`${name}.wireType must be 'string' or 'number'`);
+    if (errors.length === 0) {
+      spec[name] = {
+        accepted: f.accepted,
+        values: f.values,
+        ...(f.min !== undefined ? { min: f.min } : {}),
+        ...(f.max !== undefined ? { max: f.max } : {}),
+        default: f.default,
+        wireField: f.wireField,
+        wireType: f.wireType,
+      };
+    }
+  }
+  if (errors.length > 0) {
+    return c.json({ ok: false, error: `Invalid generation params:\n- ${errors.join('\n- ')}` }, 400);
+  }
+
+  db.prepare("UPDATE models SET generation_params = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(JSON.stringify(spec), id);
+  const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
+  logger.info('Model generation params set', { modelId: id, params: Object.keys(spec) });
+  return c.json({ ok: true, data: rowToModel(row) });
+});
+
+// PUT /models/:id/voice-catalog — write the per-model TTS voice catalog (the
+// editable model-card panel for audio-generation models).
+// Body: { voiceCatalog: VoiceOption[] | null } — an array of { id,
+// description, gender }. null clears the catalog and lets the family seed
+// re-apply on the next backfill. The stored catalog is the user-confirmed
+// source of truth and is never clobbered by the boot backfill.
+configRouter.put('/models/:id/voice-catalog', async (c) => {
+  const id = c.req.param('id');
+  const db = getDb();
+  const exists = db.prepare('SELECT id FROM models WHERE id = ?').get(id);
+  if (!exists) return c.json({ ok: false, error: 'Model not found' }, 404);
+
+  const body = await c.req.json().catch(() => null);
+  const raw = body?.voiceCatalog;
+  if (raw === null) {
+    db.prepare("UPDATE models SET voice_catalog = NULL, updated_at = datetime('now') WHERE id = ?").run(id);
+    const cleared = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
+    logger.info('Model voice catalog cleared', { modelId: id });
+    return c.json({ ok: true, data: rowToModel(cleared) });
+  }
+  if (!Array.isArray(raw)) {
+    return c.json({ ok: false, error: '`voiceCatalog` must be an array of voice options (or null to clear)' }, 400);
+  }
+
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  const catalog: Array<{ id: string; description: string; gender: string }> = [];
+  raw.forEach((entry, i) => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      errors.push(`voice ${i}: must be an object`);
+      return;
+    }
+    const e = entry as Record<string, unknown>;
+    const vid = typeof e.id === 'string' ? e.id.trim() : '';
+    if (!vid) errors.push(`voice ${i}: id must be a non-empty string`);
+    if (vid && seen.has(vid.toLowerCase())) errors.push(`voice ${i}: duplicate id "${vid}"`);
+    if (typeof e.description !== 'string') errors.push(`voice ${i}: description must be a string`);
+    if (e.gender !== 'male' && e.gender !== 'female' && e.gender !== 'neutral') {
+      errors.push(`voice ${i}: gender must be 'male', 'female', or 'neutral'`);
+    }
+    if (errors.length === 0) {
+      seen.add(vid.toLowerCase());
+      catalog.push({ id: vid, description: (e.description as string).trim(), gender: e.gender as string });
+    }
+  });
+  if (errors.length > 0) {
+    return c.json({ ok: false, error: `Invalid voice catalog:\n- ${errors.join('\n- ')}` }, 400);
+  }
+
+  db.prepare("UPDATE models SET voice_catalog = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(JSON.stringify(catalog), id);
+  const row = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as Record<string, unknown>;
+  logger.info('Model voice catalog set', { modelId: id, voices: catalog.length });
+  return c.json({ ok: true, data: rowToModel(row) });
 });
 
 // POST /models/:id/refresh-capabilities — force a fresh capability probe
@@ -1416,7 +1761,7 @@ configRouter.put('/models/:id/pricing', async (c) => {
 
   const inputCost = typeof body.inputCostPerM === 'number' ? body.inputCostPerM : undefined;
   const outputCost = typeof body.outputCostPerM === 'number' ? body.outputCostPerM : undefined;
-  const VALID_UNITS = ['token', 'megapixel', 'second', 'character', 'minute'] as const;
+  const VALID_UNITS = ['token', 'megapixel', 'second', 'character', 'minute', 'item'] as const;
   const pricingUnit = VALID_UNITS.includes(body.pricingUnit)
     ? (body.pricingUnit as typeof VALID_UNITS[number])
     : undefined;
@@ -1850,9 +2195,9 @@ function rowToModel(row: Record<string, unknown>): Model {
   // 060 won't have the column at all, and the default keeps every
   // existing model behaving exactly as it did before the change.
   const pricingUnitRaw = row.pricing_unit;
-  const pricingUnit: 'token' | 'megapixel' | 'second' | 'character' | 'minute' =
+  const pricingUnit: 'token' | 'megapixel' | 'second' | 'character' | 'minute' | 'item' =
     pricingUnitRaw === 'megapixel' || pricingUnitRaw === 'second' ||
-    pricingUnitRaw === 'character' || pricingUnitRaw === 'minute'
+    pricingUnitRaw === 'character' || pricingUnitRaw === 'minute' || pricingUnitRaw === 'item'
       ? pricingUnitRaw
       : 'token';
 
@@ -1876,6 +2221,29 @@ function rowToModel(row: Record<string, unknown>): Model {
       ? (typeof costPerMegapixelRaw === 'number' ? costPerMegapixelRaw : costPerUnit)
       : null;
 
+  // generation_params (new in migration 065): per-model canonical→wire param
+  // spec for generation tools. null when not yet seeded.
+  let generationParams: Model['generationParams'] = null;
+  if (typeof row.generation_params === 'string' && row.generation_params) {
+    try {
+      generationParams = JSON.parse(row.generation_params) as Model['generationParams'];
+    } catch {
+      generationParams = null;
+    }
+  }
+
+  // voice_catalog (new in migration 066): per-model TTS voice list. null
+  // when not yet seeded.
+  let voiceCatalog: Model['voiceCatalog'] = null;
+  if (typeof row.voice_catalog === 'string' && row.voice_catalog) {
+    try {
+      const parsed = JSON.parse(row.voice_catalog);
+      voiceCatalog = Array.isArray(parsed) ? (parsed as Model['voiceCatalog']) : null;
+    } catch {
+      voiceCatalog = null;
+    }
+  }
+
   return {
     id: row.id as string,
     providerId: row.provider_id as string,
@@ -1893,6 +2261,8 @@ function rowToModel(row: Record<string, unknown>): Model {
     thinkingEnabled,
     numCtxOverride,
     numCtxRecommended,
+    generationParams,
+    voiceCatalog,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };

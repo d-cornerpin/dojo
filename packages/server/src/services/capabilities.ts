@@ -30,7 +30,15 @@ export type Capability =
   | 'embedding'
   | 'image_generation'
   | 'video_generation'
+  // Speech synthesis — model takes text input and reads it aloud as a
+  // chosen voice. Drives the `tts_create` tool. NOT the same thing as
+  // music_generation, which composes audio from a creative prompt.
   | 'audio_generation'
+  // Music / sound-effect composition — model takes a creative prompt
+  // ("upbeat synthwave with driving bass") and generates original audio.
+  // Different request shape and intent from TTS. Drives a future
+  // `music_create` tool.
+  | 'music_generation'
   | 'transcription'
   | 'text';
 
@@ -173,14 +181,21 @@ const OPENROUTER_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 // saved in. Dojo stores OpenRouter as `https://openrouter.ai/api` (see
 // config.ts:662), but users may type it as the root domain or with `/api/v1`
 // appended. Normalize all three shapes.
+//
+// The output_modalities union is required: OpenRouter's /models defaults to
+// output_modalities=text, which omits video / image / audio-only generators
+// (seedance, flux, lyria). Without it the probe can't find those rows in the
+// catalog and returns empty capabilities. Same param the browse and pricing-
+// sync fetches use (gateway/routes/config.ts, services/pricing-sync.ts).
 function buildOpenRouterModelsEndpoint(baseUrl: string): string {
   const url = baseUrl.replace(/\/+$/, '');
   const lower = url.toLowerCase();
-  if (lower.endsWith('/api/v1')) return `${url}/models`;
-  if (lower.endsWith('/api')) return `${url}/v1/models`;
+  const modalities = '?output_modalities=text,image,audio,video';
+  if (lower.endsWith('/api/v1')) return `${url}/models${modalities}`;
+  if (lower.endsWith('/api')) return `${url}/v1/models${modalities}`;
   // Bare domain (https://openrouter.ai) or anything else — construct the
   // full path from scratch.
-  return `${url}/api/v1/models`;
+  return `${url}/api/v1/models${modalities}`;
 }
 
 async function loadOpenRouterCatalog(baseUrl: string, providerId: string): Promise<Map<string, OpenRouterModel> | null> {
@@ -297,14 +312,28 @@ async function probeOpenRouter(baseUrl: string, providerId: string, apiModelId: 
     caps.push('video_generation');
   }
 
-  // Audio generation (TTS) and transcription (STT) both touch audio,
-  // but they're opposite directions. The distinction is which side of
-  // the modality arrow audio appears on. TTS = text in, audio out.
-  // STT = audio in, text out.
+  // Audio generation splits into two operationally-different families:
+  //   - TTS / speech: text in, voice out. ("read this aloud as Nova.")
+  //     Drives the `tts_create` tool. Tagged `audio_generation`.
+  //   - Music / sound effect: prompt in, original composition out.
+  //     ("upbeat synthwave with driving bass.") Tagged `music_generation`.
+  //
+  // The modality probe alone can't tell them apart — both surface as
+  // "audio output" on OpenRouter. We use a name-substring allowlist to
+  // route known music models to `music_generation`. Anything else with
+  // audio output defaults to `audio_generation` (TTS), which matches
+  // the platform-default expectation. Users can override via the
+  // ModelRow Edit button if a probe gets the wrong family.
   const hasAudioOutput = outputModalities.includes('audio') ||
     /->.*(^|\+|\s)audio/.test(modalityString);
   if (hasAudioOutput) {
-    caps.push('audio_generation');
+    const idLower = (entry.id ?? '').toLowerCase();
+    const isMusicModel = /\b(lyria|suno|musicgen|audiocraft|stable-?audio|riffusion|mubert|udio)\b/.test(idLower);
+    if (isMusicModel) {
+      caps.push('music_generation');
+    } else {
+      caps.push('audio_generation');
+    }
   }
 
   const hasAudioInput = inputModalities.includes('audio') ||
@@ -383,7 +412,10 @@ export function getModelCapabilities(modelId: string): Capability[] {
       if (typeof c !== 'string') continue;
       const norm = c.toLowerCase();
       if ((norm === 'tools' || norm === 'vision' || norm === 'thinking' ||
-           norm === 'embedding' || norm === 'image_generation' || norm === 'text')
+           norm === 'embedding' || norm === 'image_generation' ||
+           norm === 'video_generation' || norm === 'audio_generation' ||
+           norm === 'music_generation' || norm === 'transcription' ||
+           norm === 'text')
           && !caps.includes(norm as Capability)) {
         caps.push(norm as Capability);
       }
@@ -505,6 +537,7 @@ const MODERN_CAPABILITY_VOCAB = new Set<string>([
   'image_generation',
   'video_generation',
   'audio_generation',
+  'music_generation',
   'transcription',
 ]);
 

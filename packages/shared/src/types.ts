@@ -37,7 +37,8 @@ export interface Model {
   //   second     — $ per second of generated media (video / audio gen)
   //   character  — $ per character of input text (TTS)
   //   minute     — $ per minute of input audio (transcription)
-  pricingUnit: 'token' | 'megapixel' | 'second' | 'character' | 'minute';
+  //   item       — $ per generated item (a song, an image, a clip)
+  pricingUnit: 'token' | 'megapixel' | 'second' | 'character' | 'minute' | 'item';
   costPerUnit: number | null;
   // @deprecated since v2.11.0 — use costPerUnit instead. Kept for one
   // release as a fallback read path so older clients don't break.
@@ -59,9 +60,70 @@ export interface Model {
   // on every Ollama model card. null means "computation failed" or
   // "not yet computed" — the runtime then skips num_ctx entirely.
   numCtxRecommended: number | null;
+  // Per-model generation parameter spec. Drives the canonical→wire param
+  // mapping for media-generation tools (video first). null = no spec yet
+  // (the boot backfill seeds it from the family registry). See
+  // GenerationParamSpec. Only meaningful for generation-capable models.
+  generationParams: GenerationParamSpec | null;
+  // Per-model TTS voice catalog. The valid voice set for the tts_create
+  // tool is model-specific and not discoverable at runtime, so it's seeded
+  // from a code family registry on add, stored here, and editable on the
+  // Settings model card. null = no catalog yet (boot backfill seeds it for
+  // audio_generation models). See VoiceOption.
+  voiceCatalog: VoiceOption[] | null;
   createdAt: string;
   updatedAt: string;
 }
+
+// ── TTS voice catalog ──
+//
+// One entry per voice the tts_create tool may pick for a given model. The
+// id sets the base timbre; character/accent/emotion is steered by writing
+// the delivery into the spoken text, not by the voice id.
+
+export interface VoiceOption {
+  id: string;
+  // The provider's documented voice character (e.g. "deep and authoritative").
+  description: string;
+  // Perceived gender, advisory only — helps the agent match requests like
+  // "a male voice". Providers don't officially label voices by gender.
+  gender: 'male' | 'female' | 'neutral';
+}
+
+// ── Generation parameter spec ──
+//
+// Generation tools require the agent to fill a fixed set of *canonical*
+// params (video: duration / aspect_ratio / resolution), regardless of model.
+// The engine enforces presence + validates the value, then this spec says
+// how to put each canonical param on the specific model's wire request.
+//
+// The spec is seeded from a code-side family registry on add, stored per
+// model in the DB, and editable by the user on the Settings model card.
+
+export type GenerationParamWireType = 'string' | 'number';
+
+export interface GenerationParamField {
+  // Does this model accept this canonical param on the wire? When false the
+  // agent must still supply a value (uniform tool contract) but it is NOT
+  // forwarded to the provider.
+  accepted: boolean;
+  // Allowed values the agent may pick. Non-empty = strict enum (e.g. Sora's
+  // [4,8,12]). Empty = fall back to the numeric min/max range below (lets a
+  // flexible model accept e.g. 2 seconds).
+  values: Array<string | number>;
+  // Numeric range used only when `values` is empty. Inclusive.
+  min?: number;
+  max?: number;
+  // What the card pre-fills and the agent should default to.
+  default: string | number;
+  // The provider's request-body field name. Multiple canonical params may
+  // share a wireField (aspect_ratio + resolution both feed `size`), in which
+  // case the submit composes them.
+  wireField: string;
+  wireType: GenerationParamWireType;
+}
+
+export type GenerationParamSpec = Record<string, GenerationParamField>;
 
 export type AgentStatus = 'idle' | 'working' | 'paused' | 'error' | 'terminated';
 

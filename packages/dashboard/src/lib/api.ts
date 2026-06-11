@@ -33,6 +33,8 @@ import type {
   UpdateTaskRequest,
   CreateAgentRequest,
   AgentMessagesResponse,
+  GenerationParamSpec,
+  VoiceOption,
 } from '@dojo/shared';
 
 const BASE_URL = '/api';
@@ -179,13 +181,21 @@ export interface BrowseModelResult {
   maxOutputTokens: number | null;
   inputCostPerM: number | null;
   outputCostPerM: number | null;
-  // Optional: when provided via manual add, these are stored directly
-  // instead of probing the provider catalog.
+  // Whether the provider catalog reported a nonzero price for this model.
+  // False for media-only generators OpenRouter lists as free; drives the
+  // red "no price" hint and the add-pricing modal default.
+  priceAvailable?: boolean;
+  // Output modalities from the catalog (e.g. ['image'], ['video']). Used
+  // to default the pricing unit sensibly in the add modal.
+  outputModalities?: string[];
+  // Optional: when provided via the add modal / manual add, these are
+  // stored directly instead of probing the provider catalog.
   capabilities?: string[];
-  // Optional: per-megapixel pricing for image-gen SKUs that don't use
-  // token-based billing. When pricingUnit is 'megapixel' the server
-  // ignores inputCostPerM/outputCostPerM and stores costPerMegapixel.
-  pricingUnit?: 'token' | 'megapixel';
+  // Pricing unit + cost. Token rows use inputCostPerM/outputCostPerM;
+  // every other unit stores costPerUnit. costPerMegapixel is the legacy
+  // field kept for the compat window.
+  pricingUnit?: 'token' | 'megapixel' | 'second' | 'character' | 'minute' | 'item';
+  costPerUnit?: number | null;
   costPerMegapixel?: number | null;
 }
 
@@ -250,7 +260,7 @@ export const updateModelPricing = async (
   pricing: {
     inputCostPerM?: number;
     outputCostPerM?: number;
-    pricingUnit?: 'token' | 'megapixel' | 'second' | 'character' | 'minute';
+    pricingUnit?: 'token' | 'megapixel' | 'second' | 'character' | 'minute' | 'item';
     costPerUnit?: number | null;
     /** @deprecated since v2.11.0 - send costPerUnit instead. */
     costPerMegapixel?: number | null;
@@ -273,6 +283,26 @@ export const updateModelCapabilities = async (
   return request(`/config/models/${modelId}/capabilities`, {
     method: 'PUT',
     body: JSON.stringify({ capabilities }),
+  });
+};
+
+export const updateModelGenerationParams = async (
+  modelId: string,
+  generationParams: GenerationParamSpec | null,
+): Promise<ApiResponse<unknown>> => {
+  return request(`/config/models/${modelId}/generation-params`, {
+    method: 'PUT',
+    body: JSON.stringify({ generationParams }),
+  });
+};
+
+export const updateModelVoiceCatalog = async (
+  modelId: string,
+  voiceCatalog: VoiceOption[] | null,
+): Promise<ApiResponse<unknown>> => {
+  return request(`/config/models/${modelId}/voice-catalog`, {
+    method: 'PUT',
+    body: JSON.stringify({ voiceCatalog }),
   });
 };
 
@@ -2112,6 +2142,45 @@ export const addTwilioVoiceSafeCallerApi = async (sender: { name: string; addres
 
 export const removeTwilioVoiceSafeCallerApi = async (address: string): Promise<ApiResponse<{ totalSenders: number }>> => {
   return request<{ totalSenders: number }>(`/twilio/safe-senders/voice/${encodeURIComponent(address)}`, { method: 'DELETE' });
+};
+
+// ── Video generation jobs ──
+
+// Unified media-generation job (image / audio / music / video). The
+// /config/generation-jobs endpoint merges the run-once generation_jobs
+// table with the async video_jobs table and tags each row with a `kind`,
+// so the ActiveJobsIndicator can show one list across every generator.
+export interface GenJobDto {
+  id: string;
+  kind: 'image' | 'audio' | 'music' | 'video';
+  agentId: string;
+  modelId: string;
+  providerId: string;
+  prompt: string;
+  title: string | null;
+  status: 'queued' | 'running' | 'polling' | 'succeeded' | 'failed' | 'cancelled';
+  startedAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+  durationSeconds: number | null;
+  costUsd: number | null;
+  error: string | null;
+}
+
+export const listActiveGenerationJobs = async (): Promise<ApiResponse<GenJobDto[]>> => {
+  return request<GenJobDto[]>('/config/generation-jobs?status=active');
+};
+
+// Cancel routes by kind: video jobs live in the video poller, everything
+// else in the generation-jobs worker.
+export const cancelGenerationJob = async (
+  id: string,
+  kind: GenJobDto['kind'],
+): Promise<ApiResponse<{ id: string; status: string }>> => {
+  const base = kind === 'video' ? 'video-jobs' : 'generation-jobs';
+  return request<{ id: string; status: string }>(`/config/${base}/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+  });
 };
 
 export { getToken, clearToken };

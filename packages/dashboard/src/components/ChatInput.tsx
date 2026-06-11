@@ -3,6 +3,7 @@ import * as api from '../lib/api';
 import type { AttachmentInfo } from '../lib/api';
 import { useVoiceMode } from '../hooks/useVoiceMode';
 import { VoiceFirstRunModal } from './VoiceFirstRunModal';
+import { ActiveJobsIndicator } from './ActiveJobsIndicator';
 
 const ACCEPTED_EXTENSIONS = '.png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md,.csv,.json,.xml,.doc,.docx,.xls,.xlsx,.pptx,.js,.ts,.tsx,.jsx,.py,.html,.css,.sh,.yaml,.yml,.toml,.env,.sql,.rs,.go,.java,.rb,.php,.swift,.kt,.c,.cpp,.h,.mp3,.wav,.m4a,.aac,.ogg,.opus,.flac,.webm,.mp4,.mov,.mkv,.avi';
 // 1 GB per file, 2 GB per message. Big files ride the chunked upload
@@ -483,6 +484,9 @@ export const ChatInput = ({ agentId, onSend, disabled, placeholder, variant = 'p
             </svg>
           </button>
         )}
+
+        {/* Active video-generation jobs — self-hides when none in flight */}
+        <ActiveJobsIndicator agentId={agentId} />
       </div>
 
       {/* Voice mode status banner. When muted, the banner switches to a

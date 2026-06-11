@@ -1,0 +1,27 @@
+-- v2.11.1 — Per-model generation parameter spec.
+--
+-- Generation tools (video first, image/audio to follow) require the agent
+-- to fill a fixed set of canonical params (video: duration, aspect_ratio,
+-- resolution). The engine enforces presence and validates the agent's
+-- values, then translates each canonical param into the wire field the
+-- specific model wants. That per-model knowledge lives here, as JSON.
+--
+-- Shape (object keyed by canonical param name):
+--   {
+--     "duration": {
+--       "accepted": true, "values": [4,8,12], "default": 4,
+--       "wireField": "seconds", "wireType": "string"
+--     },
+--     "aspect_ratio": { "accepted": true, "values": ["16:9","9:16","1:1"],
+--       "default": "16:9", "wireField": "size", "wireType": "string" },
+--     ...
+--   }
+--
+-- NULL means "no spec yet" — the boot backfill seeds it from the family
+-- registry (veo / seedance / generic). Users can edit the stored spec per
+-- model on the Settings model card; the registry is only the seed source.
+--
+-- Idempotent: applied once via _migrations tracking. Existing rows keep
+-- NULL until the backfill or an add-model seed fills them.
+
+ALTER TABLE models ADD COLUMN generation_params TEXT;

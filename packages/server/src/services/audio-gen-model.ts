@@ -1,8 +1,11 @@
 // ════════════════════════════════════════
-// services/audio-gen-model.ts — audio-generation (TTS) model resolver.
+// services/audio-gen-model.ts — TTS model resolver.
 //
 // Platform-wide config key points at one audio-output-capable model
-// that the `audio_create` tool dispatches to. Mirrors image-gen-model.ts.
+// that the `tts_create` tool dispatches to. Mirrors image-gen-model.ts.
+// Note: capability is `audio_generation` (TTS-style models). Music /
+// sound-effect models use `music_generation` and have their own
+// resolver (forthcoming).
 // ════════════════════════════════════════
 
 import { makeCapabilityModelResolver, type CapabilityModelChoice } from './capability-model.js';

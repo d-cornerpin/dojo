@@ -11,7 +11,7 @@ const logger = createLogger('costs');
 
 // ── Record Cost ──
 
-export type PricingUnit = 'token' | 'megapixel' | 'second' | 'character' | 'minute';
+export type PricingUnit = 'token' | 'megapixel' | 'second' | 'character' | 'minute' | 'item';
 
 export interface RecordCostParams {
   agentId: string;
@@ -30,8 +30,10 @@ export interface RecordCostParams {
   //   second    — duration of generated media (video / audio gen)
   //   character — characters of input text (TTS)
   //   minute    — minutes of input audio (transcription)
+  //   item      — flat per-generated-item (a song, an image, a clip)
   // The model row's pricing_unit field disambiguates what this number
-  // means. If unset, the recorder falls through to token math.
+  // means. If unset, the recorder falls through to token math. For 'item'
+  // a missing count defaults to 1 (one generation call = one item).
   units?: number;
 }
 
@@ -58,7 +60,7 @@ function getModelPricing(modelId: string): ModelPricing {
   const rawUnit = row?.pricing_unit;
   const unit: PricingUnit =
     rawUnit === 'megapixel' || rawUnit === 'second' ||
-    rawUnit === 'character' || rawUnit === 'minute'
+    rawUnit === 'character' || rawUnit === 'minute' || rawUnit === 'item'
       ? rawUnit
       : 'token';
 
@@ -101,6 +103,10 @@ export function recordCost(params: RecordCostParams): void {
       if (typeof units === 'number' && units > 0) {
         unitCount = units;
       }
+    } else if (pricing.unit === 'item') {
+      // Flat per-item pricing (per song / image / clip). One generation
+      // call is one item unless the caller passes an explicit count.
+      unitCount = typeof units === 'number' && units > 0 ? units : 1;
     }
 
     let costUsd: number;
