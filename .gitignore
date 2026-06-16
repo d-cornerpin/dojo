@@ -9,6 +9,9 @@ packages/shared/dist/
 watchdog/dist/
 menubar/build/
 
+# TypeScript incremental build cache
+*.tsbuildinfo
+
 # Deploy artifacts
 deploy/dist/
 

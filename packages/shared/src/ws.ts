@@ -249,10 +249,31 @@ export interface GenerationJobUpdateEvent {
   };
 }
 
+/**
+ * Emitted by engine-managed background sequences that are not media jobs.
+ * Memory compaction fires this directly (start/end correlated by `id`). The
+ * Dreamer and Healer are surfaced by the indicator from their agent:status
+ * instead, since they run as agents. The ActiveJobsIndicator renders these
+ * as in-flight rows with NO Stop button (engine-managed, not user-cancellable)
+ * and shows them regardless of which agent is selected.
+ */
+export interface EngineActivityEvent {
+  type: 'engine:activity';
+  data: {
+    id: string;
+    kind: 'compaction' | 'dreamer' | 'healer';
+    agentId: string | null;
+    label: string;
+    startedAt: string;
+    phase: 'start' | 'end';
+  };
+}
+
 export type WsEvent =
   | AgentStatusEvent
   | VideoJobUpdateEvent
   | GenerationJobUpdateEvent
+  | EngineActivityEvent
   | ChatChunkEvent
   | ChatReasoningChunkEvent
   | ChatMessageEvent

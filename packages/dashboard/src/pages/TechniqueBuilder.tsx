@@ -8,6 +8,7 @@ import type { AttachmentInfo } from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { ToolCallBlock, ToolCallCard, ToolResultBlock } from '../components/ToolCallBlock';
 import { stripVoiceMarkers, stripVoiceMarkersForStream } from '../lib/voice-markers';
+import { stripAttachmentTags } from '../lib/attachment-tags';
 import { Markdown } from '../components/Markdown';
 import { ChatInput } from '../components/ChatInput';
 import { ThinkingBubble } from '../components/ThinkingBubble';
@@ -199,13 +200,8 @@ function stripBuilderContext(content: string): string {
 
 // Mirror Chat.tsx / AgentDetail.tsx stripper. Removes server-injected
 // attachment framing so the user only sees their typed text + the chip.
-function stripAttachmentTags(content: string): string {
-  return content
-    .replace(/\n\[File attached:[^\]]+\]\nPath:[^\n]+\nUse file_read with this path to read the file contents\.?/g, '')
-    .replace(/\n\[Office file attached:[^\]]+\][^\n]*/g, '')
-    .replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '')
-    .trim();
-}
+// stripAttachmentTags moved to ../lib/attachment-tags (shared; now covers
+// Image + PDF too, which this page's old copy missed).
 
 const UserBubble = ({ msg }: { msg: ChatMessage }) => {
   const stripped = stripBuilderContext(msg.content);

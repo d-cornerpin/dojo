@@ -29,6 +29,7 @@ beforeEach(() => {
       title TEXT NOT NULL,
       description TEXT,
       original_description TEXT,
+      goal TEXT,
       completion_summary TEXT,
       status TEXT NOT NULL,
       assigned_to TEXT,
@@ -63,7 +64,7 @@ describe('autoCreateAssignTask', () => {
     expect(task).not.toBeNull();
     expect(task!.assignedTo).toBe('maddy');
     expect(task!.createdBy).toBe('kevin');
-    expect(task!.status).toBe('on_deck');
+    expect(task!.status).toBe('in_progress');
     expect(task!.title).toBe('Build me a 14-slide deck for Meridian Health');
     expect(task!.description).toBe('Build me a 14-slide deck for Meridian Health.');
   });

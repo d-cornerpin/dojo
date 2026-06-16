@@ -1,0 +1,253 @@
+// Prompt-assembly registry — type definitions (R1).
+//
+// This module is the vocabulary for the single declarative injection registry
+// described in DOJO-PROMPT-REGISTRY-PLAN.md. It defines ONLY types + the slot
+// ordering + a couple of constants; it has no runtime behavior and is imported
+// by nothing yet, so adding it changes no assembled output (R1 gate: typecheck).
+//
+// The design (plan §2): every injectable — system-prompt block OR message-side
+// injection — becomes one `PromptInjection` entry that declares four things:
+// its content (`render`), its trigger (`when` / a null render), its order
+// (`slot` + `order`), and its precedence (`precedenceTier`). One assembler
+// (R2) walks the registry per turn and produces { systemPrompt, messages }.
+//
+// THE BYTE-EQUIVALENCE CONTRACT: the slot enums below encode the EXACT live
+// assembly order verified in R0 (2026-06-15) against assembleSystemPrompt and
+// assembleContext. The migration is a strangler-fig: each legacy block is
+// extracted into a render function and registered at its slot, and the legacy
+// path is kept until the registry output is proven byte-identical (with the two
+// volatile timestamp lines normalized — see plan §6). Do NOT renumber a slot
+// without re-running the byte-equivalence check.
+
+import type Anthropic from '@anthropic-ai/sdk';
+import type { PromptTurnContext } from '../assembler.js';
+import type { ReplyDestination } from '../../agent/v2/reply-destination.js';
+import type Database from 'better-sqlite3';
+
+/**
+ * The inbound channel for a turn. Same member set as ReplyDestination (they are
+ * resolved from the same `[SOURCE: ...]` tags), aliased for call-site clarity.
+ */
+export type InboundChannel = ReplyDestination;
+
+/**
+ * The string the assembler joins system-prompt parts with. Lifted to a constant
+ * so the registry walker and any render that emits multiple parts agree on it.
+ * MUST match the legacy `parts.join('\n\n---\n\n')` in assembleSystemPrompt, or
+ * byte-equivalence breaks.
+ */
+export const PART_JOINER = '\n\n---\n\n';
+
+// ───────────────────────────────────────────────────────────────────────────
+// Slots — the ordered sections. Integer value IS the canonical order; the
+// assembler sorts entries by (slot value, then entry.order, then registration
+// index). Values are spaced by 100 so an entry can be inserted between two
+// slots in the future without renumbering everything.
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * System-prompt slots, in EXACT live order (R0). Slots 1-3 (ReplyDestination,
+ * ChannelLandscape, PhoneConduct) are the front `destinationTags` array and are
+ * primary-only; they sit BEFORE Time. VoiceConduct is last and is mutually
+ * exclusive with PhoneConduct (phone is the more specific conduct — audit C7).
+ */
+export enum SystemSlot {
+  ReplyDestination = 100,
+  ChannelLandscape = 200,
+  PhoneConduct = 300,
+  Time = 400,
+  VisionCap = 500,
+  Identity = 600,
+  Tools = 700,
+  UserProfile = 800,
+  PrecedenceLadder = 900,
+  Visibility = 950,
+  PmAwareness = 1000,
+  TrainerAwareness = 1100,
+  HealerAwareness = 1200,
+  CompactionContinuity = 1300,
+  MessageSources = 1400,
+  GoogleAccess = 1500,
+  MsAccess = 1600,
+  IntegrationReconnect = 1700,
+  Group = 1800,
+  TechniquesIndex = 1900,
+  TechniquesDraft = 2000,
+  TechniquesEquipped = 2100,
+  Runtime = 2200,
+  VoiceConduct = 2300,
+  /** Weak technique hint — raw-appended to the END (rawAppend), not slot-walked. */
+  TechniqueWeakHint = 2400,
+}
+
+/**
+ * Message-side slots, in build order. The scaffolding (A1-A11) and engine
+ * injections (§3c) are content; the integrity repairs (B1-B14) are NOT slots —
+ * they run as one final `applyIntegrityPass` stage (R6), never as entries.
+ *
+ * NOTE: the precise message ordering is validated/refined at R5 when these
+ * migrate; FreshTail is the real recent-message tail (it sits between the
+ * scaffolding and the post-tail engine injections). Slot 100 (FreshTailRehydrate)
+ * is the tail loader itself (ledger A1).
+ */
+export enum MessageSlot {
+  // ── scaffolding (memory layers), session-start-gated ones marked ──
+  MorningBriefing = 100, // A2 (session start)
+  VaultPull = 200, // A3 (session start)
+  Summaries = 300, // A4
+  RelevantMemory = 400, // A5 (relevance mode)
+  AttemptLedger = 500, // A6 (active task)
+  ActiveTasks = 600, // A7 (session start)
+  CompactionContinuity = 700, // A8 (post-compaction <24h)
+  Scratchpad = 800, // A9
+  ActiveDirective = 900, // A10 (tier 2; sits closest to the tail)
+  ScaffoldingAck = 1000, // A11 (assistant beat closing the scaffolding block)
+  // ── the live recent-message tail (rehydrated rows, ledger A1) ──
+  FreshTail = 1100,
+  // ── engine injections (§3c), fire post-tail in this order ──
+  TechniqueStrong = 1200, // C12 strong-match procedure (engine message)
+  TechniqueWeak = 1300, // weak hint (legacy: appended to systemPrompt; moves here at R5)
+  ContextGap = 1400, // "ask the user" hint
+  TrackerNotif = 1500, // auto-tracker task notice
+  Attachments = 1600, // image/PDF content blocks
+  PendingNudge = 1700, // steering nudge
+  ToolNote = 1800, // no-tools capability note
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// AssemblyContext — the single bundle threaded to every entry's when/render.
+// It replaces the scattered ad-hoc reads each legacy block does today (plan
+// §2.1). The R2 builder computes the shared/expensive values once (inbound
+// channel resolution, capabilities) so the front three slots and others don't
+// each re-query. Message-side turn state is populated for the message build
+// (R5); it carries what the loop currently computes inline before the §3c
+// injections fire.
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface AssemblyContext {
+  // ── raw inputs (as passed to assembleContext today) ──
+  agentId: string;
+  modelId: string;
+  turnContext?: PromptTurnContext;
+  /** Shared better-sqlite3 handle (getDb()), so entries don't re-open it. */
+  db: Database.Database;
+
+  // ── precomputed identity / capability (cheap, read once) ──
+  isPrimary: boolean; // isPrimaryAgent(agentId)
+  isPM: boolean; // isPMAgent(agentId)
+  capabilities: string[]; // getModelCapabilities(modelId); [] if unknown
+  contextWindow: number; // getContextWindow(modelId)
+  ownerName: string; // getOwnerName()
+  ttsEngine: 'local' | 'cloud'; // resolveTtsEngine(turnContext)
+
+  // ── inbound-channel resolution (shared by the front three system slots) ──
+  // Resolved once from the same last-user-row query the legacy reply-destination
+  // block uses (excludes A2A / system / agent-message rows).
+  lastUserContent: string; // content used for channel detection
+  inboundChannel: InboundChannel | null;
+  smsFromNumber: string | null;
+  phoneFromNumber: string | null;
+  replyDestination: ReplyDestination | null; // resolveReplyDestination(...)
+
+  // ── message-side turn state (populated for the message build; refined at R5) ──
+  /** 1-based tool-round-trip counter within the turn; many §3c entries gate on === 1. */
+  loopCount: number;
+  /** Turn number (MAX+1 at turn start). */
+  turnNumber: number;
+  /** Raw text of the latest real user message (attachment-blind), used by the
+   *  technique matcher + context-gap detector. Attachment-aware sharpening is
+   *  applied downstream via buildTechniqueMatchQuery. */
+  lastUserMessageContent: string;
+  /** Single-shot steering nudge from loop state (state.pendingNudge). */
+  pendingNudge: string | null;
+
+  // ── Loop-computed injection payloads (set by the loop at each §3c site) ──
+  // These injections' CONTENT is computed by interleaved loop logic (the
+  // technique matcher, the multistep classifier — which also create projects /
+  // record usage / wake the PM). The loop computes them and sets the payload
+  // here; the registry entry renders the payload and injects via the registry
+  // channel, so the DECLARATION + injection are registry-owned without pulling
+  // the interleaved computation out of the loop.
+  /** Auto-tracker task notice (from the multistep classifier). */
+  trackerNotif?: string | null;
+  /** Strong-match technique engine message (C12), already formatted. */
+  techniqueStrong?: string | null;
+  /** Weak-match technique hint (raw system-prompt append). */
+  techniqueWeakHint?: string | null;
+}
+
+/**
+ * The message-side turn state the loop computes that the assembler needs when
+ * the §3c engine injections migrate (R5). Passed into buildAssemblyContext;
+ * absent on the system-only path (R3/R4), where it defaults.
+ */
+export interface AssemblyTurnState {
+  loopCount: number;
+  turnNumber: number;
+  lastUserMessageContent: string;
+  pendingNudge: string | null;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Render results + the entry shape.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** A message-side injection renders one (or more) provider messages. */
+export interface EngineMessage {
+  role: 'user' | 'assistant';
+  content: string | Anthropic.ContentBlockParam[];
+}
+
+/**
+ * A system entry renders one part, several parts, or nothing this turn.
+ * Returning `string[]` contributes multiple parts each joined by PART_JOINER —
+ * this is how the IntegrationReconnect slot emits 0+ disconnected breadcrumbs
+ * byte-identically to the legacy per-integration `parts.push`.
+ */
+export type SystemRenderResult = string | string[] | null;
+
+/** A message entry renders one message, several, or nothing this turn. */
+export type MessageRenderResult = EngineMessage | EngineMessage[] | null;
+
+interface BaseInjection {
+  /** Unique, stable id, e.g. 'sys.identity', 'msg.technique-strong'. Shows up
+   *  in the receipt so "which of the M injections fired" is directly visible. */
+  id: string;
+  /** Tie-breaker within a slot (lower = earlier). Default 0. Rarely needed
+   *  since most slots hold exactly one entry. */
+  order?: number;
+  /** 1..7 from the Instruction Precedence ladder (1 = live user … 7 = engine
+   *  hint). Informational metadata for governance/audit; the engine, not this
+   *  number, enforces precedence. Optional for entries the ladder doesn't rank
+   *  (e.g. the time header). */
+  precedenceTier?: number;
+  /** The REQUIREMENT this entry encodes (preserve-the-reason). Mandatory: no
+   *  entry exists without a recorded reason. */
+  reason: string;
+  /** Optional fast pre-filter. If omitted, the entry is considered for every
+   *  turn and `render` returning null/'' is how it opts out. Keeping the
+   *  condition inside `render` (return null) is preferred for byte-equivalence
+   *  during migration; `when` is sugar for the common, cheap gate. */
+  when?: (ctx: AssemblyContext) => boolean;
+}
+
+export interface SystemInjection extends BaseInjection {
+  target: 'system';
+  slot: SystemSlot;
+  render: (ctx: AssemblyContext) => SystemRenderResult;
+  /**
+   * If true, this entry is NOT slot-walked into the joined system prompt; it is
+   * raw-appended to the END of the assembled prompt via appendSystemHint (no
+   * `---` separator), for content the legacy code appended raw (the weak
+   * technique hint). The system walker skips rawAppend entries.
+   */
+  rawAppend?: boolean;
+}
+
+export interface MessageInjection extends BaseInjection {
+  target: 'messages';
+  slot: MessageSlot;
+  render: (ctx: AssemblyContext) => MessageRenderResult;
+}
+
+export type PromptInjection = SystemInjection | MessageInjection;

@@ -283,6 +283,23 @@ function insertCompactionDivider(agentId: string, opts: { label: string }): void
   }
 }
 
+// Wrap a compaction work call so the dashboard's ActiveJobsIndicator shows a
+// "Compacting memory" row while it runs. Engine-managed (no Stop button): the
+// panel adds the row on the 'start' broadcast and removes it on 'end'. Robust
+// across the work's early returns/throws via try/finally.
+async function withCompactionActivity<T>(agentId: string, work: () => Promise<T>): Promise<T> {
+  const id = `compaction_${agentId}_${Date.now()}`;
+  const startedAt = new Date().toISOString();
+  const emit = (phase: 'start' | 'end'): void =>
+    broadcast({ type: 'engine:activity', data: { id, kind: 'compaction', agentId, label: 'Compacting memory', startedAt, phase } });
+  emit('start');
+  try {
+    return await work();
+  } finally {
+    emit('end');
+  }
+}
+
 // ── Main Entry Point ──
 
 export async function checkAndCompact(
@@ -461,10 +478,10 @@ export async function checkAndCompact(
     }
 
     const tokensBefore = totalTokens;
-    const leafCreated = await runLeafCompaction(agentId, modelId, contextWindow, {
+    const leafCreated = await withCompactionActivity(agentId, () => runLeafCompaction(agentId, modelId, contextWindow, {
       maxChunks: options?.maxChunksPerRun,
       abortSignal: options?.abortSignal,
-    });
+    }));
     // v2.5.12 — Skip condensation on routine drain too. Condensation walks
     // the depth tree and can do multiple LLM calls; backlog drains will
     // accumulate enough leaf summaries that condensation runs naturally on
@@ -538,7 +555,7 @@ export async function checkAndCompact(
       }
     }
 
-    const leafCreated = await runLeafCompaction(agentId, modelId, contextWindow);
+    const leafCreated = await withCompactionActivity(agentId, () => runLeafCompaction(agentId, modelId, contextWindow));
     rebuildContextItems(agentId);
 
     const result = { leafCreated, condensedCreated: 0, tokensReclaimed: 0 };
@@ -608,9 +625,13 @@ export async function runLeafCompaction(
     // strips technique tool-result bodies so they don't leak into the
     // summary the model writes next (and which the agent would later
     // read as authoritative, bypassing freshness enforcement).
+    // condenseToolJsonForSummary then flattens remaining tool_use/tool_result
+    // JSON to one-liners: fed verbatim, the summarizer quotes raw JSON into
+    // summaries (observed live), wasting tokens on wire format while keeping
+    // none of the meaning beyond tool name + outcome, which the one-liner keeps.
     const content = chunk.map(m => {
       const role = m.role.toUpperCase();
-      return `[${role}] ${scrubTechniqueContentForSummary(m.content)}`;
+      return `[${role}] ${condenseToolJsonForSummary(scrubTechniqueContentForSummary(m.content))}`;
     }).join('\n\n---\n\n');
 
     const messageIds = chunk.map(m => m.id);
@@ -952,6 +973,35 @@ function getFreshTailCount(contextWindow: number): number {
 }
 
 // ── Helpers ──
+
+// Persisted tool rows (and assistant tool_use rows) are raw JSON arrays.
+// For the summarizer they are flattened to one-liners that keep WHAT happened
+// (tool name, ok/error, a short result head) and drop the wire format. Pure
+// text content passes through untouched.
+function condenseToolJsonForSummary(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return content;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    const arr = Array.isArray(parsed) ? parsed : [parsed];
+    const lines: string[] = [];
+    for (const b of arr) {
+      if (!b || typeof b !== 'object') continue;
+      const block = b as { type?: string; name?: string; text?: string; content?: unknown; is_error?: boolean };
+      if (block.type === 'tool_use') {
+        lines.push(`(called tool ${block.name ?? 'unknown'})`);
+      } else if (block.type === 'tool_result') {
+        const body = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
+        lines.push(`(tool result${block.is_error ? ' ERROR' : ''}: ${body.slice(0, 200)})`);
+      } else if (block.type === 'text' && typeof block.text === 'string') {
+        lines.push(block.text);
+      }
+    }
+    return lines.length > 0 ? lines.join('\n') : content;
+  } catch {
+    return content; // not JSON after all
+  }
+}
 
 function chunkMessages(messages: Message[], targetTokens: number): Message[][] {
   const chunks: Message[][] = [];

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import type { AgentDetail as AgentDetailType, Message, AgentMessage, Model, PermissionManifest } from '@dojo/shared';
 import type { ChatChunkEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, ChatMessageEvent, WsEvent } from '@dojo/shared';
+import { classifyMessageForDisplay, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting } from '@dojo/shared';
 import * as api from '../lib/api';
 import type { AttachmentInfo } from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -9,6 +10,10 @@ import { formatDate } from '../lib/dates';
 import { StatusBadge } from '../components/StatusBadge';
 import { ToolCallBlock, ToolCallCard } from '../components/ToolCallBlock';
 import { stripVoiceMarkers, stripVoiceMarkersForStream } from '../lib/voice-markers';
+import { stripAttachmentTags } from '../lib/attachment-tags';
+import { summarizeToolTurn, type ToolTurnSummary } from '../lib/tool-display';
+import { inboundBadge, outboundBadge } from '../lib/channel-display';
+import { ToolBadgeGroup } from '../components/ToolBadge';
 import { Markdown } from '../components/Markdown';
 import { PermissionsEditor } from '../components/PermissionsEditor';
 import { ChatInput } from '../components/ChatInput';
@@ -103,55 +108,21 @@ const getClassification = (agent: AgentDetailType) => {
 
 // ── Message Bubbles (same pattern as Chat.tsx) ──
 
-// Compact pill shown in non-wordy mode when an assistant turn was tool-calls only.
-const ToolOnlyPill = ({ msg }: { msg: ChatMessage }) => {
-  const { blocks } = parseMessageContent(msg.content);
-  const toolUses = (blocks ?? []).filter(b => b.type === 'tool_use');
-  if (toolUses.length === 0) return null;
-  const label = toolUses.length === 1
-    ? toolUses[0].name ?? 'tool'
-    : `${toolUses.length} tools`;
-  return (
-    <div className="flex justify-start">
-      <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[11px] font-mono">
-        <span className="text-ui/40">⚙</span>
-        <span>{label}</span>
-      </div>
-    </div>
-  );
-};
-
-// Horizontal flex-wrap row of tool pills. Mirrors Chat.tsx's
-// ToolPillRow - renders when several consecutive assistant turns
-// were tool-only so the pills pack left-to-right with wrap instead
-// of stacking one per row.
-const ToolPillRow = ({ messages }: { messages: ChatMessage[] }) => {
-  const items = messages
-    .map(msg => {
-      const { blocks } = parseMessageContent(msg.content);
-      const toolUses = (blocks ?? []).filter(b => b.type === 'tool_use');
-      if (toolUses.length === 0) return null;
-      const label = toolUses.length === 1
-        ? toolUses[0].name ?? 'tool'
-        : `${toolUses.length} tools`;
-      return { id: msg.id, label };
+// Tool-only assistant turns render as class-aware badges (V2b): effectful action
+// vs retrieval vs hidden bookkeeping. The badge atom + wrap row are the shared
+// components/ToolBadge (so the style cannot drift vs Chat.tsx); this helper turns
+// a run of messages into the {id, summary} items it takes, dropping
+// bookkeeping-only turns (summarizeToolTurn returns null for them).
+const toolBadgeItems = (msgs: ChatMessage[]): Array<{ id: string; summary: ToolTurnSummary }> =>
+  msgs
+    .map((m) => {
+      const names = (parseMessageContent(m.content).blocks ?? [])
+        .filter((b) => b.type === 'tool_use')
+        .map((b) => b.name ?? '');
+      const summary = summarizeToolTurn(names);
+      return summary ? { id: m.id, summary } : null;
     })
-    .filter((item): item is { id: string; label: string } => item !== null);
-  if (items.length === 0) return null;
-  return (
-    <div className="flex flex-wrap items-center gap-1.5 justify-start">
-      {items.map(item => (
-        <div
-          key={item.id}
-          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[11px] font-mono"
-        >
-          <span className="text-ui/40">⚙</span>
-          <span>{item.label}</span>
-        </div>
-      ))}
-    </div>
-  );
-};
+    .filter((x): x is { id: string; summary: ToolTurnSummary } => x !== null);
 
 // v2.7.23 — when the agent calls a channel-send tool directly (imessage_send,
 // teams_send_message), render the outbound message content + channel pill
@@ -198,83 +169,36 @@ const ChannelSendBubble = ({ msg, toolUse }: { msg: ChatMessage; toolUse: Conten
   );
 };
 
-// v2.3.16 — strip the iMessage source framing (engine-injected routing
-// wrapper) and surface a small "via iMessage" badge instead. Mirrors the
-// treatment in Chat.tsx so the channel-vs-conversation distinction is
-// consistent everywhere.
-const IMESSAGE_SOURCE_RE = /^\[SOURCE: IMESSAGE FROM [^\]]+\]\s*/;
-
-/**
- * Pull just the safe-sender's NAME out of the iMessage source tag.
- * Same logic as Chat.tsx — the inbound envelope wraps the name with
- * verbose persona instructions, and we only want the leading name part
- * for the "from X via iMessage" badge.
- */
-function extractIMessageSender(content: string): string | null {
-  const m = content.match(/^\[SOURCE: IMESSAGE FROM ([^\]]+)\]/);
-  if (!m) return null;
-  const inside = m[1].trim();
-  const name = inside.match(/^[A-Za-z'\- ]+?(?=\s*[(\-—,.]|$)/)?.[0]?.trim();
-  if (name && name.length > 0) return name;
-  const firstToken = inside.split(/\s+/)[0]?.trim();
-  return firstToken && firstToken.length > 0 ? firstToken : null;
-}
-
-// Mirrors Chat.tsx's stripper. See chat.ts buildContentWithAttachments
-// for the source of these tags. Exported for the temp-bubble dedup so
-// the comparison ignores server-injected attachment framing.
-function stripAttachmentTags(content: string): string {
-  return content
-    .replace(/\n\[File attached:[^\]]+\]\nPath:[^\n]+\nUse file_read with this path to read the file contents\.?/g, '')
-    .replace(/\n\[Office file attached:[^\]]+\][^\n]*/g, '')
-    .replace(/\n=== File: .+? ===\n[\s\S]*?\n=== End File ===/g, '')
-    .trim();
-}
-
-// v2.9.23 — phone-call inbound (Twilio voice). Same treatment as
-// iMessage: strip the SOURCE header so the bubble shows just what
-// the caller said. Hide the Call SID + To: trailer the engine
-// appends unless wordy mode is on.
-const PHONE_SOURCE_RE = /^\[SOURCE: PHONE CALL FROM [^\]]+\]\s*/;
-const PHONE_TRAILER_RE = /\n+Call SID:\s*\S+(?:\n(?:To|Direction|Voicemail|Disclosures|Their Name|Purpose|Callback):\s*[^\n]*)*\s*$/;
-
-function extractPhoneCaller(content: string): string | null {
-  const m = content.match(/^\[SOURCE: PHONE CALL FROM ([^\]]+)\]/);
-  if (!m) return null;
-  const inside = m[1].trim();
-  return inside && inside !== '(unknown)' ? inside : null;
-}
+// Inbound channel framing ([SOURCE: IMESSAGE/PHONE/SMS/TEAMS/EMAIL ...] + the
+// phone Call SID trailer) is parsed and stripped by the canonical helpers in
+// @dojo/shared (parseInboundChannel / stripInboundChannelMarker); the badge
+// wording lives in ../lib/channel-display (inboundBadge). UserBubble uses them so
+// every channel is handled identically to Chat.tsx. Attachment-pointer stripping
+// is in ../lib/attachment-tags.
 
 const UserBubble = ({ msg, wordyMode = false }: { msg: ChatMessage; wordyMode?: boolean }) => {
-  const fromIMessage = IMESSAGE_SOURCE_RE.test(msg.content);
-  const fromPhone = PHONE_SOURCE_RE.test(msg.content);
+  // Inbound channel (iMessage / phone / SMS / Teams / email): one clean badge,
+  // header + phone trailer stripped, via the canonical parser (@dojo/shared) so
+  // every channel is covered and the logic matches Chat.tsx (V3). Wordy shows raw.
+  const inbound = parseInboundChannel(msg.content);
   const fromVoice = msg.source === 'voice';
-  let stripped = fromIMessage ? msg.content.replace(IMESSAGE_SOURCE_RE, '') : msg.content;
-  if (fromPhone) {
-    stripped = stripped.replace(PHONE_SOURCE_RE, '');
-    if (!wordyMode) stripped = stripped.replace(PHONE_TRAILER_RE, '').trimEnd();
+  const badge = inbound ? inboundBadge(inbound.channel, inbound.sender) : null;
+
+  let displayContent = msg.content;
+  if (!wordyMode) {
+    if (inbound) displayContent = stripInboundChannelMarker(displayContent);
+    if (msg.attachments?.length) displayContent = stripAttachmentTags(displayContent);
   }
-  const displayContent = msg.attachments?.length ? stripAttachmentTags(stripped) : stripped;
-  const iMessageSender = fromIMessage ? extractIMessageSender(msg.content) : null;
-  const phoneCaller = fromPhone ? extractPhoneCaller(msg.content) : null;
 
   return (
     <div className="flex flex-col items-end">
-      {fromIMessage && (
+      {badge && (
         <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono mb-1 mr-1">
-          <span className="text-ui/40">{'\u{1F4AC}'}</span>
-          <span>{iMessageSender ? `from ${iMessageSender} via iMessage` : 'via iMessage'}</span>
+          <span className="text-ui/40">{badge.emoji}</span>
+          <span>{badge.label}</span>
         </div>
       )}
-      {fromPhone && !fromIMessage && (
-        <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-cp-teal/10 text-cp-teal text-[10px] font-mono mb-1 mr-1">
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.86.34 1.7.62 2.51a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.57-1.57a2 2 0 0 1 2.11-.45c.81.28 1.65.49 2.51.62A2 2 0 0 1 22 16.92z" />
-          </svg>
-          <span>{phoneCaller ? `from ${phoneCaller} via phone call` : 'via phone call'}</span>
-        </div>
-      )}
-      {fromVoice && !fromIMessage && !fromPhone && (
+      {fromVoice && !badge && (
         <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-cp-teal/10 text-cp-teal text-[10px] font-mono mb-1 mr-1">
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
@@ -902,20 +826,23 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
     const groupByFirstId = new Map<string, ChatMessage[]>();
     const skipIds = new Set<string>();
     if (wordyMode) return { groupByFirstId, skipIds };
-    const isToolOnlyPill = (msg: ChatMessage): boolean => {
-      if (msg.role !== 'assistant') return false;
+    // 'visible' = tool-only turn with >=1 non-bookkeeping tool (badge it),
+    // 'hidden'  = tool-only turn that is ALL bookkeeping (hidden in regular, so
+    //             skip it like a role='tool' row without breaking a run),
+    // null      = real content (or a deliverable-attachment turn), closes group.
+    const toolOnlyKind = (msg: ChatMessage): 'visible' | 'hidden' | null => {
+      if (msg.role !== 'assistant') return null;
+      if (msg.attachments && msg.attachments.length > 0) return null; // deliverable bubble
       const { text, blocks } = parseMessageContent(msg.content);
-      if (text) return false;
-      const hasToolUse = blocks?.some(b => b.type === 'tool_use');
-      if (!hasToolUse) return false;
-      const channelSend = blocks?.find(
-        b => b.type === 'tool_use' && b.name && CHANNEL_SEND_TOOLS[b.name],
-      );
+      if (text) return null;
+      const toolUses = (blocks ?? []).filter(b => b.type === 'tool_use');
+      if (toolUses.length === 0) return null;
+      const channelSend = toolUses.find(b => b.name && CHANNEL_SEND_TOOLS[b.name]);
       const channelSendErrored = channelSend?.id
         ? toolResultErrorById.get(channelSend.id) === true
         : false;
-      if (channelSend && !channelSendErrored) return false;
-      return true;
+      if (channelSend && !channelSendErrored) return null;
+      return summarizeToolTurn(toolUses.map(b => b.name ?? '')) ? 'visible' : 'hidden';
     };
     let currentGroup: ChatMessage[] = [];
     const closeGroup = () => {
@@ -929,11 +856,10 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
     };
     for (const msg of messages) {
       if (msg.role === 'tool') continue;
-      if (isToolOnlyPill(msg)) {
-        currentGroup.push(msg);
-      } else {
-        closeGroup();
-      }
+      const kind = toolOnlyKind(msg);
+      if (kind === 'visible') currentGroup.push(msg);
+      else if (kind === 'hidden') continue; // hidden bookkeeping turn: skip, keep the run
+      else closeGroup();
     }
     closeGroup();
     return { groupByFirstId, skipIds };
@@ -943,16 +869,16 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
   // to the preceding assistant message instead of rendering them as a
   // standalone right-aligned badge below. See Chat.tsx for the same
   // mechanism in detail.
-  const ROUTING_MARKER_RE = /^\[(?:SENT VIA IMESSAGE to .+|Reply routed via (iMessage|Teams|email|phone call)[^\]]*)\]$/;
   const { outboundChannelByAssistantId, hiddenRoutingMarkerIds } = useMemo(() => {
     const byAssistant = new Map<string, OutboundChannelInfo>();
     const hidden = new Set<string>();
     for (let i = 0; i < messages.length; i++) {
       const m = messages[i];
       if (m.role !== 'system') continue;
-      const trimmed = m.content.trim();
-      const match = trimmed.match(ROUTING_MARKER_RE);
-      if (!match) continue;
+      // Canonical outbound parser: iMessage / phone / Teams / email all resolve
+      // recipient + badge consistently (V3), matching Chat.tsx.
+      const routed = parseOutboundRouting(m.content);
+      if (!routed) continue;
       let assistantId: string | null = null;
       for (let j = i - 1; j >= 0; j--) {
         const prev = messages[j];
@@ -960,27 +886,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
         if (prev.role !== 'tool' && prev.role !== 'system') break;
       }
       if (!assistantId) continue;
-      const channel = match[1] ?? 'iMessage';
-      let recipient: string | null = null;
-      if (channel.toLowerCase() === 'imessage' || trimmed.startsWith('[SENT VIA IMESSAGE')) {
-        recipient = trimmed.match(/to ([^\]]+?)\]$/)?.[1]?.trim() ?? null;
-      } else if (channel === 'Teams') {
-        recipient = trimmed.match(/to chat ([^\]]+?)\]$/)?.[1]?.trim() ?? null;
-      } else if (channel === 'phone call') {
-        recipient = trimmed.match(/phone call to ([^\]]+?)\]$/)?.[1]?.trim() ?? null;
-      }
-      const channelName = channel.toLowerCase() === 'imessage' ? 'iMessage' : channel;
-      const label = channel.toLowerCase() === 'email'
-        ? 'sent via email reply'
-        : recipient
-          ? `to ${recipient} via ${channelName}`
-          : `sent via ${channelName}`;
-      const emoji = channel.toLowerCase() === 'email'
-        ? '\u{2709}\u{FE0F}'
-        : channel === 'Teams' ? '\u{1F4DD}'
-        : channel === 'phone call' ? '\u{260E}\u{FE0F}'
-        : '\u{1F4AC}';
-      byAssistant.set(assistantId, { label, emoji });
+      byAssistant.set(assistantId, outboundBadge(routed.channel, routed.recipient));
       hidden.add(m.id);
     }
     return { outboundChannelByAssistantId: byAssistant, hiddenRoutingMarkerIds: hidden };
@@ -1032,12 +938,15 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
           // until something live arrives. When viewing PM specifically
           // we skip the exclusions so the kanban-style messages stay
           // visible.
-          if (!isPMAgent && !wordyMode && msg.role === 'user' && (
-            msg.content.startsWith('[A2A:') ||
-            (msg.content.includes('[SOURCE:') && !msg.content.startsWith('[SOURCE: IMESSAGE FROM')) ||
-            msg.content.startsWith('[System:') ||
-            msg.content.startsWith('Tracker review --')
-          )) return null;
+          // Canonical classifier (matches Chat.tsx): hides a2a / coordination /
+          // engine events (user) + engine fallback text (assistant), but SHOWS
+          // all real channels (iMessage/phone/SMS/Teams/email), removing the old
+          // hide-all-non-iMessage divergence. The PM exemption above keeps PM's
+          // kanban-style a2a/tracker feed visible.
+          if (!isPMAgent && !wordyMode && (msg.role === 'user' || msg.role === 'assistant')
+              && classifyMessageForDisplay(msg).tier !== 'user-visible') {
+            return null;
+          }
           if (msg.role === 'tool' && !wordyMode) return null;
           if (msg.role === 'system') {
             // Divider-style markers: any system message shaped "── label ──"
@@ -1063,37 +972,18 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             // we couldn't attach (no preceding assistant) still fall
             // through to the original right-aligned rendering.
             if (hiddenRoutingMarkerIds.has(msg.id)) return null;
-            const routingMatch = msg.content.trim().match(/^\[(?:SENT VIA IMESSAGE to .+|Reply routed via (iMessage|Teams|email|phone call)[^\]]*)\]$/);
-            if (routingMatch) {
-              const channel = routingMatch[1] ?? 'iMessage';
-              // Extract recipient name so the badge can show "to <name>
-              // via iMessage" — symmetric with the inbound "from <name>
-              // via iMessage" badge. Email uses '(thread: "X")' which
-              // isn't a person's name, so we keep "sent via email reply"
-              // for that channel.
-              const trimmedContent = msg.content.trim();
-              let recipient: string | null = null;
-              if (channel.toLowerCase() === 'imessage' || routingMatch[0].startsWith('[SENT VIA IMESSAGE')) {
-                const m = trimmedContent.match(/to ([^\]]+?)\]$/);
-                recipient = m?.[1]?.trim() ?? null;
-              } else if (channel === 'Teams') {
-                const m = trimmedContent.match(/to chat ([^\]]+?)\]$/);
-                recipient = m?.[1]?.trim() ?? null;
-              }
-              const channelName = channel.toLowerCase() === 'imessage' ? 'iMessage' : channel;
-              const channelLabel = channel.toLowerCase() === 'email'
-                ? 'sent via email reply'
-                : recipient
-                  ? `to ${recipient} via ${channelName}`
-                  : `sent via ${channelName}`;
-              const channelEmoji = channel.toLowerCase() === 'email'
-                ? '\u{2709}\u{FE0F}'
-                : channel === 'Teams' ? '\u{1F4DD}' : '\u{1F4AC}';
+            // Standalone routing marker we could not attach to a preceding
+            // assistant bubble: render its own badge so the channel info is not
+            // lost. Same canonical parser + badge as the attached path (fixes the
+            // old inline copy that had no phone branch and mis-emoji'd it).
+            const routed = parseOutboundRouting(msg.content);
+            if (routed) {
+              const badge = outboundBadge(routed.channel, routed.recipient);
               return (
                 <div key={msg.id} className="flex justify-end my-1 px-1">
                   <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono">
-                    <span className="text-ui/40">{channelEmoji}</span>
-                    <span>{channelLabel}</span>
+                    <span className="text-ui/40">{badge.emoji}</span>
+                    <span>{badge.label}</span>
                   </div>
                 </div>
               );
@@ -1101,7 +991,7 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
             if (!wordyMode) return null;
           }
           if (!wordyMode && msg.role === 'assistant') {
-            if (msg.content.startsWith('I got stuck on that') || msg.content.startsWith("I'm sorry — I'm having trouble")) return null;
+            // (engine fallback / error text is hidden by the classifier check above)
             // v2.7.23 — when the assistant's tool calls include a channel-
             // send (imessage_send / teams_send_message), render the
             // outbound message content + channel pill instead of the
@@ -1140,13 +1030,13 @@ const ChatTab = ({ agentId }: { agentId: string }) => {
               );
               if (otherToolUses.length === 0) return null;
             }
-            // Tool-only turns become a compact pill (rather than disappearing)
-            // so the user still sees that the agent did something.
-            if (!parsed.text && hasToolUse) {
+            // Tool-only turn with NO delivered attachments: class-aware badge(s)
+            // (effectful action / retrieval; bookkeeping-only turns hide). A
+            // tool-only turn carrying attachments is a deliverable: fall through
+            // to AssistantBubble so the chips render (V2d).
+            if (!parsed.text && hasToolUse && !(msg.attachments && msg.attachments.length > 0)) {
               const group = toolPillGrouping.groupByFirstId.get(msg.id);
-              return group
-                ? <ToolPillRow key={msg.id} messages={group} />
-                : <ToolOnlyPill key={msg.id} msg={msg} />;
+              return <ToolBadgeGroup key={msg.id} items={toolBadgeItems(group ?? [msg])} />;
             }
           }
           if (msg.role === 'user') return <UserBubble key={msg.id} msg={msg} wordyMode={wordyMode} />;

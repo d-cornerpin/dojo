@@ -46,7 +46,7 @@ export async function vectorSearch(
   agentId?: string,
   options?: {
     limit?: number;
-    sourceType?: 'all' | 'message' | 'summary';
+    sourceType?: 'all' | 'message' | 'summary' | 'technique';
     minSimilarity?: number;
   },
 ): Promise<VectorSearchResult[]> {

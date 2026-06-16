@@ -119,6 +119,31 @@ function registerSharedFile(agentId: string, filePath: string): string | null {
 
 // ── Filtered tools per agent (based on permissions + tools policy) ──
 
+/**
+ * Every tool definition the platform can expose to any agent, across all
+ * families. Single source of truth for the doc generator: a new family must
+ * be added HERE, never to a side list, so "described" and "loadable via
+ * load_tool_docs" cannot drift apart (pre-v2.11 drift left forms/pdf/
+ * credentials/plaud advertised in the prompt index but absent from the
+ * generated docs, so loading them reported "Tools not found").
+ */
+export function getAllToolDefinitions(): ToolDefinition[] {
+  return [
+    ...toolDefinitions,
+    ...pdfToolDefinitions,
+    ...formsToolDefinitions,
+    ...credentialsToolDefinitions,
+    ...plaudReadToolDefinitions,
+    ...googleReadToolDefinitions,
+    ...googleWriteToolDefinitions,
+    ...slidesToolDefinitions,
+    ...microsoftReadToolDefinitions,
+    ...microsoftWriteToolDefinitions,
+    ...officeCreateToolDefinitions,
+    ...officeEditToolDefinitions,
+  ];
+}
+
 export function getFilteredTools(agentId: string): ToolDefinition[] {
   const manifest = getAgentPermissions(agentId);
 
@@ -505,6 +530,18 @@ export interface ToolDefinition {
 
 export const toolDefinitions: ToolDefinition[] = [
   {
+    name: 'approve_destructive_action',
+    description: 'Decide a destructive-action approval request (primary agent only). The engine holds non-primary agents\' destructive tool calls (file deletion, destructive shell commands) and sends you a request with a token. Approve only when the action clearly serves the assigned work; use your judgment about checking with the owner first. Approval is one-shot and expires in 60 minutes.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        token: { type: 'string', description: 'The approval token from the request message' },
+        decision: { type: 'string', enum: ['approve', 'deny'], description: 'approve or deny' },
+      },
+      required: ['token', 'decision'],
+    },
+  },
+  {
     name: 'load_tool_docs',
     description: 'Load the full documentation for one or more tools before using them. Call this when you need to review a tool\'s parameters or usage details. After loading, the tools become callable on subsequent turns. Your always-loaded tools are already available without needing this.',
     input_schema: {
@@ -882,7 +919,7 @@ export const toolDefinitions: ToolDefinition[] = [
       properties: {
         name: {
           type: 'string',
-          description: 'A short, descriptive name for the sub-agent',
+          description: 'A regular human first name for the sub-agent (e.g. Dana, Marcus, Priya). Name it like you would name a person. Do NOT use a functional label such as "Cleaner", "File Remover", "Scraper", or "Worker"; pick an ordinary first name even for a throwaway one-shot helper.',
         },
         system_prompt: {
           type: 'string',
@@ -3266,7 +3303,7 @@ async function executeFileWrite(agentId: string, args: Record<string, unknown>):
     auditLog(agentId, 'file_write', filePath, 'success', `${content.length} bytes written`);
 
     const downloadUrl = registerSharedFile(agentId, filePath);
-    return `File written successfully: ${filePath} (${content.length} bytes)${downloadUrl ? `\nDownload: ${downloadUrl}` : ''}`;
+    return `File written successfully: ${filePath} (${content.length} bytes)${downloadUrl ? `\nDownload: ${downloadUrl}\nWhen you give this file to the user (or hand it to another agent), share the Download link above by default; mention the local path only if asked where it is on disk.` : ''}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     auditLog(agentId, 'file_write', filePath, 'error', msg);
@@ -3315,7 +3352,7 @@ async function executeFileAppend(agentId: string, args: Record<string, unknown>)
     auditLog(agentId, 'file_write', filePath, 'success', `${payload.length} bytes appended (total ${stat.size})`);
 
     const downloadUrl = registerSharedFile(agentId, filePath);
-    return `Appended ${payload.length} bytes to ${filePath}. Total size: ${stat.size} bytes.${downloadUrl ? `\nDownload: ${downloadUrl}` : ''}`;
+    return `Appended ${payload.length} bytes to ${filePath}. Total size: ${stat.size} bytes.${downloadUrl ? `\nDownload: ${downloadUrl}\nWhen you give this file to the user (or hand it to another agent), share the Download link above by default; mention the local path only if asked where it is on disk.` : ''}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     auditLog(agentId, 'file_write', filePath, 'error', msg);
@@ -4416,6 +4453,29 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         if (isAwaitingIMResponse(agentId)) {
           clearIMResponseFlag(agentId);
         }
+        break;
+      }
+      case 'approve_destructive_action': {
+        // Primary-only: the gate routes requests here, and only the primary
+        // decides (open question 6 hierarchy).
+        if (!isPrimaryAgent(agentId)) {
+          content = 'Only the primary agent can decide destructive-action approvals. If you need one approved, the engine has already routed your request to the primary.';
+          isError = true;
+          break;
+        }
+        const daToken = String((args as Record<string, unknown>).token ?? '').trim();
+        const daDecision = String((args as Record<string, unknown>).decision ?? '').trim();
+        if (!daToken || (daDecision !== 'approve' && daDecision !== 'deny')) {
+          content = 'approve_destructive_action requires token and decision ("approve" or "deny").';
+          isError = true;
+          break;
+        }
+        const { decideApproval } = await import('./destructive-gate.js');
+        content = await decideApproval({
+          deciderAgentId: agentId,
+          token: daToken,
+          decision: daDecision as 'approve' | 'deny',
+        });
         break;
       }
       case 'broadcast_to_group': {
@@ -6387,8 +6447,13 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         const { queuePendingAttachments } = await import('./pending-attachments.js');
         queuePendingAttachments(agentId, attachments, caption);
 
-        const fileList = attachments.map(a => `${a.filename} (${a.category})`).join(', ');
-        content = `Queued ${attachments.length} file(s) for your next reply: ${fileList}. Now write your reply text in your next assistant message — the DOJO will attach these files to whatever you say next so the user sees one chat bubble with your text + thumbnails. Do NOT call show_to_user again for these same files.`;
+        const fileList = attachments.map(a => {
+          const url = registerSharedFile(agentId, a.path);
+          return url
+            ? `${a.filename} (${a.category}) -> shareable link: ${url}`
+            : `${a.filename} (${a.category})`;
+        }).join('\n');
+        content = `Queued ${attachments.length} file(s) for your next reply (they attach as thumbnails):\n${fileList}\nWhen you point the user to a file, give them the shareable link above, never a raw file path. Now write your reply text in your next assistant message. Do NOT call show_to_user again for these same files.`;
         break;
       }
 

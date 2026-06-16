@@ -115,25 +115,3 @@ export function getAgentMessages(
   }));
 }
 
-// ── Mark Read ──
-
-export function markMessageRead(messageId: string): void {
-  const db = getDb();
-  db.prepare(`
-    UPDATE agent_messages SET read_by_recipient = 1 WHERE id = ?
-  `).run(messageId);
-
-  logger.debug('Agent message marked as read', { messageId });
-}
-
-// ── Unread Count ──
-
-export function getUnreadCount(agentId: string): number {
-  const db = getDb();
-  const row = db.prepare(`
-    SELECT COUNT(*) as count FROM agent_messages
-    WHERE to_agent = ? AND read_by_recipient = 0
-  `).get(agentId) as { count: number };
-
-  return row.count;
-}

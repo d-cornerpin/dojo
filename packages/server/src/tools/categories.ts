@@ -5,6 +5,11 @@
 
 import type { ToolDefinition } from '../agent/tools.js';
 
+// Tool-index representation (remediation C / tool-index slimming): the index
+// lists tool NAMES grouped by category, dropping per-tool descriptions. The
+// model still knows every tool exists and can load_tool_docs any of them (the
+// two-phase-load design is preserved), at a fraction of the tokens.
+
 // Tool category definitions — order matters, categories are shown in this order
 export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   {
@@ -187,43 +192,15 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
 ];
 
 /**
- * Truncate a tool description to a short one-liner for the index.
- * Takes the first sentence, caps at 120 chars.
- */
-function shortDescription(desc: string, maxLen: number = 120): string {
-  const firstSentence = desc.split(/\.\s|\n/)[0].trim();
-  if (firstSentence.length <= maxLen) return firstSentence;
-  return firstSentence.slice(0, maxLen - 3) + '...';
-}
-
-/**
- * Generate the lightweight tool index for system prompts.
- * Only includes tools the agent actually has access to.
+ * Compact tool index for v2: tool names grouped by category (no per-tool
+ * descriptions), with the always-loaded set enumerated once at the top instead
+ * of marked on every entry. For a primary-class agent (~165 tools) this keeps
+ * the index near ~1.4K tokens. The model calls `load_tool_docs` for the full
+ * schema of any tool that isn't always-loaded.
  */
 export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: string[]): string {
-  return generateToolIndexInternal(agentTools, alwaysLoaded, /*compact*/ false);
-}
-
-/**
- * Phase 5 (Part IV) — compact tool index for v2. Same content shape but
- * shorter descriptions (60 char vs 120) and no per-tool always-loaded
- * markers (the always-loaded list is enumerated once at the top, not
- * repeated on every entry). For Kevin (~165 tools) this drops the index
- * from ~2.8K tokens to ~1.4K, getting Phase 5's <2K total prompt target
- * within reach.
- */
-export function generateToolIndexCompact(agentTools: ToolDefinition[], alwaysLoaded: string[]): string {
-  return generateToolIndexInternal(agentTools, alwaysLoaded, /*compact*/ true);
-}
-
-function generateToolIndexInternal(
-  agentTools: ToolDefinition[],
-  alwaysLoaded: string[],
-  compact: boolean,
-): string {
   const toolMap = new Map(agentTools.map(t => [t.name, t]));
   const alwaysLoadedSet = new Set(alwaysLoaded);
-  const descLen = compact ? 60 : 120;
 
   const lines: string[] = [];
   lines.push('## Available Tools');
@@ -239,10 +216,10 @@ function generateToolIndexInternal(
     alwaysLoadedSet.has('tracker_create_project') &&
     alwaysLoadedSet.has('file_append') &&
     alwaysLoadedSet.has('scratchpad_set');
-  if (compact && !isPrimaryClass) {
+  if (!isPrimaryClass) {
     lines.push('Tools listed below by category. Always-loaded tools are callable immediately; for any other tool, call `load_tool_docs` first to get the full schema.');
     lines.push('**Before defaulting to `exec`**, scan the index below for a purpose-built tool that fits the task — file/web/office/forms/tracker/vault/chat-recall all have dedicated tools. **If you feel disoriented or have just been compacted/model-switched**, call `recall_recent_thread` first. **When sharing a URL or file path with the user**: paste the literal string from the most recent tool result, ONCE, surrounded by spaces. Never wrap a URL in backticks (the closing tick gets sucked into the href and breaks the link). Never write the same URL twice in a row. Never paraphrase, truncate, or type a URL from memory — if you don\'t have the full string, call the source tool again.');
-  } else if (compact && isPrimaryClass) {
+  } else {
     lines.push('Tools listed below by category. Always-loaded tools are callable immediately; for any other tool, call `load_tool_docs` first to get the full schema.');
     lines.push('');
     lines.push('**Seven reflexes worth building:**');
@@ -254,19 +231,6 @@ function generateToolIndexInternal(
     lines.push('- **Close out tracker tasks the moment you finish them.** Don\'t end a turn with `in_progress` tasks you\'ve actually completed. For multi-step projects use `tracker_complete_step` (auto-advances). For standalone tasks use `tracker_update_status(complete)`. Blocked → mark blocked. Paused → mark paused **only for recurring/scheduled tasks** — pausing a one-shot task as a sloppy substitute for "complete" strands it forever. If a whole project was abandoned, duplicated, or superseded, call `tracker_close_project(project_id, status="cancelled", reason="…")` to clean up the project AND every open task in one call (vastly better than looping `tracker_update_status` per task). The engine catches dangling `in_progress` and stranded `on_deck` tasks at the start of every turn and refuses non-tracker tools until you resolve them; ignoring the gate means the engine suppresses your reply and resolves them itself.');
     lines.push('- **Never read a timestamp without a timezone label.** If a time you encounter (calendar event, email, scraped web text, raw unix epoch, a tool result you\'re unsure of) does NOT include BOTH a timezone abbreviation (PT/ET/UTC/etc.) AND a UTC ISO, call `convert_time` to disambiguate before quoting it to the user or putting it in a reminder/email/task. The default failure mode is reading "19:00" as your local time when it\'s actually UTC — and getting every downstream time wrong by 7+ hours.');
     lines.push('- **Hand off technique authorship to the trainer agent.** `save_technique` / `update_technique` / `publish_technique` / `delete_technique` are reserved for the trainer agent only — the engine refuses them from anyone else. **Why:** techniques are shareable across dojos; that only works if every file the technique needs is inside the technique\'s own directory and every external install (npm/brew/git/model) is declared in `dependencies.json`. If you create a script somewhere arbitrary on disk and reference it from TECHNIQUE.md, the technique silently breaks on every other user\'s machine. To avoid this, **don\'t write files for a future technique on your own** — when you realize a piece of work could become a reusable technique, send the trainer a message describing what you want with any custom file contents inline (use `file_read` to grab existing scripts), and they\'ll build it correctly. You can still `technique_read` and `use_technique` freely — those stay open to every agent.');
-  } else {
-    lines.push('You have access to the following tools. Tool names and short descriptions are listed below. To use any tool:');
-    lines.push('1. If the tool is in your **Always-Loaded** set, you can call it directly without any preparation.');
-    lines.push('2. Otherwise, call `load_tool_docs` first with the tool names you need. The full parameter schemas will be loaded and the tools will be callable from that turn forward.');
-    lines.push('');
-    lines.push('**Six reflexes worth building:**');
-    lines.push('- **Before defaulting to `exec`**, scan the index below for a purpose-built tool — file/web/office/forms/tracker/vault/chat-recall all have dedicated tools. `exec` is the fallback, not the default.');
-    lines.push('- **If you feel disoriented, just got compacted, or just switched models**, call `recall_recent_thread` first — it reads the actual chat history from your messages table and is your fastest path back to context.');
-    lines.push('- **When sharing a URL or file path with the user**: paste the literal string from the most recent tool result, ONCE, surrounded by spaces. Never wrap a URL in backticks (the closing tick gets sucked into the href and the browser encodes it as `%60`, breaking the link). Never write the same URL twice in a row in the same sentence. Never paraphrase, never truncate to "something like…", and never type one from memory — if you don\'t have the full string handy, call the source tool again. URLs and paths are exact strings; one missing character makes them broken.');
-    lines.push('- **For tasks that span many sources or produce a long output** (read 5+ files then synthesize, build a long doc from a corpus, walk through a complex project): **your context is a FINITE window.** When it fills, the engine automatically summarizes older turns — file contents you read 30 minutes ago become a one-line summary that loses literal detail. An agent that reads a 50-page doc, then a 30-page doc, then a 40-page doc, then tries to write a flowchart, will be writing the flowchart from summaries — not from source — and **WILL fabricate plausible-sounding details that aren\'t actually there**. Defenses, in order: (1) **Open `tracker_create_project` BEFORE you start work**, with the batches as initial tasks — multi-step work without a tracker entry drifts and stalls, and the PM agent can\'t intervene because there\'s nothing to monitor. (2) **Scaffold the deliverable first** via `file_write` with section headers and placeholders. (3) **Loop**: read 3-5 sources, write findings into the right section using `file_append` (end-of-file) or `file_patch` (between markers), update `scratchpad_set` with what\'s covered and what\'s left, mark the tracker task complete, move on. (4) **Re-read the scaffold and scratchpad** when you feel lost — they survive compaction; your raw context does not. (5) **Verification pass at the end**: re-read each major source briefly and confirm the section that depends on it is accurate. The whole pattern exists to keep you working from literal source rather than from your own summarized memory.');
-    lines.push('- **Close out tracker tasks the moment you finish them.** Don\'t end a turn with `in_progress` tasks you\'ve actually completed. For multi-step projects use `tracker_complete_step` (it auto-advances the project pointer to the next step — leaves no gap). For standalone tasks use `tracker_update_status(complete)`. If you hit a blocker, mark it `blocked`. If you paused intentionally, mark it `paused`. Never leave the tracker out of sync with reality. The engine will detect dangling `in_progress` tasks at end-of-turn and inject a nudge asking you to close them — and if you ignore that, the PM agent will poke you 30 minutes later. Both cost a turn the user is waiting on. Update status the instant a transition happens: starting work → in_progress, finishing → complete, stuck → blocked.');
-    lines.push('- **Never read a timestamp without a timezone label.** If a time you encounter (calendar event, email, scraped web text, raw unix epoch, a tool result you\'re unsure of) does NOT include BOTH a timezone abbreviation (PT/ET/UTC/etc.) AND a UTC ISO, call `convert_time` to disambiguate before quoting it to the user or putting it in a reminder/email/task. The default failure mode is reading "19:00" as your local time when it\'s actually UTC — and getting every downstream time wrong by 7+ hours.');
-    lines.push('- **Hand off technique authorship to the trainer agent.** `save_technique` / `update_technique` / `publish_technique` / `delete_technique` are reserved for the trainer agent only — the engine refuses them from anyone else. Why: techniques are shareable across dojos, and that only works if every file the technique needs is inside the technique\'s own directory and every external install is declared in `dependencies.json`. If you create a script somewhere arbitrary on disk and reference it from TECHNIQUE.md, the technique silently breaks on every other user\'s machine. When you realize a piece of work could become a reusable technique, send the trainer a message describing what you want with any custom file contents inline (use `file_read` to grab existing scripts), and they\'ll build it correctly. `technique_read` and `use_technique` stay open to every agent.');
   }
   lines.push('');
   lines.push(`**Always-loaded tools**: ${alwaysLoaded.join(', ')}`);
@@ -279,24 +243,17 @@ function generateToolIndexInternal(
     const available = category.tools.filter(name => toolMap.has(name));
     if (available.length === 0) continue;
 
-    lines.push(`**${category.label}:**`);
-    for (const name of available) {
-      const tool = toolMap.get(name)!;
-      const marker = compact ? '' : (alwaysLoadedSet.has(name) ? ' _(always loaded)_' : '');
-      lines.push(`- \`${name}\`${marker}: ${shortDescription(tool.description, descLen)}`);
-      listed.add(name);
-    }
+    // One line per category: the names, comma-joined. The model can
+    // load_tool_docs any of them for the full schema.
+    lines.push(`**${category.label}:** ${available.map(n => `\`${n}\``).join(', ')}`);
+    available.forEach(n => listed.add(n));
     lines.push('');
   }
 
   // Any tools not in a category get dumped at the end under "Other"
   const uncategorized = agentTools.filter(t => !listed.has(t.name));
   if (uncategorized.length > 0) {
-    lines.push('**Other:**');
-    for (const tool of uncategorized) {
-      const marker = compact ? '' : (alwaysLoadedSet.has(tool.name) ? ' _(always loaded)_' : '');
-      lines.push(`- \`${tool.name}\`${marker}: ${shortDescription(tool.description, descLen)}`);
-    }
+    lines.push(`**Other:** ${uncategorized.map(t => `\`${t.name}\``).join(', ')}`);
     lines.push('');
   }
 

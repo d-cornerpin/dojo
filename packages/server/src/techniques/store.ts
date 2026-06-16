@@ -9,6 +9,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
+import { refreshEmbedding } from '../memory/embeddings.js';
 import { writeDiskVersionSnapshot } from './versioning.js';
 import {
   type DependencyManifest,
@@ -101,6 +102,20 @@ export interface CreateTechniqueParams {
 }
 
 // ── CRUD ──
+
+// Embed the technique's intent surface (name + description + tags), not its
+// body: recall matches the user's ASK against what the technique is FOR; the
+// body is loaded after selection. Techniques are global, so agentId is null.
+function embedTechniqueIntent(id: string): void {
+  try {
+    const row = getDb().prepare('SELECT name, description, tags FROM techniques WHERE id = ?')
+      .get(id) as { name: string; description: string | null; tags: string | null } | undefined;
+    if (!row) return;
+    let tags: string[] = [];
+    try { tags = JSON.parse(row.tags ?? '[]'); } catch { /* malformed tags column */ }
+    refreshEmbedding('technique', id, null, `${row.name}\n${row.description ?? ''}\n${tags.join(' ')}`);
+  } catch { /* embedding is best-effort */ }
+}
 
 export function createTechnique(params: CreateTechniqueParams): TechniqueMetadata {
   ensureTechniquesDir();
@@ -206,6 +221,8 @@ export function createTechnique(params: CreateTechniqueParams): TechniqueMetadat
   });
 
   logger.info('Technique created', { id, name: params.displayName, state });
+
+  embedTechniqueIntent(id);
 
   broadcast({ type: 'technique:created', data: { id, name: params.displayName, state } } as never);
 
@@ -382,6 +399,10 @@ export function updateTechnique(id: string, updates: Partial<{
     }
   }
 
+  if (updates.name !== undefined || updates.description !== undefined || updates.tags !== undefined) {
+    embedTechniqueIntent(id);
+  }
+
   return getTechnique(id);
 }
 
@@ -463,6 +484,24 @@ export function updateTechniqueDependencies(id: string, manifest: DependencyMani
   return getTechnique(id);
 }
 
+// Remediation Phase 5 (5a): close the loop the dormant `success` column was
+// waiting for — the most recent usage row for this (technique, agent) gets
+// the turn's outcome. Deliberately coarse (turn completed vs errored): the
+// signal only needs to separate "keeps working" from "keeps failing" for
+// ranking and retirement.
+export function recordTechniqueOutcome(techniqueId: string, agentId: string, success: boolean): void {
+  try {
+    getDb().prepare(`
+      UPDATE technique_usage SET success = ?
+      WHERE id = (
+        SELECT id FROM technique_usage
+        WHERE technique_id = ? AND agent_id = ?
+        ORDER BY used_at DESC LIMIT 1
+      )
+    `).run(success ? 1 : 0, techniqueId, agentId);
+  } catch { /* best effort */ }
+}
+
 export function publishTechnique(id: string): TechniqueMetadata | null {
   const db = getDb();
   const technique = getTechnique(id);
@@ -472,6 +511,7 @@ export function publishTechnique(id: string): TechniqueMetadata | null {
   db.prepare("UPDATE techniques SET state = 'published', published_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(id);
 
   logger.info('Technique published', { id, name: technique.name });
+  embedTechniqueIntent(id);
   broadcast({ type: 'technique:published', data: { id, name: technique.name } } as never);
 
   return getTechnique(id);
@@ -487,6 +527,7 @@ export function deleteTechnique(id: string): boolean {
   db.prepare('DELETE FROM technique_usage WHERE technique_id = ?').run(id);
   db.prepare('DELETE FROM technique_versions WHERE technique_id = ?').run(id);
   db.prepare('DELETE FROM techniques WHERE id = ?').run(id);
+  db.prepare("DELETE FROM embeddings WHERE source_type = 'technique' AND source_id = ?").run(id);
 
   // Delete directory
   try {

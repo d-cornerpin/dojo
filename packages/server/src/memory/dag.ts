@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getMessagesByIds } from './store.js';
+import { queueEmbedding } from './embeddings.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('memory-dag');
@@ -81,6 +82,11 @@ export function createLeafSummary(
 
   txn();
 
+  // Embed at creation so compressed history is reachable by meaning, not
+  // only by recency. (Pre-remediation, summaries were only ever embedded by
+  // the manual backfill, so vector search could not see them.)
+  queueEmbedding('summary', id, agentId, content);
+
   logger.info('Created leaf summary', {
     summaryId: id,
     messageCount: messageIds.length,
@@ -137,6 +143,9 @@ export function createCondensedSummary(
   });
 
   txn();
+
+  // Same embed-at-creation rule as leaf summaries.
+  queueEmbedding('summary', id, agentId, content);
 
   logger.info('Created condensed summary', {
     summaryId: id,

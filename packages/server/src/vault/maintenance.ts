@@ -740,7 +740,7 @@ function buildDreamerCycleMessage(
   return `═══ DREAM CYCLE ═══
 Vault state: ${stats.totalEntries} entries (${stats.pinnedCount} pinned, ${stats.permanentCount} permanent). Pin cap: ${MAX_PINNED_ENTRIES}${stats.pinnedCount > MAX_PINNED_ENTRIES ? ' — OVER CAP, prune now' : ''}.${archiveSummary}${batchNote}
 
-Process the archives below. Extract durable vault memories. Discard junk archives. Only touch USER.md / SOUL.md if an archive contains a clear, explicit trigger (see your SOUL). Then call complete_task.
+Process the archives below. Extract durable vault memories. Discard junk archives. Only update USER.md if an archive has a clear, explicit, FUNDAMENTAL profile change you can quote (see your SOUL). Never edit SOUL.md. Then call complete_task.
 
 ${batchText}`;
 }
@@ -752,8 +752,9 @@ ${batchText}`;
 // to the Trainer; that pattern caused extra token burn (Trainer wakes,
 // runs its own loop) and sometimes broke other techniques the user had
 // built. Memory curation should not have a side effect of spawning more
-// agent work. The Dreamer is now strictly read/write of vault + USER.md
-// + SOUL.md, plus its own tracker bookkeeping.
+// agent work. The Dreamer is strictly read/write of vault + USER.md (USER.md
+// only for FUNDAMENTAL profile changes), plus its own tracker bookkeeping.
+// SOUL.md is engine-protected (GLOBAL_FILE_WRITE_DENY) and never edited.
 const DREAMER_TOOLS_POLICY = JSON.stringify({
   allow: [
     'vault_remember', 'vault_search', 'vault_forget',
@@ -769,10 +770,12 @@ const DREAMER_TOOLS_POLICY = JSON.stringify({
 
 function getDreamerPermissions(): string {
   const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
-  const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
+  // USER.md only. SOUL.md (identity) is engine-protected (GLOBAL_FILE_WRITE_DENY)
+  // and never written by any agent; the Dreamer updates USER.md only for
+  // fundamental profile changes (new job, marital/family status, a move).
   return JSON.stringify({
-    file_read: [profilePath, soulPath],
-    file_write: [profilePath, soulPath],
+    file_read: [profilePath],
+    file_write: [profilePath],
     file_delete: 'none',
     exec_allow: [],
     exec_deny: ['*'],
@@ -794,7 +797,7 @@ function loadDreamerSoulPrompt(): string {
       if (fs.existsSync(p)) return fs.readFileSync(p, 'utf-8');
     } catch { /* try next */ }
   }
-  return `You are the Dreamer, the dojo's memory keeper. Each night you process conversation archives into vault memories and keep USER.md and SOUL.md up to date. When done with each cycle, call complete_task.`;
+  return `You are the Dreamer, the dojo's memory keeper. Each night you process conversation archives into vault memories and, only for fundamental profile changes (new job, marital or family status, a move), keep USER.md up to date. You never edit SOUL.md. When done with each cycle, call complete_task.`;
 }
 
 export function ensureDreamerAgentRunning(): void {
@@ -971,6 +974,20 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
   if (config.dreamMode === 'off') {
     logger.info('Dreaming is disabled, skipping cycle');
     return { dreamerId: null };
+  }
+
+  // Remediation Phase 5: the technique-distillation engine pass rides the
+  // same nightly cadence (batched by design — the v1.15.96 constraints live
+  // in techniques/distillation.ts). Deliberately NOT a Dreamer handoff: the
+  // Dreamer stays strictly memory curation; distillation candidates come
+  // from the tracker's outcome record and go straight to the Trainer.
+  try {
+    const { runDistillationCycle } = await import('../techniques/distillation.js');
+    await runDistillationCycle();
+  } catch (err) {
+    logger.warn('Technique distillation pass failed (non-fatal to dreaming)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
   const modelId = config.modelId ?? getDefaultDreamModel();

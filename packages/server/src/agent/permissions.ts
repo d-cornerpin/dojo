@@ -54,7 +54,10 @@ const GLOBAL_FILE_WRITE_DENY = [
   '~/.dojo/secrets.yaml',
   '~/.dojo/data/*.db',
   '**/SOUL.md',
-  '**/PM-SOUL.md',
+  // All sensei souls (PM/TRAINER/HEALER/DREAMER/IMAGINER-SOUL.md), not just
+  // the PM's: "never modify your own system prompt" is engine-enforced, and
+  // the old glob pair left every non-PM sensei soul writable.
+  '**/*-SOUL.md',
 ];
 
 const GLOBAL_FILE_DELETE_DENY = [

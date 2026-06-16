@@ -1,8 +1,11 @@
 // Phase 4 §E (2026-05-04) — stub-and-store unit tests.
 //
-// stubOldToolResults runs in the v2 assembler path: tool_result messages
-// older than V2_STUB_AFTER_TURNS (5) get their content replaced with a
-// short stub so context stays roughly flat over a long session.
+// stubOldToolResults runs in the v2 assembler path: tool_result messages at
+// least V2_STUB_AFTER_TURNS turns old get their content replaced with a short
+// stub so context stays roughly flat over a long session. Turn numbers here are
+// derived from V2_STUB_AFTER_TURNS so the tests track the threshold if it is
+// tuned (it moved 5 -> 12 during the memory remediation, which is what these
+// tests now follow).
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -17,7 +20,16 @@ vi.mock('../../db/connection.js', () => ({
   },
 }));
 
-import { stubOldToolResults } from '../assembler.js';
+import { stubOldToolResults, V2_STUB_AFTER_TURNS } from '../assembler.js';
+
+// currentTurn = MAX(turn_number) + 1, so seed one message at CURRENT_TURN - 1.
+// Derive the recent/old/boundary turns from the live threshold.
+const CURRENT_TURN = V2_STUB_AFTER_TURNS + 20;
+const SEED_TURN = CURRENT_TURN - 1;
+const RECENT_TURN = CURRENT_TURN - 1;                              // age 1 → keep
+const OLD_TURN = CURRENT_TURN - V2_STUB_AFTER_TURNS - 5;          // well past threshold → stub
+const STUB_BOUNDARY_TURN = CURRENT_TURN - V2_STUB_AFTER_TURNS;     // age == threshold → stub
+const KEEP_BOUNDARY_TURN = CURRENT_TURN - V2_STUB_AFTER_TURNS + 1; // age == threshold-1 → keep
 
 beforeEach(() => {
   const db = new Database(':memory:');
@@ -31,8 +43,10 @@ beforeEach(() => {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
   `);
-  // Seed some messages so MAX(turn_number) reflects "current turn = 10".
-  db.prepare(`INSERT INTO messages (id, agent_id, role, content, turn_number) VALUES ('seed', 'kevin', 'assistant', 'x', 9)`).run();
+  // Seed one message so MAX(turn_number) + 1 == CURRENT_TURN.
+  db.prepare(
+    `INSERT INTO messages (id, agent_id, role, content, turn_number) VALUES ('seed', 'kevin', 'assistant', 'x', ?)`,
+  ).run(SEED_TURN);
   mockDb.current = db;
 });
 
@@ -58,22 +72,20 @@ function makeToolBlocks(toolUseId: string, content: string): string {
 }
 
 describe('stubOldToolResults', () => {
-  it('keeps tool results from recent turns intact (<5 turns old)', () => {
-    // currentTurn = MAX(9) + 1 = 10. Recent = turns 6-10.
-    const recent = toolMsg('m1', 8, makeToolBlocks('tu_recent', 'fresh content'));
+  it('keeps tool results from recent turns intact (younger than the threshold)', () => {
+    const recent = toolMsg('m1', RECENT_TURN, makeToolBlocks('tu_recent', 'fresh content'));
     const out = stubOldToolResults([recent], 'kevin');
     expect(out[0].content).toBe(recent.content);
     expect(out[0].content).toContain('fresh content');
     expect(out[0].content).not.toContain('cleared from context');
   });
 
-  it('stubs tool results from old turns (≥5 turns old)', () => {
-    // currentTurn = 10, msg at turn 4 → age 6 → stub.
-    const old = toolMsg('m2', 4, makeToolBlocks('tu_old', 'a'.repeat(2000)));
+  it('stubs tool results from old turns (at least the threshold old)', () => {
+    const old = toolMsg('m2', OLD_TURN, makeToolBlocks('tu_old', 'a'.repeat(2000)));
     const out = stubOldToolResults([old], 'kevin');
     expect(out[0].content).not.toContain('a'.repeat(50));
     expect(out[0].content).toContain('cleared from context');
-    expect(out[0].content).toContain('turn 4');
+    expect(out[0].content).toContain(`turn ${OLD_TURN}`);
     expect(out[0].content).toContain('2000 chars');
   });
 
@@ -86,11 +98,12 @@ describe('stubOldToolResults', () => {
   });
 
   it('preserves the tool_use_id on stubbed blocks (alternation invariant)', () => {
-    const old = toolMsg('m4', 4, makeToolBlocks('tu_pair', 'old'));
+    const old = toolMsg('m4', OLD_TURN, makeToolBlocks('tu_pair', 'old'));
     const out = stubOldToolResults([old], 'kevin');
     const blocks = JSON.parse(out[0].content) as Array<{ type: string; tool_use_id: string }>;
     expect(blocks[0].type).toBe('tool_result');
     expect(blocks[0].tool_use_id).toBe('tu_pair');
+    expect(out[0].content).toContain('cleared from context');
   });
 
   it('does not touch non-tool messages (assistant, user, system)', () => {
@@ -99,35 +112,35 @@ describe('stubOldToolResults', () => {
       agentId: 'kevin',
       role: 'assistant',
       content: 'I did the thing',
-      tokenCount: null, modelId: null, cost: null, latencyMs: null,
+      tokenCount: null,
+      modelId: null,
+      cost: null,
+      latencyMs: null,
       createdAt: new Date().toISOString(),
-      turnNumber: 3,
+      turnNumber: OLD_TURN,
     };
     const out = stubOldToolResults([assistant], 'kevin');
     expect(out[0].content).toBe('I did the thing');
   });
 
   it('handles invalid JSON tool content gracefully (returns original)', () => {
-    const broken = toolMsg('m5', 4, 'not valid json');
+    const broken = toolMsg('m5', OLD_TURN, 'not valid json');
     const out = stubOldToolResults([broken], 'kevin');
     expect(out[0].content).toBe('not valid json');
   });
 
   it('mixes recent + old correctly in one call', () => {
-    const recent = toolMsg('m6', 8, makeToolBlocks('tu_r', 'fresh'));
-    const old = toolMsg('m7', 3, makeToolBlocks('tu_o', 'stale'));
+    const recent = toolMsg('m6', RECENT_TURN, makeToolBlocks('tu_r', 'fresh'));
+    const old = toolMsg('m7', OLD_TURN, makeToolBlocks('tu_o', 'stale'));
     const out = stubOldToolResults([recent, old], 'kevin');
     expect(out[0].content).toContain('fresh');
     expect(out[1].content).toContain('cleared from context');
     expect(out[1].content).not.toContain('stale');
   });
 
-  it('STUB_AFTER_TURNS boundary: msg at exactly turn-5 still recent, turn-6 stubbed', () => {
-    // currentTurn = 10. STUB_AFTER_TURNS = 5.
-    // msg at turn 5 → age 5 → stub (per spec: stub when age >= STUB_AFTER_TURNS)
-    // msg at turn 6 → age 4 → keep
-    const stubbed = toolMsg('m8', 5, makeToolBlocks('tu_x', 'boundary'));
-    const kept = toolMsg('m9', 6, makeToolBlocks('tu_y', 'kept'));
+  it('threshold boundary: age == threshold stubbed, age == threshold-1 kept', () => {
+    const stubbed = toolMsg('m8', STUB_BOUNDARY_TURN, makeToolBlocks('tu_x', 'boundary'));
+    const kept = toolMsg('m9', KEEP_BOUNDARY_TURN, makeToolBlocks('tu_y', 'kept'));
     const out = stubOldToolResults([stubbed, kept], 'kevin');
     expect(out[0].content).toContain('cleared from context');
     expect(out[1].content).toContain('kept');

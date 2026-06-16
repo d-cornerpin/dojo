@@ -80,7 +80,13 @@ beforeEach(() => {
   mockDb.current = db;
 });
 
-import { assembleSystemPrompt } from '../assembler.js';
+import { assembleSystemFromRegistry, buildAssemblyContext } from '../registry/assembler.js';
+
+// The registry walker is the sole system-prompt assembler now (legacy
+// assembleSystemPrompt/Parts deleted). This shim keeps the call sites readable.
+function assembleSystemPrompt(agentId: string, modelId: string): string {
+  return assembleSystemFromRegistry(buildAssemblyContext(agentId, modelId)).text;
+}
 
 describe('Phase 5 v2 tools-guidance content', () => {
   it('contains the "How You Communicate" terseness section verbatim', () => {

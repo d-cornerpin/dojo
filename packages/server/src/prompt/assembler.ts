@@ -8,6 +8,7 @@ import { toolDefinitions, getFilteredTools } from '../agent/tools.js';
 import { isPrimaryAgent, isPMAgent, isTrainerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName } from '../config/platform.js';
 import { getAgentGoogleAccessLevel, getGoogleWorkspaceConfig, isGoogleConnected, isEmailMonitoringEnabled, isEmailSendingEnabled } from '../google/auth.js';
 import { getAgentMicrosoftAccessLevel, getMsAccountType, getMicrosoftWorkspaceConfig, isMicrosoftConnected, isMsEmailMonitoringEnabled, isMsEmailSendingEnabled } from '../microsoft/auth.js';
+import { getChannelCapabilities, listIntegrationStatuses } from '../services/capability-registry.js';
 import { assembleGroupContext as _assembleGroupContext } from '../agent/groups.js';
 import { generateTechniqueIndex, generateDraftTechniqueContext } from '../techniques/index-builder.js';
 import { getContextWindow } from '../agent/model.js';
@@ -15,19 +16,14 @@ import { getModelCapabilities } from '../services/capabilities.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
 import { isIMBridgeRunning, addressesMatch } from '../services/imessage-bridge.js';
 import { getPresence, isImessageConfigured } from '../services/presence.js';
-import { resolveReplyDestination } from '../agent/v2/reply-destination.js';
+import { resolveReplyDestination, type ReplyDestination } from '../agent/v2/reply-destination.js';
 import { getGmailSafeSenders, getOutlookSafeSenders, getTeamsSafeSenders } from '../services/channel-safe-senders.js';
 import { getTwilioConfig } from '../twilio/auth.js';
 
-// Prompt complexity tiers based on model context window
-type PromptTier = 'full' | 'standard' | 'compact' | 'minimal';
-function getPromptTier(contextWindow: number): PromptTier {
-  if (contextWindow >= 200000) return 'full';
-  if (contextWindow >= 32000) return 'standard';
-  if (contextWindow >= 8000) return 'compact';
-  return 'minimal';
-}
-import { generateToolIndex, generateToolIndexCompact } from '../tools/categories.js';
+// (The v1 per-model prompt-tier scaler was deleted with remediation Phase 3:
+// its consumer died with v1 generateToolsGuidance, and the design law says
+// one contract for every model — curation tightness, not forked verbosity.)
+import { generateToolIndex } from '../tools/categories.js';
 import { getAgentAlwaysLoadedTools } from '../tools/tool-docs.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2 — single-track v2)
 
@@ -66,7 +62,23 @@ function readPromptFile(filename: string, defaultContent: string): string {
   return defaultContent;
 }
 
-function getSoulContent(agentId: string): string {
+// Extract a single markdown section body by its header text (e.g. 'Rules'),
+// from the first `# Header` / `## Header` to the next same-or-higher header.
+// Used to carry the owner's standing `# Rules` from SOUL.md into sub-agents
+// without dragging the primary's identity along. Returns '' if not found.
+export function extractMarkdownSection(markdown: string, header: string): string {
+  const lines = markdown.split('\n');
+  const start = lines.findIndex((l) => /^#{1,3}\s+/.test(l) && l.replace(/^#{1,3}\s+/, '').trim().toLowerCase() === header.toLowerCase());
+  if (start === -1) return '';
+  const body: string[] = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^#{1,3}\s+/.test(lines[i])) break; // next header ends the section
+    body.push(lines[i]);
+  }
+  return body.join('\n').trim();
+}
+
+export function getSoulContent(agentId: string): string {
   // Primary agent gets SOUL.md
   if (isPrimaryAgent(agentId)) {
     return readPromptFile('SOUL.md', DEFAULT_SOUL_MD);
@@ -127,6 +139,21 @@ function getSoulContent(agentId: string): string {
     const primaryName = getPrimaryAgentName();
     const primaryId = getPrimaryAgentId();
 
+    // Owner standing rules (remediation C10 / Flow 7): a sub-agent runs a
+    // SYNTHESIZED identity, not SOUL.md, so the owner's standing behavioral
+    // rules (tone, no-prompt-modification, destructive caution, tracker-first)
+    // never reached spawned agents. Carry the owner's `# Rules` section
+    // through, framed as subordinate to the sub-agent's own reporting rules.
+    // We do NOT hand over the primary's identity, only the universal rules.
+    let ownerRules = '';
+    try {
+      const soul = readPromptFile('SOUL.md', DEFAULT_SOUL_MD);
+      const rules = extractMarkdownSection(soul, 'Rules');
+      if (rules) {
+        ownerRules = `\n\n# Owner's standing rules (apply to every agent acting on the owner's behalf)\n\n${rules}\n\n(Your reporting rules above still govern when YOU speak; the engine, not these lines, enforces destructive-action approval for sub-agents.)`;
+      }
+    } catch { /* SOUL unavailable: sub-agent runs on its own rules only */ }
+
     // The "Communication" how-to and "Vault" instructional blocks are NOT
     // here — engine enforces A2A intent rules and prefetches vault context
     // at session start, so the prompt only carries structural identity /
@@ -150,7 +177,8 @@ ${groupInfo ? `- ${groupInfo}` : ''}
 - Follow your task instructions precisely.
 - Update your tracker task status as you work; call \`complete_task\` when done. The \`summary\` field is read internally by the parent agent — that IS your report; do not write a parallel chat message announcing completion.
 - If blocked, set tracker status to "blocked" and message ${primaryName} or ${pmName}.
-- Silence is the default. Don't narrate, acknowledge, or close out actions you took. The completion is evident from the tracker and from what changed.`;
+- Silence is the default. Don't narrate, acknowledge, or close out actions you took. The completion is evident from the tracker and from what changed.
+- These reporting rules are YOUR authority on when to speak. If any general guidance elsewhere in this prompt pulls toward surfacing progress or reporting back, these rules win for you as a sub-agent.${ownerRules}`;
   } catch {
     return '# Identity\n\nYou are a sub-agent in the DOJO Agent Platform. Follow your task instructions and call complete_task when done.';
   }
@@ -220,7 +248,7 @@ function isIMessageTurn(agentId: string): boolean {
   }
 }
 
-function generateToolsGuidance_v2(agentId: string): string {
+export function generateToolsGuidance_v2(agentId: string): string {
   const agentTools = getFilteredTools(agentId);
   const lines: string[] = [];
 
@@ -231,6 +259,8 @@ function generateToolsGuidance_v2(agentId: string): string {
   //    [no-reply] escape hatch as a general-purpose mechanism: any
   //    turn can end silently, and the engine handles it cleanly.
   lines.push(`## How You Communicate
+
+**Everything you write as a message goes to the user, a real person, the instant you send it, on chat or any other channel (iMessage, Teams, email, phone).** Your message is not a scratchpad, not a thinking space, not somewhere to reason or talk yourself through the work. It is one half of a conversation with a human who reads every word. Do your thinking, planning, and reacting to your own tool results silently: think, then act with tools. Never type your internal monologue into the channel. Before each message, ask yourself: "Am I telling the user something they actually need right now?" If you are only narrating to yourself, like "approving it", "now I'll spawn a helper", "the gate blocked me so let me approve", or "done, on to the next step", that is a thought, not a message: do not send it, just call the tool. If a turn has nothing new for the user, end it with \`[no-reply]\`.
 
 **You always have an escape hatch.** When a turn doesn't warrant a user-facing message — internal bookkeeping just completed, you already gave the real reply earlier this turn, a notification arrived that doesn't need surfacing, a tool result resolved something with no new info for the user — end the turn by emitting the literal sentinel \`[no-reply]\` on a line by itself, nothing else. The engine swallows it: no chat bubble, no iMessage, no noise. The turn ends cleanly. This is your release valve from the "I must say something" reflex.
 
@@ -281,11 +311,11 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
 `);
   lines.push('');
 
-  // 3. Tool index — compact variant (Phase 5): 60-char descriptions, no
-  // per-tool always-loaded marker (enumerated once at top instead).
-  // Kevin (primary, ~165 tools) drops from ~2.8K to ~1.4K tokens here.
+  // 3. Tool index — names grouped by category, no per-tool descriptions; the
+  // always-loaded set is enumerated once at the top instead of marked on every
+  // entry. A primary agent (~165 tools) lands near ~1.4K tokens here.
   const alwaysLoaded = getAgentAlwaysLoadedTools(agentId);
-  lines.push(generateToolIndexCompact(agentTools, alwaysLoaded));
+  lines.push(generateToolIndex(agentTools, alwaysLoaded));
   lines.push('');
 
   // 3. Brief, single-line notes per tool category (the v1 long blocks
@@ -535,7 +565,7 @@ text, never in the cue.`;
  * stable across tool iterations); otherwise read `voice.tts_engine` out
  * of the config table.
  */
-function resolveTtsEngine(turnContext: PromptTurnContext | undefined): 'local' | 'cloud' {
+export function resolveTtsEngine(turnContext: PromptTurnContext | undefined): 'local' | 'cloud' {
   if (turnContext?.ttsEngine === 'cloud') return 'cloud';
   if (turnContext?.ttsEngine === 'local') return 'local';
   try {
@@ -567,69 +597,48 @@ function buildMyChannelsSummary(
 ): string {
   const lines: string[] = [];
 
-  // Gmail — enumerate both slots so the agent sees its own mailbox
-  // (agent slot) and the user's mailbox (user slot) labelled
-  // distinctly. The user's mailbox is the source of "not addressed to
-  // you" traffic; the agent's mailbox is where outbound goes from.
-  for (const slot of ['agent', 'user'] as const) {
-    try {
-      if (!isGoogleConnected(slot)) continue;
-      const email = getGoogleWorkspaceConfig(slot).accountEmail;
-      if (!email) continue;
-      const label = slot === 'agent' ? 'agent mailbox' : `${ownerName}'s personal mailbox`;
-      const caps: string[] = [];
-      if (isEmailMonitoringEnabled(slot)) caps.push('monitor inbound');
-      if (isEmailSendingEnabled(slot)) caps.push('send outbound');
-      lines.push(`- Gmail \`${email}\` (${label}) - ${caps.join(' + ') || 'no email capabilities active'}`);
-    } catch { /* slot not configured */ }
-  }
+  // Facts come from the capability registry (single source shared with the
+  // channel_inspect tool); this function only owns the per-turn rendering.
+  const caps = getChannelCapabilities();
 
-  // Outlook — same per-slot enumeration.
-  for (const slot of ['agent', 'user'] as const) {
-    try {
-      if (!isMicrosoftConnected(slot)) continue;
-      const email = getMicrosoftWorkspaceConfig(slot).accountEmail;
-      if (!email) continue;
-      const label = slot === 'agent' ? 'agent mailbox' : `${ownerName}'s personal mailbox`;
-      const caps: string[] = [];
-      if (isMsEmailMonitoringEnabled(slot)) caps.push('monitor inbound');
-      if (isMsEmailSendingEnabled(slot)) caps.push('send outbound');
-      lines.push(`- Outlook \`${email}\` (${label}) - ${caps.join(' + ') || 'no email capabilities active'}`);
-    } catch { /* slot not configured */ }
+  // Mailboxes — the agent sees its own mailbox (agent slot) and the user's
+  // mailbox (user slot) labelled distinctly. The user's mailbox is the source
+  // of "not addressed to you" traffic; the agent's mailbox is where outbound
+  // goes from.
+  for (const mb of caps.mailboxes) {
+    if (!mb.address) continue;
+    const providerLabel = mb.provider === 'gmail' ? 'Gmail' : 'Outlook';
+    const label = mb.slot === 'agent' ? 'agent mailbox' : `${ownerName}'s personal mailbox`;
+    const mbCaps: string[] = [];
+    if (mb.monitorInbound) mbCaps.push('monitor inbound');
+    if (mb.sendOutbound) mbCaps.push('send outbound');
+    lines.push(`- ${providerLabel} \`${mb.address}\` (${label}) - ${mbCaps.join(' + ') || 'no email capabilities active'}`);
   }
 
   // iMessage — single channel, ownership is implicit (it's the agent's
   // own iMessage account via the bridge).
-  try {
-    if (isImessageConfigured()) {
-      lines.push(`- iMessage - reachable. Replies to inbound iMessages auto-route; \`imessage_send\` reserved for proactive sends, cross-recipient, or attachments.`);
-    }
-  } catch { /* bridge not configured */ }
+  if (caps.imessage.configured) {
+    lines.push(`- iMessage - reachable. Replies to inbound iMessages auto-route; \`imessage_send\` reserved for proactive sends, cross-recipient, or attachments.`);
+  }
 
-  // Teams — only list if connected AND account type supports it
-  // (personal Microsoft accounts can't use Teams).
-  try {
-    if (isMicrosoftConnected('agent') && getMsAccountType() === 'entra') {
-      lines.push(`- Teams - reachable. Replies to inbound Teams DMs auto-route; \`teams_send_message\` reserved for starting new chats or replying to a different chat than the inbound.`);
-    }
-  } catch { /* Microsoft not configured */ }
+  // Teams — registry already folds in the Entra-account requirement.
+  if (caps.teams.available) {
+    lines.push(`- Teams - reachable. Replies to inbound Teams DMs auto-route; \`teams_send_message\` reserved for starting new chats or replying to a different chat than the inbound.`);
+  }
 
   // Twilio SMS + Voice (v2.9.18) — added when Twilio is configured
   // and enabled so the agent knows it can text and call out.
-  try {
-    const cfg = getTwilioConfig();
-    if (cfg.configured && cfg.enabled) {
-      const numbers = cfg.numbers.length === 0
-        ? '(no numbers configured)'
-        : cfg.numbers.map(n => n.number).join(', ');
-      if (cfg.smsEnabled) {
-        lines.push(`- Twilio SMS (\`${numbers}\`) - reachable. Replies to inbound SMS auto-route; \`sms_send\` for proactive sends.`);
-      }
-      if (cfg.voiceEnabled) {
-        lines.push(`- Twilio Voice (\`${numbers}\`) - reachable. \`voice_call\` initiates a phone call; inbound calls handled per the unknown-caller policy. Real-time STT + TTS over the call.`);
-      }
+  if (caps.twilio.configured && caps.twilio.enabled) {
+    const numbers = caps.twilio.numbers.length === 0
+      ? '(no numbers configured)'
+      : caps.twilio.numbers.map(n => n.number).join(', ');
+    if (caps.twilio.smsEnabled) {
+      lines.push(`- Twilio SMS (\`${numbers}\`) - reachable. Replies to inbound SMS auto-route; \`sms_send\` for proactive sends.`);
     }
-  } catch { /* Twilio not configured */ }
+    if (caps.twilio.voiceEnabled) {
+      lines.push(`- Twilio Voice (\`${numbers}\`) - reachable. \`voice_call\` initiates a phone call; inbound calls handled per the unknown-caller policy. Real-time STT + TTS over the call.`);
+    }
+  }
 
   if (lines.length === 0) {
     return '';
@@ -641,27 +650,24 @@ function buildMyChannelsSummary(
     : inboundChannel === 'phone' ? 'live phone call'
     : 'inbound Teams message';
 
+  // Audit C11: this block DESCRIBES the channel landscape; it does not issue
+  // routing decisions. The per-turn [Reply destination] tag owns the route,
+  // and Message Sources owns surface-vs-ignore per source flavor.
   return (
     `[Channel landscape - this turn was triggered by ${triggerLabel}]\n` +
-    `${ownerName} is the owner of these channels. Inbound traffic on ${ownerName}'s mailboxes is addressed to ${ownerName}, NOT to you. Your job is to read it as third-party context and decide whether to surface or ignore.\n\n` +
+    `${ownerName} is the owner of these channels. Inbound traffic on ${ownerName}'s mailboxes is addressed to ${ownerName}, NOT to you; the Message Sources section defines when to surface it. Your reply's channel is already resolved by the [Reply destination] tag at the top of this prompt.\n\n` +
     `Channels active right now:\n${lines.join('\n')}\n\n` +
     `If you need richer detail (safe senders, recent traffic, quotas, connection health), call \`channel_inspect\`.`
   );
 }
 
-export function assembleSystemPrompt(
-  agentId: string,
-  modelId: string,
-  turnContext?: PromptTurnContext,
-): string {
-  const contextWindow = getContextWindow(modelId);
-  const tier = getPromptTier(contextWindow);
-  const soul = getSoulContent(agentId);
-  const tools = generateToolsGuidance_v2(agentId);
-  void tier; // tier was used by the deleted v1 generateToolsGuidance path
-
-  // Inject current date/time at the top so every agent is temporally anchored
-  // from the very first turn — no tool call required.
+/**
+ * The `time` slot text. Extracted so the registry's sys.time entry and the
+ * legacy parts producer share ONE implementation (byte-identity by
+ * construction). Uses new Date() at call time — minute-precision, so the value
+ * is stable within a turn; byte-equivalence checks normalize it out (§6).
+ */
+export function renderTimeHeader(): string {
   const now = new Date();
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const localStr = now.toLocaleString('en-US', {
@@ -675,243 +681,495 @@ export function assembleSystemPrompt(
     hour12: true,
     timeZoneName: 'short',
   });
-  const timeHeader = `**Current date/time: ${localStr}**\n\nUse this to judge the age and relevance of any context, vault entries, or summaries you see. Recent information is more reliable than old information.`;
+  return `**Current date/time: ${localStr}**\n\nUse this to judge the age and relevance of any context, vault entries, or summaries you see. Recent information is more reliable than old information.`;
+}
 
-  // ── Vision-capability banner ──────────────────────────────────────
-  // If the agent's current model does NOT support image input, tell
-  // it that up front so it doesn't confidently call image-producing
-  // tools and then hallucinate descriptions of results it cannot see.
-  // Inbound user images and image content blocks in tool results are
-  // already stripped by enforceModelCapabilities at assembly time (see
-  // runtime.ts), but the strip is reactive — by the time it fires the
-  // model has already chosen to call screenshot/screen_read/etc. The
-  // banner is proactive: it tells the model upfront which vision-using
-  // tools work for it (those that return text via an internal vision
-  // pass) and which don't, and where to delegate.
-  //
-  // Skipped for models whose capability set is unknown (cap probe
-  // hasn't run or returned nothing) — we'd rather not gate optimistic
-  // use than block a working model on a guess.
-  let visionCapBanner: string | null = null;
+/** The `precedence-ladder` slot. Defines the instruction-precedence order so a
+ *  weak model has a clear policy when user content and engine hints conflict. */
+// The canonical user-visibility law (V4a / DOJO-CHAT-VISIBILITY-PLAN §2.2). The
+// engine GUARANTEES this fact; the model keeps judgment over what to relay. It
+// is the umbrella for the per-item tags (the tool-result VISIBILITY hint, the
+// a2a tag) and the dashboard's regular-mode rendering. Stated once, here.
+export function renderVisibility(): string {
+  return (
+    'VISIBILITY (what the user sees): the user\'s chat shows ONLY the messages ' +
+    'they send you and the reply text plus any files you deliver to them. ' +
+    'Everything else in your context is invisible to the user: your tool calls ' +
+    'and their results, messages from other agents, and engine, scheduler, or ' +
+    'tracker notes. So never say "as you can see above", "per the result above", ' +
+    'or "the file shows" about anything except your own delivered reply, because ' +
+    'the user cannot see it. If the user needs a fact, number, URL, or quote that ' +
+    'lives in a tool result or another agent\'s message, state it in your reply or ' +
+    'deliver the file with show_to_user. The user knows only what you tell them.'
+  );
+}
+
+export function renderPrecedenceLadder(): string {
+  return `## Instruction Precedence
+
+When instructions conflict, follow this order (highest authority first):
+
+1. **Live user message in this turn** — what ${getOwnerName()} just said. If the current turn includes "this time, send it in the dashboard," that beats every standing rule below for this turn only.
+2. **Active task / project / technique notes** — what ${getOwnerName()} wrote about THIS specific work. If a task says "deliver via iMessage" and an engine hint says "post in dashboard," the task wins.
+3. **Live conversation context** — recent user messages in the live tail. "Always send Nora's posts via iMessage" said five turns ago is a standing instruction, not a passing comment, unless contradicted by something newer.
+4. **Vault entries** the user asked you to remember (e.g. "always send Nora's posts via iMessage" captured via vault_remember). Treat these as standing instructions.
+5. **USER.md** standing preferences.
+6. **SOUL.md** identity.
+7. **Engine hints** (anything labeled \`[Engine hint: ...]\`) — situational nudges from the runtime, not orders. The engine doesn't know your task; you do. When an engine hint conflicts with anything in tiers 1-5, the higher tier wins.
+
+Engine hints exist to help in the default case where the user hasn't specified. They are advice, not orders. Other engine prefixes are different: \`[ENGINE RENAME REQUEST]\` is a hard operational request, \`[Engine ack]\` is a one-way acknowledgement, and \`[Engine note: ...]\` is internal bookkeeping. None of those are user-facing routing decisions — only \`[Engine hint: ...]\` is subject to this ladder.`;
+}
+
+/**
+ * The `vision-cap` slot. If the model lacks image input, tell it up front so it
+ * doesn't call image-producing tools and hallucinate results it cannot see. The
+ * middle section varies by whether a fallback vision model is configured.
+ * Skipped (null) for models with an unknown capability set. (Honesty, Inv I.)
+ */
+export function renderVisionCapBanner(agentId: string, modelId: string): string | null {
   try {
     const caps = getModelCapabilities(modelId);
     if (caps.length > 0 && !caps.includes('vision')) {
-      // The platform now has a single configurable fallback vision
-      // model (Settings → Dojo). Detect whether a usable fallback is
-      // wired up and tailor the advice accordingly — pointing the
-      // agent at `screen_read` / `web_browse` only works if the
-      // fallback actually exists; otherwise those tools will return
-      // their own "no vision model configured" error.
       const fallback = getEffectiveVisionModel(agentId);
       const fallbackUsable = !!fallback && fallback.source === 'fallback';
-      if (fallbackUsable) {
-        visionCapBanner = (
-          `**Your current model does NOT support image input directly — but the platform has a fallback vision model configured.**\n\n` +
-          `What this means for you:\n` +
-          `- When an image arrives in your context (user upload, tool result containing an image, attachment from another agent, etc.), the engine routes it through the fallback vision model and substitutes a text description in its place. The substituted block is clearly marked: \`[Image content (described by fallback vision model "..."): <description>]\`. Treat that description as your authoritative account of what the image shows — do NOT speculate beyond it.\n` +
-          `- For tasks where you intentionally need to "see" something on demand:\n` +
-          `  • \`screen_read\` grabs a screenshot of the host display and returns a text description.\n` +
-          `  • \`web_browse\` with action="screenshot" captures and describes a web page.\n` +
-          `  Both delegate the actual seeing to the same fallback vision model.\n` +
-          `- If you call \`image_create\` (the Imaginer), the generated image is delivered to the USER. You will not see the generated pixels directly — describe only what you instructed Imaginer to create, not what you "see" in the result.\n` +
-          `- For deep visual analysis (multi-image reasoning, fine-grained inspection), delegate to a vision-capable peer via \`send_to_agent\` — that gets you a model whose entire context can include the images natively, instead of a one-shot description.\n` +
-          `- Never claim to see anything beyond what a description explicitly states. The fallback's caption is the floor of what you know; everything else is hallucination.`
-        );
-      } else {
-        visionCapBanner = (
-          `**Your current model does NOT support image input — you cannot see images. There is also NO platform fallback vision model configured.**\n\n` +
-          `What this means for you:\n` +
-          `- If a tool returns an image (file_read on an image/PDF, an attachment delivered from another agent, etc.), the engine substitutes a text marker. The actual pixels never reach you. Do NOT pretend to see or describe images you cannot actually see.\n` +
-          `- \`screen_read\` and \`web_browse\` with action="screenshot" will currently return an error pointing the user at Settings → Dojo → Fallback vision model. They cannot do their job until a fallback is set.\n` +
-          `- If you call \`image_create\` (the Imaginer), the generated image is delivered to the USER — they will see it. You will NOT. Acknowledge the delivery, but do NOT describe what is "in" the image as if you can see it.\n` +
-          `- For tasks that genuinely require vision right now, tell the user one of two things must happen: (a) set a fallback vision model in Settings → Dojo, or (b) switch you to a vision-capable model in Settings → Models. Don't pretend to see anything in the meantime.\n` +
-          `- Never claim to "see" or "look at" something you cannot. Honesty about your capabilities beats a confident hallucination every time.`
+      const fallbackSection = fallbackUsable
+        ? `- When an image arrives in your context, the engine routes it through the fallback vision model and substitutes a marked text description: \`[Image content (described by fallback vision model "..."): <description>]\`. That description is your authoritative account of the image; do not speculate beyond it.\n` +
+          `- To see something on demand: \`screen_read\` (host display) and \`web_browse\` with action="screenshot" (web page) return descriptions via the same fallback. For deep multi-image analysis, delegate to a vision-capable peer via \`send_to_agent\`.\n`
+        : `- No fallback vision model is configured either. When an image arrives, the engine substitutes a text marker; the pixels never reach you. \`screen_read\` and \`web_browse\` screenshots will error until a fallback is set.\n` +
+          `- For tasks that need vision, tell the user to set a fallback vision model (Settings -> Dojo) or switch you to a vision-capable model (Settings -> Models). Do not pretend to see anything in the meantime.\n`;
+      return (
+        `**Your current model does NOT support image input${fallbackUsable ? '; the platform has a fallback vision model configured' : ', and NO fallback vision model is configured'}.**\n\n` +
+        `What this means for you:\n` +
+        fallbackSection +
+        `- \`image_create\` (the Imaginer) delivers the generated image to the USER; you never see the pixels. Describe what you asked it to create, not what you "see" in the result.\n` +
+        `- Never claim to see anything beyond what a description explicitly states.`
+      );
+    }
+  } catch { /* capability lookup failed; skip banner */ }
+  return null;
+}
+
+/** The `user-profile` slot: USER.md, when sharing the owner profile is enabled
+ *  for this agent. Returns null otherwise. */
+export function renderUserProfile(agentId: string): string | null {
+  if (!shouldShareUserProfile(agentId)) return null;
+  return readPromptFile('USER.md', DEFAULT_USER_MD);
+}
+
+/** The `runtime` slot. Agent id / model / host footer. The Current Time line is
+ *  per-call volatile (byte-equivalence checks normalize it out). */
+export function renderRuntimeInfo(agentId: string, modelId: string): string {
+  return `
+## Runtime Information
+- Agent ID: ${agentId}
+- Model: ${modelId}
+- Current Time: ${new Date().toISOString()}
+- Platform: macOS (${os.arch()})
+- Host: ${os.hostname()}
+`;
+}
+
+/** The `message-sources` slot: decodes the `[SOURCE: ...]` tag taxonomy + the
+ *  hard inter-agent reply rule. References the precedence ladder for the engine-
+ *  prefix taxonomy (defined once there). */
+export function renderMessageSources(): string {
+  return `## Message Sources
+
+Each non-user-chat message has a \`[SOURCE: ...]\` tag:
+- No tag = direct message from ${getOwnerName()} via dashboard
+- \`[SOURCE: IMESSAGE FROM ${getOwnerName().toUpperCase()}]\` = ${getOwnerName()} via iMessage. Your reply text auto-routes back via iMessage — just write it (SMS voice, no markdown). The \`[Reply destination: ...]\` tag at the top of this prompt confirms the routing. If no reply is warranted, end the turn with literal \`[no-reply]\`.
+- \`[SOURCE: GMAIL NOTIFICATION]\` / \`[SOURCE: OUTLOOK NOTIFICATION]\` = email landed in ${getOwnerName()}'s inbox. Two flavors:
+
+  **Flavor A — Reply on a thread you're part of** (Subject starts with "Re:" AND From is a known safe-sender like ${getOwnerName()}). The engine treats this as a real inbound-REPLY: the per-turn \`[Reply destination: email reply (in-thread)]\` tag will be set, and your terminal text auto-routes back as a Re: on the same thread. Just write your reply. Use \`[no-reply]\` if no reply is warranted.
+
+  **Flavor B — Notification of a new email** (everything else). NOT a request from ${getOwnerName()} themselves. **Default: do nothing.** No chat message, no \`user_gmail_read\` / \`user_outlook_read\`, no surfacing. Most email is noise.
+
+  When in Flavor B, **DO NOT SURFACE** (don't even read the body): receipts, payment confirmations, "thank you for your invoice/order"; auto-acknowledgments ("we received your"); \`no-reply@\` / \`noreply@\` / \`notifications@\` / \`updates@\` / \`alerts@\` / \`donotreply@\` senders unless they explicitly ask ${getOwnerName()} to do something; newsletters, promo blasts, marketing emails (Netflix, LinkedIn digests, Spotify); social platform pings ("X liked your post"); calendar reminders for events already on the calendar; shipping/tracking updates unless there's a problem; anything whose preview shows no human wrote it for ${getOwnerName()} specifically.
+
+  **DO SURFACE** (one line): direct human-written emails to ${getOwnerName()} personally; emails containing a deadline, decision, blocker, or specific action request; new project initiations, contracts, client outreach.
+
+  When you do surface, just write the line — the engine delivers it per the \`[Reply destination: ...]\` tag at the top of this prompt; do not pick channels yourself. One line: "Email from <sender>: <subject>" plus a one-sentence summary if the body adds anything beyond the subject. Never reply to the email unless ${getOwnerName()} asks (or it's Flavor A where the engine auto-routes). If you decided not to surface, just don't — no "I saw a promo email, nothing to do" line.
+- \`[A2A:INTENT thread:ID from:Name]\` = structured agent message — engine validates your reply via \`send_to_agent\`
+- \`[SOURCE: AGENT MESSAGE FROM X]\` = legacy agent message
+
+**INTER-AGENT REPLY RULE (HARD):** if the most recent message in your active context starts with \`[A2A:\` or \`[SOURCE: AGENT MESSAGE FROM\`, your response on this turn MUST go through \`send_to_agent\` on the same \`thread_id\`. Text you write to your own chat is INVISIBLE to the originating agent — they only see what you send via \`send_to_agent\`. The pattern is: do the work (call any tools you need), then make exactly ONE \`send_to_agent\` call addressed to the originator with the right intent (ANSWER for QUESTION, COMPLETE/STATUS/FAIL for ASSIGN, ASSIGN if delegating further), then end your turn. **Do not write a chat summary** — your trailing text gets suppressed by the engine on inter-agent turns and is only readable by the user, who is not the audience here. If you've already sent the reply via \`send_to_agent\` and the engine still re-prompts you, just END YOUR TURN — the originator has the message; further chat text does nothing useful.
+- \`[SOURCE: TEAMS MESSAGE FROM ...]\` = Teams message. Your reply text auto-routes back via Teams — just write it (light formatting ok). The \`[Reply destination: Teams DM]\` tag at the top of this prompt confirms the routing. Use \`teams_send_message\` only for starting new chats or replying to a different chat.
+- \`[SOURCE: SMS FROM <number>]\` = Twilio SMS from a known sender (number on the SMS safe-sender allowlist). Your reply text auto-routes back via SMS — just write it (SMS voice, no markdown, short). Use \`sms_send\` only for proactive sends or cross-recipient texts.
+- \`[SOURCE: SMS NOTIFICATION — <our number>]\` = Twilio SMS from an UNKNOWN sender. NOT a request from ${getOwnerName()}. Default: do nothing. Treat like the email-notification flavor B - surface only if it looks important to ${getOwnerName()}.
+- \`[SOURCE: PHONE CALL FROM <number>]\` = real-time phone call utterance the caller just spoke. You are in a live phone call with this person. Your reply text will be spoken back to them via TTS. Keep replies short and conversational - this is voice, not text. Use \`voice_call_end\` to hang up when the conversation reaches a natural close.
+- \`[SOURCE: VOICEMAIL NOTIFICATION — <our number>]\` = transcribed voicemail an unknown caller left for ${getOwnerName()}. NOT a request from ${getOwnerName()}. Decide whether to surface (real human / urgent / known family) or ignore (spam / robocall).
+- \`[SYSTEM NOTE: ...]\`, \`[Note: ...]\` = system context, not requests
+- Engine prefixes (\`[Engine hint]\`, \`[Engine note]\`, \`[Engine ack]\`, \`[ENGINE RENAME REQUEST]\`) are defined ONCE in the Instruction Precedence section above. Same meanings here — do not re-interpret them as user requests.
+- \`[SENT VIA IMESSAGE to ${getOwnerName()}]\` = your prior response went via iMessage. **DO NOT EMIT THIS TAG YOURSELF.** It's a system-generated marker the engine writes automatically after iMessage delivery. Including it in your reply text would send the literal string "[SENT VIA IMESSAGE to ${getOwnerName()}]" to ${getOwnerName()}'s phone — they'd see the routing annotation in their iMessage, which looks broken.`;
+}
+
+/** The `pm-awareness` slot (primary only): names the PM agent + tracker-first
+ *  guidance (C3 — positive, no NEVER absolutes). Null for non-primary / no PM. */
+export function renderPmAwareness(agentId: string): string | null {
+  if (!isPrimaryAgent(agentId)) return null;
+  try {
+    const pmName = getPMAgentName();
+    const pmId = getPMAgentId();
+    const db = getDb();
+    const pmAgent = db.prepare('SELECT id, status, model_id FROM agents WHERE id = ?').get(pmId) as { id: string; status: string; model_id: string | null } | undefined;
+    if (pmAgent && pmAgent.status !== 'terminated') {
+      return `## Project Manager: ${pmName}\n\n${pmName} (ID: ${pmId}) is the dedicated PM agent. ${pmName} already watches the task tracker: poking idle work, validating completions, escalating stalls. Schedule work — one-off or recurring — as tracker tasks, not as watcher agents; spawning a worker agent and assigning it tracker work is fine. Message ${pmName} via \`send_to_agent(agent_id="${pmId}", ...)\`.`;
+    }
+  } catch { /* PM may not be configured */ }
+  return null;
+}
+
+/** The `trainer-awareness` slot (primary only): names the Trainer agent (owns
+ *  save_technique/update_technique). Null for non-primary / trainer disabled. */
+export function renderTrainerAwareness(agentId: string): string | null {
+  if (!isPrimaryAgent(agentId)) return null;
+  try {
+    if (isTrainerEnabled()) {
+      const trainerName = getTrainerAgentName();
+      const trainerId = getTrainerAgentId();
+      const db = getDb();
+      const trainerAgent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(trainerId) as { id: string; status: string } | undefined;
+      if (trainerAgent && trainerAgent.status !== 'terminated') {
+        return `## Trainer: ${trainerName}\n\n${trainerName} (ID: ${trainerId}) is the dedicated Trainer agent — owns the technique library. \`save_technique\` and \`update_technique\` are reserved for ${trainerName}; if you want a technique created or edited, send ${trainerName} a message describing what you want and they'll do it. Message via \`send_to_agent(agent_id="${trainerId}", ...)\`.`;
+      }
+    }
+  } catch { /* Trainer may not be configured */ }
+  return null;
+}
+
+/** The `healer-awareness` slot (primary only): names the Healer agent. Null for
+ *  non-primary / no Healer. */
+export function renderHealerAwareness(agentId: string): string | null {
+  if (!isPrimaryAgent(agentId)) return null;
+  try {
+    const healerName = getHealerAgentName();
+    const healerId = getHealerAgentId();
+    const db = getDb();
+    const healerAgent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(healerId) as { id: string; status: string } | undefined;
+    if (healerAgent && healerAgent.status !== 'terminated') {
+      return `## Healer: ${healerName}\n\n${healerName} (ID: ${healerId}) is the dedicated Healer agent — auto-triages injured agents (status=error / stuck loops) and can reset sessions. Operates autonomously most of the time; you rarely need to message them directly. If you do: \`send_to_agent(agent_id="${healerId}", ...)\`.`;
+    }
+  } catch { /* Healer may not be configured */ }
+  return null;
+}
+
+/** The `compaction-continuity` slot: a persistent signal (any agent) that
+ *  compaction fired within 24h + where to look if the live tail is unclear.
+ *  Null outside that window. */
+export function renderCompactionContinuity(agentId: string): string | null {
+  try {
+    const db = getDb();
+    const configRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
+    if (configRow?.config) {
+      const cfg = JSON.parse(configRow.config) as Record<string, unknown>;
+      const at = cfg.continuityBriefAt as string | undefined;
+      if (at) {
+        const atMs = new Date(at).getTime();
+        const ageMs = Date.now() - atMs;
+        if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 24 * 60 * 60 * 1000) {
+          const minutesAgo = Math.max(1, Math.round(ageMs / 60_000));
+          const friendly =
+            minutesAgo < 60 ? `${minutesAgo} minute${minutesAgo === 1 ? '' : 's'} ago`
+            : minutesAgo < 60 * 24 ? `${Math.round(minutesAgo / 60)} hour${Math.round(minutesAgo / 60) === 1 ? '' : 's'} ago`
+            : 'recently';
+          return `## Recent Memory Compaction
+
+Your conversation was compacted ${friendly}. Older raw messages were summarized into the COMPRESSED HISTORY block above (if any) and archived to the vault. Anything in the live conversation tail below is fresh; anything older lives only in summaries.
+
+**If you can't tell what you're mid-doing from the live tail**, do not guess - the most reliable sources are (in order):
+
+1. \`tracker_list_active\` — your active tasks. Tracker entries survive compaction unchanged and are the source of truth for "what am I working on."
+2. \`scratchpad_set\` (called with no value, or read via the assistant message log) — your own in-flight working notes.
+3. \`recall_recent_thread\` — pull raw messages from before the compaction. Use sparingly (it costs tokens) but call it when you need the actual words rather than a summary.
+4. \`vault_search\` / \`memory_grep\` — specific facts, decisions, or instructions you remember being said but can't find.
+
+The COMPRESSED HISTORY summaries above (if any) capture key facts but DROP procedural detail. If your task involves a specific workflow ("for each photo, ask the user for a caption, then add to album"), the summary may have collapsed that into "user and agent are building an album." Verify against the tracker before assuming.`;
+        }
+      }
+    }
+  } catch { /* config not readable — proceed without the signal */ }
+  return null;
+}
+
+/** The `google-access` slot: full/read Google Workspace access note, by the
+ *  agent's resolved access level. Null when no Google access. */
+export function renderGoogleAccess(agentId: string): string | null {
+  try {
+    const googleAccess = getAgentGoogleAccessLevel(agentId, isPrimaryAgent(agentId), isPMAgent(agentId));
+    if (googleAccess === 'full') {
+      return `## Google Workspace\n\nYou have full Google Workspace access (Gmail, Calendar, Drive, Docs, Sheets, Slides). All actions are logged in the Google Activity log. Sub-agents have read-only access; you're the only agent with write.`;
+    } else if (googleAccess === 'read') {
+      return `## Google Workspace (Read + Slides)\n\nYou have read access to Gmail/Calendar/Drive/Docs/Sheets and full Slides access. If a task needs writes outside Slides, report back to the primary agent.`;
+    }
+  } catch { /* Google module may not be available */ }
+  return null;
+}
+
+/** The `ms-access` slot: full/read Microsoft 365 access note + Teams-inbound
+ *  guidance (when not a personal MSA account). Null when no MS access. */
+export function renderMsAccess(agentId: string): string | null {
+  try {
+    const msAccess = getAgentMicrosoftAccessLevel(agentId, isPrimaryAgent(agentId), isPMAgent(agentId));
+    const msAccountType = getMsAccountType();
+    const teamsNote = msAccountType === 'msa'
+      ? '\n\nNote: Teams is NOT available with this account. The connected Microsoft account is a personal account (outlook.com/hotmail.com/live.com). Teams requires a Microsoft work/school account (Entra ID). If asked to use Teams, explain this to the user.'
+      : '';
+
+    const msEmail = getMicrosoftWorkspaceConfig().accountEmail;
+
+    if (msAccess === 'full') {
+      const teamsInboundGuidance = msAccountType !== 'msa' ? `
+
+**Incoming Teams messages:**
+People can send you Microsoft Teams messages directly. When they do, a notification arrives in your conversation tagged \`[SOURCE: TEAMS MESSAGE FROM {name} ({email})]\` and the per-turn \`[Reply destination: Teams DM]\` tag at the top of the prompt confirms auto-routing. **Just write your reply text** — the engine sends it back via Teams automatically. Light formatting ok. The \`teams_send_message\` tool is reserved for starting new chats (\`teams_create_chat\` first if needed) or replying to a DIFFERENT chat than the inbound; for the inbound thread you just write text.` : '';
+
+      return `## Microsoft 365${msEmail ? ` (${msEmail})` : ''}\n\nYou have full Microsoft 365 access (Outlook, Calendar, Word/Excel/PowerPoint, OneDrive${msAccountType !== 'msa' ? ', Teams' : ''}). All actions are logged. Sub-agents have read-only access.${teamsInboundGuidance}${teamsNote}`;
+    } else if (msAccess === 'read') {
+      return `## Microsoft 365 (Read-Only)\n\nYou have read access to Outlook/Calendar/OneDrive${msAccountType !== 'msa' ? '/Teams' : ''}. If a task needs writes, report back to the primary agent.${teamsNote}`;
+    }
+  } catch { /* Microsoft module may not be available */ }
+  return null;
+}
+
+/** The `integration-reconnect` slot (Inv I): a configured-but-disconnected
+ *  integration must not silently vanish. Returns 0+ breadcrumb parts (driven by
+ *  the capability registry). PM excluded (access is 'none' by design). */
+export function renderIntegrationReconnect(agentId: string): string[] {
+  const out: string[] = [];
+  try {
+    if (!isPMAgent(agentId)) {
+      const familyText: Record<string, string> = {
+        google: 'Google tools (Gmail/Calendar/Drive/Docs/Sheets/Slides)',
+        microsoft: 'Microsoft tools (Outlook/Calendar/Word/Excel/PowerPoint/OneDrive)',
+        plaud: 'Plaud recording tools',
+      };
+      const displayName: Record<string, string> = {
+        google: 'Google Workspace', microsoft: 'Microsoft 365', plaud: 'Plaud',
+      };
+      for (const s of listIntegrationStatuses()) {
+        if (!s.configured || s.connected) continue;
+        out.push(
+          `## ${displayName[s.name]} (disconnected)\n\n${displayName[s.name]} is set up but its connection has expired, so ${familyText[s.name]} are unavailable right now. If a task needs them, tell the user to reconnect in Dashboard -> Integrations. Do not say the capability is unsupported; it only needs a reconnect.`,
         );
       }
     }
-  } catch { /* capability lookup failed; skip banner */ }
+  } catch { /* registry unavailable */ }
+  return out;
+}
 
-  // ── Per-turn reply-destination tag (v2.7.23) ──────────────────────
-  // The engine routes the model's terminal text based on inbound channel
-  // (see reply-destination.ts). The model doesn't choose the channel —
-  // it just needs to know which voice to use (SMS-style for iMessage,
-  // normal markdown for dashboard) and that delivery is automatic. This
-  // one-line tag replaces the v2.7.22 away-presence top-block and the
-  // giant inbound-iMessage envelope, both of which fought the model's
-  // text-streaming default and lost.
-  const destinationTags: string[] = [];
-  if (isPrimaryAgent(agentId)) {
-    try {
-      // Inbound channel is derived from the last user message (same logic
-      // as the loop's preflight). Cheap heuristic here so the assembler
-      // doesn't depend on turn state being threaded through.
-      const db = getDb();
-      // v2.9.15: same predicate as the loop's preflight - skip rows
-      // that share `role='user'` but aren't actual user-channel
-      // inbounds (A2A sub-agent replies, synthetic system notices),
-      // so the [Reply destination:] tag doesn't get computed against
-      // a poisoned "most recent user message."
-      const lastRow = db.prepare(
-        `SELECT content FROM messages
+/** The `techniques-equipped` slot: full TECHNIQUE.md bodies for the agent's
+ *  equipped techniques, ladder-anchored (the user outranks a technique). Null
+ *  when none equipped. */
+export function renderEquippedTechniques(agentId: string): string | null {
+  try {
+    const db = getDb();
+    const agentEquipped = db.prepare('SELECT equipped_techniques FROM agents WHERE id = ?').get(agentId) as { equipped_techniques: string | null } | undefined;
+    if (agentEquipped?.equipped_techniques) {
+      const techniqueIds: string[] = JSON.parse(agentEquipped.equipped_techniques || '[]');
+      if (techniqueIds.length > 0) {
+        const equippedParts: string[] = ['## Equipped Techniques\nYou have equipped techniques (specialized procedures). When a task matches one, follow its steps in order rather than improvising. The user\'s live message outranks a technique: if they conflict, follow the user.\n'];
+        for (const techId of techniqueIds) {
+          const technique = db.prepare('SELECT id, name, directory_path FROM techniques WHERE id = ? AND state = \'published\' AND enabled = 1').get(techId) as { id: string; name: string; directory_path: string } | undefined;
+          if (technique) {
+            try {
+              const mdPath = path.join(technique.directory_path, 'TECHNIQUE.md');
+              if (fs.existsSync(mdPath)) {
+                const content = fs.readFileSync(mdPath, 'utf-8');
+                equippedParts.push(`═══ EQUIPPED TECHNIQUE: ${technique.name} ═══\nWhen performing "${technique.name}", follow these steps IN ORDER:\n\n${content}\n═══ END TECHNIQUE ═══`);
+              }
+            } catch { /* skip unreadable */ }
+          }
+        }
+        if (equippedParts.length > 1) {
+          return equippedParts.join('\n\n');
+        }
+      }
+    }
+  } catch { /* equipped_techniques column may not exist yet */ }
+  return null;
+}
+
+export interface InboundContext {
+  inboundChannel: ReplyDestination | null;
+  smsFromNumber: string | null;
+  phoneFromNumber: string | null;
+  replyDestination: ReplyDestination | null;
+  lastContent: string;
+}
+
+/** Resolve the inbound channel + reply destination from the latest real user
+ *  row (same predicate as the loop preflight). Powers the front three slots +
+ *  voice scoping. Call only for the primary agent. Returns all-null on error so
+ *  the front block emits nothing (matches the legacy outer try/catch). */
+export function resolveInboundContext(agentId: string): InboundContext {
+  const empty: InboundContext = { inboundChannel: null, smsFromNumber: null, phoneFromNumber: null, replyDestination: null, lastContent: '' };
+  try {
+    const db = getDb();
+    const lastRow = db.prepare(
+      `SELECT content FROM messages
            WHERE agent_id = ?
              AND role = 'user'
              AND content NOT LIKE '[SOURCE: SYSTEM%'
              AND content NOT LIKE '[A2A:%'
              AND content NOT LIKE '[SOURCE: AGENT MESSAGE FROM%'
            ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-      ).get(agentId) as { content: string } | undefined;
-      const lastContent = lastRow?.content ?? '';
-      let inboundChannel: 'imessage' | 'teams' | 'email' | 'sms' | 'phone' | 'dashboard' | null = null;
-      let smsFromNumber: string | null = null;
-      let phoneFromNumber: string | null = null;
-      if (lastContent.includes('[SOURCE: IMESSAGE FROM')) {
-        inboundChannel = 'imessage';
-      } else if (lastContent.includes('[SOURCE: TEAMS MESSAGE FROM')) {
-        // v2.7.24 — same per-channel safe-sender gate as loop.ts preflight.
-        // Unknown Teams senders stay in notification mode.
-        const senderHeader = lastContent.match(/\[SOURCE: TEAMS MESSAGE FROM ([^\]]+)\]/i);
-        const senderRaw = senderHeader?.[1] ?? '';
-        const emailMatch = senderRaw.match(/<([^>]+)>/) ?? senderRaw.match(/\(([^)]+)\)/) ?? senderRaw.match(/(\S+@\S+)/);
-        const senderAddress = emailMatch?.[1]?.toLowerCase() ?? '';
-        const senderIsKnown = senderAddress
-          ? getTeamsSafeSenders().some(s => addressesMatch(s.address, senderAddress))
-          : false;
-        inboundChannel = senderIsKnown ? 'teams' : 'dashboard';
-      } else if (
-        (lastContent.includes('[SOURCE: OUTLOOK NOTIFICATION') ||
-         lastContent.includes('[SOURCE: GMAIL NOTIFICATION'))
-      ) {
-        // v2.7.24 — email auto-routes ONLY when the inbound is a "Re:" reply
-        // from a known correspondent on THAT MAILBOX'S per-slot safe-sender
-        // list. Mirrors the loop's preflight logic so the destination tag
-        // matches what the engine will actually do.
-        const subjectMatch = lastContent.match(/^Subject:\s*(.+)$/im);
-        const fromMatch = lastContent.match(/^From:\s*(.+)$/im);
-        const isOutlook = lastContent.includes('[SOURCE: OUTLOOK NOTIFICATION');
-        const slotMatch = lastContent.match(/\[SOURCE: (?:GMAIL|OUTLOOK) NOTIFICATION[^()]*\(([^)]+)\)\]/i);
-        const inboundSlot: 'agent' | 'user' = slotMatch?.[1]?.toLowerCase() === 'user' ? 'user' : 'agent';
-        const subject = subjectMatch?.[1]?.trim() ?? '';
-        const fromRaw = fromMatch?.[1]?.trim() ?? '';
-        const emailMatch = fromRaw.match(/<([^>]+)>/) ?? fromRaw.match(/(\S+@\S+)/);
-        const fromAddress = emailMatch?.[1]?.toLowerCase() ?? '';
-        const looksLikeReply = /^re:\s/i.test(subject);
-        let fromIsKnownSafeSender = false;
-        if (fromAddress) {
-          const channelList = isOutlook
-            ? getOutlookSafeSenders(inboundSlot)
-            : getGmailSafeSenders(inboundSlot);
-          fromIsKnownSafeSender = channelList.some(s => addressesMatch(s.address, fromAddress));
-        }
-        inboundChannel = (looksLikeReply && fromIsKnownSafeSender) ? 'email' : 'dashboard';
-      } else if (lastContent.includes('[SOURCE: PHONE CALL FROM')) {
-        const fm = lastContent.match(/\[SOURCE: PHONE CALL FROM ([^\]]+)\]/);
-        if (fm?.[1]) {
-          inboundChannel = 'phone';
-          phoneFromNumber = fm[1].trim();
-        } else {
-          inboundChannel = 'dashboard';
-        }
-      } else if (lastContent.includes('[SOURCE: SMS FROM')) {
-        // v2.9.18 - Twilio SMS inbound. sms-inbound.ts already gated
-        // on the safe-sender list when building this tag; treating
-        // any `[SOURCE: SMS FROM` as known-sender is safe. Unknown
-        // senders carry `[SOURCE: SMS NOTIFICATION` and fall through
-        // to dashboard.
-        const fromMatch = lastContent.match(/\[SOURCE: SMS FROM ([^\]]+)\]/);
-        if (fromMatch?.[1]) {
-          inboundChannel = 'sms';
-          smsFromNumber = fromMatch[1].trim();
-        } else {
-          inboundChannel = 'dashboard';
-        }
-      } else if (lastContent) {
+    ).get(agentId) as { content: string } | undefined;
+    const lastContent = lastRow?.content ?? '';
+    let inboundChannel: ReplyDestination | null = null;
+    let smsFromNumber: string | null = null;
+    let phoneFromNumber: string | null = null;
+    if (lastContent.includes('[SOURCE: IMESSAGE FROM')) {
+      inboundChannel = 'imessage';
+    } else if (lastContent.includes('[SOURCE: TEAMS MESSAGE FROM')) {
+      const senderHeader = lastContent.match(/\[SOURCE: TEAMS MESSAGE FROM ([^\]]+)\]/i);
+      const senderRaw = senderHeader?.[1] ?? '';
+      const emailMatch = senderRaw.match(/<([^>]+)>/) ?? senderRaw.match(/\(([^)]+)\)/) ?? senderRaw.match(/(\S+@\S+)/);
+      const senderAddress = emailMatch?.[1]?.toLowerCase() ?? '';
+      const senderIsKnown = senderAddress
+        ? getTeamsSafeSenders().some(s => addressesMatch(s.address, senderAddress))
+        : false;
+      inboundChannel = senderIsKnown ? 'teams' : 'dashboard';
+    } else if (
+      (lastContent.includes('[SOURCE: OUTLOOK NOTIFICATION') ||
+       lastContent.includes('[SOURCE: GMAIL NOTIFICATION'))
+    ) {
+      const subjectMatch = lastContent.match(/^Subject:\s*(.+)$/im);
+      const fromMatch = lastContent.match(/^From:\s*(.+)$/im);
+      const isOutlook = lastContent.includes('[SOURCE: OUTLOOK NOTIFICATION');
+      const slotMatch = lastContent.match(/\[SOURCE: (?:GMAIL|OUTLOOK) NOTIFICATION[^()]*\(([^)]+)\)\]/i);
+      const inboundSlot: 'agent' | 'user' = slotMatch?.[1]?.toLowerCase() === 'user' ? 'user' : 'agent';
+      const subject = subjectMatch?.[1]?.trim() ?? '';
+      const fromRaw = fromMatch?.[1]?.trim() ?? '';
+      const emailMatch = fromRaw.match(/<([^>]+)>/) ?? fromRaw.match(/(\S+@\S+)/);
+      const fromAddress = emailMatch?.[1]?.toLowerCase() ?? '';
+      const looksLikeReply = /^re:\s/i.test(subject);
+      let fromIsKnownSafeSender = false;
+      if (fromAddress) {
+        const channelList = isOutlook
+          ? getOutlookSafeSenders(inboundSlot)
+          : getGmailSafeSenders(inboundSlot);
+        fromIsKnownSafeSender = channelList.some(s => addressesMatch(s.address, fromAddress));
+      }
+      inboundChannel = (looksLikeReply && fromIsKnownSafeSender) ? 'email' : 'dashboard';
+    } else if (lastContent.includes('[SOURCE: PHONE CALL FROM')) {
+      const fm = lastContent.match(/\[SOURCE: PHONE CALL FROM ([^\]]+)\]/);
+      if (fm?.[1]) {
+        inboundChannel = 'phone';
+        phoneFromNumber = fm[1].trim();
+      } else {
         inboundChannel = 'dashboard';
       }
-
-      const destination = resolveReplyDestination({
-        state: { inboundChannel },
-        presence: getPresence(),
-        imessageBridgeConfigured: isImessageConfigured(),
-      });
-      const ownerName = getOwnerName();
-      let tag: string;
-      if (destination === 'imessage') {
-        tag = `[Reply destination: iMessage to ${ownerName} — write in SMS voice (no markdown, no headers, no bullet lists). Just write the reply text; the engine delivers it via iMessage automatically. Use [no-reply] if nothing worth sending. The imessage_send tool is reserved for proactive sends, sending to someone other than ${ownerName}, or rich actions (attachments).]`;
-      } else if (destination === 'teams') {
-        tag = `[Reply destination: Teams DM — just write the reply text; the engine delivers it via Teams automatically. Conversational voice, light formatting ok. Use [no-reply] if nothing worth sending. The teams_send_message tool is reserved for starting new chats or sending to a different chat than the inbound.]`;
-      } else if (destination === 'email') {
-        tag = `[Reply destination: email reply (in-thread) — just write the reply body; the engine sends it as a Re: on the existing thread automatically. Email voice (slightly more formal than chat, but no need for a greeting/signoff if the thread is conversational). Use [no-reply] if nothing worth sending. The outlook_reply / gmail_reply / outlook_send / gmail_send tools are reserved for replies to OTHER threads or new outbound emails.]`;
-      } else if (destination === 'sms') {
-        tag = `[Reply destination: SMS to ${smsFromNumber ?? '(unknown number)'} — write in SMS voice (no markdown, no headers, no bullet lists, keep it short). Just write the reply text; the engine delivers it via Twilio automatically. Use [no-reply] if nothing worth sending. The sms_send tool is reserved for proactive texts, sending to someone other than the inbound sender, or rich actions.]`;
-      } else if (destination === 'phone') {
-        tag = `[Reply destination: phone call to ${phoneFromNumber ?? '(unknown)'} — write what you want SPOKEN. Conversational, short, no markdown, no headers, no bullet lists; the engine TTS's your text over the live call. Use [no-reply] if there is nothing worth saying (the engine will hold the silence). The call stays open until either side hangs up or you call voice_call_end.]`;
+    } else if (lastContent.includes('[SOURCE: SMS FROM')) {
+      const fromMatch = lastContent.match(/\[SOURCE: SMS FROM ([^\]]+)\]/);
+      if (fromMatch?.[1]) {
+        inboundChannel = 'sms';
+        smsFromNumber = fromMatch[1].trim();
       } else {
-        tag = `[Reply destination: dashboard chat — normal voice, markdown ok. Use [no-reply] if nothing worth sending.]`;
+        inboundChannel = 'dashboard';
       }
-      destinationTags.push(tag);
+    } else if (lastContent) {
+      inboundChannel = 'dashboard';
+    }
 
-      // v2.9.14 channel landscape: when the turn was triggered by
-      // something other than dashboard chat, the agent needs an active
-      // model of which channels belong to the owner vs the agent and
-      // what the agent can actually do with each. Skip on dashboard
-      // turns - the owner is in front of the screen addressing the
-      // agent directly, so no role confusion to disambiguate. Skip on
-      // unknown channels - we don't have a frame to render.
-      if (inboundChannel === 'imessage' || inboundChannel === 'teams' || inboundChannel === 'email' || inboundChannel === 'sms' || inboundChannel === 'phone') {
-        try {
-          const summary = buildMyChannelsSummary(inboundChannel, ownerName);
-          if (summary) destinationTags.push(summary);
-        } catch { /* channel config getters not available — proceed without summary */ }
-      }
+    const replyDestination = resolveReplyDestination({
+      state: { inboundChannel },
+      presence: getPresence(),
+      imessageBridgeConfigured: isImessageConfigured(),
+    });
+    return { inboundChannel, smsFromNumber, phoneFromNumber, replyDestination, lastContent };
+  } catch {
+    return empty;
+  }
+}
 
-      // v2.9.23 — phone-call behavior block (full spec from the dojo
-      // phone-mode rules doc). Only injected when the current turn is
-      // a live phone call utterance. The conditional sections (inbound
-      // vs outbound greeting, voicemail mode, disclosures) are driven
-      // by structured fields the CallSession writes into the message
-      // trailer (parsed below).
-      if (inboundChannel === 'phone') {
-        const phoneCtx = parsePhoneCallContext(lastContent);
-        const theirName = phoneCtx.theirName?.trim();
-        const callbackNumber = phoneCtx.callbackNumber?.trim() || '(unknown)';
-        const purpose = phoneCtx.purpose?.trim();
-        const isOutbound = phoneCtx.direction === 'outbound';
-        const isVoicemail = phoneCtx.voicemailDetected;
-        const disclosures = phoneCtx.disclosuresRequired ?? [];
+/** The `reply-destination` slot (primary only): the per-turn route + voice tag.
+ *  Null when replyDestination is null (non-primary / resolution failed). */
+export function renderReplyDestination(
+  replyDestination: ReplyDestination | null,
+  smsFromNumber: string | null,
+  phoneFromNumber: string | null,
+): string | null {
+  if (!replyDestination) return null;
+  const ownerName = getOwnerName();
+  if (replyDestination === 'imessage') {
+    return `[Reply destination: iMessage to ${ownerName} — write in SMS voice (no markdown, no headers, no bullet lists). Just write the reply text; the engine delivers it via iMessage automatically. Use [no-reply] if nothing worth sending. The imessage_send tool is reserved for proactive sends, sending to someone other than ${ownerName}, or rich actions (attachments).]`;
+  } else if (replyDestination === 'teams') {
+    return `[Reply destination: Teams DM — just write the reply text; the engine delivers it via Teams automatically. Conversational voice, light formatting ok. Use [no-reply] if nothing worth sending. The teams_send_message tool is reserved for starting new chats or sending to a different chat than the inbound.]`;
+  } else if (replyDestination === 'email') {
+    return `[Reply destination: email reply (in-thread) — just write the reply body; the engine sends it as a Re: on the existing thread automatically. Email voice (slightly more formal than chat, but no need for a greeting/signoff if the thread is conversational). Use [no-reply] if nothing worth sending. The outlook_reply / gmail_reply / outlook_send / gmail_send tools are reserved for replies to OTHER threads or new outbound emails.]`;
+  } else if (replyDestination === 'sms') {
+    return `[Reply destination: SMS to ${smsFromNumber ?? '(unknown number)'} — write in SMS voice (no markdown, no headers, no bullet lists, keep it short). Just write the reply text; the engine delivers it via Twilio automatically. Use [no-reply] if nothing worth sending. The sms_send tool is reserved for proactive texts, sending to someone other than the inbound sender, or rich actions.]`;
+  } else if (replyDestination === 'phone') {
+    return `[Reply destination: phone call to ${phoneFromNumber ?? '(unknown)'} — write what you want SPOKEN. Conversational, short, no markdown, no headers, no bullet lists; the engine TTS's your text over the live call. Use [no-reply] if there is nothing worth saying (the engine will hold the silence). The call stays open until either side hangs up or you call voice_call_end.]`;
+  }
+  return `[Reply destination: dashboard chat — normal voice, markdown ok. Use [no-reply] if nothing worth sending.]`;
+}
 
-        const sections: string[] = [];
+/** The `channel-landscape` slot (primary, non-dashboard inbound): which channels
+ *  belong to the owner vs the agent. Describes presence only (routing is the
+ *  reply-destination tag's job). Null on dashboard/unknown inbound. */
+export function renderChannelLandscape(inboundChannel: ReplyDestination | null): string | null {
+  if (inboundChannel === 'imessage' || inboundChannel === 'teams' || inboundChannel === 'email' || inboundChannel === 'sms' || inboundChannel === 'phone') {
+    try {
+      const summary = buildMyChannelsSummary(inboundChannel, getOwnerName());
+      return summary || null;
+    } catch { /* channel config getters not available — proceed without summary */ }
+  }
+  return null;
+}
 
-        sections.push(`You are on a live phone call, not a text chat. The other party hears you as speech and cannot see you. Every signal you would normally carry with formatting or visual cues must now be carried by sound and timing.`);
+/** The `phone-conduct` slot: the live-phone-call behavior block. Null unless the
+ *  inbound is a phone call. Scopes out the generic voice block (audit C7). */
+export function renderPhoneConduct(
+  inboundChannel: ReplyDestination | null,
+  lastContent: string,
+  turnContext: PromptTurnContext | undefined,
+): string | null {
+  if (inboundChannel !== 'phone') return null;
+  try {
+    const phoneCtx = parsePhoneCallContext(lastContent);
+    const theirName = phoneCtx.theirName?.trim();
+    const callbackNumber = phoneCtx.callbackNumber?.trim() || '(unknown)';
+    const purpose = phoneCtx.purpose?.trim();
+    const isOutbound = phoneCtx.direction === 'outbound';
+    const isVoicemail = phoneCtx.voicemailDetected;
+    const disclosures = phoneCtx.disclosuresRequired ?? [];
 
-        // ── Who speaks first ──
-        if (isVoicemail) {
-          sections.push(`### Voicemail mode
+    const sections: string[] = [];
+
+    sections.push(`You are on a live phone call, not a text chat. The other party hears you as speech and cannot see you. Every signal you would normally carry with formatting or visual cues must now be carried by sound and timing.`);
+
+    // ── Who speaks first ──
+    if (isVoicemail) {
+      sections.push(`### Voicemail mode
 
 This call reached voicemail, NOT a live person. Do NOT respond conversationally to the greeting — that is the classic robocall tell. Wait for the beep, then leave ONE short message: who you are, why you called, the callback number ${callbackNumber}, and repeat the number once. Then stop. Do not attempt back-and-forth.
 
 Example: "Hi ${theirName ?? 'this'}, this is ${getPrimaryAgentName()} calling${purpose ? ` about ${purpose}` : ''}. Give me a call back when you get a chance at ${callbackNumber}. Again, that's ${callbackNumber}. Thanks, bye."`);
-        } else if (isOutbound) {
-          sections.push(`### Who speaks first
+    } else if (isOutbound) {
+      sections.push(`### Who speaks first
 
 This is an OUTBOUND call you placed. The other party speaks first (usually "Hello?"). The instant you hear them, identify yourself and state your purpose. **Do NOT leave silence after their greeting** — silence after a pickup is the signature of a spam call, and people hang up on it.
 
 Opening template: "Hi, is this ${theirName ?? '[their name]'}? This is ${getPrimaryAgentName()}${purpose ? ` calling about ${purpose}` : ''}." Then, when appropriate, offer a courtesy check: "Is now a good time?"
 
 Treat a guarded or silent pickup as normal — many people stay quiet on pickup to make the caller prove they are human. Launch into your self-ID anyway.`);
-        } else {
-          sections.push(`### Who speaks first
+    } else {
+      sections.push(`### Who speaks first
 
 This is an INBOUND call. You already greeted with "Hello there!" — now let ${theirName ?? 'the caller'} state their business. Do not deliver a speech.`);
-        }
+    }
 
-        // ── Listening out loud + delay covering ──
-        sections.push(`### Listening out loud
+    // ── Listening out loud + delay covering ──
+    sections.push(`### Listening out loud
 
 On the phone, a silent listener reads as a dropped call. While ${theirName ?? 'the other person'} is talking, drop short verbal acknowledgments into their natural pauses: "mm-hmm," "yeah," "right," "gotcha," "for sure," "totally," "oh wow," "okay." Do not wait in silence for a complete turn the way a text assistant would. If you go quiet for more than a couple of seconds, the other person will assume the line died.
 
 ### Covering delay
 
-People expect a reply almost immediately. If you need a moment, fill it with a human thinking sound instead of going silent: "um," "hmm," "let me think," "good question," "so...," "one sec." Silence reads as a dropped call; a thinking noise reads as a person thinking.
+People expect a reply almost immediately. If you need a moment, fill it with a human thinking sound instead of going silent${resolveTtsEngine(turnContext) === 'cloud'
+  ? `: "um," "hmm," "let me think," "good question," "so...," "one sec."`
+  : `: "let me think," "good question," "one sec," "so..." (use real words only — your local TTS pronounces written-out hesitations like "um"/"hmm" literally and it sounds wrong).`} Silence reads as a dropped call; a thinking noise reads as a person thinking.
 
 ### Yield when interrupted
 
@@ -940,349 +1198,54 @@ Do NOT hang up the moment business is done. Phone calls end through a short ritu
 
 \`voice_call_end\` should only fire AFTER you have gone through this sequence AND ${theirName ?? 'the caller'} has said goodbye too. Do not call it on the first goodbye signal — wait for their bye to land. The engine holds the line ~6 s after you call \`voice_call_end\` to give them time. If ${theirName ?? 'they'} say something during that window, the call resumes.
 
-**Do not** treat passing requests as goodbye signals. "Say hi to Crystal" / "Tell Mom I love her" / "Let me know how it goes" are requests for you to relay or remember something, NOT signals to end the call. Acknowledge and stay on the line.`);
+**Do not** treat passing requests as goodbye signals. "Say hi to the family" / "Tell Grandma I love her" / "Let me know how it goes" are requests for you to relay or remember something, NOT signals to end the call. Acknowledge and stay on the line.`);
 
-        if (disclosures.length > 0) {
-          const lines: string[] = [];
-          if (disclosures.includes('ai')) {
-            lines.push(`- AI disclosure: "Quick heads up, I'm an AI assistant calling on behalf of ${getOwnerName()}."`);
-          }
-          if (disclosures.includes('recording')) {
-            lines.push(`- Recording notice: "Just so you know, this call may be recorded."`);
-          }
-          sections.push(`### Disclosure lines (required for this call)
+    if (disclosures.length > 0) {
+      const lines: string[] = [];
+      if (disclosures.includes('ai')) {
+        lines.push(`- AI disclosure: "Quick heads up, I'm an AI assistant calling on behalf of ${getOwnerName()}."`);
+      }
+      if (disclosures.includes('recording')) {
+        lines.push(`- Recording notice: "Just so you know, this call may be recorded."`);
+      }
+      sections.push(`### Disclosure lines (required for this call)
 
 Deliver these casually, not as a legal recital. Say them naturally and move on; do not stack them at the top of the call:
 
 ${lines.join('\n')}`);
-        }
+    }
 
-        sections.push(`### Phrase banks (draw on these, don't recite mechanically)
+    sections.push(`### Phrase banks (draw on these, don't recite mechanically)
 
 - Inbound openings: "Hello?" / "Hi, this is ${getPrimaryAgentName()}."
 - Outbound openings: "Hi, is this [name]?" / "Hey [name], it's ${getPrimaryAgentName()}." / "Hi, this is ${getPrimaryAgentName()} from ${getOwnerName()}."
 - Courtesy checks: "Is now a good time?" / "Do you have a sec?"
 - Backchannel: mm-hmm, yeah, right, gotcha, for sure, totally, oh wow, no way, okay, sure.
-- Latency filler: um, hmm, let me think, good question, so..., one sec.
+- Latency filler: ${resolveTtsEngine(turnContext) === 'cloud'
+  ? 'um, hmm, let me think, good question, so..., one sec.'
+  : 'let me think, good question, one sec, so... (real words only; local TTS speaks "um"/"hmm" literally).'}
 - Repair: "Say that again?" / "You cut out." / "Come again?" / "Can you hear me okay?"
 - Pre-closing: well, anyway, so yeah, alright, okay then.
 - Goodbyes: talk soon, talk to you later, take care, have a good one, sounds good, bye now.`);
 
-        destinationTags.push(`## You're on a live phone call
+    return `## You're on a live phone call
 
-${sections.join('\n\n')}`);
-      }
-    } catch { /* presence/resolver not available — proceed without tag */ }
-  }
+${sections.join('\n\n')}`;
+  } catch { /* phone context parse failed — proceed without the block */ }
+  return null;
+}
 
-  const parts = [...destinationTags, timeHeader];
-  if (visionCapBanner) parts.push(visionCapBanner);
-  parts.push(soul, tools);
-
-  // Conditionally include USER.md
-  if (shouldShareUserProfile(agentId)) {
-    const user = readPromptFile('USER.md', DEFAULT_USER_MD);
-    parts.push(user);
-  }
-
-  // v2.9.21 — Instruction precedence ladder.
-  //
-  // The engine injects situational hints into the prompt (deliverable
-  // routing, channel awareness, bookkeeping nudges, etc.) as bracketed
-  // strings. Sub-frontier models tended to read these as system-level
-  // orders and silently override explicit user instructions written
-  // in tasks, techniques, or vault entries. The Nora-deliverable
-  // incident (2026-06-06) was a clean example: a technique that said
-  // "always deliver via iMessage" was overridden by a per-turn
-  // `[Engine: send via iMessage unless they're in dashboard]` hint
-  // because the agent treated the engine string as more authoritative.
-  //
-  // This block establishes an explicit precedence order so the model
-  // has a clear policy when instructions conflict: user-authored
-  // content (tasks, recent messages, vault, USER.md) beats engine
-  // hints. Engine hints carry the `[Engine hint: ...]` prefix so the
-  // model can identify them. Hard operational engine requests still
-  // use other prefixes (e.g. `[ENGINE RENAME REQUEST]`) and are not
-  // covered by this ladder.
-  parts.push(`## Instruction Precedence
-
-When instructions conflict, follow this order (highest authority first):
-
-1. **Live user message in this turn** — what ${getOwnerName()} just said. If the current turn includes "this time, send it in the dashboard," that beats every standing rule below for this turn only.
-2. **Active task / project / technique notes** — what ${getOwnerName()} wrote about THIS specific work. If a task says "deliver via iMessage" and an engine hint says "post in dashboard," the task wins.
-3. **Live conversation context** — recent user messages in the live tail. "Always send Nora's posts via iMessage" said five turns ago is a standing instruction, not a passing comment, unless contradicted by something newer.
-4. **Vault entries** the user asked you to remember (e.g. "always send Nora's posts via iMessage" captured via vault_remember). Treat these as standing instructions.
-5. **USER.md** standing preferences.
-6. **SOUL.md** identity.
-7. **Engine hints** (anything labeled \`[Engine hint: ...]\`) — situational nudges from the runtime, not orders. The engine doesn't know your task; you do. When an engine hint conflicts with anything in tiers 1-5, the higher tier wins.
-
-Engine hints exist to help in the default case where the user hasn't specified. They are advice, not orders. Other engine prefixes are different: \`[ENGINE RENAME REQUEST]\` is a hard operational request, \`[Engine ack]\` is a one-way acknowledgement, and \`[Engine note: ...]\` is internal bookkeeping. None of those are user-facing routing decisions — only \`[Engine hint: ...]\` is subject to this ladder.`);
-
-  // Inject PM agent awareness for the primary agent
-  if (isPrimaryAgent(agentId)) {
-    try {
-      const pmName = getPMAgentName();
-      const pmId = getPMAgentId();
-      const db = getDb();
-      const pmAgent = db.prepare('SELECT id, status, model_id FROM agents WHERE id = ?').get(pmId) as { id: string; status: string; model_id: string | null } | undefined;
-      if (pmAgent && pmAgent.status !== 'terminated') {
-        // Trim. The "NEVER create monitoring agents" rule was prompt-side
-        // enforcement; the PM agent existing structurally communicates this
-        // without a paragraph of FORBIDDEN.
-        parts.push(`## Project Manager: ${pmName}\n\n${pmName} (ID: ${pmId}) is the dedicated PM agent — monitors tasks, pokes idle agents, escalates if needed. Don't create monitoring/pulse-check agents yourself; ${pmName} already does that. Message via \`send_to_agent(agent_id="${pmId}", ...)\`.`);
-      }
-    } catch { /* PM may not be configured */ }
-
-    // v2.10.1 — Trainer agent awareness. Tools like `save_technique` and
-    // `update_technique` are reserved for the Trainer; non-trainer callers
-    // get refused with "send to the Trainer instead." Pre-fix the primary
-    // had to either guess "trainer" by string (fails — the trainer agent's
-    // ID and display name are configurable), call list_agents and
-    // grep, or hit the refusal message just to find out who the Trainer
-    // is. Surface name + id here so the first message lands.
-    try {
-      if (isTrainerEnabled()) {
-        const trainerName = getTrainerAgentName();
-        const trainerId = getTrainerAgentId();
-        const db = getDb();
-        const trainerAgent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(trainerId) as { id: string; status: string } | undefined;
-        if (trainerAgent && trainerAgent.status !== 'terminated') {
-          parts.push(`## Trainer: ${trainerName}\n\n${trainerName} (ID: ${trainerId}) is the dedicated Trainer agent — owns the technique library. \`save_technique\` and \`update_technique\` are reserved for ${trainerName}; if you want a technique created or edited, send ${trainerName} a message describing what you want and they'll do it. Message via \`send_to_agent(agent_id="${trainerId}", ...)\`.`);
-        }
-      }
-    } catch { /* Trainer may not be configured */ }
-
-    // v2.10.1 — Healer agent awareness. Same pattern: Healer handles
-    // injury triage and diagnostic recovery; primary doesn't need to do
-    // anything with Healer day-to-day, but if a sub-agent is broken and
-    // needs intervention, name + id help.
-    try {
-      const healerName = getHealerAgentName();
-      const healerId = getHealerAgentId();
-      const db = getDb();
-      const healerAgent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(healerId) as { id: string; status: string } | undefined;
-      if (healerAgent && healerAgent.status !== 'terminated') {
-        parts.push(`## Healer: ${healerName}\n\n${healerName} (ID: ${healerId}) is the dedicated Healer agent — auto-triages injured agents (status=error / stuck loops) and can reset sessions. Operates autonomously most of the time; you rarely need to message them directly. If you do: \`send_to_agent(agent_id="${healerId}", ...)\`.`);
-      }
-    } catch { /* Healer may not be configured */ }
-  }
-
-  // v2.9.20 — Post-compaction awareness signal.
-  //
-  // The existing continuity-brief mechanism (memory/compaction.ts +
-  // memory/assembler.ts) injects a 3-4K-token brief for the 3 turns
-  // immediately after compaction, then the brief expires. After that
-  // window the agent runs on fresh tail + compressed summaries with
-  // NO standing signal that compaction happened.
-  //
-  // Mike's 2026-06-06 incident: long multi-step photo-album task,
-  // compaction fired multiple times, the brief expired between
-  // compactions, the agent had only summaries to work from, and the
-  // summaries had lost the procedural detail. Agent "felt like a
-  // brand new session" because nothing in the live prompt told it
-  // older history existed - or what to do if the fresh tail didn't
-  // reveal current task state.
-  //
-  // This section is a cheap (~120 token), persistent system-prompt
-  // signal that activates whenever the agent's continuityBriefAt is
-  // within the last 24 hours - i.e. compaction has fired sometime
-  // recently. Doesn't auto-call any tools (the v2.7.10 spiral was
-  // caused by auto-calling recall_recent_thread). Just tells the
-  // agent: compaction happened, here's where to look if you're lost.
-  try {
-    const db = getDb();
-    const configRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
-    if (configRow?.config) {
-      const cfg = JSON.parse(configRow.config) as Record<string, unknown>;
-      const at = cfg.continuityBriefAt as string | undefined;
-      if (at) {
-        const atMs = new Date(at).getTime();
-        const ageMs = Date.now() - atMs;
-        if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 24 * 60 * 60 * 1000) {
-          const minutesAgo = Math.max(1, Math.round(ageMs / 60_000));
-          const friendly =
-            minutesAgo < 60 ? `${minutesAgo} minute${minutesAgo === 1 ? '' : 's'} ago`
-            : minutesAgo < 60 * 24 ? `${Math.round(minutesAgo / 60)} hour${Math.round(minutesAgo / 60) === 1 ? '' : 's'} ago`
-            : 'recently';
-          parts.push(`## Recent Memory Compaction
-
-Your conversation was compacted ${friendly}. Older raw messages were summarized into the COMPRESSED HISTORY block above (if any) and archived to the vault. Anything in the live conversation tail below is fresh; anything older lives only in summaries.
-
-**If you can't tell what you're mid-doing from the live tail**, do not guess - the most reliable sources are (in order):
-
-1. \`tracker_list_active\` — your active tasks. Tracker entries survive compaction unchanged and are the source of truth for "what am I working on."
-2. \`scratchpad_set\` (called with no value, or read via the assistant message log) — your own in-flight working notes.
-3. \`recall_recent_thread\` — pull raw messages from before the compaction. Use sparingly (it costs tokens) but call it when you need the actual words rather than a summary.
-4. \`vault_search\` / \`memory_grep\` — specific facts, decisions, or instructions you remember being said but can't find.
-
-The COMPRESSED HISTORY summaries above (if any) capture key facts but DROP procedural detail. If your task involves a specific workflow ("for each photo, ask the user for a caption, then add to album"), the summary may have collapsed that into "user and agent are building an album." Verify against the tracker before assuming.`);
-        }
-      }
-    }
-  } catch { /* config not readable — proceed without the signal */ }
-
-  // Message source awareness — minimal source-tag reference. Routing /
-  // separation is engine logic.
-  parts.push(`## Message Sources
-
-Each non-user-chat message has a \`[SOURCE: ...]\` tag:
-- No tag = direct message from ${getOwnerName()} via dashboard
-- \`[SOURCE: IMESSAGE FROM ${getOwnerName().toUpperCase()}]\` = ${getOwnerName()} via iMessage. Your reply text auto-routes back via iMessage — just write it (SMS voice, no markdown). The \`[Reply destination: ...]\` tag at the top of this prompt confirms the routing. If no reply is warranted, end the turn with literal \`[no-reply]\`.
-- \`[SOURCE: GMAIL NOTIFICATION]\` / \`[SOURCE: OUTLOOK NOTIFICATION]\` = email landed in ${getOwnerName()}'s inbox. Two flavors:
-
-  **Flavor A — Reply on a thread you're part of** (Subject starts with "Re:" AND From is a known safe-sender like ${getOwnerName()}). The engine treats this as a real inbound-REPLY: the per-turn \`[Reply destination: email reply (in-thread)]\` tag will be set, and your terminal text auto-routes back as a Re: on the same thread. Just write your reply. Use \`[no-reply]\` if no reply is warranted.
-
-  **Flavor B — Notification of a new email** (everything else). NOT a request from ${getOwnerName()} themselves. **Default: do nothing.** No chat message, no \`user_gmail_read\` / \`user_outlook_read\`, no surfacing. Most email is noise.
-
-  When in Flavor B, **DO NOT SURFACE** (don't even read the body): receipts, payment confirmations, "thank you for your invoice/order"; auto-acknowledgments ("we received your"); \`no-reply@\` / \`noreply@\` / \`notifications@\` / \`updates@\` / \`alerts@\` / \`donotreply@\` senders unless they explicitly ask ${getOwnerName()} to do something; newsletters, promo blasts, marketing emails (Netflix, LinkedIn digests, Spotify); social platform pings ("X liked your post"); calendar reminders for events already on the calendar; shipping/tracking updates unless there's a problem; anything whose preview shows no human wrote it for ${getOwnerName()} specifically.
-
-  **DO SURFACE** (one line): direct human-written emails to ${getOwnerName()} personally; emails containing a deadline, decision, blocker, or specific action request; new project initiations, contracts, client outreach.
-
-  When you do surface, use channel rules: dashboard chat when ${getOwnerName()} is in the dojo, \`imessage_send\` when away. One line: "Email from <sender>: <subject>" plus a one-sentence summary if the body adds anything beyond the subject. Never reply to the email unless ${getOwnerName()} asks (or it's Flavor A where the engine auto-routes). If you decided not to surface, just don't — no "I saw a promo email, nothing to do" line.
-- \`[A2A:INTENT thread:ID from:Name]\` = structured agent message — engine validates your reply via \`send_to_agent\`
-- \`[SOURCE: AGENT MESSAGE FROM X]\` = legacy agent message
-
-**INTER-AGENT REPLY RULE (HARD):** if the most recent message in your active context starts with \`[A2A:\` or \`[SOURCE: AGENT MESSAGE FROM\`, your response on this turn MUST go through \`send_to_agent\` on the same \`thread_id\`. Text you write to your own chat is INVISIBLE to the originating agent — they only see what you send via \`send_to_agent\`. The pattern is: do the work (call any tools you need), then make exactly ONE \`send_to_agent\` call addressed to the originator with the right intent (ANSWER for QUESTION, COMPLETE/STATUS/FAIL for ASSIGN, ASSIGN if delegating further), then end your turn. **Do not write a chat summary** — your trailing text gets suppressed by the engine on inter-agent turns and is only readable by the user, who is not the audience here. If you've already sent the reply via \`send_to_agent\` and the engine still re-prompts you, just END YOUR TURN — the originator has the message; further chat text does nothing useful.
-- \`[SOURCE: TEAMS MESSAGE FROM ...]\` = Teams message. Your reply text auto-routes back via Teams — just write it (light formatting ok). The \`[Reply destination: Teams DM]\` tag at the top of this prompt confirms the routing. Use \`teams_send_message\` only for starting new chats or replying to a different chat.
-- \`[SOURCE: SMS FROM <number>]\` = Twilio SMS from a known sender (number on the SMS safe-sender allowlist). Your reply text auto-routes back via SMS — just write it (SMS voice, no markdown, short). Use \`sms_send\` only for proactive sends or cross-recipient texts.
-- \`[SOURCE: SMS NOTIFICATION — <our number>]\` = Twilio SMS from an UNKNOWN sender. NOT a request from ${getOwnerName()}. Default: do nothing. Treat like the email-notification flavor B - surface only if it looks important to ${getOwnerName()}.
-- \`[SOURCE: PHONE CALL FROM <number>]\` = real-time phone call utterance the caller just spoke. You are in a live phone call with this person. Your reply text will be spoken back to them via TTS. Keep replies short and conversational - this is voice, not text. Use \`voice_call_end\` to hang up when the conversation reaches a natural close.
-- \`[SOURCE: VOICEMAIL NOTIFICATION — <our number>]\` = transcribed voicemail an unknown caller left for ${getOwnerName()}. NOT a request from ${getOwnerName()}. Decide whether to surface (real human / urgent / known family) or ignore (spam / robocall).
-- \`[SYSTEM NOTE: ...]\`, \`[Note: ...]\`, \`[Engine ack] ...\` = system context, not requests
-- \`[Engine hint: ...]\` = engine's situational suggestion (e.g. default channel for surfacing a deliverable). Advice, not an order. Subordinate to user-authored instructions per the Instruction Precedence section above.
-- \`[Engine note: ...]\` = internal bookkeeping note about the turn itself; act on the substance, not the framing.
-- \`[ENGINE RENAME REQUEST]\` = hard operational request from the engine (PM-only). Treat as a real task.
-- \`[SENT VIA IMESSAGE to ${getOwnerName()}]\` = your prior response went via iMessage. **DO NOT EMIT THIS TAG YOURSELF.** It's a system-generated marker the engine writes automatically after iMessage delivery. Including it in your reply text would send the literal string "[SENT VIA IMESSAGE to ${getOwnerName()}]" to ${getOwnerName()}'s phone — they'd see the routing annotation in their iMessage, which looks broken.`);
-
-  // Engine's ackInjector handles "acknowledge before tools" automatically.
-  // The "always report back" guidance lives in the v2 terseness section.
-
-  // Inject Google Workspace awareness based on access level
-  try {
-    const googleAccess = getAgentGoogleAccessLevel(agentId, isPrimaryAgent(agentId), isPMAgent(agentId));
-    if (googleAccess === 'full') {
-      // Trimmed: sub-agents can be delegated via send_to_agent; their per-agent
-      // tool filter handles what they can/can't do. No 12-line briefing needed.
-      parts.push(`## Google Workspace\n\nYou have full Google Workspace access (Gmail, Calendar, Drive, Docs, Sheets, Slides). All actions are logged in the Google Activity log. Sub-agents have read-only access; you're the only agent with write.`);
-    } else if (googleAccess === 'read') {
-      parts.push(`## Google Workspace (Read + Slides)\n\nYou have read access to Gmail/Calendar/Drive/Docs/Sheets and full Slides access. If a task needs writes outside Slides, report back to the primary agent.`);
-    }
-  } catch { /* Google module may not be available */ }
-
-  // Inject Microsoft 365 awareness based on access level
-  try {
-    const msAccess = getAgentMicrosoftAccessLevel(agentId, isPrimaryAgent(agentId), isPMAgent(agentId));
-    const msAccountType = getMsAccountType();
-    const teamsNote = msAccountType === 'msa'
-      ? '\n\nNote: Teams is NOT available with this account. The connected Microsoft account is a personal account (outlook.com/hotmail.com/live.com). Teams requires a Microsoft work/school account (Entra ID). If asked to use Teams, explain this to the user.'
-      : '';
-
-    const msEmail = getMicrosoftWorkspaceConfig().accountEmail;
-
-    if (msAccess === 'full') {
-      const teamsInboundGuidance = msAccountType !== 'msa' ? `
-
-**Incoming Teams messages:**
-People can send you Microsoft Teams messages directly. When they do, a notification arrives in your conversation tagged \`[SOURCE: TEAMS MESSAGE FROM {name} ({email})]\` and the per-turn \`[Reply destination: Teams DM]\` tag at the top of the prompt confirms auto-routing. **Just write your reply text** — the engine sends it back via Teams automatically. Light formatting ok. The \`teams_send_message\` tool is reserved for starting new chats (\`teams_create_chat\` first if needed) or replying to a DIFFERENT chat than the inbound; for the inbound thread you just write text.` : '';
-
-      // Trimmed: keep account context + the Teams-inbound rule (that's
-      // behavior, not bloat — agents must know to reply on the right channel).
-      parts.push(`## Microsoft 365${msEmail ? ` (${msEmail})` : ''}\n\nYou have full Microsoft 365 access (Outlook, Calendar, Word/Excel/PowerPoint, OneDrive${msAccountType !== 'msa' ? ', Teams' : ''}). All actions are logged. Sub-agents have read-only access.${teamsInboundGuidance}${teamsNote}`);
-    } else if (msAccess === 'read') {
-      parts.push(`## Microsoft 365 (Read-Only)\n\nYou have read access to Outlook/Calendar/OneDrive${msAccountType !== 'msa' ? '/Teams' : ''}. If a task needs writes, report back to the primary agent.${teamsNote}`);
-    }
-  } catch { /* Microsoft module may not be available */ }
-
-  // Inject group context if agent is in a group
-  try {
-    const groupCtx = _assembleGroupContext(agentId);
-    if (groupCtx) parts.push(groupCtx);
-  } catch { /* groups table may not exist yet */ }
-
-  // Inject technique index (published techniques) and draft context (for build squads)
-  try {
-    const techniqueIndex = generateTechniqueIndex();
-    if (techniqueIndex) parts.push(techniqueIndex);
-
-    // Draft technique context for squad members
-    const agentRow = getDb().prepare('SELECT group_id FROM agents WHERE id = ?').get(agentId) as { group_id: string | null } | undefined;
-    if (agentRow?.group_id) {
-      const draftCtx = generateDraftTechniqueContext(agentRow.group_id);
-      if (draftCtx) parts.push(draftCtx);
-    }
-  } catch { /* techniques table may not exist yet */ }
-
-  // Inject equipped techniques (full TECHNIQUE.md content pre-loaded into context)
-  try {
-    const db = getDb();
-    const agentEquipped = db.prepare('SELECT equipped_techniques FROM agents WHERE id = ?').get(agentId) as { equipped_techniques: string | null } | undefined;
-    if (agentEquipped?.equipped_techniques) {
-      const techniqueIds: string[] = JSON.parse(agentEquipped.equipped_techniques || '[]');
-      if (techniqueIds.length > 0) {
-        const equippedParts: string[] = ['## Equipped Techniques\nYou have equipped techniques (specialized procedures). When a task matches a technique, follow its steps exactly — do not improvise your own approach.\n'];
-        for (const techId of techniqueIds) {
-          const technique = db.prepare('SELECT id, name, directory_path FROM techniques WHERE id = ? AND state = \'published\' AND enabled = 1').get(techId) as { id: string; name: string; directory_path: string } | undefined;
-          if (technique) {
-            try {
-              const mdPath = path.join(technique.directory_path, 'TECHNIQUE.md');
-              if (fs.existsSync(mdPath)) {
-                const content = fs.readFileSync(mdPath, 'utf-8');
-                equippedParts.push(`═══ EQUIPPED TECHNIQUE: ${technique.name} ═══\nWhen performing "${technique.name}", follow these steps IN ORDER:\n\n${content}\n═══ END TECHNIQUE ═══`);
-              }
-            } catch { /* skip unreadable */ }
-          }
-        }
-        if (equippedParts.length > 1) {
-          parts.push(equippedParts.join('\n\n'));
-        }
-      }
-    }
-  } catch { /* equipped_techniques column may not exist yet */ }
-
-  const runtimeInfo = `
-## Runtime Information
-- Agent ID: ${agentId}
-- Model: ${modelId}
-- Current Time: ${new Date().toISOString()}
-- Platform: macOS (${os.arch()})
-- Host: ${os.hostname()}
-`;
-  parts.push(runtimeInfo);
-
-  // Voice-mode conduct block — Phase 3. Goes LAST so it sits closest to the
-  // model's next token and shapes how the assembled prompt resolves into a
-  // reply, without overwriting persona earlier in the prompt. Skipped on
-  // text turns (which is the common case), so prompt token cost is unchanged
-  // for chat. Hume cloud-TTS brief: the addendum after the shared base is
-  // engine-specific — local enforces flat voice, cloud teaches the
-  // ((deliver: ...)) cue.
-  if (turnContext?.latestUserSource === 'voice') {
+/** The `voice-conduct` slot: generic voice-mode conduct. Fires on a voice turn
+ *  that is NOT a phone call (phone owns its own conduct — audit C7). */
+export function renderVoiceConduct(
+  inboundChannel: ReplyDestination | null,
+  turnContext: PromptTurnContext | undefined,
+): string | null {
+  if (turnContext?.latestUserSource === 'voice' && inboundChannel !== 'phone') {
     const engine = resolveTtsEngine(turnContext);
-    parts.push(VOICE_BASE_BLOCK + (engine === 'cloud' ? VOICE_CLOUD_ADDENDUM : VOICE_LOCAL_ADDENDUM));
+    return VOICE_BASE_BLOCK + (engine === 'cloud' ? VOICE_CLOUD_ADDENDUM : VOICE_LOCAL_ADDENDUM);
   }
-
-  const systemPrompt = parts.join('\n\n---\n\n');
-
-  const estimatedTokens = Math.ceil(systemPrompt.length / 4);
-  const promptRatio = estimatedTokens / contextWindow;
-  if (promptRatio > 0.3) {
-    logger.warn('System prompt exceeds 30% of context window', {
-      agentId, modelId, tier,
-      estimatedTokens, contextWindow,
-      ratio: (promptRatio * 100).toFixed(1) + '%',
-    }, agentId);
-  }
-
-  logger.debug('System prompt assembled', {
-    agentId,
-    modelId,
-    tier,
-    length: systemPrompt.length,
-    estimatedTokens,
-    includesUserProfile: shouldShareUserProfile(agentId),
-  }, agentId);
-
-  return systemPrompt;
+  return null;
 }
 
 export function getPromptFilePath(filename: string): string {

@@ -550,19 +550,6 @@ export const slidesToolDefinitions: ToolDefinition[] = [
     },
   },
   {
-    name: 'slides_update_text',
-    description: 'Replace all text in an existing text box.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        presentation_id: { type: 'string' },
-        text_box_id: { type: 'string' },
-        new_text: { type: 'string' },
-      },
-      required: ['presentation_id', 'text_box_id', 'new_text'],
-    },
-  },
-  {
     name: 'slides_style_text_range',
     description: 'Apply formatting to a specific character range within a text box. Only the properties you specify are changed.',
     input_schema: {
@@ -1378,18 +1365,6 @@ export async function executeGoogleSlidesTool(
         const r = await batchUpdate(presentationId, requests, agentId, agentName, 'slides_add_bullet_list', { slideId, count: items.length });
         if (!r.ok) return `Error adding bullet list: ${r.error}`;
         return ok({ text_box_id: textBoxId });
-      }
-
-      case 'slides_update_text': {
-        const presentationId = args.presentation_id as string;
-        const textBoxId = args.text_box_id as string;
-        const newText = args.new_text as string;
-        const r = await batchUpdate(presentationId, [
-          { deleteText: { objectId: textBoxId, textRange: { type: 'ALL' } } },
-          { insertText: { objectId: textBoxId, insertionIndex: 0, text: newText } },
-        ], agentId, agentName, 'slides_update_text', { textBoxId });
-        if (!r.ok) return `Error updating text: ${r.error}`;
-        return ok({ ok: true });
       }
 
       case 'slides_style_text_range': {

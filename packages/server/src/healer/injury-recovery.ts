@@ -116,9 +116,42 @@ function healerBackoffMs(attempts: number): number {
   return HEALER_BACKOFF_LADDER_MS[Math.max(0, idx)];
 }
 
+// ── Durable Healer damping state (remediation Phase 4, S8.3) ──
+// These used to be in-memory Maps, which reset on a process bounce: a
+// crash-loop that survived a restart was re-hammered by the very backoff
+// meant to damp it. Same .get/.set/.delete shape, DB-backed (durable means
+// the DB; shared-state is process memory).
+function readHealerState(scope: string, key: string): number | null {
+  try {
+    const row = getDb()
+      .prepare('SELECT at_ms FROM healer_state WHERE scope = ? AND key = ?')
+      .get(scope, key) as { at_ms: number } | undefined;
+    return row?.at_ms ?? null;
+  } catch {
+    return null;
+  }
+}
+function writeHealerState(scope: string, key: string, atMs: number): void {
+  try {
+    getDb().prepare(`
+      INSERT INTO healer_state (scope, key, at_ms) VALUES (?, ?, ?)
+      ON CONFLICT(scope, key) DO UPDATE SET at_ms = excluded.at_ms, updated_at = datetime('now')
+    `).run(scope, key, atMs);
+  } catch { /* damping is best-effort; never block recovery */ }
+}
+function deleteHealerState(scope: string, key: string): void {
+  try {
+    getDb().prepare('DELETE FROM healer_state WHERE scope = ? AND key = ?').run(scope, key);
+  } catch { /* best-effort */ }
+}
+
 // Per-agent absolute timestamp before which Healer will NOT re-fire.
 // Cleared on any successful turn (via onAgentRecovered).
-const healerSuppressedUntil = new Map<string, number>();
+const healerSuppressedUntil = {
+  get: (agentId: string): number | null => readHealerState('agent_suppression', agentId),
+  set: (agentId: string, untilMs: number): void => writeHealerState('agent_suppression', agentId, untilMs),
+  delete: (agentId: string): void => deleteHealerState('agent_suppression', agentId),
+};
 
 // v2.3.19 (error-handling-spec Phase 4) — provider-wide pattern dedup.
 //
@@ -133,8 +166,12 @@ const healerSuppressedUntil = new Map<string, number>();
 // being handled by the cycle that fired for the first agent — which
 // sees ALL three injuries in its diagnostic report).
 //
-// Map<providerName, lastAlertTimestampMs>
-const providerPatternAlerted = new Map<string, number>();
+// providerName → lastAlertTimestampMs (DB-backed via healer_state above)
+const providerPatternAlerted = {
+  get: (provider: string): number | null => readHealerState('provider_alert', provider),
+  set: (provider: string, atMs: number): void => writeHealerState('provider_alert', provider, atMs),
+  delete: (provider: string): void => deleteHealerState('provider_alert', provider),
+};
 const PROVIDER_PATTERN_WINDOW_MS = 30 * 60 * 1000;       // 30 min dedup
 const PROVIDER_PATTERN_LOOKBACK_MS = 60 * 60 * 1000;     // count peers errored in last 1h
 const PROVIDER_PATTERN_PEER_THRESHOLD = 2;               // 2 other agents = pattern (3 total)

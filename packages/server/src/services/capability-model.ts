@@ -27,6 +27,9 @@ export interface CapabilityModelChoice {
   modelId: string;
   providerId: string;
   apiModelId: string;
+  /** 'configured' = the user's pick; 'failover' = the pick was unusable and
+   *  an enabled same-capability model stood in. Callers may surface this. */
+  source: 'configured' | 'failover';
 }
 
 interface ModelRow {
@@ -93,21 +96,65 @@ export function makeCapabilityModelResolver(opts: {
     },
     getEffectiveModel(): CapabilityModelChoice | null {
       const configuredId = this.getConfiguredModelId();
+      // Unconfigured stays null: choosing NO model for a capability is a
+      // legitimate user decision; failover only stands in when a configured
+      // pick exists but is unusable (disabled, deleted, capability lost).
       if (!configuredId) return null;
       const model = loadEnabledModel(configuredId);
-      if (!model || !rowHasCapability(model)) {
-        logger.warn('Configured capability model is no longer usable', {
-          configKey,
-          capability,
-          modelId: configuredId,
-        });
-        return null;
+      if (model && rowHasCapability(model)) {
+        return {
+          modelId: model.id,
+          providerId: model.provider_id,
+          apiModelId: model.api_model_id,
+          source: 'configured',
+        };
       }
-      return {
-        modelId: model.id,
-        providerId: model.provider_id,
-        apiModelId: model.api_model_id,
-      };
+
+      logger.warn('Configured capability model is no longer usable — trying failover', {
+        configKey,
+        capability,
+        modelId: configuredId,
+      });
+
+      // Bounded failover (remediation Phase 3, Invariant III): one pass over
+      // the user's ENABLED models with this capability — enabling a model is
+      // the consent boundary, failover never reaches past it. Same provider
+      // as the configured pick is preferred (least surprise), then name
+      // order for determinism. No retries, no ping-pong: one resolution.
+      try {
+        const configuredProvider = (getDb()
+          .prepare(`SELECT provider_id FROM models WHERE id = ?`)
+          .get(configuredId) as { provider_id: string } | undefined)?.provider_id ?? null;
+        const candidates = getDb()
+          .prepare(`SELECT id, provider_id, api_model_id, is_enabled FROM models WHERE is_enabled = 1 AND id != ? ORDER BY name ASC`)
+          .all(configuredId) as ModelRow[];
+        const ordered = [
+          ...candidates.filter((c) => c.provider_id === configuredProvider),
+          ...candidates.filter((c) => c.provider_id !== configuredProvider),
+        ];
+        for (const candidate of ordered) {
+          if (!rowHasCapability(candidate)) continue;
+          logger.warn('Capability failover engaged', {
+            configKey,
+            capability,
+            from: configuredId,
+            to: candidate.id,
+          });
+          return {
+            modelId: candidate.id,
+            providerId: candidate.provider_id,
+            apiModelId: candidate.api_model_id,
+            source: 'failover',
+          };
+        }
+      } catch { /* fall through to null */ }
+
+      logger.error('Capability has no usable model (configured pick down, no enabled fallback)', {
+        configKey,
+        capability,
+        modelId: configuredId,
+      });
+      return null;
     },
   };
 }

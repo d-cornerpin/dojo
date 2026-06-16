@@ -683,6 +683,18 @@ export interface AttachmentResizeEvent {
   finalSize?: number;
 }
 
+// A dropped attachment must be visible to the model as a fact, not a silent
+// gap: the persisted pointer text says an attachment exists, so an empty hole
+// here makes the model hallucinate contents or deny the attachment was sent.
+// The skip behavior itself stays (a broken file must never kill the turn);
+// this note is what makes the skip honest.
+function droppedAttachmentNote(kind: string, filename: string, reason: string): Anthropic.ContentBlockParam {
+  return {
+    type: 'text',
+    text: `[Engine note: the attached ${kind} "${filename}" ${reason}, so it is NOT shown to you. Do not describe or assume its contents. If the user asks about it, say it failed to load and ask them to re-send it.]`,
+  };
+}
+
 // Transform messages with image/PDF attachments into content block arrays for the model
 export function injectAttachmentBlocks(
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
@@ -794,9 +806,15 @@ export function injectAttachmentBlocks(
     // plug in without touching this call site.
     for (const img of imageAttachments) {
       try {
-        if (!fs.existsSync(img.path)) continue;
+        if (!fs.existsSync(img.path)) {
+          blocks.push(droppedAttachmentNote('image', img.filename, 'is missing on disk'));
+          continue;
+        }
         const result = rectifyAttachment(img);
-        if (!result || !result.kept || !result.data || !result.mediaType) continue;
+        if (!result || !result.kept || !result.data || !result.mediaType) {
+          blocks.push(droppedAttachmentNote('image', img.filename, 'could not be processed'));
+          continue;
+        }
         blocks.push({
           type: 'image',
           source: {
@@ -815,7 +833,7 @@ export function injectAttachmentBlocks(
           });
         }
       } catch {
-        // Skip if file can't be read
+        blocks.push(droppedAttachmentNote('image', img.filename, 'could not be read'));
       }
     }
 
@@ -825,7 +843,10 @@ export function injectAttachmentBlocks(
     // so the model knows which file a passage belongs to.
     for (const pdf of pdfAttachments) {
       try {
-        if (!fs.existsSync(pdf.path)) continue;
+        if (!fs.existsSync(pdf.path)) {
+          blocks.push(droppedAttachmentNote('PDF', pdf.filename, 'is missing on disk'));
+          continue;
+        }
         const data = fs.readFileSync(pdf.path).toString('base64');
         blocks.push({
           type: 'document',
@@ -837,7 +858,7 @@ export function injectAttachmentBlocks(
           title: pdf.filename,
         } as Anthropic.ContentBlockParam);
       } catch {
-        // Skip if file can't be read
+        blocks.push(droppedAttachmentNote('PDF', pdf.filename, 'could not be read'));
       }
     }
 

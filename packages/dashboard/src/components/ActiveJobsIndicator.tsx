@@ -31,7 +31,28 @@ function elapsed(startedAt: string): string {
   return `${mins}m ${rem}s`;
 }
 
+// Elapsed from a client-side millisecond timestamp. Engine-activity items are
+// purely event-driven (no DB row to refetch), so we stamp the moment the
+// 'start' event arrives.
+function elapsedFromMs(startedAtMs: number): string {
+  const secs = Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000));
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  const rem = secs % 60;
+  return `${mins}m ${rem}s`;
+}
+
 type Kind = GenJobDto['kind'];
+
+// Engine-managed background sequences surfaced alongside media jobs. These are
+// not user-cancellable (no Stop button) and show regardless of selected agent.
+type EngineKind = 'compaction' | 'dreamer' | 'healer';
+interface EngineItem {
+  id: string;
+  kind: EngineKind;
+  label: string;
+  startedAtMs: number;
+}
 
 const KIND_LABEL: Record<Kind, string> = {
   image: 'image',
@@ -48,7 +69,7 @@ function statusLabel(job: GenJobDto): string {
 }
 
 // Per-kind glyph (Lucide paths). Each is rendered inside a spinning <svg>.
-function KindGlyph({ kind }: { kind: Kind | 'mixed' }) {
+function KindGlyph({ kind }: { kind: Kind | EngineKind | 'mixed' }) {
   const common = {
     width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none',
     stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' as const,
@@ -100,6 +121,32 @@ function KindGlyph({ kind }: { kind: Kind | 'mixed' }) {
       </svg>
     );
   }
+  if (kind === 'compaction') {
+    // Archive box — folding memory into summaries.
+    return (
+      <svg {...common}>
+        <polyline points="21 8 21 21 3 21 3 8" />
+        <rect x="1" y="3" width="22" height="5" />
+        <line x1="10" y1="12" x2="14" y2="12" />
+      </svg>
+    );
+  }
+  if (kind === 'dreamer') {
+    // Moon — the dream / distillation cycle.
+    return (
+      <svg {...common}>
+        <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+      </svg>
+    );
+  }
+  if (kind === 'healer') {
+    // Activity pulse line.
+    return (
+      <svg {...common}>
+        <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+      </svg>
+    );
+  }
   // mixed — generic sparkles.
   return (
     <svg {...common}>
@@ -114,6 +161,7 @@ function KindGlyph({ kind }: { kind: Kind | 'mixed' }) {
 export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
   const { subscribe } = useWebSocket();
   const [jobs, setJobs] = useState<GenJobDto[]>([]);
+  const [engineItems, setEngineItems] = useState<EngineItem[]>([]);
   const [open, setOpen] = useState(false);
   const [cancelling, setCancelling] = useState<Set<string>>(new Set());
   // Drives the elapsed-time re-render once a second while the popover is open.
@@ -141,7 +189,37 @@ export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
       if (event.data.agentId !== agentId) return;
       void refetch();
     });
-    return () => { unsubVideo(); unsubGen(); };
+    // Engine sequences are platform-wide, shown regardless of the selected
+    // agent. Dreamer + Healer are agents, so their `working` status IS the
+    // in-flight signal; compaction (not an agent) emits engine:activity.
+    const unsubStatus = subscribe('agent:status', (event) => {
+      if (event.type !== 'agent:status') return;
+      if (event.agentId !== 'dreamer' && event.agentId !== 'healer') return;
+      const kind: EngineKind = event.agentId === 'dreamer' ? 'dreamer' : 'healer';
+      const label = event.agentId === 'dreamer'
+        ? 'Dreaming (distilling memory)'
+        : 'Healer running diagnostics';
+      const who = event.agentId;
+      setEngineItems((prev) => {
+        if (event.status === 'working') {
+          if (prev.some((it) => it.id === who)) return prev;
+          return [...prev, { id: who, kind, label, startedAtMs: Date.now() }];
+        }
+        return prev.filter((it) => it.id !== who);
+      });
+    });
+    const unsubEngine = subscribe('engine:activity', (event) => {
+      if (event.type !== 'engine:activity') return;
+      const d = event.data;
+      setEngineItems((prev) => {
+        if (d.phase === 'start') {
+          if (prev.some((it) => it.id === d.id)) return prev;
+          return [...prev, { id: d.id, kind: d.kind, label: d.label, startedAtMs: Date.now() }];
+        }
+        return prev.filter((it) => it.id !== d.id);
+      });
+    });
+    return () => { unsubVideo(); unsubGen(); unsubStatus(); unsubEngine(); };
   }, [subscribe, agentId, refetch]);
 
   // Tick once a second only while the popover is open, so elapsed times stay live.
@@ -153,8 +231,8 @@ export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
 
   // Close the popover automatically once everything finishes.
   useEffect(() => {
-    if (jobs.length === 0 && open) setOpen(false);
-  }, [jobs.length, open]);
+    if (jobs.length === 0 && engineItems.length === 0 && open) setOpen(false);
+  }, [jobs.length, engineItems.length, open]);
 
   const handleCancel = useCallback(async (job: GenJobDto) => {
     setCancelling((prev) => new Set(prev).add(job.id));
@@ -168,15 +246,26 @@ export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
     });
   }, [refetch]);
 
-  if (jobs.length === 0) return null;
+  if (jobs.length === 0 && engineItems.length === 0) return null;
 
-  // Pick the badge icon: a single kind shows its glyph; mixed kinds show a
-  // generic spinner.
-  const kinds = new Set(jobs.map((j) => j.kind));
-  const iconKind: Kind | 'mixed' = kinds.size === 1 ? [...kinds][0] : 'mixed';
+  const total = jobs.length + engineItems.length;
 
-  // Headline label: "image", "music", or "media" when mixed.
-  const headlineNoun = iconKind === 'mixed' ? 'media' : KIND_LABEL[iconKind];
+  // Pick the badge icon over media + engine kinds: a single kind shows its
+  // glyph; a mix shows a generic spinner.
+  const kinds = new Set<Kind | EngineKind>([
+    ...jobs.map((j) => j.kind),
+    ...engineItems.map((e) => e.kind),
+  ]);
+  const iconKind: Kind | EngineKind | 'mixed' = kinds.size === 1 ? [...kinds][0] : 'mixed';
+
+  // Headline: media-only keeps its noun; anything with engine work reads as
+  // "background activity".
+  const headlineNoun =
+    engineItems.length > 0
+      ? 'background activity'
+      : iconKind === 'mixed'
+        ? 'media'
+        : KIND_LABEL[iconKind as Kind];
 
   return (
     <>
@@ -184,13 +273,13 @@ export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
         type="button"
         onPointerDown={(e) => e.preventDefault()}
         onClick={() => setOpen(true)}
-        title={`${jobs.length} ${headlineNoun}${jobs.length > 1 ? 's' : ''} generating (click for details)`}
+        title={`${total} ${headlineNoun}${total > 1 ? ' items' : ''} in progress (click for details)`}
         className="relative shrink-0 flex items-center justify-center w-9 h-9 rounded-full transition-all bg-cp-purple/20 text-cp-purple hover:bg-cp-purple/30"
       >
         <KindGlyph kind={iconKind} />
-        {jobs.length > 1 && (
+        {total > 1 && (
           <span className="absolute -top-1 -right-1 flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-cp-purple text-white text-[10px] font-semibold">
-            {jobs.length}
+            {total}
           </span>
         )}
       </button>
@@ -211,7 +300,7 @@ export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
           >
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-sm font-semibold text-ui/90">
-                Generating {headlineNoun}{jobs.length > 1 ? `s (${jobs.length})` : ''}
+                In progress{total > 1 ? ` (${total})` : ''}
               </h3>
               <button
                 type="button"
@@ -258,10 +347,27 @@ export const ActiveJobsIndicator = ({ agentId }: { agentId: string }) => {
                   </button>
                 </div>
               ))}
+
+              {engineItems.map((item) => (
+                <div key={item.id} className="flex items-start gap-3 p-3 rounded-xl bg-ui/[0.05]">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-ui/85 line-clamp-2">{item.label}</p>
+                    <div className="mt-1 flex items-center gap-2 text-[11px] text-ui/45">
+                      <span className="inline-flex items-center gap-1">
+                        <span className="inline-block w-1.5 h-1.5 rounded-full bg-cp-purple animate-pulse" />
+                        Engine
+                      </span>
+                      <span>·</span>
+                      <span>{elapsedFromMs(item.startedAtMs)}</span>
+                    </div>
+                  </div>
+                  {/* No Stop button: engine-managed (compaction / dreamer / healer). */}
+                </div>
+              ))}
             </div>
 
             <p className="mt-4 text-[11px] text-ui/40 leading-relaxed">
-              These generate in the background and post to the chat when ready. You can close this and keep working.
+              Media generates in the background and posts to chat when ready. Memory and maintenance run on their own.
             </p>
           </div>
         </>

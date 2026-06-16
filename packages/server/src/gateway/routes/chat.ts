@@ -36,15 +36,17 @@ function buildContentWithAttachments(text: string, attachments: Array<{ fileId: 
       // wants to interrogate it. The path lets it forward the file.
       parts.push(`\n[Video attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nPath: ${att.path}\nTo transcribe the audio track, call transcribe_audio with attachment_id="${att.fileId}". To forward the file (e.g. imessage_send), use the Path above.`);
     } else if (att.category === 'image') {
-      // The image is already visible to the agent as a vision content block, but
-      // the model has no way to know where the file lives on disk. Surface the
-      // path and fileId so it can forward the file (e.g. imessage_send) or use it
-      // as a reference image without shelling out to find/ls to locate it.
-      parts.push(`\n[Image attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nPath: ${att.path}\nThe image is already visible to you. To send or forward the file (e.g. imessage_send), use the Path above. To use it as a reference image for video_create, pass attachment_id="${att.fileId}".`);
+      // This text is PERSISTED into the message row, where the model is not
+      // yet known (and may change before the row is next read), so it must
+      // not assert what the model can perceive. Visibility is owned at
+      // assemble time: vision models get the image block, fallback-captioned
+      // models get a description, capability banners cover the rest. This
+      // pointer only carries what is true on every model: what the file is,
+      // where it lives, and how to act on it.
+      parts.push(`\n[Image attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nPath: ${att.path}\nIf your model supports vision, this image is shown to you in this message; otherwise a text description or notice appears instead. Do not open image files with file_read. To send or forward the file (e.g. imessage_send), use the Path above. To use it as a reference image for video_create, pass attachment_id="${att.fileId}".`);
     } else if (att.category === 'pdf') {
-      // The PDF is rendered to the model as content blocks, but as with images
-      // the model needs the on-disk path to forward or operate on the file.
-      parts.push(`\n[PDF attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nPath: ${att.path}\nThe PDF contents are already visible to you. To forward the file (e.g. imessage_send), use the Path above.`);
+      // Same persistence constraint as images: no perception claims here.
+      parts.push(`\n[PDF attached: ${att.filename} (${att.size} bytes), fileId: ${att.fileId}]\nPath: ${att.path}\nIf your model supports PDF input, the contents are shown to you in this message; otherwise a notice appears instead. To forward the file (e.g. imessage_send), use the Path above. The pdf_* tools (pdf_get_info, pdf_extract_pages, ...) operate on the Path.`);
     }
   }
 

@@ -31,6 +31,9 @@ export const DEFAULT_ALWAYS_LOADED_TOOLS = [
 // must be reachable in one step, not "scan the index → load_tool_docs → call."
 export const PRIMARY_AGENT_ALWAYS_LOADED = [
   ...DEFAULT_ALWAYS_LOADED_TOOLS,
+  // The destructive-gate approval tool must be callable the moment an
+  // approval request wakes the primary (no load_tool_docs round-trip).
+  'approve_destructive_action',
   'exec',
   'file_read',
   'file_write',

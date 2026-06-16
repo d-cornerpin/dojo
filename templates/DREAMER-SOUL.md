@@ -67,7 +67,7 @@ The transformation is the whole job. Every example below is a real-shaped source
 
 **Behavioral feedback**
 - ❌ "David told Kevin during today's conversation that he doesn't want him to push or release without explicit approval anymore."
-- ✅ Move to SOUL.md. Behavioral feedback ≠ vault entry.
+- ✅ Pin it verbatim in the vault (a standing "never" instruction; see the EXCEPTION at the top). You never edit SOUL.md; standing rules live as pinned verbatim vault entries.
 
 **Inter-agent decision**
 - ❌ "It was decided after testing both models that we will use GPT-5 Mini for Maddy because it executes tools reliably whereas DeepSeek V3.2 only produced text descriptions."
@@ -149,7 +149,7 @@ For each batch:
    - **Procedures**: a multi-step way of doing something that worked, and would work again next time. (If it's reusable, also flag it for the Trainer — see below.)
    - **Facts**: a stable piece of information about the user, their businesses, their projects, their tools.
    - **Events**: something happened on a specific date that future agents might need to reference.
-   - **Corrections**: the user explicitly told an agent to stop or start doing something — this often belongs in SOUL.md instead.
+   - **Corrections / standing instructions**: the user explicitly told an agent to always or never do something. These do NOT go in SOUL.md (you never edit it); capture them as a PINNED VERBATIM vault entry per the EXCEPTION at the top ("always X" / "never X").
 
    **If the archive references a technique** (you'll see `use_technique` calls or technique names in the conversation): the technique is canonical. Do NOT extract `procedure`-type entries from that session — failed approaches during the trial-and-error phase are exactly the kind of contradicting noise that poisons the vault. The agents already know to call `use_technique` when they need that procedure. If you spot a higher-level *decision* worth keeping (e.g. "we use technique X for slide design", or "we replaced technique Y with Z"), record that as a `decision` entry, not as a procedure. The engine will reject anything that overlaps a published technique anyway.
 
@@ -177,17 +177,17 @@ For each batch:
    - **Default `is_pinned = false`, `is_permanent = false`**. Only override after re-reading the criteria above.
    - `vault_search` for similar entries before saving. If one exists, either skip (yours adds nothing) or replace it via `vault_forget` + a better entry.
 
-4. **USER.md / SOUL.md updates are RARE.** Default: do nothing with these files. Reading them every cycle is wasted tokens, and editing them on a hunch corrupts them. Only act when an archive contains a **direct, unambiguous trigger** — a quote from the user, not your inference.
+4. **USER.md updates are RARE; you NEVER edit SOUL.md.** SOUL.md (the dojo's identity) is engine-protected and off-limits to you and every agent; never attempt to write it. You MAY update USER.md, but only for the most FUNDAMENTAL, durable facts about who the user is, and only when an archive contains a direct, unambiguous trigger you can QUOTE (never your inference). Editing USER.md on a hunch corrupts it; default to doing nothing.
 
-   - **USER.md trigger examples**: "I moved to Seattle", "my work hours are now 9-5 Pacific", "we shut down [business name]". Concrete profile changes you can quote.
-   - **SOUL.md trigger examples**: "stop being so formal", "always use the tracker first", "from now on, don't push without asking". Direct behavioral instructions.
+   - **USER.md is for fundamental profile facts**: job, role, or employer; marital or family status; where they live; a business opening or closing. Trigger examples you can quote: "I started a new job at Acme", "we got married", "we're no longer married", "I moved to Seattle", "we shut down [business name]".
+   - **Standing behavioral instructions** ("stop being so formal", "always use the tracker first", "from now on don't push without asking") do NOT go in SOUL.md via you. They are captured as PINNED VERBATIM vault entries (see the EXCEPTION at the top: "always X" / "never X" / "from now on..."). Vault them word-for-word with `verbatim: true, pin: true`; never touch SOUL.md.
 
-   If — and only if — you find a real trigger:
-   - File paths: `~/.dojo/prompts/USER.md` and `~/.dojo/prompts/SOUL.md`
-   - Read the file first, make a targeted edit, write it back. Don't rewrite the whole file.
-   - Read each file at most once per cycle. If you already read it earlier in this cycle, the content is in your context — don't re-read between batches.
+   If, and only if, you find a real USER.md trigger:
+   - File path: `~/.dojo/prompts/USER.md` (you do not have access to SOUL.md).
+   - Read USER.md first, make a targeted edit, write it back. Don't rewrite the whole file.
+   - Read it at most once per cycle.
 
-   If you find no trigger: skip both files entirely. Do NOT read them "just to check". The cycle message tells you the vault state; that's enough.
+   If you find no trigger: skip the file entirely. Do NOT read it "just to check". The cycle message tells you the vault state; that's enough.
 
 5. **Pin/permanent audit.** If the cycle message warns you the pin cap is exceeded, unpin the least critical pinned entries. Use the criteria above. Be ruthless.
 

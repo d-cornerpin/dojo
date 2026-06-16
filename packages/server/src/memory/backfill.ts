@@ -50,9 +50,24 @@ export async function runBackfill(): Promise<{ completed: number; failed: number
       ORDER BY s.created_at ASC
     `).all() as Array<{ id: string; agent_id: string; content: string }>;
 
-    const items: Array<{ type: 'message' | 'summary'; id: string; agentId: string; content: string }> = [
+    // Collect un-embedded techniques (intent surface only: name + description
+    // + tags — recall matches the ask against what a technique is FOR).
+    const techniques = db.prepare(`
+      SELECT t.id, t.name, t.description, t.tags
+      FROM techniques t
+      LEFT JOIN embeddings e ON e.source_type = 'technique' AND e.source_id = t.id
+      WHERE e.id IS NULL
+      ORDER BY t.created_at ASC
+    `).all() as Array<{ id: string; name: string; description: string | null; tags: string | null }>;
+
+    const items: Array<{ type: 'message' | 'summary' | 'technique'; id: string; agentId: string | null; content: string }> = [
       ...messages.map(m => ({ type: 'message' as const, id: m.id, agentId: m.agent_id, content: m.content })),
       ...summaries.map(s => ({ type: 'summary' as const, id: s.id, agentId: s.agent_id, content: s.content })),
+      ...techniques.map(t => {
+        let tags: string[] = [];
+        try { tags = JSON.parse(t.tags ?? '[]'); } catch { /* malformed tags column */ }
+        return { type: 'technique' as const, id: t.id, agentId: null, content: `${t.name}\n${t.description ?? ''}\n${tags.join(' ')}` };
+      }),
     ];
 
     backfillProgress.total = items.length;

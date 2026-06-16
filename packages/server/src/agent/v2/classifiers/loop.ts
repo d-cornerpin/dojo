@@ -16,6 +16,24 @@ import type { ToolCall } from '@dojo/shared';
 export const RECENT_TOOL_WINDOW = 8;       // matches v1 runtime.ts:785
 export const MAX_REPEATS_BEFORE_BREAK = 3; // matches v1 runtime.ts:786
 
+// Remediation 4f (catalog row 9): user-facing repetition guard. The exact-
+// match check missed trivially reworded repeats; token-set Jaccard catches
+// near-duplicates cheaply on the hot reply path (no embedding call). Short
+// replies stay exact-only: "Done." twice in a row can be legitimate.
+export function isNearDuplicateText(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const tokenize = (s: string) =>
+    new Set(s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((w) => w.length > 2));
+  const ta = tokenize(a);
+  const tb = tokenize(b);
+  if (ta.size < 8 || tb.size < 8) return a.trim() === b.trim();
+  let inter = 0;
+  for (const w of ta) if (tb.has(w)) inter++;
+  const jaccard = inter / (ta.size + tb.size - inter);
+  return jaccard >= 0.9;
+}
+
 export type LoopDecision = 'ok' | 'block';
 
 export interface LoopCheckResult {

@@ -20,7 +20,9 @@ export function generateTechniqueIndex(): string {
   if (techniques.length === 0) return '';
 
   let index = '## Available Techniques\n';
-  index += 'You have learned the following techniques. When a task matches a technique you have, ALWAYS call `use_technique(name="<technique-id>")` first to load the full instructions before proceeding. Do not improvise when a matching technique exists — the technique may contain specific steps, scripts, or context that improve the result.\n\n';
+  // Audit C4: ladder-anchored, not absolute — the live user message outranks
+  // a technique's standing steps (precedence tier 1 vs tier 2).
+  index += 'You have learned the following techniques. When a task matches one, call `use_technique(name="<technique-id>")` first to load the full instructions, then follow them — they carry steps, scripts, and context that improve the result. The user\'s live message outranks a technique: if they conflict, follow the user.\n\n';
 
   for (const t of techniques) {
     let tags = '';

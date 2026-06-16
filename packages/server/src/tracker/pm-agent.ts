@@ -8,6 +8,7 @@ import { broadcast } from '../gateway/ws.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';
 import { listTasks, getTask, getLastPoke, logPoke } from './schema.js';
 import { getAgentRuntime } from '../agent/runtime.js';
+import { getRecentObservations, getRecentTransitions, formatEntryLine } from './task-log.js';
 import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, isSetupCompleted, getOwnerName } from '../config/platform.js';
 import type { Message } from '@dojo/shared';
 
@@ -1157,6 +1158,19 @@ async function runPMReview(): Promise<void> {
       const desc = t.description.length > 150 ? t.description.slice(0, 150) + '...' : t.description;
       line += `\n  Instructions: ${desc}`;
     }
+    // Remediation 4e: ledger evidence inline — the PM judges from what the
+    // agent actually DID (rejects, observations, transitions), not from
+    // timestamps plus its own wiped history. Same durable record the agent
+    // itself sees via the attempt-ledger context block.
+    try {
+      const evidence = [
+        ...getRecentObservations(t.id, 2),
+        ...getRecentTransitions(t.id, 2),
+      ].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-3);
+      if (evidence.length > 0) {
+        line += `\n  Ledger: ${evidence.map((e) => formatEntryLine(e)).join(' | ').slice(0, 400)}`;
+      }
+    } catch { /* ledger optional */ }
     return line;
   }).join('\n');
 
@@ -1217,6 +1231,37 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
     await runtime.handleMessage(pmId, situationReport);
   } catch (err) {
     logger.error('PM LLM review failed', { error: err instanceof Error ? err.message : String(err) });
+    // Engine-guaranteed delivery (remediation Phase 4, 4a): a failed PM
+    // review must not swallow engine-detected issues. Pre-fix, the dedup
+    // hash was already consumed above, so the SAME issue-set was skipped as
+    // "unchanged" on every later cycle and nobody ever heard about it.
+    // Reset the hash so the next cycle retries, and deliver the engine's
+    // own issue list straight to the primary (system sender: wakes, and is
+    // dedup-exempt). The PM's judgment layer is unchanged on the success
+    // path; this only guarantees the failure path. ('' never matches a real
+    // hash, so the next cycle retries this exact issue-set.)
+    lastSituationReportHash = '';
+    try {
+      const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
+      await deliverA2AMessage({
+        intent: 'QUESTION',
+        threadId: uuidv4(),
+        requiresResponse: false,
+        payload:
+          `PM review failed to run (engine fallback delivery). Engine-detected tracker issues that still need attention:\n` +
+          issues.map((issue, i) => `${i + 1}. ${issue.text}`).join('\n') +
+          `\n\nHandle what you can directly; the PM will retry on its next cycle.`,
+        toAgent: getPrimaryAgentId(),
+        fromAgent: 'system',
+      });
+      logger.warn('PM review failure: engine delivered issue list to primary directly', {
+        issueCount: issues.length,
+      });
+    } catch (fallbackErr) {
+      logger.error('PM review fallback delivery also failed', {
+        error: fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr),
+      });
+    }
   }
 }
 

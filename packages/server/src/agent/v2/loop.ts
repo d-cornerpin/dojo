@@ -24,10 +24,11 @@
 //   ✓ Tracker enforcement (engine-side, no tool_use in context)
 //   ✓ Spinning detection with model nudge (via progressClassifier)
 //
-// Deferred to later phases (with TODO markers in-line):
-//   • Phase 3.5 — large-files.ts deletion + file_read offset/limit
-//   • Phase 4 — compaction defaults change + scaffolding cuts
-//   • Phase 5 — system prompt diet
+// Landed since (via the remediation work):
+//   ✓ Phase 3.5 — large-files.ts removed; file_read has offset/limit
+//   ✓ Phase 4 — compaction + scaffolding reworked (memory remediation)
+//   ✓ Phase 5 — system-prompt diet (names-only tool index, trimmed SOUL)
+// Still deferred (no inline markers; tracked here):
 //   • Phase 6 — full unified error cascade (Dreamer special case, etc.)
 //   • Phase 7 — squad shared memory namespaces
 // ════════════════════════════════════════
@@ -41,6 +42,7 @@ import type { Message, ToolCall } from '@dojo/shared';
 
 import { assembleContext } from '../../memory/assembler.js';
 import { callModel, getContextWindow } from '../model.js';
+import { writeContextReceipt } from './receipt.js';
 import { executeTool } from '../tools.js';
 // recordError intentionally NOT imported — handleMessage's catch path calls
 // it. Calling here would double-count errors and trip the loop-detector
@@ -89,7 +91,14 @@ import {
 } from './state.js';
 
 import { partitionTools, type ToolBatch } from './classifiers/concurrency.js';
-import { loopDetector, RECENT_TOOL_WINDOW, canonicalToolSignature } from './classifiers/loop.js';
+import { loopDetector, RECENT_TOOL_WINDOW, canonicalToolSignature, isNearDuplicateText } from './classifiers/loop.js';
+import { recordToolOutcome, crossTurnFailureNote } from './attempt-record.js';
+// Engine message-injection now flows exclusively through the registry channel
+// (injectRegistryMessage / appendSystemHint); the legacy pushEngineMessage,
+// detectContextGap, and getPromptAssemblerMode call sites were removed at R7b.
+import { injectRegistryMessage, appendSystemHint, buildAssemblyContext } from '../../prompt/registry/assembler.js';
+import type { AssemblyContext } from '../../prompt/registry/types.js';
+import { isDestructiveCall, consumeApproval, requestApproval } from '../destructive-gate.js';
 import {
   isLoadingTool,
   isStructuringTool,
@@ -106,7 +115,7 @@ import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-repli
 import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText } from './classifiers/output.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
 import { permissionAlternativeFinder } from './classifiers/permission.js';
-import { techniqueMatcher } from './classifiers/technique.js';
+import { semanticTechniqueMatches, SEMANTIC_STRONG_THRESHOLD, buildTechniqueMatchQuery } from './classifiers/technique.js';
 import { listTechniques } from '../../techniques/store.js';
 
 const logger = createLogger('v2-loop');
@@ -205,7 +214,7 @@ const BOOKKEEPING_NUDGE_TOOLS = new Set([
   'credential_delete',
 ]);
 
-const BOOKKEEPING_NUDGE = `\n\n[Engine note: this was internal bookkeeping. If the user already has the answer they needed (or didn't ask one), end the turn with literal \`[no-reply]\` instead of writing a closeout line like "Done." / "All set." / "Got it." — silent turns are first-class and the right outcome here.]`;
+const BOOKKEEPING_NUDGE = `\n\n[Engine note: this was internal bookkeeping. If the user just asked you to do exactly this (e.g. "save my key", "remember that", "delete X"), reply with ONE short line confirming it is done (e.g. "Saved.", "Got it, stored your OpenWeather key.") so they get acknowledgment. If instead this was incidental to other work, something you did on your own initiative, or the user already has what they needed, end the turn with literal \`[no-reply]\` rather than a generic "Done." / "All set." / "Got it." closeout.]`;
 
 function appendBookkeepingNudgeIfRelevant<T extends { name?: string; content?: string; isError?: boolean }>(toolResult: T): T {
   if (toolResult.isError) return toolResult;
@@ -595,6 +604,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // Snapshot turn boundary so context assembly excludes mid-run user messages
   const turnStartedAt = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
   turnBoundary.set(agentId, turnStartedAt);
+
+  // Remediation Phase 5 (5a): if a technique gets injected this turn, the
+  // turn's outcome (completed vs errored) is written back to its usage row.
+  let turnInjectedTechniqueId: string | null = null;
 
   // v2.7.6 — hydrate the technique-acknowledgement gate from agents.config.
   // If the agent ended their last turn with a pending ack, the gate stays
@@ -1226,6 +1239,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
       let systemPrompt = ctx.systemPrompt;
       const messages = ctx.messages;
 
+      // One message-injection context for this iteration's §3c entries
+      // (technique, context-gap, tracker-notif, nudge, tool-note). The loop sets
+      // mutable fields (pendingNudge, technique payload) at each site and calls
+      // injectRegistryMessage, so injection is registry-owned (R8). The registry
+      // is the only assembler path (R7), so this is always built.
+      const mctx: AssemblyContext = buildAssemblyContext(
+        agentId,
+        contextModelId,
+        { latestUserSource, ttsEngine: latestTtsEngine },
+        { loopCount: state.loopCount, turnNumber, lastUserMessageContent: lastUserMessageContent ?? '', pendingNudge: state.pendingNudge },
+      );
+
       // ── Technique matcher (Part VI #5, Phase 5) ──
       // Replaces v1's "MANDATORY: Check Techniques Before Starting Work"
       // prompt instruction with engine-side fuzzy matching: when the user
@@ -1247,7 +1272,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
             description: t.description ?? undefined,
             tags: t.tags,
           }));
-          const matches = techniqueMatcher({ query: lastUserMessageContent, techniques });
+          // Match the ask against technique-intent embeddings (remediation
+          // Phase 2). Semantic matching went GREEN on the floor model in
+          // S5.4/S5.5 (0.56/0.68/0.72 strong matches on zero-overlap
+          // phrasings; clean on unrelated pings). The token-overlap matcher
+          // survives only as semanticTechniqueMatches' internal fallback for
+          // when the embedding service is down (recall weakens, never zeroes).
+
+          // Attachment-aware query (remediation Phase 3, S5.1/S5.2): keep the
+          // attachment filename/kind as intent signal, strip pointer
+          // boilerplate so a photo-with-little-text message can still match a
+          // photo technique.
+          const matchQuery = buildTechniqueMatchQuery(lastUserMessageContent);
+          const matches = await semanticTechniqueMatches(matchQuery, techniques);
           if (matches.length > 0) {
             // Two modes:
             //   - STRONG MATCH (score >= 0.5): the engine loads TECHNIQUE.md
@@ -1266,7 +1303,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // bounded. If the technique is too large to inline (>25K chars ≈
             // 6K tokens), still wrap the user message but with a load-it
             // instruction instead of the full body.
-            const STRONG_MATCH_THRESHOLD = 0.5;
+            const STRONG_MATCH_THRESHOLD = SEMANTIC_STRONG_THRESHOLD;
             const MAX_INLINE_CHARS = 25_000;
             const strongMatch = matches[0].score >= STRONG_MATCH_THRESHOLD ? matches[0] : null;
             const weakMatches = strongMatch
@@ -1274,7 +1311,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               : matches;
 
             let injectedTechniqueId: string | null = null;
-            let userMessageWrap: string | null = null;
+            let techniqueInjection: string | null = null;
             if (strongMatch) {
               try {
                 const { getTechniqueDetail, recordTechniqueUsage } = await import('../../techniques/store.js');
@@ -1282,17 +1319,29 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 if (detail?.instructions && detail.instructions.length > 0) {
                   const md = detail.instructions;
                   const tooLarge = md.length > MAX_INLINE_CHARS;
+                  // Audit C12: the old implementation PREPENDED this text into
+                  // the user's own message, so an engine directive borrowed
+                  // tier-1 authority and structurally outranked the user's
+                  // actual words. The preserved reason (v2.2.8 → v2.3.2
+                  // history): adjacency to the ask is what makes the model
+                  // follow the technique; system-prompt placement was ignored.
+                  // So: keep adjacency by injecting a SEPARATE engine-marked
+                  // message right after the ask, framed at its true tier
+                  // (task/technique notes, below the live user message).
+                  const header =
+                    `[DOJO TECHNIQUE — engine-injected. This is technique guidance (precedence: task/technique notes); the user's live message above outranks it wherever they conflict.]`;
                   if (tooLarge) {
-                    userMessageWrap =
-                      `[DOJO: This task is covered by the "${strongMatch.technique.name}" technique. The full instructions are too long to inline (${md.length} chars) — load it via use_technique('${strongMatch.technique.id}') before doing the work. Do not improvise an alternative approach.]\n\n`;
+                    techniqueInjection =
+                      `${header}\nThis task matches the "${strongMatch.technique.name}" technique. The full instructions are too long to inline (${md.length} chars) — load it via use_technique('${strongMatch.technique.id}') before doing the work, then follow its steps unless the user said otherwise.`;
                   } else {
-                    userMessageWrap =
-                      `[DOJO: This task is covered by the "${strongMatch.technique.name}" technique. Follow the procedure below as written — do not improvise an alternative approach.]\n\n` +
-                      `--- TECHNIQUE: ${strongMatch.technique.name} ---\n${md}\n--- END TECHNIQUE ---\n\n`;
+                    techniqueInjection =
+                      `${header}\nThis task matches the "${strongMatch.technique.name}" technique. Follow the procedure below unless the user's message says otherwise.\n\n` +
+                      `--- TECHNIQUE: ${strongMatch.technique.name} ---\n${md}\n--- END TECHNIQUE ---`;
                   }
                   injectedTechniqueId = strongMatch.technique.id;
+                  turnInjectedTechniqueId = strongMatch.technique.id;
                   try { recordTechniqueUsage(strongMatch.technique.id, agentId); } catch { /* best effort */ }
-                  logger.info('v2 techniqueMatcher: wrapping user message with strong-match technique', {
+                  logger.info('v2 techniqueMatcher: injecting strong-match technique as engine message', {
                     agentId,
                     techniqueId: strongMatch.technique.id,
                     techniqueName: strongMatch.technique.name,
@@ -1310,29 +1359,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
               }
             }
 
-            // Apply the wrap to the most recent user message in `messages`.
-            // The DB-stored row is untouched — only this in-flight model call
-            // sees the wrap. Handles both string and content-block forms.
-            if (userMessageWrap) {
-              for (let i = messages.length - 1; i >= 0; i--) {
-                const m = messages[i];
-                if (m.role !== 'user') continue;
-                if (typeof m.content === 'string') {
-                  m.content = userMessageWrap + m.content;
-                } else if (Array.isArray(m.content)) {
-                  const blocks = m.content as unknown as Array<Record<string, unknown>>;
-                  const firstTextIdx = blocks.findIndex((b) => b.type === 'text');
-                  if (firstTextIdx >= 0) {
-                    blocks[firstTextIdx] = {
-                      ...blocks[firstTextIdx],
-                      text: userMessageWrap + ((blocks[firstTextIdx].text as string) ?? ''),
-                    };
-                  } else {
-                    blocks.unshift({ type: 'text', text: userMessageWrap });
-                  }
-                }
-                break;
-              }
+            // Inject as its own message AFTER the ask (post-assembly, so the
+            // role-merge mutation cannot fuse it into the user's message or a
+            // tool_result). The DB-stored rows are untouched — only this
+            // in-flight model call sees the injection.
+            if (techniqueInjection) {
+              mctx.techniqueStrong = techniqueInjection;
+              injectRegistryMessage('msg.technique-strong', messages, mctx);
             }
 
             // Weak matches (and the strong match if its load failed) get the
@@ -1349,9 +1382,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
               const hintHeader = injectedTechniqueId
                 ? `\n\n## Other Techniques That Might Also Apply\n\n`
                 : `\n\n## Possibly Relevant Techniques\n\n`;
-              systemPrompt += hintHeader +
+              const weakHint = hintHeader +
                 `Based on the user's message, the DOJO matched these techniques. Load any that fit the task; ignore otherwise.\n\n` +
                 lines.join('\n');
+              mctx.techniqueWeakHint = weakHint;
+              systemPrompt = appendSystemHint(systemPrompt, 'sys.technique-weak-hint', mctx);
             }
             logger.debug('v2 techniqueMatcher: surfaced matches', {
               agentId,
@@ -1373,6 +1408,26 @@ export async function runV2Turn(agentId: string): Promise<void> {
             logger.warn('v2 techniqueMatcher failed (non-fatal)', { agentId, error: msg }, agentId);
           }
         }
+      }
+
+      // ── Context-gap detection (2026-06-15, "ask when stuck") ──
+      // The engine nudges the agent to ASK the user when it can SEE the agent
+      // lacks enough to proceed (v1: an attachment with no instruction),
+      // instead of inferring intent or hoping a weak model notices. Advisory
+      // [Engine hint] via the one engine-message channel; the agent uses
+      // judgment (and ignores it when a task/technique/context covers the gap).
+      // Same fire conditions as the technique matcher: first iteration, real
+      // user message, not the PM.
+      if (state.loopCount === 1 && lastUserMessageContent && !isPMAgent(agentId)) {
+        try {
+          // Same site, same alternation guard, byte-identical injection. Registry
+          // mode renders msg.context-gap (same detectContextGap call) and injects
+          // through the registry channel; legacy mode inline. The guard is the
+          // loop's (it depends on the live messages tail).
+          if (messages.length === 0 || messages[messages.length - 1].role === 'user') {
+            injectRegistryMessage('msg.context-gap', messages, mctx);
+          }
+        } catch { /* advisory only — never block the turn */ }
       }
 
       // ── Multi-step detection (v2.3.3) ──
@@ -1491,7 +1546,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   // chronologically — agent reads "user said X" then
                   // "the engine assigned you a task for it."
                   if (notif.ok && notif.content) {
-                    messages.push({ role: 'user', content: notif.content });
+                    mctx.trackerNotif = notif.content;
+                    injectRegistryMessage('msg.tracker-notif', messages, mctx);
                   }
 
                   // ── PM rename handoff (async) ──
@@ -1627,7 +1683,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // Per v1 runtime.ts:940-947 — only inject if last message is assistant
       // (so alternation stays valid). Then clear the nudge.
       if (state.pendingNudge && (messages.length === 0 || messages[messages.length - 1].role === 'assistant')) {
-        messages.push({ role: 'user', content: state.pendingNudge });
+        mctx.pendingNudge = state.pendingNudge;
+        injectRegistryMessage('msg.pending-nudge', messages, mctx);
         state = advance(state, { pendingNudge: null });
       }
 
@@ -1698,13 +1755,27 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // can only respond with text. Only inject on first iteration when last
       // message is assistant (alternation safety).
       if (!useTools && state.loopCount === 1 && messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
-        const toolNote = (
-          `[System note: Your current model does not support tool calling. You can only respond with text. ` +
-          `If the user asks you to do something that requires tools (file access, web search, tracker, etc.), ` +
-          `explain that your model doesn't support it and suggest they switch to a tool-capable model in Settings.]`
-        );
-        messages.push({ role: 'user', content: toolNote });
+        injectRegistryMessage('msg.tool-note', messages, mctx);
       }
+
+      // ── Context receipt (debug-gated, fire-and-forget) ──
+      // Last touch point before the provider call: every injector and
+      // post-assembly mutation has run, so this records exactly what the
+      // model receives this iteration.
+      writeContextReceipt({
+        agentId,
+        modelId,
+        turnNumber,
+        loopCount: state.loopCount,
+        systemPrompt,
+        messages,
+        useTools,
+        // Registry path only (undefined on legacy): which registered entry
+        // produced each system part / message. Receipt drops them if a later
+        // loop-side mutation makes the counts disagree.
+        systemEntryIds: ctx.systemEntryIds,
+        messageEntryIds: ctx.messageEntryIds,
+      });
 
       // ── Call model with retry-and-fallback (matches v1 runtime.ts:1028-1116) ──
       // For auto-routed agents, try up to 3 different models in the tier.
@@ -1965,8 +2036,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
             "SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' ORDER BY created_at DESC, rowid DESC LIMIT 1",
           )
           .get(agentId) as { content: string } | undefined;
-        if (lastAssistant && lastAssistant.content === result.content) {
-          logger.warn('v2: skipping duplicate assistant response (identical to last message)', {
+        if (lastAssistant && isNearDuplicateText(lastAssistant.content, result.content)) {
+          logger.warn('v2: skipping duplicate assistant response (identical or near-identical to last message)', {
             loopCount: state.loopCount,
           }, agentId);
           break;
@@ -3393,6 +3464,37 @@ export async function runV2Turn(agentId: string): Promise<void> {
           } else if (isLoadingTool(tc.name) && !isTrainerOwnTechniquesRead(agentId, tc.name, tc.arguments)) {
             state = advance(state, { loadingToolCallsThisTurn: state.loadingToolCallsThisTurn + 1 });
           }
+          // ── Destructive-action gate (remediation 4d, open question 6) ──
+          // The primary has full reign; every OTHER agent's destructive call
+          // is engine-held pending the primary's approval (one-shot,
+          // signature-bound, 60-min expiry). Prose cannot hold this line on
+          // the weakest model; the gate is the mechanism.
+          if (!isPrimaryAgent(agentId)) {
+            const destructiveKind = isDestructiveCall(tc.name, tc.arguments as Record<string, unknown>);
+            if (destructiveKind) {
+              const gateSig = canonicalToolSignature(tc.name, tc.arguments);
+              if (!consumeApproval(agentId, gateSig)) {
+                const gateAgentRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+                const refusal = await requestApproval({
+                  agentId,
+                  agentName: gateAgentRow?.name ?? agentId,
+                  toolName: tc.name,
+                  signature: gateSig,
+                  kind: destructiveKind,
+                  callDescription: `${tc.name}(${JSON.stringify(tc.arguments).slice(0, 300)})`,
+                });
+                try {
+                  broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
+                  broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusal.slice(0, 500) });
+                } catch { /* best effort */ }
+                return { toolCallId: tc.id, name: tc.name, content: refusal, isError: true };
+              }
+              logger.info('v2: destructive call approved by primary, executing', {
+                tool: tc.name,
+              }, agentId);
+            }
+          }
+
           // Execute (with safety wrapper)
           let toolResult;
           try {
@@ -3429,6 +3531,26 @@ export async function runV2Turn(agentId: string): Promise<void> {
               isError: true,
             };
           }
+
+          // Cross-turn attempt record (Invariant II): failures accumulate in
+          // the DB by canonical signature; a success clears its signature.
+          // When the SAME call keeps failing across separate turns, the
+          // failing result carries a note so the model stops re-trying it
+          // verbatim ("works in circles" had no cross-turn guard at all).
+          try {
+            const crossTurnSig = canonicalToolSignature(tc.name, tc.arguments);
+            const failCount = recordToolOutcome(agentId, tc.name, crossTurnSig, toolResult.isError === true);
+            if (toolResult.isError) {
+              const note = crossTurnFailureNote(tc.name, failCount);
+              if (note && typeof toolResult.content === 'string') {
+                toolResult = { ...toolResult, content: toolResult.content + note };
+                logger.warn('v2: cross-turn repeated failure', {
+                  tool: tc.name, failCount, signature: crossTurnSig.slice(0, 120),
+                }, agentId);
+              }
+            }
+          } catch { /* recording is best-effort */ }
+
           state = advance(state, { toolCallsExecutedThisTurn: state.toolCallsExecutedThisTurn + 1 });
 
           // v2.7.23 — track explicit channel-send tool calls so the
@@ -4362,6 +4484,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
       }, agentId);
     }
 
+    // 5a: the injected technique's usage row learns the turn's outcome.
+    if (turnInjectedTechniqueId) {
+      try {
+        const { recordTechniqueOutcome } = await import('../../techniques/store.js');
+        recordTechniqueOutcome(turnInjectedTechniqueId, agentId, true);
+      } catch { /* best effort */ }
+    }
+
     // Compaction is rare in v2 (Part V). For Phase 2 we skip the post-turn
     // call entirely — the pre-call compactionGate (added in Phase 4) will
     // handle it. v1's post-turn compaction call was the failure mode this
@@ -4371,6 +4501,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // don't keep firing while the recovery cascade does its DB writes.
     stopStatusHeartbeat(agentId);
     activeAbortControllers.delete(agentId);
+
+    // 5a: a turn that died with a technique injected counts as a failure
+    // signal for that technique.
+    if (turnInjectedTechniqueId) {
+      try {
+        const { recordTechniqueOutcome } = await import('../../techniques/store.js');
+        recordTechniqueOutcome(turnInjectedTechniqueId, agentId, false);
+      } catch { /* best effort */ }
+    }
 
     // Phase 6 (2026-05-04) — v2 now owns its own recovery cascade.
     // recoverFromError handles all side effects: context-overflow recovery,

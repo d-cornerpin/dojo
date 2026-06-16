@@ -1,20 +1,8 @@
 import { getOwnerName } from '../config/platform.js';
-import {
-  getGoogleWorkspaceConfig,
-  isGoogleConnected,
-  isEmailMonitoringEnabled,
-  isEmailSendingEnabled,
-} from '../google/auth.js';
-import {
-  getMicrosoftWorkspaceConfig,
-  isMicrosoftConnected,
-  isMsEmailMonitoringEnabled,
-  isMsEmailSendingEnabled,
-  getMsAccountType,
-} from '../microsoft/auth.js';
-import { isImessageConfigured } from '../services/presence.js';
+import { getMsAccountType } from '../microsoft/auth.js';
 import { isIMBridgeRunning } from '../services/imessage-bridge.js';
 import { getTwilioConfig } from '../twilio/auth.js';
+import { getChannelCapabilities } from './capability-registry.js';
 import { getTwilioSmsSafeSenders, getTwilioVoiceSafeCallers } from '../services/channel-safe-senders.js';
 import {
   getGmailSafeSenders,
@@ -38,22 +26,25 @@ export function buildChannelInspectReport(): string {
   lines.push(`Channel landscape for ${owner}'s DOJO`);
   lines.push('');
 
+  // Connection facts come from the capability registry (single source shared
+  // with the per-turn prompt summary); this report only owns its deeper
+  // rendering (safe-sender counts, bridge liveness, account type, policies).
+  const caps = getChannelCapabilities();
+
   // ── Gmail ──
   const gmailLines: string[] = [];
-  for (const slot of ['agent', 'user'] as const) {
-    if (!isGoogleConnected(slot)) continue;
-    const cfg = getGoogleWorkspaceConfig(slot);
-    const email = cfg.accountEmail ?? '(unknown address)';
-    const label = slot === 'agent' ? 'agent slot' : `${owner}'s personal slot`;
-    const caps: string[] = [];
-    if (isEmailMonitoringEnabled(slot)) caps.push('monitor inbound');
-    if (isEmailSendingEnabled(slot)) caps.push('send outbound');
+  for (const mb of caps.mailboxes.filter((m) => m.provider === 'gmail')) {
+    const email = mb.address ?? '(unknown address)';
+    const label = mb.slot === 'agent' ? 'agent slot' : `${owner}'s personal slot`;
+    const mbCaps: string[] = [];
+    if (mb.monitorInbound) mbCaps.push('monitor inbound');
+    if (mb.sendOutbound) mbCaps.push('send outbound');
     let safeSenderCount = 0;
     try {
-      safeSenderCount = getGmailSafeSenders(slot).length;
+      safeSenderCount = getGmailSafeSenders(mb.slot).length;
     } catch { /* config may not include this slot */ }
     gmailLines.push(
-      `  - ${email} (${label}) - ${caps.join(' + ') || 'no email capabilities active'} - ${safeSenderCount} safe sender(s) configured`,
+      `  - ${email} (${label}) - ${mbCaps.join(' + ') || 'no email capabilities active'} - ${safeSenderCount} safe sender(s) configured`,
     );
   }
   if (gmailLines.length > 0) {
@@ -66,20 +57,18 @@ export function buildChannelInspectReport(): string {
 
   // ── Outlook / Microsoft 365 ──
   const outlookLines: string[] = [];
-  for (const slot of ['agent', 'user'] as const) {
-    if (!isMicrosoftConnected(slot)) continue;
-    const cfg = getMicrosoftWorkspaceConfig(slot);
-    const email = cfg.accountEmail ?? '(unknown address)';
-    const label = slot === 'agent' ? 'agent slot' : `${owner}'s personal slot`;
-    const caps: string[] = [];
-    if (isMsEmailMonitoringEnabled(slot)) caps.push('monitor inbound');
-    if (isMsEmailSendingEnabled(slot)) caps.push('send outbound');
+  for (const mb of caps.mailboxes.filter((m) => m.provider === 'outlook')) {
+    const email = mb.address ?? '(unknown address)';
+    const label = mb.slot === 'agent' ? 'agent slot' : `${owner}'s personal slot`;
+    const mbCaps: string[] = [];
+    if (mb.monitorInbound) mbCaps.push('monitor inbound');
+    if (mb.sendOutbound) mbCaps.push('send outbound');
     let safeSenderCount = 0;
     try {
-      safeSenderCount = getOutlookSafeSenders(slot).length;
+      safeSenderCount = getOutlookSafeSenders(mb.slot).length;
     } catch { /* config may not include this slot */ }
     outlookLines.push(
-      `  - ${email} (${label}) - ${caps.join(' + ') || 'no email capabilities active'} - ${safeSenderCount} safe sender(s) configured`,
+      `  - ${email} (${label}) - ${mbCaps.join(' + ') || 'no email capabilities active'} - ${safeSenderCount} safe sender(s) configured`,
     );
   }
   if (outlookLines.length > 0) {
@@ -100,7 +89,7 @@ export function buildChannelInspectReport(): string {
 
   // ── iMessage ──
   try {
-    if (isImessageConfigured()) {
+    if (caps.imessage.configured) {
       const bridgeRunning = isIMBridgeRunning();
       lines.push('iMessage:');
       lines.push(`  - Bridge configured: yes. Running right now: ${bridgeRunning ? 'yes' : 'no'}.`);
@@ -115,7 +104,7 @@ export function buildChannelInspectReport(): string {
 
   // ── Teams ──
   try {
-    if (isMicrosoftConnected('agent') && getMsAccountType() === 'entra') {
+    if (caps.teams.available) {
       let teamsSafeSenderCount = 0;
       try {
         teamsSafeSenderCount = getTeamsSafeSenders().length;

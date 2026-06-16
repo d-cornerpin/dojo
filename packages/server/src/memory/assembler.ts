@@ -1,13 +1,15 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { assembleSystemPrompt, type PromptTurnContext } from '../prompt/assembler.js';
+import { type PromptTurnContext } from '../prompt/assembler.js';
 import { getContextWindow } from '../agent/model.js';
 import { estimateTokens, getRecentMessages } from './store.js';
 import { getContextSummaries } from './dag.js';
 import { getLatestBriefing } from './briefing.js';
 import { retrieveForContext } from '../vault/retrieval.js';
 import { isPMAgent } from '../config/platform.js';
+import { buildAssemblyContext, assembleSystemFromRegistry } from '../prompt/registry/assembler.js';
+import type { AssemblyTurnState } from '../prompt/registry/types.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2 — single-track v2)
 import { turnBoundary } from '../agent/turn-state.js';
 import type { Summary } from './dag.js';
@@ -51,7 +53,7 @@ const V2_MAX_TOOL_RESULT_TOKENS = 15000;
 // 200K model, 64 on 128K, 40 on 32K) still bounds how many turns are
 // ever visible to the assembler, so this number caps "alive within the
 // visible window" rather than total memory growth.
-const V2_STUB_AFTER_TURNS = 12;
+export const V2_STUB_AFTER_TURNS = 12;
 
 // v2.7.6 — the v2.7.4 1-turn override for technique tool results
 // has been REMOVED. It tried to enforce freshness by stubbing
@@ -150,22 +152,149 @@ function getFreshTailCount(contextWindow: number): number {
 
 // ── Context Assembly ──
 
+type LoopMsg = { role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] };
+
+/**
+ * Integrity pass (R6) — the post-combine repairs that make the message array a
+ * valid provider request, by construction. Run as one named stage after the
+ * scaffolding + fresh tail are combined: prune old images, cap large tool
+ * results, strip leading orphans, merge consecutive roles, sanitize orphaned
+ * tool blocks, strip a leading tool_result, and pop a trailing assistant.
+ *
+ * Scope note (mutation ledger B-rows): the PRE-combine cap/budget (B1/B2 — "cap
+ * BEFORE fit") stays in tail construction by design, and the DELIVERY markers
+ * (B12 [New Session] / B13 stop / B14 a2a-preempt) + the empty-context fallback
+ * (B11) stay after this pass because they depend on session/config state. This
+ * pass is the INTEGRITY core (B3-B10). Byte-equivalent extraction.
+ */
+function applyIntegrityPass(messages: LoopMsg[], agentId: string): LoopMsg[] {
+  pruneOldImageBlocksInPlace(messages, /* maxKeepImages */ 1);
+  capLargeToolResultsInPlace(messages);
+
+  // Ensure messages start with user role (Anthropic API requirement). Drop
+  // leading assistant messages and pure tool_result messages that reference
+  // tool_use IDs no longer in context. Stop at the first real user message.
+  while (messages.length > 0) {
+    const first = messages[0];
+    if (first.role === 'assistant') {
+      messages.shift();
+      continue;
+    }
+    if (first.role === 'user' && Array.isArray(first.content)) {
+      const blocks = first.content as Array<{ type?: string }>;
+      const allToolResults = blocks.length > 0 && blocks.every(b => b.type === 'tool_result');
+      if (allToolResults) {
+        messages.shift();
+        continue;
+      }
+    }
+    break;
+  }
+
+  // Ensure alternating roles.
+  let merged = mergeConsecutiveRoles(messages);
+
+  // Self-heal: drop orphaned tool blocks so a broken tool_use/tool_result
+  // invariant doesn't cause provider errors. Loud warning if >half is dropped.
+  const preSanitizeCount = merged.length;
+  merged = sanitizeToolBlocks(merged, agentId);
+  if (merged.length < preSanitizeCount / 2 && preSanitizeCount > 4) {
+    logger.error('sanitizeToolBlocks dropped over half the context — possible bug', {
+      before: preSanitizeCount,
+      after: merged.length,
+      agentId,
+    }, agentId);
+  }
+
+  // Final safety: strip any remaining tool_result blocks from the first message.
+  if (merged.length > 0 && merged[0].role === 'user' && Array.isArray(merged[0].content)) {
+    const firstBlocks = merged[0].content as unknown as Array<Record<string, unknown>>;
+    const filtered = firstBlocks.filter(b => b.type !== 'tool_result');
+    if (filtered.length < firstBlocks.length) {
+      logger.warn('Stripped tool_result blocks from first context message', {
+        droppedCount: firstBlocks.length - filtered.length,
+      }, agentId);
+      if (filtered.length === 0) {
+        merged.shift();
+      } else {
+        merged[0] = { ...merged[0], content: filtered as unknown as Anthropic.ContentBlockParam[] };
+      }
+    }
+  }
+
+  // Ensure conversation ends with a user message (Anthropic API requirement —
+  // "does not support assistant message prefill").
+  while (merged.length > 0 && merged[merged.length - 1].role === 'assistant') {
+    merged.pop();
+  }
+
+  return merged;
+}
+
+export interface AssembledContext {
+  systemPrompt: string;
+  messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>;
+  /**
+   * Registry path only: the entry id that produced each system-prompt part
+   * (aligned to parts) / each message. Fed to the context receipt so it shows
+   * which registered injections fired. Undefined on the legacy path.
+   */
+  systemEntryIds?: (string | null)[];
+  messageEntryIds?: (string | null)[];
+}
+
+/**
+ * Assemble the full per-turn context (system prompt + message array). The
+ * declarative registry is the sole assembler: the registry walker produces the
+ * system prompt and the message-context builder produces the messages. The
+ * `prompt_assembler_mode` flag, the parallel legacy system-prompt builder, and
+ * the shadow guard were all removed once the registry was verified byte-identical
+ * to legacy for every agent type. See DOJO-PROMPT-REGISTRY-PLAN.md.
+ */
 export async function assembleContext(
   agentId: string,
   modelId: string,
   turnContext?: PromptTurnContext,
-): Promise<{
-  systemPrompt: string;
-  messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>;
-}> {
+  turnState?: AssemblyTurnState,
+): Promise<AssembledContext> {
+  return assembleContextViaRegistry(agentId, modelId, turnContext, turnState);
+}
+
+/**
+ * The assembler. The registry walker produces the system prompt; the message-
+ * context builder produces the message array, budgeted against that system
+ * prompt's size, and threads the per-slot entry ids to the receipt.
+ *
+ * Through R7 this ran a shadow comparison against a parallel legacy system-
+ * prompt build and shipped legacy on any drift. Once the registry was verified
+ * byte-identical to legacy for every agent type, the legacy system build and
+ * the shadow guard were deleted; the registry is now the sole source.
+ */
+async function assembleContextViaRegistry(
+  agentId: string,
+  modelId: string,
+  turnContext?: PromptTurnContext,
+  turnState?: AssemblyTurnState,
+): Promise<AssembledContext> {
+  const ctx = buildAssemblyContext(agentId, modelId, turnContext, turnState);
+  const sys = assembleSystemFromRegistry(ctx);
+  const { messages } = await assembleMessageContext(agentId, modelId, sys.text, turnContext);
+  return { systemPrompt: sys.text, messages, systemEntryIds: sys.entryIds };
+}
+
+async function assembleMessageContext(
+  agentId: string,
+  modelId: string,
+  systemPrompt: string,
+  turnContext?: PromptTurnContext,
+): Promise<AssembledContext> {
   const contextWindow = getContextWindow(modelId);
   // Reserve 10K tokens for tool definitions (they're added by the model layer, not here)
   // and output tokens. The assembler only controls system prompt + messages.
   const toolAndOutputReserve = 15000;
   const maxTokens = Math.floor(DEFAULTS.contextThreshold * contextWindow) - toolAndOutputReserve;
 
-  // 1. System prompt
-  const systemPrompt = assembleSystemPrompt(agentId, modelId, turnContext);
+  // Budget the message array against the registry-produced system prompt's size.
   let usedTokens = estimateTokens(systemPrompt);
 
   const messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }> = [];
@@ -337,8 +466,9 @@ export async function assembleContext(
   const summaries = scrubSummariesAgainstFreshTechniques(rawSummaries, freshlyReadTechniques);
 
   if (summaries.length > 0) {
-    // Budget check: drop oldest summaries if they would overflow
-    const summariesToInclude = budgetSummaries(summaries, maxTokens - usedTokens);
+    // Selection by meaning under a hard cap (budgetSummaries is the internal
+    // fallback when relevance scoring can't run — see selectSummariesByRelevance).
+    const summariesToInclude = await selectSummariesByRelevance(summaries, maxTokens - usedTokens, agentId);
 
     if (summariesToInclude.length > 0) {
       const summaryText = summariesToInclude.map(s => formatSummaryXml(s)).join('\n\n');
@@ -351,6 +481,61 @@ export async function assembleContext(
       injectedAnyScaffolding = true;
     }
   }
+
+  // 3.6. Relevant memory (remediation Phase 2, Invariant II): per-turn pull of
+  // OLD raw messages by meaning. Summaries cover compacted epochs; this covers
+  // facts still in un-compacted history that have fallen out of the fresh
+  // tail (told two sessions ago, never compacted, not yet vaulted by the
+  // Dreamer). Tight budget, cached per query so per-iteration context
+  // rebuilds don't re-run vector search.
+  try {
+    const block = await buildRelevantMemoryBlock(agentId);
+    if (block && estimateTokens(block) < maxTokens - usedTokens) {
+      messages.push({ role: 'user', content: block });
+      usedTokens += estimateTokens(block);
+      injectedAnyScaffolding = true;
+    }
+  } catch (err) {
+    logger.debug('relevant-memory block failed', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+
+  // 3.7. Attempt ledger (remediation Phase 2, Invariant II / Cluster C):
+  // deterministic task-id join, NOT semantic — the engine knows which task
+  // the agent is on. What was already tried is engine fact and belongs in
+  // front of the model before it repeats itself ("works in circles"). The
+  // durable record (task_log + tasks.revert_count) existed all along; this
+  // surfaces it. Tight cap; rejects and recent transitions matter most.
+  try {
+    const { listTasks } = await import('../tracker/schema.js');
+    const { getRecentObservations, getRecentTransitions, formatEntryLine } = await import('../tracker/task-log.js');
+    const activeForLedger = listTasks({ status: 'in_progress', assignedTo: agentId }).slice(0, 2);
+    const sections: string[] = [];
+    for (const task of activeForLedger) {
+      const entries = [
+        ...getRecentObservations(task.id, 4),
+        ...getRecentTransitions(task.id, 4),
+      ].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-6);
+      if (entries.length === 0) continue;
+      let revertNote = '';
+      try {
+        const row = getDb().prepare('SELECT revert_count FROM tasks WHERE id = ?')
+          .get(task.id) as { revert_count: number | null } | undefined;
+        if (row?.revert_count) revertNote = ` — reverted ${row.revert_count}x already`;
+      } catch { /* column may not exist on old DBs */ }
+      sections.push(`Task "${task.title}"${revertNote}:\n${entries.map((e) => `  ${formatEntryLine(e)}`).join('\n')}`);
+    }
+    if (sections.length > 0) {
+      const ledgerText = `═══ ATTEMPT LEDGER (engine record of work on your active tasks — do not repeat attempts already logged here) ═══\n${sections.join('\n\n')}\n═══ END ATTEMPT LEDGER ═══`;
+      const ledgerTokens = estimateTokens(ledgerText);
+      if (ledgerTokens < 800 && ledgerTokens < maxTokens - usedTokens) {
+        messages.push({ role: 'user', content: ledgerText });
+        usedTokens += ledgerTokens;
+        injectedAnyScaffolding = true;
+      }
+    }
+  } catch { /* tracker may be empty or absent */ }
 
   // 3.5. Active task injection — v1: always; v2: session start only AND
   // skip if the last 3 turns already mention any of those task IDs (Part V
@@ -594,90 +779,11 @@ export async function assembleContext(
   // image blocks). Only the MOST RECENT image is needed for vision; older
   // ones can be replaced with a text stub. The agent can re-call
   // file_read on the path if it genuinely needs to re-examine.
-  pruneOldImageBlocksInPlace(messages, /* maxKeepImages */ 1);
-
-  // ── v2 only: per-tool-result text cap (Part V) ──
-  // A 30K-token file_read becomes a ~3K stub. This is the per-call cap,
-  // applied to fresh tail tool results. Older results (≥STUB_AFTER_TURNS
-  // turns) were already replaced with much shorter stubs above by
-  // stubOldToolResults — capLargeToolResultsInPlace mostly affects the
-  // recent tail.
-  capLargeToolResultsInPlace(messages);
-
-  // Ensure messages start with user role (Anthropic API requirement).
-  // Drop leading assistant messages and pure tool_result messages that
-  // reference tool_use IDs no longer in context. Stop at the first
-  // real user message.
-  while (messages.length > 0) {
-    const first = messages[0];
-    if (first.role === 'assistant') {
-      messages.shift();
-      continue;
-    }
-    // Check if this user message is ONLY tool_result blocks (no text)
-    if (first.role === 'user' && Array.isArray(first.content)) {
-      const blocks = first.content as Array<{ type?: string }>;
-      const allToolResults = blocks.length > 0 && blocks.every(b => b.type === 'tool_result');
-      if (allToolResults) {
-        messages.shift();
-        continue;
-      }
-    }
-    break;
-  }
-
-  // Ensure alternating roles
-  let merged = mergeConsecutiveRoles(messages);
-
-  // Self-heal: drop orphaned tool blocks so the agent can recover from a
-  // broken conversation invariant without manual intervention. Both the
-  // Anthropic and OpenAI-compatible APIs require that every tool_use in
-  // an assistant message has a matching tool_result in a following user
-  // message, and every tool_result references a tool_use id that appears
-  // in a preceding assistant message. Violations cause provider errors
-  // like MiniMax's "tool result's tool id(...) not found", which leaves
-  // the agent stuck in a loop of failed calls.
-  //
-  // Causes include mid-history compaction dropping an assistant turn
-  // but leaving the tool_result behind, stream accumulators capturing
-  // a drifted id, or transient DB failures. We don't try to diagnose
-  // which one — we just enforce the invariant before every call.
-  const preSanitizeCount = merged.length;
-  merged = sanitizeToolBlocks(merged, agentId);
-  // Safety check: if sanitization dropped more than half the messages, something is wrong.
-  // Log a critical warning so we can debug. Don't drop them — the provider error is better
-  // than silently losing the conversation.
-  if (merged.length < preSanitizeCount / 2 && preSanitizeCount > 4) {
-    logger.error('sanitizeToolBlocks dropped over half the context — possible bug', {
-      before: preSanitizeCount,
-      after: merged.length,
-      agentId,
-    }, agentId);
-  }
-
-  // Final safety: strip any remaining tool_result blocks from the first message.
-  // After merging and sanitization, a tool_result can still end up at position 0
-  // if it got merged with a text message. Providers reject this.
-  if (merged.length > 0 && merged[0].role === 'user' && Array.isArray(merged[0].content)) {
-    const firstBlocks = merged[0].content as unknown as Array<Record<string, unknown>>;
-    const filtered = firstBlocks.filter(b => b.type !== 'tool_result');
-    if (filtered.length < firstBlocks.length) {
-      logger.warn('Stripped tool_result blocks from first context message', {
-        droppedCount: firstBlocks.length - filtered.length,
-      }, agentId);
-      if (filtered.length === 0) {
-        merged.shift();
-      } else {
-        merged[0] = { ...merged[0], content: filtered as unknown as Anthropic.ContentBlockParam[] };
-      }
-    }
-  }
-
-  // Ensure conversation ends with a user message (Anthropic API requirement —
-  // "does not support assistant message prefill")
-  while (merged.length > 0 && merged[merged.length - 1].role === 'assistant') {
-    merged.pop();
-  }
+  // ── Integrity pass (R6) — post-combine repairs, one named stage ──
+  // prune old images, cap large tool results, strip leading orphans, merge
+  // consecutive roles, sanitize orphaned tool blocks, strip a leading
+  // tool_result, pop a trailing assistant. See applyIntegrityPass.
+  let merged = applyIntegrityPass(messages, agentId);
 
   // Guard: if we have zero messages after all filtering, pull the last user message
   // directly from DB so the agent at least sees what it's supposed to respond to.
@@ -721,7 +827,6 @@ export async function assembleContext(
 
       if (lastUserMsg) {
         logger.error('Context assembly produced 0 messages after filtering — recovering last user message', {
-          preSanitizeCount,
           agentId,
         }, agentId);
         merged.push({ role: 'user', content: lastUserMsg.content });
@@ -736,7 +841,6 @@ export async function assembleContext(
         // No session boundary set and no recoverable message — preserve
         // legacy fallback so the agent has something to respond to.
         logger.error('Context assembly produced 0 messages after filtering and no recoverable user message', {
-          preSanitizeCount,
           agentId,
         }, agentId);
         merged.push({ role: 'user', content: 'Continue with your current task.' });
@@ -873,6 +977,155 @@ function formatSummaryXml(summary: Summary): string {
   return `<summary id="${summary.id}" depth="${summary.depth}" kind="${summary.kind}" tokens="${summary.tokenCount}" earliest="${summary.earliestAt}" latest="${summary.latestAt}">
 ${summary.content}
 </summary>`;
+}
+
+// ── Summary selection (remediation Phase 2, Invariant II) ──
+// Summaries are selected by MEANING under a hard cap, not packed to fill the
+// window. The old recency packer loaded ~50K tokens of mostly-irrelevant
+// history on every turn of a large-window model; relevance preserves the
+// reasons recency encoded — continuity (the newest summaries always ride
+// along) and window safety (hard budget) — without the bloat. budgetSummaries
+// survives as the internal fallback when relevance scoring can't run (see
+// selectSummariesByRelevance), never as a window-filling default.
+
+const SUMMARY_RELEVANCE_BUDGET_TOKENS = 6000;
+const SUMMARY_RECENCY_FLOOR = 2;
+
+async function selectSummariesByRelevance(
+  summaries: Summary[],
+  availableTokens: number,
+  agentId: string,
+): Promise<Summary[]> {
+  const budget = Math.min(Math.floor(availableTokens * 0.7), SUMMARY_RELEVANCE_BUDGET_TOKENS);
+
+  // Continuity floor: the newest summaries are the compressed tail of the
+  // live thread and always ride along.
+  const floor = summaries.slice(-SUMMARY_RECENCY_FLOOR);
+  const picked = new Set(floor.map((s) => s.id));
+  let used = floor.reduce((t, s) => t + s.tokenCount, 0);
+
+  // Rank the remainder by similarity to the live ask.
+  let queryText = '';
+  try {
+    const recent = getRecentMessages(agentId, 3);
+    queryText = recent
+      .filter((m) => m.role === 'user' && typeof m.content === 'string')
+      .map((m) => m.content)
+      .join('\n')
+      .slice(-500);
+  } catch { /* no query, floor-only */ }
+
+  if (queryText.trim().length > 10) {
+    try {
+      const { vectorSearch } = await import('./vector-search.js');
+      const hits = await vectorSearch(queryText, agentId, {
+        sourceType: 'summary',
+        limit: 12,
+        minSimilarity: 0.3,
+      });
+      const byId = new Map(summaries.map((s) => [s.id, s]));
+      for (const hit of hits) {
+        if (picked.has(hit.sourceId)) continue;
+        const s = byId.get(hit.sourceId);
+        if (!s) continue;
+        if (used + s.tokenCount > budget) continue;
+        picked.add(s.id);
+        used += s.tokenCount;
+      }
+    } catch (err) {
+      logger.debug('relevance summary selection failed; using floor only', {
+        agentId,
+        error: err instanceof Error ? err.message : String(err),
+      }, agentId);
+    }
+  }
+
+  // If even the floor overflows the budget (oversized summaries), fall back
+  // to the recency packer under the SAME tight budget, never the full window.
+  if (used > budget) {
+    return budgetSummaries(summaries, Math.floor(budget / 0.7));
+  }
+
+  // Chronological order in output, same as the recency path.
+  return summaries.filter((s) => picked.has(s.id));
+}
+
+// ── Relevant memory block (per-turn, relevance mode only) ──
+
+const RELEVANT_MEMORY_BUDGET_TOKENS = 1200;
+const RELEVANT_MEMORY_CACHE_MS = 60_000;
+// Derived-data cache only (loss = recompute); keyed by agent, validated by
+// query text, so N tool iterations of one turn run vector search once.
+const relevantMemoryCache = new Map<string, { at: number; queryText: string; block: string | null }>();
+
+function isSyntheticRow(content: string): boolean {
+  return content.startsWith('[SOURCE:') || content.startsWith('[A2A:')
+    || content.startsWith('[Engine') || content.startsWith('[ENGINE')
+    || content.startsWith('[System') || content.startsWith('[DOJO:')
+    || content.startsWith('── New Session');
+}
+
+async function buildRelevantMemoryBlock(agentId: string): Promise<string | null> {
+  const recent = getRecentMessages(agentId, 3);
+  const queryText = recent
+    .filter((m) => m.role === 'user' && typeof m.content === 'string' && !isSyntheticRow(m.content))
+    .map((m) => m.content)
+    .join('\n')
+    .slice(-500);
+  if (queryText.trim().length <= 10) return null;
+
+  const cached = relevantMemoryCache.get(agentId);
+  if (cached && cached.queryText === queryText && Date.now() - cached.at < RELEVANT_MEMORY_CACHE_MS) {
+    return cached.block;
+  }
+
+  let block: string | null = null;
+  try {
+    const { vectorSearch } = await import('./vector-search.js');
+    const hits = await vectorSearch(queryText, agentId, {
+      sourceType: 'message',
+      limit: 8,
+      minSimilarity: 0.35,
+    });
+
+    if (hits.length > 0) {
+      const db = getDb();
+      // Anything the fresh tail will already include is excluded; this block
+      // is only for what fell out. getRecentMessages is session-aware, so a
+      // fact taught just before a session reset correctly stays ELIGIBLE here
+      // (it is outside the new session's tail).
+      const tailIds = new Set(getRecentMessages(agentId, 80).map((m) => m.id));
+
+      const lines: string[] = [];
+      let used = 0;
+      for (const hit of hits) {
+        if (tailIds.has(hit.sourceId)) continue;
+        const row = db.prepare('SELECT role, content, created_at FROM messages WHERE id = ?')
+          .get(hit.sourceId) as { role: string; content: string; created_at: string } | undefined;
+        if (!row || typeof row.content !== 'string') continue;
+        if (row.content.trim().startsWith('[') && row.content.includes('"type"')) continue; // tool JSON rows
+        if (isSyntheticRow(row.content)) continue;
+        const snippet = row.content.replace(/\s+/g, ' ').slice(0, 300);
+        const line = `- [${row.created_at}] ${row.role}: ${snippet}`;
+        const lineTokens = estimateTokens(line);
+        if (used + lineTokens > RELEVANT_MEMORY_BUDGET_TOKENS) break;
+        lines.push(line);
+        used += lineTokens;
+        if (lines.length >= 5) break;
+      }
+
+      if (lines.length > 0) {
+        block = `═══ RELEVANT MEMORY (older messages retrieved by meaning — context only, not live conversation) ═══\n${lines.join('\n')}\n═══ END RELEVANT MEMORY ═══`;
+      }
+    }
+  } catch (err) {
+    logger.debug('relevant-memory vector search failed', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+
+  relevantMemoryCache.set(agentId, { at: Date.now(), queryText, block });
+  return block;
 }
 
 function budgetSummaries(summaries: Summary[], availableTokens: number): Summary[] {

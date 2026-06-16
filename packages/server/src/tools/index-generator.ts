@@ -72,24 +72,12 @@ export async function generateToolDocs(): Promise<{ count: number }> {
   // Ensure directory exists
   fs.mkdirSync(TOOLS_DIR, { recursive: true });
 
-  // Gather all tools from all sources
-  const { toolDefinitions } = await import('../agent/tools.js');
-  const { googleReadToolDefinitions } = await import('../google/tools-read.js');
-  const { googleWriteToolDefinitions } = await import('../google/tools-write.js');
-  const { slidesToolDefinitions } = await import('../google/tools-slides.js');
-  const { microsoftReadToolDefinitions } = await import('../microsoft/tools-read.js');
-  const { microsoftWriteToolDefinitions } = await import('../microsoft/tools-write.js');
-  const { officeToolDefinitions } = await import('../microsoft/tools-office.js');
-
-  const allTools: ToolDefinition[] = [
-    ...toolDefinitions,
-    ...googleReadToolDefinitions,
-    ...googleWriteToolDefinitions,
-    ...slidesToolDefinitions,
-    ...microsoftReadToolDefinitions,
-    ...microsoftWriteToolDefinitions,
-    ...officeToolDefinitions,
-  ];
+  // Single source of truth: agent/tools.ts owns the complete family list, so
+  // any tool family agents can be granted is documented here too. (Replaces a
+  // hand-maintained import list that drifted: forms/pdf/credentials/plaud were
+  // loadable but undocumented, so load_tool_docs dead-ended on them.)
+  const { getAllToolDefinitions } = await import('../agent/tools.js');
+  const allTools: ToolDefinition[] = getAllToolDefinitions();
 
   // Deduplicate by name (Google calendar_agenda vs Microsoft calendar_agenda_ms, etc.)
   const seen = new Set<string>();

@@ -202,20 +202,6 @@ function scheduleNextAttempt(
   retryStates.set(agentId, { agentId, timer, strike, startedAt, lastMessageContent, alerted });
 }
 
-/**
- * Cancel any pending rate-limit retry for an agent.
- */
-export function cancelRateLimitRetry(agentId: string): void {
-  cleanupRetry(agentId);
-}
-
-/**
- * Check if an agent is currently in rate-limit retry mode.
- */
-export function isInRateLimitRetry(agentId: string): boolean {
-  return retryStates.has(agentId);
-}
-
 // ── Helpers ──
 
 function cleanupRetry(agentId: string): void {

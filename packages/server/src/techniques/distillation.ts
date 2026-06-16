@@ -1,0 +1,212 @@
+// ════════════════════════════════════════
+// Distillation trigger — remediation Phase 5 (5b/5c/5d), Invariant VI.
+//
+// "Learn over time" needs the open half of the loop closed: repeated task
+// SUCCESS distills into a reusable technique, and techniques that keep
+// failing get retired. A previous auto path (Dreamer→Trainer handoff) was
+// removed in v1.15.96 because it burned tokens and broke user-built
+// techniques. Those reasons are BINDING constraints here:
+//
+//   OUTCOME-GATED — candidates come from the tracker's durable completion
+//     record, never from conversation mining.
+//   BATCHED — one engine pass per dreaming cycle; at most ONE message to the
+//     Trainer and ONE to the primary per cycle, regardless of candidates.
+//   DRAFT-ONLY — the Trainer is instructed to save drafts (publish: false).
+//     Drafts are inert: recall only matches published techniques, so an
+//     auto-distilled procedure can never shadow or modify user-built work.
+//   CAPPED — at most MAX_CANDIDATES_PER_CYCLE new draft requests per cycle.
+//   OWNER-IN-THE-LOOP — the approval ask reaches the owner through the
+//     PRIMARY agent (engine-delivered notice; the primary asks on its normal
+//     channel; publishing stays a deliberate act via the Trainer).
+// ════════════════════════════════════════
+
+import { v4 as uuidv4 } from 'uuid';
+import { getDb } from '../db/connection.js';
+import { createLogger } from '../logger.js';
+import { getPrimaryAgentId } from '../config/platform.js';
+import { getTrainerAgentId, isTrainerEnabled } from '../config/platform.js';
+
+const logger = createLogger('technique-distillation');
+
+const MAX_CANDIDATES_PER_CYCLE = 2;
+const SUCCESS_PATTERN_MIN_COMPLETIONS = 3;
+const PATTERN_LOOKBACK_DAYS = 7;
+const COVERED_SIMILARITY = 0.55;
+const RETIRE_MIN_USES = 5;
+const RETIRE_LOOKBACK_DAYS = 30;
+const RETIRE_MAX_SUCCESS_RATE = 0.4;
+
+interface CompletionGroup {
+  normTitle: string;
+  sampleTitle: string;
+  sampleTaskId: string;
+  sampleGoal: string | null;
+  count: number;
+}
+
+// Normalized grouping key: lowercase, digits and dates stripped, whitespace
+// collapsed — "Send weekly status email 6/3" and "Send weekly status email
+// 6/10" group together. Deterministic by design (no LLM in the trigger).
+function normalizeTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/\d+[\/\-.]\d+([\/\-.]\d+)?/g, ' ')
+    .replace(/\d+/g, ' ')
+    .replace(/[^a-z\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function findRepeatedSuccessGroups(): CompletionGroup[] {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT id, title, goal FROM tasks
+    WHERE status = 'complete'
+      AND updated_at >= datetime('now', '-${PATTERN_LOOKBACK_DAYS} days')
+      AND title IS NOT NULL
+  `).all() as Array<{ id: string; title: string; goal: string | null }>;
+
+  const groups = new Map<string, CompletionGroup>();
+  for (const row of rows) {
+    const norm = normalizeTitle(row.title);
+    if (norm.length < 8) continue; // too generic to be a procedure
+    const g = groups.get(norm);
+    if (g) {
+      g.count += 1;
+      g.sampleTaskId = row.id; // keep the most recent sample
+      g.sampleTitle = row.title;
+      g.sampleGoal = row.goal;
+    } else {
+      groups.set(norm, { normTitle: norm, sampleTitle: row.title, sampleTaskId: row.id, sampleGoal: row.goal, count: 1 });
+    }
+  }
+  return [...groups.values()].filter((g) => g.count >= SUCCESS_PATTERN_MIN_COMPLETIONS);
+}
+
+async function isCoveredByExistingTechnique(group: CompletionGroup): Promise<boolean> {
+  try {
+    const { vectorSearch } = await import('../memory/vector-search.js');
+    const hits = await vectorSearch(`${group.sampleTitle}\n${group.sampleGoal ?? ''}`, undefined, {
+      sourceType: 'technique',
+      limit: 1,
+      minSimilarity: COVERED_SIMILARITY,
+    });
+    return hits.length > 0;
+  } catch {
+    // Embeddings down: assume covered (do NOT create drafts blind — the
+    // v1.15.96 lesson says err toward not flooding the store).
+    return true;
+  }
+}
+
+interface RetireCandidate { id: string; name: string; uses: number; successRate: number }
+
+function findRetirementCandidates(): RetireCandidate[] {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT t.id, t.name,
+           COUNT(u.id) AS uses,
+           AVG(COALESCE(u.success, 0)) AS success_rate
+    FROM techniques t
+    JOIN technique_usage u ON u.technique_id = t.id
+      AND u.used_at >= datetime('now', '-${RETIRE_LOOKBACK_DAYS} days')
+      AND u.success IS NOT NULL
+    WHERE t.state = 'published'
+    GROUP BY t.id
+    HAVING uses >= ${RETIRE_MIN_USES} AND success_rate < ${RETIRE_MAX_SUCCESS_RATE}
+  `).all() as Array<{ id: string; name: string; uses: number; success_rate: number }>;
+  return rows.map((r) => ({ id: r.id, name: r.name, uses: r.uses, successRate: r.success_rate }));
+}
+
+/**
+ * One engine pass per dreaming cycle. Never spawns agents itself; it sends
+ * at most one batched A2A to the Trainer (draft authoring) and one to the
+ * primary (owner-approval relay + retirement flags).
+ */
+export async function runDistillationCycle(): Promise<void> {
+  if (!isTrainerEnabled()) {
+    logger.debug('distillation: trainer disabled, skipping');
+    return;
+  }
+
+  // ── 5b: repeated-success → draft candidates ──
+  const groups = findRepeatedSuccessGroups();
+  const candidates: CompletionGroup[] = [];
+  for (const group of groups) {
+    if (candidates.length >= MAX_CANDIDATES_PER_CYCLE) {
+      logger.info('distillation: candidate cap reached, deferring remainder', {
+        deferred: groups.length - candidates.length,
+      });
+      break;
+    }
+    if (await isCoveredByExistingTechnique(group)) continue;
+    candidates.push(group);
+  }
+
+  // ── 5d: failing published techniques → retirement flags ──
+  const retireFlags = findRetirementCandidates();
+
+  if (candidates.length === 0 && retireFlags.length === 0) {
+    logger.debug('distillation: nothing to do this cycle');
+    return;
+  }
+
+  const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
+
+  if (candidates.length > 0) {
+    const list = candidates.map((c, i) =>
+      `${i + 1}. "${c.sampleTitle}" — completed ${c.count}x in the last ${PATTERN_LOOKBACK_DAYS} days (latest task id ${c.sampleTaskId}).${c.sampleGoal ? ` Goal: ${c.sampleGoal.slice(0, 200)}` : ''}`,
+    ).join('\n');
+    try {
+      await deliverA2AMessage({
+        intent: 'ASSIGN',
+        threadId: uuidv4(),
+        requiresResponse: false,
+        payload:
+          `Technique distillation (engine, one batch per dreaming cycle). These task patterns completed repeatedly and no existing technique covers them:\n${list}\n\n` +
+          `For each: read the latest task's tracker entry and ledger, and author a DRAFT technique capturing the repeatable procedure (save_technique with publish: false — DRAFTS ONLY, never publish, never modify an existing technique). ` +
+          `Name it after the procedure, not the specific dates/people. When the drafts exist, you are done; the owner decides promotion.`,
+        toAgent: getTrainerAgentId(),
+        fromAgent: 'system',
+      });
+      logger.info('distillation: sent draft batch to Trainer', { count: candidates.length });
+    } catch (err) {
+      logger.error('distillation: Trainer batch failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // ── 5c: the owner hears about it from the PRIMARY ──
+  try {
+    const parts: string[] = [];
+    if (candidates.length > 0) {
+      parts.push(
+        `The engine spotted ${candidates.length} repeated task pattern(s) and asked the Trainer to draft technique(s): ` +
+        candidates.map((c) => `"${c.sampleTitle}" (${c.count}x)`).join(', ') +
+        `. Drafts are inert until published. When the owner has a moment, ask whether to promote them (the Trainer publishes via publish_technique on approval).`,
+      );
+    }
+    if (retireFlags.length > 0) {
+      parts.push(
+        `Retirement flags: ` +
+        retireFlags.map((r) => `"${r.name}" succeeded only ${(r.successRate * 100).toFixed(0)}% of its last ${r.uses} uses`).join('; ') +
+        `. Ask the owner whether to archive; if yes, tell the Trainer to set the technique state to archived.`,
+      );
+    }
+    if (parts.length > 0) {
+      await deliverA2AMessage({
+        intent: 'FYI',
+        threadId: uuidv4(),
+        requiresResponse: false,
+        payload: `Learning-loop summary (engine, nightly):\n${parts.join('\n\n')}`,
+        toAgent: getPrimaryAgentId(),
+        fromAgent: 'system',
+      });
+    }
+  } catch (err) {
+    logger.error('distillation: primary notice failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}

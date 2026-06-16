@@ -9,9 +9,6 @@ import { getSummariesByAgent } from './dag.js';
 
 const logger = createLogger('memory-briefing');
 
-// Track scheduled intervals
-const scheduledIntervals = new Map<string, ReturnType<typeof setInterval>>();
-
 // ── Generate Briefing ──
 
 export async function generateBriefing(
@@ -178,46 +175,6 @@ export function updateBriefing(agentId: string, content: string): void {
   }
 }
 
-// ── Schedule Briefing ──
-
-export function scheduleBriefing(
-  agentId: string,
-  modelId: string,
-  cronExpression?: string,
-): void {
-  // Clear any existing schedule for this agent
-  const existing = scheduledIntervals.get(agentId);
-  if (existing) {
-    clearInterval(existing);
-    scheduledIntervals.delete(agentId);
-  }
-
-  // Default: every 24 hours
-  // Simple approach using setInterval rather than full cron parsing
-  const intervalMs = parseInterval(cronExpression);
-
-  const interval = setInterval(async () => {
-    try {
-      await generateBriefing(agentId, modelId);
-    } catch (err) {
-      logger.error('Scheduled briefing generation failed', {
-        error: err instanceof Error ? err.message : String(err),
-      }, agentId);
-    }
-  }, intervalMs);
-
-  // Don't keep the process alive just for briefing intervals
-  interval.unref();
-
-  scheduledIntervals.set(agentId, interval);
-
-  logger.info('Briefing scheduled', {
-    intervalMs,
-    intervalHours: intervalMs / (60 * 60 * 1000),
-    cronExpression: cronExpression ?? 'default (24h)',
-  }, agentId);
-}
-
 // ── Helpers ──
 
 async function saveBriefing(agentId: string, content: string): Promise<string> {
@@ -231,27 +188,4 @@ async function saveBriefing(agentId: string, content: string): Promise<string> {
   `).run(id, agentId, content, tokenCount);
 
   return id;
-}
-
-function parseInterval(cronExpression?: string): number {
-  if (!cronExpression) {
-    return 24 * 60 * 60 * 1000; // 24 hours default
-  }
-
-  // Simple parsing: support basic interval expressions
-  const match = cronExpression.match(/^every\s+(\d+)\s*(h|hour|hours|m|min|minutes?)$/i);
-  if (match) {
-    const value = parseInt(match[1], 10);
-    const unit = match[2].toLowerCase();
-    if (unit.startsWith('h')) {
-      return value * 60 * 60 * 1000;
-    }
-    if (unit.startsWith('m')) {
-      return value * 60 * 1000;
-    }
-  }
-
-  // If we can't parse, default to 24 hours
-  logger.warn('Could not parse cron expression, using 24h default', { cronExpression });
-  return 24 * 60 * 60 * 1000;
 }

@@ -108,8 +108,10 @@ export async function generateEmbedding(text: string): Promise<Float32Array> {
 
 // ── Store Embedding ──
 
+export type EmbeddingSourceType = 'message' | 'summary' | 'briefing' | 'technique';
+
 export async function storeEmbedding(
-  sourceType: 'message' | 'summary' | 'briefing',
+  sourceType: EmbeddingSourceType,
   sourceId: string,
   agentId: string | null,
   content: string,
@@ -154,7 +156,7 @@ export async function storeEmbedding(
 // ── Queue Embedding (async, non-blocking) ──
 
 export function queueEmbedding(
-  sourceType: 'message' | 'summary' | 'briefing',
+  sourceType: EmbeddingSourceType,
   sourceId: string,
   agentId: string | null,
   content: string,
@@ -167,6 +169,21 @@ export function queueEmbedding(
       sourceId,
     });
   });
+}
+
+// Re-embed a source whose content changed. The insert path dedups by
+// (source_type, source_id), so updates must drop the stale row first or the
+// new content would be silently ignored.
+export function refreshEmbedding(
+  sourceType: EmbeddingSourceType,
+  sourceId: string,
+  agentId: string | null,
+  content: string,
+): void {
+  try {
+    getDb().prepare('DELETE FROM embeddings WHERE source_type = ? AND source_id = ?').run(sourceType, sourceId);
+  } catch { /* best effort */ }
+  queueEmbedding(sourceType, sourceId, agentId, content);
 }
 
 // ── Embedding Status ──

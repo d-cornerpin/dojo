@@ -108,9 +108,14 @@ async function checkSemanticDedup(payload: string, threadId: string, fromAgent: 
     // question's terms). The honest signal is "this sender is repeating
     // themselves" — that's what we now check.
     const db = getDb();
+    // Age guard (remediation Phase 4, matrix S7.2): dedup exists to damp
+    // rapid ack/repeat loops, so only RECENT messages participate. A similar
+    // message re-sent minutes later (a deliberate re-ask after no response,
+    // the next step of a slow collaboration) is a legitimate wake, not spam.
     const recentMessages = db.prepare(`
       SELECT content FROM messages
       WHERE a2a_thread_id = ? AND source_agent_id = ?
+        AND created_at >= datetime('now', '-10 minutes')
       ORDER BY created_at DESC, rowid DESC
       LIMIT ?
     `).all(threadId, fromAgent, DEDUP_LOOKBACK) as Array<{ content: string }>;
