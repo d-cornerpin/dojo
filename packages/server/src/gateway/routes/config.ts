@@ -1909,6 +1909,25 @@ configRouter.put('/settings/:key', async (c) => {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
   `).run(key, body.value);
 
+  // Mirror channel safe-sender lists into the contacts store so a name the user
+  // just trusted (e.g. "Jain" on the iMessage list) resolves when they later
+  // say "text Jain about ...". The dashboard replaces the whole list on save;
+  // the mirror is idempotent + additive (it never deletes contacts) and
+  // best-effort (a contacts hiccup must not fail the setting write).
+  try {
+    const { configKeyToChannel, syncSafeSendersToContacts } = await import('../../contacts/from-safe-senders.js');
+    const channel = configKeyToChannel(key);
+    if (channel) {
+      const { parseSafeSenders } = await import('../../services/imessage-bridge.js');
+      syncSafeSendersToContacts(channel, parseSafeSenders(body.value), null);
+    }
+  } catch (err) {
+    const { createLogger } = await import('../../logger.js');
+    createLogger('config').warn('Failed to mirror safe senders to contacts', {
+      key, error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   // Clear platform config cache when platform keys are updated
   const platformKeys = ['platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'pm_agent_enabled', 'trainer_agent_id', 'trainer_agent_name', 'trainer_agent_enabled', 'imaginer_agent_id', 'imaginer_agent_name', 'imaginer_enabled', 'setup_completed'];
   if (platformKeys.includes(key)) {

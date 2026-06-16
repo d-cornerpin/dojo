@@ -6546,6 +6546,11 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent â
               ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
             `).run(JSON.stringify(next));
             try { reloadApprovedSenders(); } catch { /* bridge may not be running */ }
+            // Mirror into contacts so the trusted name resolves later (best-effort).
+            try {
+              const { syncSafeSenderToContacts } = await import('../contacts/from-safe-senders.js');
+              syncSafeSenderToContacts('imessage', sender, agentId);
+            } catch { /* contacts mirror is best-effort */ }
             content =
               `Added ${name} (${address}) to the iMessage safe-sender list (sharing level: ${sharingLevel}). ` +
               `Future iMessages from this address will auto-route a reply when you respond. ` +

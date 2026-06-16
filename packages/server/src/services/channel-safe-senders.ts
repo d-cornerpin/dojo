@@ -23,6 +23,7 @@
 
 import { getDb } from '../db/connection.js';
 import { parseSafeSenders, type SafeSender } from './imessage-bridge.js';
+import { configKeyToChannel, syncSafeSenderToContacts, syncSafeSendersToContacts } from '../contacts/from-safe-senders.js';
 
 export type AccountSlot = 'agent' | 'user';
 
@@ -103,6 +104,10 @@ function appendToKey(key: string, sender: SafeSender): AppendChannelSenderResult
     INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
   `).run(key, JSON.stringify(next));
+  // Mirror the new sender into the contacts store (best-effort) so a trusted
+  // name resolves when the user later asks the agent to reach them.
+  const channel = configKeyToChannel(key);
+  if (channel) syncSafeSenderToContacts(channel, sender, null);
   return { ok: true, added: true, totalSenders: next.length };
 }
 
@@ -120,4 +125,42 @@ export function appendTwilioSmsSafeSender(sender: SafeSender): AppendChannelSend
 }
 export function appendTwilioVoiceSafeCaller(sender: SafeSender): AppendChannelSenderResult {
   return appendToKey(TWILIO_VOICE_CONFIG_KEY, sender);
+}
+
+// One-time migration: mirror every EXISTING safe-sender list (all channels +
+// slots) into the contacts store, so users upgrading with senders already on
+// their allowlists get contacts without having to re-save each list. Gated by a
+// config flag so it runs exactly once; afterward the live write paths (config
+// PUT, appendToKey, the agent's iMessage write) keep contacts in sync. The
+// mirror itself is idempotent, but the flag also avoids resurrecting a contact
+// the user deleted after the migration ran.
+const SAFE_SENDER_BACKFILL_FLAG = 'safe_senders_contacts_backfilled';
+
+export function backfillSafeSenderContacts(): { created: number; updated: number; skipped: boolean } {
+  const db = getDb();
+  const done = db
+    .prepare('SELECT value FROM config WHERE key = ?')
+    .get(SAFE_SENDER_BACKFILL_FLAG) as { value: string } | undefined;
+  if (done?.value === 'true') return { created: 0, updated: 0, skipped: true };
+
+  let created = 0;
+  let updated = 0;
+  // Match every safe-sender list by key shape, then resolve its channel. This
+  // catches the per-slot gmail/outlook keys without enumerating them.
+  const rows = db
+    .prepare("SELECT key, value FROM config WHERE key LIKE '%approved_senders%' OR key LIKE '%approved_callers%'")
+    .all() as Array<{ key: string; value: string }>;
+  for (const { key, value } of rows) {
+    const channel = configKeyToChannel(key);
+    if (!channel) continue;
+    const r = syncSafeSendersToContacts(channel, parseSafeSenders(value), null);
+    created += r.created;
+    updated += r.updated;
+  }
+
+  db.prepare(`
+    INSERT INTO config (key, value, updated_at) VALUES (?, 'true', datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = datetime('now')
+  `).run(SAFE_SENDER_BACKFILL_FLAG);
+  return { created, updated, skipped: false };
 }

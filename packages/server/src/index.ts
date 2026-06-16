@@ -388,6 +388,23 @@ async function main(): Promise<void> {
     })();
   }
 
+  // 4j-bis. One-time migration: mirror existing safe-sender lists (all channels)
+  // into the contacts store so upgrading users with senders already configured
+  // get their contacts without re-saving each list. Gated by a config flag;
+  // new adds are mirrored live by the config/append write paths. Fast (small
+  // lists), so it runs inline rather than as a background task.
+  try {
+    const { backfillSafeSenderContacts } = await import('./services/channel-safe-senders.js');
+    const r = backfillSafeSenderContacts();
+    if (!r.skipped) {
+      logger.info('Safe-sender contacts migration complete', { created: r.created, updated: r.updated });
+    }
+  } catch (err) {
+    logger.warn('Safe-sender contacts migration failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   // 4k. Refresh model pricing for providers whose live API exposes it
   // (primarily OpenRouter). Background so it doesn't block HTTP boot.
   // COALESCE semantics: missing API prices preserve what we already have.
