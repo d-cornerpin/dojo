@@ -740,7 +740,7 @@ function buildDreamerCycleMessage(
   return `═══ DREAM CYCLE ═══
 Vault state: ${stats.totalEntries} entries (${stats.pinnedCount} pinned, ${stats.permanentCount} permanent). Pin cap: ${MAX_PINNED_ENTRIES}${stats.pinnedCount > MAX_PINNED_ENTRIES ? ' — OVER CAP, prune now' : ''}.${archiveSummary}${batchNote}
 
-Process the archives below. Extract durable memories and route each to the right store per your SOUL: vault_remember for general knowledge, contact_remember for person-as-entity facts (who someone is, role/company, relationships, channel preferences, a new email/phone). Discard junk archives. Only update USER.md if an archive has a clear, explicit, FUNDAMENTAL profile change you can quote (see your SOUL). Never edit SOUL.md. Then call complete_task.
+Process the archives below. Extract durable memories and route each to the right store per your SOUL: vault_remember for general knowledge, contact_remember for person-as-entity facts (who someone is, role/company, relationships, channel preferences, a new email/phone), and credential_add ONLY when an archive contains the actual value of a service credential (follow your SOUL's cautions: never guess, skip anything personal-financial). Discard junk archives. Only update USER.md if an archive has a clear, explicit, FUNDAMENTAL profile change you can quote (see your SOUL). Never edit SOUL.md. Then call complete_task.
 
 ${batchText}`;
 }
@@ -752,9 +752,10 @@ ${batchText}`;
 // to the Trainer; that pattern caused extra token burn (Trainer wakes,
 // runs its own loop) and sometimes broke other techniques the user had
 // built. Memory curation should not have a side effect of spawning more
-// agent work. The Dreamer is strictly read/write of vault + contacts + USER.md
-// (USER.md only for FUNDAMENTAL profile changes), plus its own tracker
-// bookkeeping. SOUL.md is engine-protected (GLOBAL_FILE_WRITE_DENY) and never edited.
+// agent work. The Dreamer is strictly read/write of vault + contacts, add-only
+// for credentials, and USER.md (USER.md only for FUNDAMENTAL profile changes),
+// plus its own tracker bookkeeping. SOUL.md is engine-protected
+// (GLOBAL_FILE_WRITE_DENY) and never edited.
 const DREAMER_TOOLS_POLICY = JSON.stringify({
   allow: [
     'vault_remember', 'vault_search', 'vault_forget',
@@ -765,6 +766,11 @@ const DREAMER_TOOLS_POLICY = JSON.stringify({
     // of the vault. contact_remember upserts, so re-running each cycle keeps
     // the record fresh rather than duplicating it.
     'contact_remember', 'contact_search',
+    // Service credentials: the SOUL routes an actual credential VALUE found in
+    // an archive here. ADD + LIST only; deliberately NO credential_get (value
+    // reads), credential_update, or credential_delete (editing/removing a
+    // credential is the user's call, never the curator's).
+    'credential_add', 'credential_list',
     'file_read', 'file_write',
     'tracker_create_project', 'tracker_create_task',
     'tracker_update_status', 'tracker_add_notes', 'tracker_complete_step',
