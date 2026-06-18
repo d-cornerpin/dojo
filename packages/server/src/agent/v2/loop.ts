@@ -4153,6 +4153,65 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // auto-route — they handled it directly.
     if (isPrimaryAgent(agentId) && state.lastAssistantTextForIM) {
       try {
+        // ── File download-link backstop ──
+        // file_write / file_append return the share URL ONLY in the tool
+        // result, which the user never sees. Agents under load routinely
+        // reply "saved to your desktop" and drop the link, so the deliverable
+        // is never actually delivered. The engine guarantees it instead: any
+        // download URL produced this turn that the agent left out of its
+        // user-facing reply is (a) appended to the channel-routed text so it
+        // rides along to iMessage/SMS/etc., and (b) surfaced in the dashboard
+        // as its own assistant bubble. Model-independent — the link lands
+        // whether or not the agent remembered it (correctness-floor rule).
+        {
+          const replyText = state.lastAssistantTextForIM;
+          const undelivered: string[] = [];
+          const seen = new Set<string>();
+          for (const tr of state.toolResults) {
+            if (tr.isError) continue;
+            if (tr.name !== 'file_write' && tr.name !== 'file_append') continue;
+            const matches = tr.content.match(/Download:\s*(\S+)/g);
+            if (!matches) continue;
+            for (const line of matches) {
+              const url = line.replace(/^Download:\s*/, '').trim();
+              if (!url || seen.has(url)) continue;
+              seen.add(url);
+              if (!replyText.includes(url)) undelivered.push(url);
+            }
+          }
+          if (undelivered.length > 0) {
+            const linkBlock = undelivered.map(u => `Download: ${u}`).join('\n');
+            state = advance(state, {
+              lastAssistantTextForIM: `${replyText.trimEnd()}\n\n${linkBlock}`,
+            });
+            const linkMsgId = uuidv4();
+            db.prepare(`
+              INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+              VALUES (?, ?, 'assistant', ?, ?, datetime('now'))
+            `).run(linkMsgId, agentId, linkBlock, turnNumber);
+            broadcast({
+              type: 'chat:message',
+              agentId,
+              message: {
+                id: linkMsgId, agentId, role: 'assistant' as const,
+                content: linkBlock,
+                tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                createdAt: new Date().toISOString(),
+              },
+            });
+            logger.info('delivered file download link(s) the reply omitted', {
+              agentId, count: undelivered.length, turnNumber,
+            }, agentId);
+          }
+        }
+        // The entry guard guarantees lastAssistantTextForIM is non-null and the
+        // backstop above only ever replaces it with a longer non-null string;
+        // the intervening `state = advance(...)` widens the type back to
+        // `string | null` for the compiler, so re-assert the invariant once.
+        if (state.lastAssistantTextForIM === null) {
+          throw new Error('unreachable: lastAssistantTextForIM null after download-link backstop');
+        }
+
         const { resolveReplyDestination } = await import('./reply-destination.js');
         const { getPresence, isImessageConfigured } = await import('../../services/presence.js');
         const {

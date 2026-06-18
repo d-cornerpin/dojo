@@ -4449,10 +4449,18 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
           }
         }
 
-        // Clear iMessage auto-reply flag if the agent explicitly sent an iMessage
-        if (isAwaitingIMResponse(agentId)) {
-          clearIMResponseFlag(agentId);
-        }
+        // NOTE: do NOT clear the pending iMessage-reply flag here. This is
+        // send_to_agent — delegating work to ANOTHER AGENT, never a reply to
+        // the user. The earlier code cleared it (with a copy-pasted "if the
+        // agent explicitly sent an iMessage" comment that never matched what
+        // this handler does), which silently wiped the user's reply recipient
+        // mid-turn. Canonical failure: user iMessages "pause Nora", the agent
+        // delegates the pause to Nora via send_to_agent, the clear nukes the
+        // pending sender, and the end-of-turn auto-route has no one to deliver
+        // to — so the reply falls into dashboard chat the user never sees.
+        // The only legitimate "the agent handled the reply itself" clear lives
+        // in imessage_send (double-send guard); stale flags are swept at
+        // end-of-turn by the `if (imFlagSetAtRunStart)` cleanup in loop.ts.
         break;
       }
       case 'approve_destructive_action': {
