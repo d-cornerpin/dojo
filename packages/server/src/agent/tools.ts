@@ -386,9 +386,12 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
 
   const msServiceToolPrefixes: Record<string, string[]> = {
     outlook: ['outlook_'],
-    calendar: ['calendar_agenda_ms', 'calendar_search_ms', 'calendar_list_ms', 'calendar_create_ms', 'calendar_update_ms', 'calendar_delete_ms', 'calendar_respond_invite_ms', 'calendar_share_invites_ms', 'calendar_accept_share_ms'],
+    calendar: ['calendar_agenda_ms', 'calendar_search_ms', 'calendar_list_ms', 'calendar_create_ms', 'calendar_update_ms', 'calendar_delete_ms', 'calendar_respond_invite_ms', 'calendar_share_invites_ms', 'calendar_accept_share_ms', 'calendar_freebusy_ms'],
     onedrive: ['onedrive_', 'sharepoint_'],
     teams: ['teams_', 'online_meeting_'],
+    contacts: ['contacts_'],
+    onenote: ['onenote_'],
+    tasks: ['tasks_'],
   };
 
   /** Same two-stage gate as the Google version: slot connected AND service enabled on that slot. */

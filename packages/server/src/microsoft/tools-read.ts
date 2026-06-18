@@ -490,14 +490,14 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
 // generator in tools-read.ts — for each canonical tool name, emit a
 // `user_*` counterpart wired to the User slot. Always emitted so static
 // importers (agent/tools.ts) get the full surface at startup.
-const USER_SLOT_READ_TOOLS: readonly string[] = [
-  'outlook_search', 'outlook_read', 'outlook_inbox', 'outlook_list_attachments',
-  'calendar_agenda_ms', 'calendar_search_ms', 'calendar_list_ms',
-  'onedrive_list', 'onedrive_read', 'onedrive_search',
-];
-for (const canonical of USER_SLOT_READ_TOOLS) {
-  const baseDef = microsoftReadToolDefinitions.find(d => d.name === canonical);
-  if (!baseDef) continue;
+// Full-parity (2026-06-17): every Microsoft read tool gets a user-slot
+// variant. Every read case threads the resolved `slot` into msGraphRead
+// (compiler-verified), so the variant reads the user's account and is gated
+// by isMsToolEnabledByService (User slot connected AND service enabled).
+// Snapshot the base list first so we don't iterate over appended variants.
+const microsoftReadBaseTools = [...microsoftReadToolDefinitions];
+for (const baseDef of microsoftReadBaseTools) {
+  const canonical = baseDef.name;
   microsoftReadToolDefinitions.push({
     ...baseDef,
     name: `user_${canonical}`,
@@ -688,7 +688,7 @@ export async function executeMicrosoftReadTool(
       const result = await msGraphRead(
         `${calendarPrefix(calendarId)}calendarView?startDateTime=${window.startISO}&endDateTime=${window.endISO}&$filter=contains(subject,'${encodeURIComponent(query)}')&$select=id,subject,start,end,isAllDay`,
         agentId, agentName, 'calendar_search_ms', { query, daysAhead, calendarId, startDate, anchored: window.anchored },
-      );
+      slot);
       if (!result.ok) return `Error searching calendar: ${result.error}`;
 
       const data = result.data as { value?: Array<{ id: string; subject: string; start: { dateTime: string; timeZone?: string }; end?: { dateTime: string; timeZone?: string }; isAllDay?: boolean }> };
@@ -756,7 +756,7 @@ export async function executeMicrosoftReadTool(
         ? `${prefix}items/${encodeURIComponent(folderId)}/children?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl`
         : `${prefix}root/children?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl`;
 
-      const result = await msGraphRead(endpoint, agentId, agentName, 'onedrive_list', { folderId, maxResults, driveId });
+      const result = await msGraphRead(endpoint, agentId, agentName, 'onedrive_list', { folderId, maxResults, driveId }, slot);
       if (!result.ok) return `Error listing OneDrive: ${result.error}`;
 
       const data = result.data as { value?: Array<{ id: string; name: string; size?: number; lastModifiedDateTime: string; file?: { mimeType: string }; folder?: { childCount: number }; webUrl?: string }> };
@@ -920,7 +920,7 @@ export async function executeMicrosoftReadTool(
       const result = await msGraphRead(
         `${prefix}root/search(q='${encodeURIComponent(query)}')?$top=${maxResults}&$select=id,name,size,lastModifiedDateTime,file,folder,webUrl`,
         agentId, agentName, 'onedrive_search', { query, maxResults, driveId },
-      );
+      slot);
       if (!result.ok) return `Error searching OneDrive: ${result.error}`;
 
       const data = result.data as { value?: Array<{ id: string; name: string; size?: number; lastModifiedDateTime: string; file?: { mimeType: string }; folder?: { childCount: number }; webUrl?: string }> };
@@ -977,7 +977,7 @@ export async function executeMicrosoftReadTool(
       const endpoint = query
         ? `sites?search=${encodeURIComponent(query)}&$top=${max}&$select=id,name,displayName,webUrl,description`
         : `sites?$top=${max}&$select=id,name,displayName,webUrl,description`;
-      const result = await msGraphRead(endpoint, agentId, agentName, 'sharepoint_list_sites', { query, max });
+      const result = await msGraphRead(endpoint, agentId, agentName, 'sharepoint_list_sites', { query, max }, slot);
       if (!result.ok) return `Error listing SharePoint sites: ${result.error}`;
       const data = result.data as { value?: Array<{ id: string; name: string; displayName?: string; webUrl: string; description?: string }> };
       if (!data?.value || data.value.length === 0) return query ? `No SharePoint sites matching "${query}".` : 'No SharePoint sites found.';

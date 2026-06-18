@@ -244,14 +244,15 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
 // exported array is consumed statically at startup. If the agent calls
 // a user_* tool while the slot isn't connected, the client returns a
 // clean "Not authenticated" message naming the slot.
-const USER_SLOT_READ_TOOLS: readonly string[] = [
-  'gmail_search', 'gmail_read', 'gmail_list_attachments', 'gmail_inbox',
-  'calendar_agenda', 'calendar_search', 'calendar_list',
-  'drive_list', 'drive_read',
-];
-for (const canonical of USER_SLOT_READ_TOOLS) {
-  const baseDef = googleReadToolDefinitions.find(d => d.name === canonical);
-  if (!baseDef) continue;
+// Full-parity (2026-06-17): every Google read tool gets a user-slot variant.
+// All read tools target a per-slot-toggled service (gmail/calendar/drive/docs/
+// sheets) and every read case threads the resolved `slot` into googleRead, so
+// the variant is safe and gated by isToolEnabledByService (User slot connected
+// AND service enabled). Snapshot the base list first so we don't iterate over
+// the variants we're appending.
+const googleReadBaseTools = [...googleReadToolDefinitions];
+for (const baseDef of googleReadBaseTools) {
+  const canonical = baseDef.name;
   googleReadToolDefinitions.push({
     ...baseDef,
     name: `user_${canonical}`,
