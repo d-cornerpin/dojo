@@ -315,6 +315,7 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
   // always-loaded set is enumerated once at the top instead of marked on every
   // entry. A primary agent (~165 tools) lands near ~1.4K tokens here.
   const alwaysLoaded = getAgentAlwaysLoadedTools(agentId);
+  lines.push('Your current tools, rebuilt every turn — if it\'s listed, you have it now. Don\'t tell the user a capability is missing from memory or an old message; check here (or just try it) first.');
   lines.push(generateToolIndex(agentTools, alwaysLoaded));
   lines.push('');
 

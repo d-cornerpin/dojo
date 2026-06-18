@@ -474,7 +474,7 @@ async function assembleMessageContext(
       const summaryText = summariesToInclude.map(s => formatSummaryXml(s)).join('\n\n');
       const summaryTokens = estimateTokens(summaryText);
 
-      const wrappedText = `═══ COMPRESSED HISTORY (summaries of earlier messages — not live conversation) ═══\nThe following are compressed summaries of older conversation history. These capture key facts and decisions but are NOT live messages. Do not respond to them directly — they are context only.\n\n${summaryText}\n\n═══ END COMPRESSED HISTORY ═══`;
+      const wrappedText = `═══ COMPRESSED HISTORY (summaries of earlier messages — not live conversation) ═══\nThe following are compressed summaries of older conversation history. These capture key facts and decisions but are NOT live messages. Do not respond to them directly — they are context only. Any "couldn't do X" / "not supported" noted here may be outdated (the platform gains tools over time); check your current tool list before repeating it.\n\n${summaryText}\n\n═══ END COMPRESSED HISTORY ═══`;
 
       messages.push({ role: 'user', content: wrappedText });
       usedTokens += summaryTokens;

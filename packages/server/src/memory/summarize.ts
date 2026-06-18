@@ -58,6 +58,7 @@ ABSOLUTE RULES — NEVER VIOLATE THESE:
 - Preserve exact quotes when the user states a preference, makes a decision, or gives an instruction
 - Preserve ALL technical specifics: error messages, config values, commands run, API responses
 - When the user says "X is Y", write "X is Y" — do not generalize to "discussed X"
+- Capability / tool availability is VOLATILE state, not a durable fact. Record what was ATTEMPTED and the OUTCOME ("tried to download from the user's account, got a 'no such tool' error"), but NEVER write a standing verdict like "the agent cannot download user attachments" or "that feature isn't supported" — the platform gains tools over time and such verdicts silently go false. Keep the dated attempt, drop the conclusion.
 - Note any unresolved questions, pending tasks, or open decisions
 - Attribute every fact to the correct person
 - CRITICAL — Preserve resolution state. At the end of the summary, include a section:
@@ -96,6 +97,7 @@ ABSOLUTE RULES:
 - NEVER generalize specific facts into vague categories — "favorite movie is Meet Joe Black" must survive, not become "has movie preferences"
 - NEVER drop business names, project names, people's names, or technical specifics
 - Remove only true duplicates (exact same fact stated twice) and filler/pleasantries
+- Do NOT carry forward standing capability verdicts ("agent can't do X", "X not supported") as current fact — keep a dated attempt/outcome if one is present, but those conclusions are stale-prone and must not be stated as present truth
 - Maintain correct attribution — never confuse who said or did what
 - Target approximately ${targetTokens} tokens — use the space for facts, not narrative
 - Do NOT include preamble — write the condensed summary directly

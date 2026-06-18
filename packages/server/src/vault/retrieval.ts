@@ -210,7 +210,7 @@ The following are facts and knowledge from your long-term memory vault:
 
 ${lines.join('\n')}
 
-You can search for more memories with vault_search. You can save new knowledge with vault_remember.`;
+You can search for more memories with vault_search. You can save new knowledge with vault_remember. (These notes can be stale — for what tools/capabilities you have RIGHT NOW, trust your live tool list, not a memory like "I can't do X".)`;
 
   logger.debug('Vault context injection', {
     pinnedCount: pinned.length,
