@@ -350,11 +350,16 @@ const AssistantBubble = ({
 // shared components/ToolBadge so the style cannot drift across chat pages; this
 // helper turns a run of messages into the {id, summary} items it takes, dropping
 // bookkeeping-only turns (summarizeToolTurn returns null for them).
-const toolBadgeItems = (msgs: ChatMessage[]): Array<{ id: string; summary: ToolTurnSummary }> =>
+const toolBadgeItems = (
+  msgs: ChatMessage[],
+  resultById: Map<string, ToolResultInfo>,
+  wordyMode: boolean,
+): Array<{ id: string; summary: ToolTurnSummary }> =>
   msgs
     .map((m) => {
       const names = (parseMessageContent(m.content).blocks ?? [])
         .filter((b) => b.type === 'tool_use')
+        .filter((b) => wordyMode || !isMissingParamError(b.id ? resultById.get(b.id) : undefined))
         .map((b) => b.name ?? '');
       const summary = summarizeToolTurn(names);
       return summary ? { id: m.id, summary } : null;
@@ -368,13 +373,24 @@ const toolBadgeItems = (msgs: ChatMessage[]): Array<{ id: string; summary: ToolT
 // path (summarizeToolTurn hides them); if a group surfaces no visible tool the
 // chips list is empty and ToolBadgeGroup falls back to the summary items.
 interface ToolResultInfo { content: string; isError: boolean }
+
+// A tool call rejected for a missing / blank required parameter — a validation
+// failure before the tool really ran. The agent immediately retries with the
+// param, so showing this failed chip makes it look like the agent is repeating
+// itself. Hide it outside Wordy mode (where the user wants every step).
+const isMissingParamError = (info?: ToolResultInfo): boolean =>
+  !!info?.isError &&
+  /\bis required\b|required field (is )?missing|missing required (parameter|field|argument)/i.test(info.content);
+
 const toolChips = (
   msgs: ChatMessage[],
   resultById: Map<string, ToolResultInfo>,
+  wordyMode: boolean,
 ): ToolChipData[] =>
   msgs.flatMap((m) =>
     (parseMessageContent(m.content).blocks ?? [])
       .filter((b) => b.type === 'tool_use' && b.name && classifyTool(b.name) !== 'bookkeeping')
+      .filter((b) => wordyMode || !isMissingParamError(b.id ? resultById.get(b.id) : undefined))
       .map((b, i): ToolChipData => {
         const res = b.id ? resultById.get(b.id) : undefined;
         return {
@@ -1422,8 +1438,8 @@ export const Chat = ({ panel = null }: ChatProps) => {
               return (
                 <ToolBadgeGroup
                   key={msg.id}
-                  items={toolBadgeItems(members)}
-                  chips={toolChips(members, toolResultById)}
+                  items={toolBadgeItems(members, toolResultById, wordyMode)}
+                  chips={toolChips(members, toolResultById, wordyMode)}
                 />
               );
             }

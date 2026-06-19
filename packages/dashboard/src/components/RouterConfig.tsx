@@ -67,7 +67,9 @@ export const RouterConfig = ({ config, onUpdateTierModels, onUpdateDimension }: 
       <div>
         <h3 className="card-header mb-3">Tier Configuration</h3>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {config.tiers.map((tier) => (
+          {/* The 'system' tier is not router-related (it runs the classifier +
+              watchdog); its model picker lives in Settings -> Dojo instead. */}
+          {config.tiers.filter((tier) => tier.id !== 'system').map((tier) => (
             <TierPanel
               key={tier.id}
               tier={tier}
@@ -117,10 +119,14 @@ const TierPanel = ({
   tier,
   availableModels,
   onUpdate,
+  bare = false,
 }: {
   tier: Tier;
   availableModels: AvailableModel[];
   onUpdate: (models: Array<{ modelId: string; priority: number }>) => Promise<void>;
+  /** Render only the model list + add control, no card wrapper or title (the
+      host card supplies those). Used by the System Model card in the Dojo tab. */
+  bare?: boolean;
 }) => {
   const [saving, setSaving] = useState(false);
   const [showAddDropdown, setShowAddDropdown] = useState(false);
@@ -182,13 +188,8 @@ const TierPanel = ({
     tier3: 'border-cp-teal/30',
   };
 
-  return (
-    <div className={`glass-card rounded-xl p-4 ${tierColors[tier.id] || 'text-ui/25'}`}>
-      <div className="mb-3">
-        <h4 className="text-sm font-medium text-ui">{tier.name}</h4>
-        <p className="text-xs text-ui/40 mt-0.5">{tier.description}</p>
-      </div>
-
+  const inner = (
+    <>
       {sortedModels.length === 0 ? (
         <p className="text-xs text-ui/25 mb-3">No models assigned</p>
       ) : (
@@ -280,6 +281,17 @@ const TierPanel = ({
           <span className="text-lg leading-none">+</span> Add Model
         </button>
       )}
+    </>
+  );
+
+  if (bare) return inner;
+  return (
+    <div className={`glass-card rounded-xl p-4 ${tierColors[tier.id] || 'text-ui/25'}`}>
+      <div className="mb-3">
+        <h4 className="text-sm font-medium text-ui">{tier.name}</h4>
+        <p className="text-xs text-ui/40 mt-0.5">{tier.description}</p>
+      </div>
+      {inner}
     </div>
   );
 };
@@ -340,5 +352,63 @@ const DimensionRow = ({
         </button>
       </td>
     </tr>
+  );
+};
+
+// ── System Model (relocated from the Router tab to Settings -> Dojo) ──
+// The 'system' tier is not router-related: its (local-only) model runs the
+// multi-step classifier and the watchdog's smart alerts. Self-contained: loads
+// the router config + available models itself and saves via updateTierModels.
+export const SystemModelConfig = () => {
+  const [tier, setTier] = useState<Tier | null>(null);
+  const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = async () => {
+    const [cfgRes, modelsRes] = await Promise.all([
+      api.getRouterConfig(),
+      api.getAvailableRouterModels(),
+    ]);
+    if (cfgRes.ok) {
+      const data = cfgRes.data as Record<string, unknown>;
+      const raw = (data.tiers as Array<Record<string, unknown>>).find((t) => t.id === 'system');
+      setTier(
+        raw
+          ? {
+              id: raw.id as string,
+              name: (raw.displayName ?? raw.name) as string,
+              description: (raw.description ?? '') as string,
+              models: (raw.models ?? []) as TierModel[],
+            }
+          : null,
+      );
+    }
+    if (modelsRes.ok) setAvailableModels(modelsRes.data);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleUpdate = async (models: Array<{ modelId: string; priority: number }>) => {
+    await api.updateTierModels('system', models);
+    await load();
+  };
+
+  if (loading) return <div className="tile loading-state">Loading...</div>;
+  if (!tier) return null;
+
+  return (
+    <div className="tile">
+      <div className="scard__title">System Model</div>
+      <div className="scard__desc">
+        The local model that runs the multi-step classifier and the watchdog's smart alerts.
+        Local-only (Ollama) so it keeps working with no network. This is a system function, not
+        part of the model router.
+      </div>
+      <TierPanel tier={tier} availableModels={availableModels} onUpdate={handleUpdate} bare />
+    </div>
   );
 };

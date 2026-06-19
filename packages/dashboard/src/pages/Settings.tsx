@@ -4,7 +4,7 @@ import { useSearchParams } from 'react-router-dom';
 import type { Provider, Model, GenerationParamSpec, VoiceOption } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
-import { RouterConfig } from '../components/RouterConfig';
+import { RouterConfig, SystemModelConfig } from '../components/RouterConfig';
 import { RouterTest } from '../components/RouterTest';
 import { GoogleWorkspaceSettings } from '../components/GoogleWorkspaceSettings';
 import { MicrosoftWorkspaceSettings } from '../components/MicrosoftWorkspaceSettings';
@@ -596,10 +596,12 @@ const PlatformTab = () => {
     <div className="scards">
       <AgentLimitsSettings />
       <OllamaSettings />
+      <SystemModelConfig />
       <RemoteAccessSettings />
       <SearchSettings />
       <MigrationSettings />
-      <FengShuiSettings />
+      {/* Feng Shui (theme) card hidden per request; component kept for easy restore. */}
+      {/* <FengShuiSettings /> */}
       <ServerControlSettings />
     </div>
   );
