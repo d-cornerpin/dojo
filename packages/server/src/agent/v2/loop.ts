@@ -96,7 +96,7 @@ import { recordToolOutcome, crossTurnFailureNote } from './attempt-record.js';
 // Engine message-injection now flows exclusively through the registry channel
 // (injectRegistryMessage / appendSystemHint); the legacy pushEngineMessage,
 // detectContextGap, and getPromptAssemblerMode call sites were removed at R7b.
-import { injectRegistryMessage, appendSystemHint, buildAssemblyContext } from '../../prompt/registry/assembler.js';
+import { injectRegistryMessage, buildAssemblyContext } from '../../prompt/registry/assembler.js';
 import type { AssemblyContext } from '../../prompt/registry/types.js';
 import { isDestructiveCall, consumeApproval, requestApproval } from '../destructive-gate.js';
 import {
@@ -1396,8 +1396,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
               const weakHint = hintHeader +
                 `Based on the user's message, the DOJO matched these techniques. Load any that fit the task; ignore otherwise.\n\n` +
                 lines.join('\n');
+              // Inject as a post-tail engine message (NOT appended to the
+              // system prompt). The match-strength wording changes per user
+              // message, so keeping it out of the system prefix preserves
+              // prompt-cache warmth across turns. Mirrors the strong-match
+              // injection above (its own message, after the ask).
               mctx.techniqueWeakHint = weakHint;
-              systemPrompt = appendSystemHint(systemPrompt, 'sys.technique-weak-hint', mctx);
+              injectRegistryMessage('msg.technique-weak', messages, mctx);
             }
             logger.debug('v2 techniqueMatcher: surfaced matches', {
               agentId,
@@ -1768,6 +1773,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
       if (!useTools && state.loopCount === 1 && messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
         injectRegistryMessage('msg.tool-note', messages, mctx);
       }
+
+      // Precise clock time as the FINAL message — after every other engine
+      // injection — so its per-minute churn falls past the entire cached
+      // prefix (system + tools + conversation history + other injections)
+      // instead of breaking it. The system prompt carries date-only; this is
+      // the live time. Always injected.
+      injectRegistryMessage('msg.current-time', messages, mctx);
 
       // ── Context receipt (debug-gated, fire-and-forget) ──
       // Last touch point before the provider call: every injector and

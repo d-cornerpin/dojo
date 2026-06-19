@@ -684,6 +684,13 @@ async function assembleMessageContext(
     usedTokens += estimateTokens(combinedAck);
   }
 
+  // NOTE: the current clock time is intentionally NOT injected here. It is a
+  // volatile, per-call value, and injecting it BEFORE the fresh tail would
+  // break prompt caching for the entire conversation history (the cache prefix
+  // would diverge at the timestamp every turn). It is instead injected as the
+  // LAST engine message in the loop (msg.current-time), after the fresh tail,
+  // where its churn costs no cache. See renderCurrentTimeMessage().
+
   // 4. Fresh tail — exclude user messages that arrived after the current turn
   // started so they get a clean run via the wakeup mechanism instead of being
   // buried mid-context where the LLM might ignore them

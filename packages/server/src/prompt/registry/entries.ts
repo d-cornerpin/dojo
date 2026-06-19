@@ -10,6 +10,7 @@ import { register } from './registry.js';
 import { SystemSlot, MessageSlot, type SystemInjection, type MessageInjection } from './types.js';
 import {
   renderTimeHeader,
+  renderCurrentTimeMessage,
   generateToolsGuidance_v2,
   getSoulContent,
   renderPrecedenceLadder,
@@ -266,18 +267,6 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
       'filler advice (C6). Mutually exclusive with phone-conduct.',
     render: (ctx) => renderVoiceConduct(ctx.inboundChannel, ctx.turnContext),
   },
-  {
-    id: 'sys.technique-weak-hint',
-    target: 'system',
-    slot: SystemSlot.TechniqueWeakHint,
-    precedenceTier: 2,
-    rawAppend: true,
-    reason:
-      'Weak-match "consider these techniques" hint. Legacy raw-appended it to the ' +
-      'system prompt (no --- separator); kept byte-equivalent via appendSystemHint. ' +
-      'Content (the matched list) is computed by the loop matcher; the entry renders it.',
-    render: (ctx) => ctx.techniqueWeakHint ?? null,
-  },
 ];
 
 // ── Message-side entries (R3 PoC: one conditional, standalone injection) ──
@@ -350,6 +339,35 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
       'message outranks it. Content (matcher + body) is computed by the loop; the ' +
       'entry renders + injects it.',
     render: (ctx) => (ctx.techniqueStrong ? { role: 'user', content: ctx.techniqueStrong } : null),
+  },
+  {
+    id: 'msg.technique-weak',
+    target: 'messages',
+    slot: MessageSlot.TechniqueWeak,
+    precedenceTier: 2,
+    reason:
+      'Weak-match "consider these techniques" hint. Was raw-appended to the system ' +
+      'prompt (legacy), which broke prompt caching: the matched-strength wording ' +
+      'changes per user message, so a volatile string lived inside the otherwise ' +
+      'stable cached prefix. Now injected as a post-tail engine message (the R5 ' +
+      'move the slot enum always anticipated), keeping the system prefix cacheable. ' +
+      'Content is computed by the loop matcher; the entry renders + injects it.',
+    render: (ctx) => {
+      const h = ctx.techniqueWeakHint?.trimStart();
+      return h ? { role: 'user', content: h } : null;
+    },
+  },
+  {
+    id: 'msg.current-time',
+    target: 'messages',
+    slot: MessageSlot.CurrentTime,
+    precedenceTier: 7,
+    reason:
+      'Precise clock time as the LAST (most volatile) message. The system prompt ' +
+      'carries date-only (stable, cacheable); the per-minute clock time lives here ' +
+      'so its per-call churn falls after the entire cached prefix (system + tools + ' +
+      'conversation history) instead of breaking it. Always rendered.',
+    render: () => ({ role: 'user', content: renderCurrentTimeMessage() }),
   },
 ];
 

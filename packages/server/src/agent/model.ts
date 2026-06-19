@@ -845,10 +845,17 @@ async function buildOpenAIMessages(
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string }>,
   agentId: string,
   isDeepSeek = false,
+  isOpenRouter = false,
 ): Promise<OpenAI.ChatCompletionMessageParam[]> {
-  const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [
-    { role: 'system', content: systemPrompt },
-  ];
+  // OpenAI & DeepSeek auto-cache a stable system prefix with NO markup, so they
+  // get a plain string (changing the shape could disturb their auto-cache).
+  // OpenRouter is a proxy: Anthropic/Gemini-backed models behind it need an
+  // explicit cache_control marker (OpenRouter's adopted convention), which it
+  // ignores for backends that already auto-cache. So mark only for OpenRouter.
+  const systemMessage = (isOpenRouter
+    ? { role: 'system', content: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }] }
+    : { role: 'system', content: systemPrompt }) as OpenAI.ChatCompletionMessageParam;
+  const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [systemMessage];
 
   for (const m of messages) {
     if (m.role === 'user') {
@@ -1098,7 +1105,8 @@ async function callOpenAIModel(
   const client = getOpenAIClient(modelInfo.providerId, modelInfo.providerBaseUrl);
 
   const isDeepSeek = (modelInfo.providerBaseUrl ?? '').toLowerCase().includes('deepseek.com');
-  const openaiMessages = await buildOpenAIMessages(systemPrompt, messages, agentId, isDeepSeek);
+  const isOpenRouter = (modelInfo.providerBaseUrl ?? '').toLowerCase().includes('openrouter.ai');
+  const openaiMessages = await buildOpenAIMessages(systemPrompt, messages, agentId, isDeepSeek, isOpenRouter);
 
   // Build tools in OpenAI format (two-phase loading: only always-loaded + session-loaded)
   let openaiTools: OpenAI.ChatCompletionTool[] | undefined = undefined;
@@ -1315,6 +1323,10 @@ async function callOpenAIModel(
     model: modelInfo.apiModelId,
     messages: openaiMessages,
     stream: true,
+    // Ask for a final usage chunk so we can see real prompt-cache hits (DeepSeek
+    // reports prompt_cache_hit_tokens; OpenAI reports prompt_tokens_details
+    // .cached_tokens). Used for cache-hit logging below; harmless if ignored.
+    stream_options: { include_usage: true },
     ...(isReasoningModel
       ? { max_completion_tokens: effectiveMaxTokens }
       : { max_tokens: effectiveMaxTokens }),
@@ -1328,7 +1340,7 @@ async function callOpenAIModel(
   // upstream provider's convention (Anthropic thinking, o-series
   // reasoning_effort, Gemini thinkingBudget, DeepSeek R1, etc). For generic
   // openai-compatible providers we leave the request alone.
-  const isOpenRouter = (modelInfo.providerBaseUrl ?? '').toLowerCase().includes('openrouter.ai');
+  // (isOpenRouter is declared once near the top of this function.)
   const supportsThinking = modelInfo.capabilities.includes('thinking');
   if (isOpenRouter && supportsThinking) {
     // `extra_body` survives the OpenAI SDK's pass-through to non-standard
@@ -1399,8 +1411,13 @@ async function callOpenAIModel(
     let fullReasoning = '';
     const toolCalls: ToolCall[] = [];
     const toolCallAccumulator = new Map<number, { id: string; name: string; args: string }>();
+    // Final usage chunk (from stream_options.include_usage) — carries cache stats.
+    let realUsage: (OpenAI.CompletionUsage & { prompt_cache_hit_tokens?: number; prompt_cache_miss_tokens?: number }) | undefined;
 
     for await (const chunk of stream) {
+      // The usage chunk arrives last with an empty choices array — capture it
+      // before the delta guard skips it.
+      if (chunk.usage) realUsage = chunk.usage as typeof realUsage;
       const delta = chunk.choices[0]?.delta;
       if (!delta) continue;
 
@@ -1471,6 +1488,22 @@ async function callOpenAIModel(
     }
 
     const latencyMs = Date.now() - startTime;
+
+    // Prompt-cache visibility: log how much of the prompt was served from cache.
+    // DeepSeek exposes prompt_cache_hit/miss_tokens; OpenAI exposes
+    // prompt_tokens_details.cached_tokens. Lets us confirm caching actually
+    // HITS (markers alone don't guarantee it — the prefix must be stable).
+    if (realUsage) {
+      const promptTokens = realUsage.prompt_tokens ?? 0;
+      const cachedTokens = realUsage.prompt_cache_hit_tokens ?? realUsage.prompt_tokens_details?.cached_tokens ?? 0;
+      logger.info('prompt cache usage', {
+        provider: modelInfo.providerType,
+        model: modelInfo.apiModelId,
+        promptTokens,
+        cachedTokens,
+        cacheHitRatio: promptTokens > 0 ? Math.round((cachedTokens / promptTokens) * 100) / 100 : 0,
+      }, agentId);
+    }
 
     // Estimate tokens (OpenAI streaming doesn't always give usage in stream mode)
     const inputTokens = Math.ceil((systemPrompt.length + JSON.stringify(openaiMessages).length) / 4);
@@ -1811,12 +1844,19 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
   // OAuth tokens require the system parameter as an array with a specific
   // passphrase as the first block for Sonnet/Opus model access
   const OAUTH_SYSTEM_PASSPHRASE = 'You are Claude Code, Anthropic\'s official CLI for Claude.';
-  const systemParam: string | Anthropic.TextBlockParam[] = isOAuth
+  // Prompt caching: the system prompt is a large, mostly-stable prefix. Marking
+  // its final block with cache_control lets Anthropic reuse the prefill across
+  // turns instead of re-processing it every call — a big TTFT + cost win for
+  // rapid back-and-forth (e.g. voice). The OAuth passphrase block stays unmarked;
+  // the breakpoint sits on the real prompt. Anthropic safely ignores the marker
+  // on sub-minimum blocks, so this never errors on a short prompt.
+  const CACHE_EPHEMERAL = { type: 'ephemeral' as const };
+  const systemParam: Anthropic.TextBlockParam[] = isOAuth
     ? [
         { type: 'text' as const, text: OAUTH_SYSTEM_PASSPHRASE },
-        { type: 'text' as const, text: systemPrompt },
+        { type: 'text' as const, text: systemPrompt, cache_control: CACHE_EPHEMERAL },
       ]
-    : systemPrompt;
+    : [{ type: 'text' as const, text: systemPrompt, cache_control: CACHE_EPHEMERAL }];
 
   // Estimate input tokens and enforce hard cap.
   // Use ~3.5 chars/token (conservative) to avoid underestimating.
@@ -1901,10 +1941,15 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     max_tokens: anthropicMaxTokens,
     system: systemParam,
     messages: anthropicMessages,
-    ...(filteredTools.length > 0 ? { tools: filteredTools.map(t => ({
+    // Tools are a large block that never changes turn-to-turn, so caching them
+    // is a guaranteed win. Anthropic caches everything up to the breakpoint, and
+    // tools come before the system block in the request, so this marker caches
+    // the full tools array (and the system block's marker extends it).
+    ...(filteredTools.length > 0 ? { tools: filteredTools.map((t, i, arr) => ({
       name: t.name,
       description: t.description,
       input_schema: t.input_schema as Anthropic.Tool['input_schema'],
+      ...(i === arr.length - 1 ? { cache_control: CACHE_EPHEMERAL } : {}),
     })) } : {}),
   };
 
@@ -2016,6 +2061,22 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     const latencyMs = Date.now() - startTime;
     const inputTokens = finalMessage.usage.input_tokens;
     const outputTokens = finalMessage.usage.output_tokens;
+
+    // Prompt-cache visibility (Anthropic): cache_read = served from cache,
+    // cache_creation = written to cache this call. Confirms the cache_control
+    // markers are actually hitting.
+    {
+      const u = finalMessage.usage as typeof finalMessage.usage & { cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+      if (u.cache_read_input_tokens != null || u.cache_creation_input_tokens != null) {
+        logger.info('prompt cache usage', {
+          provider: 'anthropic',
+          model: modelInfo.apiModelId,
+          cacheReadTokens: u.cache_read_input_tokens ?? 0,
+          cacheCreationTokens: u.cache_creation_input_tokens ?? 0,
+          uncachedInputTokens: inputTokens,
+        }, agentId);
+      }
+    }
 
     // Calculate cost
     const inputCost = modelInfo.apiModelId.includes('opus')

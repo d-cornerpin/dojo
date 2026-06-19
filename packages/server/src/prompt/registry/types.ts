@@ -112,6 +112,7 @@ export enum MessageSlot {
   Attachments = 1600, // image/PDF content blocks
   PendingNudge = 1700, // steering nudge
   ToolNote = 1800, // no-tools capability note
+  CurrentTime = 1900, // precise clock time — most volatile, always last (cache tail)
 }
 
 // ───────────────────────────────────────────────────────────────────────────

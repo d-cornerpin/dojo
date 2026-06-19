@@ -683,12 +683,33 @@ function buildMyChannelsSummary(
 }
 
 /**
- * The `time` slot text. Extracted so the registry's sys.time entry and the
- * legacy parts producer share ONE implementation (byte-identity by
- * construction). Uses new Date() at call time — minute-precision, so the value
- * is stable within a turn; byte-equivalence checks normalize it out (§6).
+ * The `time` slot text — DATE ONLY (no time-of-day). Date is stable across the
+ * whole day, so it stays byte-identical turn-to-turn and the system prompt
+ * remains prompt-cacheable (a minute-precision timestamp here was breaking the
+ * cache every minute, poisoning the entire system+tools prefix). The precise
+ * clock time is injected separately as a volatile tail message via
+ * renderCurrentTimeMessage(), where per-call churn costs no cache.
  */
 export function renderTimeHeader(): string {
+  const now = new Date();
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const localStr = now.toLocaleString('en-US', {
+    timeZone: tz,
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+  return `**Current date: ${localStr}**\n\nUse this to judge the age and relevance of any context, vault entries, or summaries you see. Recent information is more reliable than old information. (The precise clock time appears in a note at the end of this context.)`;
+}
+
+/**
+ * The precise clock time, rendered as a VOLATILE tail message (not in the
+ * cached system prefix). Injected after the fresh tail / engine messages so its
+ * per-call churn never breaks the stable prefix. Keeps the agent's
+ * minute-precision temporal awareness without poisoning the cache.
+ */
+export function renderCurrentTimeMessage(): string {
   const now = new Date();
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const localStr = now.toLocaleString('en-US', {
@@ -702,7 +723,7 @@ export function renderTimeHeader(): string {
     hour12: true,
     timeZoneName: 'short',
   });
-  return `**Current date/time: ${localStr}**\n\nUse this to judge the age and relevance of any context, vault entries, or summaries you see. Recent information is more reliable than old information.`;
+  return `[Current time: ${localStr} (${now.toISOString()})]`;
 }
 
 /** The `precedence-ladder` slot. Defines the instruction-precedence order so a
@@ -777,14 +798,17 @@ export function renderUserProfile(agentId: string): string | null {
   return readPromptFile('USER.md', DEFAULT_USER_MD);
 }
 
-/** The `runtime` slot. Agent id / model / host footer. The Current Time line is
- *  per-call volatile (byte-equivalence checks normalize it out). */
+/** The `runtime` slot. Agent id / model / host footer — all STABLE so the whole
+ *  system prompt stays byte-identical across turns and can be prompt-cached.
+ *  Current Time was removed from here on purpose: a per-call timestamp inside
+ *  the system prefix breaks prompt caching (raw byte-prefix match, no
+ *  normalization). The time is now injected per-turn into the message tail (see
+ *  assembleMessageContext) where volatile data belongs. */
 export function renderRuntimeInfo(agentId: string, modelId: string): string {
   return `
 ## Runtime Information
 - Agent ID: ${agentId}
 - Model: ${modelId}
-- Current Time: ${new Date().toISOString()}
 - Platform: macOS (${os.arch()})
 - Host: ${os.hostname()}
 `;
