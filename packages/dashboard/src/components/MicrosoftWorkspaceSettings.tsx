@@ -37,6 +37,9 @@ const serviceList = [
   { key: 'calendar', label: 'Calendar', desc: 'View and create events' },
   { key: 'onedrive', label: 'OneDrive', desc: 'List, read, and upload files' },
   { key: 'teams', label: 'Teams', desc: 'Send messages', entraOnly: true },
+  { key: 'contacts', label: 'Contacts', desc: 'Read and manage contacts' },
+  { key: 'onenote', label: 'OneNote', desc: 'Read and write notebook pages' },
+  { key: 'tasks', label: 'To Do', desc: 'Read and manage tasks' },
 ];
 
 const SLOT_META: Record<Slot, { title: string; subtitle: string }> = {

@@ -731,6 +731,17 @@ export const pdfToolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'pdf_read',
+    description: 'Extract and return the TEXT CONTENT of a PDF on disk. This is the tool for actually READING what a PDF says — e.g. an attached document the user wants you to look at. (pdf_get_info returns only metadata like page count and title, not the words.) Returns the text with per-page markers; very large PDFs are truncated. If the PDF is scanned / image-only with no text layer, little or no text comes back — say so rather than guessing. When a PDF is attached and your model already shows you its contents inline, you do not need this; reach for it when the inline contents are absent or you want the raw text on demand.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to the PDF (e.g. the Path shown in an attachment notice).' },
+      },
+      required: ['path'],
+    },
+  },
+  {
     name: 'pdf_merge',
     description: 'Combine multiple PDFs (in the given order) into a single new PDF. Returns the absolute output path. Original files are not modified.',
     input_schema: {
@@ -881,6 +892,25 @@ export async function executePdfTool(
         if (!fs.existsSync(p)) return `Error: file not found: ${p}`;
         const info = await getPdfInfo(p);
         return JSON.stringify(info, null, 2);
+      }
+      case 'pdf_read': {
+        const p = args.path as string;
+        if (!p) return 'Error: path is required.';
+        if (!fs.existsSync(p)) return `Error: file not found: ${p}`;
+        const { extractPdfText, PdfExtractError } = await import('../services/pdf-extract.js');
+        try {
+          const data = fs.readFileSync(p).toString('base64');
+          const extracted = await extractPdfText(data);
+          const trimmed = extracted.text.trim();
+          if (!trimmed) {
+            return `This PDF (${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}) has no extractable text layer — it is almost certainly scanned or image-only. There is nothing to read as text; tell the user it looks image-based.`;
+          }
+          const header = `[PDF text — ${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}, ${extracted.charCount} chars${extracted.truncated ? `, truncated to the first ${extracted.pagesExtracted} page(s)` : ''}]`;
+          return `${header}\n${trimmed}`;
+        } catch (err) {
+          const reason = err instanceof PdfExtractError ? err.message : (err instanceof Error ? err.message : String(err));
+          return `Error reading PDF text: ${reason}`;
+        }
       }
       case 'pdf_merge': {
         const inputs = args.input_paths as string[] | undefined;

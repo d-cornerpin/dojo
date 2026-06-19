@@ -574,6 +574,26 @@ for (const canonical of USER_SLOT_SEND_TOOLS) {
   });
 }
 
+// ── Full-parity (2026-06-17): user_* variants for ALL remaining write tools ──
+// Every non-send Microsoft write tool (calendar/onedrive/outlook ops/teams/
+// contacts/onenote/tasks/online_meeting) gets a generic user_ variant. Every
+// write executor case threads the resolved `slot` into msGraphWrite
+// (compiler-verified by temporarily making `slot` required), so a user_
+// variant always acts on the user's account. Gated per-slot via
+// isMsToolEnabledByService. Snapshot first; skip names already given a variant
+// (the send tools).
+const microsoftWriteBaseTools = [...microsoftWriteToolDefinitions];
+for (const baseDef of microsoftWriteBaseTools) {
+  const canonical = baseDef.name;
+  if (canonical.startsWith('user_')) continue;
+  if (microsoftWriteToolDefinitions.some(d => d.name === `user_${canonical}`)) continue;
+  microsoftWriteToolDefinitions.push({
+    ...baseDef,
+    name: `user_${canonical}`,
+    description: `[USER'S Microsoft account variant of \`${canonical}\`] ${baseDef.description}\n\nActs on the user's connected Microsoft account (Settings → Microsoft → User slot), gated by that slot's service toggle. The agent's own account is the unprefixed \`${canonical}\` tool. If the User slot isn't connected or the service is off, the tool returns a friendly error.`,
+  });
+}
+
 // ── Helpers ──
 
 function parseRecipients(str: string): Array<{ emailAddress: { address: string } }> {
@@ -962,7 +982,7 @@ export async function executeMicrosoftWriteTool(
       const endpoint = `${calendarPrefix(calendarId)}events`;
       const result = await msGraphWrite('POST', endpoint, event, agentId, agentName, 'calendar_create_ms', {
         title: resolvedTitle, start: args.start, end: args.end, calendarId,
-      });
+      }, slot);
       if (!result.ok) return `Error creating event: ${result.error}`;
 
       const data = result.data as { id?: string; webLink?: string };
@@ -983,7 +1003,7 @@ export async function executeMicrosoftWriteTool(
       const endpoint = calendarId ? `${calendarPrefix(calendarId)}events/${eventId}` : `me/events/${eventId}`;
       const result = await msGraphWrite('PATCH', endpoint, patch, agentId, agentName, 'calendar_update_ms', {
         eventId: args.event_id, calendarId,
-      });
+      }, slot);
       if (!result.ok) return `Error updating event: ${result.error}`;
       return `Calendar event ${args.event_id} updated`;
     }
@@ -994,7 +1014,7 @@ export async function executeMicrosoftWriteTool(
       const endpoint = calendarId ? `${calendarPrefix(calendarId)}events/${eventId}` : `me/events/${eventId}`;
       const result = await msGraphWrite('DELETE', endpoint, undefined, agentId, agentName, 'calendar_delete_ms', {
         eventId: args.event_id, calendarId,
-      });
+      }, slot);
       if (!result.ok) return `Error deleting event: ${result.error}`;
       return `Calendar event ${args.event_id} deleted`;
     }
@@ -1013,7 +1033,7 @@ export async function executeMicrosoftWriteTool(
         name: folderName,
         folder: {},
         '@microsoft.graph.conflictBehavior': 'rename',
-      }, agentId, agentName, 'onedrive_create_folder', { folderName, parentFolderId, driveId });
+      }, agentId, agentName, 'onedrive_create_folder', { folderName, parentFolderId, driveId }, slot);
 
       if (!result.ok) return `Error creating folder: ${result.error}`;
       const folder = result.data as { id?: string; name?: string; webUrl?: string };
@@ -1126,7 +1146,7 @@ export async function executeMicrosoftWriteTool(
       // Pass UPNs (emails) directly in the bind URL — no directory lookup needed.
       // The signed-in user is included automatically by Graph when using /chats,
       // but we add them explicitly as owner to satisfy the API requirement.
-      const meResult = await msGraphRead('me?$select=id', agentId, agentName, 'teams_create_chat_me', {});
+      const meResult = await msGraphRead('me?$select=id', agentId, agentName, 'teams_create_chat_me', {}, slot);
       if (!meResult.ok) return `Error fetching signed-in user: ${meResult.error}`;
       const me = meResult.data as { id?: string };
       if (!me?.id) return 'Error: could not determine signed-in user ID';
@@ -1149,7 +1169,7 @@ export async function executeMicrosoftWriteTool(
 
       const result = await msGraphWrite('POST', 'chats', chatBody, agentId, agentName, 'teams_create_chat', {
         chatType, members: memberEmails,
-      });
+      }, slot);
 
       if (!result.ok) return `Error creating Teams chat: ${result.error}`;
       const chat = result.data as { id?: string };
@@ -1165,7 +1185,7 @@ export async function executeMicrosoftWriteTool(
 
       const result = await msGraphWrite('POST', `chats/${chatId}/messages`, {
         body: { content: message },
-      }, agentId, agentName, 'teams_send_message', { chatId: args.chat_id });
+      }, agentId, agentName, 'teams_send_message', { chatId: args.chat_id }, slot);
 
       if (!result.ok) return `Error sending Teams message: ${result.error}`;
       return `Teams message sent to chat ${args.chat_id}`;
@@ -1186,7 +1206,7 @@ export async function executeMicrosoftWriteTool(
           roles: [role === 'write' ? 'write' : 'read'],
           requireSignIn: true,
           sendInvitation: true,
-        }, agentId, agentName, 'onedrive_share', { fileId: args.file_id, email, role, driveId });
+        }, agentId, agentName, 'onedrive_share', { fileId: args.file_id, email, role, driveId }, slot);
 
         if (!result.ok) return `Error sharing file: ${result.error}`;
         return `File shared with ${email} (${role} access). They'll receive an email invitation.`;
@@ -1198,7 +1218,7 @@ export async function executeMicrosoftWriteTool(
         const result = await msGraphWrite('POST', `${prefix}items/${fileId}/createLink`, {
           type: linkType,
           scope,
-        }, agentId, agentName, 'onedrive_share', { fileId: args.file_id, role, scope, driveId });
+        }, agentId, agentName, 'onedrive_share', { fileId: args.file_id, role, scope, driveId }, slot);
 
         if (!result.ok) return `Error creating sharing link: ${result.error}`;
         const data = result.data as { link?: { webUrl?: string } };
@@ -1212,7 +1232,7 @@ export async function executeMicrosoftWriteTool(
 
       const result = await msGraphWrite('PATCH', `me/messages/${messageId}`, { isRead }, agentId, agentName, 'outlook_mark_read', {
         messageId: args.message_id, isRead,
-      });
+      }, slot);
       if (!result.ok) return `Error marking email: ${result.error}`;
       return `Email marked as ${isRead ? 'read' : 'unread'}`;
     }
@@ -1222,7 +1242,7 @@ export async function executeMicrosoftWriteTool(
 
       const result = await msGraphWrite('DELETE', `me/messages/${messageId}`, undefined, agentId, agentName, 'outlook_delete', {
         messageId: args.message_id,
-      });
+      }, slot);
       if (!result.ok) return `Error deleting email: ${result.error}`;
       return `Email moved to Deleted Items`;
     }
@@ -1232,7 +1252,7 @@ export async function executeMicrosoftWriteTool(
       const categories = (args.categories as string[]) ?? [];
       const result = await msGraphWrite('PATCH', `me/messages/${messageId}`, { categories }, agentId, agentName, 'outlook_categories_set', {
         messageId: args.message_id, categories,
-      });
+      }, slot);
       if (!result.ok) return `Error setting categories: ${result.error}`;
       return categories.length === 0
         ? `All categories cleared from message ${args.message_id}.`
@@ -1248,7 +1268,7 @@ export async function executeMicrosoftWriteTool(
         {},
         agentId, agentName, 'onedrive_versions_restore',
         { fileId: args.file_id, versionId: args.version_id },
-      );
+      slot);
       if (!result.ok) return `Error restoring version: ${result.error}`;
       return `Version ${args.version_id} restored as the current version of file ${args.file_id}. The previous current version is now in the version history.`;
     }
@@ -1260,7 +1280,7 @@ export async function executeMicrosoftWriteTool(
       const endpoint = parentFolderId
         ? `me/mailFolders/${encodeURIComponent(parentFolderId)}/childFolders`
         : 'me/mailFolders';
-      const result = await msGraphWrite('POST', endpoint, { displayName: folderName }, agentId, agentName, 'outlook_create_folder', { name: folderName, parentFolderId });
+      const result = await msGraphWrite('POST', endpoint, { displayName: folderName }, agentId, agentName, 'outlook_create_folder', { name: folderName, parentFolderId }, slot);
       if (!result.ok) return `Error creating folder: ${result.error}`;
       const data = result.data as { id?: string; displayName?: string };
       return `Outlook folder "${data?.displayName ?? folderName}" created${data?.id ? ` (ID: ${data.id})` : ''}`;
@@ -1271,7 +1291,7 @@ export async function executeMicrosoftWriteTool(
       const folderId = args.folder_id as string;
       const result = await msGraphWrite('POST', `me/messages/${messageId}/move`, { destinationId: folderId }, agentId, agentName, 'outlook_move_to_folder', {
         messageId: args.message_id, folderId,
-      });
+      }, slot);
       if (!result.ok) return `Error moving email: ${result.error}`;
       const data = result.data as { id?: string };
       return `Email moved to folder ${folderId}${data?.id ? ` (new message ID: ${data.id})` : ''}`;
@@ -1284,7 +1304,7 @@ export async function executeMicrosoftWriteTool(
       const result = await msGraphRead(
         `me/messages/${messageId}/attachments/${attachmentId}`,
         agentId, agentName, 'outlook_download_attachment', { messageId: args.message_id, attachmentId: args.attachment_id },
-      );
+      slot);
       if (!result.ok) return `Error fetching attachment: ${result.error}`;
 
       const att = result.data as { name?: string; contentType?: string; contentBytes?: string; size?: number };
@@ -1333,7 +1353,7 @@ export async function executeMicrosoftWriteTool(
         `chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}?$select=id,attachments`,
         agentId, agentName, 'teams_download_attachment',
         { chatId, messageId, attachmentId, stage: 'lookup' },
-      );
+      slot);
       if (!msgResult.ok) return `Error fetching Teams message: ${msgResult.error}`;
       const msgData = msgResult.data as {
         attachments?: Array<{ id: string; name?: string; contentType?: string; contentUrl?: string }>;
@@ -1448,7 +1468,7 @@ export async function executeMicrosoftWriteTool(
       const result = await msGraphWrite('POST', `me/events/${eventId}/${action}`, {
         comment: (args.comment as string) ?? '',
         sendResponse: true,
-      }, agentId, agentName, 'calendar_respond_invite_ms', { eventId: args.event_id, response });
+      }, agentId, agentName, 'calendar_respond_invite_ms', { eventId: args.event_id, response }, slot);
 
       if (!result.ok) return `Error responding to invite: ${result.error}`;
       return `Meeting invite ${response}ed${args.comment ? ` with comment: "${args.comment}"` : ''}`;
@@ -1469,7 +1489,7 @@ export async function executeMicrosoftWriteTool(
       const msg = await msGraphRead(
         `me/messages/${messageId}?$select=from,subject,itemClass`,
         agentId, agentName, 'calendar_accept_share_ms:read', { messageId: rawMessageId },
-      );
+      slot);
       if (!msg.ok) return `Error reading share-invitation message: ${msg.error}`;
 
       const m = msg.data as { from?: { emailAddress?: { address?: string; name?: string } }; subject?: string; itemClass?: string };
@@ -1483,7 +1503,7 @@ export async function executeMicrosoftWriteTool(
       const verify = await msGraphRead(
         `users/${encodeURIComponent(ownerEmail)}/calendar?$select=id,name,owner`,
         agentId, agentName, 'calendar_accept_share_ms:verify', { ownerEmail },
-      );
+      slot);
       if (!verify.ok) {
         const errStr = String(verify.error ?? '');
         if (/403|Forbidden|AccessDenied/i.test(errStr)) {
@@ -1500,7 +1520,7 @@ export async function executeMicrosoftWriteTool(
         `me/messages/${messageId}/microsoft.graph.calendarSharingMessage/accept`,
         {},
         agentId, agentName, 'calendar_accept_share_ms:add', { messageId: rawMessageId },
-      );
+      slot);
       const addedToList = addResult.ok;
 
       const cal = verify.data as { id?: string; name?: string };
@@ -1519,7 +1539,7 @@ export async function executeMicrosoftWriteTool(
 
       const result = await msGraphWrite('DELETE', `${prefix}items/${fileId}`, undefined, agentId, agentName, 'onedrive_delete', {
         fileId: args.file_id, driveId,
-      });
+      }, slot);
       if (!result.ok) return `Error deleting from OneDrive: ${result.error}`;
       return `Item deleted from OneDrive`;
     }
@@ -1536,7 +1556,7 @@ export async function executeMicrosoftWriteTool(
 
       const result = await msGraphWrite('PATCH', `${prefix}items/${fileId}`, patch, agentId, agentName, 'onedrive_move', {
         fileId: args.file_id, newName: args.new_name, newParentId: args.new_parent_id, driveId,
-      });
+      }, slot);
       if (!result.ok) return `Error moving/renaming OneDrive item: ${result.error}`;
       const data = result.data as { name?: string };
       return `OneDrive item updated${data?.name ? `: now named "${data.name}"` : ''}`;
@@ -1657,7 +1677,7 @@ export async function executeMicrosoftWriteTool(
 
       const result = await msGraphWrite('POST', `teams/${teamId}/channels/${channelId}/messages`, {
         body: { content: args.message as string },
-      }, agentId, agentName, 'teams_send_channel_message', { teamId: args.team_id, channelId: args.channel_id });
+      }, agentId, agentName, 'teams_send_channel_message', { teamId: args.team_id, channelId: args.channel_id }, slot);
 
       if (!result.ok) return `Error sending channel message: ${result.error}`;
       return `Message posted to channel`;
@@ -1671,7 +1691,7 @@ export async function executeMicrosoftWriteTool(
         subject,
         startDateTime: start,
         endDateTime: end,
-      }, agentId, agentName, 'online_meeting_create', { subject, start, end });
+      }, agentId, agentName, 'online_meeting_create', { subject, start, end }, slot);
       if (!result.ok) return `Error creating online meeting: ${result.error}`;
       const m = result.data as { id?: string; joinUrl?: string; joinWebUrl?: string };
       const lines = [
@@ -1692,14 +1712,14 @@ export async function executeMicrosoftWriteTool(
       if (args.start) patch.startDateTime = args.start as string;
       if (args.end) patch.endDateTime = args.end as string;
       if (Object.keys(patch).length === 0) return 'Error: provide at least one of subject, start, end';
-      const result = await msGraphWrite('PATCH', `me/onlineMeetings/${meetingId}`, patch, agentId, agentName, 'online_meeting_update', { meetingId: args.meeting_id, ...patch });
+      const result = await msGraphWrite('PATCH', `me/onlineMeetings/${meetingId}`, patch, agentId, agentName, 'online_meeting_update', { meetingId: args.meeting_id, ...patch }, slot);
       if (!result.ok) return `Error updating online meeting: ${result.error}`;
       return `Online meeting ${args.meeting_id} updated. Join URL is unchanged.`;
     }
 
     case 'online_meeting_delete': {
       const meetingId = encodeURIComponent(args.meeting_id as string);
-      const result = await msGraphWrite('DELETE', `me/onlineMeetings/${meetingId}`, undefined, agentId, agentName, 'online_meeting_delete', { meetingId: args.meeting_id });
+      const result = await msGraphWrite('DELETE', `me/onlineMeetings/${meetingId}`, undefined, agentId, agentName, 'online_meeting_delete', { meetingId: args.meeting_id }, slot);
       if (!result.ok) return `Error deleting online meeting: ${result.error}`;
       return `Online meeting ${args.meeting_id} deleted. The join URL is now invalid.`;
     }
@@ -1708,7 +1728,7 @@ export async function executeMicrosoftWriteTool(
     case 'tasks_create_list': {
       const listName = (args.name as string | undefined)?.trim();
       if (!listName) return 'Error: name is required for tasks_create_list.';
-      const result = await msGraphWrite('POST', 'me/todo/lists', { displayName: listName }, agentId, agentName, 'tasks_create_list', { name: listName });
+      const result = await msGraphWrite('POST', 'me/todo/lists', { displayName: listName }, agentId, agentName, 'tasks_create_list', { name: listName }, slot);
       if (!result.ok) return `Error creating task list: ${result.error}`;
       const data = result.data as { id?: string; displayName?: string };
       return `Task list "${data?.displayName ?? listName}" created${data?.id ? ` (ID: ${data.id})` : ''}`;
@@ -1724,7 +1744,7 @@ export async function executeMicrosoftWriteTool(
       }
       let listId = args.list_id as string | undefined;
       if (!listId) {
-        const lookup = await msGraphRead("me/todo/lists?$filter=wellknownListName eq 'defaultList'&$top=1", agentId, agentName, 'tasks_create:default-lookup', {});
+        const lookup = await msGraphRead("me/todo/lists?$filter=wellknownListName eq 'defaultList'&$top=1", agentId, agentName, 'tasks_create:default-lookup', {}, slot);
         if (!lookup.ok) return `Error resolving default task list: ${lookup.error}`;
         const lookupData = lookup.data as { value?: Array<{ id: string }> };
         listId = lookupData?.value?.[0]?.id;
@@ -1738,7 +1758,7 @@ export async function executeMicrosoftWriteTool(
 
       const result = await msGraphWrite('POST', `me/todo/lists/${encodeURIComponent(listId)}/tasks`, task, agentId, agentName, 'tasks_create', {
         title: resolvedTitle, listId, due: args.due, importance: args.importance,
-      });
+      }, slot);
       if (!result.ok) return `Error creating task: ${result.error}`;
       const data = result.data as { id?: string };
       return `Task "${resolvedTitle}" created${data?.id ? ` (ID: ${data.id})` : ''}`;
@@ -1748,7 +1768,7 @@ export async function executeMicrosoftWriteTool(
       const taskId = args.task_id as string;
       let listId = args.list_id as string | undefined;
       if (!listId) {
-        const lookup = await msGraphRead("me/todo/lists?$filter=wellknownListName eq 'defaultList'&$top=1", agentId, agentName, 'tasks_update:default-lookup', {});
+        const lookup = await msGraphRead("me/todo/lists?$filter=wellknownListName eq 'defaultList'&$top=1", agentId, agentName, 'tasks_update:default-lookup', {}, slot);
         if (!lookup.ok) return `Error resolving default task list: ${lookup.error}`;
         const lookupData = lookup.data as { value?: Array<{ id: string }> };
         listId = lookupData?.value?.[0]?.id;
@@ -1769,7 +1789,7 @@ export async function executeMicrosoftWriteTool(
 
       const result = await msGraphWrite('PATCH', `me/todo/lists/${encodeURIComponent(listId)}/tasks/${encodeURIComponent(taskId)}`, patch, agentId, agentName, 'tasks_update', {
         taskId, listId, ...patch,
-      });
+      }, slot);
       if (!result.ok) return `Error updating task: ${result.error}`;
       return `Task ${taskId} updated`;
     }
@@ -1778,13 +1798,13 @@ export async function executeMicrosoftWriteTool(
       const taskId = args.task_id as string;
       let listId = args.list_id as string | undefined;
       if (!listId) {
-        const lookup = await msGraphRead("me/todo/lists?$filter=wellknownListName eq 'defaultList'&$top=1", agentId, agentName, 'tasks_complete:default-lookup', {});
+        const lookup = await msGraphRead("me/todo/lists?$filter=wellknownListName eq 'defaultList'&$top=1", agentId, agentName, 'tasks_complete:default-lookup', {}, slot);
         if (!lookup.ok) return `Error resolving default task list: ${lookup.error}`;
         const lookupData = lookup.data as { value?: Array<{ id: string }> };
         listId = lookupData?.value?.[0]?.id;
         if (!listId) return 'No default task list found. Call tasks_list_lists to see what lists exist and pass list_id explicitly.';
       }
-      const result = await msGraphWrite('PATCH', `me/todo/lists/${encodeURIComponent(listId)}/tasks/${encodeURIComponent(taskId)}`, { status: 'completed' }, agentId, agentName, 'tasks_complete', { taskId, listId });
+      const result = await msGraphWrite('PATCH', `me/todo/lists/${encodeURIComponent(listId)}/tasks/${encodeURIComponent(taskId)}`, { status: 'completed' }, agentId, agentName, 'tasks_complete', { taskId, listId }, slot);
       if (!result.ok) return `Error completing task: ${result.error}`;
       return `Task ${taskId} marked complete`;
     }
@@ -1793,13 +1813,13 @@ export async function executeMicrosoftWriteTool(
       const taskId = args.task_id as string;
       let listId = args.list_id as string | undefined;
       if (!listId) {
-        const lookup = await msGraphRead("me/todo/lists?$filter=wellknownListName eq 'defaultList'&$top=1", agentId, agentName, 'tasks_delete:default-lookup', {});
+        const lookup = await msGraphRead("me/todo/lists?$filter=wellknownListName eq 'defaultList'&$top=1", agentId, agentName, 'tasks_delete:default-lookup', {}, slot);
         if (!lookup.ok) return `Error resolving default task list: ${lookup.error}`;
         const lookupData = lookup.data as { value?: Array<{ id: string }> };
         listId = lookupData?.value?.[0]?.id;
         if (!listId) return 'No default task list found. Call tasks_list_lists to see what lists exist and pass list_id explicitly.';
       }
-      const result = await msGraphWrite('DELETE', `me/todo/lists/${encodeURIComponent(listId)}/tasks/${encodeURIComponent(taskId)}`, undefined, agentId, agentName, 'tasks_delete', { taskId, listId });
+      const result = await msGraphWrite('DELETE', `me/todo/lists/${encodeURIComponent(listId)}/tasks/${encodeURIComponent(taskId)}`, undefined, agentId, agentName, 'tasks_delete', { taskId, listId }, slot);
       if (!result.ok) return `Error deleting task: ${result.error}`;
       return `Task ${taskId} deleted`;
     }
@@ -1813,7 +1833,7 @@ export async function executeMicrosoftWriteTool(
       }
       const result = await msGraphWrite('POST', 'me/contacts', body.payload, agentId, agentName, 'contacts_create', {
         name: body.payload.displayName, hasEmail: Array.isArray(body.payload.emailAddresses),
-      });
+      }, slot);
       if (!result.ok) return `Error creating contact: ${result.error}`;
       const data = result.data as { id?: string; displayName?: string };
       return `Contact "${data?.displayName ?? body.payload.displayName ?? 'new contact'}" created${data?.id ? ` (ID: ${data.id})` : ''}`;
@@ -1828,14 +1848,14 @@ export async function executeMicrosoftWriteTool(
       }
       const result = await msGraphWrite('PATCH', `me/contacts/${contactId}`, body.payload, agentId, agentName, 'contacts_update', {
         contactId: args.contact_id, fields: Object.keys(body.payload),
-      });
+      }, slot);
       if (!result.ok) return `Error updating contact: ${result.error}`;
       return `Contact ${args.contact_id} updated`;
     }
 
     case 'contacts_delete': {
       const contactId = encodeURIComponent(args.contact_id as string);
-      const result = await msGraphWrite('DELETE', `me/contacts/${contactId}`, undefined, agentId, agentName, 'contacts_delete', { contactId: args.contact_id });
+      const result = await msGraphWrite('DELETE', `me/contacts/${contactId}`, undefined, agentId, agentName, 'contacts_delete', { contactId: args.contact_id }, slot);
       if (!result.ok) return `Error deleting contact: ${result.error}`;
       return `Contact ${args.contact_id} deleted`;
     }

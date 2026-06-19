@@ -430,9 +430,12 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
 
   const msServiceToolPrefixes: Record<string, string[]> = {
     outlook: ['outlook_'],
-    calendar: ['calendar_agenda_ms', 'calendar_search_ms', 'calendar_list_ms', 'calendar_create_ms', 'calendar_update_ms', 'calendar_delete_ms', 'calendar_respond_invite_ms', 'calendar_share_invites_ms', 'calendar_accept_share_ms'],
+    calendar: ['calendar_agenda_ms', 'calendar_search_ms', 'calendar_list_ms', 'calendar_create_ms', 'calendar_update_ms', 'calendar_delete_ms', 'calendar_respond_invite_ms', 'calendar_share_invites_ms', 'calendar_accept_share_ms', 'calendar_freebusy_ms'],
     onedrive: ['onedrive_', 'sharepoint_'],
     teams: ['teams_', 'online_meeting_'],
+    contacts: ['contacts_'],
+    onenote: ['onenote_'],
+    tasks: ['tasks_'],
   };
 
   /** Same two-stage gate as the Google version: slot connected AND service enabled on that slot. */
@@ -4619,10 +4622,18 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
           }
         }
 
-        // Clear iMessage auto-reply flag if the agent explicitly sent an iMessage
-        if (isAwaitingIMResponse(agentId)) {
-          clearIMResponseFlag(agentId);
-        }
+        // NOTE: do NOT clear the pending iMessage-reply flag here. This is
+        // send_to_agent — delegating work to ANOTHER AGENT, never a reply to
+        // the user. The earlier code cleared it (with a copy-pasted "if the
+        // agent explicitly sent an iMessage" comment that never matched what
+        // this handler does), which silently wiped the user's reply recipient
+        // mid-turn. Canonical failure: user iMessages "pause Nora", the agent
+        // delegates the pause to Nora via send_to_agent, the clear nukes the
+        // pending sender, and the end-of-turn auto-route has no one to deliver
+        // to — so the reply falls into dashboard chat the user never sees.
+        // The only legitimate "the agent handled the reply itself" clear lives
+        // in imessage_send (double-send guard); stale flags are swept at
+        // end-of-turn by the `if (imFlagSetAtRunStart)` cleanup in loop.ts.
         break;
       }
       case 'approve_destructive_action': {

@@ -174,7 +174,7 @@ microsoftRouter.post('/test', async (c) => {
 microsoftRouter.put('/services', async (c) => {
   try {
     const slot = parseSlot(c.req.query('slot'));
-    const body = await c.req.json() as Partial<{ outlook: boolean; calendar: boolean; onedrive: boolean; teams: boolean }>;
+    const body = await c.req.json() as Partial<{ outlook: boolean; calendar: boolean; onedrive: boolean; teams: boolean; contacts: boolean; onenote: boolean; tasks: boolean }>;
     setEnabledMsServices(body, slot);
     return c.json({ ok: true, data: { slot } });
   } catch { return c.json({ ok: false, error: 'Invalid request body' }, 400); }

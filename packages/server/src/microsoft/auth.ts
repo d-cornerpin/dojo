@@ -63,15 +63,26 @@ export interface MicrosoftWorkspaceConfig {
     calendar: boolean;
     onedrive: boolean;
     teams: boolean;
+    contacts: boolean;
+    onenote: boolean;
+    tasks: boolean;
   };
   lastVerifiedAt: string | null;
 }
 
+// contacts/onenote/tasks added 2026-06-17 — these tool families shipped with
+// no per-slot toggle and were always-on when connected. Default true so
+// existing installs keep them, but they're now gated like every other service
+// (and get user_* variants). The {...DEFAULT_SERVICES, ...stored} merge in
+// getMicrosoftWorkspaceConfig backfills the new keys into old saved configs.
 const DEFAULT_SERVICES = {
   outlook: true,
   calendar: true,
   onedrive: true,
   teams: true,
+  contacts: true,
+  onenote: true,
+  tasks: true,
 };
 
 // ── Config Helpers ──

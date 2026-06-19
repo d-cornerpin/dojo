@@ -443,6 +443,30 @@ for (const canonical of USER_SLOT_SEND_TOOLS) {
   });
 }
 
+// ── Full-parity (2026-06-17): user_* variants for ALL remaining write tools ──
+//
+// The send tools above carry a bespoke description (email-send toggle). Every
+// OTHER write tool (calendar/drive/docs/sheets writes) gets a generic user_
+// variant here. These route through the per-slot SERVICE toggle via
+// isToolEnabledByService in agent/tools.ts: a user_ variant is only exposed
+// when the User slot is connected AND that service is enabled for the User
+// slot. Every write executor case threads the resolved `slot` into
+// googleRead/googleWrite (compiler-verified by temporarily making `slot`
+// required), so a user_ variant always acts on the user's account, never the
+// agent's. Snapshot the base list first so we don't iterate over variants we
+// append, and skip any name that already has a variant (the send tools).
+const googleWriteBaseTools = [...googleWriteToolDefinitions];
+for (const baseDef of googleWriteBaseTools) {
+  const canonical = baseDef.name;
+  if (canonical.startsWith('user_')) continue;
+  if (googleWriteToolDefinitions.some(d => d.name === `user_${canonical}`)) continue;
+  googleWriteToolDefinitions.push({
+    ...baseDef,
+    name: `user_${canonical}`,
+    description: `[USER'S Google account variant of \`${canonical}\`] ${baseDef.description}\n\nActs on the user's connected Google account (Settings → Google → User slot), gated by that slot's service toggle. The agent's own account is the unprefixed \`${canonical}\` tool. If the User slot isn't connected or the service is off, the tool returns a friendly error.`,
+  });
+}
+
 // ── Helpers ──
 
 function sanitizeFilename(name: string): string {
@@ -902,7 +926,7 @@ export async function executeGoogleWriteTool(
       // googleWrite is fine here for the read — it just makes an authenticated GET.
       // Using googleRead module to avoid quirky write-side audit semantics.
       const { googleRead } = await import('./client.js');
-      const result = await googleRead(url, agentId, agentName, 'gmail_read_attachment', { messageId, attachmentId });
+      const result = await googleRead(url, agentId, agentName, 'gmail_read_attachment', { messageId, attachmentId }, slot);
       if (!result.ok) return `Error fetching attachment: ${result.error}`;
       const att = result.data as { size?: number; data?: string };
       if (!att?.data) return 'Error: attachment has no downloadable data (may be inline or removed).';
@@ -939,7 +963,7 @@ export async function executeGoogleWriteTool(
       const removeLabels = (args.remove_labels as string[]) ?? [];
 
       const url = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}/modify`;
-      const result = await googleWrite('POST', url, { addLabelIds: addLabels, removeLabelIds: removeLabels }, agentId, agentName, 'gmail_label', { messageId, addLabels, removeLabels });
+      const result = await googleWrite('POST', url, { addLabelIds: addLabels, removeLabelIds: removeLabels }, agentId, agentName, 'gmail_label', { messageId, addLabels, removeLabels }, undefined, slot);
       if (!result.ok) return `Error modifying labels: ${result.error}`;
       return `Labels updated on message ${messageId}`;
     }
@@ -952,7 +976,7 @@ export async function executeGoogleWriteTool(
         `${GMAIL_BASE}/labels`,
         { name: labelName, labelListVisibility: 'labelShow', messageListVisibility: 'show' },
         agentId, agentName, 'gmail_create_label', { name: labelName },
-      );
+      undefined, slot);
       if (!result.ok) return `Error creating label: ${result.error}`;
       const data = result.data as { id?: string; name?: string };
       return `Gmail label "${data?.name ?? labelName}" created${data?.id ? ` (ID: ${data.id})` : ''}`;
@@ -960,7 +984,7 @@ export async function executeGoogleWriteTool(
 
     case 'gmail_delete_label': {
       const labelId = args.label_id as string;
-      const result = await googleWrite('DELETE', `${GMAIL_BASE}/labels/${encodeURIComponent(labelId)}`, undefined, agentId, agentName, 'gmail_delete_label', { labelId });
+      const result = await googleWrite('DELETE', `${GMAIL_BASE}/labels/${encodeURIComponent(labelId)}`, undefined, agentId, agentName, 'gmail_delete_label', { labelId }, undefined, slot);
       if (!result.ok) return `Error deleting label: ${result.error}`;
       return `Gmail label ${labelId} deleted (any emails that had it are unchanged)`;
     }
@@ -987,7 +1011,7 @@ export async function executeGoogleWriteTool(
       }
 
       const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events`;
-      const result = await googleWrite('POST', url, event, agentId, agentName, 'calendar_create', { title: resolvedTitle, start: args.start, end: args.end, calendarId });
+      const result = await googleWrite('POST', url, event, agentId, agentName, 'calendar_create', { title: resolvedTitle, start: args.start, end: args.end, calendarId }, undefined, slot);
       if (!result.ok) return `Error creating event: ${result.error}`;
 
       const data = result.data as { id?: string; htmlLink?: string };
@@ -1005,7 +1029,7 @@ export async function executeGoogleWriteTool(
       if (args.description) patch.description = args.description;
 
       const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
-      const result = await googleWrite('PATCH', url, patch, agentId, agentName, 'calendar_update', { eventId, calendarId, ...patch });
+      const result = await googleWrite('PATCH', url, patch, agentId, agentName, 'calendar_update', { eventId, calendarId, ...patch }, undefined, slot);
       if (!result.ok) return `Error updating event: ${result.error}`;
       return `Calendar event ${eventId} updated`;
     }
@@ -1014,7 +1038,7 @@ export async function executeGoogleWriteTool(
       const eventId = args.event_id as string;
       const calendarId = (args.calendar_id as string | undefined) ?? 'primary';
       const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
-      const result = await googleWrite('DELETE', url, undefined, agentId, agentName, 'calendar_delete', { eventId, calendarId });
+      const result = await googleWrite('DELETE', url, undefined, agentId, agentName, 'calendar_delete', { eventId, calendarId }, undefined, slot);
       if (!result.ok) return `Error deleting event: ${result.error}`;
       return `Calendar event ${eventId} deleted`;
     }
@@ -1031,7 +1055,7 @@ export async function executeGoogleWriteTool(
       // round-trip the existing list with our row modified.
       const readUrl = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
       const { googleRead } = await import('./client.js');
-      const readResult = await googleRead(readUrl, agentId, agentName, 'calendar_respond_invite:read', { eventId, calendarId });
+      const readResult = await googleRead(readUrl, agentId, agentName, 'calendar_respond_invite:read', { eventId, calendarId }, slot);
       if (!readResult.ok) return `Error fetching event: ${readResult.error}`;
 
       const event = readResult.data as { attendees?: Array<{ email?: string; responseStatus?: string; comment?: string }> };
@@ -1047,7 +1071,7 @@ export async function executeGoogleWriteTool(
       };
 
       const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}?sendUpdates=all`;
-      const result = await googleWrite('PATCH', url, { attendees }, agentId, agentName, 'calendar_respond_invite', { eventId, response, attendeeEmail, calendarId });
+      const result = await googleWrite('PATCH', url, { attendees }, agentId, agentName, 'calendar_respond_invite', { eventId, response, attendeeEmail, calendarId }, undefined, slot);
       if (!result.ok) return `Error responding to invite: ${result.error}`;
       return `Responded "${response}" to event ${eventId} as ${args.attendee_email}.`;
     }
@@ -1055,7 +1079,7 @@ export async function executeGoogleWriteTool(
     case 'calendar_subscribe': {
       const calendarId = args.calendar_id as string;
       const url = `${CALENDAR_BASE}/users/me/calendarList`;
-      const result = await googleWrite('POST', url, { id: calendarId }, agentId, agentName, 'calendar_subscribe', { calendarId });
+      const result = await googleWrite('POST', url, { id: calendarId }, agentId, agentName, 'calendar_subscribe', { calendarId }, undefined, slot);
       if (!result.ok) return `Error subscribing to calendar: ${result.error}`;
       const data = result.data as { id?: string; summary?: string; accessRole?: string };
       return `Subscribed to "${data?.summary ?? calendarId}" (access: ${data?.accessRole ?? 'unknown'}). It now appears in calendar_list.`;
@@ -1064,7 +1088,7 @@ export async function executeGoogleWriteTool(
     case 'calendar_unsubscribe': {
       const calendarId = args.calendar_id as string;
       const url = `${CALENDAR_BASE}/users/me/calendarList/${encodeURIComponent(calendarId)}`;
-      const result = await googleWrite('DELETE', url, undefined, agentId, agentName, 'calendar_unsubscribe', { calendarId });
+      const result = await googleWrite('DELETE', url, undefined, agentId, agentName, 'calendar_unsubscribe', { calendarId }, undefined, slot);
       if (!result.ok) return `Error unsubscribing: ${result.error}`;
       return `Unsubscribed from calendar ${calendarId}. The calendar itself was not deleted.`;
     }
@@ -1114,7 +1138,7 @@ export async function executeGoogleWriteTool(
         agentId, agentName, 'drive_upload',
         { filePath, name: fileName, folderId },
         `multipart/related; boundary=${boundary}`,
-      );
+      slot);
 
       // Fallback: use simple metadata-only upload if multipart fails
       if (!result.ok) {
@@ -1171,7 +1195,7 @@ export async function executeGoogleWriteTool(
           { role, type: 'anyone', allowFileDiscovery: discoverable },
           agentId, agentName, 'drive_share',
           { fileId, audience: 'anyone', role, discoverable },
-        );
+        undefined, slot);
         if (!result.ok) return `Error sharing file: ${result.error}`;
         const accessNote = discoverable ? 'discoverable via Drive search' : 'link-share only (not discoverable)';
         const correctedNote = emailLooksLikeAudienceKeyword && !args.audience
@@ -1192,7 +1216,7 @@ export async function executeGoogleWriteTool(
         { role, type: 'user', emailAddress: rawEmail },
         agentId, agentName, 'drive_share',
         { fileId, email: rawEmail, role },
-      );
+      undefined, slot);
       if (!result.ok) return `Error sharing file: ${result.error}`;
       return `File ${fileId} shared with ${rawEmail} as ${role}.`;
     }
@@ -1211,7 +1235,7 @@ export async function executeGoogleWriteTool(
           undefined,
           agentId, agentName, 'drive_delete',
           { fileId, permanent: true },
-        );
+        undefined, slot);
         if (!result.ok) return `Error permanently deleting file: ${result.error}`;
         return `File ${fileId} permanently deleted.`;
       } else {
@@ -1221,7 +1245,7 @@ export async function executeGoogleWriteTool(
           { trashed: true },
           agentId, agentName, 'drive_delete',
           { fileId, permanent: false },
-        );
+        undefined, slot);
         if (!result.ok) return `Error trashing file: ${result.error}`;
         return `File ${fileId} moved to Drive trash (recoverable for 30 days).`;
       }
@@ -1237,7 +1261,7 @@ export async function executeGoogleWriteTool(
         { name: newName },
         agentId, agentName, 'drive_rename',
         { fileId, newName },
-      );
+      undefined, slot);
       if (!result.ok) return `Error renaming file: ${result.error}`;
       return `File ${fileId} renamed to "${newName}".`;
     }
@@ -1271,7 +1295,7 @@ export async function executeGoogleWriteTool(
         {},
         agentId, agentName, 'drive_move',
         { fileId, newParentId, removeParents },
-      );
+      undefined, slot);
       if (!result.ok) return `Error moving file: ${result.error}`;
       const data = result.data as { name?: string };
       return `File ${fileId}${data?.name ? ` ("${data.name}")` : ''} moved into folder ${newParentId}.`;
@@ -1279,7 +1303,7 @@ export async function executeGoogleWriteTool(
 
     case 'docs_create': {
       const title = args.title as string;
-      const result = await googleWrite('POST', DOCS_BASE, { title }, agentId, agentName, 'docs_create', { title });
+      const result = await googleWrite('POST', DOCS_BASE, { title }, agentId, agentName, 'docs_create', { title }, undefined, slot);
       if (!result.ok) return `Error creating document: ${result.error}`;
 
       const data = result.data as { documentId?: string };
@@ -1291,7 +1315,7 @@ export async function executeGoogleWriteTool(
         const batchUrl = `${DOCS_BASE}/${docId}:batchUpdate`;
         const writeResult = await googleWrite('POST', batchUrl, {
           requests: [{ insertText: { location: { index: 1 }, text: content } }],
-        }, agentId, agentName, 'docs_edit', { documentId: docId, contentLength: content.length });
+        }, agentId, agentName, 'docs_edit', { documentId: docId, contentLength: content.length }, undefined, slot);
 
         if (!writeResult.ok) {
           return `Google Doc "${title}" created (ID: ${docId}) but failed to write content: ${writeResult.error}`;
@@ -1307,7 +1331,7 @@ export async function executeGoogleWriteTool(
 
       // Get document length to append at the end
       const docUrl = `${DOCS_BASE}/${encodeURIComponent(docId)}`;
-      const doc = await googleRead(docUrl, agentId, agentName, 'docs_edit_fetch', { documentId: docId });
+      const doc = await googleRead(docUrl, agentId, agentName, 'docs_edit_fetch', { documentId: docId }, slot);
       if (!doc.ok) return `Error reading document: ${doc.error}`;
 
       const docData = doc.data as { body?: { content?: Array<{ endIndex?: number }> } };
@@ -1316,7 +1340,7 @@ export async function executeGoogleWriteTool(
       const batchUrl = `${DOCS_BASE}/${encodeURIComponent(docId)}:batchUpdate`;
       const result = await googleWrite('POST', batchUrl, {
         requests: [{ insertText: { location: { index: Math.max(endIndex - 1, 1) }, text: '\n' + content } }],
-      }, agentId, agentName, 'docs_edit', { documentId: docId, contentLength: content.length });
+      }, agentId, agentName, 'docs_edit', { documentId: docId, contentLength: content.length }, undefined, slot);
 
       if (!result.ok) return `Error editing document: ${result.error}`;
       return `Text appended to document ${docId}`;
@@ -1330,7 +1354,7 @@ export async function executeGoogleWriteTool(
       const batchUrl = `${DOCS_BASE}/${encodeURIComponent(docId)}:batchUpdate`;
       const result = await googleWrite('POST', batchUrl, {
         requests: [{ replaceAllText: { containsText: { text: find, matchCase }, replaceText: replace } }],
-      }, agentId, agentName, 'docs_find_replace', { documentId: docId, find, matchCase });
+      }, agentId, agentName, 'docs_find_replace', { documentId: docId, find, matchCase }, undefined, slot);
       if (!result.ok) return `Error in find/replace: ${result.error}`;
       const data = result.data as { replies?: Array<{ replaceAllText?: { occurrencesChanged?: number } }> };
       const count = data?.replies?.[0]?.replaceAllText?.occurrencesChanged ?? 0;
@@ -1344,7 +1368,7 @@ export async function executeGoogleWriteTool(
       const batchUrl = `${DOCS_BASE}/${encodeURIComponent(docId)}:batchUpdate`;
       const result = await googleWrite('POST', batchUrl, {
         requests: [{ insertText: { location: { index }, text } }],
-      }, agentId, agentName, 'docs_insert_text', { documentId: docId, index, length: text.length });
+      }, agentId, agentName, 'docs_insert_text', { documentId: docId, index, length: text.length }, undefined, slot);
       if (!result.ok) return `Error inserting text: ${result.error}`;
       return `Inserted ${text.length} character(s) at index ${index} in document ${docId}.`;
     }
@@ -1356,14 +1380,14 @@ export async function executeGoogleWriteTool(
       const batchUrl = `${DOCS_BASE}/${encodeURIComponent(docId)}:batchUpdate`;
       const result = await googleWrite('POST', batchUrl, {
         requests: [{ deleteContentRange: { range: { startIndex, endIndex } } }],
-      }, agentId, agentName, 'docs_delete_range', { documentId: docId, startIndex, endIndex });
+      }, agentId, agentName, 'docs_delete_range', { documentId: docId, startIndex, endIndex }, undefined, slot);
       if (!result.ok) return `Error deleting range: ${result.error}`;
       return `Deleted content from index ${startIndex} to ${endIndex} in document ${docId}.`;
     }
 
     case 'sheets_create': {
       const title = args.title as string;
-      const result = await googleWrite('POST', SHEETS_BASE, { properties: { title } }, agentId, agentName, 'sheets_create', { title });
+      const result = await googleWrite('POST', SHEETS_BASE, { properties: { title } }, agentId, agentName, 'sheets_create', { title }, undefined, slot);
       if (!result.ok) return `Error creating spreadsheet: ${result.error}`;
 
       const data = result.data as { spreadsheetId?: string };
@@ -1373,7 +1397,7 @@ export async function executeGoogleWriteTool(
       if (sheetId && args.headers) {
         const headers = args.headers as string[];
         const valuesUrl = `${SHEETS_BASE}/${sheetId}/values/Sheet1!A1?valueInputOption=USER_ENTERED`;
-        await googleWrite('PUT', valuesUrl, { values: [headers] }, agentId, agentName, 'sheets_write', { spreadsheetId: sheetId, headers });
+        await googleWrite('PUT', valuesUrl, { values: [headers] }, agentId, agentName, 'sheets_write', { spreadsheetId: sheetId, headers }, undefined, slot);
       }
 
       return `Spreadsheet "${title}" created${sheetId ? ` (ID: ${sheetId})` : ''}`;
@@ -1385,7 +1409,7 @@ export async function executeGoogleWriteTool(
       const values = (args.values as string).split(',').map(v => v.trim());
 
       const url = `${SHEETS_BASE}/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED`;
-      const result = await googleWrite('POST', url, { values: [values] }, agentId, agentName, 'sheets_append', { spreadsheetId: sheetId, range, valueCount: values.length });
+      const result = await googleWrite('POST', url, { values: [values] }, agentId, agentName, 'sheets_append', { spreadsheetId: sheetId, range, valueCount: values.length }, undefined, slot);
       if (!result.ok) return `Error appending to spreadsheet: ${result.error}`;
       return `Row appended to spreadsheet ${sheetId}`;
     }
@@ -1396,7 +1420,7 @@ export async function executeGoogleWriteTool(
       const values = args.values as string[][];
 
       const url = `${SHEETS_BASE}/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
-      const result = await googleWrite('PUT', url, { values }, agentId, agentName, 'sheets_write', { spreadsheetId: sheetId, range, rows: values.length });
+      const result = await googleWrite('PUT', url, { values }, agentId, agentName, 'sheets_write', { spreadsheetId: sheetId, range, rows: values.length }, undefined, slot);
       if (!result.ok) return `Error writing to spreadsheet: ${result.error}`;
       return `Data written to ${range} in spreadsheet ${sheetId}`;
     }
@@ -1409,7 +1433,7 @@ export async function executeGoogleWriteTool(
       const url = `${SHEETS_BASE}/${encodeURIComponent(sheetId)}:batchUpdate`;
       const result = await googleWrite('POST', url, {
         requests: [{ addSheet: { properties: { title } } }],
-      }, agentId, agentName, 'sheets_add_sheet', { spreadsheetId: sheetId, title });
+      }, agentId, agentName, 'sheets_add_sheet', { spreadsheetId: sheetId, title }, undefined, slot);
       if (!result.ok) return `Error adding sheet: ${result.error}`;
       const data = result.data as { replies?: Array<{ addSheet?: { properties?: { sheetId?: number; title?: string } } }> };
       const newSheet = data?.replies?.[0]?.addSheet?.properties;
@@ -1422,7 +1446,7 @@ export async function executeGoogleWriteTool(
       const url = `${SHEETS_BASE}/${encodeURIComponent(spreadsheetId)}:batchUpdate`;
       const result = await googleWrite('POST', url, {
         requests: [{ deleteSheet: { sheetId: sheetIdNum } }],
-      }, agentId, agentName, 'sheets_delete_sheet', { spreadsheetId, sheetId: sheetIdNum });
+      }, agentId, agentName, 'sheets_delete_sheet', { spreadsheetId, sheetId: sheetIdNum }, undefined, slot);
       if (!result.ok) return `Error deleting sheet: ${result.error}`;
       return `Sheet ${sheetIdNum} deleted from spreadsheet ${spreadsheetId}.`;
     }
@@ -1433,7 +1457,7 @@ export async function executeGoogleWriteTool(
       // Resolve the range into a GridRange via the Sheets metadata.
       // Range is in A1 notation like 'Sheet1!A1:D10'; we need sheet ID + indices.
       const metaUrl = `${SHEETS_BASE}/${encodeURIComponent(sheetId)}?fields=sheets.properties(sheetId,title)`;
-      const meta = await googleRead(metaUrl, agentId, agentName, 'sheets_format:meta', { spreadsheetId: sheetId });
+      const meta = await googleRead(metaUrl, agentId, agentName, 'sheets_format:meta', { spreadsheetId: sheetId }, slot);
       if (!meta.ok) return `Error reading spreadsheet metadata: ${meta.error}`;
       const sheets = (meta.data as { sheets?: Array<{ properties: { sheetId: number; title: string } }> }).sheets ?? [];
       const gridRange = a1ToGridRange(range, sheets);
@@ -1481,7 +1505,7 @@ export async function executeGoogleWriteTool(
             fields: fieldsList.join(','),
           },
         }],
-      }, agentId, agentName, 'sheets_format', { spreadsheetId: sheetId, range, fields: fieldsList });
+      }, agentId, agentName, 'sheets_format', { spreadsheetId: sheetId, range, fields: fieldsList }, undefined, slot);
       if (!result.ok) return `Error formatting cells: ${result.error}`;
       return `Formatted range ${range} (applied: ${fieldsList.map(f => f.split('.').pop()).join(', ')}).`;
     }
