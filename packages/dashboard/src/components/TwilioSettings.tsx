@@ -2,12 +2,12 @@ import { useEffect, useState, useCallback } from 'react';
 import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
 
-// Twilio integration card. Lives on the Integrations tab. Mirrors
-// the Plaud card's structural patterns (glass-card + connect-flow)
-// but Twilio is API-key auth, not OAuth, so the connect flow is just
-// "paste Account SID + Auth Token, click Test, save." Once connected
-// the card grows additional sections: settings toggles, numbers
-// management, safe-sender lists for SMS + Voice, webhook URLs to
+// Twilio channel card. Lives on the Channels tab (it's a messaging channel,
+// like the iMessage bridge). A master-enable toggle gates the whole panel:
+// when off, everything below collapses. When on, the connect flow appears
+// ("paste Account SID + Auth Token, Test, Connect" — API-key auth, not OAuth),
+// and once connected the card grows additional sections: feature toggles,
+// numbers management, safe-sender lists for SMS + Voice, and webhook URLs to
 // copy into the Twilio console.
 
 export const TwilioSettings = () => {
@@ -97,7 +97,7 @@ export const TwilioSettings = () => {
   }
 
   return (
-    <div className="tile space-y-3">
+    <div className="tile space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <h3 className="scard__title">Twilio</h3>
@@ -111,38 +111,54 @@ export const TwilioSettings = () => {
         Twilio gives your agents two new channels: SMS (text the user, text people on their behalf, receive replies) and Voice (place + receive phone calls, real-time spoken conversation). Personal Twilio accounts only. No call recording.
       </p>
 
-      {!config.configured && (
-        <ConnectForm
-          sid={sid}
-          token={token}
-          onChangeSid={setSid}
-          onChangeToken={setToken}
-          onTest={handleTest}
-          onConnect={handleConnect}
-          testing={testing}
-          saving={saving}
+      {/* Master enable — mirrors the iMessage Bridge toggle. When off, the rest
+          of the panel collapses. */}
+      <div className="flex items-center justify-between">
+        <label className="text-sm text-ui/70">Enable Twilio</label>
+        <button
+          type="button"
+          aria-pressed={config.enabled}
+          onClick={() => void handlePatch({ enabled: !config.enabled })}
+          className={`switch ${config.enabled ? 'is-on' : ''}`}
         />
-      )}
+      </div>
 
-      {config.configured && (
+      {config.enabled && (
         <>
-          <div className="text-sm text-ui/80">
-            Account SID: <code className="text-xs">{config.accountSid?.slice(0, 12)}…</code>
-            <button
-              onClick={handleDisconnect}
-              disabled={disconnecting}
-              className="ml-3 px-2 py-0.5 text-[11px] glass-btn rounded transition-colors disabled:opacity-60"
-            >
-              {disconnecting ? 'Disconnecting…' : 'Disconnect'}
-            </button>
-          </div>
+          {!config.configured && (
+            <ConnectForm
+              sid={sid}
+              token={token}
+              onChangeSid={setSid}
+              onChangeToken={setToken}
+              onTest={handleTest}
+              onConnect={handleConnect}
+              testing={testing}
+              saving={saving}
+            />
+          )}
 
-          <FeatureToggles config={config} onPatch={handlePatch} />
-          <NumbersSection config={config} reload={load} />
-          <VoiceSettingsSection config={config} onPatch={handlePatch} />
-          <SafeSenderSection kind="sms" />
-          <SafeSenderSection kind="voice" />
-          <WebhookSection config={config} />
+          {config.configured && (
+            <>
+              <div className="text-sm text-ui/80">
+                Account SID: <code className="text-xs">{config.accountSid?.slice(0, 12)}…</code>
+                <button
+                  onClick={handleDisconnect}
+                  disabled={disconnecting}
+                  className="ml-3 px-2 py-0.5 text-[11px] glass-btn rounded transition-colors disabled:opacity-60"
+                >
+                  {disconnecting ? 'Disconnecting…' : 'Disconnect'}
+                </button>
+              </div>
+
+              <FeatureToggles config={config} onPatch={handlePatch} />
+              <NumbersSection config={config} reload={load} />
+              <VoiceSettingsSection config={config} onPatch={handlePatch} />
+              <SafeSenderSection kind="sms" />
+              <SafeSenderSection kind="voice" />
+              <WebhookSection config={config} />
+            </>
+          )}
         </>
       )}
     </div>
@@ -205,23 +221,15 @@ const FeatureToggles = ({ config, onPatch }: { config: api.TwilioConfigDto; onPa
   <div className="border-t border-ui/[0.06] pt-3 space-y-2">
     <h4 className="text-xs font-medium text-ui/70 uppercase tracking-wider">Features</h4>
     <ToggleRow
-      label="Master enable"
-      hint="Turn this off to pause both SMS and Voice without disconnecting credentials."
-      checked={config.enabled}
-      onChange={v => onPatch({ enabled: v })}
-    />
-    <ToggleRow
       label="SMS"
       hint="Inbound + outbound text messages."
       checked={config.smsEnabled}
-      disabled={!config.enabled}
       onChange={v => onPatch({ smsEnabled: v })}
     />
     <ToggleRow
       label="Voice calls"
       hint="Inbound + outbound phone calls with real-time speech."
       checked={config.voiceEnabled}
-      disabled={!config.enabled}
       onChange={v => onPatch({ voiceEnabled: v })}
     />
   </div>

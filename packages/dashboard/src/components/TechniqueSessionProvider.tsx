@@ -176,6 +176,10 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
   trainerAgentIdRef.current = trainerAgentId;
   const createdTechniqueIdRef = useRef<string | null>(null);
   createdTechniqueIdRef.current = createdTechniqueId;
+  // Set true the moment the trainer calls save_technique in a NEW session, so
+  // the next technique:updated event can hand us the AUTHORITATIVE server id
+  // (which may differ from our client-derived slug after de-dupe/normalize).
+  const awaitingTechniqueIdRef = useRef(false);
 
   // Trainer identity from settings (loaded once).
   useEffect(() => {
@@ -194,15 +198,34 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
     });
     const data = await res.json().catch(() => null);
     if (data?.ok) {
+      // Load each file's BODY (not just its path) so the file is editable on the
+      // canvas and edits round-trip on save (saveTechnique only uploads files
+      // that carry `content`). Path segments are URL-encoded so spaces / # / ?
+      // in a filename don't break the request.
+      const filePaths: string[] = (data.data.files ?? [])
+        .filter((f: { isDirectory: boolean }) => !f.isDirectory)
+        .map((f: { path: string }) => f.path);
+      const files = await Promise.all(
+        filePaths.map(async (p) => {
+          try {
+            const enc = p.split('/').map(encodeURIComponent).join('/');
+            const fr = await fetch(`/api/techniques/${data.data.id}/files/${enc}`, {
+              headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+            });
+            const fd = await fr.json().catch(() => null);
+            return fd?.ok ? { path: p, content: fd.data.content as string } : { path: p };
+          } catch {
+            return { path: p };
+          }
+        }),
+      );
       setCanvas({
         name: data.data.id,
         displayName: data.data.name,
         description: data.data.description ?? '',
         tags: data.data.tags ?? [],
         instructions: data.data.instructions ?? '',
-        files: (data.data.files ?? [])
-          .filter((f: { isDirectory: boolean }) => !f.isDirectory)
-          .map((f: { path: string }) => ({ path: f.path })),
+        files,
       });
       if (typeof data.data.updatedAt === 'string') techniqueUpdatedAtRef.current = data.data.updatedAt;
       if (typeof data.data.state === 'string') techniqueStateRef.current = data.data.state;
@@ -223,10 +246,12 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
       const firstUserMsg = result.data.find((m: Message) => m.role === 'user');
       if (firstUserMsg) {
         if (mode === 'edit') {
-          const dn = canvasRef.current.displayName;
-          const slug = canvasRef.current.name;
-          conversationMatches = (!!dn && firstUserMsg.content.includes(dn)) ||
-            (!!slug && firstUserMsg.content.includes(slug));
+          // Edit sessions always start a fresh thread. Resuming by fuzzy
+          // name-match grabbed the wrong prior conversation for short/common
+          // technique names. The technique's current state is loaded into the
+          // canvas from disk and re-sent to the trainer via the edit-context
+          // header on the first message, so a fresh thread loses nothing.
+          conversationMatches = false;
         } else {
           conversationMatches = firstUserMsg.content.includes('build a new technique');
         }
@@ -301,7 +326,10 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
     if (toolName === 'save_technique') {
       const techName = (args.name as string) || '';
       const slug = techName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
+      // Provisional id for immediate UI. The server may persist under a
+      // different id; the technique:updated handler upgrades us to the real one.
       if (slug) setCreatedTechniqueId(slug);
+      awaitingTechniqueIdRef.current = true;
       setCanvas((prev) => ({
         ...prev,
         name: techName || prev.name,
@@ -337,9 +365,22 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
     });
     const unsubTechUpdated = subscribe('technique:updated', (event: WsEvent) => {
       const e = event as { type: 'technique:updated'; data: { id: string } };
+      const serverId = e.data?.id;
+      if (!serverId) return;
       const currentId = createdTechniqueIdRef.current || session.editId;
-      if (!currentId || e.data?.id !== currentId) return;
-      loadTechniqueFromDisk(currentId)
+      const exact = !!currentId && serverId === currentId;
+      // In a NEW session right after save_technique, the first technique:updated
+      // is ours even if the server id differs from our provisional slug — adopt
+      // the authoritative id so Save updates the right technique (and we don't
+      // PUT/POST a dead slug). Edit mode always has a real editId, so never adopt.
+      const adopt = !exact && session.mode !== 'edit' && awaitingTechniqueIdRef.current;
+      if (!exact && !adopt) return;
+      awaitingTechniqueIdRef.current = false;
+      if (adopt) {
+        setCreatedTechniqueId(serverId);
+        createdTechniqueIdRef.current = serverId;
+      }
+      loadTechniqueFromDisk(serverId)
         .then(() => { lastTrainerActivityAtRef.current = new Date().toISOString(); })
         .catch(() => { /* best effort */ });
     });
@@ -411,15 +452,18 @@ export function TechniqueSessionProvider({ children }: { children: ReactNode }) 
       if (existingId) {
         const filesToUpload = c.files.filter((f) => typeof f.content === 'string');
         for (const file of filesToUpload) {
-          await fetch(`/api/techniques/${existingId}/files/${file.path}`, {
+          const enc = file.path.split('/').map(encodeURIComponent).join('/');
+          const fr = await fetch(`/api/techniques/${existingId}/files/${enc}`, {
             method: 'PUT', headers, body: JSON.stringify({ content: file.content }),
           });
+          if (!fr.ok) throw new Error(`Failed to save file "${file.path}"`);
         }
         if (c.instructions.trim()) {
-          await fetch(`/api/techniques/${existingId}/instructions`, {
+          const ir = await fetch(`/api/techniques/${existingId}/instructions`, {
             method: 'PUT', headers,
             body: JSON.stringify({ content: c.instructions.trim(), changeSummary: 'Updated from Technique Trainer' }),
           });
+          if (!ir.ok) throw new Error('Failed to save instructions');
         }
         const metaRes = await fetch(`/api/techniques/${existingId}`, {
           method: 'PUT', headers,

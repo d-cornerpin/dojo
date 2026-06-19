@@ -221,11 +221,16 @@ routerRouter.post('/test', async (c) => {
   // is exhausted (rate-limited, no enabled models, budget cap hit);
   // surface that explicitly instead of leaving the field undefined.
   const { selectModel } = await import('../../router/selector.js');
+  const db = getDb();
   let selectedModel = '(no model available)';
   try {
     const sel = selectModel(result.tier, 'router-test');
     if (sel) {
-      selectedModel = sel.fallbackUsed ? `${sel.modelId} (fallback)` : sel.modelId;
+      // Show the human-readable model NAME, not the internal id. Fall back to
+      // the id if the model row is gone.
+      const row = db.prepare('SELECT name FROM models WHERE id = ?').get(sel.modelId) as { name: string } | undefined;
+      const label = row?.name ?? sel.modelId;
+      selectedModel = sel.fallbackUsed ? `${label} (fallback)` : label;
     }
   } catch (err) {
     // Don't fail the test on a selector hiccup - the scoring result

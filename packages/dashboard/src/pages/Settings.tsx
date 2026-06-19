@@ -109,6 +109,7 @@ export const Settings = () => {
           </div>
           <div className="scards">
             <IMBridgeSettings />
+            <TwilioSettings />
             <GoogleWorkspaceSettings />
             <MicrosoftWorkspaceSettings />
           </div>
@@ -117,7 +118,6 @@ export const Settings = () => {
       {activeTab === 'integrations' && (
         <div className="scards">
           <PlaudSettings />
-          <TwilioSettings />
         </div>
       )}
       {activeTab === 'voice' && <VoiceTab />}
@@ -4141,9 +4141,6 @@ const DreamingTab = () => {
         </div>
       </div>
 
-      {/* Imaginer card — image generation sensei */}
-      <ImaginerCard models={models} />
-
       {/* Healer card — self-healing sensei */}
       <HealerCard models={models} />
       </div>
@@ -4161,225 +4158,6 @@ const DreamingTab = () => {
           </pre>
         </div>
       )}
-    </div>
-  );
-};
-
-// ── Imaginer Settings Card ──
-//
-// Lives under the Dreaming tab. Controls the Imaginer Sensei agent's
-// image-generation model selection, default aspect ratio / style, and
-// provides a test-generate button. The Model dropdown is filtered to
-// image-capable models only; if none exist, the card explains how to
-// add one.
-
-const ASPECT_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4'] as const;
-
-const ImaginerCard = ({ models }: { models: Model[] }) => {
-  const [enabled, setEnabled] = useState(true);
-  const [imageModelId, setImageModelId] = useState('');
-  const [defaultAspect, setDefaultAspect] = useState<string>('1:1');
-  const [defaultStyle, setDefaultStyle] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<string | null>(null);
-  // Primary agent name pulled from runtime config so the help copy reads
-  // "Kevin / Jain / whatever-this-install-named-their-agent" instead of
-  // hardcoding any one user's choice.
-  const [primaryAgentName, setPrimaryAgentName] = useState('the primary agent');
-
-  // Filter to models that the capability probe has flagged as image-capable.
-  const imageCapableModels = models.filter(m => m.capabilities.includes('image_generation'));
-
-  useEffect(() => {
-    const load = async () => {
-      const [enabledResult, modelResult, aspectResult, styleResult, nameResult] = await Promise.all([
-        api.getSetting('imaginer_enabled'),
-        api.getSetting('imaginer_image_model'),
-        api.getSetting('imaginer_default_aspect_ratio'),
-        api.getSetting('imaginer_default_style'),
-        api.getSetting('primary_agent_name'),
-      ]);
-      if (nameResult.ok && nameResult.data.value) {
-        setPrimaryAgentName(nameResult.data.value);
-      }
-      if (enabledResult.ok) {
-        setEnabled(enabledResult.data.value !== 'false'); // default true
-      }
-      if (modelResult.ok && modelResult.data.value) {
-        setImageModelId(modelResult.data.value);
-      }
-      if (aspectResult.ok && aspectResult.data.value) {
-        setDefaultAspect(aspectResult.data.value);
-      }
-      if (styleResult.ok && styleResult.data.value) {
-        setDefaultStyle(styleResult.data.value);
-      }
-      setLoading(false);
-    };
-    load();
-  }, []);
-
-  const handleSave = async () => {
-    setSaving(true);
-    await Promise.all([
-      api.setSetting('imaginer_enabled', enabled ? 'true' : 'false'),
-      api.setSetting('imaginer_image_model', imageModelId),
-      api.setSetting('imaginer_default_aspect_ratio', defaultAspect),
-      api.setSetting('imaginer_default_style', defaultStyle),
-    ]);
-    setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  };
-
-  const handleTest = async () => {
-    setTesting(true);
-    setTestResult(null);
-    try {
-      // Route through the primary agent so the full image_create flow is
-      // exercised (acks, delivery, thumbnail routing). The result image
-      // will show up in the primary agent's chat view.
-      const agentsResult = await api.getAgents();
-      if (!agentsResult.ok) {
-        setTestResult('Failed to resolve primary agent');
-        return;
-      }
-      const primary = agentsResult.data.find(a => a.classification === 'sensei');
-      if (!primary) {
-        setTestResult('No sensei agent found to route test through');
-        return;
-      }
-      const send = await api.sendMessage(
-        primary.id,
-        'Please call image_create with description="A friendly stylized dojo mascot mid-kata, simple line drawing on white background". Tell me when Imaginer acknowledges, and share the image when it arrives.',
-      );
-      if (send.ok) {
-        setTestResult(`Test request sent to ${primary.name}. Watch their chat view for the image.`);
-      } else {
-        setTestResult(`Failed to send test message: ${send.error}`);
-      }
-    } catch (err) {
-      setTestResult(`Test failed: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setTesting(false);
-    }
-  };
-
-  if (loading) return null;
-
-  return (
-    <div className="tile space-y-4">
-      <div>
-        <div className="scard__title">Imaginer (Image Generation Sensei)</div>
-        <p className="text-xs text-ui/40 mt-1">
-          Imaginer is a system agent that turns text descriptions into images when any agent calls the{' '}
-          <code className="text-cp-amber">image_create</code> tool. {primaryAgentName} and sub-agents never need to switch models
-          to generate images — they describe what they want and Imaginer handles the rest.
-        </p>
-      </div>
-
-      {/* Enabled toggle */}
-      <label className="flex items-center gap-3 cursor-pointer">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => setEnabled(e.target.checked)}
-          className="h-4 w-4 rounded border-ui/[0.15] bg-ui/[0.05] accent-cp-amber cursor-pointer"
-        />
-        <span className="text-sm text-ui/70">Enable Imaginer</span>
-      </label>
-
-      {/* Model dropdown */}
-      <div>
-        <label className="flabel">Image Generation Model</label>
-        {imageCapableModels.length === 0 ? (
-          <div className="alert-banner alert-warning">
-            No image-capable models configured. Add an image-generating model (e.g. Google Gemini 2.5 Flash Image or
-            OpenAI GPT-5 Image via OpenRouter) in Settings → Models. Already added but not showing up? Click{' '}
-            <em>Refresh capabilities</em> on that model's card — older rows may need a fresh probe to pick up the new
-            <code className="mx-1 text-cp-amber">image_generation</code>capability.
-          </div>
-        ) : (
-          <>
-            <select
-              value={imageModelId}
-              onChange={(e) => setImageModelId(e.target.value)}
-              className="finput field--select"
-            >
-              <option value="">(select an image model)</option>
-              {imageCapableModels.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name} ({m.apiModelId})
-                </option>
-              ))}
-            </select>
-            <p className="text-[10px] text-ui/25 mt-1">
-              Only models with the <code className="text-cp-amber">Image Gen</code> capability are shown. Imaginer
-              calls this model whenever it needs to actually produce an image — its orchestration/chat brain uses a
-              separate text model ({primaryAgentName}'s default by default).
-            </p>
-          </>
-        )}
-      </div>
-
-      {/* Default aspect ratio */}
-      <div>
-        <label className="flabel">Default Aspect Ratio</label>
-        <select
-          value={defaultAspect}
-          onChange={(e) => setDefaultAspect(e.target.value)}
-          className="finput field--select"
-        >
-          {ASPECT_RATIOS.map(r => <option key={r} value={r}>{r}</option>)}
-        </select>
-        <div className="fhelp">Used when requesting agents don't specify one.</div>
-      </div>
-
-      {/* Default style */}
-      <div>
-        <label className="flabel">Default Style (optional)</label>
-        <input
-          type="text"
-          value={defaultStyle}
-          onChange={(e) => setDefaultStyle(e.target.value)}
-          placeholder="e.g. photorealistic, cinematic lighting"
-          className="finput"
-        />
-        <div className="fhelp">Fallback style hint when requesting agents don't specify one.</div>
-      </div>
-
-      {/* Output dir (read-only info) */}
-      <div>
-        <label className="flabel">Output Directory</label>
-        <code className="block text-[11px] text-ui/55 px-3 py-2 bg-ui/[0.03] rounded font-mono">
-          ~/.dojo/uploads/generated/
-        </code>
-      </div>
-
-      {/* Save + Test buttons */}
-      <div className="srow pt-2">
-        <button
-          type="button"
-          onClick={handleSave}
-          disabled={saving || !imageModelId || imageCapableModels.length === 0}
-          className="btn btn--primary btn--sm"
-        >
-          {saving ? 'Saving...' : 'Save'}
-        </button>
-        <button
-          type="button"
-          onClick={handleTest}
-          disabled={testing || !imageModelId || imageCapableModels.length === 0}
-          className="btn btn--sm"
-        >
-          {testing ? 'Testing...' : 'Generate test image'}
-        </button>
-        {saved && <span className="text-xs text-cp-teal">Saved!</span>}
-        {testResult && <span className="text-xs text-ui/55">{testResult}</span>}
-      </div>
     </div>
   );
 };

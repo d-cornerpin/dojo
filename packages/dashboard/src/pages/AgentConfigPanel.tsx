@@ -88,6 +88,7 @@ const MemoryCard = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
       onUpdated();
     } else {
       setEnabled(!next);
+      toast.error(result.error || 'Could not update memory setting.');
     }
   };
 
@@ -182,6 +183,8 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
       }
       toast.success('Name updated');
       onUpdated();
+    } else {
+      toast.error(result.error || 'Could not update name.');
     }
   };
 
@@ -189,16 +192,19 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
     if (!selectedModelId) return;
     const result = await api.updateAgentConfig(agent.id, { modelId: selectedModelId });
     if (result.ok) { toast.success('Model updated'); onUpdated(); }
+    else { toast.error(result.error || 'Could not update model.'); }
   };
 
   const saveClassification = async (value: string) => {
     const result = await api.updateAgentConfig(agent.id, { classification: value } as Record<string, unknown>);
     if (result.ok) { toast.success('Classification updated'); onUpdated(); }
+    else { toast.error(result.error || 'Could not update classification.'); }
   };
 
   const saveSystemPrompt = async () => {
     const result = await api.updateAgentConfig(agent.id, { systemPrompt });
     if (result.ok) { toast.success('System prompt saved'); onUpdated(); }
+    else { toast.error(result.error || 'Could not save system prompt.'); }
   };
 
   const handlePermsChange = (
@@ -220,6 +226,7 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
       config: updatedConfig,
     } as Record<string, unknown>);
     if (result.ok) { toast.success('Permissions saved'); onUpdated(); }
+    else { toast.error(result.error || 'Could not save permissions.'); }
   };
 
   if (loading) {

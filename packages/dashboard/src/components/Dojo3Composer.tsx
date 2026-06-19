@@ -316,7 +316,10 @@ export function Dojo3Composer({
       setUploading(true);
       const result = await api.uploadFiles(agentId, pendingFiles.map((pf) => pf.file));
       setUploading(false);
-      if (!result.ok) return;
+      if (!result.ok) {
+        toastWarning(result.error || 'Upload failed — your files were not attached. Try again.');
+        return;
+      }
       attachments = result.data;
       pendingFiles.forEach((pf) => {
         if (pf.previewUrl) URL.revokeObjectURL(pf.previewUrl);

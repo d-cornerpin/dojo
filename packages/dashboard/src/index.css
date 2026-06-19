@@ -3295,6 +3295,25 @@
   to   { opacity: 1; transform: none; }
 }
 
+/* Agent-switch transition: when the user switches agents, the whole message
+   column scroll-rises into place with a brief motion blur instead of a hard
+   cut. Chat.tsx keys the wrapper on the agent id so this re-fires on every
+   switch. transform + filter don't affect layout, so the scroll math (and the
+   scroll-to-bottom on load) are unaffected. The scroll container's top/bottom
+   mask makes the blurred content feather in/out, reinforcing the scroll feel. */
+@keyframes dojo3-agentSwitchIn {
+  0%   { opacity: 0; transform: translateY(30px); filter: blur(11px); }
+  55%  { opacity: 1; filter: blur(2.5px); }
+  100% { opacity: 1; transform: translateY(0); filter: blur(0); }
+}
+.dojo3-stage .dojo3-agent-enter {
+  animation: dojo3-agentSwitchIn .42s cubic-bezier(.22, 1, .36, 1) both;
+  will-change: transform, filter, opacity;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dojo3-stage .dojo3-agent-enter { animation: none; }
+}
+
 /* Tool chip: a small mono UPPERCASE pill with a soft dispersion border and
    a green status dot. The collapsed look for a tool-only turn; clicking it
    expands the canonical ToolCallCard / ToolResultBlock detail below. */

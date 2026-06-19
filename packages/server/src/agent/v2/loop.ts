@@ -357,6 +357,17 @@ export function setAgentStatus(agentId: string, status: string): void {
   }
 }
 
+// Orb mood marker (`((mood: NAME))`) is an orb-only signal: the dashboard and
+// TTS already strip it before display, but away text channels (iMessage / SMS /
+// Teams / email) were sending it raw, breaking the prompt's promise that it's
+// invisible to the user. Strip it from the channel-routed copy
+// (lastAssistantTextForIM) at set-time; the persisted assistant message keeps
+// the marker so the dashboard can still animate the orb.
+const ORB_MOOD_MARKER_RE = /\(\(\s*mood\s*:\s*[a-z]+\s*\)\)/gi;
+function stripOrbMood(text: string): string {
+  return text.replace(ORB_MOOD_MARKER_RE, '').trim();
+}
+
 // ── Main entry ──
 
 /**
@@ -2371,7 +2382,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // regardless of whether tools rode with it gives the routing
         // block the right value to deliver at end-of-turn.
         if (persistedContent && persistedContent.trim().length > 0) {
-          state = advance(state, { lastAssistantTextForIM: persistedContent.trim() });
+          state = advance(state, { lastAssistantTextForIM: stripOrbMood(persistedContent) });
         }
       } else if (persistedContent) {
         db.prepare(`
@@ -2389,7 +2400,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           result.reasoningContent ?? null,
         );
         if (persistedContent.trim().length > 0) {
-          state = advance(state, { lastAssistantTextForIM: persistedContent.trim() });
+          state = advance(state, { lastAssistantTextForIM: stripOrbMood(persistedContent) });
         }
         // Per v1 runtime.ts:1303-1318 — text-only response. The streaming
         // chunks already delivered the text live, so we'd dupe-render if we

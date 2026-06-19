@@ -359,7 +359,7 @@ const toolBadgeItems = (
     .map((m) => {
       const names = (parseMessageContent(m.content).blocks ?? [])
         .filter((b) => b.type === 'tool_use')
-        .filter((b) => wordyMode || !isMissingParamError(b.id ? resultById.get(b.id) : undefined))
+        .filter((b) => wordyMode || !isErroredToolResult(b.id ? resultById.get(b.id) : undefined))
         .map((b) => b.name ?? '');
       const summary = summarizeToolTurn(names);
       return summary ? { id: m.id, summary } : null;
@@ -374,13 +374,13 @@ const toolBadgeItems = (
 // chips list is empty and ToolBadgeGroup falls back to the summary items.
 interface ToolResultInfo { content: string; isError: boolean }
 
-// A tool call rejected for a missing / blank required parameter — a validation
-// failure before the tool really ran. The agent immediately retries with the
-// param, so showing this failed chip makes it look like the agent is repeating
-// itself. Hide it outside Wordy mode (where the user wants every step).
-const isMissingParamError = (info?: ToolResultInfo): boolean =>
-  !!info?.isError &&
-  /\bis required\b|required field (is )?missing|missing required (parameter|field|argument)/i.test(info.content);
+// A tool call whose result errored — the exact same `isError` flag the UI uses
+// to render the chip red. The engine surfaces and recovers from these itself
+// (it typically retries), so outside Wordy mode the failed chip is just noise
+// that makes the agent look like it's repeating itself. Hide it in the clean
+// view; Wordy mode still shows every step. (Replaces an older text-regex that
+// only caught missing-param errors and could over-match a legit "is required".)
+const isErroredToolResult = (info?: ToolResultInfo): boolean => !!info?.isError;
 
 const toolChips = (
   msgs: ChatMessage[],
@@ -390,7 +390,7 @@ const toolChips = (
   msgs.flatMap((m) =>
     (parseMessageContent(m.content).blocks ?? [])
       .filter((b) => b.type === 'tool_use' && b.name && classifyTool(b.name) !== 'bookkeeping')
-      .filter((b) => wordyMode || !isMissingParamError(b.id ? resultById.get(b.id) : undefined))
+      .filter((b) => wordyMode || !isErroredToolResult(b.id ? resultById.get(b.id) : undefined))
       .map((b, i): ToolChipData => {
         const res = b.id ? resultById.get(b.id) : undefined;
         return {
@@ -1245,7 +1245,13 @@ export const Chat = ({ panel = null }: ChatProps) => {
     return { outboundChannelByAssistantId: byAssistant, hiddenRoutingMarkerIds: hidden };
   }, [messages]);
 
-  if (loading) return <div className="flex-1 loading-state">Loading...</div>;
+  // NOTE: no early `if (loading) return` here. Returning a bare loading div
+  // above the main render unmounts the entire Dojo3Stage (orb, composer,
+  // background) on every agent switch — that full blow-away IS the jarring
+  // "cut" between agents. Instead the stage stays mounted and the message
+  // column shows a brief in-stage loader, then scroll-rises the new agent's
+  // chat in (dojo3-agentSwitchIn). (All hooks are declared above this point,
+  // so dropping the early return doesn't change hook order.)
 
   const composer = (
     <Dojo3Composer
@@ -1299,7 +1305,16 @@ export const Chat = ({ panel = null }: ChatProps) => {
             <span className="text-xs text-ui/25">Loading older messages...</span>
           </div>
         )}
-        {messages.length === 0 && (
+        {/* Brief in-stage loader while the switched-to agent's history loads.
+            The orb + composer stay put (no full-stage unmount), so the switch
+            reads as a transition, not a cut. */}
+        {loading && (
+          <div className="flex-1 flex items-center justify-center h-full">
+            <span className="text-xs text-ui/25 animate-pulse">Loading…</span>
+          </div>
+        )}
+
+        {!loading && messages.length === 0 && (
           <div className="flex-1 flex items-center justify-center h-full">
             <div className="text-center animate-fade-up">
               <div className="text-4xl mb-4">{'\u{1F4AC}'}</div>
@@ -1309,6 +1324,10 @@ export const Chat = ({ panel = null }: ChatProps) => {
           </div>
         )}
 
+        {/* Keyed on the agent id so switching agents replays the motion-blur
+            scroll-in (dojo3-agentSwitchIn) instead of a hard cut. */}
+        {!loading && (
+        <div key={AGENT_ID} className="dojo3-agent-enter space-y-2 sm:space-y-4">
         {messages.map((msg) => {
           // Group-render: subsequent members of a tool-pill group are
           // skipped here; the group renders at the first member below.
@@ -1446,6 +1465,8 @@ export const Chat = ({ panel = null }: ChatProps) => {
           }
           return <AssistantBubble key={msg.id} msg={msg} wordyMode={wordyMode} modelNames={modelNames} outboundChannel={outboundChannelByAssistantId.get(msg.id) ?? null} />;
         })}
+        </div>
+        )}
         {isWorking && !messages.some(m => m.isStreaming) && <ThinkingBubble />}
         <div ref={messagesEndRef} />
       </div>
