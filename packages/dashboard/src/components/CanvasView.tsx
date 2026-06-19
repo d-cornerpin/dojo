@@ -68,6 +68,22 @@ function CheckIcon() {
     </svg>
   );
 }
+// Mobile-only tab icons: a monitor (Rendered) and </> (Code). Hidden on desktop,
+// where the text labels show instead (see .dojo3-dock__tab svg rules in index.css).
+function MonitorIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8" /><path d="M12 17v4" />
+    </svg>
+  );
+}
+function CodeIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m16 18 6-6-6-6" /><path d="m8 6-6 6 6 6" /><path d="m14.5 4-5 16" />
+    </svg>
+  );
+}
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico']);
 const MARKDOWN_EXTS = new Set(['.md', '.markdown']);
@@ -295,8 +311,10 @@ export function CanvasView({ dock }: { dock: Extract<DockSpec, { kind: 'canvas' 
               aria-selected={htmlView === 'rendered'}
               className={`dojo3-dock__tab ${htmlView === 'rendered' ? 'is-active' : ''}`}
               onClick={() => setHtmlView('rendered')}
+              title="Rendered"
             >
-              Rendered
+              <MonitorIcon />
+              <span className="dojo3-dock__tab-label">Rendered</span>
             </button>
             <button
               type="button"
@@ -304,8 +322,10 @@ export function CanvasView({ dock }: { dock: Extract<DockSpec, { kind: 'canvas' 
               aria-selected={htmlView === 'code'}
               className={`dojo3-dock__tab ${htmlView === 'code' ? 'is-active' : ''}`}
               onClick={() => setHtmlView('code')}
+              title="Code"
             >
-              Code
+              <CodeIcon />
+              <span className="dojo3-dock__tab-label">Code</span>
             </button>
           </div>
         )}

@@ -1164,6 +1164,39 @@
 .dojo3-dock__body { flex: 1 1 auto; min-height: 0; position: relative; overflow: auto; }
 .dojo3-dock__frame { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
 
+/* Tab icons (monitor = Rendered, </> = Code) are mobile-only; desktop shows the
+   text labels instead. */
+.dojo3-dock__tab svg { display: none; }
+
+/* Mobile: the Rendered/Code tabs are absolutely centred on desktop, which on a
+   narrow screen lands them on top of the title and crams the action buttons
+   together. Bring the tabs into normal flow and shrink them to icon-only so the
+   whole bar fits one clean row: title … [monitor] [</>] [actions]. The title
+   takes the remaining space and ellipsizes. */
+@media (max-width: 768px) {
+  .dojo3-dock__bar { gap: 8px; padding: 10px 12px; }
+  /* Title is the ONLY shrinkable item (flex-basis 0 + min-width 0), so it
+     absorbs all the negative space and ellipsizes before it can reach the
+     tabs/buttons. The base rule already sets nowrap + overflow:hidden +
+     text-overflow:ellipsis. */
+  .dojo3-dock__title { flex: 1 1 0; min-width: 0; max-width: none; }
+  .dojo3-dock__tabs {
+    position: static;
+    transform: none;
+    left: auto;
+    top: auto;
+    flex-shrink: 0; /* tabs hold their size; the title yields instead */
+  }
+  .dojo3-dock__tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 11px;
+  }
+  .dojo3-dock__tab svg { display: block; }
+  .dojo3-dock__tab-label { display: none; }
+}
+
 /* ── Canvas content (file-backed: markdown / text / images / states) ── */
 .dojo3-canvas__state {
   display: grid; place-items: center; height: 100%;
