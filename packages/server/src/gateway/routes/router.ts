@@ -76,7 +76,7 @@ routerRouter.get('/available-models', (c) => {
   const db = getDb();
 
   const models = db.prepare(`
-    SELECT m.id, m.name, m.api_model_id, p.name as provider_name
+    SELECT m.id, m.name, m.api_model_id, p.name as provider_name, p.type as provider_type
     FROM models m
     JOIN providers p ON m.provider_id = p.id
     WHERE m.is_enabled = 1
@@ -86,6 +86,7 @@ routerRouter.get('/available-models', (c) => {
     name: string;
     api_model_id: string;
     provider_name: string;
+    provider_type: string;
   }>;
 
   return c.json({ ok: true, data: models });
@@ -106,6 +107,24 @@ routerRouter.put('/tiers/:tierId/models', async (c) => {
   const tier = db.prepare('SELECT id FROM router_tiers WHERE id = ?').get(tierId);
   if (!tier) {
     return c.json({ ok: false, error: 'Tier not found' }, 404);
+  }
+
+  // The 'system' tier is LOCAL-ONLY: its model powers the multi-step
+  // classifier and the watchdog's smart alerts. The watchdog must work when
+  // the network/cloud is down, so a cloud model there would be a liability.
+  // Enforce server-side too (not just the UI dropdown) so the API can't be
+  // used to slip a cloud model in.
+  if (tierId === 'system') {
+    const assigned = (body.models as Array<{ modelId: string }>).map(m => m.modelId);
+    for (const modelId of assigned) {
+      const row = db.prepare(`
+        SELECT p.type as providerType FROM models m
+        JOIN providers p ON p.id = m.provider_id WHERE m.id = ?
+      `).get(modelId) as { providerType: string } | undefined;
+      if (row?.providerType !== 'ollama') {
+        return c.json({ ok: false, error: 'The System tier accepts local (Ollama) models only.' }, 400);
+      }
+    }
   }
 
   try {

@@ -130,6 +130,77 @@ function sendIMessage(recipient: string, text: string): void {
   }
 }
 
+// ── Smart alerts (best-effort) ──
+// When the operator has selected a LOCAL (Ollama) model for the "system"
+// router tier, the watchdog runs the raw alert facts through it to produce a
+// clearer, more actionable text. STRICTLY best-effort: the watchdog is the
+// last line of defense and must work when everything else is broken, so ANY
+// failure (no local system model, Ollama down, timeout, junk output) falls
+// straight back to the deterministic fixed-text alert — the smart version can
+// never block the dumb one from going out. Local-only on purpose: during an
+// incident the network/cloud may be down too, so the watchdog calls its own
+// Ollama directly rather than the (possibly dead) platform. Cloud or unset
+// system model → the watchdog stays fixed-text.
+function getSystemLocalModel(): string | null {
+  try {
+    if (!fs.existsSync(DB_PATH)) return null;
+    const db = new Database(DB_PATH, { readonly: true });
+    const row = db.prepare(`
+      SELECT m.api_model_id AS apiModelId
+      FROM router_tier_models tm
+      JOIN models m ON m.id = tm.model_id
+      JOIN providers p ON p.id = m.provider_id
+      WHERE tm.tier_id = 'system' AND m.is_enabled = 1 AND p.type = 'ollama'
+      ORDER BY tm.priority ASC
+      LIMIT 1
+    `).get() as { apiModelId: string } | undefined;
+    db.close();
+    return row?.apiModelId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function composeSmartAlert(fixedText: string): Promise<string> {
+  const model = getSystemLocalModel();
+  if (!model) return fixedText;
+  try {
+    const prompt =
+      "You are the DOJO watchdog writing a short alert to the operator's phone. " +
+      'Rewrite the status below as ONE or TWO short, calm, plain-text sentences ' +
+      '(no markdown, no emoji, no greeting). State the problem and, if there is an ' +
+      'obvious next step, add it. Do NOT invent any detail not present in the status. ' +
+      'Keep it under 300 characters.\n\n' +
+      `Status: ${fixedText}`;
+    const response = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        prompt,
+        stream: false,
+        options: { temperature: 0.2, num_predict: 120 },
+      }),
+      // Short, hard cap: a hung Ollama (likely on a wedged machine) must not
+      // sit on the alert. On timeout we fall back to fixed text immediately.
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) return fixedText;
+    const data = await response.json() as { response?: string };
+    const composed = (data.response ?? '').trim();
+    if (!composed || composed.length > 600) return fixedText;
+    // Keep alerts identifiable no matter how the model phrased it.
+    const body = composed.replace(/^watchdog:\s*/i, '').trim();
+    return body ? `Watchdog: ${body}` : fixedText;
+  } catch {
+    return fixedText;
+  }
+}
+
+async function sendSmartAlert(recipient: string, fixedText: string): Promise<void> {
+  sendIMessage(recipient, await composeSmartAlert(fixedText));
+}
+
 // ── Heartbeat recording ──
 
 function recordHeartbeat(): void {
@@ -198,7 +269,7 @@ async function checkPlatformHealth(): Promise<boolean> {
   }
 }
 
-function checkStalledAgents(): void {
+async function checkStalledAgents(): Promise<void> {
   try {
     if (!fs.existsSync(DB_PATH)) return;
 
@@ -220,7 +291,7 @@ function checkStalledAgents(): void {
       if (shouldSendAlert('stalled_agents')) {
         const imRecipient = getImessageRecipient();
       if (imRecipient) {
-        sendIMessage(imRecipient, `Watchdog: ${stalled.length} stalled agent(s): ${names}. Will follow up when resolved.`);
+        await sendSmartAlert(imRecipient, `Watchdog: ${stalled.length} stalled agent(s): ${names}. Will follow up when resolved.`);
         recordAlert(`Stalled agents: ${names}`);
       }
       }
@@ -286,7 +357,7 @@ function getMacAvailableMemoryMb(): { totalMb: number; freeMb: number; freePerce
   }
 }
 
-function checkSystemMemory(): void {
+async function checkSystemMemory(): Promise<void> {
   const { freeMb, freePercent } = getMacAvailableMemoryMb();
 
   if (freePercent < 10) {
@@ -295,7 +366,7 @@ function checkSystemMemory(): void {
     if (shouldSendAlert('memory_low')) {
       const imRecipient = getImessageRecipient();
       if (imRecipient) {
-        sendIMessage(imRecipient, `Watchdog: System memory low — ${freeMb}MB free (${freePercent.toFixed(0)}%). Will follow up when resolved.`);
+        await sendSmartAlert(imRecipient, `Watchdog: System memory low — ${freeMb}MB free (${freePercent.toFixed(0)}%). Will follow up when resolved.`);
         recordAlert(`Memory low: ${freeMb}MB`);
       }
     }
@@ -313,7 +384,7 @@ function checkSystemMemory(): void {
   }
 }
 
-function checkDiskSpace(): void {
+async function checkDiskSpace(): Promise<void> {
   try {
     const result = execSync(`df -k "${DOJO_DIR}" | tail -1`, { encoding: 'utf-8', timeout: 5000 });
     const parts = result.trim().split(/\s+/);
@@ -325,7 +396,7 @@ function checkDiskSpace(): void {
       if (shouldSendAlert('disk_low')) {
         const imRecipient = getImessageRecipient();
         if (imRecipient) {
-          sendIMessage(imRecipient, `Watchdog: Disk space low — ${availableGb.toFixed(1)}GB free. Will follow up when resolved.`);
+          await sendSmartAlert(imRecipient, `Watchdog: Disk space low — ${availableGb.toFixed(1)}GB free. Will follow up when resolved.`);
           recordAlert(`Disk space low: ${availableGb.toFixed(1)}GB`);
         }
       }
@@ -350,7 +421,7 @@ function checkDiskSpace(): void {
   }
 }
 
-function checkDatabaseIntegrity(): void {
+async function checkDatabaseIntegrity(): Promise<void> {
   try {
     if (!fs.existsSync(DB_PATH)) return;
 
@@ -364,7 +435,7 @@ function checkDatabaseIntegrity(): void {
       if (shouldSendAlert('db_integrity')) {
         const imRecipient = getImessageRecipient();
         if (imRecipient) {
-          sendIMessage(imRecipient, `Watchdog: Database integrity check failed — ${status}`);
+          await sendSmartAlert(imRecipient, `Watchdog: Database integrity check failed — ${status}`);
           recordAlert(`DB integrity: ${status}`);
         }
       }
@@ -444,7 +515,7 @@ async function runCheck(): Promise<void> {
     if (consecutiveFailures >= MAX_FAILURES_BEFORE_ALERT && shouldSendAlert('platform_down')) {
       const imRecipient = getImessageRecipient();
       if (imRecipient) {
-        sendIMessage(imRecipient, `Watchdog: Dojo platform is DOWN (${consecutiveFailures} checks failed). Will notify when it recovers.`);
+        await sendSmartAlert(imRecipient, `Watchdog: Dojo platform is DOWN (${consecutiveFailures} checks failed). Will notify when it recovers.`);
         recordAlert(`Platform down: ${consecutiveFailures} checks failed`);
       }
     }
@@ -462,20 +533,20 @@ async function runCheck(): Promise<void> {
   }
 
   // 2. Check stalled agents
-  checkStalledAgents();
+  await checkStalledAgents();
 
   // 3. Check providers
   await checkProviders();
 
   // 4. Check system memory
-  checkSystemMemory();
+  await checkSystemMemory();
 
   // 5. Check disk space
-  checkDiskSpace();
+  await checkDiskSpace();
 
   // 6. Database integrity (run less frequently — every 10th cycle ~20 min)
   if (Math.random() < 0.1) {
-    checkDatabaseIntegrity();
+    await checkDatabaseIntegrity();
   }
 
   // 7. Rotate watchdog log if needed

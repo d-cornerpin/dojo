@@ -49,6 +49,19 @@ function getTierModels(tierId: string): TierModelRow[] {
   `).all(tierId) as TierModelRow[];
 }
 
+/**
+ * The "system" router tier holds the model used for background/system tasks
+ * (the multi-step classifier today; watchdog smart-alerts to follow). It is
+ * NOT score-routed — it's resolved explicitly here. Returns the top-priority
+ * enabled model id assigned to the tier, or null when none is configured (in
+ * which case callers fall back to their non-LLM behavior). Separate from the
+ * PM agent model (`pm_agent_model`) by design.
+ */
+export function getSystemModel(): string | null {
+  const models = getTierModels('system');
+  return models.length > 0 ? models[0].model_id : null;
+}
+
 function estimateRequestCost(model: TierModelRow): number {
   // Rough estimate: 2k input, 1k output per request
   const inputCost = ((model.input_cost_per_m ?? 3.0) / 1_000_000) * 2000;

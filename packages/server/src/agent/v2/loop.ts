@@ -1461,7 +1461,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             `).get(agentId) as { id: string } | undefined;
 
             if (!existingTask) {
-              const decision = await detectMultistep(lastUserMessageContent, cfg);
+              const decision = await detectMultistep(lastUserMessageContent, agentId, cfg);
               logger.info('v2 multistep classifier ran', {
                 agentId,
                 source: decision.source,

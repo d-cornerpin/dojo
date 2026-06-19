@@ -1600,6 +1600,7 @@ export const getAvailableRouterModels = async (): Promise<ApiResponse<Array<{
   name: string;
   api_model_id: string;
   provider_name: string;
+  provider_type: string;
 }>>> => {
   return request('/router/available-models');
 };

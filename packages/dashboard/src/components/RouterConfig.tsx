@@ -32,6 +32,7 @@ interface AvailableModel {
   name: string;
   api_model_id: string;
   provider_name: string;
+  provider_type: string;
 }
 
 interface RouterConfigProps {
@@ -125,6 +126,15 @@ const TierPanel = ({
   const [showAddDropdown, setShowAddDropdown] = useState(false);
 
   const sortedModels = [...tier.models].sort((a, b) => a.priority - b.priority);
+
+  // The 'system' tier is local-only: its model runs the multi-step classifier
+  // and the watchdog's smart alerts, and the watchdog must keep working with no
+  // network/cloud. So only offer local (Ollama) models there. Enforced server-
+  // side too — this is just to keep cloud models out of the picker.
+  const isSystemTier = tier.id === 'system';
+  const selectableModels = availableModels
+    .filter((m) => !tier.models.some((tm: { modelId: string }) => tm.modelId === m.id))
+    .filter((m) => !isSystemTier || m.provider_type === 'ollama');
 
   const handleMoveUp = async (index: number) => {
     if (index === 0) return;
@@ -231,8 +241,12 @@ const TierPanel = ({
       {/* Add Model */}
       {showAddDropdown ? (
         <div className="space-y-1">
-          {availableModels.length === 0 ? (
-            <p className="text-xs text-ui/25">No available models. Enable models in the Models tab first.</p>
+          {selectableModels.length === 0 ? (
+            <p className="text-xs text-ui/25">
+              {isSystemTier
+                ? 'No local (Ollama) models available. The System tier accepts local models only — add one in the Models tab.'
+                : 'No available models. Enable models in the Models tab first.'}
+            </p>
           ) : (
             <select
               defaultValue=""
@@ -243,9 +257,7 @@ const TierPanel = ({
               className="glass-select w-full"
             >
               <option value="" disabled>Select a model...</option>
-              {availableModels
-                .filter((m) => !tier.models.some((tm: { modelId: string }) => tm.modelId === m.id))
-                .map((m) => (
+              {selectableModels.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.name} ({m.provider_name})
                 </option>

@@ -79,6 +79,8 @@ export interface MultistepHeuristic {
   signals: {
     actionVerbs: number;
     conjunctions: number;
+    /** Sentence/clause boundaries between imperatives — coordination, like "and". */
+    clauseBoundaries: number;
     deliverables: number;
     chars: number;
   };
@@ -185,19 +187,31 @@ export function multistepHeuristic(query: string): MultistepHeuristic {
     if (re.test(lower)) deliverables++;
   }
 
+  // Sentence/clause boundaries act as coordination: "Make X. Generate Y." is
+  // the same "do two things" signal as "Make X and generate Y." The tokenizer
+  // above strips punctuation, so we count boundaries on the raw lowercased
+  // text. Only count a terminator when real word content follows it — so a
+  // trailing "." and tokens like "report.txt" / "3.5" (no following space)
+  // don't register. This is what catches the "Build a page. Generate an
+  // image." class the conjunction-only check used to miss.
+  const clauseBoundaries = (lower.match(/[.!?;\n]+\s+(?=[a-z0-9])/g) ?? []).length;
+  // Coordination = explicit conjunctions OR clause boundaries between work.
+  const coordination = conjunctions + clauseBoundaries;
+
   const chars = query.length;
   const isQuestion = looksLikeQuestion(query);
 
   // Scoring: weight action verbs heaviest. Two distinct action verbs
-  // joined by a conjunction is the canonical multi-step signal.
-  const score = actionVerbs * 1.0 + Math.min(conjunctions, 3) * 0.5 + deliverables * 0.6;
+  // joined by coordination is the canonical multi-step signal.
+  const score = actionVerbs * 1.0 + Math.min(coordination, 3) * 0.5 + deliverables * 0.6;
 
   let decision: HeuristicDecision;
   if (chars < 20 && actionVerbs <= 1) {
     decision = 'definitely_single';
-  } else if (actionVerbs >= 3 || (actionVerbs >= 2 && conjunctions >= 1)) {
+  } else if (actionVerbs >= 3 || (actionVerbs >= 2 && coordination >= 1)) {
     // Genuinely multi-step even if phrased as a question
-    // ("can you find X, summarize it, and email it?")
+    // ("can you find X, summarize it, and email it?") or split across
+    // sentences ("Build the page. Generate the background image.").
     decision = 'definitely_multi';
   } else if (isQuestion && actionVerbs <= 1 && conjunctions === 0) {
     // Short/medium question with at most one action verb and no
@@ -220,7 +234,7 @@ export function multistepHeuristic(query: string): MultistepHeuristic {
   return {
     decision,
     score,
-    signals: { actionVerbs, conjunctions, deliverables, chars },
+    signals: { actionVerbs, conjunctions, clauseBoundaries, deliverables, chars },
   };
 }
 
@@ -231,18 +245,41 @@ export interface MultistepLLMResult {
   name: string | null;
 }
 
+/** Tolerant JSON extraction — cloud models may wrap the object in prose or
+ *  ```json fences, unlike Ollama's forced `format: 'json'`. Pull the first
+ *  balanced-looking {...} and parse that. */
+function parseClassifierJson(text: string): { multistep?: unknown; name?: unknown } | null {
+  if (!text) return null;
+  let s = text.trim();
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence?.[1]) s = fence[1].trim();
+  const start = s.indexOf('{');
+  const end = s.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try {
+    return JSON.parse(s.slice(start, end + 1)) as { multistep?: unknown; name?: unknown };
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Call the configured local Ollama model to classify the prompt and
- * (if multi-step) propose a short project name. Returns null on any
- * failure — caller falls back to heuristic-only behavior.
+ * Classify an ambiguous prompt using the configured SYSTEM model (the
+ * "system" router tier — Settings → Router). Routed through the general
+ * callModel path so the System model can be cloud OR local, not just Ollama.
+ * Returns null on any failure or when no System model is configured — the
+ * caller then falls back to heuristic-only behavior.
  */
 export async function multistepLLMClassify(
   query: string,
-  config: MultistepConfig,
+  agentId: string,
+  timeoutMs = 5000,
 ): Promise<MultistepLLMResult | null> {
-  if (!config.model) return null;
+  if (!agentId) return null;
+  const { getSystemModel } = await import('../../../router/selector.js');
+  const systemModel = getSystemModel();
+  if (!systemModel) return null;
 
-  const baseUrl = config.baseUrl.replace(/\/+$/, '');
   const prompt =
     'You are a classifier. Decide if the user task below is multi-step (more than 2 distinct actions or deliverables) or single-step.\n' +
     'Reply with JSON only, no prose:\n' +
@@ -250,27 +287,21 @@ export async function multistepLLMClassify(
     `Task: ${query}`;
 
   try {
-    const response = await fetch(`${baseUrl}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: config.model,
-        prompt,
-        stream: false,
-        format: 'json',
-        options: { temperature: 0.1, num_predict: 80 },
-      }),
-      signal: AbortSignal.timeout(config.timeoutMs),
+    const { callModel } = await import('../../model.js');
+    const result = await callModel({
+      agentId,
+      modelId: systemModel,
+      systemPrompt: '',
+      messages: [{ role: 'user', content: prompt }],
+      tools: false,
+      abortSignal: AbortSignal.timeout(timeoutMs),
     });
 
-    if (!response.ok) {
-      logger.warn('Multistep LLM classifier HTTP error', { status: response.status });
+    const parsed = parseClassifierJson(result.content);
+    if (!parsed) {
+      logger.warn('Multistep classifier: system model returned unparseable output', { model: systemModel });
       return null;
     }
-
-    const data = await response.json() as { response?: string };
-    const raw = data.response ?? '';
-    const parsed = JSON.parse(raw) as { multistep?: unknown; name?: unknown };
 
     const multistep = parsed.multistep === true;
     const name = typeof parsed.name === 'string' && parsed.name.trim().length > 0
@@ -279,9 +310,9 @@ export async function multistepLLMClassify(
 
     return { multistep, name };
   } catch (err) {
-    logger.warn('Multistep LLM classifier failed (non-fatal — falling back to heuristic)', {
+    logger.warn('Multistep classifier (system model) failed (non-fatal — falling back to heuristic)', {
       error: err instanceof Error ? err.message : String(err),
-      model: config.model,
+      model: systemModel,
     });
     return null;
   }
@@ -369,6 +400,7 @@ export interface MultistepDecision {
 
 export async function detectMultistep(
   query: string,
+  agentId: string,
   config: MultistepConfig = getMultistepConfig(),
 ): Promise<MultistepDecision> {
   const heuristic = multistepHeuristic(query);
@@ -404,8 +436,8 @@ export async function detectMultistep(
     return { multistep: true, name: null, source: 'heuristic_multi', heuristic };
   }
 
-  // Ambiguous — try LLM if configured.
-  const llm = await multistepLLMClassify(query, config);
+  // Ambiguous — try the System model if one is configured.
+  const llm = await multistepLLMClassify(query, agentId, config.timeoutMs);
   if (llm === null) {
     // v2.5.46 (revised) — When the heuristic is genuinely uncertain AND no
     // local-LLM classifier is wired up, default to SINGLE. Earlier we
