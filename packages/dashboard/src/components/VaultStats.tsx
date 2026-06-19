@@ -48,7 +48,7 @@ export const VaultStats = ({ stats, loading, onArchivesDiscarded }: VaultStatsPr
 
   if (loading || !stats) {
     return (
-      <div className="flex items-center gap-4 px-4 py-2 text-xs text-ui/25 border-b border-ui/[0.06]">
+      <div className="vstats">
         Loading vault stats...
       </div>
     );
@@ -80,20 +80,21 @@ export const VaultStats = ({ stats, loading, onArchivesDiscarded }: VaultStatsPr
   };
 
   return (
-    <div className="flex items-center gap-4 px-4 py-2 text-[11px] border-b border-ui/[0.06] bg-ui/[0.03] overflow-x-auto">
+    <div className="vstats anim" style={{ '--ci': '0ms' } as React.CSSProperties}>
       <StatItem label="Total" value={stats.totalEntries} />
-      <StatItem label="Pinned" value={stats.pinnedCount} color="text-cp-amber" />
-      <StatItem label="Permanent" value={stats.permanentCount} color="text-cp-teal" />
+      <StatItem label="Pinned" value={stats.pinnedCount} />
+      <StatItem label="Permanent" value={stats.permanentCount} />
       <StatItem label="Confidence" value={`${(stats.avgConfidence * 100).toFixed(0)}%`} />
       <StatItem label="Retrieved Today" value={stats.retrievedToday} />
-      <span className="text-ui/40 whitespace-nowrap">
-        Unprocessed: <span className={stats.unprocessedArchives > 0 ? 'text-cp-amber' : 'text-ui/70'}>{stats.unprocessedArchives}</span>
+      <span>
+        Unprocessed <b>{stats.unprocessedArchives}</b>
         {stats.unprocessedArchives > 0 && (
           <button
             ref={buttonRef}
             onClick={openMenu}
             disabled={busy}
-            className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] text-ui/55 hover:text-ui/70 hover:bg-ui/[0.08] disabled:opacity-40"
+            className="link"
+            style={{ marginLeft: 6 }}
             title="Bulk-discard unprocessed archives"
           >
             {busy ? '…' : 'discard ▾'}
@@ -103,11 +104,9 @@ export const VaultStats = ({ stats, loading, onArchivesDiscarded }: VaultStatsPr
       {stats.lastDreamAt && (
         <StatItem label="Last Dream" value={formatRelative(stats.lastDreamAt)} />
       )}
-      <div className="border-l border-ui/[0.06] h-4 mx-1" />
+      <span>·</span>
       {typeEntries.map(([type, count]) => (
-        <span key={type} className="text-ui/25">
-          <span className="text-ui/55">{count}</span> {type}s
-        </span>
+        <span key={type}><b>{count}</b> {type}s</span>
       ))}
 
       {/* Dropdown is rendered via a portal to document.body so it isn't
@@ -131,9 +130,7 @@ export const VaultStats = ({ stats, loading, onArchivesDiscarded }: VaultStatsPr
   );
 };
 
-const StatItem = ({ label, value, color }: { label: string; value: string | number; color?: string }) => (
-  <span className="text-ui/40 whitespace-nowrap">
-    {label}: <span className={color ?? 'text-ui/70'}>{value}</span>
-  </span>
+const StatItem = ({ label, value }: { label: string; value: string | number }) => (
+  <span>{label} <b>{value}</b></span>
 );
 

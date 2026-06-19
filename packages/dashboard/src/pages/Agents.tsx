@@ -7,7 +7,6 @@ import { formatDateShort } from '../lib/dates';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { AgentCard } from '../components/AgentCard';
 import { GroupCard } from '../components/GroupCard';
-import { StatusBadge } from '../components/StatusBadge';
 import { PermissionsEditor, DEFAULT_SUBAGENT_PERMISSIONS, DEFAULT_SUBAGENT_TOOLS_POLICY } from '../components/PermissionsEditor';
 import { TechniqueSelector } from '../components/TechniqueSelector';
 
@@ -189,7 +188,7 @@ const CreateAgentModal = ({
               className="flex items-center gap-2 text-xs font-semibold text-ui/55 uppercase tracking-wide hover:text-ui/70 transition-colors"
             >
               <span className="text-ui/25">{showPerms ? '\u25BC' : '\u25B6'}</span>
-              Permissions {!showPerms && <span className="normal-case font-normal text-ui/25">(restrictive defaults — click to customize)</span>}
+              Permissions {!showPerms && <span className="normal-case font-normal text-ui/25">(restrictive defaults, click to customize)</span>}
             </button>
             {showPerms && (
               <div className="mt-3 glass-nested rounded-xl p-4">
@@ -211,16 +210,14 @@ const CreateAgentModal = ({
         </div>
 
         <div className="flex gap-3 justify-end mt-6">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm text-ui/55 hover:text-ui/90 transition-colors"
-          >
+          <button type="button" onClick={onClose} className="btn">
             Cancel
           </button>
           <button
+            type="button"
             onClick={handleCreate}
             disabled={saving || !name.trim() || !systemPrompt.trim()}
-            className="px-4 py-2 text-sm glass-btn-primary rounded-lg transition-colors"
+            className="btn btn--primary"
           >
             {saving ? 'Creating...' : 'Recruit Agent'}
           </button>
@@ -243,8 +240,8 @@ const TerminatedAgentRow = ({
   const [expanded, setExpanded] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const statusColor =
-    agent.status === 'terminated' ? 'text-ui/40' : 'text-cp-coral';
+  const pillClass = agent.status === 'terminated' ? 'pill--norm' : 'pill--down';
+  const statusLabel = agent.status === 'terminated' ? 'Ended' : agent.status;
 
   const duration = agent.uptime > 0
     ? agent.uptime < 60
@@ -255,60 +252,65 @@ const TerminatedAgentRow = ({
     : '--';
 
   return (
-    <div className="border-b border-ui/[0.06] last:border-b-0">
+    <div style={{ borderBottom: '1px solid rgba(140,116,84,.12)' }}>
       <div
-        className="flex items-center gap-3 px-4 py-2.5 hover:text-ui/25 cursor-pointer transition-colors"
         onClick={() => setExpanded(!expanded)}
+        style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', cursor: 'pointer' }}
       >
-        <span className="text-xs text-ui/25 w-4">{expanded ? '-' : '+'}</span>
-        <span className="text-sm text-ui/70 font-medium w-36 truncate">{agent.name}</span>
-        <StatusBadge status={agent.status} />
-        <span className="text-xs text-ui/40 w-20">{duration}</span>
-        <span className="text-xs text-ui/40 w-16">{agent.messageCount} msgs</span>
-        <span className="text-xs text-ui/40 flex-1 truncate">{agent.taskId || ''}</span>
-        <span className="text-xs text-ui/25">{formatDateShort(agent.updatedAt)}</span>
+        <span className="text-tertiary" style={{ fontSize: 11, width: 12 }}>{expanded ? '-' : '+'}</span>
+        <span style={{ width: 144, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13, color: 'var(--dojo3-ink-2)' }}>{agent.name}</span>
+        <span className={`pill ${pillClass}`}><i className="dot" />{statusLabel}</span>
+        <span className="text-tertiary" style={{ fontSize: 11, width: 64 }}>{duration}</span>
+        <span className="text-tertiary" style={{ fontSize: 11, width: 64 }}>{agent.messageCount} msgs</span>
+        <span className="text-tertiary" style={{ fontSize: 11, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{agent.taskId || ''}</span>
+        <span className="text-tertiary" style={{ fontSize: 11 }}>{formatDateShort(agent.updatedAt)}</span>
       </div>
 
       {expanded && (
-        <div className="px-4 pb-3 pt-1 text-ui/25 flex items-center gap-3">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '2px 16px 12px' }}>
           <button
+            type="button"
+            className="link"
             onClick={(e) => { e.stopPropagation(); navigate(`/agents/${agent.id}`); }}
-            className="text-xs text-cp-blue hover:text-cp-blue/80 transition-colors"
           >
             View Detail
           </button>
           {agent.classification !== 'sensei' && (
             confirmDelete ? (
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-cp-coral">Delete permanently?</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 11, color: 'var(--dojo3-rust)' }}>Delete permanently?</span>
                 <button
+                  type="button"
+                  className="btn btn--primary btn--sm"
                   onClick={async (e) => {
                     e.stopPropagation();
                     await api.purgeAgent(agent.id);
                     onReload();
                     setConfirmDelete(false);
                   }}
-                  className="text-xs px-2 py-0.5 bg-cp-coral hover:bg-cp-coral/80 text-[var(--btn-primary-text)] rounded transition-colors"
                 >
                   Yes
                 </button>
                 <button
+                  type="button"
+                  className="btn btn--sm"
                   onClick={(e) => { e.stopPropagation(); setConfirmDelete(false); }}
-                  className="text-xs text-ui/55 hover:text-ui/90"
                 >
                   No
                 </button>
               </div>
             ) : (
               <button
+                type="button"
+                className="group__action"
+                style={{ color: 'var(--dojo3-rust)' }}
                 onClick={(e) => { e.stopPropagation(); setConfirmDelete(true); }}
-                className="text-xs text-cp-coral hover:text-cp-coral/80 transition-colors"
               >
                 Delete
               </button>
             )
           )}
-          <span className="text-xs text-ui/25 ml-auto">
+          <span className="text-tertiary" style={{ fontSize: 11, marginLeft: 'auto' }}>
             Model: {agent.model?.name || 'None'} | Type: {agent.agentType}
           </span>
         </div>
@@ -427,55 +429,58 @@ export const Agents = () => {
     }
   };
 
-  if (loading) return <div className="flex-1 loading-state">Loading...</div>;
+  if (loading) return <div className="loading-state">Loading...</div>;
 
   if (error) {
     return (
-      <div className="flex-1 flex items-center justify-center">
-        <p className="text-cp-coral">{error}</p>
+      <div className="stub">
+        <p className="stub__line" style={{ color: 'var(--dojo3-rust)' }}>{error}</p>
       </div>
     );
   }
 
   return (
-    <div className="flex-1 p-4 md:p-6 overflow-y-auto">
+    <>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-lg sm:text-xl font-bold text-ui">Agents</h1>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setShowCreateGroup(true)} className="glass-btn glass-btn-secondary text-sm">+ Form Squad</button>
-          <button onClick={() => setShowCreate(true)} className="glass-btn glass-btn-primary text-sm">+ Recruit Agent</button>
+      <header className="phead">
+        <h2 className="phead__title">Agents</h2>
+        <span className="phead__meta">{activeAgents.length} agent{activeAgents.length !== 1 ? 's' : ''}</span>
+        <div className="phead__actions">
+          <button type="button" className="btn" onClick={() => setShowCreateGroup(true)}>+ Form Squad</button>
+          <button type="button" className="btn btn--primary" onClick={() => setShowCreate(true)}>+ Recruit Agent</button>
         </div>
-      </div>
+      </header>
 
-      {/* Ollama model concurrency warnings — one per over-limit provider */}
+      {/* Ollama model concurrency warnings, one per over-limit provider */}
       {ollamaWarnings.length > 0 && (
-        <div className="mb-4 space-y-2">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
           {ollamaWarnings.map((w) => (
-            <div key={w.providerId} className="px-4 py-2.5 rounded-xl bg-cp-amber/10 border border-cp-amber/20">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-cp-amber">
-                  {w.count} different local models in use on <span className="font-semibold">{w.providerName}</span> — supports {w.maxConcurrentModels} concurrent. Some agents may queue.
+            <div key={w.providerId} className="note--warn" style={{ marginBottom: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+                <span>
+                  {w.count} different local models in use on <b>{w.providerName}</b> · supports {w.maxConcurrentModels} concurrent. Some agents may queue.
                 </span>
                 <button
+                  type="button"
+                  className="link"
                   onClick={() => setOllamaWarningExpanded(!ollamaWarningExpanded)}
-                  className="text-xs text-cp-amber/70 hover:text-cp-amber ml-2 shrink-0"
+                  style={{ flexShrink: 0 }}
                 >
                   {ollamaWarningExpanded ? 'Hide' : 'Learn more'}
                 </button>
               </div>
               {ollamaWarningExpanded && (
-                <div className="mt-2 text-xs text-ui/55 space-y-1">
+                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6, textTransform: 'none', letterSpacing: 'normal' }}>
                   <p>
-                    <span className="font-semibold">{w.providerName}</span> can only keep {w.maxConcurrentModels} Ollama model{w.maxConcurrentModels > 1 ? 's' : ''} loaded in RAM at once.
+                    <b>{w.providerName}</b> can only keep {w.maxConcurrentModels} Ollama model{w.maxConcurrentModels > 1 ? 's' : ''} loaded in RAM at once.
                     When agents assigned to this provider use different models, they have to wait for the current one to finish before swapping.
-                    Other Ollama providers on your network aren't affected — each machine has its own slot pool.
+                    Other Ollama providers on your network aren't affected, each machine has its own slot pool.
                   </p>
                   <p>
-                    Current models on {w.providerName}: <span className="font-mono">{w.models.join(', ')}</span>
+                    Current models on {w.providerName}: {w.models.join(', ')}
                   </p>
                   <p>
-                    To avoid delays: assign all agents on this provider to the same model, route some agents to a different Ollama provider (or a cloud model), or <a href="/settings?tab=platform" className="text-cp-amber underline hover:text-cp-amber/80">increase the concurrent model limit</a> if the host has enough RAM.
+                    To avoid delays: assign all agents on this provider to the same model, route some agents to a different Ollama provider (or a cloud model), or <a href="/settings?tab=platform" className="link">increase the concurrent model limit</a> if the host has enough RAM.
                   </p>
                 </div>
               )}
@@ -494,7 +499,7 @@ export const Agents = () => {
         <GroupCard key={group.id} group={group} agents={activeAgents.filter(a => a.groupId === group.id)} models={models} providerNameById={providerNameById} onReload={loadAgents} />
       ))}
 
-      {/* Ungrouped at the bottom — also a drop zone to remove from groups */}
+      {/* Ungrouped at the bottom, also a drop zone to remove from groups */}
       <UngroupedSection agents={activeAgents.filter(a => !a.groupId)} models={models} providerNameById={providerNameById} onReload={loadAgents} />
 
       {/* Create Group Modal */}
@@ -504,38 +509,31 @@ export const Agents = () => {
 
       {/* Recent History */}
       {terminatedAgents.length > 0 && (
-        <div>
-          <div className="flex items-center gap-3 mb-2">
-            <button
-              onClick={() => setHistoryExpanded(!historyExpanded)}
-              className="flex items-center gap-2 text-sm font-semibold text-ui/55 uppercase tracking-wide hover:text-ui/70 transition-colors"
-            >
-              <span className="text-xs">{historyExpanded ? '\u25BC' : '\u25B6'}</span>
-              Recent History ({terminatedAgents.length})
-            </button>
-            {historyExpanded && terminatedAgents.length > 0 && (
+        <section className="group">
+          <div className="group__head">
+            <div>
               <button
-                onClick={handleClearHistory}
-                className="text-xs text-ui/25 hover:text-ui/55 transition-colors ml-auto"
+                type="button"
+                className="group__title"
+                onClick={() => setHistoryExpanded(!historyExpanded)}
+                style={{ background: 'transparent', border: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}
               >
-                Clear older than 7 days
+                <span style={{ fontSize: 10 }}>{historyExpanded ? '\u25BC' : '\u25B6'}</span>
+                Recent History
               </button>
-            )}
+            </div>
+            <div className="group__side">
+              <span>{terminatedAgents.length} ended</span>
+              {historyExpanded && (
+                <button type="button" className="group__action" onClick={handleClearHistory}>
+                  Clear older than 7 days
+                </button>
+              )}
+            </div>
           </div>
 
           {historyExpanded && (
-            <div className="glass-card overflow-hidden">
-              {/* Column headers */}
-              <div className="flex items-center gap-3 px-4 py-2 border-b border-ui/[0.06] text-xs text-ui/25 uppercase tracking-wide">
-                <span className="w-4" />
-                <span className="w-36">Name</span>
-                <span className="w-16">Status</span>
-                <span className="w-20">Duration</span>
-                <span className="w-16">Messages</span>
-                <span className="flex-1">Task</span>
-                <span>Date</span>
-              </div>
-
+            <div className="tile" style={{ marginTop: 16, padding: 0, overflow: 'hidden' }}>
               {visibleTerminated.map((agent) => (
                 <TerminatedAgentRow
                   key={agent.id}
@@ -545,18 +543,15 @@ export const Agents = () => {
               ))}
 
               {terminatedAgents.length > 20 && !showAllHistory && (
-                <div className="px-4 py-2 border-t border-ui/[0.06]">
-                  <button
-                    onClick={() => setShowAllHistory(true)}
-                    className="text-xs text-cp-blue hover:text-cp-blue/80 transition-colors"
-                  >
+                <div style={{ padding: '10px 16px', borderTop: '1px solid rgba(140,116,84,.14)' }}>
+                  <button type="button" className="link" onClick={() => setShowAllHistory(true)}>
                     Show all {terminatedAgents.length} terminated agents
                   </button>
                 </div>
               )}
             </div>
           )}
-        </div>
+        </section>
       )}
 
       {showCreate && (
@@ -568,7 +563,7 @@ export const Agents = () => {
           onCreate={loadAgents}
         />
       )}
-    </div>
+    </>
   );
 };
 
@@ -599,7 +594,7 @@ const CreateGroupModal = ({ onClose, onCreated }: { onClose: () => void; onCreat
         <h3 className="text-lg font-semibold text-ui mb-4">Form Squad</h3>
         <p className="text-sm text-ui/40 mb-4">Groups organize agents around a shared purpose. The description is injected into all member agents' context.</p>
 
-        {error && <div className="mb-4 px-3 py-2 rounded-xl bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
+        {error && <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }}>{error}</div>}
 
         <div className="space-y-4">
           <div>
@@ -613,8 +608,8 @@ const CreateGroupModal = ({ onClose, onCreated }: { onClose: () => void; onCreat
         </div>
 
         <div className="flex gap-3 justify-end mt-6">
-          <button onClick={onClose} className="glass-btn glass-btn-ghost">Cancel</button>
-          <button onClick={handleCreate} disabled={saving || !name.trim()} className="glass-btn glass-btn-primary">
+          <button type="button" onClick={onClose} className="btn">Cancel</button>
+          <button type="button" onClick={handleCreate} disabled={saving || !name.trim()} className="btn btn--primary">
             {saving ? 'Creating...' : 'Form Squad'}
           </button>
         </div>
@@ -649,24 +644,33 @@ const UngroupedSection = ({
   };
 
   return (
-    <div
-      className={`mb-6 p-4 rounded-2xl transition-all ${dragOver ? 'ring-2 ring-ui/20 bg-ui/[0.03]' : ''}`}
+    <section
+      className="group"
+      style={dragOver ? { outline: '2px solid rgba(152,126,92,.4)', outlineOffset: 6, borderRadius: 8 } : undefined}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
     >
-      <h2 className="section-label mb-3">Unassigned ({agents.length})</h2>
+      <div className="group__head">
+        <div>
+          <div className="group__title">Unassigned</div>
+          <div className="group__desc">Agents that don't belong to a squad. Drop an agent here to remove it from its group.</div>
+        </div>
+        <div className="group__side">
+          <span>{agents.length} agent{agents.length !== 1 ? 's' : ''}</span>
+        </div>
+      </div>
       {agents.length === 0 ? (
-        <p className="text-sm text-ui/25 text-center py-4">
+        <p className="text-tertiary" style={{ fontSize: 12, padding: '16px 2px 2px' }}>
           {dragOver ? 'Drop here to remove from squad' : 'No unassigned agents'}
         </p>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {agents.map((agent) => (
-            <AgentCard key={agent.id} agent={agent} models={models} providerNameById={providerNameById} onModelChanged={onReload} />
+        <div className="cards">
+          {agents.map((agent, i) => (
+            <AgentCard key={agent.id} agent={agent} models={models} providerNameById={providerNameById} onModelChanged={onReload} index={i} />
           ))}
         </div>
       )}
-    </div>
+    </section>
   );
 };

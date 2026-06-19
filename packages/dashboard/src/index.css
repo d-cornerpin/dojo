@@ -980,6 +980,1644 @@
   }
 }
 
+/* ════════════════════════════════════════
+   DOJO 3 ORB STAGE
+   First UI-refresh slice for the dojo-ui branch. The chat remains live,
+   the orb owns navigation, and the composer is only for communication.
+   ════════════════════════════════════════ */
+
+.dojo3-stage {
+  --dojo3-orb-size: clamp(96px, 10vw, 140px);
+  --dojo3-orb-top: clamp(26px, 4vh, 48px);
+  --dojo3-ink: #3d3226;
+  --dojo3-ink-2: rgba(77, 63, 46, 0.80);
+  --dojo3-ink-3: rgba(98, 82, 60, 0.58);
+  --dojo3-ink-4: rgba(112, 96, 74, 0.42);
+  --dojo3-glass-hi: rgba(255, 253, 249, 0.72);
+  --dojo3-glass-lo: rgba(251, 244, 232, 0.44);
+  --dojo3-champagne: #d9a55c;
+  --dojo3-champagne-hot: #f6e2bb;
+  --dojo3-edge: linear-gradient(135deg,
+      rgba(255, 176, 148, 0.55) 0%,
+      rgba(255, 219, 156, 0.70) 24%,
+      rgba(255, 252, 244, 0.92) 50%,
+      rgba(166, 213, 211, 0.48) 76%,
+      rgba(186, 168, 224, 0.50) 100%);
+  --dojo3-edge-soft: linear-gradient(135deg,
+      rgba(255, 176, 148, 0.30) 0%,
+      rgba(255, 219, 156, 0.42) 24%,
+      rgba(255, 252, 244, 0.60) 50%,
+      rgba(166, 213, 211, 0.26) 76%,
+      rgba(186, 168, 224, 0.28) 100%);
+  --dojo3-edge-lit: linear-gradient(135deg,
+      rgba(255, 196, 158, 0.85) 0%,
+      rgba(255, 226, 168, 0.95) 26%,
+      rgba(255, 252, 240, 1.0) 50%,
+      rgba(186, 222, 218, 0.70) 76%,
+      rgba(202, 184, 236, 0.72) 100%);
+
+  /* panel-content accent palette (ports the prototype's literals) */
+  --dojo3-green: #5fc06f;
+  --dojo3-green-ink: #3c7a4a;
+  --dojo3-green-deep: #2e7a52;
+  --dojo3-indigo: #4d5694;
+  --dojo3-purple: #6d549c;
+  --dojo3-teal: #2e7a72;
+  --dojo3-rust: #9c4434;
+  --dojo3-amber-ink: #a4762e;
+  --dojo3-amber-deep: #8a6328;
+  --dojo3-amber-deepest: #6b5128;
+  --dojo3-focus: #dcab63;
+
+  /* font roles */
+  --dojo3-font-ui: "Space Grotesk", var(--font-sans), system-ui, sans-serif;
+  --dojo3-font-body: "Instrument Sans", var(--font-sans), system-ui, sans-serif;
+  --dojo3-font-mono: var(--font-mono), ui-monospace, monospace;
+
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: #efe6d3;
+  color: var(--dojo3-ink);
+  font-family: "Instrument Sans", var(--font-sans), system-ui, sans-serif;
+  /* a flex row: [ main interface ][ optional right dock ] */
+  display: flex;
+  align-items: stretch;
+}
+
+/* the dojo interface (orb, chat, composer, panels) lives here; it shrinks to
+   the left when the dock opens. It is the positioning context for all the
+   absolutely-positioned stage children. */
+.dojo3-stage__main {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* the right dock: slides in, sized by --dock-w (0 when closed). main follows
+   via flex, so the chat width adjusts inversely. */
+.dojo3-dock {
+  flex: 0 0 var(--dock-w, 0px);
+  width: var(--dock-w, 0px);
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(255, 253, 249, 0.92), rgba(250, 243, 230, 0.9));
+  border-left: 1px solid rgba(140, 116, 84, 0.18);
+  box-shadow: -24px 0 60px -30px rgba(80, 54, 28, 0.4);
+  transition: flex-basis 0.42s cubic-bezier(.4, 0, .2, 1);
+}
+.dojo3-stage.is-resizing .dojo3-dock,
+.dojo3-stage.is-resizing .dojo3-stage__main { transition: none; }
+/* While dragging the grabber, let the pointer pass THROUGH the dock's iframe
+   (and any content) so the drag never gets swallowed by an embedded frame —
+   the cursor can move freely over the dock without losing pointermove/up. */
+.dojo3-stage.is-resizing iframe,
+.dojo3-stage.is-resizing .dojo3-dock__body { pointer-events: none; }
+.dojo3-dock__inner {
+  position: absolute;
+  inset: 0;
+  /* hold the inner content at the dock's open width so it does not reflow /
+     squish while the dock animates open or closed */
+  width: var(--dock-w, 0px);
+  min-width: var(--dock-w, 0px);
+  display: flex;
+  flex-direction: column;
+}
+.dojo3-dock__bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px 12px 18px;
+  border-bottom: 1px solid rgba(140, 116, 84, 0.14);
+}
+.dojo3-dock__title {
+  font: 600 12px/1 var(--dojo3-font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dojo3-ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dojo3-dock__actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.dojo3-dock__btn {
+  width: 32px; height: 32px; border-radius: 50%;
+  display: grid; place-items: center;
+  border: 1px solid rgba(150, 126, 94, 0.2);
+  background: rgba(255, 253, 248, 0.5);
+  color: #6b5a42; cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+.dojo3-dock__btn:hover { background: rgba(250, 233, 202, 0.5); color: #5c4b34; box-shadow: 0 0 12px -3px rgba(238, 196, 120, 0.5); }
+.dojo3-dock__btn:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
+.dojo3-dock__btn { text-decoration: none; }
+.dojo3-dock__body { flex: 1 1 auto; min-height: 0; position: relative; overflow: auto; }
+.dojo3-dock__frame { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
+
+/* ── Canvas content (file-backed: markdown / text / images / states) ── */
+.dojo3-canvas__state {
+  display: grid; place-items: center; height: 100%;
+  padding: 24px; text-align: center;
+  font: 500 13px/1.5 var(--dojo3-font-mono);
+  color: var(--dojo3-ink-3);
+}
+.dojo3-canvas__state--err { color: #b4533a; }
+.dojo3-canvas__media {
+  display: grid; place-items: center; min-height: 100%;
+  padding: 22px; box-sizing: border-box;
+  background:
+    linear-gradient(45deg, rgba(140,116,84,0.05) 25%, transparent 25%) 0 0 / 22px 22px,
+    linear-gradient(-45deg, rgba(140,116,84,0.05) 25%, transparent 25%) 0 0 / 22px 22px;
+}
+.dojo3-canvas__media img { max-width: 100%; max-height: 100%; border-radius: 8px; box-shadow: 0 8px 30px -12px rgba(80, 60, 30, 0.4); }
+.dojo3-canvas__doc {
+  min-height: 100%;
+  padding: 26px 30px 60px;
+  box-sizing: border-box;
+  background: rgba(255, 253, 248, 0.62);
+  color: var(--dojo3-ink-1);
+}
+.dojo3-canvas__code {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 400 12.5px/1.6 var(--dojo3-font-mono);
+  color: var(--dojo3-ink-2);
+}
+/* Markdown prose inside the canvas */
+.dojo3-canvas__doc--md { font: 400 14px/1.7 var(--dojo3-font-sans, inherit); }
+.dojo3-canvas__doc--md h1,
+.dojo3-canvas__doc--md h2,
+.dojo3-canvas__doc--md h3,
+.dojo3-canvas__doc--md h4 { color: var(--dojo3-ink-1); font-weight: 650; line-height: 1.25; margin: 1.4em 0 0.5em; }
+.dojo3-canvas__doc--md h1 { font-size: 1.7em; margin-top: 0.2em; }
+.dojo3-canvas__doc--md h2 { font-size: 1.35em; }
+.dojo3-canvas__doc--md h3 { font-size: 1.15em; }
+.dojo3-canvas__doc--md p { margin: 0.7em 0; }
+.dojo3-canvas__doc--md ul,
+.dojo3-canvas__doc--md ol { margin: 0.7em 0; padding-left: 1.5em; }
+.dojo3-canvas__doc--md li { margin: 0.25em 0; }
+.dojo3-canvas__doc--md a { color: #9a6a1f; text-decoration: underline; }
+.dojo3-canvas__doc--md code {
+  font: 400 0.88em/1.5 var(--dojo3-font-mono);
+  background: rgba(140, 116, 84, 0.12);
+  padding: 0.12em 0.4em; border-radius: 5px;
+}
+.dojo3-canvas__doc--md pre {
+  background: rgba(60, 48, 30, 0.06);
+  border: 1px solid rgba(140, 116, 84, 0.16);
+  border-radius: 10px; padding: 14px 16px; overflow: auto; margin: 1em 0;
+}
+.dojo3-canvas__doc--md pre code { background: none; padding: 0; }
+.dojo3-canvas__doc--md blockquote {
+  margin: 1em 0; padding: 0.2em 1em;
+  border-left: 3px solid rgba(238, 196, 120, 0.6);
+  color: var(--dojo3-ink-3);
+}
+.dojo3-canvas__doc--md table { border-collapse: collapse; margin: 1em 0; font-size: 0.92em; }
+.dojo3-canvas__doc--md th,
+.dojo3-canvas__doc--md td { border: 1px solid rgba(140, 116, 84, 0.22); padding: 6px 10px; text-align: left; }
+.dojo3-canvas__doc--md img { max-width: 100%; border-radius: 8px; }
+.dojo3-canvas__doc--md hr { border: 0; border-top: 1px solid rgba(140, 116, 84, 0.2); margin: 1.5em 0; }
+
+/* the grabber between the chat and a media dock */
+.dojo3-dock-resizer {
+  position: absolute;
+  top: 0; bottom: 0;
+  right: var(--dock-w, 0px);
+  width: 12px;
+  transform: translateX(50%);
+  z-index: 20;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.dojo3-dock-resizer::before {
+  content: "";
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 4px; height: 46px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: rgba(140, 116, 84, 0.35);
+  transition: background 0.2s ease, height 0.2s ease;
+}
+.dojo3-dock-resizer:hover::before,
+.dojo3-stage.is-resizing .dojo3-dock-resizer::before {
+  background: var(--dojo3-champagne);
+  height: 70px;
+}
+
+.dojo3-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 20% 15%, rgba(255, 248, 232, 0.90), transparent 26%),
+    radial-gradient(circle at 82% 20%, rgba(178, 205, 210, 0.40), transparent 24%),
+    radial-gradient(circle at 28% 78%, rgba(230, 176, 106, 0.28), transparent 34%),
+    linear-gradient(180deg, #f2ead9 0%, #ece0c8 58%, #e7dac1 100%);
+}
+
+.dojo3-backdrop::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.32;
+  background-image:
+    linear-gradient(115deg, transparent 0 42%, rgba(255,255,255,0.28) 42.3% 42.6%, transparent 43% 100%),
+    linear-gradient(30deg, transparent 0 56%, rgba(154,122,82,0.12) 56.2% 56.5%, transparent 57% 100%);
+  background-size: 210px 210px, 260px 260px;
+}
+
+.dojo3-wordmark {
+  position: absolute;
+  top: 22px;
+  /* align the wordmark text with the chat content's left edge (the chat
+     column edge + the scroller's 8px padding), so it does not dangle left */
+  left: max(calc(4% + 8px), calc(50% - 372px));
+  z-index: 8;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  margin: -6px -8px;
+  border-radius: 12px;
+  color: rgba(95, 79, 58, 0.72);
+  transition: background 0.2s ease, color 0.35s ease;
+}
+.dojo3-wordmark:hover:not(:disabled) { background: rgba(255, 252, 246, 0.42); }
+.dojo3-wordmark:disabled { cursor: default; }
+.dojo3-wordmark__text {
+  font: 500 13px/1 "Space Grotesk", var(--font-sans), system-ui, sans-serif;
+  /* the wordmark shows the active agent's NAME, uppercased, moderate tracking */
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.dojo3-wordmark__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffe9c0, #c8964e);
+  box-shadow: 0 0 8px rgba(238, 188, 110, 0.85);
+}
+.dojo3-wordmark__state {
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font: 500 9px/1 var(--font-mono), ui-monospace, monospace;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dojo3-ink-4);
+  opacity: 0;
+  transition: max-width 0.35s ease, opacity 0.3s ease, margin 0.35s ease;
+}
+.dojo3-wordmark:hover .dojo3-wordmark__state,
+.dojo3-wordmark:focus-visible .dojo3-wordmark__state {
+  max-width: 180px;
+  opacity: 1;
+  margin-left: -2px;
+}
+.dojo3-stage.is-out .dojo3-wordmark__dot {
+  background: radial-gradient(circle at 35% 30%, #aeb6c4, #5e6b80);
+  box-shadow: 0 0 7px rgba(120, 134, 158, 0.6);
+}
+
+.dojo3-orb-hit {
+  position: absolute;
+  top: var(--dojo3-orb-top);
+  left: 50%;
+  width: var(--dojo3-orb-size);
+  height: var(--dojo3-orb-size);
+  transform: translateX(-50%);
+  z-index: 6;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.dojo3-orb-hit:focus-visible {
+  outline: 2px solid #dcab63;
+  outline-offset: 6px;
+}
+/* ── WebGL orb: refraction backdrop <img> + canvas + fallback pearl ──
+   The engine's layout() sets the canvas top/margin-left/width/height in JS;
+   CSS only establishes the positioning context and clears any inherited
+   surface styling so the transparent canvas composites over the page. */
+.dojo3-orb-glass-wrap {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* no z-index: the img (z0) and canvas (z3) stack in the stage context,
+     so the backdrop sits behind the chat and the orb floats above it */
+}
+.dojo3-orb-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top center;
+  display: block;
+  z-index: 0;
+}
+.dojo3-orb__glass.orb-canvas {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  z-index: 3;
+  pointer-events: none;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+.dojo3-stage.is-out .dojo3-orb__glass.orb-canvas {
+  filter: saturate(0.72) brightness(0.96);
+  transition: filter 0.6s ease;
+}
+.dojo3-orb-fallback {
+  display: none;
+  position: absolute;
+  top: var(--dojo3-orb-top);
+  left: 50%;
+  width: var(--dojo3-orb-size);
+  height: var(--dojo3-orb-size);
+  transform: translateX(-50%);
+  border-radius: 50%;
+  z-index: 3;
+  background:
+    radial-gradient(circle at 50% 86%, rgba(255,250,240,.9), rgba(248,226,184,.4) 30%, transparent 55%),
+    radial-gradient(circle at 50% 36%, rgba(64,52,42,.5), transparent 60%),
+    radial-gradient(circle, rgba(253,248,240,.2), rgba(253,248,240,.12));
+  box-shadow:
+    inset 0 -8px 14px rgba(255,250,240,.85),
+    inset 0 6px 12px rgba(50,40,32,.4),
+    0 0 0 1px rgba(90,76,62,.18),
+    0 14px 36px rgba(110,82,46,.25);
+}
+.dojo3-orb-glass-wrap.no-webgl .dojo3-orb-fallback { display: block; }
+.dojo3-orb-glass-wrap.no-webgl .orb-canvas,
+.dojo3-orb-glass-wrap.no-webgl .dojo3-orb-bg { display: none; }
+
+/* The thin task progress line, pinned just under the orb (image / video / song
+   / compaction jobs). The engine appends this <div class="orb-progress"><i/></div>
+   to the stage and sets its top/width inline; ported from the prototype. */
+.dojo3-stage .orb-progress {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 6px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(120, 92, 54, 0.35);
+  background: rgba(70, 56, 40, 0.55);
+  backdrop-filter: blur(8px) saturate(1.1);
+  -webkit-backdrop-filter: blur(8px) saturate(1.1);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.3),
+    0 2px 10px -2px rgba(60, 40, 20, 0.5),
+    0 0 0 1px rgba(255, 250, 240, 0.25);
+  overflow: hidden;
+  opacity: 0;
+  z-index: 5;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+.dojo3-stage .orb-progress.is-on { opacity: 1; }
+.dojo3-stage .orb-progress i {
+  position: absolute;
+  top: 0; bottom: 0;
+  left: 0; right: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #ffd98a, #e8a23f);
+  box-shadow:
+    0 0 12px 2px rgba(240, 180, 90, 0.9),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  transition: left 0.3s ease, right 0.3s ease;
+}
+.dojo3-stage .orb-progress.is-indeterminate i { transition: none; }
+
+/* ── Login gate ──────────────────────────────────────────────────────────
+   A stripped-back dojo3 stage: the orb bobs excitedly above one password
+   field and a clean "DOJO" label (matching the in-app wordmark). The orb sits
+   lower than usual so it has room to bounce above the form. */
+.dojo3-login { min-height: 100dvh; }
+/* Drop the orb toward the upper-middle so the bubble hovers just over the
+   form (the two read as one centered group). NOTE: the orb engine reads these
+   vars with parseFloat, which only works on a plain px value, a clamp()/calc()
+   parses to NaN and the engine silently falls back to its default top-of-stage
+   position. So these are fixed px (with a mobile step-down), not clamp(). The
+   double-class bumps specificity so they beat the base .dojo3-stage vars
+   (including the mobile --dojo3-orb-size override). */
+.dojo3-stage.dojo3-login {
+  --dojo3-orb-top: 220px;
+  --dojo3-orb-size: 132px;
+}
+@media (max-width: 768px) {
+  .dojo3-stage.dojo3-login {
+    --dojo3-orb-top: 188px;
+    --dojo3-orb-size: 104px;
+  }
+}
+/* The orb canvas bobs around like it's excited to see you. Transform layers
+   over the engine's inline top/margin/size, so the bubble (and its cast light)
+   drift together while pointer + refraction tracking follow via getBoundingClientRect.
+   The bob amplitude is scaled by --dojo3-bob (a registered, hence animatable,
+   custom property): once the orb calms, we transition --dojo3-bob DOWN rather
+   than swapping to a different keyframe, so the motion eases off in place with
+   no jump (the animation keeps running at the same phase). */
+@property --dojo3-bob {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 1;
+}
+.dojo3-login {
+  --dojo3-bob: 1;
+  transition: --dojo3-bob 1.6s ease;
+}
+.dojo3-login.is-settled { --dojo3-bob: 0.4; }
+.dojo3-login .dojo3-orb__glass.orb-canvas {
+  animation: dojo3LoginBob 4.6s ease-in-out infinite;
+}
+@keyframes dojo3LoginBob {
+  0%   { transform: translate(0, 0); }
+  16%  { transform: translate(calc(-14px * var(--dojo3-bob)), calc(-24px * var(--dojo3-bob))); }
+  34%  { transform: translate(calc(11px * var(--dojo3-bob)), calc(3px * var(--dojo3-bob))); }
+  50%  { transform: translate(calc(16px * var(--dojo3-bob)), calc(-20px * var(--dojo3-bob))); }
+  68%  { transform: translate(calc(-7px * var(--dojo3-bob)), calc(6px * var(--dojo3-bob))); }
+  84%  { transform: translate(calc(-15px * var(--dojo3-bob)), calc(-10px * var(--dojo3-bob))); }
+  100% { transform: translate(0, 0); }
+}
+.dojo3-login__center {
+  position: absolute;
+  left: 50%;
+  top: calc(var(--dojo3-orb-top) + var(--dojo3-orb-size) + 6vh);
+  transform: translateX(-50%);
+  width: min(312px, 84vw);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 26px;
+  z-index: 4;
+}
+/* the wordmark: thin and widely tracked for a quiet, premium read. The
+   text-indent offsets the trailing letter-spacing so it stays optically
+   centred. */
+.dojo3-login__wordmark {
+  font: 300 clamp(30px, 7vw, 38px)/1 "Space Grotesk", var(--font-sans), system-ui, sans-serif;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+  text-transform: uppercase;
+  color: rgba(70, 56, 40, 0.9);
+}
+/* password + sign-in in a quiet glass card: tighter radius, hairline edge,
+   a soft single shadow (no chunky glow) */
+.dojo3-login__card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 16px;
+  padding: 20px 20px 22px;
+  border-radius: 16px;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(180deg, var(--dojo3-glass-hi), var(--dojo3-glass-lo)) padding-box,
+    var(--dojo3-edge-soft) border-box;
+  backdrop-filter: blur(26px) saturate(1.2);
+  -webkit-backdrop-filter: blur(26px) saturate(1.2);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    0 18px 44px -28px rgba(80, 58, 30, 0.5);
+}
+.dojo3-login__group {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.dojo3-login__label {
+  padding-left: 2px;
+  font: 500 9.5px/1 var(--dojo3-font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--dojo3-ink-4);
+}
+.dojo3-login__input {
+  height: 42px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  /* a touch recessed so it reads as a field set INTO the glass card; kept
+     fairly opaque so it stays a calm, defined surface rather than picking up
+     colourful bleed from the backdrop */
+  background:
+    linear-gradient(180deg, rgba(255, 253, 249, 0.72), rgba(250, 243, 230, 0.58)) padding-box,
+    var(--dojo3-edge-soft) border-box;
+  font: 400 14px/42px var(--dojo3-font-body);
+  letter-spacing: 0.2em;
+  color: var(--dojo3-ink);
+  box-shadow: inset 0 1px 3px rgba(108, 80, 42, 0.1);
+  outline: none;
+  transition: box-shadow 0.2s ease;
+}
+.dojo3-login__input:focus {
+  box-shadow:
+    inset 0 1px 3px rgba(108, 80, 42, 0.1),
+    0 0 0 1px rgba(217, 165, 92, 0.45);
+}
+.dojo3-login__submit {
+  align-self: flex-end;
+  width: auto;
+  min-width: 124px;
+  height: 40px;
+  padding: 0 26px;
+  /* the base .btn is inline-flex with no justify, so on a min-width button the
+     label hugs the left edge; centre it (and pad the trailing letter-spacing) */
+  justify-content: center;
+  text-indent: 0.06em;
+  border-radius: 11px;
+  font-size: 12.5px;
+  letter-spacing: 0.06em;
+}
+.dojo3-login__submit:disabled { opacity: 0.5; cursor: default; }
+/* A lighter champagne button with the wordmark's warm-ink label. The double
+   class beats the .dojo3-stage .btn--primary base (same 0,2,0 specificity but
+   defined later in the file), so its colour/fill win. */
+.dojo3-stage.dojo3-login .dojo3-login__submit,
+.dojo3-stage.dojo3-login .dojo3-login__submit:hover {
+  color: rgba(70, 56, 40, 0.9);
+  background:
+    linear-gradient(180deg, #fdeecf, #eec488) padding-box,
+    linear-gradient(135deg, rgba(255, 244, 222, 0.95), rgba(228, 178, 112, 0.85)) border-box;
+}
+.dojo3-login__error {
+  margin: 0;
+  padding-left: 2px;
+  font: 500 11.5px/1.45 var(--dojo3-font-body);
+  color: #a8503c;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dojo3-login .dojo3-orb__glass.orb-canvas { animation: none; }
+}
+
+/* ── Focal haze: stacked backdrop-blur bands (ported from prototype
+   1307-1367, scoped). The conversation lives in a volume; content
+   drifting up past the orb or down under the composer defocuses. ── */
+.dojo3-haze { position: absolute; left: 0; right: 0; z-index: 2; pointer-events: none; }
+.dojo3-haze i { position: absolute; inset: 0; display: block; }
+.dojo3-haze--top { top: 0; height: calc(var(--dojo3-orb-top) + var(--dojo3-orb-size) + 64px); }
+.dojo3-haze--top i:nth-child(1) { backdrop-filter: blur(1px); -webkit-backdrop-filter: blur(1px);
+  -webkit-mask-image: linear-gradient(to top, transparent 2%, #000 30%); mask-image: linear-gradient(to top, transparent 2%, #000 30%); }
+.dojo3-haze--top i:nth-child(2) { backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+  -webkit-mask-image: linear-gradient(to top, transparent 22%, #000 48%); mask-image: linear-gradient(to top, transparent 22%, #000 48%); }
+.dojo3-haze--top i:nth-child(3) { backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+  -webkit-mask-image: linear-gradient(to top, transparent 42%, #000 66%); mask-image: linear-gradient(to top, transparent 42%, #000 66%); }
+.dojo3-haze--top i:nth-child(4) { backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  -webkit-mask-image: linear-gradient(to top, transparent 60%, #000 82%); mask-image: linear-gradient(to top, transparent 60%, #000 82%); }
+.dojo3-haze--top i:nth-child(5) { backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  -webkit-mask-image: linear-gradient(to top, transparent 76%, #000 96%); mask-image: linear-gradient(to top, transparent 76%, #000 96%); }
+.dojo3-haze--top::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(to top, rgba(243,234,216,0) 32%, rgba(243,234,216,0.45) 74%, rgba(243,234,216,0.82) 100%);
+}
+/* When the menu drops down, the focus/opacity dropoff drops with it: this
+   extra band fades in only while the fan is open, carrying a strong, even
+   blur + cream scrim from the top down PAST the menu, then fading out just
+   below it (the mask). That clears the sharp chat text from behind the menu
+   so the labels read cleanly, and eases in as the menu blooms. */
+.dojo3-haze--top::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 0;
+  height: calc(var(--dojo3-orb-top) + var(--dojo3-orb-size) + 150px);
+  backdrop-filter: blur(13px) saturate(1.03);
+  -webkit-backdrop-filter: blur(13px) saturate(1.03);
+  background: linear-gradient(to bottom,
+    rgba(243,234,216,0.72), rgba(243,234,216,0.52) 56%, rgba(243,234,216,0));
+  -webkit-mask-image: linear-gradient(to bottom, #000 72%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 72%, transparent 100%);
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+.dojo3-stage.fan-open .dojo3-haze--top::before { opacity: 1; }
+.dojo3-haze--bottom { bottom: 0; height: 150px; }
+.dojo3-haze--bottom i:nth-child(1) { backdrop-filter: blur(1px); -webkit-backdrop-filter: blur(1px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 4%, #000 36%); mask-image: linear-gradient(to bottom, transparent 4%, #000 36%); }
+.dojo3-haze--bottom i:nth-child(2) { backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 26%, #000 54%); mask-image: linear-gradient(to bottom, transparent 26%, #000 54%); }
+.dojo3-haze--bottom i:nth-child(3) { backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 46%, #000 72%); mask-image: linear-gradient(to bottom, transparent 46%, #000 72%); }
+.dojo3-haze--bottom i:nth-child(4) { backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 64%, #000 88%); mask-image: linear-gradient(to bottom, transparent 64%, #000 88%); }
+.dojo3-haze--bottom i:nth-child(5) { backdrop-filter: blur(11px); -webkit-backdrop-filter: blur(11px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 80%, #000 100%); mask-image: linear-gradient(to bottom, transparent 80%, #000 100%); }
+/* hide the haze while a panel is open so it never blurs panel content */
+.dojo3-stage.panel-open .dojo3-haze { opacity: 0; transition: opacity .3s ease; }
+
+/* The dojo menu is the same rounded glass tab bar the pages use (.tabs/.tab):
+   a single horizontal pill rail of TEXT-ONLY tabs. On open it drops straight
+   down from the orb (the rail expands from a thin sliver to full width) and
+   the tab labels then spread out / fade in left-to-right (--d per tab). The
+   current route reads as the lit champagne tab; Reset sits at the end in
+   coral. (The old radial "bubble necklace" arc lived here, see git history.) */
+.dojo3-orb-fan {
+  position: absolute;
+  top: calc(var(--dojo3-orb-top) + var(--dojo3-orb-size) + 18px);
+  left: 50%;
+  z-index: 5;
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  max-width: 94vw;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(180deg, rgba(255, 253, 249, 0.62), rgba(251, 243, 229, 0.42)) padding-box,
+    var(--dojo3-edge-soft) border-box;
+  backdrop-filter: blur(16px) saturate(1.25);
+  -webkit-backdrop-filter: blur(16px) saturate(1.25);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 20px 44px -20px rgba(108, 80, 42, 0.5);
+  overflow-x: auto;
+  scrollbar-width: none;
+  /* closed: dropped up at the orb and clipped to its center (the rail then
+     drops down and the clip opens center-out, so it "spreads" without
+     distorting the text the way a scaleX would). */
+  transform: translate(-50%, -14px);
+  clip-path: inset(0 49.5% 0 49.5% round 999px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    transform 0.42s cubic-bezier(.22, 1.16, .36, 1),
+    clip-path 0.46s cubic-bezier(.22, 1.16, .36, 1),
+    opacity 0.2s ease,
+    visibility 0s 0.46s;
+}
+.dojo3-orb-fan::-webkit-scrollbar { display: none; }
+.dojo3-orb-fan[aria-hidden="false"] {
+  transform: translate(-50%, 0);
+  clip-path: inset(0 0 0 0 round 999px);
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    transform 0.46s cubic-bezier(.22, 1.16, .36, 1),
+    clip-path 0.5s cubic-bezier(.22, 1.16, .36, 1),
+    opacity 0.22s ease,
+    visibility 0s;
+}
+.dojo3-fan-btn {
+  appearance: none;
+  border: 0;
+  cursor: pointer;
+  white-space: nowrap;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font: 500 10.5px/1 var(--dojo3-font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dojo3-ink-3);
+  background: transparent;
+  /* the labels "spread out": each tab fades + lifts in once the rail opens
+     (a neutral lift so it reads the same whether revealed left, right, or
+     centre-out) */
+  opacity: 0;
+  transform: translateY(4px) scale(0.96);
+  transition:
+    color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease,
+    opacity 0.2s ease, transform 0.2s ease;
+}
+.dojo3-orb-fan[aria-hidden="false"] .dojo3-fan-btn {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition:
+    opacity 0.34s ease var(--d),
+    transform 0.4s cubic-bezier(.3, 1.3, .42, 1) var(--d),
+    color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+.dojo3-fan-btn:hover { color: #4a3a26; }
+.dojo3-fan-btn:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
+/* Trace + Reset are chat functions, not pages: a hairline rule sets them
+   apart from the page tabs. The line sits in the extra gap before Trace. */
+.dojo3-fan-btn--sep { position: relative; margin-left: 9px; }
+.dojo3-fan-btn--sep::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1px;
+  height: 16px;
+  background: linear-gradient(to bottom, transparent, rgba(150, 120, 80, 0.34), transparent);
+}
+/* the current route: lit champagne tab, matching .tab.is-active across the
+   pages */
+.dojo3-fan-btn.is-active {
+  color: var(--dojo3-amber-deepest);
+  background: rgba(248, 226, 184, 0.45);
+  box-shadow:
+    inset 0 0 0 1px rgba(217, 165, 92, 0.45),
+    0 0 14px -4px rgba(243, 221, 180, 0.7);
+}
+/* Wordy (trace) is a toggle, not a page: when on, a small champagne dot sits
+   next to the label, mirroring the presence dot next to the agent name. */
+.dojo3-fan-btn__dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 6px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffe9c0, #c8964e);
+  box-shadow: 0 0 8px rgba(238, 188, 110, 0.85);
+}
+/* Reset sits apart in coral, and throbs once armed to confirm */
+.dojo3-fan-btn--reset { color: #a8674f; }
+.dojo3-fan-btn--reset:hover { color: #9c4434; }
+.dojo3-fan-btn--reset.is-confirm {
+  color: #fff;
+  background:
+    linear-gradient(180deg, #e89a86, rgba(192, 88, 66, 0.58)) padding-box,
+    linear-gradient(135deg, rgba(240, 180, 165, 0.95), rgba(176, 70, 52, 0.95)) border-box;
+  animation: dojo3ResetThrob 1.1s ease-in-out infinite;
+}
+@keyframes dojo3ResetThrob {
+  0%, 100% { box-shadow: 0 12px 26px -8px rgba(150,60,44,.5), 0 0 18px -2px rgba(216,110,90,.5); }
+  50% { box-shadow: 0 12px 26px -8px rgba(150,60,44,.5), 0 0 30px 0 rgba(216,110,90,.8); }
+}
+
+/* The chat is a single full-height scroller, like the prototype's .chat:
+   it spans top:0..bottom:0, scrolls through the whole viewport, and carries
+   the padding + the top/bottom fade-mask on the SAME element so content
+   scrolls edge to edge and fades/blurs at the very top and bottom. The
+   outer .dojo3-chat is just the centered full-height frame; the inner
+   .dojo3-chat-scroll (the element Chat.tsx scrolls) does the work. */
+.dojo3-chat {
+  position: absolute;
+  inset: 0;
+  /* center via auto margins, NOT translateX: a transform would promote the
+     chat to its own compositing layer, which stops the focal-haze
+     backdrop-filter from sampling (and blurring) the messages. */
+  margin-inline: auto;
+  width: min(92%, 760px);
+  z-index: 1;
+}
+/* Scoped under .dojo3-stage so the vertical padding wins over the Tailwind
+   `py-*` utility on the same element (equal class specificity otherwise lets
+   the utility override it, which boxed the newest message behind the
+   composer). The padding lives INSIDE the scroller so content scrolls past
+   the orb at the top and clears the composer at the bottom. Horizontal
+   padding is left to the element's own `px-*` utilities. */
+.dojo3-stage .dojo3-chat-scroll {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  /* EXACTLY the prototype's .chat padding + mask (scoped to win over the
+     element's Tailwind py/px utilities). top = clears the orb, sides 8px,
+     bottom 150px so the newest message rests above the composer. */
+  padding: calc(var(--dojo3-orb-top) + var(--dojo3-orb-size) + 84px) 8px 150px;
+  -webkit-mask-image: linear-gradient(to bottom,
+    transparent 0, rgba(0,0,0,.5) 9%, #000 20%, #000 88%, rgba(0,0,0,.45) 97%, transparent 100%);
+  mask-image: linear-gradient(to bottom,
+    transparent 0, rgba(0,0,0,.5) 9%, #000 20%, #000 88%, rgba(0,0,0,.45) 97%, transparent 100%);
+}
+.dojo3-chat-scroll::-webkit-scrollbar { display: none; }
+.dojo3-stage.panel-open .dojo3-chat {
+  opacity: 0.42;
+  filter: blur(7px) saturate(0.88);
+  transform: scale(0.975);
+  pointer-events: none;
+  transition: opacity 0.4s ease, filter 0.4s ease, transform 0.4s ease;
+}
+.dojo3-panel-dismiss {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border: 0;
+  background: transparent;
+  cursor: default;
+}
+.dojo3-stage .bubble-user {
+  background:
+    linear-gradient(170deg, rgba(255, 253, 249, 0.74), rgba(251, 243, 229, 0.46)) padding-box,
+    var(--dojo3-edge-soft) border-box;
+  border: 1px solid transparent;
+  color: var(--dojo3-ink);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.65),
+    inset 0 -12px 20px -14px rgba(226, 178, 106, 0.55),
+    0 16px 34px -18px rgba(108, 80, 42, 0.42);
+}
+.dojo3-stage .bubble-assistant {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  color: #45392b;
+  padding-left: 19px;
+  position: relative;
+}
+.dojo3-stage .bubble-assistant::before {
+  content: '';
+  position: absolute;
+  left: 1px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(180deg,
+    var(--dojo3-champagne-hot),
+    rgba(217, 165, 92, 0.60) 40%,
+    rgba(217, 165, 92, 0.0) 100%);
+  box-shadow: 0 0 8px rgba(238, 188, 110, 0.55);
+}
+.dojo3-stage .bubble-assistant::after {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 11px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #fff8e8, #ecbe7c 70%);
+  box-shadow: 0 0 9px rgba(243, 221, 180, 0.95);
+}
+.dojo3-stage .text-ui,
+.dojo3-stage .text-primary { color: var(--dojo3-ink); }
+.dojo3-stage .text-secondary { color: var(--dojo3-ink-2); }
+.dojo3-stage .text-tertiary { color: var(--dojo3-ink-4); }
+
+/* Transparent scroll container (NOT a glass sheet): the page's cards float
+   directly over the blurred, receded chat, exactly like the prototype's
+   .panel. Each card carries its own glass; the container itself is just a
+   masked, scrollable region under the orb. */
+.dojo3-panel {
+  position: absolute;
+  /* full page height, like the chat: content flows top-to-bottom and fades
+     at BOTH ends rather than cropping in a fixed box. z-index 2 keeps it
+     under the orb canvas (z3), so cards scroll up behind the orb. */
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  width: min(94%, 980px);
+  z-index: 2;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  /* padded so content scrolls under the orb at the top and clears the
+     composer at the bottom (mirrors the chat scroller) */
+  padding-top: calc(var(--dojo3-orb-top) + var(--dojo3-orb-size) + 60px);
+  padding-bottom: 150px;
+  /* the same top-and-bottom fade the chat uses */
+  -webkit-mask-image: linear-gradient(to bottom,
+    transparent 0, rgba(0,0,0,.5) 7%, #000 18%, #000 86%, rgba(0,0,0,.4) 96%, transparent 100%);
+  mask-image: linear-gradient(to bottom,
+    transparent 0, rgba(0,0,0,.5) 7%, #000 18%, #000 86%, rgba(0,0,0,.4) 96%, transparent 100%);
+  animation: dojo3PanelIn 0.42s cubic-bezier(.30, 1.3, .42, 1) both;
+}
+.dojo3-panel::-webkit-scrollbar { display: none; }
+@keyframes dojo3PanelIn {
+  from { opacity: 0; filter: blur(9px); transform: translateY(-14px) scale(0.985); }
+  to { opacity: 1; filter: blur(0); transform: none; }
+}
+.dojo3-panel__head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 22px 24px 16px;
+  border-bottom: 1px solid rgba(140, 116, 84, 0.14);
+}
+.dojo3-panel__title {
+  margin: 0;
+  font: 600 21px/1 "Space Grotesk", var(--font-sans), system-ui, sans-serif;
+  color: var(--dojo3-ink);
+}
+.dojo3-panel__meta {
+  margin-top: 6px;
+  font: 500 10px/1 var(--font-mono), ui-monospace, monospace;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--dojo3-ink-4);
+}
+.dojo3-panel__close {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid rgba(150, 126, 94, 0.20);
+  background: rgba(255, 253, 248, 0.38);
+  color: #6b5a42;
+  font-size: 22px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+.dojo3-panel__close:hover {
+  background: rgba(178, 120, 92, 0.18);
+  color: #7c4232;
+  box-shadow: 0 0 12px -2px rgba(178, 120, 92, 0.40);
+}
+.dojo3-panel__body {
+  /* the panel itself scrolls now; the body is just the content region */
+  color: var(--dojo3-ink);
+}
+.dojo3-panel__body > .flex-1,
+.dojo3-panel__body > .flex,
+.dojo3-panel__body > .h-full {
+  min-height: 100%;
+}
+.dojo3-panel__body .border-b,
+.dojo3-panel__body .border-t,
+.dojo3-panel__body .border-l,
+.dojo3-panel__body .border-r {
+  border-color: rgba(140, 116, 84, 0.14);
+}
+.dojo3-panel__body .glass-card,
+.dojo3-panel__body .glass-nested,
+.dojo3-panel__body .glass-modal-bg {
+  background:
+    linear-gradient(170deg, rgba(255, 253, 249, 0.54), rgba(251, 243, 229, 0.34)) padding-box,
+    var(--dojo3-edge-soft) border-box;
+  border: 1px solid transparent;
+  color: var(--dojo3-ink);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.50),
+    0 16px 34px -22px rgba(108, 80, 42, 0.34);
+}
+.dojo3-panel__body .glass-input,
+.dojo3-panel__body .glass-select,
+.dojo3-panel__body .glass-textarea {
+  background: rgba(255, 253, 248, 0.42);
+  border-color: rgba(140, 116, 84, 0.18);
+  color: var(--dojo3-ink);
+}
+.dojo3-panel__body .text-ui,
+.dojo3-panel__body .text-primary {
+  color: var(--dojo3-ink);
+}
+.dojo3-panel__body .text-secondary,
+.dojo3-panel__body .text-ui\/55,
+.dojo3-panel__body .text-ui\/70 {
+  color: var(--dojo3-ink-2);
+}
+.dojo3-panel__body .text-tertiary,
+.dojo3-panel__body .text-ui\/25,
+.dojo3-panel__body .text-ui\/40 {
+  color: var(--dojo3-ink-4);
+}
+
+.dojo3-composer-scrim {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  height: 150px;
+  /* Kept light: a heavy cream wash here sits BEHIND the translucent composer,
+     so the card's backdrop-filter would just blur opaque cream (reading as a
+     solid panel). A gentle fade lets the chat read through the glass. */
+  background: linear-gradient(to bottom,
+    rgba(238, 230, 216, 0) 0%,
+    rgba(237, 228, 213, 0.22) 58%,
+    rgba(233, 223, 206, 0.42) 100%);
+  pointer-events: none;
+}
+/* ============================================================
+   DOJO3 COMPOSER — bespoke glass pill flanked by two orbit
+   lenses. Ported from the v3 prototype, scoped under
+   .dojo3-stage and remapped onto the --dojo3-* design tokens.
+   The .composer positions itself absolutely within the stage.
+   ============================================================ */
+/* The composer is a glass CARD: a message area on top, a control bar at the
+   bottom (presence on the left; attach / voice / send-or-stop on the right),
+   modelled after a chat composer and remapped onto the dojo3 tokens. */
+.dojo3-stage .composer {
+  position: absolute;
+  bottom: 22px;
+  z-index: 4;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(92%, 720px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid transparent;
+  border-radius: 24px;
+  /* deliberately translucent so the blurred chat reads through the card and it
+     reads as a "focused" pane of the conversation rather than an opaque panel.
+     Low fill alpha + a moderate (not heavy) blur lets the conversation behind
+     stay visible through the frosted glass. */
+  /* Same glass treatment as the orb menu bar (.dojo3-orb-fan): a warm cream
+     fill at moderate opacity that keeps the cast champagne instead of letting
+     the backdrop's cooler tones bleed through as a rainbow. */
+  background:
+    linear-gradient(180deg, rgba(255, 253, 249, 0.62), rgba(251, 243, 229, 0.42)) padding-box,
+    var(--dojo3-edge-soft) border-box;
+  backdrop-filter: blur(16px) saturate(1.25);
+  -webkit-backdrop-filter: blur(16px) saturate(1.25);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 22px 46px -20px rgba(108, 80, 42, 0.4),
+    0 2px 6px -2px rgba(108, 80, 42, 0.14);
+  transition: box-shadow .3s ease, background .3s ease;
+}
+.dojo3-stage .composer:focus-within {
+  background:
+    linear-gradient(180deg, rgba(255, 254, 250, 0.72), rgba(252, 246, 234, 0.52)) padding-box,
+    var(--dojo3-edge-lit) border-box;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    inset 0 -16px 30px -20px rgba(222, 172, 100, 0.42),
+    0 22px 46px -20px rgba(108, 80, 42, 0.48),
+    0 0 0 1px rgba(246, 220, 168, 0.3),
+    0 0 38px -10px rgba(243, 221, 180, 0.55);
+}
+
+/* message area: cross-fading text / file (drop-zone) layers in one grid cell */
+.dojo3-stage .composer__body {
+  position: relative;
+  display: grid;
+  align-items: stretch;
+  min-height: 38px;
+  overflow: hidden;
+  border-radius: 24px 24px 0 0;
+}
+
+/* bottom control bar */
+.dojo3-stage .composer__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 11px 5px;
+}
+.dojo3-stage .composer__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* presence toggle (bottom-left): in the dojo vs out / iMessage */
+.dojo3-stage .composer__presence {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 13px 0 11px;
+  border-radius: 999px;
+  border: 0;
+  background: transparent;
+  color: var(--dojo3-ink-2);
+  font: 500 11.5px/1 var(--dojo3-font-ui);
+  letter-spacing: .02em;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .2s ease, color .2s ease;
+}
+.dojo3-stage .composer__presence:hover { background: rgba(250, 240, 222, 0.5); color: var(--dojo3-ink-1); }
+.dojo3-stage .composer__presence:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
+.dojo3-stage .composer__presence-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex: none;
+  background: radial-gradient(circle at 35% 30%, #b6e3c0, #4e9e7a);
+  box-shadow: 0 0 8px rgba(78, 158, 122, 0.55);
+  transition: background .3s ease, box-shadow .3s ease;
+}
+.dojo3-stage .composer__presence.is-out .composer__presence-dot {
+  background: radial-gradient(circle at 35% 30%, #d9c2a2, #9a7a52);
+  box-shadow: 0 0 7px rgba(154, 122, 82, 0.45);
+}
+
+/* action buttons (attach / voice / send / stop) */
+.dojo3-stage .composer__btn {
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  border: 1px solid transparent;
+  display: grid; place-items: center;
+  color: var(--dojo3-ink-2);
+  background: transparent;
+  cursor: pointer;
+  transition: background .2s ease, color .2s ease, box-shadow .2s ease, transform .15s ease;
+}
+.dojo3-stage .composer__btn:hover { background: rgba(250, 240, 222, 0.6); color: var(--dojo3-ink-1); }
+.dojo3-stage .composer__btn:active { transform: scale(0.94); }
+.dojo3-stage .composer__btn:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
+.dojo3-stage .composer__btn svg { width: 19px; height: 19px; display: none; }
+.dojo3-stage .composer__btn .ic--clip,
+.dojo3-stage .composer__btn .ic--mic { display: block; }
+.dojo3-stage .composer[data-mode="file"] #attachBtn .ic--clip { display: none; }
+.dojo3-stage .composer[data-mode="file"] #attachBtn .ic--x { display: block; }
+.dojo3-stage #voiceBtn.is-muted .ic--mic { display: none; }
+.dojo3-stage #voiceBtn.is-muted .ic--mic-off { display: block; }
+.dojo3-stage .composer__btn--send svg,
+.dojo3-stage .composer__btn--stop svg { display: block; }
+
+/* live voice (mic) — lit champagne while a session is running */
+.dojo3-stage #voiceBtn.is-live {
+  color: #fffaf0;
+  background:
+    linear-gradient(180deg, #f9e2b2, #e0a958) padding-box,
+    linear-gradient(135deg, rgba(255, 238, 204, 0.95), rgba(212, 148, 68, 0.95)) border-box;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 6px 14px -6px rgba(160, 110, 44, 0.5);
+}
+.dojo3-stage #voiceBtn.is-muted { color: #a8674f; }
+
+/* SEND — champagne filled when there's something to send, faded when empty */
+.dojo3-stage .composer__btn--send {
+  color: #4a3a26;
+  background:
+    linear-gradient(180deg, #f9e2b2, #e0a958) padding-box,
+    linear-gradient(135deg, rgba(255, 238, 204, 0.95), rgba(212, 148, 68, 0.95)) border-box;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 6px 14px -6px rgba(160, 110, 44, 0.5);
+}
+.dojo3-stage .composer__btn--send:hover {
+  color: #3d3020;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 9px 18px -6px rgba(160, 110, 44, 0.6), 0 0 18px -4px rgba(238, 188, 110, 0.6);
+}
+.dojo3-stage .composer__btn--send:disabled {
+  color: var(--dojo3-ink-4);
+  background: transparent;
+  box-shadow: none;
+  cursor: default;
+}
+.dojo3-stage .composer__btn--send:disabled:hover { background: transparent; color: var(--dojo3-ink-4); }
+
+/* STOP — coral filled while the agent is working */
+.dojo3-stage .composer__btn--stop {
+  color: #fff;
+  background:
+    linear-gradient(180deg, #e2876d, #b94f37) padding-box,
+    linear-gradient(135deg, rgba(240, 180, 160, 0.9), rgba(176, 70, 52, 0.95)) border-box;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 6px 14px -6px rgba(150, 60, 44, 0.5);
+}
+.dojo3-stage .composer__btn--stop:hover {
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 9px 18px -6px rgba(150, 60, 44, 0.6);
+}
+
+/* layered mode content, cross-fading in one grid cell */
+.dojo3-stage .composer__layer {
+  grid-area: 1 / 1;
+  display: flex;
+  align-items: center;
+  /* top-padded so the text sits near the top of the card, above the bar */
+  padding: 11px 18px 3px;
+  opacity: 0;
+  transform: translateY(4px) scale(0.99);
+  pointer-events: none;
+  transition: opacity .28s ease, transform .28s ease;
+}
+.dojo3-stage .composer[data-mode="text"] .composer__layer--text,
+.dojo3-stage .composer[data-mode="file"] .composer__layer--file {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+/* Attached-file thumbnails shown inline in the text composer (tiny preview /
+   doc icon, removable) so you can see what's staged while you type a message. */
+.dojo3-stage .composer__thumbs {
+  display: flex; align-items: center; gap: 7px;
+  margin-right: 10px; flex-shrink: 0;
+  max-width: 56%; overflow-x: auto; overflow-y: hidden;
+  padding: 3px 2px;
+  scrollbar-width: none;
+}
+.dojo3-stage .composer__thumbs::-webkit-scrollbar { display: none; }
+.dojo3-stage .composer__thumb {
+  position: relative; width: 34px; height: 34px; border-radius: 9px;
+  flex-shrink: 0; overflow: hidden;
+  background: rgba(255, 253, 248, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(152, 126, 92, 0.28), 0 2px 6px -2px rgba(118, 92, 54, 0.25);
+}
+.dojo3-stage .composer__thumb img {
+  width: 100%; height: 100%; object-fit: cover; border-radius: 9px; display: block;
+}
+.dojo3-stage .composer__thumb-doc {
+  display: grid; place-items: center; width: 100%; height: 100%;
+  position: relative; color: var(--dojo3-ink-3);
+}
+.dojo3-stage .composer__thumb-doc svg { width: 16px; height: 16px; margin-top: -3px; }
+.dojo3-stage .composer__thumb-ext {
+  position: absolute; bottom: 3px; left: 0; right: 0; text-align: center;
+  font: 700 6.5px/1 var(--dojo3-font-mono); letter-spacing: .03em;
+  color: var(--dojo3-amber-deep);
+}
+.dojo3-stage .composer__thumb-x {
+  position: absolute; top: 2px; right: 2px;
+  width: 14px; height: 14px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: rgba(40, 30, 18, 0.66); color: #fff;
+  font-size: 11px; line-height: 1; cursor: pointer; border: 0;
+  box-shadow: 0 1px 3px rgba(60, 46, 30, 0.45);
+  opacity: .7; transition: opacity .15s ease, background .15s ease;
+}
+.dojo3-stage .composer__thumb:hover .composer__thumb-x { opacity: 1; background: rgba(40, 30, 18, 0.85); }
+
+.dojo3-stage .composer__input {
+  flex: 1 1 auto; min-width: 0; width: auto;
+  align-self: center;
+  display: block;
+  /* word-wrapping, auto-growing message box: a textarea sized by JS to fit its
+     text (1 line at rest, up to 2 lines mobile / 4 desktop, then it scrolls).
+     Zero the native textarea chrome so iOS Safari does not add intrinsic
+     padding that would inflate the empty box past a single line. */
+  -webkit-appearance: none;
+  appearance: none;
+  box-sizing: border-box;
+  resize: none;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  height: 1.4em;
+  border: 0; outline: none; background: transparent;
+  font: 400 15px var(--dojo3-font-body);
+  line-height: 1.4;
+  letter-spacing: .005em;
+  color: var(--dojo3-ink);
+  padding: 0;
+  caret-color: var(--dojo3-champagne);
+}
+.dojo3-stage .composer__input::-webkit-scrollbar { display: none; }
+/* On desktop the box starts a line taller (2 lines of room at rest). min-height
+   clamps the rendered height even though auto-grow sets an inline height, so an
+   empty box still shows two lines of space; it grows from there up to 8 lines. */
+@media (min-width: 769px) {
+  .dojo3-stage .composer__input { min-height: 2.8em; }
+}
+/* iOS floats an EMPTY input's caret to the top of the box (above the centered
+   placeholder) and CSS can't reliably re-seat it. So hide the native caret
+   while the field is empty and render our own centered one (.composer__caret,
+   below); once the user types, :placeholder-shown is false and the native
+   caret — which already sits correctly with the text — returns. */
+.dojo3-stage .composer__input:placeholder-shown { caret-color: transparent; }
+.dojo3-stage .composer__caret {
+  flex: 0 0 auto;
+  /* sit on the FIRST line (top), not the layer's vertical centre — otherwise a
+     taller (multi-line) box drops the caret onto the second line, away from the
+     placeholder/first character */
+  align-self: flex-start;
+  margin-top: 0.13em;
+  width: 1.6px;
+  height: 1.15em;
+  border-radius: 1px;
+  background: var(--dojo3-champagne, #e9c98a);
+  animation: dojo3-caret-blink 1.05s steps(1, end) infinite;
+}
+@keyframes dojo3-caret-blink { 0%, 49.9% { opacity: 1; } 50%, 100% { opacity: 0; } }
+.dojo3-stage .composer__input::placeholder {
+  color: var(--dojo3-ink-4);
+  font-family: var(--dojo3-font-ui);
+  font-size: 13.5px;
+  letter-spacing: .05em;
+}
+
+/* file layer */
+.dojo3-stage .composer__layer--file {
+  flex-direction: column; align-items: stretch;
+  justify-content: center; gap: 7px; padding: 6px 16px;
+}
+.dojo3-stage .composer__drop {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  min-height: 26px;
+  border-radius: 13px;
+  color: var(--dojo3-ink-3);
+  font: 500 12.5px/1 var(--dojo3-font-ui);
+  letter-spacing: .05em;
+  cursor: pointer;
+  background: rgba(255, 252, 246, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(152, 126, 92, 0.26);
+  transition: box-shadow .25s ease, color .25s ease, background .25s ease;
+  padding: 5px 16px;
+}
+.dojo3-stage .composer__drop:hover,
+.dojo3-stage .composer__drop.is-over {
+  color: #5e4d36;
+  background: rgba(250, 233, 202, 0.40);
+  box-shadow:
+    inset 0 0 0 1px rgba(216, 170, 100, 0.60),
+    inset 0 0 26px rgba(246, 224, 180, 0.50),
+    0 0 18px -6px rgba(238, 196, 120, 0.50);
+}
+.dojo3-stage .composer__drop svg { width: 15px; height: 15px; }
+
+.dojo3-stage .composer__chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.dojo3-stage .composer__chips:empty { display: none; }
+.dojo3-stage .chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 5px 7px 5px 11px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(180deg, rgba(255, 253, 248, 0.85), rgba(252, 245, 233, 0.62)) padding-box,
+    var(--dojo3-edge-soft) border-box;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 2px 8px -2px rgba(118, 92, 54, 0.18);
+  font: 500 11.5px/1 var(--dojo3-font-mono);
+  letter-spacing: .01em;
+  color: #564a39;
+}
+.dojo3-stage .chip svg { width: 13px; height: 13px; opacity: .65; }
+.dojo3-stage .chip__size { color: var(--dojo3-ink-4); font-weight: 400; }
+.dojo3-stage .chip__x {
+  appearance: none; border: 0; cursor: pointer;
+  width: 18px; height: 18px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: rgba(150, 126, 94, 0.14);
+  color: #6b5a42; font-size: 11px; line-height: 1;
+  transition: background .2s ease;
+}
+.dojo3-stage .chip__x:hover { background: rgba(150, 126, 94, 0.28); }
+
+/* When attach is active (file mode), the paperclip button lights champagne. */
+.dojo3-stage .composer[data-mode="file"] #attachBtn {
+  color: #fffaf0;
+  background:
+    linear-gradient(180deg, #f9e2b2, #e0a958) padding-box,
+    linear-gradient(135deg, rgba(255, 238, 204, 0.95), rgba(212, 148, 68, 0.95)) border-box;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 6px 14px -6px rgba(160, 110, 44, 0.5);
+}
+.dojo3-stage #voiceBtn.is-live { animation: dojo3-voice-pulse 2.2s ease-in-out infinite; }
+
+/* ------------------------------------------------------------
+   VOICE SESSION CAPSULE: docks beneath the orb.
+   ------------------------------------------------------------ */
+.dojo3-stage .voice-capsule {
+  position: absolute;
+  top: calc(var(--dojo3-orb-top) + var(--dojo3-orb-size) + 20px);
+  left: 50%;
+  transform: translateX(-50%) translateY(-8px);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 12px 9px 18px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(180deg, var(--dojo3-glass-hi), var(--dojo3-glass-lo)) padding-box,
+    var(--dojo3-edge) border-box;
+  backdrop-filter: blur(24px) saturate(1.25);
+  -webkit-backdrop-filter: blur(24px) saturate(1.25);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    inset 0 -10px 16px -12px rgba(222, 172, 100, 0.35),
+    0 18px 38px -16px rgba(108, 80, 42, 0.42);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .3s ease, transform .3s ease;
+  z-index: 4;
+}
+.dojo3-stage .voice-capsule.is-open {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  pointer-events: auto;
+}
+
+.dojo3-stage .voice-capsule__timer {
+  font: 500 12px/1 var(--dojo3-font-mono);
+  letter-spacing: .04em;
+  color: #8a7659;
+  min-width: 36px;
+  font-variant-numeric: tabular-nums;
+}
+.dojo3-stage .voice-capsule__wave {
+  display: flex; align-items: center; gap: 2.5px;
+  height: 22px; width: 110px;
+  justify-content: center;
+}
+.dojo3-stage .voice-capsule__wave span {
+  width: 2.5px; height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #efc684, #cf9a4e);
+  box-shadow: 0 0 4px rgba(238, 188, 110, 0.45);
+  transform: scaleY(0.10);
+  transform-origin: center;
+  will-change: transform;
+  transition: background .3s ease, box-shadow .3s ease;
+}
+.dojo3-stage .voice-capsule.is-muted .voice-capsule__wave span {
+  background: rgba(150, 142, 130, 0.55);
+  box-shadow: none;
+}
+.dojo3-stage .voice-capsule__end {
+  appearance: none; border: 0; cursor: pointer;
+  width: 30px; height: 30px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: rgba(150, 126, 94, 0.12);
+  color: #6b5a42;
+  transition: background .2s ease, color .2s ease, box-shadow .2s ease;
+}
+.dojo3-stage .voice-capsule__end:hover {
+  background: rgba(178, 120, 92, 0.26);
+  color: #7c4232;
+  box-shadow: 0 0 12px -2px rgba(178, 120, 92, 0.40);
+}
+.dojo3-stage .voice-capsule__end:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
+.dojo3-stage .voice-capsule__end svg { width: 13px; height: 13px; }
+
+@keyframes dojo3-voice-pulse {
+  0%, 100% { box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.65),
+      inset 0 -7px 12px -4px rgba(146, 96, 34, 0.40),
+      0 10px 26px -8px rgba(160, 110, 44, 0.45),
+      0 0 14px rgba(238, 188, 110, 0.45); }
+  50% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.65),
+      inset 0 -7px 12px -4px rgba(146, 96, 34, 0.40),
+      0 10px 26px -8px rgba(160, 110, 44, 0.45),
+      0 0 30px rgba(238, 188, 110, 0.80); }
+}
+
+/* the light mote that carries a sent message up to the orb */
+.dojo3-stage .mote {
+  position: absolute;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(circle, #fffdf6 0%, #f5d79a 45%, rgba(245,215,154,0) 75%);
+  box-shadow: 0 0 12px 4px rgba(243, 221, 180, 0.75);
+  z-index: 5;
+}
+
+/* ── Notification cards: tiered glass cards that drop in under the orb ── */
+.dojo3-stage .dojo3-notes {
+  position: absolute;
+  top: calc(var(--dojo3-orb-top) + var(--dojo3-orb-size) + 16px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(92%, 440px);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  z-index: 8;
+  pointer-events: none;
+}
+.dojo3-stage .dojo3-note {
+  --note: #c98a2e;
+  pointer-events: auto;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 8px 10px 16px;
+  border-radius: 19px;
+  border: 1px solid transparent;
+  /* the airy champagne glass of the new aesthetic (composer pill / orbit), not
+     an opaque modal panel */
+  background:
+    linear-gradient(180deg, var(--dojo3-glass-hi), var(--dojo3-glass-lo)) padding-box,
+    var(--dojo3-edge-soft) border-box;
+  color: var(--dojo3-ink);
+  backdrop-filter: blur(26px) saturate(1.25);
+  -webkit-backdrop-filter: blur(26px) saturate(1.25);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    inset 0 -12px 22px -16px rgba(222, 172, 100, 0.32),
+    0 16px 34px -22px rgba(108, 80, 42, 0.42),
+    0 2px 6px -3px rgba(108, 80, 42, 0.16);
+  animation: dojo3-note-in 0.34s cubic-bezier(.3, 1.2, .4, 1) both;
+}
+.dojo3-stage .dojo3-note--info { --note: #4e9e7a; }
+.dojo3-stage .dojo3-note--warning { --note: #c98a2e; }
+.dojo3-stage .dojo3-note--error { --note: #c0533a; }
+/* the held red error also gives its card a soft red edge-glow so it reads as
+   the front-of-mind blocking item */
+.dojo3-stage .dojo3-note--error {
+  border-radius: 19px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    inset 0 -12px 22px -16px rgba(192, 83, 58, 0.34),
+    0 16px 36px -20px rgba(120, 40, 24, 0.45),
+    0 0 18px -8px color-mix(in srgb, var(--note) 55%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--note) 30%, transparent);
+}
+.dojo3-stage .dojo3-note__dot {
+  flex: 0 0 auto;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--note);
+  box-shadow: 0 0 8px -1px color-mix(in srgb, var(--note) 70%, transparent);
+}
+.dojo3-stage .dojo3-note__msg { flex: 1 1 auto; min-width: 0; font: 500 12.5px/1.45 var(--dojo3-font-body); color: var(--dojo3-ink-2); word-break: break-word; }
+.dojo3-stage .dojo3-note__x { flex: 0 0 auto; width: 28px; height: 28px; border: 0; background: transparent; color: var(--dojo3-ink-4); cursor: pointer; border-radius: 50%; display: grid; place-items: center; transition: background .15s ease, color .15s ease; }
+.dojo3-stage .dojo3-note__x:hover { background: rgba(140, 116, 84, 0.12); color: var(--dojo3-ink-2); }
+.dojo3-stage .dojo3-note__x svg { width: 13px; height: 13px; }
+@keyframes dojo3-note-in { from { opacity: 0; transform: translateY(-10px) scale(.97); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .dojo3-stage .dojo3-note { animation: none; }
+  .dojo3-stage .composer,
+  .dojo3-stage .composer__layer,
+  .dojo3-stage .composer__btn { transition: none; }
+  .dojo3-stage #voiceBtn.is-live { animation: none; }
+}
+
+@media (max-width: 768px) {
+  .dojo3-stage { --dojo3-orb-size: 92px; }
+  .dojo3-wordmark { left: 18px; }
+  .dojo3-chat {
+    width: min(96vw, 760px);
+  }
+  /* The scroller fills the full height; its bottom padding (not an extra
+     .dojo3-chat padding on top of it) is the ONLY bottom reservation, sized so
+     the newest message rests just above the composer instead of floating high. */
+  .dojo3-stage .dojo3-chat-scroll {
+    padding-bottom: 110px;
+  }
+  /* The composer card spans nearly the full width on a phone. */
+  .dojo3-stage .composer {
+    bottom: 16px;
+    width: calc(100vw - 18px);
+  }
+  .dojo3-panel {
+    top: calc(var(--dojo3-orb-top) + var(--dojo3-orb-size) + 40px);
+    bottom: 96px;
+    width: calc(100vw - 18px);
+    border-radius: 18px;
+    /* The box top already clears the orb, so the big orb-clearing padding-top is
+       redundant here — it was double-offsetting content to ~halfway down the
+       page. Just a little internal breathing room. */
+    padding-top: 22px;
+    padding-bottom: 44px;
+  }
+  .dojo3-panel__head {
+    padding: 16px 18px 12px;
+  }
+  /* On a phone the single horizontal rail can't fit nine tabs, and trying to
+     horizontal-scroll it inside a clip-path collapses the row on iOS Safari
+     (every tab piles up centered behind the orb). So on mobile the rail WRAPS
+     into centered rows instead: no scroll container, every tab visible, still
+     the same glass tab-pill look. Rounded rect (not a 999px bar) since it is
+     now multiple rows. */
+  .dojo3-orb-fan {
+    top: calc(var(--dojo3-orb-top) + var(--dojo3-orb-size) + 16px);
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+    width: min(320px, 92vw);
+    padding: 8px;
+    border-radius: 24px;
+    overflow: visible;
+    /* the clip-path's `round` (not border-radius) sets the visible corners
+       during the reveal; match it to the composer's 24px so the panel isn't a
+       stadium */
+    clip-path: inset(0 49.5% 0 49.5% round 24px);
+  }
+  .dojo3-orb-fan[aria-hidden="false"] {
+    clip-path: inset(0 0 0 0 round 24px);
+  }
+  /* each tab fills its column and centres its label, so the three rows line
+     up into a tidy, symmetric 3x3 grid (no ragged pill widths) */
+  .dojo3-orb-fan .dojo3-fan-btn {
+    width: 100%;
+    padding: 8px 4px;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-align: center;
+  }
+  /* the menu is three rows on a phone, so the fan-open blur/scrim band has to
+     reach further down to clear the chat behind all of it */
+  .dojo3-haze--top::before {
+    height: calc(var(--dojo3-orb-top) + var(--dojo3-orb-size) + 270px);
+  }
+  /* keep the page/chat-function divider on mobile too (between Settings and
+     Wordy on the last row); no left margin so the grid columns stay aligned,
+     the hairline sits in the column gap */
+  .dojo3-fan-btn--sep { margin-left: 0; }
+  .dojo3-fan-btn--sep::before { left: -2px; height: 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dojo3-orb,
+  .dojo3-fan-btn,
+  .dojo3-wordmark__state {
+    transition: none;
+  }
+  .dojo3-orb__pulse,
+  .dojo3-fan-btn--reset.is-confirm {
+    animation: none;
+  }
+}
+
 /* Safe area padding for notched devices (iPhone X+, Dynamic Island) */
 @supports (padding-top: env(safe-area-inset-top)) {
   .safe-area-top { padding-top: env(safe-area-inset-top); }
@@ -1024,4 +2662,602 @@
   .thinking-dot:nth-child(2) { animation-delay: 0.5s; }
   .thinking-dot:nth-child(3) { animation-delay: 1.0s; }
   @keyframes thinking-fade { to { opacity: 0.3; } }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   DOJO 3 PANEL PRIMITIVES
+   Ported verbatim from the prototype (dojo-orb-v3.html, CSS 1124-1771),
+   scoped under .dojo3-stage and remapped onto the --dojo3-* tokens.
+   These are the shared card/stat/group/kanban vocabulary every panel
+   page is rebuilt from. Bare class names (.tile, .btn, .pill, ...) are
+   safe here because they only apply inside the orb stage.
+   ════════════════════════════════════════════════════════════════ */
+
+/* groups */
+.dojo3-stage .group + .group { margin-top: 30px; }
+.dojo3-stage .group__head {
+  position: relative;
+  padding-left: 17px;
+  display: flex; align-items: flex-start; gap: 14px;
+}
+.dojo3-stage .group__head::before {
+  content: ""; position: absolute; left: 1px; top: 3px; bottom: 3px;
+  width: 2px; border-radius: 2px;
+  background: linear-gradient(180deg, var(--dojo3-champagne-hot), rgba(217,165,92,.55) 45%, rgba(217,165,92,0) 100%);
+  box-shadow: 0 0 8px rgba(238,188,110,.55);
+}
+.dojo3-stage .group__title { font: 600 15px/1.2 var(--dojo3-font-ui); color: var(--dojo3-ink); }
+.dojo3-stage .group__desc { margin-top: 5px; font: 400 12px/1.5 var(--dojo3-font-body); color: var(--dojo3-ink-3); }
+.dojo3-stage .group__note { margin-top: 4px; font: 500 10px/1.5 var(--dojo3-font-mono); letter-spacing: .04em; color: var(--dojo3-amber-ink); }
+.dojo3-stage .group__side {
+  margin-left: auto; flex-shrink: 0; display: flex; gap: 14px; align-items: center; padding-top: 3px;
+  font: 500 10px/1 var(--dojo3-font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--dojo3-ink-4);
+}
+.dojo3-stage .group__action {
+  appearance: none; border: 0; background: transparent; cursor: pointer;
+  font: inherit; letter-spacing: inherit; text-transform: inherit; color: var(--dojo3-ink-3);
+  padding: 2px 0; transition: color .2s ease;
+}
+.dojo3-stage .group__action:hover { color: #5c4b34; }
+.dojo3-stage .group__action:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 3px; border-radius: 4px; }
+
+/* cards grid + agent card */
+.dojo3-stage .cards {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(238px, 1fr)); gap: 14px; margin-top: 16px;
+}
+.dojo3-stage .agent-card {
+  border-radius: 18px; border: 1px solid transparent;
+  background: linear-gradient(170deg, rgba(255,253,249,.66), rgba(251,243,229,.40)) padding-box, var(--dojo3-edge-soft) border-box;
+  backdrop-filter: blur(16px) saturate(1.2); -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.6), inset 0 -12px 20px -14px rgba(226,178,106,.45), 0 16px 34px -18px rgba(108,80,42,.38);
+  padding: 14px 16px 13px; transition: transform .25s ease, box-shadow .25s ease;
+}
+.dojo3-stage .dojo3-panel .agent-card { animation: msgIn .45s cubic-bezier(.22,.9,.26,1) backwards; animation-delay: var(--ci); }
+.dojo3-stage .agent-card:hover {
+  transform: translateY(-2px);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7), inset 0 -12px 20px -14px rgba(226,178,106,.50), 0 22px 40px -18px rgba(108,80,42,.45), 0 0 24px -8px rgba(243,221,180,.50);
+}
+.dojo3-stage .agent-card__head { display: flex; align-items: center; gap: 10px; margin-bottom: 13px; }
+.dojo3-stage .agent-card__avatar {
+  width: 38px; height: 38px; border-radius: 12px; flex-shrink: 0; display: grid; place-items: center;
+  font: 600 15px/1 var(--dojo3-font-ui); color: hsl(var(--h), 42%, 36%);
+  background: radial-gradient(circle at 34% 28%, hsla(var(--h),70%,86%,.85), hsla(var(--h),58%,70%,.30));
+  box-shadow: inset 0 0 0 1px hsla(var(--h),48%,50%,.30), inset 0 1px 0 rgba(255,255,255,.6);
+}
+/* Editable avatar (non-primary): the box becomes the agent's colour picker. */
+.dojo3-stage .agent-card__avatar-wrap { position: relative; flex-shrink: 0; }
+.dojo3-stage .agent-card__avatar--btn { cursor: pointer; padding: 0; transition: transform .14s ease, box-shadow .18s ease; }
+.dojo3-stage .agent-card__avatar--btn:hover { transform: translateY(-1px); box-shadow: inset 0 0 0 1px hsla(var(--h),48%,50%,.30), inset 0 1px 0 rgba(255,255,255,.6), 0 0 0 3px hsla(var(--h),60%,60%,.22); }
+.dojo3-stage .agent-card__avatar--btn:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
+.dojo3-stage .agent-color-backdrop { position: fixed; inset: 0; z-index: 60; }
+.dojo3-stage .agent-color-pop {
+  position: absolute; top: 46px; left: 0; z-index: 61;
+  display: grid; grid-template-columns: repeat(5, 26px); gap: 9px;
+  padding: 12px; border-radius: 16px;
+  background: rgba(252, 247, 238, 0.92);
+  backdrop-filter: blur(18px) saturate(1.3);
+  box-shadow: 0 18px 44px -16px rgba(80, 60, 30, 0.4), inset 0 0 0 1px rgba(150, 126, 94, 0.18);
+  animation: dojo3-pop-in .14s ease;
+}
+@keyframes dojo3-pop-in { from { opacity: 0; transform: translateY(-4px) scale(.97); } to { opacity: 1; transform: none; } }
+.dojo3-stage .agent-color-swatch {
+  width: 26px; height: 26px; border-radius: 8px; cursor: pointer; padding: 0;
+  background: radial-gradient(circle at 34% 28%, hsla(var(--h),70%,86%,.95), hsla(var(--h),58%,68%,.55));
+  box-shadow: inset 0 0 0 1px hsla(var(--h),48%,50%,.35), inset 0 1px 0 rgba(255,255,255,.6);
+  transition: transform .12s ease;
+}
+.dojo3-stage .agent-color-swatch:hover { transform: scale(1.14); }
+.dojo3-stage .agent-color-swatch.is-active { box-shadow: inset 0 0 0 1px hsla(var(--h),48%,50%,.35), 0 0 0 2px var(--dojo3-ink-3); }
+.dojo3-stage .agent-card__id { min-width: 0; }
+.dojo3-stage .agent-card__name { display: flex; align-items: center; gap: 7px; font: 600 14px/1.2 var(--dojo3-font-ui); color: var(--dojo3-ink); white-space: nowrap; }
+.dojo3-stage .badge { font: 500 8.5px/1 var(--dojo3-font-mono); letter-spacing: .14em; text-transform: uppercase; padding: 3px 7px; border-radius: 999px; }
+.dojo3-stage .badge--sensei { color: var(--dojo3-amber-deep); background: rgba(222,172,92,.18); box-shadow: inset 0 0 0 1px rgba(217,165,92,.40); }
+.dojo3-stage .badge--ronin  { color: var(--dojo3-indigo); background: rgba(140,152,222,.14); box-shadow: inset 0 0 0 1px rgba(140,152,222,.38); }
+.dojo3-stage .agent-card__role { margin-top: 4px; font: 400 11px/1.3 var(--dojo3-font-body); color: var(--dojo3-ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dojo3-stage .status { margin-left: auto; flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; font: 500 9.5px/1 var(--dojo3-font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--dojo3-green-ink); }
+.dojo3-stage .status i { width: 5px; height: 5px; border-radius: 50%; background: var(--dojo3-green); box-shadow: 0 0 7px rgba(95,192,111,.85); }
+.dojo3-stage .agent-card__stats { display: flex; flex-direction: column; gap: 8px; }
+.dojo3-stage .agent-card__stats > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.dojo3-stage .agent-card__stats dt { font: 400 11.5px/1 var(--dojo3-font-body); color: var(--dojo3-ink-3); }
+.dojo3-stage .agent-card__stats dd { font: 500 11.5px/1 var(--dojo3-font-mono); color: var(--dojo3-ink-2); font-variant-numeric: tabular-nums; max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dojo3-stage .agent-card__stats dd.acc { color: var(--dojo3-amber-ink); }
+/* details/settings gear: swaps in for the status pill on card hover so the
+   card-click stays "chat with this agent" while config remains reachable */
+.dojo3-stage .agent-card__cog {
+  margin-left: auto; flex-shrink: 0;
+  width: 26px; height: 26px; display: none; place-items: center;
+  border: 0; border-radius: 8px; background: transparent;
+  color: var(--dojo3-ink-3); cursor: pointer;
+  transition: color .2s ease, background .2s ease;
+}
+.dojo3-stage .agent-card:hover .status { display: none; }
+.dojo3-stage .agent-card:hover .agent-card__cog { display: grid; }
+.dojo3-stage .agent-card__cog:hover { color: var(--dojo3-ink); background: rgba(255, 253, 248, 0.55); }
+.dojo3-stage .agent-card__cog:focus-visible { display: grid; outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
+.dojo3-stage .agent-card--ghost {
+  appearance: none; display: grid; place-items: center; min-height: 150px;
+  background: rgba(255,253,248,.22); box-shadow: inset 0 0 0 1px rgba(152,126,92,.22);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  font: 500 10.5px/1 var(--dojo3-font-mono); letter-spacing: .16em; text-transform: uppercase; color: var(--dojo3-ink-4);
+  cursor: pointer; transition: color .2s ease, box-shadow .2s ease, background .2s ease;
+}
+.dojo3-stage .agent-card--ghost:hover { color: var(--dojo3-ink-3); background: rgba(250,233,202,.28); box-shadow: inset 0 0 0 1px rgba(216,170,100,.45); transform: none; }
+
+/* stub */
+.dojo3-stage .stub {
+  max-width: 430px; margin: 9vh auto 0; padding: 38px 34px; text-align: center; border-radius: 22px; border: 1px solid transparent;
+  background: linear-gradient(170deg, rgba(255,253,249,.60), rgba(251,243,229,.36)) padding-box, var(--dojo3-edge-soft) border-box;
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.6), 0 18px 38px -18px rgba(108,80,42,.35);
+}
+.dojo3-stage .stub svg { width: 26px; height: 26px; color: #a4824f; margin-bottom: 14px; }
+.dojo3-stage .stub__line { font: 400 12.5px/1.65 var(--dojo3-font-body); color: var(--dojo3-ink-3); }
+
+/* panel chrome: header, buttons, toolbar, tabs, fields */
+.dojo3-stage .phead { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 0 2px 16px; }
+.dojo3-stage .phead__title { font: 600 21px/1 var(--dojo3-font-ui); letter-spacing: .015em; color: var(--dojo3-ink); }
+.dojo3-stage .phead__meta { font: 500 10px/1 var(--dojo3-font-mono); letter-spacing: .16em; text-transform: uppercase; color: var(--dojo3-ink-4); }
+.dojo3-stage .phead__actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.dojo3-stage .btn {
+  appearance: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  height: 34px; padding: 0 16px; border-radius: 999px; font: 500 12px/1 var(--dojo3-font-ui); letter-spacing: .03em; color: #5e4d36;
+  border: 1px solid transparent;
+  background: linear-gradient(180deg, var(--dojo3-glass-hi), var(--dojo3-glass-lo)) padding-box, var(--dojo3-edge) border-box;
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.8), 0 8px 18px -10px rgba(108,80,42,.4);
+  transition: transform .2s ease, box-shadow .2s ease, color .2s ease; white-space: nowrap;
+}
+.dojo3-stage .btn:hover { transform: translateY(-1px); color: #4a3a26; box-shadow: inset 0 1px 0 rgba(255,255,255,.85), 0 12px 24px -10px rgba(108,80,42,.45), 0 0 16px -4px rgba(243,221,180,.5); }
+.dojo3-stage .btn:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
+.dojo3-stage .btn--primary {
+  color: #fffaf0;
+  background: linear-gradient(180deg, #f9e2b2, #e0a958) padding-box, linear-gradient(135deg, rgba(255,238,204,.95), rgba(212,148,68,.95)) border-box;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.65), inset 0 -6px 10px -4px rgba(146,96,34,.35), 0 10px 22px -10px rgba(160,110,44,.5);
+}
+.dojo3-stage .btn--primary:hover { color: #fffaf0; box-shadow: inset 0 1px 0 rgba(255,255,255,.65), inset 0 -6px 10px -4px rgba(146,96,34,.35), 0 14px 26px -10px rgba(160,110,44,.55), 0 0 20px -2px rgba(238,188,110,.6); }
+.dojo3-stage .btn--sm { height: 28px; padding: 0 12px; font-size: 11px; }
+.dojo3-stage .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 2px 18px; }
+.dojo3-stage .toolbar__label { font: 500 9.5px/1 var(--dojo3-font-mono); letter-spacing: .16em; text-transform: uppercase; color: var(--dojo3-ink-4); }
+.dojo3-stage .toolbar__spacer { margin-left: auto; }
+.dojo3-stage .tabs {
+  display: inline-flex; gap: 2px; padding: 3px; border-radius: 999px; border: 1px solid transparent;
+  background: linear-gradient(180deg, rgba(255,253,249,.55), rgba(251,243,229,.35)) padding-box, var(--dojo3-edge-soft) border-box;
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); max-width: 100%; overflow-x: auto; scrollbar-width: none;
+}
+.dojo3-stage .tabs::-webkit-scrollbar { display: none; }
+.dojo3-stage .tab {
+  appearance: none; border: 0; cursor: pointer; white-space: nowrap; padding: 7px 13px; border-radius: 999px;
+  font: 500 10.5px/1 var(--dojo3-font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--dojo3-ink-3); background: transparent;
+  transition: color .2s ease, background .2s ease, box-shadow .2s ease;
+}
+.dojo3-stage .tab:hover { color: #4a3a26; }
+.dojo3-stage .tab.is-active { color: var(--dojo3-amber-deepest); background: rgba(248,226,184,.45); box-shadow: inset 0 0 0 1px rgba(217,165,92,.45), 0 0 14px -4px rgba(243,221,180,.7); }
+.dojo3-stage .tab:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
+.dojo3-stage .field {
+  height: 34px; padding: 0 14px; border-radius: 999px; border: 1px solid transparent;
+  background: linear-gradient(180deg, rgba(255,253,249,.5), rgba(251,243,229,.32)) padding-box, var(--dojo3-edge-soft) border-box;
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  font: 400 12.5px/32px var(--dojo3-font-body); color: var(--dojo3-ink);
+  box-shadow: inset 0 1px 2px rgba(108,80,42,.08); outline: none; min-width: 0;
+}
+.dojo3-stage .field::placeholder { color: var(--dojo3-ink-4); }
+.dojo3-stage .field:focus { box-shadow: inset 0 1px 2px rgba(108,80,42,.08), 0 0 0 1px rgba(246,220,168,.45), 0 0 18px -6px rgba(243,221,180,.6); }
+.dojo3-stage select.field--select {
+  appearance: none; cursor: pointer; padding-right: 32px;
+  background:
+    url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23998060' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 13px center / 10px 6px padding-box,
+    linear-gradient(180deg, rgba(255,253,249,.5), rgba(251,243,229,.32)) padding-box,
+    var(--dojo3-edge-soft) border-box;
+}
+
+/* generic tile */
+.dojo3-stage .tile {
+  border-radius: 18px; border: 1px solid transparent;
+  background: linear-gradient(170deg, rgba(255,253,249,.66), rgba(251,243,229,.40)) padding-box, var(--dojo3-edge-soft) border-box;
+  backdrop-filter: blur(16px) saturate(1.2); -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.6), inset 0 -12px 20px -14px rgba(226,178,106,.40), 0 16px 34px -18px rgba(108,80,42,.35);
+  padding: 16px 18px;
+}
+.dojo3-stage .tile--ok {
+  background: linear-gradient(170deg, rgba(241,250,242,.70), rgba(228,244,231,.44)) padding-box, linear-gradient(135deg, rgba(150,210,160,.5), rgba(255,253,246,.85) 50%, rgba(140,200,170,.42)) border-box;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.6), 0 16px 34px -18px rgba(80,110,60,.3);
+}
+.dojo3-stage .tile--down {
+  background: linear-gradient(170deg, rgba(252,240,236,.72), rgba(248,228,222,.46)) padding-box, linear-gradient(135deg, rgba(224,140,118,.5), rgba(255,250,246,.85) 50%, rgba(218,130,108,.42)) border-box;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.6), 0 16px 34px -18px rgba(130,70,50,.3);
+}
+.dojo3-stage .dojo3-panel .anim { animation: msgIn .45s cubic-bezier(.22,.9,.26,1) backwards; animation-delay: var(--ci, 0ms); }
+
+/* stats */
+.dojo3-stage .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.dojo3-stage .stat__label { font: 500 9px/1 var(--dojo3-font-mono); letter-spacing: .18em; text-transform: uppercase; color: var(--dojo3-ink-4); margin-bottom: 9px; }
+.dojo3-stage .stat__value { font: 600 19px/1.15 var(--dojo3-font-ui); color: var(--dojo3-ink); }
+.dojo3-stage .stat__value.is-ok { color: var(--dojo3-green-ink); }
+.dojo3-stage .stat__sub { margin-top: 6px; font: 500 11px/1 var(--dojo3-font-mono); color: var(--dojo3-ink-3); }
+
+/* bars */
+.dojo3-stage .bar { height: 5px; border-radius: 999px; background: rgba(120,98,72,.16); box-shadow: inset 0 1px 1px rgba(108,80,42,.12); overflow: hidden; }
+.dojo3-stage .bar i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #efc684, #cf9a4e); box-shadow: 0 0 8px rgba(238,188,110,.5); }
+.dojo3-stage .bar i.is-green { background: linear-gradient(90deg, #8fd49c, #4f9e5e); box-shadow: 0 0 8px rgba(95,192,111,.4); }
+.dojo3-stage .bar i.is-blue  { background: linear-gradient(90deg, #9db8e8, #5d7fc4); box-shadow: 0 0 8px rgba(120,150,210,.4); }
+.dojo3-stage .bar i.is-dim   { background: rgba(120,98,72,.45); box-shadow: none; }
+.dojo3-stage .brow { display: grid; grid-template-columns: minmax(86px, 126px) 1fr 52px; gap: 12px; align-items: center; }
+.dojo3-stage .brow + .brow { margin-top: 11px; }
+.dojo3-stage .brow__label { font: 400 11.5px/1.2 var(--dojo3-font-body); color: var(--dojo3-ink-2); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dojo3-stage .brow__val { font: 500 11px/1 var(--dojo3-font-mono); color: var(--dojo3-ink-2); text-align: right; font-variant-numeric: tabular-nums; }
+
+/* pills, badges, tags */
+.dojo3-stage .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; flex-shrink: 0; font: 500 9.5px/1 var(--dojo3-font-mono); letter-spacing: .12em; text-transform: uppercase; }
+.dojo3-stage .pill .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; box-shadow: 0 0 6px currentColor; }
+.dojo3-stage .pill--ok    { color: var(--dojo3-green-ink); background: rgba(95,192,111,.13);  box-shadow: inset 0 0 0 1px rgba(95,192,111,.34); }
+.dojo3-stage .pill--down  { color: var(--dojo3-rust); background: rgba(208,106,84,.13);  box-shadow: inset 0 0 0 1px rgba(208,106,84,.38); }
+.dojo3-stage .pill--draft { color: var(--dojo3-amber-deep); background: rgba(222,172,92,.16);  box-shadow: inset 0 0 0 1px rgba(217,165,92,.40); }
+.dojo3-stage .pill--norm  { color: var(--dojo3-amber-deep); background: rgba(222,172,92,.14);  box-shadow: inset 0 0 0 1px rgba(217,165,92,.34); }
+.dojo3-stage .tbadge { font: 500 8.5px/1 var(--dojo3-font-mono); letter-spacing: .12em; text-transform: uppercase; padding: 4px 8px; border-radius: 999px; flex-shrink: 0; margin-top: 2px; }
+.dojo3-stage .tbadge--fact      { color: var(--dojo3-indigo); background: rgba(140,152,222,.14); box-shadow: inset 0 0 0 1px rgba(140,152,222,.38); }
+.dojo3-stage .tbadge--procedure { color: var(--dojo3-green-ink); background: rgba(95,192,111,.13);  box-shadow: inset 0 0 0 1px rgba(95,192,111,.34); }
+.dojo3-stage .tbadge--event     { color: var(--dojo3-teal); background: rgba(86,188,176,.13);  box-shadow: inset 0 0 0 1px rgba(86,188,176,.34); }
+.dojo3-stage .tagrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.dojo3-stage .tag { font: 500 9.5px/1 var(--dojo3-font-mono); letter-spacing: .04em; color: var(--dojo3-ink-3); padding: 4px 9px; border-radius: 999px; background: rgba(255,252,246,.45); box-shadow: inset 0 0 0 1px rgba(152,126,92,.2); }
+
+/* switch */
+.dojo3-stage .switch { position: relative; width: 38px; height: 22px; border-radius: 999px; cursor: pointer; appearance: none; border: 0; flex-shrink: 0; background: rgba(120,98,72,.22); box-shadow: inset 0 1px 2px rgba(108,80,42,.2); transition: background .25s ease, box-shadow .25s ease; }
+.dojo3-stage .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fffdf8; box-shadow: 0 2px 5px rgba(60,45,25,.3); transition: transform .25s cubic-bezier(.3,1.3,.5,1); }
+.dojo3-stage .switch.is-on { background: linear-gradient(180deg, #f0c577, #d99c4b); box-shadow: inset 0 1px 0 rgba(255,255,255,.4), 0 0 12px -2px rgba(238,188,110,.6); }
+.dojo3-stage .switch.is-on::after { transform: translateX(16px); }
+.dojo3-stage .switch:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
+
+/* key-value rows, links */
+.dojo3-stage .rows { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.dojo3-stage .rows > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.dojo3-stage .rows .k { font: 400 11.5px/1 var(--dojo3-font-body); color: var(--dojo3-ink-3); }
+.dojo3-stage .rows .v { font: 500 11.5px/1 var(--dojo3-font-mono); color: var(--dojo3-ink-2); font-variant-numeric: tabular-nums; max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dojo3-stage .link { color: var(--dojo3-amber-ink); font: 500 11px/1 var(--dojo3-font-mono); letter-spacing: .08em; cursor: pointer; }
+.dojo3-stage .link:hover { color: var(--dojo3-amber-deep); }
+.dojo3-stage .mono-url { font: 500 11.5px/1.4 var(--dojo3-font-mono); color: var(--dojo3-green-ink); letter-spacing: .01em; word-break: break-all; }
+
+/* vault */
+.dojo3-stage .vstats { display: flex; gap: 7px 16px; flex-wrap: wrap; align-items: center; margin: 0 2px 16px; font: 500 10.5px/1.6 var(--dojo3-font-mono); letter-spacing: .05em; color: var(--dojo3-ink-3); }
+.dojo3-stage .vstats b { color: var(--dojo3-amber-deepest); font-weight: 600; }
+.dojo3-stage .vrow { display: flex; gap: 12px; align-items: flex-start; position: relative; padding: 15px 17px; }
+.dojo3-stage .vrow + .vrow { margin-top: 12px; }
+.dojo3-stage .vrow__body { min-width: 0; flex: 1; }
+.dojo3-stage .vrow__text { font: 400 13px/1.55 var(--dojo3-font-body); color: var(--dojo3-ink); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.dojo3-stage .vrow__meta { margin-top: 9px; display: flex; gap: 14px; flex-wrap: wrap; font: 500 10px/1 var(--dojo3-font-mono); letter-spacing: .06em; color: var(--dojo3-ink-4); }
+.dojo3-stage .vrow > .pill { position: absolute; top: 13px; right: 14px; }
+.dojo3-stage .vrow--pinned .vrow__text { padding-right: 58px; }
+
+/* techniques */
+.dojo3-stage .tech__head { display: flex; align-items: flex-start; gap: 10px; }
+.dojo3-stage .tech__title { font: 600 14.5px/1.25 var(--dojo3-font-ui); color: var(--dojo3-ink); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dojo3-stage .tech__desc { margin-top: 7px; font: 400 11.5px/1.5 var(--dojo3-font-body); color: var(--dojo3-ink-3); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.dojo3-stage .tech__meta { margin-top: 12px; display: flex; justify-content: space-between; gap: 10px; font: 500 10.5px/1 var(--dojo3-font-mono); color: var(--dojo3-ink-3); }
+.dojo3-stage .tech__foot { margin-top: 12px; padding-top: 11px; border-top: 1px solid rgba(140,116,84,.14); display: flex; justify-content: space-between; align-items: center; font: 400 11.5px/1 var(--dojo3-font-body); color: var(--dojo3-ink-3); }
+
+/* tracker / kanban */
+.dojo3-stage .hygiene { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 11px 16px; margin: 0 2px 16px; font: 500 10.5px/1 var(--dojo3-font-mono); letter-spacing: .1em; text-transform: uppercase; }
+.dojo3-stage .hygiene__title { color: var(--dojo3-green-deep); display: inline-flex; align-items: center; gap: 8px; }
+.dojo3-stage .hygiene__stats { margin-left: auto; display: flex; gap: 16px; flex-wrap: wrap; letter-spacing: .04em; text-transform: none; color: var(--dojo3-ink-3); }
+.dojo3-stage .hygiene__stats .ok { color: var(--dojo3-green-ink); } .dojo3-stage .hygiene__stats .bad { color: var(--dojo3-rust); } .dojo3-stage .hygiene__stats .warn { color: var(--dojo3-amber-deep); }
+.dojo3-stage .kanban { display: flex; gap: 14px; align-items: flex-start; overflow-x: auto; padding: 2px 2px 12px; scrollbar-width: none; }
+.dojo3-stage .kanban::-webkit-scrollbar { display: none; }
+.dojo3-stage .kcol { flex: 0 0 216px; }
+.dojo3-stage .kcol__head { display: flex; align-items: center; gap: 8px; margin-bottom: 11px; padding: 0 3px; }
+.dojo3-stage .kcol__title { font: 600 13px/1 var(--dojo3-font-ui); color: var(--dojo3-ink); }
+.dojo3-stage .kcol--progress .kcol__title { color: var(--dojo3-indigo); }
+.dojo3-stage .kcol--paused   .kcol__title { color: var(--dojo3-purple); }
+.dojo3-stage .kcol--complete .kcol__title { color: var(--dojo3-green-ink); }
+.dojo3-stage .kcol--blocked  .kcol__title { color: var(--dojo3-amber-deep); }
+.dojo3-stage .kcol__count { font: 500 9.5px/1 var(--dojo3-font-mono); padding: 3px 7px; border-radius: 999px; background: rgba(255,252,246,.5); box-shadow: inset 0 0 0 1px rgba(152,126,92,.22); color: var(--dojo3-ink-3); }
+.dojo3-stage .kcard { padding: 12px 13px; }
+.dojo3-stage .kcard + .kcard { margin-top: 10px; }
+.dojo3-stage .kcard__top { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+.dojo3-stage .kcard__title { font: 600 12.5px/1.35 var(--dojo3-font-ui); color: var(--dojo3-ink); min-width: 0; }
+.dojo3-stage .kcard__line { margin-top: 7px; font: 500 10px/1.5 var(--dojo3-font-mono); color: #5d6da8; }
+.dojo3-stage .kcard__sub  { margin-top: 3px; font: 500 10px/1.5 var(--dojo3-font-mono); color: var(--dojo3-ink-3); }
+.dojo3-stage .kcard__warn { margin-top: 3px; font: 500 10px/1.5 var(--dojo3-font-mono); color: var(--dojo3-amber-deep); }
+.dojo3-stage .kcard__foot { margin-top: 9px; display: flex; justify-content: space-between; font: 500 10px/1 var(--dojo3-font-mono); color: var(--dojo3-ink-4); }
+.dojo3-stage .kcard--dim { opacity: .65; }
+.dojo3-stage .kempty { min-height: 90px; border-radius: 16px; display: grid; place-items: center; font: 500 10.5px/1 var(--dojo3-font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--dojo3-ink-4); background: rgba(255,253,248,.18); box-shadow: inset 0 0 0 1px rgba(152,126,92,.18); }
+
+/* settings */
+.dojo3-stage .scards { columns: 2 310px; column-gap: 14px; }
+.dojo3-stage .scards > .tile { break-inside: avoid; -webkit-column-break-inside: avoid; margin-bottom: 14px; }
+.dojo3-stage .scard__title { font: 600 14.5px/1.25 var(--dojo3-font-ui); color: var(--dojo3-ink); margin-bottom: 7px; }
+.dojo3-stage .scard__desc { font: 400 11.5px/1.55 var(--dojo3-font-body); color: var(--dojo3-ink-3); margin-bottom: 14px; }
+.dojo3-stage .fgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+.dojo3-stage .flabel { display: block; font: 500 9.5px/1 var(--dojo3-font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--dojo3-ink-3); margin-bottom: 7px; }
+.dojo3-stage .finput {
+  width: 100%; height: 34px; padding: 0 12px; border-radius: 12px; border: 1px solid transparent;
+  background: linear-gradient(180deg, rgba(255,253,249,.5), rgba(251,243,229,.32)) padding-box, var(--dojo3-edge-soft) border-box;
+  font: 400 12.5px/32px var(--dojo3-font-body); color: var(--dojo3-ink); box-shadow: inset 0 1px 2px rgba(108,80,42,.08); outline: none;
+}
+.dojo3-stage .finput:focus { box-shadow: inset 0 1px 2px rgba(108,80,42,.08), 0 0 0 1px rgba(246,220,168,.45), 0 0 18px -6px rgba(243,221,180,.6); }
+.dojo3-stage .fhelp { margin-top: 6px; font: 400 10px/1.5 var(--dojo3-font-body); color: var(--dojo3-ink-4); }
+.dojo3-stage .note--warn { padding: 10px 13px; border-radius: 12px; margin-bottom: 12px; font: 500 10.5px/1.55 var(--dojo3-font-mono); letter-spacing: .02em; color: var(--dojo3-amber-ink); background: rgba(238,196,120,.13); box-shadow: inset 0 0 0 1px rgba(217,165,92,.3); }
+.dojo3-stage .radio-card { display: flex; gap: 11px; align-items: flex-start; padding: 13px 14px; border-radius: 14px; cursor: pointer; background: rgba(255,253,248,.3); box-shadow: inset 0 0 0 1px rgba(152,126,92,.2); transition: box-shadow .2s ease, background .2s ease; }
+.dojo3-stage .radio-card + .radio-card { margin-top: 10px; }
+.dojo3-stage .radio-card__dot { width: 14px; height: 14px; border-radius: 50%; margin-top: 2px; flex-shrink: 0; box-shadow: inset 0 0 0 1.5px rgba(152,126,92,.45); transition: box-shadow .2s ease, background .2s ease; }
+.dojo3-stage .radio-card.is-selected { background: rgba(250,233,202,.32); box-shadow: inset 0 0 0 1.5px rgba(217,165,92,.55), 0 0 20px -8px rgba(243,221,180,.7); }
+.dojo3-stage .radio-card.is-selected .radio-card__dot { background: radial-gradient(circle at 35% 30%, #ffe9c0, #d99c4b); box-shadow: 0 0 8px rgba(238,188,110,.7); }
+.dojo3-stage .radio-card__name { font: 600 12.5px/1.3 var(--dojo3-font-ui); color: var(--dojo3-ink); }
+.dojo3-stage .radio-card__desc { margin-top: 4px; font: 400 11px/1.5 var(--dojo3-font-body); color: var(--dojo3-ink-3); }
+.dojo3-stage .srow { display: flex; gap: 8px; align-items: center; }
+.dojo3-stage .srow .finput { width: 84px; }
+
+/* panel body gets the prototype's content padding when a rebuilt page
+   opts in with .dojo3-pbody (so not-yet-rebuilt pages keep their own) */
+/* horizontal padding only; the panel itself pads top/bottom for the orb and
+   composer and applies the fade, so content flows the full page height */
+.dojo3-stage .dojo3-pbody { padding: 0 24px; }
+
+/* floating close for self-headered (rebuilt) panels: the page owns its
+   .phead, so the close control floats in the panel's top-right corner */
+/* The close floats at the panel column's top-right, OUTSIDE the scrolling
+   panel (a stage child) so it stays put as the cards scroll. Closing is
+   also available via the orb (step up), Esc, and clicking the margins. */
+.dojo3-panel__close--float {
+  position: absolute;
+  /* sit in the gap between the orb and the panel top, so it never collides
+     with the page's own header actions (Recruit Agent, Create, tabs, ...) */
+  top: calc(var(--dojo3-orb-top) + var(--dojo3-orb-size) + 26px);
+  right: max(3.5%, calc(50% - 492px));
+  z-index: 7;
+}
+
+/* third layer: modals over busy panel content get a MORE OPAQUE glass
+   (David, 2026-06-16) so the content below does not read through. */
+/* A forward LAYER, not a dark modal: rather than dimming with a dark scrim,
+   we LIGHTEN and blur whatever is behind, so the new panel reads as the
+   front-most layer. Each layer deeper into the stack lightens/blurs more. */
+.dojo3-stage .glass-modal-backdrop {
+  /* No tint at all: blur what is behind and drop its opacity (fade it),
+     nothing lighter or darker. opacity() fades the blurred layer behind
+     toward the backdrop scene, like the chat fades behind a panel, without
+     painting any wash over it. */
+  background: transparent !important;
+  backdrop-filter: blur(15px) opacity(0.42);
+  -webkit-backdrop-filter: blur(15px) opacity(0.42);
+}
+/* Many modals (New Contact, delete confirms, Migration, ...) do NOT use the
+   .glass-modal-backdrop class; they use a hardcoded `fixed inset-0 bg-black/XX`
+   scrim wrapping a `.glass-modal-bg` or `.glass-modal` box. Convert that dark
+   grey scrim to the same light, blurred brought-to-front layer, and make the
+   box the opaque front-layer glass. */
+.dojo3-stage .fixed.inset-0:has(.glass-modal-bg),
+.dojo3-stage .fixed.inset-0:has(.glass-modal) {
+  /* No tint at all: blur what is behind and drop its opacity (fade it),
+     nothing lighter or darker. opacity() fades the blurred layer behind
+     toward the backdrop scene, like the chat fades behind a panel, without
+     painting any wash over it. */
+  background: transparent !important;
+  backdrop-filter: blur(15px) opacity(0.42);
+  -webkit-backdrop-filter: blur(15px) opacity(0.42);
+}
+.dojo3-stage .fixed.inset-0 .glass-modal-bg {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(168deg, rgba(255, 253, 249, 0.97), rgba(250, 242, 228, 0.94)) padding-box,
+    var(--dojo3-edge) border-box !important;
+  color: var(--dojo3-ink);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 40px 90px -30px rgba(80, 54, 28, 0.55);
+}
+.dojo3-stage .glass-modal {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(168deg, rgba(255, 253, 249, 0.97), rgba(250, 242, 228, 0.94)) padding-box,
+    var(--dojo3-edge) border-box;
+  color: var(--dojo3-ink);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 40px 90px -30px rgba(80, 54, 28, 0.55),
+    0 0 0 1px rgba(255, 250, 240, 0.20);
+}
+.dojo3-stage .glass-modal .text-ui,
+.dojo3-stage .glass-modal .text-primary { color: var(--dojo3-ink); }
+.dojo3-stage .glass-modal .text-secondary,
+.dojo3-stage .glass-modal .text-ui\/55,
+.dojo3-stage .glass-modal .text-ui\/70 { color: var(--dojo3-ink-2); }
+.dojo3-stage .glass-modal .text-ui\/40,
+.dojo3-stage .glass-modal .text-ui\/25 { color: var(--dojo3-ink-4); }
+.dojo3-stage .glass-modal .glass-input,
+.dojo3-stage .glass-modal .glass-select,
+.dojo3-stage .glass-modal .glass-textarea {
+  background: rgba(255, 253, 248, 0.55);
+  border-color: rgba(140, 116, 84, 0.22);
+  color: var(--dojo3-ink);
+}
+.dojo3-stage .glass-modal .glass-nested {
+  background: rgba(255, 252, 246, 0.42);
+  border: 1px solid rgba(140, 116, 84, 0.18);
+}
+
+/* Mobile: input modals (Recruit Agent, New Contact, ...) were jammed against
+   the top edge. Give them breathing room below the orb/wordmark and cap their
+   height so the heading stays visible and the box scrolls internally. Placed
+   after the .dojo3-stage modal rules so it wins; specificity 0,2,0 beats the
+   global/Tailwind defaults. */
+@media (max-width: 768px) {
+  .dojo3-stage .glass-modal-backdrop,
+  .dojo3-stage .fixed.inset-0:has(.glass-modal-bg),
+  .dojo3-stage .fixed.inset-0:has(.glass-modal) {
+    align-items: center;
+    padding: 132px 14px 40px;
+  }
+  .dojo3-stage .glass-modal,
+  .dojo3-stage .fixed.inset-0 .glass-modal-bg {
+    max-height: calc(100dvh - 172px) !important;
+    margin: 0 !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dojo3-stage .dojo3-panel .anim,
+  .dojo3-stage .dojo3-panel .agent-card { animation: none; }
+  .dojo3-stage .switch, .dojo3-stage .switch::after, .dojo3-stage .btn { transition: none; }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   DOJO 3 CHAT MESSAGE ANATOMY
+   Ported from the prototype (dojo-orb-v3.html, CSS 781-906) and scoped
+   under .dojo3-stage so the same shared markup keeps its untouched look
+   on the agent-detail page. Remapped onto the --dojo3-* tokens.
+   ════════════════════════════════════════════════════════════════ */
+
+@keyframes dojo3-msgIn {
+  from { opacity: 0; transform: translateY(12px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Tool chip: a small mono UPPERCASE pill with a soft dispersion border and
+   a green status dot. The collapsed look for a tool-only turn; clicking it
+   expands the canonical ToolCallCard / ToolResultBlock detail below. */
+.dojo3-stage .chip-tool {
+  align-self: flex-start;
+  display: inline-flex; align-items: center; gap: 8px;
+  font: 500 10px/1 var(--dojo3-font-mono);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--dojo3-ink-3);
+  padding: 7px 13px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(180deg, rgba(255, 253, 248, 0.55), rgba(252, 245, 233, 0.32)) padding-box,
+    var(--dojo3-edge-soft) border-box;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  cursor: pointer;
+  animation: dojo3-msgIn .38s cubic-bezier(.22, .9, .26, 1) both;
+  transition: color .18s ease;
+}
+.dojo3-stage .chip-tool:hover,
+.dojo3-stage .chip-tool:focus-visible {
+  color: var(--dojo3-ink-2);
+  outline: none;
+}
+.dojo3-stage .chip-tool::before {
+  content: ""; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--dojo3-green);
+  box-shadow: 0 0 7px rgba(95, 192, 111, 0.85), 0 0 2px rgba(95, 192, 111, 1);
+}
+.dojo3-stage .chip-tool__detail { animation: dojo3-msgIn .3s cubic-bezier(.22, .9, .26, 1) both; }
+
+/* Media card: generated/attached image or video/audio rendered as a poster
+   tile with optional duration and a filename/size meta row. */
+.dojo3-stage .media {
+  width: 340px; max-width: 100%;
+  border-radius: 18px; overflow: hidden;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(180deg, rgba(255, 253, 248, 0.80), rgba(252, 245, 233, 0.55)) padding-box,
+    var(--dojo3-edge-soft) border-box;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 24px 48px -22px rgba(108, 80, 42, 0.48);
+}
+.dojo3-stage .media__poster {
+  position: relative; aspect-ratio: 16/9;
+  display: grid; place-items: center;
+  background: linear-gradient(165deg, #9cc6ec, #cfe4f6 52%, #95d4a0);
+  font-size: 46px;
+  cursor: pointer;
+}
+.dojo3-stage .media__poster img {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+}
+.dojo3-stage .media__play {
+  position: absolute; width: 46px; height: 46px; border-radius: 50%;
+  background: rgba(255, 253, 248, 0.55);
+  backdrop-filter: blur(10px) saturate(1.2);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  display: grid; place-items: center;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.20), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  transition: transform .2s ease, box-shadow .2s ease;
+  z-index: 1;
+}
+.dojo3-stage .media__poster:hover .media__play {
+  transform: scale(1.06);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.9),
+              0 0 20px -4px rgba(255, 255, 255, 0.8);
+}
+.dojo3-stage .media__play::after {
+  content: ""; border-style: solid;
+  border-width: 8px 0 8px 13px;
+  border-color: transparent transparent transparent #3f352a;
+  margin-left: 3px;
+}
+.dojo3-stage .media__dur {
+  position: absolute; right: 9px; bottom: 8px; z-index: 1;
+  font: 500 10px/1 var(--dojo3-font-mono);
+  letter-spacing: .04em;
+  color: #fff; background: rgba(28, 24, 19, 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  padding: 4px 7px; border-radius: 7px;
+}
+.dojo3-stage .media__meta {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 10px 14px;
+  border-top: 1px solid rgba(140, 116, 84, 0.14);
+  font: 500 10.5px/1 var(--dojo3-font-mono);
+  letter-spacing: .03em;
+  color: var(--dojo3-ink-2);
+}
+.dojo3-stage .media__meta span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dojo3-stage .media__meta span:last-child { flex-shrink: 0; color: var(--dojo3-ink-4); }
+
+/* Session / date divider: a centered mono UPPERCASE label with dispersion
+   hairline rules left and right. Restyles the existing divider markup. */
+.dojo3-stage .dojo3-divider {
+  align-self: stretch;
+  align-items: center; gap: 16px;
+  margin: 14px 0 2px;
+}
+.dojo3-stage .dojo3-divider__label {
+  font: 500 9px/1 var(--dojo3-font-mono);
+  letter-spacing: .42em;
+  text-transform: uppercase;
+  color: var(--dojo3-ink-4);
+  white-space: nowrap;
+}
+.dojo3-stage .dojo3-divider__rule { height: 1px; border: 0; }
+.dojo3-stage .dojo3-divider__rule--l {
+  background: linear-gradient(90deg, transparent, rgba(255, 200, 150, 0.30) 70%, rgba(150, 120, 80, 0.32));
+}
+.dojo3-stage .dojo3-divider__rule--r {
+  background: linear-gradient(90deg, rgba(150, 120, 80, 0.32), rgba(166, 196, 210, 0.28) 30%, transparent);
+}
+
+/* Typing indicator: the champagne filament plus three pulsing champagne dots.
+   Restyles the shared ThinkingBubble when it sits inside the dojo3 stage; the
+   filament already comes from the .bubble-assistant::before rule above. */
+.dojo3-stage .thinking-dots {
+  gap: 6px;
+}
+.dojo3-stage .thinking-dot {
+  width: 5px; height: 5px;
+  background-color: var(--dojo3-champagne);
+  box-shadow: 0 0 6px rgba(238, 188, 110, 0.65);
+  animation: dojo3-tp 1.1s infinite ease-in-out;
+}
+.dojo3-stage .thinking-dot:nth-child(2) { animation-delay: .18s; }
+.dojo3-stage .thinking-dot:nth-child(3) { animation-delay: .36s; }
+
+@keyframes dojo3-tp {
+  0%, 70%, 100% { opacity: .25; transform: translateY(0); }
+  35%           { opacity: 1;   transform: translateY(-3px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dojo3-stage .chip-tool,
+  .dojo3-stage .chip-tool__detail { animation: none; }
+  .dojo3-stage .thinking-dot { animation: dojo3-tp 1.5s infinite alternate; opacity: .6; }
 }

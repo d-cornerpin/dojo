@@ -25,6 +25,13 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     tools: ['web_search', 'web_fetch', 'web_browse'],
   },
   {
+    // Right-dock workspace: slides the dojo aside and shows something next to
+    // the chat. show_canvas renders agent-produced HTML/docs; open_browser
+    // loads a live website. Both are view-together surfaces, not file writes.
+    label: 'Shared Workspace (right dock)',
+    tools: ['show_canvas', 'open_browser', 'view_canvas'],
+  },
+  {
     label: 'DOJO Contacts (people the owner interacts with - persistent, agent-authored)',
     tools: ['contact_remember', 'contact_search', 'contact_list', 'contact_get', 'contact_update', 'contact_forget', 'contact_describe'],
   },

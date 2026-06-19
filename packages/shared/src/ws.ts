@@ -313,7 +313,43 @@ export type WsEvent =
   | VoiceTtsEndEvent
   | VoiceStateEvent
   | VoiceWakeDetectedEvent
-  | VoiceSleepDetectedEvent;
+  | VoiceSleepDetectedEvent
+  | DockOpenEvent
+  | CanvasUpdatedEvent;
+
+/**
+ * Open the right dock for the user (slides the chat left). Emitted by the
+ * agent (via a tool) to surface a working document / HTML render ('canvas')
+ * or a live website ('iframe') alongside the conversation.
+ */
+export interface DockOpenEvent {
+  type: 'dock:open';
+  data: {
+    kind: 'canvas' | 'iframe';
+    title?: string;
+    /** canvas: inline HTML to render */
+    html?: string;
+    /** canvas (a hosted doc) or iframe: the url to load */
+    url?: string;
+    /** canvas: absolute path of the backing file, when the canvas shows a file
+     *  on disk. Lets the dock auto-refresh when the agent edits that file and
+     *  enables the download affordance. */
+    path?: string;
+  };
+}
+
+/**
+ * A file on disk that a canvas may be showing was just written (file_write /
+ * file_patch / file_append). The dock re-fetches if it's displaying this path,
+ * so edits the agent makes appear without a manual refresh.
+ */
+export interface CanvasUpdatedEvent {
+  type: 'canvas:updated';
+  data: {
+    /** absolute path of the file that changed */
+    path: string;
+  };
+}
 
 export interface OllamaStatusEvent {
   type: 'ollama:status';

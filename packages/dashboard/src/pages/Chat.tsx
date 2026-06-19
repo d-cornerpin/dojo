@@ -1,22 +1,52 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import type { Message } from '@dojo/shared';
 import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, WsEvent } from '@dojo/shared';
-import { classifyMessageForDisplay, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting } from '@dojo/shared';
+import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting } from '@dojo/shared';
 import { summarizeToolTurn, type ToolTurnSummary } from '../lib/tool-display';
 import { inboundBadge, outboundBadge } from '../lib/channel-display';
-import { ToolBadgeGroup } from '../components/ToolBadge';
+import { ToolBadgeGroup, type ToolChipData } from '../components/ToolBadge';
 import * as api from '../lib/api';
 import type { AttachmentInfo } from '../lib/api';
 import { formatDate } from '../lib/dates';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { ToolCallBlock, ToolCallCard, ToolResultBlock } from '../components/ToolCallBlock';
-import { stripVoiceMarkers, stripVoiceMarkersForStream } from '../lib/voice-markers';
+import { stripVoiceMarkers, stripVoiceMarkersForStream, parseMoodMarker } from '../lib/voice-markers';
+import { useDojoOrb } from '../components/orb/OrbProvider';
+import type { OrbEmotionName } from '../components/orb/dojoOrbEngine';
 import { stripAttachmentTags } from '../lib/attachment-tags';
 import { Markdown } from '../components/Markdown';
-import { ChatInput } from '../components/ChatInput';
+import { Dojo3Composer } from '../components/Dojo3Composer';
+import { useActiveAgent } from '../components/ActiveAgentProvider';
+import { useTechniqueSession, stripBuilderContext } from '../components/TechniqueSessionProvider';
 import { useToast } from '../hooks/useToast';
 import { AttachmentChips } from '../components/AttachmentChips';
 import { ThinkingBubble } from '../components/ThinkingBubble';
+import { Dojo3Stage } from '../components/Dojo3Stage';
+import { PresenceProvider } from '../components/PresenceProvider';
+
+// ── Orb mood ──
+// Map a model-emitted `((mood: NAME))` marker to one of the orb's emotions.
+// Accept the canonical names plus a few natural synonyms; ignore anything else.
+const VALID_EMOTIONS = new Set<OrbEmotionName>([
+  'startled', 'joyous', 'working', 'mad', 'calm', 'sleepy', 'confused',
+  'success', 'sheepish', 'curious', 'sympathetic', 'excited', 'waiting', 'alert',
+]);
+const EMOTION_SYNONYMS: Record<string, OrbEmotionName> = {
+  happy: 'joyous', glad: 'joyous', delighted: 'joyous',
+  sad: 'sympathetic', concerned: 'sympathetic', sorry: 'sympathetic',
+  angry: 'mad', annoyed: 'mad', frustrated: 'mad',
+  surprised: 'startled', shocked: 'startled',
+  proud: 'success', done: 'success',
+  embarrassed: 'sheepish', apologetic: 'sheepish',
+  interested: 'curious', thinking: 'curious', intrigued: 'curious',
+  relaxed: 'calm', neutral: 'calm',
+  thrilled: 'excited', eager: 'excited',
+};
+function moodToEmotion(raw: string | null): OrbEmotionName | null {
+  if (!raw) return null;
+  if (VALID_EMOTIONS.has(raw as OrbEmotionName)) return raw as OrbEmotionName;
+  return EMOTION_SYNONYMS[raw] ?? null;
+}
 
 // ── Types ──
 
@@ -57,21 +87,6 @@ interface ChatMessage {
   source?: 'voice' | null;
 }
 
-// Primary agent ID — loaded from settings
-let _primaryAgentId: string | null = null;
-function usePrimaryAgentId(): string {
-  const [id, setId] = useState(_primaryAgentId ?? 'primary');
-  useEffect(() => {
-    if (_primaryAgentId) return;
-    api.getSetting('primary_agent_id').then(r => {
-      if (r.ok && r.data.value) {
-        _primaryAgentId = r.data.value;
-        setId(r.data.value);
-      }
-    });
-  }, []);
-  return id;
-}
 
 // ── Parse DB message content into structured blocks ──
 
@@ -111,6 +126,9 @@ const UserBubble = ({ msg, wordyMode = false }: { msg: ChatMessage; wordyMode?: 
   const badge = inbound ? inboundBadge(inbound.channel, inbound.sender) : null;
 
   let displayContent = msg.content;
+  // Strip injected technique build/edit context (no-op for normal messages) so
+  // the user bubble shows only what they typed during a technique session.
+  displayContent = stripBuilderContext(displayContent);
   if (!wordyMode) {
     if (inbound) displayContent = stripInboundChannelMarker(displayContent);
     // Strip the engine attachment-pointer blocks (chips render the files).
@@ -307,10 +325,12 @@ const AssistantBubble = ({
             effectively dead and could be removed entirely (left in place
             to keep the diff minimal). */}
 
-        {/* Image / PDF attachments (e.g. Imaginer-generated images) */}
+        {/* Image / PDF attachments (e.g. Imaginer-generated images). In the
+            dojo3 chat these render as prototype .media cards (poster + meta);
+            audio and non-previewable files stay as the existing chips. */}
         {msg.attachments && msg.attachments.length > 0 && (
           <div className="mt-2">
-            <AttachmentChips attachments={msg.attachments} />
+            <AttachmentChips attachments={msg.attachments} variant="media" />
           </div>
         )}
 
@@ -340,6 +360,32 @@ const toolBadgeItems = (msgs: ChatMessage[]): Array<{ id: string; summary: ToolT
       return summary ? { id: m.id, summary } : null;
     })
     .filter((x): x is { id: string; summary: ToolTurnSummary } => x !== null);
+
+// dojo3 chat only: turn a run of tool-only turns into one chip-tool pill per
+// visible (non-bookkeeping) tool, carrying its raw input plus any matching
+// tool_result so each chip can expand into the canonical ToolCallCard /
+// ToolResultBlock detail. Bookkeeping tools are dropped to mirror the badge
+// path (summarizeToolTurn hides them); if a group surfaces no visible tool the
+// chips list is empty and ToolBadgeGroup falls back to the summary items.
+interface ToolResultInfo { content: string; isError: boolean }
+const toolChips = (
+  msgs: ChatMessage[],
+  resultById: Map<string, ToolResultInfo>,
+): ToolChipData[] =>
+  msgs.flatMap((m) =>
+    (parseMessageContent(m.content).blocks ?? [])
+      .filter((b) => b.type === 'tool_use' && b.name && classifyTool(b.name) !== 'bookkeeping')
+      .map((b, i): ToolChipData => {
+        const res = b.id ? resultById.get(b.id) : undefined;
+        return {
+          key: `${m.id}-${b.id ?? i}`,
+          name: b.name ?? '',
+          input: (b.input as Record<string, unknown>) ?? {},
+          result: res?.content,
+          isError: res?.isError,
+        };
+      }),
+  );
 
 // v2.7.23 — mirror AgentDetail.tsx: render channel-send tool calls as
 // outbound message bubbles with the channel pill, not generic gear icons.
@@ -438,8 +484,28 @@ const ToolResultBubble = ({ msg }: { msg: ChatMessage }) => {
 
 // ── Main Chat Component ──
 
-export const Chat = () => {
-  const AGENT_ID = usePrimaryAgentId();
+interface ChatProps {
+  panel?: {
+    title?: string;
+    meta?: string;
+    content: ReactNode;
+  } | null;
+}
+
+export const Chat = ({ panel = null }: ChatProps) => {
+  // The active agent drives the whole stage. Defaults to the primary
+  // ("dojo master", shown as DOJO); selecting an agent swaps the chat,
+  // composer target, orb, and labels to that agent.
+  const { agentId: activeAgentId, agentName: selectedAgentName } = useActiveAgent();
+  // While a technique-build session is active, the chat BECOMES the trainer
+  // conversation: it targets the trainer agent, prepends build/edit context on
+  // the first message, and the Technique Mat docks on the right. With no
+  // session this is fully inert and the chat behaves exactly as before.
+  const techSession = useTechniqueSession();
+  const AGENT_ID = techSession.active ? techSession.trainerAgentId : activeAgentId;
+  const activeAgentName = techSession.active
+    ? (techSession.trainerName || 'Trainer')
+    : selectedAgentName;
   const agentIdRef = useRef(AGENT_ID);
   agentIdRef.current = AGENT_ID; // always up to date for closures
 
@@ -466,6 +532,34 @@ export const Chat = () => {
   }, []);
   const { subscribe } = useWebSocket();
   const currentToolCallsRef = useRef<ToolCallData[]>([]);
+
+  // ── Orb mood ──
+  // The active agent can lead a reply with a `((mood: NAME))` marker; we read it
+  // out of its (streaming) text and emote the orb. Scoped to the active agent
+  // because this Chat is bound to it. Per-message accumulator drives a live
+  // reaction as the reply starts; lastMoodRef de-dupes repeat sets.
+  const dojoOrb = useDojoOrb();
+  const streamTextRef = useRef<Map<string, string>>(new Map());
+  // De-dupe per (message, emotion): streaming chunks of the SAME message don't
+  // re-fire, but a NEW message re-fires even the same mood (so two angry
+  // replies both flare). Emotions auto-release via their `hold`, so each is a
+  // momentary burst that settles back to rest.
+  const lastEmotionKeyRef = useRef<string | null>(null);
+  const applyMood = useCallback((msgId: string, text: string) => {
+    const emotion = moodToEmotion(parseMoodMarker(text));
+    if (!emotion) return;
+    const key = `${msgId}:${emotion}`;
+    if (key === lastEmotionKeyRef.current) return;
+    lastEmotionKeyRef.current = key;
+    dojoOrb.setEmotion(emotion);
+  }, [dojoOrb]);
+
+  // Reset mood tracking when the active agent changes (a new agent starts
+  // neutral; its own next reply re-drives the orb).
+  useEffect(() => {
+    lastEmotionKeyRef.current = null;
+    streamTextRef.current.clear();
+  }, [AGENT_ID]);
 
   // Auto-scroll — fires on (a) new message appended and (b) the last
   // message growing during streaming. Streaming-chunk scrolls only fire
@@ -510,6 +604,16 @@ export const Chat = () => {
 
   // Load chat history
   useEffect(() => {
+    // During a technique session, wait until the resume-vs-clear decision has
+    // resolved so we don't load a stale trainer conversation that's about to be
+    // wiped (or render before a resumed one is confirmed). Clear the prior
+    // agent's messages immediately so the previous conversation doesn't bleed
+    // through while the trainer history loads.
+    if (techSession.active && !techSession.ready) {
+      setMessages([]);
+      setLoading(true);
+      return;
+    }
     const loadHistory = async () => {
       // Check if agent is currently working (e.g. user navigated away and came back)
       const agentResult = await api.getAgent(AGENT_ID);
@@ -556,7 +660,8 @@ export const Chat = () => {
       setLoading(false);
     };
     loadHistory();
-  }, [AGENT_ID]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [AGENT_ID, techSession.active, techSession.ready]);
 
   // Load older messages when scrolling to top
   const loadOlderMessages = useCallback(async () => {
@@ -627,6 +732,13 @@ export const Chat = () => {
     const unsubChunk = subscribe('chat:chunk', (event: WsEvent) => {
       const e = event as ChatChunkEvent;
       if (e.agentId !== agentIdRef.current) return;
+
+      // Orb mood: accumulate this message's streamed text and emote the orb as
+      // soon as a `((mood: NAME))` marker appears (it leads the reply).
+      const accum = (streamTextRef.current.get(e.messageId) ?? '') + e.content;
+      streamTextRef.current.set(e.messageId, accum);
+      applyMood(e.messageId, accum);
+      if (e.done) streamTextRef.current.delete(e.messageId);
 
       // v2.5.22 — On every done event, snapshot the tool-call ref and clear
       // it BEFORE entering the state updater. Previously the clear was only
@@ -780,6 +892,10 @@ export const Chat = () => {
       const e = event as ChatMessageEvent;
       if (e.agentId !== agentIdRef.current) return;
 
+      // Orb mood from the canonical message (covers non-streamed replies and
+      // any marker the stream parse missed).
+      if (e.message.role === 'assistant') applyMood(e.message.id, e.message.content);
+
       setMessages((prev) => {
         const idx = prev.findIndex((m) => m.id === e.message.id);
         if (idx >= 0) {
@@ -830,10 +946,13 @@ export const Chat = () => {
           // payload but the optimistic temp bubble only has what the
           // user typed — without normalizing, every message-with-attachment
           // failed dedup and rendered twice.
-          const broadcastCore = stripAttachmentTags(e.message.content);
+          // Strip injected technique build/edit context too: the broadcast
+          // carries the full wire message (context + marker + typed) but the
+          // optimistic temp bubble only has the typed text.
+          const broadcastCore = stripBuilderContext(stripAttachmentTags(e.message.content));
           const tempIdx = prev.findIndex(
             (m) => m.role === 'user' && m.id.startsWith('temp-') &&
-                   stripAttachmentTags(m.content) === broadcastCore,
+                   stripBuilderContext(stripAttachmentTags(m.content)) === broadcastCore,
           );
           if (tempIdx >= 0) {
             const updated = [...prev];
@@ -915,10 +1034,16 @@ export const Chat = () => {
       unsubTerminated();
       unsubSource();
     };
-  }, [subscribe, AGENT_ID]);
+  }, [subscribe, AGENT_ID, applyMood]);
 
   const handleSend = async (content: string, attachments?: AttachmentInfo[]) => {
     setIsWorking(true);
+
+    // Technique session: prepend build/edit/setup/refresh context to the wire
+    // message. The bubble still shows only what the user typed (UserBubble
+    // strips the context); commit/rollback advances the one-shot context gate.
+    const plan = techSession.active ? techSession.prepareOutgoing(content) : null;
+    const outgoing = plan ? plan.outgoing : content;
 
     const userMsg: ChatMessage = {
       id: `temp-${Date.now()}`,
@@ -929,14 +1054,17 @@ export const Chat = () => {
     };
     setMessages((prev) => [...prev, userMsg]);
 
-    const result = await api.sendMessage(AGENT_ID, content, attachments);
+    const result = await api.sendMessage(AGENT_ID, outgoing, attachments);
     if (!result.ok) {
+      plan?.rollback();
       setIsWorking(false);
       if (result.error.includes('busy')) {
         toast.info(`${agentName || 'Agent'} is mid-mission — your message will be delivered when they finish.`);
       } else {
         toast.error(result.error);
       }
+    } else {
+      plan?.commit();
     }
   };
 
@@ -961,6 +1089,42 @@ export const Chat = () => {
           if (block?.type === 'tool_result' && typeof block.tool_use_id === 'string') {
             m.set(block.tool_use_id, block.is_error === true);
           }
+        }
+      } catch { /* not JSON */ }
+    }
+    return m;
+  }, [messages]);
+
+  // tool_use_id → { content, isError } for the dojo3 chip-tool expansion. Mirrors
+  // ToolResultBubble's content extraction (string OR array of content blocks) so a
+  // collapsed chip can reveal the same result text wordy mode shows in its cards.
+  const toolResultById = useMemo(() => {
+    const m = new Map<string, ToolResultInfo>();
+    for (const msg of messages) {
+      if (msg.role !== 'tool') continue;
+      try {
+        const parsed = JSON.parse(msg.content);
+        if (!Array.isArray(parsed)) continue;
+        for (const block of parsed) {
+          if (block?.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue;
+          const raw = block.content as unknown;
+          let content: string;
+          if (typeof raw === 'string') {
+            content = raw;
+          } else if (Array.isArray(raw)) {
+            content = (raw as Array<Record<string, unknown>>)
+              .map((b) => {
+                if (b.type === 'text') return b.text as string;
+                if (b.type === 'image') return '[Image content — visible to model via vision]';
+                if (b.type === 'document') return `[PDF: ${(b.title as string) ?? 'document'}]`;
+                return '';
+              })
+              .filter(Boolean)
+              .join('\n');
+          } else {
+            content = JSON.stringify(raw);
+          }
+          m.set(block.tool_use_id, { content, isError: block.is_error === true });
         }
       } catch { /* not JSON */ }
     }
@@ -1067,10 +1231,53 @@ export const Chat = () => {
 
   if (loading) return <div className="flex-1 loading-state">Loading...</div>;
 
+  const composer = (
+    <Dojo3Composer
+      agentId={AGENT_ID}
+      onSend={handleSend}
+      isWorking={isWorking}
+      placeholder={activeAgentName ? `Message ${activeAgentName}` : undefined}
+      onStop={async () => {
+        await api.stopAgent(AGENT_ID);
+        setIsWorking(false);
+      }}
+    />
+  );
+
+  const toggleWordyMode = () => {
+    const next = !wordyMode;
+    setWordyMode(next);
+    localStorage.setItem('dojo_wordy_mode', String(next));
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        scrollToBottom(true);
+      });
+    });
+  };
+
+  const startNewSession = async () => {
+    const res = await api.request<{ archiveId: string; sessionStartedAt: string }>(`/chat/${AGENT_ID}/new-session`, { method: 'POST' });
+    if (res.ok) {
+      const result = await api.getChatHistory(AGENT_ID, 200);
+      if (result.ok) {
+        setMessages(result.data.map((m: Message) => ({ ...m, isStreaming: false })));
+      }
+    }
+  };
+
   return (
-    <div className="flex-1 flex flex-col min-h-0">
+    <PresenceProvider>
+    <Dojo3Stage
+      composer={composer}
+      agentName={activeAgentName || agentName}
+      isWorking={isWorking}
+      wordyMode={wordyMode}
+      onToggleWordyMode={toggleWordyMode}
+      onNewSession={startNewSession}
+      panel={panel}
+    >
       {/* Messages */}
-      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto min-h-0 px-2 sm:px-4 md:px-6 py-3 sm:py-6 space-y-2 sm:space-y-4">
+      <div ref={messagesContainerRef} className="dojo3-chat-scroll px-2 sm:px-4 md:px-6 py-3 sm:py-6 space-y-2 sm:space-y-4">
         {loadingMore && (
           <div className="text-center py-2">
             <span className="text-xs text-ui/25">Loading older messages...</span>
@@ -1133,10 +1340,10 @@ export const Chat = () => {
               const isCompactionDivider = /^Memory Compacted/.test(dividerMatch[1]);
               if (isCompactionDivider && !wordyMode) return null;
               return (
-                <div key={msg.id} className="flex items-center gap-3 my-4 px-4">
-                  <div className="flex-1 h-px bg-ui/[0.12]" />
-                  <span className="text-xs text-ui/25 shrink-0">{dividerMatch[1]}</span>
-                  <div className="flex-1 h-px bg-ui/[0.12]" />
+                <div key={msg.id} className="dojo3-divider flex items-center gap-3 my-4 px-4">
+                  <div className="dojo3-divider__rule dojo3-divider__rule--l flex-1 h-px bg-ui/[0.12]" />
+                  <span className="dojo3-divider__label text-xs text-ui/25 shrink-0">{dividerMatch[1]}</span>
+                  <div className="dojo3-divider__rule dojo3-divider__rule--r flex-1 h-px bg-ui/[0.12]" />
                 </div>
               );
             }
@@ -1211,7 +1418,14 @@ export const Chat = () => {
             // so the image/file chips render in regular mode (V2d).
             if (!text && hasToolUse && !(msg.attachments && msg.attachments.length > 0)) {
               const group = toolPillGrouping.groupByFirstId.get(msg.id);
-              return <ToolBadgeGroup key={msg.id} items={toolBadgeItems(group ?? [msg])} />;
+              const members = group ?? [msg];
+              return (
+                <ToolBadgeGroup
+                  key={msg.id}
+                  items={toolBadgeItems(members)}
+                  chips={toolChips(members, toolResultById)}
+                />
+              );
             }
           }
           return <AssistantBubble key={msg.id} msg={msg} wordyMode={wordyMode} modelNames={modelNames} outboundChannel={outboundChannelByAssistantId.get(msg.id) ?? null} />;
@@ -1219,43 +1433,7 @@ export const Chat = () => {
         {isWorking && !messages.some(m => m.isStreaming) && <ThinkingBubble />}
         <div ref={messagesEndRef} />
       </div>
-
-      {/* Input */}
-      {/* Input */}
-      <ChatInput
-        agentId={AGENT_ID}
-        onSend={handleSend}
-        variant="primary"
-        wordyMode={wordyMode}
-        onToggleWordyMode={() => {
-          const next = !wordyMode;
-          setWordyMode(next);
-          localStorage.setItem('dojo_wordy_mode', String(next));
-          // Toggling shows/hides many messages (tool calls, system messages),
-          // which changes content height drastically. Scroll to bottom after
-          // React re-renders with the new message visibility.
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              scrollToBottom(true);
-            });
-          });
-        }}
-        onNewSession={async () => {
-          if (!confirm('Start a new session? The current conversation will be archived to the vault. Your agent won\'t lose any knowledge.')) return;
-          const res = await api.request<{ archiveId: string; sessionStartedAt: string }>(`/chat/${AGENT_ID}/new-session`, { method: 'POST' });
-          if (res.ok) {
-            const result = await api.getChatHistory(AGENT_ID, 200);
-            if (result.ok) {
-              setMessages(result.data.map((m: Message) => ({ ...m, isStreaming: false })));
-            }
-          }
-        }}
-        isWorking={isWorking}
-        onStop={async () => {
-          await api.stopAgent(AGENT_ID);
-          setIsWorking(false);
-        }}
-      />
-    </div>
+    </Dojo3Stage>
+    </PresenceProvider>
   );
 };

@@ -59,39 +59,31 @@ export const Settings = () => {
   ];
 
   return (
-    <div className="flex-1 p-3 sm:p-6 overflow-y-auto">
-      <h1 className="text-lg sm:text-xl font-bold text-ui mb-4 sm:mb-6">Settings</h1>
+    <>
+      {/* Self-headered panel: the page owns its prototype .phead. */}
+      <header className="phead">
+        <h2 className="phead__title">Settings</h2>
+        <span className="phead__meta">House rules</span>
+      </header>
 
-      {/* Tabs — hidden on mobile (handled by hamburger sub-menu instead).
-          flex-wrap lets tabs spill onto a second row as the viewport narrows
-          instead of running off the right edge. */}
-      <div className="hidden md:flex md:flex-wrap gap-1 mb-6 bg-ui/[0.05] rounded-lg p-1 w-fit max-w-full">
-        {tabs.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => handleTabChange(tab.key)}
-            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-              activeTab === tab.key
-                ? 'bg-ui/[0.05] text-ui'
-                : 'text-ui/55 hover:text-ui/90'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Mobile tab selector — a compact dropdown for quick switching on phones */}
-      <div className="md:hidden mb-4">
-        <select
-          value={activeTab}
-          onChange={(e) => handleTabChange(e.target.value as Tab)}
-          className="glass-select w-full"
-        >
-          {tabs.map(tab => (
-            <option key={tab.key} value={tab.key}>{tab.label}</option>
+      {/* Tab bar — prototype .tabs/.tab pill row. Horizontally scrollable
+          on narrow viewports (the .tabs primitive handles overflow), so
+          the same control works on phones without a separate dropdown. */}
+      <div className="toolbar">
+        <div className="tabs" role="tablist">
+          {tabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.key}
+              onClick={() => handleTabChange(tab.key)}
+              className={`tab ${activeTab === tab.key ? 'is-active' : ''}`}
+            >
+              {tab.label}
+            </button>
           ))}
-        </select>
+        </div>
       </div>
 
       {/* Tab Content */}
@@ -103,36 +95,34 @@ export const Settings = () => {
       {activeTab === 'security' && <SecurityTab />}
       {activeTab === 'sensei' && <DreamingTab />}
       {activeTab === 'channels' && (
-        <div className="max-w-4xl">
+        <>
           {/* OAuth callbacks land on http://localhost:3001 — connecting from
               a Cloudflare-tunneled URL (or any remote host) breaks the
               redirect roundtrip. Surface this once at the top of the page
               so users don't get cryptic "session expired" errors after the
               Google/Microsoft sign-in popup closes. */}
-          <div className="alert-banner alert-info mb-6">
-            <p className="text-sm font-medium">Connect accounts from your local Mac, not via a tunnel.</p>
-            <p className="text-xs text-ui/70 mt-1">
-              Google and Microsoft sign-in redirects land on <code className="px-1 rounded bg-ui/[0.06]">http://localhost:3001</code> — that only resolves when this dashboard is open on the same machine running the Dojo. If you're hitting the dashboard through a Cloudflare tunnel or named host from another device, the OAuth callback won't reach the server and the connection will silently fail. Sit at the host machine and use <code className="px-1 rounded bg-ui/[0.06]">http://localhost:3000</code> for the connect flow; once connected, the credentials work regardless of how you access the dashboard.
+          <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal', marginBottom: 18 }}>
+            <p style={{ fontWeight: 600 }}>Connect accounts from your local Mac, not via a tunnel.</p>
+            <p style={{ marginTop: 4, fontWeight: 400 }}>
+              Google and Microsoft sign-in redirects land on <code>http://localhost:3001</code> — that only resolves when this dashboard is open on the same machine running the Dojo. If you're hitting the dashboard through a Cloudflare tunnel or named host from another device, the OAuth callback won't reach the server and the connection will silently fail. Sit at the host machine and use <code>http://localhost:3000</code> for the connect flow; once connected, the credentials work regardless of how you access the dashboard.
             </p>
           </div>
-          <div className="columns-1 lg:columns-2 gap-6 [&>*]:mb-6 [&>*]:break-inside-avoid">
+          <div className="scards">
             <IMBridgeSettings />
             <GoogleWorkspaceSettings />
             <MicrosoftWorkspaceSettings />
           </div>
-        </div>
+        </>
       )}
       {activeTab === 'integrations' && (
-        <div className="max-w-4xl">
-          <div className="columns-1 lg:columns-2 gap-6 [&>*]:mb-6 [&>*]:break-inside-avoid">
-            <PlaudSettings />
-            <TwilioSettings />
-          </div>
+        <div className="scards">
+          <PlaudSettings />
+          <TwilioSettings />
         </div>
       )}
       {activeTab === 'voice' && <VoiceTab />}
       {activeTab === 'update' && <UpdateTab />}
-    </div>
+    </>
   );
 };
 
@@ -368,21 +358,23 @@ const IMBridgeSettings = () => {
   if (loading) return null;
 
   return (
-    <div className="glass-card p-4 space-y-4">
-      <h3 className="card-header">iMessage Bridge</h3>
-      <p className="text-xs text-ui/40">
-        Enable to send and receive messages with your agent via iMessage. Requires Full Disk Access for Terminal in System Settings &gt; Privacy &amp; Security &gt; Full Disk Access.
-      </p>
+    <div className="tile space-y-4">
+      <div>
+        <div className="scard__title">iMessage Bridge</div>
+        <div className="scard__desc">
+          Enable to send and receive messages with your agent via iMessage. Requires Full Disk Access for Terminal in System Settings &gt; Privacy &amp; Security &gt; Full Disk Access.
+        </div>
+      </div>
 
       {/* Toggle */}
       <div className="flex items-center justify-between">
         <label className="text-sm text-ui/70">Enable iMessage Bridge</label>
         <button
+          type="button"
+          aria-pressed={enabled}
           onClick={() => setEnabled(!enabled)}
-          className={`toggle-switch ${enabled ? 'toggle-on' : ''}`}
-        >
-          <span className="toggle-knob" />
-        </button>
+          className={`switch ${enabled ? 'is-on' : ''}`}
+        />
       </div>
 
       {/* Approved Senders */}
@@ -601,7 +593,7 @@ const IMBridgeSettings = () => {
 
 const PlatformTab = () => {
   return (
-    <div className="columns-1 lg:columns-2 gap-6 max-w-4xl [&>*]:mb-6 [&>*]:break-inside-avoid">
+    <div className="scards">
       <AgentLimitsSettings />
       <OllamaSettings />
       <RemoteAccessSettings />
@@ -704,18 +696,21 @@ const ServerControlSettings = () => {
   };
 
   return (
-    <div className="glass-card p-4 space-y-3">
-      <h3 className="card-header">Server</h3>
-      <p className="text-xs text-ui/40">
-        Most settings on this tab hot-reload and do not need a restart. Use this if you've changed
-        something deeper (model registry, OAuth config) that asked for a restart, or if the server
-        looks stuck and you want to recycle it without SSHing to the host.
-      </p>
+    <div className="tile space-y-3">
+      <div>
+        <div className="scard__title">Server</div>
+        <div className="scard__desc">
+          Most settings on this tab hot-reload and do not need a restart. Use this if you've changed
+          something deeper (model registry, OAuth config) that asked for a restart, or if the server
+          looks stuck and you want to recycle it without SSHing to the host.
+        </div>
+      </div>
 
       {!confirming && !restarting && (
         <button
+          type="button"
           onClick={() => setConfirming(true)}
-          className="px-4 py-2 glass-btn text-sm font-medium rounded-lg transition-colors"
+          className="btn"
         >
           Restart server
         </button>
@@ -723,19 +718,21 @@ const ServerControlSettings = () => {
 
       {confirming && !restarting && (
         <div className="space-y-2">
-          <div className="alert-banner alert-warning text-xs">
+          <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal' }}>
             This exits the server process immediately. In production it auto-restarts via launchd
             within a few seconds. <strong>If you're running `npm run dev`</strong>, tsx watch will
             NOT bring it back — you'll need to re-run the command in your terminal.
           </div>
-          <div className="flex gap-2">
+          <div className="srow">
             <button
+              type="button"
               onClick={doRestart}
-              className="px-3 py-2 glass-btn-primary text-sm rounded-lg transition-colors"
+              className="btn btn--primary btn--sm"
             >
               Yes, restart now
             </button>
             <button
+              type="button"
               onClick={() => setConfirming(false)}
               className="px-3 py-2 text-sm text-ui/55 hover:text-ui/90 transition-colors"
             >
@@ -746,7 +743,7 @@ const ServerControlSettings = () => {
       )}
 
       {restarting && (
-        <div className="alert-banner alert-info text-xs">
+        <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal' }}>
           Restarting server… the dashboard will reconnect automatically once it's back up.
         </div>
       )}
@@ -767,9 +764,10 @@ const ServerControlSettings = () => {
             </p>
             {backups.count > 1 && (
               <button
+                type="button"
                 onClick={doCleanup}
                 disabled={cleaning}
-                className="px-3 py-2 glass-btn text-sm rounded-lg transition-colors disabled:opacity-60"
+                className="btn btn--sm"
               >
                 {cleaning ? 'Cleaning up…' : 'Clean up old backups (keep most recent 1)'}
               </button>
@@ -787,35 +785,32 @@ const FengShuiSettings = () => {
   const { themeId, setTheme, themes } = useTheme();
 
   return (
-    <div className="glass-card p-5 space-y-4">
-      <h3 className="card-header">Feng Shui</h3>
-      <p className="text-xs text-ui/40">
+    <div className="tile">
+      <div className="scard__title">Feng Shui</div>
+      <div className="scard__desc">
         Choose the visual theme for your Dojo.
-      </p>
-
-      <div className="grid gap-3">
-        {themes.map(theme => (
-          <button
-            key={theme.id}
-            onClick={() => setTheme(theme.id)}
-            className={`flex items-center gap-3 p-3 rounded-xl border transition-all text-left ${
-              themeId === theme.id
-                ? 'border-cp-amber bg-cp-amber/10'
-                : 'border-ui/[0.10] bg-ui/[0.03] hover:bg-ui/[0.08]'
-            }`}
-          >
-            <div className={`w-3 h-3 rounded-full shrink-0 border-2 ${
-              themeId === theme.id
-                ? 'border-cp-amber bg-cp-amber'
-                : 'border-ui/[0.15] bg-transparent'
-            }`} />
-            <div>
-              <div className="text-sm font-medium text-ui">{theme.name}</div>
-              <div className="text-xs text-ui/40">{theme.description}</div>
-            </div>
-          </button>
-        ))}
       </div>
+
+      {themes.map(theme => {
+        const selected = themeId === theme.id;
+        return (
+          <div
+            key={theme.id}
+            role="radio"
+            aria-checked={selected}
+            tabIndex={0}
+            onClick={() => setTheme(theme.id)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setTheme(theme.id); } }}
+            className={`radio-card ${selected ? 'is-selected' : ''}`}
+          >
+            <span className="radio-card__dot" />
+            <div>
+              <div className="radio-card__name">{theme.name}</div>
+              <div className="radio-card__desc">{theme.description}</div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 };
@@ -826,17 +821,18 @@ const MigrationSettings = () => {
   const [showImport, setShowImport] = useState(false);
 
   return (
-    <div className="glass-card p-5 space-y-4">
-      <h3 className="card-header">Migration</h3>
-      <p className="text-xs text-ui/40">
+    <div className="tile">
+      <div className="scard__title">Migration</div>
+      <div className="scard__desc">
         Export your entire dojo to move it to another machine, or import from a previous export.
-      </p>
+      </div>
 
-      <div className="flex gap-3">
+      <div className="srow">
         <MigrationExport />
         <button
+          type="button"
           onClick={() => setShowImport(!showImport)}
-          className="px-4 py-2 bg-ui/[0.05] hover:bg-ui/[0.12] text-ui/70 text-sm font-medium rounded-lg transition-colors"
+          className="btn"
         >
           {showImport ? 'Cancel Import' : 'Import Dojo'}
         </button>
@@ -967,21 +963,23 @@ const RemoteAccessSettings = () => {
     }
   };
 
-  if (loading) return <div className="loading-state">Loading...</div>;
+  if (loading) return <div className="tile loading-state">Loading...</div>;
 
   const isActive = status?.status === 'active';
   const isStarting = status?.status === 'starting';
 
   return (
-    <div className="glass-card p-4 space-y-4">
-      <h3 className="card-header">Remote Access</h3>
-      <p className="text-xs text-ui/40">
-        Access your dojo from anywhere via Cloudflare Tunnel.
-      </p>
+    <div className="tile space-y-4">
+      <div>
+        <div className="scard__title">Remote Access</div>
+        <div className="scard__desc">
+          Access your dojo from anywhere via Cloudflare Tunnel.
+        </div>
+      </div>
 
       {/* Security warning */}
       {(isActive || isStarting) && (
-        <div className="px-3 py-2 rounded-lg bg-cp-amber/10 border border-cp-amber/20 text-xs text-cp-amber">
+        <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal' }}>
           Your dojo is accessible from the internet. Make sure you have a strong password set in Settings &gt; Security.
         </div>
       )}
@@ -991,9 +989,10 @@ const RemoteAccessSettings = () => {
         <div className="glass-nested rounded-xl p-3 space-y-2">
           <p className="text-xs text-ui/55">cloudflared is not installed.</p>
           <button
+            type="button"
             onClick={handleInstall}
             disabled={installing}
-            className="px-3 py-1.5 text-xs glass-btn-primary rounded-lg transition-colors"
+            className="btn btn--primary btn--sm"
           >
             {installing ? 'Installing...' : 'Install cloudflared'}
           </button>
@@ -1006,17 +1005,15 @@ const RemoteAccessSettings = () => {
           {/* Status display */}
           {isActive && (
             <div className="glass-nested rounded-xl p-3 space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-cp-teal animate-pulse" />
-                <span className="text-xs text-cp-teal font-medium">Tunnel Active</span>
+              <div className="tech__head">
+                <span className="pill pill--ok"><i className="dot" />Tunnel active</span>
                 {status.mode === 'quick' && <span className="text-[10px] text-ui/25">Quick Tunnel</span>}
                 {status.mode === 'named' && <span className="text-[10px] text-ui/25">Named Tunnel</span>}
+                <span className="toolbar__spacer" />
+                {status.url && <span className="link" onClick={copyUrl}>Copy</span>}
               </div>
               {status.url && (
-                <div className="flex items-center gap-2">
-                  <a href={status.url} target="_blank" rel="noopener noreferrer" className="text-xs text-cp-teal font-mono flex-1 truncate hover:underline">{status.url}</a>
-                  <button onClick={copyUrl} className="text-[10px] text-ui/40 hover:text-ui/70 shrink-0">Copy</button>
-                </div>
+                <a href={status.url} target="_blank" rel="noopener noreferrer" className="mono-url" style={{ display: 'block', marginTop: 6 }}>{status.url}</a>
               )}
               {/* When in named mode and no URL saved yet, let the user add it
                   inline without disabling+re-enabling. The URL is what was
@@ -1024,18 +1021,20 @@ const RemoteAccessSettings = () => {
               {status.mode === 'named' && !status.url && (
                 <div className="space-y-1">
                   <p className="text-[10px] text-ui/40">Add the public URL you configured in Cloudflare so the dashboard and the agent can use it.</p>
-                  <div className="flex gap-1">
+                  <div className="srow">
                     <input
                       type="text"
                       value={namedUrl}
                       onChange={(e) => setNamedUrl(e.target.value)}
                       placeholder="https://dojo.example.com"
-                      className="glass-input flex-1 text-xs"
+                      className="finput"
+                      style={{ flex: 1, width: 'auto' }}
                     />
                     <button
+                      type="button"
                       onClick={handleSaveNamedUrl}
                       disabled={acting || !namedUrl.trim()}
-                      className="px-3 text-xs glass-btn-primary rounded-lg shrink-0 disabled:opacity-40"
+                      className="btn btn--primary btn--sm"
                     >
                       Save
                     </button>
@@ -1043,6 +1042,7 @@ const RemoteAccessSettings = () => {
                 </div>
               )}
               <button
+                type="button"
                 onClick={handleDisable}
                 disabled={acting}
                 className="text-xs text-cp-coral hover:text-cp-coral/80 transition-colors"
@@ -1054,10 +1054,7 @@ const RemoteAccessSettings = () => {
 
           {isStarting && (
             <div className="glass-nested rounded-xl p-3">
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-cp-amber animate-pulse" />
-                <span className="text-xs text-cp-amber">Starting tunnel...</span>
-              </div>
+              <span className="pill pill--draft"><i className="dot" />Starting tunnel</span>
             </div>
           )}
 
@@ -1127,7 +1124,7 @@ const RemoteAccessSettings = () => {
                     value={token}
                     onChange={(e) => setToken(e.target.value)}
                     placeholder="Cloudflare tunnel token (eyJ...)"
-                    className="glass-input w-full"
+                    className="finput"
                   />
                   <div className="text-[10px] text-ui/40 font-medium pt-1">Phase 2 — Bind a URL (after the tunnel connects)</div>
                   <div className="text-[10px] text-ui/25 space-y-0.5">
@@ -1141,7 +1138,7 @@ const RemoteAccessSettings = () => {
                     value={namedUrl}
                     onChange={(e) => setNamedUrl(e.target.value)}
                     placeholder="https://dojo.example.com"
-                    className="glass-input w-full"
+                    className="finput"
                   />
                   <p className="text-[10px] text-ui/25">
                     No domain on Cloudflare yet? Add one at <a href="https://dash.cloudflare.com/" target="_blank" rel="noopener noreferrer" className="font-mono text-cp-blue hover:underline">dash.cloudflare.com</a> &rarr; <span className="font-mono">+ Add &rarr; Existing domain</span> (free DNS transfer), or register one through Cloudflare Registrar (~$8–10/yr).
@@ -1150,9 +1147,10 @@ const RemoteAccessSettings = () => {
               )}
 
               <button
+                type="button"
                 onClick={handleEnable}
                 disabled={acting || (mode === 'named' && !token.trim())}
-                className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
+                className="btn btn--primary"
               >
                 {acting ? 'Connecting...' : mode === 'named' ? 'Save & Connect' : 'Enable Remote Access'}
               </button>
@@ -1192,39 +1190,38 @@ const OllamaSettings = () => {
     setSaving(false);
   };
 
-  if (loading) return <div className="loading-state">Loading...</div>;
+  if (loading) return <div className="tile loading-state">Loading...</div>;
 
   return (
-    <div className="glass-card p-4 space-y-4">
-      <h3 className="card-header">Ollama (Local Models)</h3>
-      <p className="text-xs text-ui/40">
+    <div className="tile">
+      <div className="scard__title">Ollama (Local Models)</div>
+      <div className="scard__desc">
         Controls how many different Ollama models can be loaded in RAM simultaneously.
         Set to 1 for 16GB machines, 2+ if you have more RAM.
-      </p>
-      <div>
-        <label className="form-label">Max Concurrent Models</label>
+      </div>
+      <label className="flabel">Max Concurrent Models</label>
+      <div className="srow">
         <input
           type="number"
           min={1}
           max={8}
           value={maxConcurrent}
           onChange={(e) => setMaxConcurrent(e.target.value)}
-          className="glass-input w-24"
+          className="finput"
         />
-        <p className="text-[10px] text-ui/25 mt-0.5">
-          When agents use more local models than this limit, requests queue until the current model finishes.
-          A 7B model uses ~4GB RAM, a 30B model uses ~16GB.
-        </p>
-      </div>
-      <div className="flex items-center gap-2">
         <button
+          type="button"
           onClick={handleSave}
           disabled={saving}
-          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
+          className="btn btn--primary btn--sm"
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
         {saved && <span className="text-xs text-cp-teal">Saved!</span>}
+      </div>
+      <div className="fhelp">
+        When agents use more local models than this limit, requests queue until the current model finishes.
+        A 7B model uses ~4GB RAM, a 30B model uses ~16GB.
       </div>
     </div>
   );
@@ -1272,35 +1269,36 @@ const AgentLimitsSettings = () => {
     setSaving(false);
   };
 
-  if (loading) return <div className="loading-state">Loading...</div>;
+  if (loading) return <div className="tile loading-state">Loading...</div>;
 
   return (
-    <div className="glass-card p-4 space-y-4">
-      <h3 className="card-header">Dojo Capacity</h3>
-      <p className="text-xs text-ui/40">
+    <div className="tile">
+      <div className="scard__title">Dojo Capacity</div>
+      <div className="scard__desc">
         Controls how many agents can run and how they are spawned. Changes take effect immediately.
-      </p>
-      <div className="grid grid-cols-2 gap-4">
+      </div>
+      <div className="fgrid">
         {AGENT_LIMIT_KEYS.map((item) => (
           <div key={item.key}>
-            <label className="form-label">{item.label}</label>
+            <label className="flabel">{item.label}</label>
             <input
               type="number"
               min={item.min}
               max={item.max}
               value={values[item.key] ?? item.default}
               onChange={(e) => setValues(prev => ({ ...prev, [item.key]: e.target.value }))}
-              className="glass-input w-full"
+              className="finput"
             />
-            <p className="text-[10px] text-ui/25 mt-0.5">{item.description}</p>
+            <div className="fhelp">{item.description}</div>
           </div>
         ))}
       </div>
-      <div className="flex items-center gap-2">
+      <div className="srow">
         <button
+          type="button"
           onClick={handleSave}
           disabled={saving}
-          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
+          className="btn btn--primary"
         >
           {saving ? 'Saving...' : 'Save Limits'}
         </button>
@@ -1383,92 +1381,84 @@ const SearchSettings = () => {
   if (loading) return null;
 
   return (
-    <div className="glass-card p-4 space-y-4">
-      <h3 className="card-header">Web Search Provider</h3>
-      <p className="text-xs text-ui/40">
+    <div className="tile">
+      <div className="scard__title">Web Search Provider</div>
+      <div className="scard__desc">
         Configure web search for the web_search tool.
-      </p>
-
-      <div>
-        <label className="form-label">Provider</label>
-        <select
-          value={provider}
-          onChange={(e) => setProvider(e.target.value)}
-          className="glass-select w-full"
-        >
-          <option value="brave">Brave Search</option>
-        </select>
       </div>
 
-      <div>
-        <label className="form-label">
-          Brave Search API Key
-        </label>
-        <input
-          type="password"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          placeholder={hasKey ? '••••••••••••••••' : 'Enter Brave Search API key'}
-          className="glass-input w-full"
-        />
-        <p className="text-[11px] text-ui/40 mt-1">
-          Brave Search has a free tier (2,000 queries/month).{' '}
-          <a
-            href="https://api-dashboard.search.brave.com/app/keys"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-cp-teal hover:text-cp-teal/80 underline"
-          >
-            Get a key ↗
-          </a>{' '}
-          · No account?{' '}
-          <a
-            href="https://api-dashboard.search.brave.com/register"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-cp-teal hover:text-cp-teal/80 underline"
-          >
-            Sign up ↗
-          </a>
-        </p>
+      <label className="flabel">Provider</label>
+      <select
+        value={provider}
+        onChange={(e) => setProvider(e.target.value)}
+        className="finput field--select"
+        style={{ marginBottom: 14 }}
+      >
+        <option value="brave">Brave Search</option>
+      </select>
+
+      <label className="flabel">Brave Search API Key</label>
+      <input
+        type="password"
+        value={apiKey}
+        onChange={(e) => setApiKey(e.target.value)}
+        placeholder={hasKey ? '••••••••••••••••' : 'Enter Brave Search API key'}
+        aria-label="API key"
+        className="finput"
+      />
+      <div className="fhelp" style={{ marginBottom: 14 }}>
+        Brave Search has a free tier (2,000 queries/month).{' '}
+        <a
+          href="https://api-dashboard.search.brave.com/app/keys"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="link"
+        >
+          Get a key
+        </a>{' '}
+        · No account?{' '}
+        <a
+          href="https://api-dashboard.search.brave.com/register"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="link"
+        >
+          Sign up
+        </a>
       </div>
 
       {error && (
-        <div className="alert-banner alert-error">
+        <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal' }}>
           {error}
         </div>
       )}
 
       {validationResult === 'valid' && (
-        <div className="alert-banner alert-success">
+        <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal' }}>
           API key is valid
         </div>
       )}
 
-      <div className="flex items-center gap-2">
+      <div className="srow">
         <button
+          type="button"
           onClick={handleSave}
           disabled={saving || !apiKey.trim()}
-          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
+          className="btn btn--primary btn--sm"
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
         <button
+          type="button"
           onClick={handleValidate}
           disabled={validating || (!apiKey.trim() && !hasKey)}
-          className="px-4 py-2 bg-ui/[0.08] hover:bg-ui/[0.12] disabled:bg-ui/[0.05] disabled:text-ui/25 text-ui/90 text-sm font-medium rounded-lg transition-colors"
+          className="btn btn--sm"
         >
           {validating ? 'Validating...' : 'Validate'}
         </button>
+        <span className="toolbar__spacer" />
         {saved && <span className="text-xs text-cp-teal">Saved!</span>}
-      </div>
-
-      <div className="flex items-center gap-2">
-        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-          hasKey
-            ? 'bg-cp-teal/10 text-cp-teal border border-cp-teal/20'
-            : 'bg-ui/[0.08] text-ui/55 border border-ui/[0.10]'
-        }`}>
+        <span className={`pill ${hasKey ? 'pill--ok' : ''}`}>
           {hasKey ? 'Configured' : 'Not configured'}
         </span>
       </div>
@@ -1635,7 +1625,7 @@ const ProvidersTab = () => {
           {providers.map((provider) => (
             <div
               key={provider.id}
-              className="glass-card p-4 flex items-center justify-between"
+              className="tile flex items-center justify-between"
             >
               <div>
                 <h3 className="text-sm font-medium text-ui">{provider.name}</h3>
@@ -1674,8 +1664,9 @@ const ProvidersTab = () => {
         />
       ) : (
         <button
+          type="button"
           onClick={() => setShowAdd(true)}
-          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
+          className="btn btn--primary"
         >
           Add Provider
         </button>
@@ -1757,23 +1748,23 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
   };
 
   return (
-    <form onSubmit={handleSubmit} className="glass-card p-4 space-y-3">
-      <div className="grid grid-cols-2 gap-3">
+    <form onSubmit={handleSubmit} className="tile space-y-3">
+      <div className="fgrid" style={{ marginBottom: 0 }}>
         <div>
-          <label className="form-label">Name</label>
+          <label className="flabel">Name</label>
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="glass-input w-full"
+            className="finput"
           />
         </div>
         <div>
-          <label className="form-label">Type</label>
+          <label className="flabel">Type</label>
           <select
             value={preset}
             onChange={(e) => setPreset(e.target.value)}
-            className="glass-select w-full"
+            className="finput field--select"
           >
             <option value="anthropic">Anthropic</option>
             <option value="openai">OpenAI</option>
@@ -1786,13 +1777,13 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
 
       {preset === 'ollama' && (
         <div>
-          <label className="form-label">Base URL</label>
+          <label className="flabel">Base URL</label>
           <input
             type="text"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder="http://localhost:11434"
-            className="glass-input w-full"
+            className="finput"
           />
           <p className="text-[11px] text-ui/40 mt-1">
             Ollama runs models locally — no account needed.{' '}
@@ -1813,11 +1804,11 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
         <>
           {preset === 'anthropic' && (
             <div>
-              <label className="form-label">Auth Type</label>
+              <label className="flabel">Auth Type</label>
               <select
                 value={authType}
                 onChange={(e) => setAuthType(e.target.value as 'api_key' | 'oauth' | 'agent-sdk')}
-                className="glass-select w-full"
+                className="finput field--select"
               >
                 <option value="api_key">API Key</option>
                 <option value="oauth">OAuth Token</option>
@@ -1830,7 +1821,7 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
             <AgentSdkSetup />
           ) : (
             <div>
-              <label className="form-label">
+              <label className="flabel">
                 {authType === 'oauth' && preset === 'anthropic' ? 'OAuth Token' : 'API Key'}
               </label>
               <input
@@ -1842,7 +1833,7 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
                   preset === 'openai' ? 'sk-...' :
                   authType === 'oauth' ? 'Bearer token...' : 'sk-...'
                 }
-                className="glass-input w-full"
+                className="finput"
               />
               {/* Per-provider help: where to grab a key (or create an
                   account first). Each link opens the provider's
@@ -1920,11 +1911,11 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
         </div>
       )}
 
-      <div className="flex gap-2">
+      <div className="srow">
         <button
           type="submit"
           disabled={status === 'saving' || status === 'validating' || status === 'valid' || !name.trim() || (preset !== 'ollama' && authType !== 'agent-sdk' && !credential.trim())}
-          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
+          className="btn btn--primary btn--sm"
         >
           {status === 'saving' ? 'Adding...' : status === 'validating' ? 'Validating...' : 'Add & Validate'}
         </button>
@@ -1964,7 +1955,7 @@ const ProviderModelGroup = ({
   const enabledCount = models.filter(m => m.isEnabled).length;
 
   return (
-    <div className="glass-card overflow-hidden">
+    <div className="tile overflow-hidden">
       <button
         onClick={() => setOpen(!open)}
         className="w-full px-4 py-3 flex items-center justify-between text-sm font-medium text-ui/70 hover:bg-ui/[0.03] transition-colors"
@@ -2061,7 +2052,7 @@ const OllamaHostRamRow = ({ provider, onChange }: { provider: Provider; onChange
 
   if (isLocal) {
     return (
-      <div className="glass-card p-3 flex items-center gap-3 text-xs">
+      <div className="glass-nested rounded-xl p-3 flex items-center gap-3 text-xs">
         <span className="text-ui/40 w-20">Host RAM</span>
         <span className="text-ui/70 font-mono">auto-detected (this machine)</span>
         <span className="text-[10px] text-ui/25 italic">
@@ -2072,7 +2063,7 @@ const OllamaHostRamRow = ({ provider, onChange }: { provider: Provider; onChange
   }
 
   return (
-    <div className="glass-card p-3 flex items-center gap-3 text-xs">
+    <div className="glass-nested rounded-xl p-3 flex items-center gap-3 text-xs">
       <label className="text-ui/40 w-20" title="Total RAM of the remote Ollama host in GB. The dojo uses this value to auto-size num_ctx recommendations for every model on this provider.">
         Host RAM
       </label>
@@ -2419,7 +2410,7 @@ const ModelRow = ({
   };
 
   return (
-    <div className="glass-card p-4">
+    <div className="tile">
       <div className="flex items-center justify-between mb-3">
         <div>
           <h3 className="text-sm font-medium text-ui">
@@ -2509,11 +2500,11 @@ const ModelRow = ({
         </div>
         <div className="flex items-center gap-2">
           <button
+            type="button"
+            aria-pressed={model.isEnabled}
             onClick={onToggle}
-            className={`toggle-switch ${model.isEnabled ? 'toggle-on' : ''}`}
-          >
-            <span className="toggle-knob" />
-          </button>
+            className={`switch ${model.isEnabled ? 'is-on' : ''}`}
+          />
           <button
             onClick={async () => {
               if (!confirm(`Delete "${model.name}"? This removes it from the dojo entirely.`)) return;
@@ -3064,8 +3055,8 @@ const BrowseModels = ({ providerId, providerName, onModelAdded }: { providerId: 
   };
 
   return (
-    <div className="glass-card p-4 space-y-3">
-      <h3 className="card-header">Browse {providerName} Models</h3>
+    <div className="tile space-y-3">
+      <h3 className="scard__title">Browse {providerName} Models</h3>
       <p className="text-xs text-ui/40">Search the model catalog and add models you want to use.</p>
       <div className="flex gap-2">
         <input
@@ -3692,10 +3683,10 @@ const ModelsTab = () => {
       )}
 
       {/* Platform-level model pickers — placed below the provider
-          catalogs. Up to 3 columns on lg+ viewports, 2 on md, 1 on
-          mobile. Receive the live models list as a prop so newly-
+          catalogs. Masonry of capability cards (matches the prototype's
+          .scards). Receive the live models list as a prop so newly-
           added models show up in the dropdowns without a page reload. */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 pt-3">
+      <div className="scards pt-3">
         <FallbackVisionModelCard models={models} />
         <ImageGenModelCard models={models} />
         <VideoGenModelCard models={models} />
@@ -3751,9 +3742,9 @@ const ProfileTab = () => {
   return (
     <div className="space-y-6 max-w-4xl">
       {/* Your Name */}
-      <div className="glass-card p-4 space-y-3">
-        <h3 className="card-header">Your Name</h3>
-        <p className="text-xs text-ui/40">Used in memory summaries and agent conversations to identify you.</p>
+      <div className="tile space-y-3">
+        <div className="scard__title">Your Name</div>
+        <div className="scard__desc">Used in memory summaries and agent conversations to identify you.</div>
         {loadingName ? (
           <div className="h-10 glass-nested rounded-xl animate-pulse" />
         ) : (
@@ -3763,11 +3754,11 @@ const ProfileTab = () => {
               value={userName}
               onChange={(e) => setUserName(e.target.value)}
               placeholder="e.g., Alex"
-              className="glass-input w-full"
+              className="finput"
             />
-            <div className="flex items-center gap-2">
-              <button onClick={handleSaveName} disabled={savingName || !userName.trim()}
-                className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors">
+            <div className="srow">
+              <button type="button" onClick={handleSaveName} disabled={savingName || !userName.trim()}
+                className="btn btn--primary btn--sm">
                 {savingName ? 'Saving...' : 'Save'}
               </button>
               {savedName && <span className="text-xs text-cp-teal">Saved!</span>}
@@ -3777,19 +3768,19 @@ const ProfileTab = () => {
       </div>
 
       {/* About You (USER.md) */}
-      <div className="glass-card p-4 space-y-3">
+      <div className="tile space-y-3">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="card-header">About You</h3>
-            <p className="text-xs text-ui/40 mt-0.5">
+            <div className="scard__title">About You</div>
+            <div className="scard__desc" style={{ marginBottom: 0 }}>
               Information about you that agents will know when "Share User Profile" is enabled.
               Your preferences, businesses, projects, communication style, etc.
-            </p>
+            </div>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="srow shrink-0">
             {savedProfile && <span className="text-xs text-cp-teal">Saved!</span>}
-            <button onClick={handleSaveProfile} disabled={savingProfile || loadingProfile}
-              className="px-3 py-1.5 glass-btn-primary text-xs font-medium rounded-lg transition-colors">
+            <button type="button" onClick={handleSaveProfile} disabled={savingProfile || loadingProfile}
+              className="btn btn--primary btn--sm">
               {savingProfile ? 'Saving...' : 'Save'}
             </button>
           </div>
@@ -3931,48 +3922,48 @@ const SecurityTab = () => {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="glass-card p-4 space-y-4 max-w-lg">
-      <h3 className="card-header">Change Password</h3>
+    <form onSubmit={handleSubmit} className="tile space-y-4 max-w-lg">
+      <div className="scard__title">Change Password</div>
 
       <div>
-        <label className="form-label">Current Password</label>
+        <label className="flabel">Current Password</label>
         <input
           type="password"
           value={currentPassword}
           onChange={(e) => setCurrentPassword(e.target.value)}
-          className="glass-input w-full"
+          className="finput"
         />
       </div>
 
       <div>
-        <label className="form-label">New Password</label>
+        <label className="flabel">New Password</label>
         <input
           type="password"
           value={newPassword}
           onChange={(e) => setNewPassword(e.target.value)}
           placeholder="At least 8 characters"
-          className="glass-input w-full"
+          className="finput"
         />
       </div>
 
       <div>
-        <label className="form-label">Confirm New Password</label>
+        <label className="flabel">Confirm New Password</label>
         <input
           type="password"
           value={confirmPassword}
           onChange={(e) => setConfirmPassword(e.target.value)}
-          className="glass-input w-full"
+          className="finput"
         />
       </div>
 
       {error && (
-        <div className="alert-banner alert-error">
+        <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal' }}>
           {error}
         </div>
       )}
 
       {success && (
-        <div className="alert-banner alert-success">
+        <div className="note--warn" style={{ textTransform: 'none', letterSpacing: 'normal' }}>
           Password changed successfully!
         </div>
       )}
@@ -3980,7 +3971,7 @@ const SecurityTab = () => {
       <button
         type="submit"
         disabled={saving || !currentPassword || !newPassword || !confirmPassword}
-        className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
+        className="btn btn--primary"
       >
         {saving ? 'Changing...' : 'Change Password'}
       </button>
@@ -4057,22 +4048,22 @@ const DreamingTab = () => {
   if (loading) return <div className="loading-state">Loading...</div>;
 
   return (
-    <div className="max-w-4xl">
-      <div className="columns-1 lg:columns-2 gap-6 [&>*]:mb-6 [&>*]:break-inside-avoid">
-      <div className="glass-card p-4 space-y-4">
+    <div>
+      <div className="scards">
+      <div className="tile space-y-4">
         <div>
-          <h3 className="card-header">Dreaming</h3>
+          <div className="scard__title">Dreaming</div>
           <p className="text-xs text-ui/40 mt-1">
             Configure how the dojo processes its daily conversations into long-term memories overnight. A temporary "Dreamer" agent is spawned to do the work -- it uses the tracker, extracts knowledge, and dismisses itself when done.
           </p>
         </div>
 
         <div>
-          <label className="form-label">Dreamer Model</label>
+          <label className="flabel">Dreamer Model</label>
           <select
             value={dreamModelId}
             onChange={(e) => setDreamModelId(e.target.value)}
-            className="glass-select w-full"
+            className="finput field--select"
           >
             <option value="">Auto (first available Standard tier model)</option>
             {models.map((m) => (
@@ -4081,26 +4072,26 @@ const DreamingTab = () => {
               </option>
             ))}
           </select>
-          <p className="text-[10px] text-ui/25 mt-1">
+          <div className="fhelp">
             The model the Dreamer agent uses. Standard tier recommended for good extraction quality at reasonable cost.
-          </p>
+          </div>
         </div>
 
         <div>
-          <label className="form-label">Dream Time</label>
+          <label className="flabel">Dream Time</label>
           <input
             type="time"
             value={dreamTime}
             onChange={(e) => setDreamTime(e.target.value)}
-            className="glass-select w-full"
+            className="finput"
           />
-          <p className="text-[10px] text-ui/25 mt-1">
+          <div className="fhelp">
             When the Dreamer agent wakes up to process the day's conversations. Default: 3:00 AM.
-          </p>
+          </div>
         </div>
 
         <div>
-          <label className="form-label mb-2">Dream Mode</label>
+          <label className="flabel mb-2">Dream Mode</label>
           <div className="space-y-2">
             {([
               { value: 'full', label: 'Full Dream', desc: 'Extract memories + identify technique candidates + vault maintenance' },
@@ -4124,18 +4115,20 @@ const DreamingTab = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-3 pt-2 flex-wrap">
+        <div className="srow pt-2 flex-wrap">
           <button
+            type="button"
             onClick={handleSave}
             disabled={saving}
-            className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
+            className="btn btn--primary btn--sm"
           >
             {saving ? 'Saving...' : 'Save'}
           </button>
           <button
+            type="button"
             onClick={handleRunNow}
             disabled={running}
-            className="px-4 py-2 text-sm font-medium rounded-lg bg-ui/[0.08] text-ui/55 border border-ui/[0.10] hover:border-ui/[0.15] hover:text-ui/70 transition-colors disabled:opacity-40"
+            className="btn btn--sm"
             title="Wake the Dreamer now to process unprocessed archives"
           >
             {running ? 'Starting...' : 'Run Now'}
@@ -4155,8 +4148,8 @@ const DreamingTab = () => {
 
       {/* Last Dream Report — full width below the grid */}
       {lastDream && (
-        <div className="glass-card p-4 space-y-2 mt-6">
-          <h3 className="card-header">Last Dream</h3>
+        <div className="tile space-y-2 mt-6">
+          <div className="scard__title">Last Dream</div>
           <p className="text-[10px] text-ui/25">
             {formatDate(lastDream.createdAt)}
             {lastDream.durationMs && ` (${(lastDream.durationMs / 1000).toFixed(1)}s)`}
@@ -4276,9 +4269,9 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
   if (loading) return null;
 
   return (
-    <div className="glass-card p-4 space-y-4">
+    <div className="tile space-y-4">
       <div>
-        <h3 className="card-header">Imaginer (Image Generation Sensei)</h3>
+        <div className="scard__title">Imaginer (Image Generation Sensei)</div>
         <p className="text-xs text-ui/40 mt-1">
           Imaginer is a system agent that turns text descriptions into images when any agent calls the{' '}
           <code className="text-cp-amber">image_create</code> tool. {primaryAgentName} and sub-agents never need to switch models
@@ -4299,7 +4292,7 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
 
       {/* Model dropdown */}
       <div>
-        <label className="form-label">Image Generation Model</label>
+        <label className="flabel">Image Generation Model</label>
         {imageCapableModels.length === 0 ? (
           <div className="alert-banner alert-warning">
             No image-capable models configured. Add an image-generating model (e.g. Google Gemini 2.5 Flash Image or
@@ -4312,7 +4305,7 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
             <select
               value={imageModelId}
               onChange={(e) => setImageModelId(e.target.value)}
-              className="glass-input w-full"
+              className="finput field--select"
             >
               <option value="">(select an image model)</option>
               {imageCapableModels.map((m) => (
@@ -4332,51 +4325,53 @@ const ImaginerCard = ({ models }: { models: Model[] }) => {
 
       {/* Default aspect ratio */}
       <div>
-        <label className="form-label">Default Aspect Ratio</label>
+        <label className="flabel">Default Aspect Ratio</label>
         <select
           value={defaultAspect}
           onChange={(e) => setDefaultAspect(e.target.value)}
-          className="glass-input w-full"
+          className="finput field--select"
         >
           {ASPECT_RATIOS.map(r => <option key={r} value={r}>{r}</option>)}
         </select>
-        <p className="text-[10px] text-ui/25 mt-1">Used when requesting agents don't specify one.</p>
+        <div className="fhelp">Used when requesting agents don't specify one.</div>
       </div>
 
       {/* Default style */}
       <div>
-        <label className="form-label">Default Style (optional)</label>
+        <label className="flabel">Default Style (optional)</label>
         <input
           type="text"
           value={defaultStyle}
           onChange={(e) => setDefaultStyle(e.target.value)}
           placeholder="e.g. photorealistic, cinematic lighting"
-          className="glass-input w-full"
+          className="finput"
         />
-        <p className="text-[10px] text-ui/25 mt-1">Fallback style hint when requesting agents don't specify one.</p>
+        <div className="fhelp">Fallback style hint when requesting agents don't specify one.</div>
       </div>
 
       {/* Output dir (read-only info) */}
       <div>
-        <label className="form-label">Output Directory</label>
+        <label className="flabel">Output Directory</label>
         <code className="block text-[11px] text-ui/55 px-3 py-2 bg-ui/[0.03] rounded font-mono">
           ~/.dojo/uploads/generated/
         </code>
       </div>
 
       {/* Save + Test buttons */}
-      <div className="flex items-center gap-3 pt-2">
+      <div className="srow pt-2">
         <button
+          type="button"
           onClick={handleSave}
           disabled={saving || !imageModelId || imageCapableModels.length === 0}
-          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
+          className="btn btn--primary btn--sm"
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
         <button
+          type="button"
           onClick={handleTest}
           disabled={testing || !imageModelId || imageCapableModels.length === 0}
-          className="px-4 py-2 bg-ui/[0.05] hover:bg-ui/[0.08] border border-ui/[0.10] disabled:bg-ui/[0.03] disabled:text-ui/25 text-ui/70 text-sm font-medium rounded-lg transition-colors"
+          className="btn btn--sm"
         >
           {testing ? 'Testing...' : 'Generate test image'}
         </button>
@@ -4552,9 +4547,9 @@ const CapabilityModelCard = ({
   const selectedExtra = extraOptions.find(o => o.id === selectedId) ?? null;
 
   return (
-    <div className="glass-card p-4 space-y-4">
+    <div className="tile space-y-4">
       <div>
-        <h3 className="card-header">{title}</h3>
+        <div className="scard__title">{title}</div>
         <p className="text-xs text-ui/40 mt-1">{description}</p>
       </div>
 
@@ -4571,11 +4566,11 @@ const CapabilityModelCard = ({
       {hasAnyOption && (
         <>
           <div>
-            <label className="form-label">{selectorLabel}</label>
+            <label className="flabel">{selectorLabel}</label>
             <select
               value={selectedId}
               onChange={(e) => setSelectedId(e.target.value)}
-              className="glass-input w-full"
+              className="finput field--select"
             >
               <option value="">(none)</option>
               {extraOptions.length > 0 && (
@@ -4602,19 +4597,21 @@ const CapabilityModelCard = ({
               : <ModelCostLine model={selectedModel} />}
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="srow">
             <button
+              type="button"
               onClick={handleSave}
               disabled={saving}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-cp-amber/15 text-cp-amber border border-cp-amber/30 hover:bg-cp-amber/25 transition-colors disabled:opacity-40"
+              className="btn btn--primary btn--sm"
             >
               {saving ? 'Saving...' : 'Save'}
             </button>
             {selectedId && (
               <button
+                type="button"
                 onClick={handleClear}
                 disabled={saving}
-                className="px-4 py-2 text-sm font-medium rounded-lg bg-ui/[0.08] text-ui/55 border border-ui/[0.10] hover:border-ui/[0.15] hover:text-ui/70 transition-colors disabled:opacity-40"
+                className="btn btn--sm"
               >
                 Clear
               </button>
@@ -4822,23 +4819,23 @@ const HealerCard = ({ models }: { models: Model[] }) => {
     setSendingReport(false);
   };
 
-  if (loading) return <div className="glass-card p-4"><div className="loading-state">Loading...</div></div>;
+  if (loading) return <div className="tile loading-state">Loading...</div>;
 
   return (
-    <div className="glass-card p-4 space-y-4">
+    <div className="tile space-y-4">
       <div>
-        <h3 className="card-header">Healing</h3>
+        <div className="scard__title">Healing</div>
         <p className="text-xs text-ui/40 mt-1">
           The Healer agent analyzes daily health data, auto-fixes routine issues (stuck agents, orphaned tasks), and proposes solutions for complex problems. Proposals appear on the Vitals page for your approval.
         </p>
       </div>
 
       <div>
-        <label className="form-label">Healer Model</label>
+        <label className="flabel">Healer Model</label>
         <select
           value={healerModelId}
           onChange={(e) => setHealerModelId(e.target.value)}
-          className="glass-select w-full"
+          className="finput field--select"
         >
           <option value="">Auto (first available mid-tier model)</option>
           {models.map((m) => (
@@ -4864,20 +4861,20 @@ const HealerCard = ({ models }: { models: Model[] }) => {
       </div>
 
       <div>
-        <label className="form-label">Healing Time</label>
+        <label className="flabel">Healing Time</label>
         <input
           type="time"
           value={healerTime}
           onChange={(e) => setHealerTime(e.target.value)}
-          className="glass-select w-full"
+          className="finput"
         />
-        <p className="text-[10px] text-ui/25 mt-1">
+        <div className="fhelp">
           When the Healer runs each day. Default: 4:00 AM (after the Dreamer).
-        </p>
+        </div>
       </div>
 
       <div>
-        <label className="form-label mb-2">Mode</label>
+        <label className="flabel mb-2">Mode</label>
         <div className="space-y-2">
           {([
             { value: 'active' as const, label: 'Active', desc: 'Auto-fix routine issues + propose complex fixes for your approval' },
@@ -4902,18 +4899,20 @@ const HealerCard = ({ models }: { models: Model[] }) => {
         </div>
       </div>
 
-      <div className="flex items-center gap-3 pt-2">
+      <div className="srow pt-2">
         <button
+          type="button"
           onClick={handleSave}
           disabled={saving}
-          className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
+          className="btn btn--primary btn--sm"
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
         <button
+          type="button"
           onClick={handleRunNow}
           disabled={running || healerMode === 'off'}
-          className="px-4 py-2 text-sm font-medium rounded-lg bg-ui/[0.08] text-ui/55 border border-ui/[0.10] hover:border-ui/[0.15] hover:text-ui/70 transition-colors disabled:opacity-40"
+          className="btn btn--sm"
         >
           {running ? 'Running...' : 'Run Now'}
         </button>
@@ -4922,9 +4921,10 @@ const HealerCard = ({ models }: { models: Model[] }) => {
 
       <div>
         <button
+          type="button"
           onClick={handleSendReport}
           disabled={sendingReport}
-          className="px-4 py-2 text-sm font-medium rounded-lg bg-ui/[0.08] text-ui/55 border border-ui/[0.10] hover:border-ui/[0.15] hover:text-ui/70 transition-colors disabled:opacity-40"
+          className="btn btn--sm"
         >
           {sendingReport ? 'Sending...' : 'Send Healer Report'}
         </button>
@@ -5002,10 +5002,10 @@ const UpdateTab = () => {
   };
 
   return (
-    <div className="columns-1 lg:columns-2 gap-6 max-w-4xl [&>*]:mb-6 [&>*]:break-inside-avoid">
-      <div className="glass-card p-4 space-y-4">
+    <div className="scards">
+      <div className="tile space-y-4">
         <div>
-          <h3 className="card-header">Software Update</h3>
+          <div className="scard__title">Software Update</div>
           <p className="text-xs text-ui/40 mt-1">
             Check for and install updates from the Agent D.O.J.O. repository.
           </p>
@@ -5061,20 +5061,22 @@ const UpdateTab = () => {
           </div>
         )}
 
-        <div className="flex items-center gap-3 pt-2">
+        <div className="srow pt-2">
           <button
+            type="button"
             onClick={checkUpdates}
             disabled={checking || updating}
-            className="px-4 py-2 bg-ui/[0.05] hover:bg-ui/[0.08] disabled:opacity-40 text-ui/70 text-sm font-medium rounded-lg transition-colors"
+            className="btn btn--sm"
           >
             {checking ? 'Checking...' : 'Check for Updates'}
           </button>
 
           {updateInfo?.updateAvailable && (
             <button
+              type="button"
               onClick={handleUpdate}
               disabled={updating}
-              className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
+              className="btn btn--primary btn--sm"
             >
               {updating ? 'Updating...' : 'Update Now'}
             </button>
@@ -5140,8 +5142,8 @@ const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) 
   };
 
   return (
-    <div className="glass-card p-4 space-y-3">
-      <h3 className="card-header">Previous Releases</h3>
+    <div className="tile space-y-3">
+      <div className="scard__title">Previous Releases</div>
       <p className="text-xs text-ui/40">
         Roll back to a previous version if the current release has issues.
       </p>
@@ -5656,8 +5658,8 @@ const VoiceTab = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
       {ttsTab === 'local' && (<>
       {/* Voice picker */}
-      <div className="glass-card p-4 space-y-3">
-        <h3 className="card-header">Voice for {primaryAgentName}</h3>
+      <div className="tile space-y-3">
+        <h3 className="scard__title">Voice for {primaryAgentName}</h3>
         <p className="text-xs text-ui/40">
           The voice your primary agent uses when reading replies back to you in voice mode.
         </p>
@@ -5688,8 +5690,8 @@ const VoiceTab = () => {
       {/* Custom voice imports — full-width inside the grid so the form has room
           to breathe. Visible even when no customs exist (the form is the main
           surface). */}
-      <div className="glass-card p-4 space-y-3 md:col-span-2">
-        <h3 className="card-header">Custom voice imports</h3>
+      <div className="tile space-y-3 md:col-span-2">
+        <h3 className="scard__title">Custom voice imports</h3>
         <p className="text-xs text-ui/40">
           Import a Kokoro voicepack (a 522,240-byte <code className="px-1 rounded bg-ui/[0.06]">.bin</code> file
           produced by fine-tuning or shared from elsewhere). Imported voices show up in the picker
@@ -5798,8 +5800,8 @@ const VoiceTab = () => {
       </div>
 
       {/* Playback speed */}
-      <div className="glass-card p-4 space-y-3">
-        <h3 className="card-header">Playback speed</h3>
+      <div className="tile space-y-3">
+        <h3 className="scard__title">Playback speed</h3>
         <p className="text-xs text-ui/40">How fast {primaryAgentName}'s voice plays back. 1.0 is the natural Kokoro rate.</p>
         <div className="flex items-center gap-3">
           <input
@@ -5819,8 +5821,8 @@ const VoiceTab = () => {
 
       {ttsTab === 'cloud' && (<>
       {/* Hume API key */}
-      <div className="glass-card p-4 space-y-3 md:col-span-2">
-        <h3 className="card-header">Hume API key</h3>
+      <div className="tile space-y-3 md:col-span-2">
+        <h3 className="scard__title">Hume API key</h3>
         <p className="text-xs text-ui/40">
           Cloud TTS uses Hume Octave. Grab a key from your Hume dashboard and paste it here.
           The key is stored on this machine only and is never sent to the browser after it's saved.
@@ -5885,8 +5887,8 @@ const VoiceTab = () => {
       </div>
 
       {/* Hume voice picker */}
-      <div className="glass-card p-4 space-y-3 md:col-span-2">
-        <h3 className="card-header">Voice for {primaryAgentName}</h3>
+      <div className="tile space-y-3 md:col-span-2">
+        <h3 className="scard__title">Voice for {primaryAgentName}</h3>
         <p className="text-xs text-ui/40">
           Pulled live from Hume's Voice Library (HUME_AI provider) plus any custom voices saved
           to your account. The voice carries between turns within a session.
@@ -5939,8 +5941,8 @@ const VoiceTab = () => {
       </div>
 
       {/* Baseline delivery description */}
-      <div className="glass-card p-4 space-y-3 md:col-span-2">
-        <h3 className="card-header">Baseline delivery</h3>
+      <div className="tile space-y-3 md:col-span-2">
+        <h3 className="scard__title">Baseline delivery</h3>
         <p className="text-xs text-ui/40">
           Standing "acting instructions" Hume applies to every turn unless the agent overrides
           with a <code className="px-1 rounded bg-ui/[0.06]">((deliver: ...))</code> cue at the
@@ -5962,8 +5964,8 @@ const VoiceTab = () => {
       </div>
 
       {/* Cloud playback speed */}
-      <div className="glass-card p-4 space-y-3">
-        <h3 className="card-header">Playback speed</h3>
+      <div className="tile space-y-3">
+        <h3 className="scard__title">Playback speed</h3>
         <p className="text-xs text-ui/40">Speed multiplier for cloud TTS. 1.0 is natural.</p>
         <div className="flex items-center gap-3">
           <input
@@ -5982,8 +5984,8 @@ const VoiceTab = () => {
       </>)}
 
       {/* VAD sensitivity */}
-      <div className="glass-card p-4 space-y-3">
-        <h3 className="card-header">Voice activity sensitivity</h3>
+      <div className="tile space-y-3">
+        <h3 className="scard__title">Voice activity sensitivity</h3>
         <p className="text-xs text-ui/40">
           How quickly {primaryAgentName} decides you've finished speaking after you pause.
         </p>
@@ -6009,9 +6011,9 @@ const VoiceTab = () => {
       </div>
 
       {/* Voice interruption (barge-in) */}
-      <div className="glass-card p-4 space-y-3">
+      <div className="tile space-y-3">
         <div className="flex items-baseline justify-between gap-3">
-          <h3 className="card-header">Voice interruption</h3>
+          <h3 className="scard__title">Voice interruption</h3>
           {savedKey === 'barge' && <span className="text-xs text-cp-teal">Saved!</span>}
         </div>
         <p className="text-xs text-ui/40">
@@ -6037,9 +6039,9 @@ const VoiceTab = () => {
       </div>
 
       {/* Sound effects */}
-      <div className="glass-card p-4 space-y-3">
+      <div className="tile space-y-3">
         <div className="flex items-baseline justify-between gap-3">
-          <h3 className="card-header">Sound effects</h3>
+          <h3 className="scard__title">Sound effects</h3>
           {savedKey === 'sfx' && <span className="text-xs text-cp-teal">Saved!</span>}
         </div>
         <p className="text-xs text-ui/40">
@@ -6065,9 +6067,9 @@ const VoiceTab = () => {
       </div>
 
       {/* Hands-free wake word */}
-      <div className="glass-card p-4 space-y-3">
+      <div className="tile space-y-3">
         <div className="flex items-baseline justify-between gap-3">
-          <h3 className="card-header">Hands-free wake word</h3>
+          <h3 className="scard__title">Hands-free wake word</h3>
           {savedKey === 'wake' && <span className="text-xs text-cp-teal">Saved!</span>}
         </div>
         <p className="text-xs text-ui/40">
@@ -6131,9 +6133,9 @@ const VoiceTab = () => {
       </div>
 
       {/* Speech-to-text model (unified — pick active, download, delete, see disk) */}
-      <div className="glass-card p-4 space-y-3">
+      <div className="tile space-y-3">
         <div className="flex items-baseline justify-between">
-          <h3 className="card-header">Speech-to-text model</h3>
+          <h3 className="scard__title">Speech-to-text model</h3>
           {models && (
             <span className="text-xs text-ui/40">
               {models.freeDiskMb >= 0 ? `${(models.freeDiskMb / 1024).toFixed(1)} GB free` : ''}
@@ -6327,9 +6329,9 @@ const VoiceTab = () => {
 
       {/* Text-to-speech model (Kokoro lives by itself — one model, on/off) */}
       {models?.kokoro && (
-        <div className="glass-card p-4 space-y-3">
+        <div className="tile space-y-3">
           <div className="flex items-baseline justify-between">
-            <h3 className="card-header">Text-to-speech model</h3>
+            <h3 className="scard__title">Text-to-speech model</h3>
             {models.totalDiskBytes > 0 && (
               <span className="text-xs text-ui/40">All voice models: {formatBytes(models.totalDiskBytes)}</span>
             )}

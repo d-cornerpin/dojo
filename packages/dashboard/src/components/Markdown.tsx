@@ -124,7 +124,7 @@ function parseMarkdown(text: string): React.ReactNode[] {
 
 // ── Fenced Code Block ──
 
-const CodeBlock = ({ code, language }: { code: string; language: string }) => {
+export const CodeBlock = ({ code, language }: { code: string; language: string }) => {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -192,7 +192,7 @@ const SourceBlock = ({ body, label }: { body: string; label?: string }) => {
 
 // ── Inline Markdown (bold, italic, inline code, links) ──
 
-function InlineMarkdown({ text }: { text: string }): React.ReactNode {
+export function InlineMarkdown({ text }: { text: string }): React.ReactNode {
   const parts: React.ReactNode[] = [];
   let remaining = text;
   let key = 0;

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import type { CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatRelative } from '../lib/dates';
 import { useToast } from '../hooks/useToast';
@@ -16,16 +17,16 @@ interface TechniqueData {
   version: number;
 }
 
+// State -> pill primitive. The prototype only shows Published/Draft, but the
+// data model carries more states; map each onto the closest .pill--* variant.
 const stateBadge: Record<string, { cls: string; label: string }> = {
-  published: { cls: 'glass-badge-teal', label: 'Published' },
-  draft: { cls: 'glass-badge-amber', label: 'Draft' },
-  review: { cls: 'glass-badge-blue', label: 'Review' },
-  disabled: { cls: 'glass-badge-gray', label: 'Disabled' },
-  archived: { cls: 'text-ui/25 bg-ui/[0.03]', label: 'Archived' },
-  needs_setup: { cls: 'glass-badge-coral', label: 'Needs setup' },
+  published: { cls: 'pill--ok', label: 'Published' },
+  draft: { cls: 'pill--draft', label: 'Draft' },
+  review: { cls: 'pill--norm', label: 'Review' },
+  disabled: { cls: 'pill--down', label: 'Disabled' },
+  archived: { cls: 'pill--norm', label: 'Archived' },
+  needs_setup: { cls: 'pill--draft', label: 'Needs setup' },
 };
-
-const tagColors = ['glass-badge-purple', 'glass-badge-blue', 'glass-badge-teal', 'glass-badge-amber', 'glass-badge-coral'];
 
 interface ExportResolution {
   ref: string;
@@ -87,11 +88,25 @@ async function exportTechniqueToBrowser(id: string): Promise<{ resolutions: Expo
   return { resolutions };
 }
 
-export const TechniqueCard = ({ technique, onToggle }: { technique: TechniqueData; onToggle?: (id: string, enabled: boolean) => void }) => {
+export const TechniqueCard = ({
+  technique,
+  onToggle,
+  index = 0,
+}: {
+  technique: TechniqueData;
+  onToggle?: (id: string, enabled: boolean) => void;
+  /** Stagger index for the card-entry animation (sets --ci). */
+  index?: number;
+}) => {
   const navigate = useNavigate();
   const toast = useToast();
   const badge = stateBadge[technique.state] ?? stateBadge.draft;
   const [sharing, setSharing] = useState(false);
+
+  const cardStyle = {
+    '--ci': `${index * 40}ms`,
+    cursor: 'pointer',
+  } as CSSProperties;
 
   const handleShare = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -124,85 +139,77 @@ export const TechniqueCard = ({ technique, onToggle }: { technique: TechniqueDat
     }
   };
 
+  const uses = `${technique.usageCount} use${technique.usageCount !== 1 ? 's' : ''}`;
+  const age = technique.lastUsedAt ? formatRelative(technique.lastUsedAt) : 'never';
+  const overflow = technique.tags.length - 4;
+
   return (
-    <div
+    <article
       onClick={() => navigate(`/techniques/${technique.id}`)}
-      className="glass-card glass-card-hover p-5 cursor-pointer group"
+      className="tile anim"
+      style={cardStyle}
     >
-      {/* Header */}
-      <div className="flex items-start justify-between mb-3">
-        <div className="min-w-0 flex-1">
-          <h3 className="text-base font-semibold text-ui truncate">{technique.name}</h3>
-          <p className="text-xs text-ui/40 mt-0.5 line-clamp-2">{technique.description ?? 'No description'}</p>
-        </div>
-        <div className="flex items-center gap-1.5 shrink-0 ml-2">
-          <button
-            type="button"
-            onClick={handleShare}
-            disabled={sharing}
-            title={sharing ? 'Packaging…' : 'Share this technique (downloads a .dojo.zip)'}
-            aria-label="Share technique"
-            className="p-1 rounded-md text-ui/40 hover:text-ui hover:bg-ui/[0.06] transition-colors disabled:opacity-50 disabled:cursor-wait"
-          >
-            {sharing ? (
-              <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" strokeOpacity="0.25" />
-                <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-              </svg>
-            ) : (
-              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7" />
-                <polyline points="16 6 12 2 8 6" />
-                <line x1="12" y1="2" x2="12" y2="15" />
-              </svg>
-            )}
-          </button>
-          <span className={`glass-badge ${badge.cls}`}>{badge.label}</span>
-        </div>
+      <div className="tech__head">
+        <div className="tech__title">{technique.name}</div>
+        <button
+          type="button"
+          onClick={handleShare}
+          disabled={sharing}
+          title={sharing ? 'Packaging…' : 'Share this technique (downloads a .dojo.zip)'}
+          aria-label="Share technique"
+          className="link"
+          style={{ background: 'transparent', border: 0, flexShrink: 0, cursor: sharing ? 'wait' : 'pointer', opacity: sharing ? 0.5 : 1, display: 'inline-flex' }}
+        >
+          {sharing ? (
+            <svg width="14" height="14" className="animate-spin" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" strokeOpacity="0.25" />
+              <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7" />
+              <polyline points="16 6 12 2 8 6" />
+              <line x1="12" y1="2" x2="12" y2="15" />
+            </svg>
+          )}
+        </button>
+        <span className={`pill ${badge.cls}`}>{badge.label}</span>
       </div>
 
-      {/* Tags */}
+      <div className="tech__desc">{technique.description ?? 'No description'}</div>
+
       {technique.tags.length > 0 && (
-        <div className="flex flex-wrap gap-1 mb-3">
-          {technique.tags.slice(0, 4).map((tag, i) => (
-            <span key={tag} className={`glass-badge ${tagColors[i % tagColors.length]}`}>
-              {tag}
-            </span>
+        <div className="tagrow">
+          {technique.tags.slice(0, 4).map((tag) => (
+            <span key={tag} className="tag">{tag}</span>
           ))}
-          {technique.tags.length > 4 && (
-            <span className="text-[10px] text-ui/25">+{technique.tags.length - 4}</span>
-          )}
+          {overflow > 0 && <span className="tag">+{overflow}</span>}
         </div>
       )}
 
-      {/* Footer */}
-      <div className="flex items-center justify-between text-xs text-ui/40">
+      <div className="tech__meta">
         <span>{technique.authorAgentName ?? 'Unknown'}</span>
-        <div className="flex items-center gap-3">
-          <span>{technique.usageCount} use{technique.usageCount !== 1 ? 's' : ''}</span>
-          {technique.lastUsedAt && <span>{formatRelative(technique.lastUsedAt)}</span>}
-          <span>v{technique.version}</span>
-        </div>
+        <span>{uses} &middot; {age} &middot; v{technique.version}</span>
       </div>
 
       {/* Enable/Disable toggle for published */}
       {technique.state === 'published' && onToggle && (
-        <div className="mt-3 pt-3 border-t border-ui/[0.06] flex items-center justify-between">
-          <span className="text-xs text-ui/40">Enabled</span>
+        <div className="tech__foot">
+          <span>Enabled</span>
           <button
+            type="button"
+            aria-label="Enabled"
             onClick={(e) => { e.stopPropagation(); onToggle(technique.id, !technique.enabled); }}
-            className={`toggle-switch ${technique.enabled ? 'toggle-on' : ''}`}
-          >
-            <span className="toggle-knob" />
-          </button>
+            className={`switch ${technique.enabled ? 'is-on' : ''}`}
+          />
         </div>
       )}
 
       {technique.state === 'needs_setup' && (
-        <div className="mt-3 pt-3 border-t border-ui/[0.06] text-xs text-ui/55">
+        <div className="tech__foot" style={{ justifyContent: 'flex-start' }}>
           Open this technique to finish setup with your trainer.
         </div>
       )}
-    </div>
+    </article>
   );
 };

@@ -1,11 +1,15 @@
 // ════════════════════════════════════════
-// Watcher Cards — surfaces Gmail / Outlook / Teams watcher health.
+// Watcher Cards: surfaces Gmail / Outlook / Teams watcher health.
 //
 // Pre-2026-04-30 there was no surface for these watchers. A stuck OAuth
 // token, a quietly-disabled service, or a silent poll failure left the
 // user staring at an inbox with new emails their agents weren't seeing.
 // This panel shows running/enabled/connected, last poll time/result,
-// last error, and recent notifications — refreshed every 30s.
+// last error, and recent notifications, refreshed every 30s.
+//
+// Rebuilt onto the dojo3 panel primitives (.group / .cards / .tile +
+// .tech__head + .rows). The status indicator maps onto a pill variant
+// (ok / down / draft) so the same health semantics carry through.
 // ════════════════════════════════════════
 
 import { useEffect, useState } from 'react';
@@ -25,67 +29,73 @@ function relativeTime(iso: string | null): string {
   return `${Math.floor(diffSec / 86400)}d ago`;
 }
 
-function indicatorColor(status: api.WatcherStatusDto): { color: string; label: string } {
-  if (!status.enabled) return { color: 'bg-ui/[0.12]', label: 'Disabled' };
-  if (!status.connected) return { color: 'bg-cp-coral', label: 'Not connected' };
-  if (!status.running) return { color: 'bg-cp-coral', label: 'Stopped' };
-  if (status.consecutiveFailures >= 3) return { color: 'bg-cp-coral animate-pulse', label: `Failing (${status.consecutiveFailures} in a row)` };
-  if (status.lastPollOk === false) return { color: 'bg-cp-amber', label: 'Last poll failed' };
-  if (status.lastPollOk === true) return { color: 'bg-cp-teal animate-pulse', label: 'Healthy' };
-  return { color: 'bg-cp-amber', label: 'Initializing' };
+type PillVariant = 'pill--ok' | 'pill--down' | 'pill--draft';
+
+function statusInfo(status: api.WatcherStatusDto): { variant: PillVariant; label: string } {
+  if (!status.enabled) return { variant: 'pill--draft', label: 'Disabled' };
+  if (!status.connected) return { variant: 'pill--down', label: 'Not connected' };
+  if (!status.running) return { variant: 'pill--down', label: 'Stopped' };
+  if (status.consecutiveFailures >= 3) return { variant: 'pill--down', label: `Failing (${status.consecutiveFailures})` };
+  if (status.lastPollOk === false) return { variant: 'pill--draft', label: 'Last poll failed' };
+  if (status.lastPollOk === true) return { variant: 'pill--ok', label: 'Healthy' };
+  return { variant: 'pill--draft', label: 'Initializing' };
 }
 
-const WatcherCard = ({ status, label }: { status: api.WatcherStatusDto; label: string }) => {
-  const ind = indicatorColor(status);
+const WatcherCard = ({ status, label, ci }: { status: api.WatcherStatusDto; label: string; ci: number }) => {
+  const info = statusInfo(status);
   const intervalMin = Math.round(status.pollIntervalMs / 60000);
   const intervalSec = Math.round(status.pollIntervalMs / 1000);
   const intervalLabel = intervalMin >= 1 ? `${intervalMin}m` : `${intervalSec}s`;
+  const notifValue = status.lastNotifiedAt
+    ? `${status.totalNotifications} · last ${relativeTime(status.lastNotifiedAt)}`
+    : String(status.totalNotifications);
 
   return (
-    <div className="glass-card p-4">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${ind.color}`} />
-          <span className="text-sm text-ui/70 font-medium">{label}</span>
-          <span className="text-xs text-ui/40">{ind.label}</span>
-        </div>
-        <span className="text-[10px] text-ui/25">poll every {intervalLabel}</span>
+    <article className="tile anim" style={{ ['--ci' as string]: `${ci}ms` }}>
+      <div className="tech__head">
+        <div className="tech__title">{label}</div>
+        <span className={`pill ${info.variant}`}><i className="dot" />{info.label}</span>
       </div>
-
-      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-ui/40 mb-2">
-        <span>Last poll: <span className="text-ui/55">{relativeTime(status.lastPollAt)}</span></span>
-        <span>Polls: <span className="text-ui/55">{status.totalPolls}</span></span>
-        <span>Notifications: <span className="text-ui/55">{status.totalNotifications}</span></span>
-        {status.lastNotifiedAt && (
-          <span>Last delivery: <span className="text-ui/55">{relativeTime(status.lastNotifiedAt)}</span></span>
-        )}
+      <div className="rows">
+        <div>
+          <span className="k">Last poll</span>
+          <span className="v">{relativeTime(status.lastPollAt)} {'·'} every {intervalLabel}</span>
+        </div>
+        <div>
+          <span className="k">Polls</span>
+          <span className="v">{status.totalPolls.toLocaleString()}</span>
+        </div>
+        <div>
+          <span className="k">Notifications</span>
+          <span className="v">{notifValue}</span>
+        </div>
       </div>
 
       {status.lastPollError && (
-        <div className="mt-2 text-[11px] px-2 py-1.5 rounded bg-cp-coral/10 border border-cp-coral/20 text-cp-coral/90 break-words">
-          <span className="font-medium">Last error:</span> {status.lastPollError}
+        <div className="rows" style={{ marginTop: 10 }}>
+          <div>
+            <span className="k" style={{ color: 'var(--dojo3-rust)' }}>Last error</span>
+            <span className="v" style={{ color: 'var(--dojo3-rust)', maxWidth: '62%' }}>{status.lastPollError}</span>
+          </div>
         </div>
       )}
 
       {status.recentNotifications.length > 0 && (
-        <details className="mt-2">
-          <summary className="text-[11px] text-ui/40 cursor-pointer hover:text-ui/55 select-none">
+        <details style={{ marginTop: 10 }}>
+          <summary className="link" style={{ cursor: 'pointer' }}>
             Recent {status.recentNotifications.length} notification{status.recentNotifications.length === 1 ? '' : 's'}
           </summary>
-          <div className="mt-1.5 space-y-1">
+          <div className="rows" style={{ marginTop: 8 }}>
             {status.recentNotifications.map((n, i) => (
-              <div key={i} className="text-[11px] text-ui/55 truncate">
-                <span className="text-ui/25">{relativeTime(n.at)}</span>
-                {' · '}
-                <span className="text-ui/70">{n.from}</span>
-                {' — '}
-                <span>{n.subject}</span>
+              <div key={i}>
+                <span className="k">{relativeTime(n.at)} {'·'} {n.from}</span>
+                <span className="v">{n.subject}</span>
               </div>
             ))}
           </div>
         </details>
       )}
-    </div>
+    </article>
   );
 };
 
@@ -119,20 +129,27 @@ export const WatcherCards = () => {
   // play keeps the Health page tidy for users who don't use email.
   if (!data) {
     return error ? (
-      <div className="text-xs text-cp-coral mb-6">Could not load watcher status: {error}</div>
+      <section className="group">
+        <div className="group__head"><div><div className="group__title">Email &amp; Teams Watchers</div></div></div>
+        <div className="stub" style={{ marginTop: 14 }}>
+          <p className="stub__line" style={{ color: 'var(--dojo3-rust)' }}>Could not load watcher status: {error}</p>
+        </div>
+      </section>
     ) : null;
   }
   const anyEnabled = data.gmail.enabled || data.outlook.enabled || data.teams.enabled;
   if (!anyEnabled) return null;
 
   return (
-    <div className="mb-6">
-      <h3 className="card-header mb-3">Email & Teams Watchers</h3>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {data.gmail.enabled && <WatcherCard status={data.gmail} label="Gmail" />}
-        {data.outlook.enabled && <WatcherCard status={data.outlook} label="Outlook" />}
-        {data.teams.enabled && <WatcherCard status={data.teams} label="Teams" />}
+    <section className="group">
+      <div className="group__head">
+        <div><div className="group__title">Email &amp; Teams Watchers</div></div>
       </div>
-    </div>
+      <div className="cards" style={{ marginTop: 14 }}>
+        {data.gmail.enabled && <WatcherCard status={data.gmail} label="Gmail" ci={120} />}
+        {data.outlook.enabled && <WatcherCard status={data.outlook} label="Outlook" ci={150} />}
+        {data.teams.enabled && <WatcherCard status={data.teams} label="Teams" ci={180} />}
+      </div>
+    </section>
   );
 };

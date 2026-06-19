@@ -4,8 +4,6 @@ import type { LogEntryEvent, WsEvent } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { formatDate } from '../lib/dates';
-import { PercentageBar } from '../components/CostCharts';
-import { cssVar } from '../lib/theme';
 import { ProviderHealth } from '../components/ProviderHealth';
 import { HealerVitals } from '../components/HealerVitals';
 import { WatcherCards } from '../components/WatcherCards';
@@ -39,11 +37,11 @@ const formatTimestamp = (ts: string | null): string => {
   return d.toLocaleDateString();
 };
 
-const levelColors: Record<string, string> = {
-  debug: 'bg-ui/[0.12] text-ui/90',
-  info: 'bg-cp-blue/30 text-cp-blue',
-  warn: 'bg-cp-amber/30 text-cp-amber',
-  error: 'bg-cp-coral/30 text-cp-coral',
+const levelPill: Record<string, string> = {
+  debug: 'pill--norm',
+  info: 'pill--ok',
+  warn: 'pill--draft',
+  error: 'pill--down',
 };
 
 interface ProviderStatus {
@@ -83,6 +81,7 @@ interface ResourceData {
 
 const RemoteAccessCard = () => {
   const [tunnel, setTunnel] = useState<{ enabled: boolean; mode: string; status: string; url: string | null; startedAt: number | null } | null>(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem('dojo_token');
@@ -96,25 +95,44 @@ const RemoteAccessCard = () => {
   if (!tunnel || !tunnel.enabled) return null;
 
   const isActive = tunnel.status === 'active';
+  const isStarting = tunnel.status === 'starting';
   const uptime = tunnel.startedAt ? Math.floor((Date.now() - tunnel.startedAt) / 60000) : 0;
+  const statusLabel = isActive ? 'Active' : isStarting ? 'Starting' : 'Inactive';
+  const tileClass = isActive ? 'tile tile--ok' : isStarting ? 'tile' : 'tile tile--down';
+  const pillClass = isActive ? 'pill pill--ok' : isStarting ? 'pill pill--draft' : 'pill pill--down';
+
+  const handleCopy = () => {
+    if (!tunnel.url) return;
+    navigator.clipboard.writeText(tunnel.url).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {});
+  };
 
   return (
-    <div className="mb-6">
-      <h3 className="card-header mb-3">Remote Access</h3>
-      <div className="glass-card p-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${isActive ? 'bg-cp-teal animate-pulse' : tunnel.status === 'starting' ? 'bg-cp-amber animate-pulse' : 'bg-cp-coral'}`} />
-            <span className="text-sm text-ui/70">{isActive ? 'Active' : tunnel.status === 'starting' ? 'Starting...' : 'Inactive'}</span>
-            <span className="text-xs text-ui/25">{tunnel.mode === 'quick' ? 'Quick Tunnel' : 'Named Tunnel'}</span>
-          </div>
-          {isActive && <span className="text-xs text-ui/25">{uptime}m uptime</span>}
+    <section className="group">
+      <div className="group__head">
+        <div><div className="group__title">Remote Access</div></div>
+      </div>
+      <div className={`${tileClass} anim`} style={{ ['--ci' as string]: '120ms', marginTop: 14 }}>
+        <div className="tech__head">
+          <span className={pillClass}><i className="dot" />{statusLabel}</span>
+          <span className="toolbar__label" style={{ paddingTop: 4 }}>
+            {tunnel.mode === 'quick' ? 'Quick tunnel' : 'Named tunnel'}
+          </span>
+          <span className="toolbar__spacer" />
+          {isActive && <span className="phead__meta">{uptime}m uptime</span>}
         </div>
         {tunnel.url && (
-          <div className="mt-2 text-xs font-mono text-cp-teal truncate">{tunnel.url}</div>
+          <div style={{ marginTop: 11, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <a className="mono-url" href={tunnel.url} target="_blank" rel="noreferrer">{tunnel.url}</a>
+            <button type="button" className="link" onClick={handleCopy} style={{ flexShrink: 0 }}>
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
         )}
       </div>
-    </div>
+    </section>
   );
 };
 
@@ -143,29 +161,35 @@ const GoogleWorkspaceCard = () => {
     .map(([k]) => k.charAt(0).toUpperCase() + k.slice(1));
 
   return (
-    <div className="mb-6">
-      <h3 className="card-header mb-3">Google Workspace</h3>
-      <div className="glass-card p-4">
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-cp-teal animate-pulse" />
-            <span className="text-sm text-ui/70">Connected</span>
-          </div>
-          <span className="text-xs text-ui/25">{status.email}</span>
+    <section className="group">
+      <div className="group__head">
+        <div><div className="group__title">Google Workspace</div></div>
+      </div>
+      <div className="tile tile--ok anim" style={{ ['--ci' as string]: '120ms', marginTop: 14 }}>
+        <div className="tech__head">
+          <span className="pill pill--ok"><i className="dot" />Connected</span>
+          <span className="toolbar__spacer" />
+          <span className="phead__meta">{status.email}</span>
         </div>
-        <div className="flex flex-wrap gap-1 mb-2">
+        <div className="tagrow">
           {enabledServices.map(svc => (
-            <span key={svc} className="text-[10px] px-1.5 py-0.5 rounded bg-cp-teal/10 text-cp-teal border border-cp-teal/20">{svc}</span>
+            <span key={svc} className="tag">{svc}</span>
           ))}
         </div>
-        <div className="flex gap-4 text-xs text-ui/25">
-          <span>Today: {status.todayActivity.reads}R / {status.todayActivity.writes}W</span>
+        <div className="rows">
+          <div>
+            <span className="k">Today</span>
+            <span className="v">{status.todayActivity.reads}R / {status.todayActivity.writes}W</span>
+          </div>
           {status.lastActivity && (
-            <span>Last: {new Date(status.lastActivity).toLocaleTimeString()}</span>
+            <div>
+              <span className="k">Last activity</span>
+              <span className="v">{new Date(status.lastActivity).toLocaleTimeString()}</span>
+            </div>
           )}
         </div>
       </div>
-    </div>
+    </section>
   );
 };
 
@@ -238,8 +262,9 @@ export const Health = () => {
         });
       }
       if (resourceResult?.ok) setResources(resourceResult.data as ResourceData);
-      } catch (err) {
-        console.error('Health page load failed:', err);
+      } catch {
+        // Initial load failed; the page renders with whatever data arrived
+        // plus live websocket updates. Individual sections degrade gracefully.
       }
       setLoading(false);
     };
@@ -310,229 +335,233 @@ export const Health = () => {
     setSendingTest(false);
   };
 
-  if (loading) return <div className="flex-1 loading-state">Loading...</div>;
+  if (loading) return <div className="stub"><p className="stub__line">Loading...</p></div>;
 
+  const memUsedMb = resources ? resources.memory.used : health ? health.memory.used : null;
+  const memTotalMb = resources ? resources.memory.total : health ? health.memory.total : null;
   const memPct = resources?.memory?.percentage
     ?? (health ? (health.memory.used / Math.max(health.memory.total, 1)) * 100 : 0);
+  const cpuPct = resources?.cpu?.usage ?? null;
+
+  // Overall posture for the header pill: down if DB is errored or any
+  // provider is unhealthy, else nominal.
+  const anyProviderDown = providerStatuses.some(p => !p.healthy);
+  const dbDown = health?.db === 'error';
+  const overallDown = dbDown || anyProviderDown;
+  const overallLabel = overallDown
+    ? (dbDown ? 'Database error' : 'Provider issue')
+    : 'All systems nominal';
 
   return (
-    <div className="flex-1 p-3 sm:p-6 flex flex-col min-h-0 overflow-y-auto">
-      <h1 className="text-lg sm:text-xl font-bold text-ui mb-4 sm:mb-6">System Health</h1>
+    <>
+      {/* Header */}
+      <header className="phead">
+        <h2 className="phead__title">Vitals</h2>
+        <span className="phead__meta">System health</span>
+        <div className="phead__actions">
+          <span className={`pill ${overallDown ? 'pill--down' : 'pill--ok'}`}>
+            <i className="dot" />{overallLabel}
+          </span>
+        </div>
+      </header>
 
-      {/* Stat Cards */}
-      <div className="grid grid-cols-1 xs:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-4 sm:mb-6">
-        <StatCard
-          label="Uptime"
-          value={health ? formatUptime(health.uptime) : '--'}
-        />
-        <StatCard
-          label="Memory"
-          value={
-            resources
-              ? `${formatBytes(resources.memory.used * 1024 * 1024)} / ${formatBytes(resources.memory.total * 1024 * 1024)}`
-              : health
-                ? `${formatBytes(health.memory.used * 1024 * 1024)} / ${formatBytes(health.memory.total * 1024 * 1024)}`
-                : '--'
-          }
-        />
-        <StatCard
-          label="Database"
-          value={health?.db === 'ok' ? 'OK' : 'Error'}
-          valueColor={health?.db === 'ok' ? 'text-cp-teal' : 'text-cp-coral'}
-        />
-        <StatCard
-          label="Agents"
-          value={health ? String(health.agents) : '--'}
-        />
+      {/* Stat tiles */}
+      <div className="stats">
+        <div className="tile anim" style={{ ['--ci' as string]: '0ms' }}>
+          <div className="stat__label">Uptime</div>
+          <div className="stat__value">{health ? formatUptime(health.uptime) : '--'}</div>
+        </div>
+        <div className="tile anim" style={{ ['--ci' as string]: '30ms' }}>
+          <div className="stat__label">Memory</div>
+          <div className="stat__value">
+            {memUsedMb != null && memTotalMb != null
+              ? `${formatBytes(memUsedMb * 1024 * 1024)} / ${formatBytes(memTotalMb * 1024 * 1024)}`
+              : '--'}
+          </div>
+        </div>
+        <div className="tile anim" style={{ ['--ci' as string]: '60ms' }}>
+          <div className="stat__label">Database</div>
+          <div className={`stat__value ${health?.db === 'ok' ? 'is-ok' : ''}`}>
+            {health?.db === 'ok' ? 'OK' : health ? 'Error' : '--'}
+          </div>
+        </div>
+        <div className="tile anim" style={{ ['--ci' as string]: '90ms' }}>
+          <div className="stat__label">Agents</div>
+          <div className="stat__value">{health ? String(health.agents) : '--'}</div>
+        </div>
       </div>
 
-      {/* Healer Vitals */}
+      {/* Healer Vitals (preserved) */}
       <HealerVitals />
 
       {/* Email & Teams Watchers */}
       <WatcherCards />
 
-      {/* Memory gauge */}
-      <div className="glass-card p-4 mb-6">
-        <h3 className="card-header mb-3">Memory Usage</h3>
-        <div className="space-y-2">
-          <div className="flex items-center justify-between text-xs text-ui/40">
-            <span>
-              {resources
-                ? formatBytes(resources.memory.used * 1024 * 1024)
-                : health
-                  ? formatBytes(health.memory.used * 1024 * 1024)
-                  : '--'}{' '}
-              used
-            </span>
-            <span>
-              {resources
-                ? formatBytes(resources.memory.total * 1024 * 1024)
-                : health
-                  ? formatBytes(health.memory.total * 1024 * 1024)
-                  : '--'}{' '}
-              total
-            </span>
-          </div>
-          <PercentageBar value={memPct} max={100} />
-          {resources?.cpu?.usage != null && (
-            <div className="mt-3">
-              <div className="flex items-center justify-between text-xs text-ui/40 mb-1">
-                <span>CPU Usage</span>
-                <span>{resources.cpu.usage.toFixed(0)}%</span>
-              </div>
-              <PercentageBar value={resources.cpu.usage} max={100} color={cssVar('--cp-blue') || '#3b82f6'} />
+      {/* Resources */}
+      <section className="group">
+        <div className="group__head">
+          <div><div className="group__title">Resources</div></div>
+        </div>
+        <div className="tile anim" style={{ ['--ci' as string]: '90ms', marginTop: 14 }}>
+          <div className="rows" style={{ marginTop: 0 }}>
+            <div>
+              <span className="k">
+                Memory{memUsedMb != null ? ` · ${formatBytes(memUsedMb * 1024 * 1024)} used` : ''}
+              </span>
+              <span className="v">
+                {memTotalMb != null ? `${formatBytes(memTotalMb * 1024 * 1024)} total · ` : ''}{memPct.toFixed(0)}%
+              </span>
             </div>
-          )}
-          {resources?.ollama && (
-            <div className="mt-3 space-y-1.5">
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-ui/40">Ollama:</span>
-                <span className={`text-xs ${resources.ollama.running ? 'text-cp-teal' : 'text-cp-coral'}`}>
-                  {resources.ollama.running ? 'Running' : 'Stopped'}
-                </span>
-                {resources.ollama.running && resources.ollama.models.length > 0 && (
-                  <span className="text-xs text-ui/25">
-                    ({resources.ollama.models.length} model{resources.ollama.models.length !== 1 ? 's' : ''} installed)
-                  </span>
-                )}
+          </div>
+          <div className="bar" style={{ margin: '9px 0 14px' }}>
+            <i className="is-green" style={{ width: `${Math.min(100, Math.max(0, memPct))}%` }} />
+          </div>
+
+          {cpuPct != null && (
+            <>
+              <div className="rows" style={{ marginTop: 0 }}>
+                <div>
+                  <span className="k">CPU</span>
+                  <span className="v">{cpuPct.toFixed(0)}%</span>
+                </div>
               </div>
-              {resources.ollamaLock && (
-                <>
-                  {resources.ollamaLock.slots.length > 0 && (
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-ui/40">Loaded:</span>
-                      {resources.ollamaLock.slots.map((s, i) => (
-                        <span key={i} className="text-xs text-cp-teal">
-                          {s.modelName} <span className="text-ui/25">({s.activeRequests} active)</span>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  {resources.ollamaLock.queuedRequests > 0 && (
-                    <div className="text-xs px-2 py-1 rounded bg-cp-amber/10 border border-cp-amber/20 text-cp-amber">
-                      {resources.ollamaLock.queuedRequests} request{resources.ollamaLock.queuedRequests !== 1 ? 's' : ''} queued
-                      {resources.ollamaLock.queuedModels.length > 0 && (
-                        <> for {resources.ollamaLock.queuedModels.join(', ')}</>
-                      )}
-                      {' '}&mdash; multiple local models in use, consider consolidating to one.
-                    </div>
-                  )}
-                </>
+              <div className="bar" style={{ margin: '9px 0 14px' }}>
+                <i className="is-blue" style={{ width: `${Math.min(100, Math.max(0, cpuPct))}%` }} />
+              </div>
+            </>
+          )}
+
+          {resources?.ollama && (
+            <div className="rows" style={{ marginTop: 0 }}>
+              <div>
+                <span className="k">Ollama</span>
+                <span className="v" style={{ color: resources.ollama.running ? 'var(--dojo3-green-ink)' : 'var(--dojo3-rust)' }}>
+                  {resources.ollama.running ? 'Running' : 'Stopped'}
+                  {resources.ollama.running && resources.ollama.models.length > 0
+                    ? ` · ${resources.ollama.models.length} model${resources.ollama.models.length !== 1 ? 's' : ''} installed`
+                    : ''}
+                </span>
+              </div>
+              {resources.ollamaLock && resources.ollamaLock.slots.length > 0 && (
+                <div>
+                  <span className="k">Loaded</span>
+                  <span className="v">
+                    {resources.ollamaLock.slots.map(s => `${s.modelName} · ${s.activeRequests} active`).join(', ')}
+                  </span>
+                </div>
               )}
             </div>
           )}
-        </div>
-      </div>
 
-      {/* Provider health */}
-      <div className="mb-6">
-        <h3 className="card-header mb-3">Provider Health</h3>
+          {resources?.ollamaLock && resources.ollamaLock.queuedRequests > 0 && (
+            <div className="note--warn" style={{ marginTop: 12, marginBottom: 0 }}>
+              {resources.ollamaLock.queuedRequests} request{resources.ollamaLock.queuedRequests !== 1 ? 's' : ''} queued
+              {resources.ollamaLock.queuedModels.length > 0 && <> for {resources.ollamaLock.queuedModels.join(', ')}</>}
+              . Multiple local models in use, consider consolidating to one.
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* Provider Health */}
+      <section className="group">
+        <div className="group__head">
+          <div><div className="group__title">Provider Health</div></div>
+        </div>
         <ProviderHealth providers={providerStatuses} />
-      </div>
+      </section>
 
       {/* Remote Access */}
       <RemoteAccessCard />
 
-      {/* Google Workspace */}
+      {/* Google Workspace (preserved) */}
       <GoogleWorkspaceCard />
 
-      {/* Watchdog + iMessage status */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-        {/* Watchdog */}
-        <div className="glass-card p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="card-header">Watchdog</h3>
-            {watchdog && (
-              <span
-                className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                  watchdog.running
-                    ? 'bg-cp-teal/10 text-cp-teal'
-                    : 'bg-cp-coral/10 text-cp-coral'
-                }`}
-              >
-                {watchdog.running ? 'Running' : 'Stopped'}
-              </span>
-            )}
-          </div>
-          {watchdog ? (
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-ui/40">Last check</span>
-                <span className="text-xs text-ui/55">{formatTimestamp(watchdog.lastCheck)}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-ui/40">Last alert</span>
-                <span className="text-xs text-ui/55">{formatTimestamp(watchdog.lastAlert)}</span>
-              </div>
-            </div>
-          ) : (
-            <p className="text-xs text-ui/25">Unable to fetch status</p>
-          )}
+      {/* Watchdog + iMessage status (preserved) */}
+      <section className="group">
+        <div className="group__head">
+          <div><div className="group__title">Watchdog &amp; iMessage</div></div>
         </div>
-
-        {/* iMessage bridge */}
-        <div className="glass-card p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="card-header">iMessage Bridge</h3>
-            {imBridge && (
-              <span
-                className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                  imBridge.connected
-                    ? 'bg-cp-teal/10 text-cp-teal'
-                    : imBridge.enabled
-                      ? 'bg-cp-amber/10 text-cp-amber'
-                      : 'bg-ui/[0.05] text-ui/55'
-                }`}
-              >
-                {imBridge.connected ? 'Connected' : imBridge.enabled ? 'Disconnected' : 'Disabled'}
-              </span>
-            )}
-          </div>
-          {imBridge ? (
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-ui/40">Last received</span>
-                <span className="text-xs text-ui/55">{formatTimestamp(imBridge.lastReceived)}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-ui/40">Last sent</span>
-                <span className="text-xs text-ui/55">{formatTimestamp(imBridge.lastSent)}</span>
-              </div>
-              {imBridge.enabled && (
-                <div className="flex items-center gap-2 mt-2 pt-2 border-t border-ui/[0.06]">
-                  <input
-                    type="text"
-                    value={testMsg}
-                    onChange={(e) => setTestMsg(e.target.value)}
-                    placeholder="Test message..."
-                    className="glass-input flex-1"
-                  />
-                  <button
-                    onClick={handleSendTest}
-                    disabled={sendingTest || !testMsg.trim()}
-                    className="px-2 py-1 glass-btn-primary text-xs font-medium rounded transition-colors"
-                  >
-                    {sendingTest ? '...' : 'Send'}
-                  </button>
-                </div>
+        <div className="cards" style={{ marginTop: 14 }}>
+          {/* Watchdog */}
+          <article className="tile">
+            <div className="tech__head">
+              <div className="tech__title">Watchdog</div>
+              {watchdog && (
+                <span className={`pill ${watchdog.running ? 'pill--ok' : 'pill--down'}`}>
+                  <i className="dot" />{watchdog.running ? 'Running' : 'Stopped'}
+                </span>
               )}
             </div>
-          ) : (
-            <p className="text-xs text-ui/25">Unable to fetch status</p>
-          )}
-        </div>
-      </div>
+            {watchdog ? (
+              <div className="rows">
+                <div><span className="k">Last check</span><span className="v">{formatTimestamp(watchdog.lastCheck)}</span></div>
+                <div><span className="k">Last alert</span><span className="v">{formatTimestamp(watchdog.lastAlert)}</span></div>
+              </div>
+            ) : (
+              <div className="rows"><div><span className="k">Status</span><span className="v">Unavailable</span></div></div>
+            )}
+          </article>
 
-      {/* Log Viewer */}
-      <div className="flex-1 flex flex-col min-h-[1200px] glass-card overflow-hidden">
-        {/* Log Filters */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-ui/[0.06]">
-          <span className="text-sm font-medium text-ui/55">Logs</span>
+          {/* iMessage bridge */}
+          <article className="tile">
+            <div className="tech__head">
+              <div className="tech__title">iMessage Bridge</div>
+              {imBridge && (
+                <span className={`pill ${imBridge.connected ? 'pill--ok' : imBridge.enabled ? 'pill--draft' : 'pill--down'}`}>
+                  <i className="dot" />{imBridge.connected ? 'Connected' : imBridge.enabled ? 'Disconnected' : 'Disabled'}
+                </span>
+              )}
+            </div>
+            {imBridge ? (
+              <>
+                <div className="rows">
+                  <div><span className="k">Last received</span><span className="v">{formatTimestamp(imBridge.lastReceived)}</span></div>
+                  <div><span className="k">Last sent</span><span className="v">{formatTimestamp(imBridge.lastSent)}</span></div>
+                </div>
+                {imBridge.enabled && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
+                    <input
+                      type="text"
+                      value={testMsg}
+                      onChange={(e) => setTestMsg(e.target.value)}
+                      placeholder="Test message..."
+                      className="field"
+                      style={{ flex: 1 }}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleSendTest}
+                      disabled={sendingTest || !testMsg.trim()}
+                      className="btn btn--primary btn--sm"
+                    >
+                      {sendingTest ? '...' : 'Send'}
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="rows"><div><span className="k">Status</span><span className="v">Unavailable</span></div></div>
+            )}
+          </article>
+        </div>
+      </section>
+
+      {/* Logs (preserved) */}
+      <section className="group">
+        <div className="group__head">
+          <div><div className="group__title">Logs</div></div>
+          <div className="group__side">
+            <span>{filteredLogs.length} entries</span>
+          </div>
+        </div>
+
+        <div className="toolbar" style={{ marginTop: 14, marginBottom: 0 }}>
+          <span className="toolbar__label">Level</span>
           <select
             value={levelFilter}
             onChange={(e) => setLevelFilter(e.target.value)}
-            className="glass-select"
+            className="field field--select"
           >
             <option value="">All Levels</option>
             <option value="debug">Debug</option>
@@ -540,47 +569,34 @@ export const Health = () => {
             <option value="warn">Warn</option>
             <option value="error">Error</option>
           </select>
+          <span className="toolbar__label">Component</span>
           <select
             value={componentFilter}
             onChange={(e) => setComponentFilter(e.target.value)}
-            className="glass-select"
+            className="field field--select"
           >
             <option value="">All Components</option>
             {components.map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
           </select>
-          <div className="flex-1" />
-          <span className="text-xs text-ui/25">{filteredLogs.length} entries</span>
         </div>
 
-        {/* Log Table */}
-        <div className="flex-1 overflow-y-auto">
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-ui/[0.05]">
-              <tr className="text-left text-ui/40 text-xs uppercase tracking-wider">
-                <th className="px-4 py-2 w-40">Timestamp</th>
-                <th className="px-4 py-2 w-20">Level</th>
-                <th className="px-4 py-2 w-32">Component</th>
-                <th className="px-4 py-2">Message</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredLogs.map((log, i) => (
+        <div className="tile" style={{ marginTop: 14, padding: 0, overflow: 'hidden' }}>
+          <div style={{ maxHeight: 520, overflowY: 'auto' }}>
+            {filteredLogs.length === 0 ? (
+              <div style={{ padding: '32px 16px', textAlign: 'center' }}>
+                <span className="phead__meta">No log entries</span>
+              </div>
+            ) : (
+              filteredLogs.map((log, i) => (
                 <LogRow key={`${log.timestamp}-${i}`} log={log} />
-              ))}
-              {filteredLogs.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="px-4 py-8 text-center text-ui/25 text-sm">
-                    No log entries
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+              ))
+            )}
+          </div>
         </div>
-      </div>
-    </div>
+      </section>
+    </>
   );
 };
 
@@ -589,55 +605,42 @@ const LogRow = ({ log }: { log: LogEntry }) => {
   const hasMeta = log.meta && Object.keys(log.meta).length > 0;
 
   return (
-    <>
-      <tr
-        className={`border-t border-ui/[0.06] hover:text-ui/25 ${hasMeta ? 'cursor-pointer' : ''}`}
+    <div style={{ borderTop: '1px solid rgba(140,116,84,.14)' }}>
+      <div
         onClick={() => hasMeta && setExpanded(!expanded)}
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '150px 64px 130px 1fr',
+          gap: 12,
+          alignItems: 'baseline',
+          padding: '8px 16px',
+          cursor: hasMeta ? 'pointer' : 'default',
+        }}
       >
-        <td className="px-4 py-1.5 text-xs text-ui/40 font-mono whitespace-nowrap">
-          {formatDate(log.timestamp)}
-        </td>
-        <td className="px-4 py-1.5">
-          <span className={`text-xs px-1.5 py-0.5 rounded ${levelColors[log.level] || 'bg-ui/[0.08] text-ui/70'}`}>
-            {log.level}
-          </span>
-        </td>
-        <td className="px-4 py-1.5 text-xs text-ui/55 font-mono">
-          {log.component}
-        </td>
-        <td className="px-4 py-1.5 text-xs text-ui/70">
-          <span className={expanded ? '' : 'line-clamp-2'}>
-            {log.message}
-          </span>
-          {hasMeta && !expanded && (
-            <span className="ml-1 text-ui/25">[+]</span>
-          )}
-        </td>
-      </tr>
+        <span className="v" style={{ maxWidth: 'none' }}>{formatDate(log.timestamp)}</span>
+        <span className={`pill ${levelPill[log.level] ?? ''}`} style={{ justifySelf: 'start' }}>{log.level}</span>
+        <span className="v" style={{ maxWidth: 'none' }}>{log.component}</span>
+        <span className="k" style={{ color: 'var(--dojo3-ink-2)' }}>
+          {log.message}
+          {hasMeta && !expanded && <span className="phead__meta" style={{ marginLeft: 6 }}>[+]</span>}
+        </span>
+      </div>
       {expanded && hasMeta && (
-        <tr className="border-t border-ui/[0.06]/20">
-          <td colSpan={4} className="px-4 py-2 text-ui/25">
-            <pre className="text-xs text-ui/55 font-mono whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
-              {JSON.stringify(log.meta, null, 2)}
-            </pre>
-          </td>
-        </tr>
+        <pre
+          style={{
+            margin: 0,
+            padding: '8px 16px 12px',
+            font: '500 11px/1.5 var(--dojo3-font-mono)',
+            color: 'var(--dojo3-ink-3)',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-all',
+            maxHeight: 192,
+            overflowY: 'auto',
+          }}
+        >
+          {JSON.stringify(log.meta, null, 2)}
+        </pre>
       )}
-    </>
+    </div>
   );
 };
-
-const StatCard = ({
-  label,
-  value,
-  valueColor,
-}: {
-  label: string;
-  value: string;
-  valueColor?: string;
-}) => (
-  <div className="glass-card p-4">
-    <p className="text-xs text-ui/40 uppercase tracking-wider mb-1">{label}</p>
-    <p className={`text-lg font-semibold ${valueColor || 'text-ui'}`}>{value}</p>
-  </div>
-);

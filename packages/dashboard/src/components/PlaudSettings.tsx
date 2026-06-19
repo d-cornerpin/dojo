@@ -112,17 +112,17 @@ export const PlaudSettings = () => {
 
   if (!status) {
     return (
-      <div className="glass-card p-4">
-        <h3 className="card-header">Plaud</h3>
+      <div className="tile">
+        <h3 className="scard__title">Plaud</h3>
         <p className="text-xs text-ui/40 mt-2">Loading…</p>
       </div>
     );
   }
 
   return (
-    <div className="glass-card p-4 space-y-3">
+    <div className="tile space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="card-header">Plaud</h3>
+        <h3 className="scard__title">Plaud</h3>
         {status.connected && (
           <span className="text-xs px-2 py-0.5 rounded-full bg-cp-teal/20 text-cp-teal">Connected</span>
         )}

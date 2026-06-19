@@ -9,6 +9,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
+import { setCurrentCanvas, getCurrentCanvas, viewCanvas } from './canvas-view.js';
 import { memoryGrep, memoryDescribe, memoryExpand, memorySearch } from '../memory/retrieval.js';
 import { checkRequired, friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer, type FieldSpec } from './tool-helpers.js';
 // Phase 3.5 (2026-05-04) — `shouldIntercept` / `interceptLargeFile` removed
@@ -114,6 +115,49 @@ function registerSharedFile(agentId: string, filePath: string): string | null {
     return getDownloadUrl(fileId);
   } catch {
     return null;
+  }
+}
+
+// Tell any open canvas showing this file to re-fetch. The right dock matches on
+// absolute path, so editing a document the user is watching (file_write /
+// file_patch / file_append) refreshes the canvas with no manual step.
+function broadcastCanvasUpdate(filePath: string): void {
+  try {
+    broadcast({ type: 'canvas:updated', data: { path: filePath } });
+  } catch { /* best effort — never let a UI ping break a file write */ }
+}
+
+// Documents the right-dock canvas can render (and that are worth auto-showing).
+const CANVAS_DOC_EXTS = new Set(['.html', '.htm', '.md', '.markdown', '.txt', '.text']);
+
+// Keep the canvas in sync after writing a file. If the canvas is already showing
+// this exact file, just refresh it. Otherwise, if it's a renderable document
+// (html / markdown / text), AUTO-OPEN it in the dock — so "write me a page /
+// doc" lands in the canvas without the model having to remember show_canvas
+// (weaker models routinely don't, even when explicitly told to). Non-document
+// writes only ping (a no-op unless some canvas already watches that path).
+function syncCanvasAfterWrite(agentId: string, filePath: string, downloadUrl: string | null): { opened: boolean } {
+  const cur = getCurrentCanvas();
+  if (cur?.kind === 'canvas' && cur.path === filePath) {
+    broadcastCanvasUpdate(filePath);
+    return { opened: false };
+  }
+  const ext = path.extname(filePath).toLowerCase();
+  if (!CANVAS_DOC_EXTS.has(ext) || !downloadUrl) {
+    broadcastCanvasUpdate(filePath);
+    return { opened: false };
+  }
+  let url = downloadUrl;
+  if (/\/api\/upload\/download\/[^?#]+/.test(url) && !/[?&]inline=1\b/.test(url)) {
+    url += (url.includes('?') ? '&' : '?') + 'inline=1';
+  }
+  const title = path.basename(filePath);
+  try {
+    broadcast({ type: 'dock:open', data: { kind: 'canvas', url, title, path: filePath } });
+    setCurrentCanvas({ kind: 'canvas', url, path: filePath, title });
+    return { opened: true };
+  } catch {
+    return { opened: false };
   }
 }
 
@@ -909,6 +953,74 @@ export const toolDefinitions: ToolDefinition[] = [
     },
     concurrency: 'safe',
     maxResultTokens: 2000,
+  },
+  // ── Right Dock (shared workspace) ──
+  {
+    name: 'show_canvas',
+    description:
+      'Open a canvas in the user\'s right dock — a side panel where you and the user look at a working document together. The dojo interface slides left to make room and the canvas renders on the right. Use this to show the user something you have produced: an HTML page, a Markdown doc, a plain-text/code file, a report, a chart, a mockup.\n\nNOTE: writing an .html / .md / .txt file with file_write already opens it in the canvas automatically — you usually do not need to call show_canvas at all. Use show_canvas to (re)show an existing file, or to render inline `html` / a `url`.\n\nThree ways to fill it (use ONE):\n  • `path` — the absolute path to a file on disk you wrote with file_write (e.g. "/Users/.../uploads/kevin/report.md"). BEST for documents you will keep editing: HTML renders, Markdown renders formatted, text/code shows monospaced, and the canvas gets a download button. After you call show_canvas({path}), any later file_write / file_patch / file_append to that SAME path auto-refreshes the canvas — you do NOT need to call show_canvas again. For HTML, relative asset paths resolve against the file\'s own folder, so reference local images as <img src="photo.png"> with the image saved next to the .html file and it will render.\n  • `html` — inline HTML markup to render directly (runs sandboxed); no file needed. Inline markup cannot reference local files — embed images as data: URIs or write a file with the image beside it instead.\n  • `url` — content already hosted at a URL (a file_write download URL also works).\n\nExamples:\n  • show_canvas({ title: "Spec", path: "/Users/me/uploads/kevin/spec.md" })\n  • show_canvas({ title: "Q3", html: "<h1>Q3</h1><p>...</p>" })',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Absolute path to a file on disk to show (html, markdown, text, code, image, or pdf). Preferred for documents you will keep editing — edits to this path auto-refresh the canvas. Provide ONE of path / html / url.',
+        },
+        html: {
+          type: 'string',
+          description: 'Inline HTML markup to render in the canvas. A full document or a fragment. Runs sandboxed (scripts allowed). Provide ONE of path / html / url.',
+        },
+        url: {
+          type: 'string',
+          description: 'A URL to load in the canvas (for example a file_write download URL). Provide ONE of path / html / url.',
+        },
+        title: {
+          type: 'string',
+          description: 'Optional short label shown in the canvas header.',
+        },
+      },
+      required: [],
+    },
+    concurrency: 'safe',
+  },
+  {
+    name: 'open_browser',
+    description:
+      'Open a live website in the user\'s right dock so you and the user can view it together. The dojo interface slides left and the page loads in a resizable frame on the right with refresh and close controls. Use this for showing a real, working website at a URL (not your own generated markup — for that use show_canvas). Note: some sites refuse to load inside a frame; if a page comes up blank the site has blocked embedding. Example: open_browser({ url: "https://example.com", title: "Example" }).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: {
+          type: 'string',
+          description: 'The URL of the website to open in the dock.',
+        },
+        title: {
+          type: 'string',
+          description: 'Optional short label shown in the frame header.',
+        },
+      },
+      required: ['url'],
+    },
+    concurrency: 'safe',
+  },
+  {
+    name: 'view_canvas',
+    description:
+      'Look at what is currently shown in the user\'s right-dock canvas — use this when the user asks you to look at / read / check / review what is on the canvas. By default it views whatever you most recently opened there (with show_canvas or open_browser). It renders the content and reads it back: an HTML page or website is screenshotted and described, an image is examined directly, and a markdown/text/code file is returned as text. Works even if your own model cannot see images (it falls back to the configured vision model). Pass an optional `prompt` to ask something specific (e.g. "does the chart axis start at zero?", "summarize the page", "is the header centered?"). You can also point it at a specific `html`, `url`, or `path` to view that instead of the current canvas.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        prompt: {
+          type: 'string',
+          description: 'Optional. What to look for or answer about the canvas. Omit for a general description.',
+        },
+        path: { type: 'string', description: 'Optional. View a specific file on disk instead of the current canvas.' },
+        url: { type: 'string', description: 'Optional. View a specific URL instead of the current canvas.' },
+        html: { type: 'string', description: 'Optional. View specific inline HTML instead of the current canvas.' },
+      },
+      required: [],
+    },
+    concurrency: 'safe',
   },
   // ── Multi-Agent Tools ──
   {
@@ -3303,7 +3415,12 @@ async function executeFileWrite(agentId: string, args: Record<string, unknown>):
     auditLog(agentId, 'file_write', filePath, 'success', `${content.length} bytes written`);
 
     const downloadUrl = registerSharedFile(agentId, filePath);
-    return `File written successfully: ${filePath} (${content.length} bytes)${downloadUrl ? `\nDownload: ${downloadUrl}\nWhen you give this file to the user (or hand it to another agent), share the Download link above by default; mention the local path only if asked where it is on disk.` : ''}`;
+    // Auto-open documents (html/markdown/text) in the canvas; refresh if already shown.
+    const canvas = syncCanvasAfterWrite(agentId, filePath, downloadUrl);
+    const canvasNote = canvas.opened
+      ? '\nThis document is now open in the canvas — the user can see it. No need to call show_canvas; just tell them what you did.'
+      : '';
+    return `File written successfully: ${filePath} (${content.length} bytes)${canvasNote}${downloadUrl ? `\nDownload: ${downloadUrl}\nWhen you give this file to the user (or hand it to another agent), share the Download link above by default; mention the local path only if asked where it is on disk.` : ''}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     auditLog(agentId, 'file_write', filePath, 'error', msg);
@@ -3352,6 +3469,7 @@ async function executeFileAppend(agentId: string, args: Record<string, unknown>)
     auditLog(agentId, 'file_write', filePath, 'success', `${payload.length} bytes appended (total ${stat.size})`);
 
     const downloadUrl = registerSharedFile(agentId, filePath);
+    broadcastCanvasUpdate(filePath);
     return `Appended ${payload.length} bytes to ${filePath}. Total size: ${stat.size} bytes.${downloadUrl ? `\nDownload: ${downloadUrl}\nWhen you give this file to the user (or hand it to another agent), share the Download link above by default; mention the local path only if asked where it is on disk.` : ''}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -3502,6 +3620,8 @@ export async function executeFilePatch(
   const afterBytes = Buffer.byteLength(working, 'utf-8');
   const totalReplacements = counts.reduce((a, b) => a + b, 0);
   auditLog(agentId, 'file_patch', filePath, 'success', `${totalReplacements} replacements across ${patches.length} patches`);
+  registerSharedFile(agentId, filePath);
+  broadcastCanvasUpdate(filePath);
   return (
     `Patched ${filePath} (${beforeBytes} → ${afterBytes} bytes, ${totalReplacements} total replacements)\n${summary}`
   );
@@ -4160,6 +4280,56 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         isError = content.startsWith('Permission denied') || content.startsWith('Fetch failed');
         break;
       }
+
+      // ── Right Dock ──
+      case 'show_canvas': {
+        const html = typeof args.html === 'string' ? args.html : undefined;
+        let url = typeof args.url === 'string' ? args.url : undefined;
+        const rawPath = typeof args.path === 'string' ? args.path : undefined;
+        let canvasPath: string | undefined;
+        // `path`: register the on-disk file so the canvas can fetch it (and
+        // remember the path so later edits to it auto-refresh the canvas).
+        if (rawPath) {
+          canvasPath = resolvePath(rawPath);
+          const registered = registerSharedFile(agentId, canvasPath);
+          if (!registered) {
+            content = `Error: show_canvas could not read the file at ${canvasPath}. Make sure it exists (write it with file_write first).`;
+            isError = true;
+            break;
+          }
+          url = registered;
+        }
+        if (!html && !url) {
+          content = 'Error: show_canvas requires one of `path` (a file on disk), `html` (markup to render), or `url` (a page/file to load).';
+          isError = true;
+          break;
+        }
+        // A file_write download URL serves Content-Disposition: attachment by
+        // default, which makes the canvas iframe download the file instead of
+        // rendering it. Flip our own download URLs to inline so the content
+        // renders in the canvas. (Leaves external URLs untouched.)
+        if (url && /\/api\/upload\/download\/[^?#]+/.test(url) && !/[?&]inline=1\b/.test(url)) {
+          url += (url.includes('?') ? '&' : '?') + 'inline=1';
+        }
+        const title = typeof args.title === 'string' ? args.title : undefined;
+        broadcast({ type: 'dock:open', data: { kind: 'canvas', html, url, title, path: canvasPath } });
+        setCurrentCanvas({ kind: 'canvas', html, url, path: canvasPath, title });
+        content = `Canvas opened in the user's right dock${title ? ` ("${title}")` : ''}. The user can now see it.${canvasPath ? ' Edits you make to this file (file_write/file_patch/file_append) will refresh the canvas automatically.' : ''} Call view_canvas if you need to look at it yourself.`;
+        break;
+      }
+      case 'open_browser': {
+        const obErr = checkRequired([{ name: 'url', value: args.url, type: 'string' }]);
+        if (obErr) { content = obErr; isError = true; break; }
+        const title = typeof args.title === 'string' ? args.title : undefined;
+        broadcast({ type: 'dock:open', data: { kind: 'iframe', url: args.url as string, title } });
+        setCurrentCanvas({ kind: 'iframe', url: args.url as string, title });
+        content = `Opened ${args.url} in the user's right dock. (If it shows blank, that site blocks embedding — but you can still view_canvas to look at the page yourself.)`;
+        break;
+      }
+      case 'view_canvas':
+        content = await viewCanvas(agentId, args);
+        isError = content.startsWith('Error');
+        break;
 
       // ── Multi-Agent Tools ──
       case 'spawn_agent': {

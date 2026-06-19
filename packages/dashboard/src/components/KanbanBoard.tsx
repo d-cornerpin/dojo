@@ -13,22 +13,25 @@ interface KanbanBoardProps {
 interface ColumnDef {
   key: Task['status'];
   label: string;
-  headerColor: string;
+  // Prototype kcol flavor modifier. On Deck has no flavor (the plain .kcol);
+  // the others map onto the four prototype colors.
+  flavor: '' | 'kcol--progress' | 'kcol--paused' | 'kcol--complete' | 'kcol--blocked';
 }
 
 const columns: ColumnDef[] = [
-  { key: 'on_deck', label: 'On Deck', headerColor: 'text-ui/55' },
-  { key: 'in_progress', label: 'In Progress', headerColor: 'text-cp-amber' },
-  { key: 'paused', label: 'Paused', headerColor: 'text-cp-purple' },
-  { key: 'complete', label: 'Complete', headerColor: 'text-cp-teal' },
-  { key: 'blocked', label: 'Blocked', headerColor: 'text-cp-amber-light' },
-  { key: 'fallen', label: 'Fallen', headerColor: 'text-cp-coral' },
+  { key: 'on_deck', label: 'On Deck', flavor: '' },
+  { key: 'in_progress', label: 'In Progress', flavor: 'kcol--progress' },
+  { key: 'paused', label: 'Paused', flavor: 'kcol--paused' },
+  { key: 'complete', label: 'Complete', flavor: 'kcol--complete' },
+  { key: 'blocked', label: 'Blocked', flavor: 'kcol--blocked' },
+  { key: 'fallen', label: 'Fallen', flavor: 'kcol--blocked' },
 ];
 
 const KanbanColumn = ({
   column,
   tasks,
   workingAgentIds,
+  index,
   onTaskClick,
   onTaskDeleted,
   onDrop,
@@ -36,6 +39,7 @@ const KanbanColumn = ({
   column: ColumnDef;
   tasks: Task[];
   workingAgentIds?: Set<string>;
+  index: number;
   onTaskClick: (taskId: string) => void;
   onTaskDeleted?: () => void;
   onDrop: (taskId: string, newStatus: Task['status']) => void;
@@ -63,43 +67,30 @@ const KanbanColumn = ({
 
   return (
     <div
-      className={`flex-1 min-w-[200px] flex flex-col rounded-xl transition-colors ${
-        dragOver ? 'bg-cp-blue/10 ring-2 ring-cp-blue/40' : ''
-      }`}
+      className={`kcol anim ${column.flavor}`}
+      style={{ '--ci': `${40 + index * 40}ms` } as React.CSSProperties}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {/* Column header */}
-      <div className="flex items-center gap-2 mb-3 px-2">
-        <h3 className={`text-sm font-semibold ${column.headerColor}`}>{column.label}</h3>
-        <span className="text-xs text-ui/40 bg-ui/[0.05] px-1.5 py-0.5 rounded-full">
-          {tasks.length}
-        </span>
+      <div className="kcol__head">
+        <span className="kcol__title">{column.label}</span>
+        <span className="kcol__count">{tasks.length}</span>
       </div>
 
-      {/* Cards */}
-      <div className={`flex-1 space-y-2 overflow-y-auto min-h-[80px] px-1 pb-1 rounded-lg ${
-        dragOver ? 'bg-cp-blue/5' : ''
-      }`}>
-        {tasks.map((task) => (
-          <DraggableTaskCard
-            key={task.id}
-            task={task}
-            agentIsWorking={!!(task.assignedTo && workingAgentIds?.has(task.assignedTo))}
-            onClick={() => onTaskClick(task.id)}
-            onDeleted={onTaskDeleted}
-          />
-        ))}
+      {tasks.map((task) => (
+        <DraggableTaskCard
+          key={task.id}
+          task={task}
+          agentIsWorking={!!(task.assignedTo && workingAgentIds?.has(task.assignedTo))}
+          onClick={() => onTaskClick(task.id)}
+          onDeleted={onTaskDeleted}
+        />
+      ))}
 
-        {tasks.length === 0 && (
-          <div className={`text-center py-8 text-xs rounded-lg border border-dashed ${
-            dragOver ? 'border-cp-blue/40 text-cp-blue' : 'text-ui/25 text-ui/25'
-          }`}>
-            {dragOver ? 'Drop here' : 'No tasks'}
-          </div>
-        )}
-      </div>
+      {tasks.length === 0 && (
+        <div className="kempty">{dragOver ? 'Drop here' : 'No tasks'}</div>
+      )}
     </div>
   );
 };
@@ -132,7 +123,7 @@ const DraggableTaskCard = ({
       draggable
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
-      className={`cursor-grab active:cursor-grabbing ${dragging ? 'opacity-40' : ''}`}
+      style={{ cursor: 'grab', opacity: dragging ? 0.4 : undefined }}
     >
       <TaskCard task={task} agentIsWorking={agentIsWorking} onClick={onClick} onDeleted={onDeleted} />
     </div>
@@ -199,11 +190,12 @@ export const KanbanBoard = ({ tasks, workingAgentIds, onTaskClick, onStatusChang
   };
 
   return (
-    <div className="flex gap-4 h-full overflow-x-auto pb-2">
-      {columns.map((col) => (
+    <div className="kanban">
+      {columns.map((col, i) => (
         <KanbanColumn
           key={col.key}
           column={col}
+          index={i}
           tasks={tasksByStatus[col.key] || []}
           workingAgentIds={workingAgentIds}
           onTaskClick={onTaskClick}

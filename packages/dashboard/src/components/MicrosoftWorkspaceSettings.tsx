@@ -140,16 +140,16 @@ export const MicrosoftWorkspaceSettings = () => {
   if (!status) return <div className="loading-state">Loading...</div>;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" style={{ breakInside: 'avoid' }}>
       {(['agent', 'user'] as Slot[]).map((slot) => {
         const info = status.slots[slot];
         const meta = SLOT_META[slot];
         const isConnecting = connectingSlot === slot;
         const isTesting = testingSlot === slot;
         return (
-          <div key={slot} className="glass-card p-4 space-y-4">
+          <div key={slot} className="tile space-y-4">
             <div>
-              <h3 className="card-header">{meta.title}</h3>
+              <h3 className="scard__title">{meta.title}</h3>
               <p className="text-xs text-ui/40 mt-1">{meta.subtitle}</p>
             </div>
 

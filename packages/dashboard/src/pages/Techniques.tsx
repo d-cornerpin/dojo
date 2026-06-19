@@ -152,11 +152,12 @@ export const Techniques = () => {
   };
 
   return (
-    <div className="flex-1 p-4 md:p-6 overflow-y-auto">
+    <>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-lg sm:text-xl font-bold text-ui">Techniques</h1>
-        <div className="flex items-center gap-2">
+      <header className="phead">
+        <h2 className="phead__title">Techniques</h2>
+        <span className="phead__meta">{techniques.length} technique{techniques.length !== 1 ? 's' : ''}</span>
+        <div className="phead__actions">
           <input
             ref={fileInputRef}
             type="file"
@@ -165,48 +166,48 @@ export const Techniques = () => {
             onChange={handleImportFile}
           />
           <button
+            type="button"
             onClick={handleImportClick}
             disabled={importing}
-            className="glass-btn text-sm disabled:opacity-60"
+            className="btn"
             title="Import a .dojo.zip technique package"
           >
             {importing ? 'Importing…' : 'Import Technique'}
           </button>
           <button
+            type="button"
             onClick={() => navigate('/techniques/new')}
-            className="glass-btn glass-btn-primary text-sm"
+            className="btn btn--primary"
           >
             + Create Technique
           </button>
         </div>
-      </div>
+      </header>
 
       {importError && (
-        <div className="mb-4 px-4 py-3 rounded-lg bg-cp-coral/[0.08] text-sm text-cp-coral border border-cp-coral/20">
+        <div className="note--warn" style={{ color: 'var(--dojo3-rust)' }}>
           Import failed: {importError}
         </div>
       )}
 
-      {/* Filters */}
-      <div className="flex flex-wrap gap-3 mb-6">
+      {/* Toolbar: search + state tabs + tag filter */}
+      <div className="toolbar">
         <input
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search techniques..."
-          className="glass-input px-4 py-2 text-sm w-64"
+          placeholder="Search techniques"
+          aria-label="Search techniques"
+          className="field"
         />
 
-        <div className="flex gap-1">
+        <div className="tabs" role="tablist">
           {STATE_FILTERS.map(f => (
             <button
               key={f}
+              type="button"
               onClick={() => setStateFilter(f)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                stateFilter === f
-                  ? 'bg-ui/[0.12] text-ui'
-                  : 'bg-ui/[0.05] text-ui/40 hover:text-ui/70'
-              }`}
+              className={`tab ${stateFilter === f ? 'is-active' : ''}`}
             >
               {f}
             </button>
@@ -217,7 +218,8 @@ export const Techniques = () => {
           <select
             value={tagFilter}
             onChange={(e) => setTagFilter(e.target.value)}
-            className="glass-select text-xs py-1.5 px-3"
+            aria-label="Tag filter"
+            className="field field--select"
           >
             <option value="">All tags</option>
             {allTags.map(tag => (
@@ -229,25 +231,24 @@ export const Techniques = () => {
 
       {/* Grid */}
       {loading ? (
-        <div className="flex items-center justify-center py-12">
-          <p className="text-ui/40">Loading techniques...</p>
+        <div className="stub">
+          <p className="stub__line">Loading techniques...</p>
         </div>
       ) : techniques.length === 0 ? (
-        <div className="text-center py-16">
-          <div className="text-4xl mb-4">{'\u{1F94B}'}</div>
-          <h2 className="text-lg font-semibold text-ui/55 mb-2">No techniques yet</h2>
-          <p className="text-sm text-ui/40 max-w-md mx-auto">
+        <div className="stub">
+          <p className="stub__line" style={{ fontWeight: 600, color: 'var(--dojo3-ink-2)', marginBottom: 8 }}>No techniques yet</p>
+          <p className="stub__line">
             Techniques are reusable skills your agents learn and share.
             Create your first one or ask your agent to save what they learn.
           </p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {techniques.map(t => (
-            <TechniqueCard key={t.id} technique={t} onToggle={handleToggle} />
+        <div className="cards">
+          {techniques.map((t, i) => (
+            <TechniqueCard key={t.id} technique={t} onToggle={handleToggle} index={i} />
           ))}
         </div>
       )}
-    </div>
+    </>
   );
 };

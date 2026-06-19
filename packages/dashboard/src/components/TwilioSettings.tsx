@@ -86,9 +86,9 @@ export const TwilioSettings = () => {
 
   if (loading || !config) {
     return (
-      <div className="glass-card p-4">
+      <div className="tile">
         <div className="flex items-center gap-2 mb-2">
-          <h3 className="card-header">Twilio</h3>
+          <h3 className="scard__title">Twilio</h3>
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-cp-amber/20 text-cp-amber uppercase tracking-wide font-mono">Beta</span>
         </div>
         <p className="text-xs text-ui/40">Loading…</p>
@@ -97,10 +97,10 @@ export const TwilioSettings = () => {
   }
 
   return (
-    <div className="glass-card p-4 space-y-3">
+    <div className="tile space-y-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <h3 className="card-header">Twilio</h3>
+          <h3 className="scard__title">Twilio</h3>
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-cp-amber/20 text-cp-amber uppercase tracking-wide font-mono">Beta</span>
         </div>
         {config.configured && (
