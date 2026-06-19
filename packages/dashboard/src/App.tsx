@@ -1,20 +1,19 @@
-import { Routes, Route, Navigate, useNavigate, Outlet } from 'react-router-dom';
-import { useEffect, useState, useCallback, type ReactNode } from 'react';
+import { Routes, Route, Navigate, useNavigate, useLocation, Outlet } from 'react-router-dom';
+import { useEffect, useState, useCallback } from 'react';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { WebSocketProvider, useWebSocket } from './hooks/useWebSocket';
-import { ToastProvider, ToastContainer, useToast } from './hooks/useToast';
+import { ToastProvider, useToast } from './hooks/useToast';
 import { V2CutoverNotice } from './components/V2CutoverNotice';
 import type { WsEvent } from '@dojo/shared';
-import { Sidebar } from './components/Sidebar';
 import { Login } from './pages/Login';
 import { Setup } from './pages/Setup';
 import { Chat } from './pages/Chat';
 import { Agents } from './pages/Agents';
-import { AgentDetailPage } from './pages/AgentDetail';
+import { AgentConfigPanel } from './pages/AgentConfigPanel';
 import { Tracker } from './pages/Tracker';
 import { Techniques } from './pages/Techniques';
 import { TechniqueDetail } from './pages/TechniqueDetail';
-import { TechniqueBuilder } from './pages/TechniqueBuilder';
+import { TechniqueSessionRoute } from './pages/TechniqueSessionRoute';
 import { Memory } from './pages/Memory';
 import { Health } from './pages/Health';
 import { Settings } from './pages/Settings';
@@ -22,6 +21,10 @@ import { Costs } from './pages/Costs';
 import * as api from './lib/api';
 import { PostMigrationBanner } from './components/PostMigrationBanner';
 import { ThemeProvider } from './themes/ThemeProvider';
+import { OrbProvider } from './components/orb/OrbProvider';
+import { ActiveAgentProvider } from './components/ActiveAgentProvider';
+import { RightDockProvider } from './components/RightDockProvider';
+import { TechniqueSessionProvider } from './components/TechniqueSessionProvider';
 
 // ── Auth guard — redirects to login if not authenticated ──
 
@@ -87,31 +90,52 @@ const WebSocketShell = () => {
 
 // ── Dashboard layout with sidebar ──
 
-const GradientBlobs = () => (
-  <div className="gradient-blob-layer">
-    <div className="blob blob-purple" />
-    <div className="blob blob-teal" />
-    <div className="blob blob-warm" />
-  </div>
+// Shared chrome for every authenticated surface: the toast system + the
+// cutover notice. Both the dojo3 stage and the full-page surfaces render
+// inside it via <Outlet/>.
+const DashboardChrome = () => (
+  // ToastProvider is shared; the dojo3 stage renders its own orb-anchored
+  // notification cards (Dojo3Notifications), while the full-page chrome below
+  // keeps the classic corner ToastContainer — same queue, two surfaces.
+  <ToastProvider>
+    <V2CutoverNotice />
+    <Outlet />
+  </ToastProvider>
 );
 
-const DashboardLayout = () => {
+// The PERSISTENT dojo3 shell: one Chat (stage + orb) that stays mounted
+// across all panel surfaces, so the orb never reloads on navigation. The
+// routed page is injected as the panel content via <Outlet/>; on "/" there
+// is no panel (just the chat). Because this layout element stays mounted
+// while any of its child routes match, navigating Agents -> Vault -> ...
+// only swaps the panel content, not the orb.
+const Dojo3Shell = () => {
+  const location = useLocation();
+  const isHome = location.pathname === '/';
+  // Technique build/edit routes don't overlay a panel — the chat itself becomes
+  // the trainer conversation (slides nothing, stays in focus) and the Technique
+  // Mat docks on the right. Their <Outlet/> mounts the session controller
+  // outside the panel slot so it can start the session + open the dock.
+  const isTechniqueBuild = /^\/techniques\/(new|[^/]+\/edit)$/.test(location.pathname);
+  const showPanel = !isHome && !isTechniqueBuild;
   return (
-    <ToastProvider>
-      <GradientBlobs />
-      <ToastContainer />
-      <V2CutoverNotice />
-      <div className="h-dvh flex overflow-hidden relative z-[1]">
-        <Sidebar />
-        <main className="flex-1 flex flex-col h-full overflow-hidden pt-[48px] md:pt-0">
-          <PostMigrationBanner />
-          <GlobalAlerts />
-          <Outlet />
-        </main>
-      </div>
-    </ToastProvider>
+    <OrbProvider>
+      <ActiveAgentProvider>
+        <RightDockProvider>
+          <TechniqueSessionProvider>
+            <PostMigrationBanner />
+            <GlobalAlerts />
+            <div className="h-dvh w-full overflow-hidden relative z-[1]">
+              <Chat panel={showPanel ? { content: <Outlet /> } : null} />
+              {isTechniqueBuild && <Outlet />}
+            </div>
+          </TechniqueSessionProvider>
+        </RightDockProvider>
+      </ActiveAgentProvider>
+    </OrbProvider>
   );
 };
+
 
 // ── Routes ──
 
@@ -129,19 +153,28 @@ const AppRoutes = () => {
         {/* Dashboard — WebSocket wraps all pages, single mount */}
         <Route element={<WebSocketShell />}>
           <Route element={<SetupGate />}>
-            <Route element={<DashboardLayout />}>
-              <Route path="/" element={<Chat />} />
-              <Route path="/agents" element={<Agents />} />
-              <Route path="/agents/:id" element={<AgentDetailPage />} />
-              <Route path="/techniques" element={<Techniques />} />
-              <Route path="/techniques/new" element={<TechniqueBuilder />} />
-              <Route path="/techniques/:id/edit" element={<TechniqueBuilder />} />
-              <Route path="/techniques/:id" element={<TechniqueDetail />} />
-              <Route path="/tracker" element={<Tracker />} />
-              <Route path="/memory" element={<Memory />} />
-              <Route path="/costs" element={<Costs />} />
-              <Route path="/health" element={<Health />} />
-              <Route path="/settings" element={<Settings />} />
+            <Route element={<DashboardChrome />}>
+              {/* Persistent orb stage; routed pages become panel content */}
+              <Route element={<Dojo3Shell />}>
+                <Route index element={null} />
+                <Route path="agents" element={<Agents />} />
+                <Route path="agents/:id" element={<AgentConfigPanel />} />
+                <Route path="techniques" element={<Techniques />} />
+                <Route path="tracker" element={<Tracker />} />
+                <Route path="memory" element={<Memory />} />
+                <Route path="costs" element={<Costs />} />
+                <Route path="health" element={<Health />} />
+                <Route path="settings" element={<Settings />} />
+                {/* Technique build/edit run inside the persistent shell: the
+                    chat becomes the trainer conversation and the Mat docks
+                    right. The controller renders null (see Dojo3Shell). */}
+                <Route path="techniques/new" element={<TechniqueSessionRoute />} />
+                <Route path="techniques/:id/edit" element={<TechniqueSessionRoute />} />
+                {/* Technique detail renders as a dojo3 panel like every other
+                    page (it self-headers via .phead). The more specific
+                    new/edit routes above out-rank this :id match. */}
+                <Route path="techniques/:id" element={<TechniqueDetail />} />
+              </Route>
             </Route>
           </Route>
         </Route>

@@ -19,6 +19,10 @@ export interface PendingAttachment {
   size: number;
   path: string;
   category: 'image' | 'pdf' | 'text' | 'office' | 'audio' | 'video' | 'unknown';
+  /** A canvas-viewable document the agent opened in the right dock this turn.
+   * The dashboard renders an "Open in canvas" affordance for these (so the
+   * user can re-open it from the chat after closing the canvas). */
+  openInCanvas?: boolean;
 }
 
 const buffers = new Map<string, PendingAttachment[]>();
@@ -43,6 +47,16 @@ export function queuePendingAttachments(
     const existingCaps = captionBuffers.get(agentId) ?? [];
     captionBuffers.set(agentId, [...existingCaps, caption.trim()]);
   }
+}
+
+/**
+ * Queue an "open in canvas" document reference onto the agent's next assistant
+ * message, deduped by path so repeated edits in one turn don't stack chips.
+ */
+export function queueCanvasDoc(agentId: string, att: PendingAttachment): void {
+  const existing = buffers.get(agentId) ?? [];
+  if (existing.some((a) => a.openInCanvas && a.path === att.path)) return;
+  buffers.set(agentId, [...existing, att]);
 }
 
 export function drainPendingAttachments(agentId: string): PendingAttachment[] {

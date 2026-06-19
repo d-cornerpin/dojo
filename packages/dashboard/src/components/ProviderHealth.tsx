@@ -1,7 +1,8 @@
-// FENG-SHUI EXEMPTION: this component intentionally uses standard Tailwind
-// status colors (text-green-400, text-yellow-400, text-red-400) for universal
-// healthy/degraded/down semantics. See FENG-SHUI-THEME-SPEC.md "Tailwind
-// Classes and Theme Colors" — these stay recognizable across themes.
+// Provider health cards, rebuilt onto the dojo3 panel primitives
+// (.cards / .tile.tile--ok / .tile.tile--down + .tech__head + .rows).
+// Healthy and degraded providers render as .tile--ok with an OK pill;
+// down providers render as .tile--down with a Down pill. The error
+// count and last-success timestamp carry through unchanged.
 
 interface ProviderStatus {
   id: string;
@@ -28,64 +29,45 @@ const formatTimestamp = (ts: string | null): string => {
   return d.toLocaleDateString();
 };
 
-const getStatusInfo = (provider: ProviderStatus): { label: string; color: string; bgColor: string; borderColor: string } => {
-  if (provider.healthy && provider.errorCount === 0) {
-    return {
-      label: 'Healthy',
-      color: 'text-green-400',
-      bgColor: 'bg-green-500/10',
-      borderColor: 'border-green-500/30',
-    };
-  }
-  if (provider.healthy && provider.errorCount > 0) {
-    return {
-      label: 'Degraded',
-      color: 'text-yellow-400',
-      bgColor: 'bg-yellow-500/10',
-      borderColor: 'border-yellow-500/30',
-    };
-  }
-  return {
-    label: 'Down',
-    color: 'text-red-400',
-    bgColor: 'bg-red-500/10',
-    borderColor: 'border-red-500/30',
-  };
+const getStatusInfo = (provider: ProviderStatus): { label: string; down: boolean } => {
+  if (provider.healthy && provider.errorCount === 0) return { label: 'Healthy', down: false };
+  if (provider.healthy && provider.errorCount > 0) return { label: 'Degraded', down: false };
+  return { label: 'Down', down: true };
 };
 
 export const ProviderHealth = ({ providers }: ProviderHealthProps) => {
   if (providers.length === 0) {
-    return <p className="text-sm text-ui/25">No providers configured.</p>;
+    return <div className="stub"><p className="stub__line">No providers configured.</p></div>;
   }
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-      {providers.map((provider) => {
+    <div className="cards" style={{ marginTop: 14 }}>
+      {providers.map((provider, i) => {
         const status = getStatusInfo(provider);
         return (
-          <div
+          <article
             key={provider.id}
-            className={`border rounded-xl p-4 ${status.bgColor} ${status.borderColor}`}
+            className={`tile ${status.down ? 'tile--down' : 'tile--ok'} anim`}
+            style={{ ['--ci' as string]: `${120 + i * 30}ms` }}
           >
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="text-sm font-medium text-ui">{provider.name}</h4>
-              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${status.color} ${status.bgColor}`}>
+            <div className="tech__head">
+              <div className="tech__title">{provider.name}</div>
+              <span className={`pill ${status.down ? 'pill--down' : 'pill--ok'}`}>
+                <i className="dot" />
                 {status.label}
               </span>
             </div>
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-ui/40">Last success</span>
-                <span className="text-xs text-ui/55">{formatTimestamp(provider.lastSuccess)}</span>
+            <div className="rows">
+              <div>
+                <span className="k">Last success</span>
+                <span className="v">{formatTimestamp(provider.lastSuccess)}</span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-ui/40">Errors</span>
-                <span className={`text-xs font-mono ${provider.errorCount > 0 ? 'text-red-400' : 'text-ui/55'}`}>
-                  {provider.errorCount}
-                </span>
+              <div>
+                <span className="k">Errors</span>
+                <span className="v">{provider.errorCount}</span>
               </div>
             </div>
-          </div>
+          </article>
         );
       })}
     </div>

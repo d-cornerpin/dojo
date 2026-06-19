@@ -1,14 +1,17 @@
 import { useNavigate } from 'react-router-dom';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type CSSProperties } from 'react';
 import type { AgentDetail, Model } from '@dojo/shared';
-import { StatusBadge } from './StatusBadge';
 import * as api from '../lib/api';
+import { useActiveAgent } from './ActiveAgentProvider';
+import { resolveAgentHue, ORB_PALETTE, CHAMPAGNE_HUE } from '../lib/agent-hue';
 
 interface AgentCardProps {
   agent: AgentDetail;
   models: Model[];
   providerNameById: Record<string, string>;
   onModelChanged: () => void;
+  /** Stagger index for the card-entry animation (sets --ci). */
+  index?: number;
 }
 
 // Cached sensei role lookup
@@ -24,29 +27,56 @@ async function getSenseiRoles(): Promise<Record<string, string>> {
     api.getSetting('dreamer_agent_id'),
   ]);
   _senseiRoles = {};
-  if (primary.ok && primary.data.value) _senseiRoles[primary.data.value] = 'Dojo Master \u2014 Main Agent';
-  if (pm.ok && pm.data.value) _senseiRoles[pm.data.value] = 'Dojo Planner \u2014 Task Agent';
-  if (trainer.ok && trainer.data.value) _senseiRoles[trainer.data.value] = 'Dojo Trainer \u2014 Technique Agent';
-  if (imaginer.ok && imaginer.data.value) _senseiRoles[imaginer.data.value] = 'Dojo Imaginer \u2014 Image Agent';
-  if (healer.ok && healer.data.value) _senseiRoles[healer.data.value] = 'Dojo Healer \u2014 Health Agent';
-  if (dreamer.ok && dreamer.data.value) _senseiRoles[dreamer.data.value] = 'Dojo Dreamer \u2014 Memory Agent';
+  if (primary.ok && primary.data.value) _senseiRoles[primary.data.value] = 'Dojo Master · Main Agent';
+  if (pm.ok && pm.data.value) _senseiRoles[pm.data.value] = 'Dojo Planner · Task Agent';
+  if (trainer.ok && trainer.data.value) _senseiRoles[trainer.data.value] = 'Dojo Trainer · Technique Agent';
+  if (imaginer.ok && imaginer.data.value) _senseiRoles[imaginer.data.value] = 'Dojo Imaginer · Image Agent';
+  if (healer.ok && healer.data.value) _senseiRoles[healer.data.value] = 'Dojo Healer · Health Agent';
+  if (dreamer.ok && dreamer.data.value) _senseiRoles[dreamer.data.value] = 'Dojo Dreamer · Memory Agent';
   return _senseiRoles;
 }
 
+// Classification -> badge style + label. Apprentice reuses the ronin style.
 const classificationBadge: Record<string, { cls: string; label: string }> = {
-  sensei: { cls: 'glass-badge-amber', label: 'Sensei' },
-  ronin: { cls: 'glass-badge-blue', label: 'Ronin' },
-  apprentice: { cls: 'glass-badge-gray', label: 'Apprentice' },
+  sensei: { cls: 'badge--sensei', label: 'Sensei' },
+  ronin: { cls: 'badge--ronin', label: 'Ronin' },
+  apprentice: { cls: 'badge--ronin', label: 'Apprentice' },
 };
 
-import { getAgentColors } from '../lib/theme';
+// The avatar tint (--h) now comes from the shared resolver (lib/agent-hue), so
+// the box and the orb always use the same hue. A small palette popover on the
+// avatar lets the user pick a colour for any non-primary agent.
 
-function getAgentColor(id: string): string {
-  const colors = getAgentColors();
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) hash = id.charCodeAt(i) + ((hash << 5) - hash);
-  return colors[Math.abs(hash) % colors.length];
-}
+// Swatch palette popover anchored under an agent's avatar.
+const ColorPicker = ({ current, onPick, onClose }: {
+  current: number; onPick: (hue: number) => void; onClose: () => void;
+}) => (
+  <>
+    <div className="agent-color-backdrop" onClick={(e) => { e.stopPropagation(); onClose(); }} />
+    <div className="agent-color-pop" onClick={(e) => e.stopPropagation()} role="menu" aria-label="Agent colour">
+      {ORB_PALETTE.map((c) => (
+        <button
+          key={c.hue}
+          type="button"
+          className={`agent-color-swatch${Math.round(current) === c.hue ? ' is-active' : ''}`}
+          style={{ '--h': c.hue } as CSSProperties}
+          title={c.name}
+          aria-label={c.name}
+          onClick={() => onPick(c.hue)}
+        />
+      ))}
+    </div>
+  </>
+);
+
+// Status pill: green "Ready" by default; override colour inline for the rest.
+const statusPresentation: Record<string, { label: string; color?: string }> = {
+  idle: { label: 'Ready' },
+  paused: { label: 'Ready' },
+  working: { label: 'Working', color: '#a4762e' },
+  error: { label: 'Error', color: '#9c4434' },
+  terminated: { label: 'Ended', color: 'var(--dojo3-ink-4)' },
+};
 
 const formatUptime = (seconds: number): string => {
   if (seconds < 60) return `${seconds}s`;
@@ -55,13 +85,18 @@ const formatUptime = (seconds: number): string => {
   return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
 };
 
-export const AgentCard = ({ agent, models, providerNameById, onModelChanged }: AgentCardProps) => {
+export const AgentCard = ({ agent, models, providerNameById, onModelChanged, index = 0 }: AgentCardProps) => {
   const navigate = useNavigate();
+  const { selectAgent, agentId: activeAgentId, primaryId } = useActiveAgent();
   const [changingModel, setChangingModel] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmTerminate, setConfirmTerminate] = useState(false);
   const [senseiRole, setSenseiRole] = useState<string | null>(null);
+  const [colorOpen, setColorOpen] = useState(false);
+  // Local override so a freshly-picked colour shows immediately (the agent prop
+  // only refreshes on reload). null = use the agent's stored/derived hue.
+  const [localHue, setLocalHue] = useState<number | null>(null);
 
   useEffect(() => {
     if (agent.classification === 'sensei') {
@@ -71,8 +106,25 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged }: A
     }
   }, [agent.id, agent.classification]);
 
-  const cls = classificationBadge[agent.classification] ?? classificationBadge.apprentice;
-  const color = getAgentColor(agent.id);
+  const badge = classificationBadge[agent.classification] ?? classificationBadge.apprentice;
+  const isThisPrimary = primaryId != null && agent.id === primaryId;
+  // One hue for both the avatar box and the orb. Primary is always champagne.
+  const hue = isThisPrimary ? CHAMPAGNE_HUE : (localHue ?? resolveAgentHue(agent, false));
+  const status = statusPresentation[agent.status] ?? statusPresentation.idle;
+
+  const pickColor = async (h: number) => {
+    setLocalHue(h);
+    setColorOpen(false);
+    // Live-update the orb if this agent is the active one.
+    if (activeAgentId === agent.id) selectAgent({ id: agent.id, name: agent.name, hue: h });
+    await api.updateAgentConfig(agent.id, { config: { orbHue: h } });
+  };
+  const isAuto = agent.modelId === 'auto';
+
+  const isWorking = agent.status === 'working';
+  const isTerminated = agent.status === 'terminated';
+  const canDismiss = agent.classification !== 'sensei' && !isTerminated;
+  const canDelete = agent.classification !== 'sensei' && isTerminated;
 
   const handleModelChange = async (modelId: string) => {
     setSaving(true);
@@ -82,158 +134,217 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged }: A
     setChangingModel(false);
   };
 
-  const isWorking = agent.status === 'working';
-  const isError = agent.status === 'error';
+  const cardStyle = {
+    '--h': hue,
+    '--ci': `${index * 35}ms`,
+    position: 'relative',
+    cursor: 'pointer',
+    opacity: agent.status === 'terminated' ? 0.55 : 1,
+  } as CSSProperties;
 
-  const cardContent = (
-    <div
-      onClick={() => navigate(`/agents/${agent.id}`)}
+  // Light scrim for the confirm overlays, sized to the card radius.
+  const scrimStyle: CSSProperties = {
+    position: 'absolute',
+    inset: 0,
+    borderRadius: 18,
+    background: 'rgba(60,46,30,0.55)',
+    color: '#fdf6ea',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+    padding: '0 12px',
+    zIndex: 10,
+  };
+
+  return (
+    <article
+      className="agent-card"
+      style={cardStyle}
+      onClick={() => { selectAgent({ id: agent.id, name: agent.name, hue: isThisPrimary ? undefined : hue }); navigate('/'); }}
       draggable={agent.classification !== 'sensei' && window.innerWidth >= 768}
       onDragStart={(e) => {
         if (agent.classification === 'sensei' || window.innerWidth < 768) { e.preventDefault(); return; }
         e.dataTransfer.setData('agent-id', agent.id);
         e.dataTransfer.effectAllowed = 'move';
       }}
-      className={`glass-card glass-card-hover p-3 sm:p-5 cursor-pointer group relative ${
-        agent.status === 'terminated' ? 'opacity-50' : ''
-      }`}
+      title={`Chat with ${agent.name}`}
     >
-      {/* Header */}
-      <div className="flex items-start justify-between mb-2 sm:mb-4">
-        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center text-xs sm:text-sm font-bold shrink-0"
-            style={{ background: `color-mix(in srgb, ${color} 12%, transparent)`, color }}>
+      <header className="agent-card__head">
+        {isThisPrimary ? (
+          <div className="agent-card__avatar" title="The dojo master keeps the signature champagne">
             {agent.name.charAt(0).toUpperCase()}
           </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
-              <span className={`glass-badge ${cls.cls} text-[9px] sm:text-[10px]`}>{cls.label}</span>
-              <h3 className="text-sm sm:text-base font-semibold text-ui truncate">{agent.name}</h3>
-            </div>
-            {senseiRole && <p className="text-[9px] sm:text-[10px] text-ui/40 mt-0.5 truncate">{senseiRole}</p>}
-          </div>
-        </div>
-        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
-          <StatusBadge status={agent.status} />
-          {/* Action buttons: always visible on mobile (no hover), hover-reveal on desktop */}
-          {agent.status === 'working' && (
+        ) : (
+          <div className="agent-card__avatar-wrap" onClick={(e) => e.stopPropagation()}>
             <button
-              onClick={async (e) => { e.stopPropagation(); await api.stopAgent(agent.id); onModelChanged(); }}
-              className="md:opacity-0 md:group-hover:opacity-100 text-ui/25 hover:text-cp-amber transition-all p-1"
-              title="Stop agent"
+              type="button"
+              className="agent-card__avatar agent-card__avatar--btn"
+              onClick={() => setColorOpen((o) => !o)}
+              title={`Set ${agent.name}'s colour`}
+              aria-haspopup="menu"
+              aria-expanded={colorOpen}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>
+              {agent.name.charAt(0).toUpperCase()}
             </button>
-          )}
-          {agent.classification !== 'sensei' && agent.status !== 'terminated' && (
-            <button
-              onClick={(e) => { e.stopPropagation(); setConfirmTerminate(true); }}
-              className="md:opacity-0 md:group-hover:opacity-100 text-ui/25 hover:text-cp-coral transition-all p-1"
-              title="Dismiss agent"
-            >
-              &times;
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Terminate confirmation */}
-      {confirmTerminate && (
-        <div className="absolute inset-0 bg-black/80 rounded-2xl flex items-center justify-center gap-2 z-10"
-          onClick={(e) => e.stopPropagation()}>
-          <span className="text-xs text-ui/70">Dismiss {agent.name} from the dojo?</span>
-          <button
-            onClick={async (e) => { e.stopPropagation(); await api.terminateAgent(agent.id); onModelChanged(); setConfirmTerminate(false); }}
-            className="glass-btn glass-btn-destructive text-xs py-1 px-2"
-          >Yes</button>
-          <button onClick={(e) => { e.stopPropagation(); setConfirmTerminate(false); }}
-            className="glass-btn glass-btn-ghost text-xs py-1 px-2"
-          >No</button>
-        </div>
-      )}
-
-      {/* Info rows */}
-      <div className="space-y-1.5 sm:space-y-2.5 text-xs sm:text-sm">
-        <div className="flex justify-between items-center">
-          <span className="text-secondary">Model</span>
-          {changingModel ? (
-            <select
-              value={agent.modelId === 'auto' ? 'auto' : (agent.modelId ?? '')}
-              onChange={(e) => { e.stopPropagation(); handleModelChange(e.target.value); }}
-              disabled={saving}
-              autoFocus
-              onBlur={() => !saving && setChangingModel(false)}
-              onClick={(e) => e.stopPropagation()}
-              className="glass-select text-xs py-1 px-2 w-40"
-            >
-              <option value="auto">Auto (Smart Router)</option>
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                  {providerNameById[m.providerId] ? ` (${providerNameById[m.providerId]})` : ''}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <button
-              onClick={(e) => { e.stopPropagation(); setChangingModel(true); }}
-              className="text-ui/70 hover:text-cp-amber transition-colors text-right truncate max-w-[160px]"
-            >
-              {agent.modelId === 'auto'
-                ? <span className="text-cp-purple">Auto (Router)</span>
-                : agent.model?.name || <span className="text-cp-amber">Not set</span>}
-            </button>
-          )}
-        </div>
-
-        <div className="flex justify-between">
-          <span className="text-secondary">Uptime</span>
-          <span className="text-ui/70">{formatUptime(agent.uptime)}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-secondary">Messages</span>
-          <span className="text-ui/70">{agent.messageCount.toLocaleString()}</span>
-        </div>
-
-        {/* Delete for terminated non-permanent */}
-        {agent.status === 'terminated' && agent.classification !== 'sensei' && (
-          <div className="pt-2 mt-2 border-t border-ui/[0.06]">
-            {confirmDelete ? (
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-cp-coral">Delete permanently?</span>
-                <button
-                  onClick={async (e) => { e.stopPropagation(); const r = await api.purgeAgent(agent.id); if (r.ok) onModelChanged(); setConfirmDelete(false); }}
-                  className="glass-btn glass-btn-destructive text-xs py-1 px-2"
-                >Yes</button>
-                <button onClick={(e) => { e.stopPropagation(); setConfirmDelete(false); }}
-                  className="glass-btn glass-btn-ghost text-xs py-1 px-2"
-                >Cancel</button>
-              </div>
-            ) : (
-              <button onClick={(e) => { e.stopPropagation(); setConfirmDelete(true); }}
-                className="text-xs text-cp-coral hover:text-cp-coral/80 transition-colors"
-              >Delete agent</button>
+            {colorOpen && (
+              <ColorPicker current={hue} onPick={pickColor} onClose={() => setColorOpen(false)} />
             )}
           </div>
         )}
-      </div>
-    </div>
+        <div className="agent-card__id">
+          <div className="agent-card__name">
+            <span className={`badge ${badge.cls}`}>{badge.label}</span>
+            {agent.name}
+          </div>
+          {senseiRole && <div className="agent-card__role">{senseiRole}</div>}
+        </div>
+        <span className="status" style={status.color ? { color: status.color } : undefined}>
+          <i style={status.color ? { background: status.color, boxShadow: 'none' } : undefined} />
+          {status.label}
+        </span>
+        <button
+          type="button"
+          className="agent-card__cog"
+          title="Agent details and settings"
+          aria-label={`${agent.name} details and settings`}
+          onClick={(e) => { e.stopPropagation(); navigate(`/agents/${agent.id}`); }}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+      </header>
+
+      <dl className="agent-card__stats">
+        <div>
+          <dt>Model</dt>
+          {changingModel ? (
+            <dd>
+              <select
+                value={isAuto ? 'auto' : (agent.modelId ?? '')}
+                onChange={(e) => { e.stopPropagation(); handleModelChange(e.target.value); }}
+                disabled={saving}
+                autoFocus
+                onBlur={() => !saving && setChangingModel(false)}
+                onClick={(e) => e.stopPropagation()}
+                className="field field--select"
+                style={{ height: 28, lineHeight: '26px', fontSize: 11, maxWidth: 170 }}
+              >
+                <option value="auto">Auto (Smart Router)</option>
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                    {providerNameById[m.providerId] ? ` (${providerNameById[m.providerId]})` : ''}
+                  </option>
+                ))}
+              </select>
+            </dd>
+          ) : (
+            <dd
+              className={isAuto ? 'acc' : undefined}
+              onClick={(e) => { e.stopPropagation(); setChangingModel(true); }}
+              style={{ cursor: 'pointer' }}
+              title="Change model"
+            >
+              {isAuto
+                ? 'Auto (Router)'
+                : agent.model?.name || 'Not set'}
+            </dd>
+          )}
+        </div>
+        <div>
+          <dt>Uptime</dt>
+          <dd>{formatUptime(agent.uptime)}</dd>
+        </div>
+        <div>
+          <dt>Messages</dt>
+          <dd>{agent.messageCount.toLocaleString()}</dd>
+        </div>
+      </dl>
+
+      {/* Inline actions: stop (working), dismiss (non-sensei active) */}
+      {(isWorking || canDismiss) && (
+        <div className="tagrow" style={{ marginTop: 11 }} onClick={(e) => e.stopPropagation()}>
+          {isWorking && (
+            <button
+              type="button"
+              className="group__action"
+              onClick={async (e) => { e.stopPropagation(); await api.stopAgent(agent.id); onModelChanged(); }}
+            >
+              Stop
+            </button>
+          )}
+          {canDismiss && (
+            <button
+              type="button"
+              className="group__action"
+              style={{ color: 'var(--dojo3-rust)' }}
+              onClick={(e) => { e.stopPropagation(); setConfirmTerminate(true); }}
+            >
+              Dismiss
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Delete for terminated non-sensei */}
+      {canDelete && (
+        <div className="tagrow" style={{ marginTop: 11 }} onClick={(e) => e.stopPropagation()}>
+          <button
+            type="button"
+            className="group__action"
+            style={{ color: 'var(--dojo3-rust)' }}
+            onClick={(e) => { e.stopPropagation(); setConfirmDelete(true); }}
+          >
+            Delete agent
+          </button>
+        </div>
+      )}
+
+      {/* Dismiss/terminate confirm */}
+      {confirmTerminate && (
+        <div style={scrimStyle} onClick={(e) => e.stopPropagation()}>
+          <span style={{ fontSize: 12 }}>Dismiss {agent.name}?</span>
+          <button
+            type="button"
+            className="btn btn--primary btn--sm"
+            onClick={async (e) => { e.stopPropagation(); await api.terminateAgent(agent.id); onModelChanged(); setConfirmTerminate(false); }}
+          >
+            Yes
+          </button>
+          <button
+            type="button"
+            className="btn btn--sm"
+            onClick={(e) => { e.stopPropagation(); setConfirmTerminate(false); }}
+          >
+            No
+          </button>
+        </div>
+      )}
+
+      {/* Delete confirm */}
+      {confirmDelete && (
+        <div style={scrimStyle} onClick={(e) => e.stopPropagation()}>
+          <span style={{ fontSize: 12 }}>Delete permanently?</span>
+          <button
+            type="button"
+            className="btn btn--primary btn--sm"
+            onClick={async (e) => { e.stopPropagation(); const r = await api.purgeAgent(agent.id); if (r.ok) onModelChanged(); setConfirmDelete(false); }}
+          >
+            Yes
+          </button>
+          <button
+            type="button"
+            className="btn btn--sm"
+            onClick={(e) => { e.stopPropagation(); setConfirmDelete(false); }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+    </article>
   );
-
-  if (isWorking || isError) {
-    return (
-      <div className={isWorking ? 'card-working-wrap' : ''}>
-        {isWorking && (
-          <>
-            <div className="card-working-glow card-glow-amber" />
-            <div className="card-working-border card-glow-amber" />
-          </>
-        )}
-        {isError && <div className="card-error-glow" />}
-        {cardContent}
-      </div>
-    );
-  }
-
-  return cardContent;
 };

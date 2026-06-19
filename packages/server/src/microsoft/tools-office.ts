@@ -55,6 +55,132 @@ async function getFileMeta(fileId: string): Promise<{ name: string; parentId?: s
   return { name: data.name, parentId: data.parentReference?.id };
 }
 
+// The Word edit tools were built around OneDrive file_ids (download → edit the
+// document.xml → upload back). But on a local-only setup (Microsoft not
+// connected) documents live on disk under ~/.dojo/uploads/<agent>/ and there is
+// NO file_id — so the edit tools were unusable and the agent had to regenerate
+// the whole doc on every change. This resolver lets the SAME edit handlers run
+// against a LOCAL .docx: pass `path` (or pass the absolute path as `file_id` —
+// models conflate the two) and the read/write ends become plain disk I/O. The
+// in-between XML manipulation is identical, so every edit op works locally.
+interface OfficeEditTarget {
+  isLocal: boolean;
+  name: string;
+  /** What to pass back to edit this file again — a local path or a file_id. */
+  handle: string;
+  read(): Promise<Buffer>;
+  writeBack(buf: Buffer, mimeType: string): Promise<{ name: string; ref: string; localPath?: string }>;
+}
+
+async function resolveOfficeEditTarget(
+  args: Record<string, unknown>,
+  ext: '.docx' | '.xlsx',
+): Promise<OfficeEditTarget | string> {
+  const explicitPath = typeof args.path === 'string' && args.path.trim() ? args.path.trim() : undefined;
+  const fileId = typeof args.file_id === 'string' && args.file_id.trim() ? args.file_id.trim() : undefined;
+  // A file_id that's actually a filesystem path (starts with / or ~) is local.
+  const pathLike = explicitPath ?? (fileId && (fileId.startsWith('/') || fileId.startsWith('~')) ? fileId : undefined);
+
+  if (pathLike) {
+    const abs = pathLike.startsWith('~') ? path.join(os.homedir(), pathLike.slice(1)) : pathLike;
+    if (!fs.existsSync(abs)) {
+      return `Error: no file found at ${abs}. Create it first (e.g. office_create_word_document), or pass the exact path the create tool returned.`;
+    }
+    if (path.extname(abs).toLowerCase() !== ext) {
+      return `Error: ${abs} is not a ${ext} file.`;
+    }
+    return {
+      isLocal: true,
+      name: path.basename(abs),
+      handle: abs,
+      read: async () => fs.readFileSync(abs),
+      writeBack: async (buf) => { fs.writeFileSync(abs, buf); return { name: path.basename(abs), ref: `Saved to ${abs}.`, localPath: abs }; },
+    };
+  }
+
+  if (fileId) {
+    const meta = await getFileMeta(fileId);
+    return {
+      isLocal: false,
+      name: meta.name,
+      handle: fileId,
+      read: async () => downloadFileBytes(fileId),
+      writeBack: async (buf, mimeType) => {
+        const r = await uploadToOneDrive(buf, meta.name, mimeType, meta.parentId);
+        return { name: r.name, ref: `File ID: ${r.id}\nOpen: ${r.webUrl}` };
+      },
+    };
+  }
+
+  return 'Error: provide `path` (a local .docx on disk) or `file_id` (a OneDrive .docx) to edit.';
+}
+
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+// ── Local Excel (.xlsx) editing via ExcelJS ──
+// The Excel edit tools (read/write range, append rows, add/delete sheet) were
+// Graph-only. On a local-only setup they now read → modify → write the workbook
+// on disk with ExcelJS (the same lib office_create_spreadsheet uses). Each
+// handler checks for a local path first; otherwise the existing Graph path runs.
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+function localXlsxPath(args: Record<string, unknown>): string | null {
+  const explicit = typeof args.path === 'string' && args.path.trim() ? args.path.trim() : undefined;
+  const fid = typeof args.file_id === 'string' ? args.file_id.trim() : undefined;
+  const p = explicit ?? (fid && (fid.startsWith('/') || fid.startsWith('~')) ? fid : undefined);
+  if (!p) return null;
+  return p.startsWith('~') ? path.join(os.homedir(), p.slice(1)) : p;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function loadLocalWorkbook(absPath: string): Promise<any> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ExcelJSMod: any = await (Function('return import("exceljs")')());
+  const ExcelJS = ExcelJSMod.default ?? ExcelJSMod;
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(fs.readFileSync(absPath));
+  return wb;
+}
+
+function colLettersToIndex(letters: string): number {
+  let n = 0;
+  for (const ch of letters.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n; // 1-based
+}
+
+// Parse "A1", "A1:C3", "$B$2:$B$10" → 1-based inclusive bounds.
+function parseA1Range(range: string): { startRow: number; startCol: number; endRow: number; endCol: number } | null {
+  const m = range.replace(/\$/g, '').match(/^([A-Za-z]+)(\d+)(?::([A-Za-z]+)(\d+))?$/);
+  if (!m) return null;
+  const c1 = colLettersToIndex(m[1]);
+  const r1 = parseInt(m[2], 10);
+  const c2 = m[3] ? colLettersToIndex(m[3]) : c1;
+  const r2 = m[4] ? parseInt(m[4], 10) : r1;
+  return { startRow: Math.min(r1, r2), startCol: Math.min(c1, c2), endRow: Math.max(r1, r2), endCol: Math.max(c1, c2) };
+}
+
+// ExcelJS cell.value can be a formula object {formula,result}, a date, rich
+// text, or a hyperlink. Reduce to a plain JSON-friendly value for read results.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function plainCellValue(cell: any): unknown {
+  const v = cell?.value;
+  if (v == null) return null;
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === 'object') {
+    if ('result' in v) return (v as { result?: unknown }).result ?? null;
+    if ('richText' in v || 'hyperlink' in v) return cell.text;
+    if ('text' in v) return (v as { text?: unknown }).text;
+  }
+  return v;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function resolveLocalSheet(wb: any, sheetName?: string): any {
+  if (sheetName) return wb.getWorksheet(sheetName);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return wb.worksheets.find((w: any) => w.state !== 'hidden') ?? wb.worksheets[0];
+}
+
 /**
  * Extract the inner content of `<w:body>` from a Word document's document.xml.
  * Returns the prefix (everything before body open), body inner XML, and the
@@ -348,7 +474,7 @@ function slideTitleFromXml(slideXml: string): string {
 export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_create_word_document',
-    description: 'Create a Word document (.docx) with formatted content. When Microsoft is connected, the file uploads to OneDrive and you get back a file ID + share link (and the file_id-driven edit tools — append, insert, replace, etc. — become usable). When Microsoft is NOT connected, the file is saved locally under your agent uploads dir and the result tells you the absolute path; edit tools aren\'t available against that path.\n\nThe document is composed of `content` blocks (paragraphs, headings, tables, lists, images, page breaks, table of contents). Optional top-level fields control page setup, default font, headers, footers, footnotes, and multi-column layouts.\n\nDefaults: US Letter, 1" margins, Arial 12pt, full-width tables with light-blue header row and grey borders. You only need to specify these if you want to override the default.\n\n**For long documents — use chunked create + append.** Everything you write into the `content` array counts against your model\'s output token budget (typically 8K-32K tokens depending on which model is in play). A single multi-page document with rich blocks (paragraphs, tables, lists, formatting) can blow that budget mid-tool-call and the call will truncate / fail. The correct pattern for anything longer than ~3-5 dense pages: open the doc with this tool carrying the first section (title page, intro, opening section), then use **office_append_to_word_document** for each subsequent chunk. The file_id and share link stay alive across appends; the doc grows in place. Plan for this upfront — don\'t try to cram a whole report into one call.\n\nKey rules the renderer follows for you (no manual handling needed):\n- Tables get proper widths and cell margins automatically — no more 1-character-wide columns.\n- Bullet/numbered lists use real Word list semantics, not unicode bullet characters.\n- Headings include outlineLevel so Word\'s navigation pane and Table of Contents work.\n- Page breaks are wrapped in valid paragraphs.\n- Cell text can be a plain string; only wrap it in a cell object when you actually need per-cell formatting. Plain strings save a lot of output budget.',
+    description: 'Create a Word document (.docx) with formatted content. When Microsoft is connected, the file uploads to OneDrive and you get back a file ID + share link (and the file_id-driven edit tools — append, insert, replace, etc. — become usable). When Microsoft is NOT connected, the file is saved locally under your agent uploads dir and the result tells you the absolute path — and the Word edit tools (replace / insert / delete / append) work on that LOCAL path directly (pass path="..."), so you NEVER need to regenerate a document just to make a small change.\n\nThe document is composed of `content` blocks (paragraphs, headings, tables, lists, images, page breaks, table of contents). Optional top-level fields control page setup, default font, headers, footers, footnotes, and multi-column layouts.\n\nDefaults: US Letter, 1" margins, Arial 12pt, full-width tables with light-blue header row and grey borders. You only need to specify these if you want to override the default.\n\n**For long documents — use chunked create + append.** Everything you write into the `content` array counts against your model\'s output token budget (typically 8K-32K tokens depending on which model is in play). A single multi-page document with rich blocks (paragraphs, tables, lists, formatting) can blow that budget mid-tool-call and the call will truncate / fail. The correct pattern for anything longer than ~3-5 dense pages: open the doc with this tool carrying the first section (title page, intro, opening section), then use **office_append_to_word_document** for each subsequent chunk. The file_id and share link stay alive across appends; the doc grows in place. Plan for this upfront — don\'t try to cram a whole report into one call.\n\nKey rules the renderer follows for you (no manual handling needed):\n- Tables get proper widths and cell margins automatically — no more 1-character-wide columns.\n- Bullet/numbered lists use real Word list semantics, not unicode bullet characters.\n- Headings include outlineLevel so Word\'s navigation pane and Table of Contents work.\n- Page breaks are wrapped in valid paragraphs.\n- Cell text can be a plain string; only wrap it in a cell object when you actually need per-cell formatting. Plain strings save a lot of output budget.',
     input_schema: {
       type: 'object',
       properties: {
@@ -505,18 +631,19 @@ export const officeToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'office_append_to_word_document',
-    description: 'Append content to the END of an existing Word document in OneDrive. The original content is preserved (the file_id and any existing share links stay alive). For inserting at a specific position, use office_insert_in_word_document instead.\n\n**This is the natural continuation tool for long documents.** Because every block you pass to office_create_word_document counts against your model\'s per-call output token budget, multi-page docs (anything past ~3-5 dense pages of content) reliably overflow a single tool call. The shipping pattern: open the doc with office_create_word_document carrying the first chunk (title, intro, opening section), then call this tool once per subsequent chunk until the doc is complete. Each append is an independent tool call with its own output budget, so a 30-page report becomes ~5-10 sequential append calls, each well within budget. No content limit per call from us — only the model\'s output cap, which resets per call.',
+    description: 'Append content to the END of an existing Word document — a LOCAL .docx (pass path="...") or one on OneDrive (pass file_id). The original content is preserved. For inserting at a specific position, use office_insert_in_word_document instead.\n\n**This is the natural continuation tool for long documents.** Because every block you pass to office_create_word_document counts against your model\'s per-call output token budget, multi-page docs (anything past ~3-5 dense pages of content) reliably overflow a single tool call. The shipping pattern: open the doc with office_create_word_document carrying the first chunk (title, intro, opening section), then call this tool once per subsequent chunk until the doc is complete. Each append is an independent tool call with its own output budget, so a 30-page report becomes ~5-10 sequential append calls, each well within budget. No content limit per call from us — only the model\'s output cap, which resets per call.',
     input_schema: {
       type: 'object',
       properties: {
-        file_id: { type: 'string', description: 'OneDrive file ID of the existing .docx' },
+        path: { type: 'string', description: 'Absolute path to a LOCAL .docx on disk (what office_create_word_document returns when Microsoft is not connected). Provide either path OR file_id.' },
+        file_id: { type: 'string', description: 'OneDrive file ID of the existing .docx (Microsoft-connected setups). Provide either file_id OR path.' },
         content: {
           type: 'array',
           description: 'Content blocks to append (same schema as office_create_word_document)',
           items: { type: 'object' },
         },
       },
-      required: ['file_id', 'content'],
+      required: ['content'],
     },
   },
   {
@@ -525,38 +652,41 @@ export const officeToolDefinitions: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        file_id: { type: 'string', description: 'OneDrive file ID of the .docx to inspect' },
+        path: { type: 'string', description: 'Absolute path to a LOCAL .docx on disk. Provide either path OR file_id.' },
+        file_id: { type: 'string', description: 'OneDrive file ID of the .docx to inspect. Provide either file_id OR path.' },
       },
-      required: ['file_id'],
+      required: [],
     },
   },
   {
     name: 'office_read_word_document',
-    description: 'Read the FULL text content of a Word document (.docx) on OneDrive. Returns headings, paragraphs, and table contents in document order — this is the read-equivalent of file_read for .docx files. Supports pagination via offset+limit (block-indexed) for large documents. Use this when the user asks you to read, summarize, quote, or extract content from a Word doc; use office_get_word_document_outline only when you need to know block indexes for an edit operation.',
+    description: 'Read the FULL text content of a Word document (.docx). Returns headings, paragraphs, and table contents in document order — this is the read-equivalent of file_read for .docx files. Supports pagination via offset+limit (block-indexed) for large documents. Use this when the user asks you to read, summarize, quote, or extract content from a Word doc; use office_get_word_document_outline only when you need to know block indexes for an edit operation.',
     input_schema: {
       type: 'object',
       properties: {
-        file_id: { type: 'string', description: 'OneDrive file ID of the .docx to read' },
+        path: { type: 'string', description: 'Absolute path to a LOCAL .docx on disk. Provide either path OR file_id.' },
+        file_id: { type: 'string', description: 'OneDrive file ID of the .docx to read. Provide either file_id OR path.' },
         offset: { type: 'number', description: 'Zero-based block index to start reading from. Default 0.' },
         limit: { type: 'number', description: 'Maximum number of blocks to return. Default 200, max 500. Combined with a per-call response cap; very large blocks may produce fewer.' },
         format: { type: 'string', enum: ['text', 'json'], description: 'Output format: "text" (default — clean, readable transcript with markdown-style headings) or "json" (structured array of {index, type, text, rows?} objects, useful before edits).' },
       },
-      required: ['file_id'],
+      required: [],
     },
     concurrency: 'safe',
     maxResultTokens: 8000,
   },
   {
     name: 'office_replace_in_word_document',
-    description: 'Find and replace text throughout an existing Word document. Preserves formatting and file ID. Limitation: the find string must be contained within a single formatted run — works for unformatted text or text in one consistent style; cannot match text that spans bold/italic boundaries.',
+    description: 'Find and replace text throughout an existing Word document. Preserves formatting. Limitation: the find string must be contained within a single formatted run — works for unformatted text or text in one consistent style; cannot match text that spans bold/italic boundaries.',
     input_schema: {
       type: 'object',
       properties: {
-        file_id: { type: 'string', description: 'OneDrive file ID of the .docx to edit' },
+        path: { type: 'string', description: 'Absolute path to a LOCAL .docx on disk. Provide either path OR file_id.' },
+        file_id: { type: 'string', description: 'OneDrive file ID of the .docx to edit. Provide either file_id OR path.' },
         find: { type: 'string', description: 'Text to search for (exact match, case-sensitive)' },
         replace: { type: 'string', description: 'Replacement text. Use empty string to delete the find text.' },
       },
-      required: ['file_id', 'find', 'replace'],
+      required: ['find', 'replace'],
     },
   },
   {
@@ -565,7 +695,8 @@ export const officeToolDefinitions: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        file_id: { type: 'string', description: 'OneDrive file ID of the .docx to edit' },
+        path: { type: 'string', description: 'Absolute path to a LOCAL .docx on disk. Provide either path OR file_id.' },
+        file_id: { type: 'string', description: 'OneDrive file ID of the .docx to edit. Provide either file_id OR path.' },
         position: { type: 'number', description: 'Zero-based index where the new content goes. Existing block at this index shifts down.' },
         content: {
           type: 'array',
@@ -573,7 +704,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
           items: { type: 'object' },
         },
       },
-      required: ['file_id', 'position', 'content'],
+      required: ['position', 'content'],
     },
   },
   {
@@ -582,75 +713,81 @@ export const officeToolDefinitions: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        file_id: { type: 'string', description: 'OneDrive file ID of the .docx to edit' },
+        path: { type: 'string', description: 'Absolute path to a LOCAL .docx on disk. Provide either path OR file_id.' },
+        file_id: { type: 'string', description: 'OneDrive file ID of the .docx to edit. Provide either file_id OR path.' },
         start: { type: 'number', description: 'Zero-based index of the first block to delete' },
         count: { type: 'number', description: 'Number of consecutive blocks to delete (default 1)' },
       },
-      required: ['file_id', 'start'],
+      required: ['start'],
     },
   },
   {
     name: 'office_get_spreadsheet_range',
-    description: 'Read a range of cells from an existing Excel spreadsheet using the Microsoft Graph Workbook API (true in-place read, no download needed). Returns the cell values as a 2D array. Use this to inspect data before editing.',
+    description: 'Read a range of cells from an existing Excel spreadsheet. Works on a LOCAL .xlsx (pass path="...") or one on OneDrive (pass file_id). Returns the cell values as a 2D array. Use this to inspect data before editing.',
     input_schema: {
       type: 'object',
       properties: {
-        file_id: { type: 'string', description: 'OneDrive file ID of the .xlsx' },
+        path: { type: 'string', description: 'Absolute path to a LOCAL .xlsx on disk (what office_create_spreadsheet returns when Microsoft is not connected). Provide either path OR file_id.' },
+        file_id: { type: 'string', description: 'OneDrive file ID of the .xlsx. Provide either file_id OR path.' },
         sheet_name: { type: 'string', description: 'Worksheet name (e.g. "Sheet1"). If omitted, reads from the first sheet.' },
         range: { type: 'string', description: 'A1-style range (e.g. "A1:D10"). If omitted, returns the used range of the sheet.' },
       },
-      required: ['file_id'],
+      required: [],
     },
   },
   {
     name: 'office_write_spreadsheet_range',
-    description: 'Write values to a specific range in an existing Excel spreadsheet using the Microsoft Graph Workbook API. True in-place edit — preserves the file_id and any existing share links.',
+    description: 'Write values to a specific range in an existing Excel spreadsheet — true in-place edit. Works on a LOCAL .xlsx (pass path="...") or one on OneDrive (pass file_id). Do NOT recreate the whole workbook to change a few cells.',
     input_schema: {
       type: 'object',
       properties: {
-        file_id: { type: 'string', description: 'OneDrive file ID of the .xlsx' },
+        path: { type: 'string', description: 'Absolute path to a LOCAL .xlsx on disk. Provide either path OR file_id.' },
+        file_id: { type: 'string', description: 'OneDrive file ID of the .xlsx. Provide either file_id OR path.' },
         sheet_name: { type: 'string', description: 'Worksheet name (e.g. "Sheet1"). If omitted, writes to the first sheet.' },
         range: { type: 'string', description: 'A1-style range to write (e.g. "A1:C3"). The values array dimensions must match this range exactly.' },
         values: { type: 'array', description: '2D array of cell values. Outer array = rows, inner array = columns. Values are strings or numbers.', items: { type: 'array', items: {} } },
       },
-      required: ['file_id', 'range', 'values'],
+      required: ['range', 'values'],
     },
   },
   {
     name: 'office_append_spreadsheet_rows',
-    description: 'Append rows to the end of an existing worksheet (after the last used row). True in-place edit via the Graph Workbook API.',
+    description: 'Append rows to the end of an existing worksheet (after the last used row). True in-place edit. Works on a LOCAL .xlsx (pass path="...") or one on OneDrive (pass file_id).',
     input_schema: {
       type: 'object',
       properties: {
-        file_id: { type: 'string', description: 'OneDrive file ID of the .xlsx' },
+        path: { type: 'string', description: 'Absolute path to a LOCAL .xlsx on disk. Provide either path OR file_id.' },
+        file_id: { type: 'string', description: 'OneDrive file ID of the .xlsx. Provide either file_id OR path.' },
         sheet_name: { type: 'string', description: 'Worksheet name. If omitted, appends to the first sheet.' },
         rows: { type: 'array', description: '2D array of row values to append', items: { type: 'array', items: {} } },
       },
-      required: ['file_id', 'rows'],
+      required: ['rows'],
     },
   },
   {
     name: 'office_add_sheet',
-    description: 'Add a new worksheet to an existing Excel workbook. True in-place edit via the Graph Workbook API.',
+    description: 'Add a new worksheet to an existing Excel workbook. True in-place edit. Works on a LOCAL .xlsx (pass path="...") or one on OneDrive (pass file_id).',
     input_schema: {
       type: 'object',
       properties: {
-        file_id: { type: 'string', description: 'OneDrive file ID of the .xlsx' },
+        path: { type: 'string', description: 'Absolute path to a LOCAL .xlsx on disk. Provide either path OR file_id.' },
+        file_id: { type: 'string', description: 'OneDrive file ID of the .xlsx. Provide either file_id OR path.' },
         sheet_name: { type: 'string', description: 'Name for the new worksheet' },
       },
-      required: ['file_id', 'sheet_name'],
+      required: ['sheet_name'],
     },
   },
   {
     name: 'office_delete_sheet',
-    description: 'Delete a worksheet from an existing Excel workbook. Cannot delete the only sheet in a workbook.',
+    description: 'Delete a worksheet from an existing Excel workbook. Cannot delete the only sheet. Works on a LOCAL .xlsx (pass path="...") or one on OneDrive (pass file_id).',
     input_schema: {
       type: 'object',
       properties: {
-        file_id: { type: 'string', description: 'OneDrive file ID of the .xlsx' },
+        path: { type: 'string', description: 'Absolute path to a LOCAL .xlsx on disk. Provide either path OR file_id.' },
+        file_id: { type: 'string', description: 'OneDrive file ID of the .xlsx. Provide either file_id OR path.' },
         sheet_name: { type: 'string', description: 'Worksheet name to delete' },
       },
-      required: ['file_id', 'sheet_name'],
+      required: ['sheet_name'],
     },
   },
   {
@@ -1087,10 +1224,33 @@ async function saveOfficeBuffer(
   const outPath = path.join(dir, safe);
   fs.writeFileSync(outPath, buffer);
   const kindLabel = kind === 'word' ? 'Word document' : kind === 'excel' ? 'Excel spreadsheet' : 'PowerPoint presentation';
+  const shareLine = `To give the user a downloadable URL for this file, call share_file with path="${outPath}" — do NOT invent or guess a URL.`;
+  // Word and Excel are editable IN PLACE on disk — their edit tools accept a
+  // local `path`. This is the key affordance: without it the model regenerates
+  // the whole file on every change and the canvas churns. PowerPoint edits still
+  // need the Graph connection.
+  if (kind === 'word') {
+    return (
+      `Word document created locally at ${outPath} (${buffer.length} bytes). ` +
+      `To EDIT it (now or later) do NOT regenerate it — call the Word edit tools with path="${outPath}": ` +
+      `office_replace_in_word_document (change text), office_insert_in_word_document / office_delete_block_in_word_document (add or remove blocks), office_append_to_word_document (add to the end). ` +
+      `Call office_get_word_document_outline or office_read_word_document with path="${outPath}" first to see current block indexes. Edits save back to the same file and refresh the canvas automatically. ` +
+      shareLine
+    );
+  }
+  if (kind === 'excel') {
+    return (
+      `Excel spreadsheet created locally at ${outPath} (${buffer.length} bytes). ` +
+      `To EDIT it (now or later) do NOT recreate it — call the spreadsheet edit tools with path="${outPath}": ` +
+      `office_write_spreadsheet_range (set cells in a range), office_append_spreadsheet_rows (add rows), office_add_sheet / office_delete_sheet (manage worksheets). ` +
+      `Call office_get_spreadsheet_range with path="${outPath}" first to see current values. Edits save back to the same file and refresh the canvas automatically. ` +
+      shareLine
+    );
+  }
   return (
     `${kindLabel} created locally at ${outPath} (${buffer.length} bytes). ` +
-    `To give the user a downloadable URL for this file, call share_file with path="${outPath}" — do NOT invent or guess a URL. ` +
-    `Microsoft is not connected, so this was saved to disk instead of OneDrive — the file_id-driven edit tools (append/insert/replace/etc.) are NOT available for it. To make the document editable via those tools later, connect Microsoft in Settings → Integrations and create it again.`
+    shareLine + ' ' +
+    `Microsoft is not connected, so this was saved to disk instead of OneDrive — the file_id-driven slide edit tools are NOT available for it. To edit presentations in place, connect Microsoft in Settings → Integrations; otherwise recreate the file with your changes.`
   );
 }
 
@@ -2347,20 +2507,45 @@ async function generatePptxBuffer(
 const officeToolDefByName = new Map(officeToolDefinitions.map(t => [t.name, t]));
 
 /**
- * The three CREATE tools work locally — they only need the npm packages
- * (docx, exceljs, pptxgenjs) and write to disk. The Microsoft connection
- * is required for the *file_id-driven* edit tools (append/insert/read/
- * replace/etc.) because those operate on existing OneDrive items via
- * Graph. Surfaces them separately so the filter in agent/tools.ts can
- * grant the creates without granting the edits.
+ * Three tiers of gating (see the filter in agent/tools.ts):
+ *   - CREATE tools work locally — they only need the npm packages (docx,
+ *     exceljs, pptxgenjs) and write to disk. Granted to every agent.
+ *   - WORD EDIT/READ tools also work locally now: they accept a `path` and
+ *     read/manipulate/write the .docx on disk (they still accept a OneDrive
+ *     file_id when Microsoft is connected). Granted alongside the creates so
+ *     a local-only setup can EDIT Word docs in place instead of regenerating.
+ *   - The remaining EDIT tools (Excel workbook ops, PowerPoint slide ops)
+ *     genuinely need the Graph connection, so they stay gated behind full
+ *     Microsoft access.
  */
 const OFFICE_CREATE_TOOL_NAMES = new Set([
   'office_create_word_document',
   'office_create_spreadsheet',
   'office_create_presentation',
 ]);
+const OFFICE_WORD_EDIT_TOOL_NAMES = new Set([
+  'office_append_to_word_document',
+  'office_get_word_document_outline',
+  'office_read_word_document',
+  'office_replace_in_word_document',
+  'office_insert_in_word_document',
+  'office_delete_block_in_word_document',
+]);
+const OFFICE_EXCEL_EDIT_TOOL_NAMES = new Set([
+  'office_get_spreadsheet_range',
+  'office_write_spreadsheet_range',
+  'office_append_spreadsheet_rows',
+  'office_add_sheet',
+  'office_delete_sheet',
+]);
+const OFFICE_LOCAL_EDIT_TOOL_NAMES = new Set([...OFFICE_WORD_EDIT_TOOL_NAMES, ...OFFICE_EXCEL_EDIT_TOOL_NAMES]);
 export const officeCreateToolDefinitions: ToolDefinition[] = officeToolDefinitions.filter(t => OFFICE_CREATE_TOOL_NAMES.has(t.name));
-export const officeEditToolDefinitions: ToolDefinition[] = officeToolDefinitions.filter(t => !OFFICE_CREATE_TOOL_NAMES.has(t.name));
+// Word + Excel edit/read — local-capable (path-based), granted without Microsoft.
+export const officeWordEditToolDefinitions: ToolDefinition[] = officeToolDefinitions.filter(t => OFFICE_LOCAL_EDIT_TOOL_NAMES.has(t.name));
+// Everything else (PowerPoint edit/read) — Graph-only, Microsoft required.
+export const officeEditToolDefinitions: ToolDefinition[] = officeToolDefinitions.filter(
+  t => !OFFICE_CREATE_TOOL_NAMES.has(t.name) && !OFFICE_LOCAL_EDIT_TOOL_NAMES.has(t.name),
+);
 
 export async function executeOfficeTool(
   name: string,
@@ -2410,12 +2595,13 @@ export async function executeOfficeTool(
 
     case 'office_append_to_word_document': {
       try {
-        const fileId = args.file_id as string;
+        const target = await resolveOfficeEditTarget(args, '.docx');
+        if (typeof target === 'string') return target;
         const blocks = args.content as ContentBlock[];
 
         // v2.5.10 — actually append now. Previously this re-generated the
         // doc from scratch and overwrote the original (despite the name).
-        const existingBuffer = await downloadFileBytes(fileId);
+        const existingBuffer = await target.read();
         const zip = await JSZip.loadAsync(existingBuffer);
         const docFile = zip.file('word/document.xml');
         if (!docFile) return 'Error: existing file is missing word/document.xml — not a valid Word doc?';
@@ -2426,10 +2612,9 @@ export async function executeOfficeTool(
         const updatedDocXml = prefix + bodyInner + newInner + suffix;
         const updatedBuffer = await rewriteDocumentXml(existingBuffer, updatedDocXml);
 
-        const meta = await getFileMeta(fileId);
-        const result = await uploadToOneDrive(updatedBuffer, meta.name, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', meta.parentId);
-        logMicrosoftActivity({ agentId, agentName, action: 'office_append_to_word_document', actionType: 'write', details: JSON.stringify({ fileId, blocksAppended: blocks.length }), apiEndpoint: 'drive/upload', success: true });
-        return `Word document "${result.name}" updated (${blocks.length} block(s) appended).\nFile ID: ${result.id}\nOpen: ${result.webUrl}`;
+        const w = await target.writeBack(updatedBuffer, DOCX_MIME);
+        logMicrosoftActivity({ agentId, agentName, action: 'office_append_to_word_document', actionType: 'write', details: JSON.stringify({ local: target.isLocal, blocksAppended: blocks.length }), apiEndpoint: target.isLocal ? 'local' : 'drive/upload', success: true });
+        return `Word document "${w.name}" updated (${blocks.length} block(s) appended).\n${w.ref}`;
       } catch (err) {
         return `Error appending to document: ${err instanceof Error ? err.message : String(err)}`;
       }
@@ -2437,15 +2622,15 @@ export async function executeOfficeTool(
 
     case 'office_get_word_document_outline': {
       try {
-        const fileId = args.file_id as string;
-        const buf = await downloadFileBytes(fileId);
+        const target = await resolveOfficeEditTarget(args, '.docx');
+        if (typeof target === 'string') return target;
+        const buf = await target.read();
         const zip = await JSZip.loadAsync(buf);
         const docFile = zip.file('word/document.xml');
         if (!docFile) return 'Error: file is missing word/document.xml — not a valid Word doc?';
         const xml = await docFile.async('string');
         const { bodyInner } = splitDocumentXml(xml);
         const blocks = parseBodyBlocks(bodyInner);
-        const meta = await getFileMeta(fileId);
         const outline = blocks.map((b, idx) => {
           if (b.startsWith('<w:tbl')) {
             return { index: idx, type: 'table', preview: '[table]' };
@@ -2458,8 +2643,8 @@ export async function executeOfficeTool(
             preview: previewText || '[empty]',
           };
         });
-        logMicrosoftActivity({ agentId, agentName, action: 'office_get_word_document_outline', actionType: 'read', details: JSON.stringify({ fileId, blockCount: outline.length }), apiEndpoint: 'drive/download', success: true });
-        return JSON.stringify({ file: meta.name, file_id: fileId, blocks: outline });
+        logMicrosoftActivity({ agentId, agentName, action: 'office_get_word_document_outline', actionType: 'read', details: JSON.stringify({ local: target.isLocal, blockCount: outline.length }), apiEndpoint: target.isLocal ? 'local' : 'drive/download', success: true });
+        return JSON.stringify({ file: target.name, ...(target.isLocal ? { path: target.handle } : { file_id: target.handle }), blocks: outline });
       } catch (err) {
         return `Error reading document outline: ${err instanceof Error ? err.message : String(err)}`;
       }
@@ -2467,18 +2652,19 @@ export async function executeOfficeTool(
 
     case 'office_read_word_document': {
       try {
-        const fileId = args.file_id as string;
+        const target = await resolveOfficeEditTarget(args, '.docx');
+        if (typeof target === 'string') return target;
         const offset = Math.max(0, Math.floor((args.offset as number | undefined) ?? 0));
         const limit = Math.min(500, Math.max(1, Math.floor((args.limit as number | undefined) ?? 200)));
         const format = (args.format as string | undefined) === 'json' ? 'json' : 'text';
-        const buf = await downloadFileBytes(fileId);
+        const buf = await target.read();
         const zip = await JSZip.loadAsync(buf);
         const docFile = zip.file('word/document.xml');
         if (!docFile) return 'Error: file is missing word/document.xml — not a valid Word doc?';
         const xml = await docFile.async('string');
         const { bodyInner } = splitDocumentXml(xml);
         const blocks = parseBodyBlocks(bodyInner);
-        const meta = await getFileMeta(fileId);
+        const meta = { name: target.name };
         const totalBlocks = blocks.length;
         const slice = blocks.slice(offset, offset + limit);
 
@@ -2498,12 +2684,12 @@ export async function executeOfficeTool(
           return { index: idx, type: 'paragraph', text };
         });
 
-        logMicrosoftActivity({ agentId, agentName, action: 'office_read_word_document', actionType: 'read', details: JSON.stringify({ fileId, offset, returned: parsed.length, totalBlocks }), apiEndpoint: 'drive/download', success: true });
+        logMicrosoftActivity({ agentId, agentName, action: 'office_read_word_document', actionType: 'read', details: JSON.stringify({ local: target.isLocal, offset, returned: parsed.length, totalBlocks }), apiEndpoint: target.isLocal ? 'local' : 'drive/download', success: true });
 
         if (format === 'json') {
           return JSON.stringify({
             file: meta.name,
-            file_id: fileId,
+            ...(target.isLocal ? { path: target.handle } : { file_id: target.handle }),
             total_blocks: totalBlocks,
             offset,
             returned: parsed.length,
@@ -2544,7 +2730,7 @@ export async function executeOfficeTool(
           }
         }
         if (offset + parsed.length < totalBlocks) {
-          lines.push(`[truncated — ${totalBlocks - offset - parsed.length} more blocks. Call office_read_word_document(file_id="${fileId}", offset=${offset + parsed.length}) for the next slice.]`);
+          lines.push(`[truncated — ${totalBlocks - offset - parsed.length} more blocks. Call office_read_word_document(${target.isLocal ? `path="${target.handle}"` : `file_id="${target.handle}"`}, offset=${offset + parsed.length}) for the next slice.]`);
         }
         return lines.join('\n').trim();
       } catch (err) {
@@ -2554,12 +2740,13 @@ export async function executeOfficeTool(
 
     case 'office_replace_in_word_document': {
       try {
-        const fileId = args.file_id as string;
+        const target = await resolveOfficeEditTarget(args, '.docx');
+        if (typeof target === 'string') return target;
         const find = args.find as string;
         const replace = args.replace as string;
         if (!find) return 'Error: find cannot be empty';
 
-        const existingBuffer = await downloadFileBytes(fileId);
+        const existingBuffer = await target.read();
         const zip = await JSZip.loadAsync(existingBuffer);
         const docFile = zip.file('word/document.xml');
         if (!docFile) return 'Error: file is missing word/document.xml — not a valid Word doc?';
@@ -2569,10 +2756,9 @@ export async function executeOfficeTool(
           return `No matches for "${find}" found in the document. Note: find/replace only matches text within a single formatted run — text spanning bold/italic boundaries can't be matched this way.`;
         }
         const updatedBuffer = await rewriteDocumentXml(existingBuffer, newXml);
-        const meta = await getFileMeta(fileId);
-        const result = await uploadToOneDrive(updatedBuffer, meta.name, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', meta.parentId);
-        logMicrosoftActivity({ agentId, agentName, action: 'office_replace_in_word_document', actionType: 'write', details: JSON.stringify({ fileId, replacements }), apiEndpoint: 'drive/upload', success: true });
-        return `Replaced ${replacements} occurrence(s) of "${find}" in "${result.name}".\nFile ID: ${result.id}\nOpen: ${result.webUrl}`;
+        const w = await target.writeBack(updatedBuffer, DOCX_MIME);
+        logMicrosoftActivity({ agentId, agentName, action: 'office_replace_in_word_document', actionType: 'write', details: JSON.stringify({ local: target.isLocal, replacements }), apiEndpoint: target.isLocal ? 'local' : 'drive/upload', success: true });
+        return `Replaced ${replacements} occurrence(s) of "${find}" in "${w.name}".\n${w.ref}`;
       } catch (err) {
         return `Error replacing text: ${err instanceof Error ? err.message : String(err)}`;
       }
@@ -2580,11 +2766,12 @@ export async function executeOfficeTool(
 
     case 'office_insert_in_word_document': {
       try {
-        const fileId = args.file_id as string;
+        const target = await resolveOfficeEditTarget(args, '.docx');
+        if (typeof target === 'string') return target;
         const position = args.position as number;
         const blocks = args.content as ContentBlock[];
 
-        const existingBuffer = await downloadFileBytes(fileId);
+        const existingBuffer = await target.read();
         const zip = await JSZip.loadAsync(existingBuffer);
         const docFile = zip.file('word/document.xml');
         if (!docFile) return 'Error: file is missing word/document.xml — not a valid Word doc?';
@@ -2601,10 +2788,9 @@ export async function executeOfficeTool(
         const updatedBodyInner = before + newInner + after;
         const updatedDocXml = prefix + updatedBodyInner + suffix;
         const updatedBuffer = await rewriteDocumentXml(existingBuffer, updatedDocXml);
-        const meta = await getFileMeta(fileId);
-        const result = await uploadToOneDrive(updatedBuffer, meta.name, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', meta.parentId);
-        logMicrosoftActivity({ agentId, agentName, action: 'office_insert_in_word_document', actionType: 'write', details: JSON.stringify({ fileId, position, blocksInserted: blocks.length }), apiEndpoint: 'drive/upload', success: true });
-        return `Inserted ${blocks.length} block(s) at position ${position} in "${result.name}".\nFile ID: ${result.id}\nOpen: ${result.webUrl}`;
+        const w = await target.writeBack(updatedBuffer, DOCX_MIME);
+        logMicrosoftActivity({ agentId, agentName, action: 'office_insert_in_word_document', actionType: 'write', details: JSON.stringify({ local: target.isLocal, position, blocksInserted: blocks.length }), apiEndpoint: target.isLocal ? 'local' : 'drive/upload', success: true });
+        return `Inserted ${blocks.length} block(s) at position ${position} in "${w.name}".\n${w.ref}`;
       } catch (err) {
         return `Error inserting blocks: ${err instanceof Error ? err.message : String(err)}`;
       }
@@ -2612,12 +2798,13 @@ export async function executeOfficeTool(
 
     case 'office_delete_block_in_word_document': {
       try {
-        const fileId = args.file_id as string;
+        const target = await resolveOfficeEditTarget(args, '.docx');
+        if (typeof target === 'string') return target;
         const start = args.start as number;
         const count = (args.count as number | undefined) ?? 1;
         if (count < 1) return 'Error: count must be at least 1';
 
-        const existingBuffer = await downloadFileBytes(fileId);
+        const existingBuffer = await target.read();
         const zip = await JSZip.loadAsync(existingBuffer);
         const docFile = zip.file('word/document.xml');
         if (!docFile) return 'Error: file is missing word/document.xml — not a valid Word doc?';
@@ -2632,10 +2819,9 @@ export async function executeOfficeTool(
         const updatedBlocks = [...existingBlocks.slice(0, start), ...existingBlocks.slice(start + actualCount)];
         const updatedDocXml = prefix + updatedBlocks.join('') + suffix;
         const updatedBuffer = await rewriteDocumentXml(existingBuffer, updatedDocXml);
-        const meta = await getFileMeta(fileId);
-        const result = await uploadToOneDrive(updatedBuffer, meta.name, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', meta.parentId);
-        logMicrosoftActivity({ agentId, agentName, action: 'office_delete_block_in_word_document', actionType: 'write', details: JSON.stringify({ fileId, start, count: actualCount }), apiEndpoint: 'drive/upload', success: true });
-        return `Deleted ${actualCount} block(s) starting at position ${start} in "${result.name}".\nFile ID: ${result.id}\nOpen: ${result.webUrl}`;
+        const w = await target.writeBack(updatedBuffer, DOCX_MIME);
+        logMicrosoftActivity({ agentId, agentName, action: 'office_delete_block_in_word_document', actionType: 'write', details: JSON.stringify({ local: target.isLocal, start, count: actualCount }), apiEndpoint: target.isLocal ? 'local' : 'drive/upload', success: true });
+        return `Deleted ${actualCount} block(s) starting at position ${start} in "${w.name}".\n${w.ref}`;
       } catch (err) {
         return `Error deleting blocks: ${err instanceof Error ? err.message : String(err)}`;
       }
@@ -2643,9 +2829,28 @@ export async function executeOfficeTool(
 
     case 'office_get_spreadsheet_range': {
       try {
-        const fileId = args.file_id as string;
         const sheetName = args.sheet_name as string | undefined;
         const range = args.range as string | undefined;
+
+        const lp = localXlsxPath(args);
+        if (lp) {
+          if (!fs.existsSync(lp)) return `Error: no file found at ${lp}.`;
+          const wb = await loadLocalWorkbook(lp);
+          const ws = resolveLocalSheet(wb, sheetName);
+          if (!ws) return `Error: sheet "${sheetName ?? '(first)'}" not found. Sheets: ${wb.worksheets.map((w: { name: string }) => w.name).join(', ')}.`;
+          const bounds = range ? parseA1Range(range) : { startRow: 1, startCol: 1, endRow: Math.max(1, ws.rowCount), endCol: Math.max(1, ws.columnCount) };
+          if (!bounds) return `Error: could not parse range "${range}". Use A1 notation like "A1:C10".`;
+          const values: unknown[][] = [];
+          for (let r = bounds.startRow; r <= bounds.endRow; r++) {
+            const row: unknown[] = [];
+            for (let c = bounds.startCol; c <= bounds.endCol; c++) row.push(plainCellValue(ws.getCell(r, c)));
+            values.push(row);
+          }
+          logMicrosoftActivity({ agentId, agentName, action: 'office_get_spreadsheet_range', actionType: 'read', details: JSON.stringify({ local: true, sheet: ws.name, range }), apiEndpoint: 'local', success: true });
+          return JSON.stringify({ sheet: ws.name, address: range ?? 'usedRange', values });
+        }
+
+        const fileId = args.file_id as string;
         const token = await getValidAccessToken();
         if (!token) return 'Error: Not authenticated with Microsoft';
 
@@ -2684,12 +2889,33 @@ export async function executeOfficeTool(
 
     case 'office_write_spreadsheet_range': {
       try {
-        const fileId = args.file_id as string;
         const sheetName = args.sheet_name as string | undefined;
         const range = args.range as string;
         const values = args.values as unknown[][];
         if (!range) return 'Error: range is required';
         if (!Array.isArray(values) || !Array.isArray(values[0])) return 'Error: values must be a 2D array';
+
+        const lp = localXlsxPath(args);
+        if (lp) {
+          if (!fs.existsSync(lp)) return `Error: no file found at ${lp}.`;
+          const bounds = parseA1Range(range);
+          if (!bounds) return `Error: could not parse range "${range}". Use A1 notation like "A1".`;
+          const wb = await loadLocalWorkbook(lp);
+          const ws = resolveLocalSheet(wb, sheetName);
+          if (!ws) return `Error: sheet "${sheetName ?? '(first)'}" not found.`;
+          for (let i = 0; i < values.length; i++) {
+            const rowVals = values[i] as unknown[];
+            for (let j = 0; j < rowVals.length; j++) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              ws.getCell(bounds.startRow + i, bounds.startCol + j).value = rowVals[j] as any;
+            }
+          }
+          await wb.xlsx.writeFile(lp);
+          logMicrosoftActivity({ agentId, agentName, action: 'office_write_spreadsheet_range', actionType: 'write', details: JSON.stringify({ local: true, sheet: ws.name, range, rowCount: values.length }), apiEndpoint: 'local', success: true });
+          return `Wrote ${values.length} row(s) to ${ws.name}!${range}. Saved to ${lp}.`;
+        }
+
+        const fileId = args.file_id as string;
         const token = await getValidAccessToken();
         if (!token) return 'Error: Not authenticated with Microsoft';
 
@@ -2718,10 +2944,23 @@ export async function executeOfficeTool(
 
     case 'office_append_spreadsheet_rows': {
       try {
-        const fileId = args.file_id as string;
         const sheetName = args.sheet_name as string | undefined;
         const rows = args.rows as unknown[][];
         if (!Array.isArray(rows) || rows.length === 0) return 'Error: rows must be a non-empty 2D array';
+
+        const lp = localXlsxPath(args);
+        if (lp) {
+          if (!fs.existsSync(lp)) return `Error: no file found at ${lp}.`;
+          const wb = await loadLocalWorkbook(lp);
+          const ws = resolveLocalSheet(wb, sheetName);
+          if (!ws) return `Error: sheet "${sheetName ?? '(first)'}" not found.`;
+          for (const row of rows) ws.addRow(row as unknown[]);
+          await wb.xlsx.writeFile(lp);
+          logMicrosoftActivity({ agentId, agentName, action: 'office_append_spreadsheet_rows', actionType: 'write', details: JSON.stringify({ local: true, sheet: ws.name, rowCount: rows.length }), apiEndpoint: 'local', success: true });
+          return `Appended ${rows.length} row(s) to ${ws.name}. Saved to ${lp}.`;
+        }
+
+        const fileId = args.file_id as string;
         const token = await getValidAccessToken();
         if (!token) return 'Error: Not authenticated with Microsoft';
 
@@ -2761,8 +3000,20 @@ export async function executeOfficeTool(
 
     case 'office_add_sheet': {
       try {
-        const fileId = args.file_id as string;
         const sheetName = args.sheet_name as string;
+
+        const lpAdd = localXlsxPath(args);
+        if (lpAdd) {
+          if (!fs.existsSync(lpAdd)) return `Error: no file found at ${lpAdd}.`;
+          const wb = await loadLocalWorkbook(lpAdd);
+          if (wb.getWorksheet(sheetName)) return `Error: a worksheet named "${sheetName}" already exists.`;
+          wb.addWorksheet(sheetName);
+          await wb.xlsx.writeFile(lpAdd);
+          logMicrosoftActivity({ agentId, agentName, action: 'office_add_sheet', actionType: 'write', details: JSON.stringify({ local: true, sheetName }), apiEndpoint: 'local', success: true });
+          return `Added worksheet "${sheetName}". Saved to ${lpAdd}.`;
+        }
+
+        const fileId = args.file_id as string;
         const token = await getValidAccessToken();
         if (!token) return 'Error: Not authenticated with Microsoft';
         const resp = await fetch(`${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets/add`, {
@@ -2780,8 +3031,22 @@ export async function executeOfficeTool(
 
     case 'office_delete_sheet': {
       try {
-        const fileId = args.file_id as string;
         const sheetName = args.sheet_name as string;
+
+        const lpDel = localXlsxPath(args);
+        if (lpDel) {
+          if (!fs.existsSync(lpDel)) return `Error: no file found at ${lpDel}.`;
+          const wb = await loadLocalWorkbook(lpDel);
+          const ws = wb.getWorksheet(sheetName);
+          if (!ws) return `Error: no worksheet named "${sheetName}". Sheets: ${wb.worksheets.map((w: { name: string }) => w.name).join(', ')}.`;
+          if (wb.worksheets.length <= 1) return 'Error: cannot delete the only worksheet in a workbook.';
+          wb.removeWorksheet(ws.id);
+          await wb.xlsx.writeFile(lpDel);
+          logMicrosoftActivity({ agentId, agentName, action: 'office_delete_sheet', actionType: 'write', details: JSON.stringify({ local: true, sheetName }), apiEndpoint: 'local', success: true });
+          return `Deleted worksheet "${sheetName}". Saved to ${lpDel}.`;
+        }
+
+        const fileId = args.file_id as string;
         const token = await getValidAccessToken();
         if (!token) return 'Error: Not authenticated with Microsoft';
         const resp = await fetch(`${GRAPH_BASE}/me/drive/items/${encodeURIComponent(fileId)}/workbook/worksheets('${encodeURIComponent(sheetName)}')`, {

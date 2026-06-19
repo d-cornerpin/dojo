@@ -1334,7 +1334,7 @@ export const getAgentSystemPrompt = async (id: string): Promise<ApiResponse<{ co
 
 export const updateAgentConfig = async (
   id: string,
-  updates: { modelId?: string; systemPrompt?: string; permissions?: Record<string, unknown>; toolsPolicy?: { allow: string[]; deny: string[] }; dreamerIgnore?: boolean },
+  updates: { modelId?: string; systemPrompt?: string; permissions?: Record<string, unknown>; toolsPolicy?: { allow: string[]; deny: string[] }; dreamerIgnore?: boolean; config?: Record<string, unknown> },
 ): Promise<ApiResponse<AgentDetailResponse>> => {
   return request<AgentDetailResponse>(`/agents/${id}`, {
     method: 'PUT',

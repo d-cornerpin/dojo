@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { formatDate } from '../lib/dates';
 
 // ── Types ──
@@ -41,12 +41,15 @@ interface UsageData {
   notes: string | null;
 }
 
+// State -> dojo3 .pill variant. Mirrors TechniqueCard so the detail header
+// reads the same as the grid card the user clicked.
 const stateBadge: Record<string, { cls: string; label: string }> = {
-  published: { cls: 'glass-badge-teal', label: 'Published' },
-  draft: { cls: 'glass-badge-amber', label: 'Draft' },
-  review: { cls: 'glass-badge-blue', label: 'Review' },
-  disabled: { cls: 'glass-badge-gray', label: 'Disabled' },
-  archived: { cls: 'text-ui/25 bg-ui/[0.03]', label: 'Archived' },
+  published: { cls: 'pill--ok', label: 'Published' },
+  draft: { cls: 'pill--draft', label: 'Draft' },
+  review: { cls: 'pill--norm', label: 'Review' },
+  disabled: { cls: 'pill--down', label: 'Disabled' },
+  archived: { cls: 'pill--norm', label: 'Archived' },
+  needs_setup: { cls: 'pill--draft', label: 'Needs setup' },
 };
 
 function getToken(): string | null { return localStorage.getItem('dojo_token'); }
@@ -88,8 +91,19 @@ export const TechniqueDetail = () => {
 
   useEffect(() => { load(); }, [id]);
 
-  if (loading) return <div className="flex-1 loading-state">Loading...</div>;
-  if (!technique) return <div className="flex-1 flex items-center justify-center"><p className="text-cp-coral">Technique not found</p></div>;
+  if (loading) {
+    return <div className="stub"><p className="stub__line">Loading technique...</p></div>;
+  }
+  if (!technique) {
+    return (
+      <div className="stub">
+        <p className="stub__line" style={{ color: 'var(--dojo3-rust)' }}>Technique not found.</p>
+        <button type="button" className="btn btn--sm" style={{ marginTop: 12 }} onClick={() => navigate('/techniques')}>
+          Back to Techniques
+        </button>
+      </div>
+    );
+  }
 
   const badge = stateBadge[technique.state] ?? stateBadge.draft;
   const isPublished = technique.state === 'published';
@@ -118,101 +132,110 @@ export const TechniqueDetail = () => {
   };
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 p-4 md:p-6 overflow-y-auto">
-      {/* Back link */}
-      <Link to="/techniques" className="text-xs text-ui/40 hover:text-ui/70 mb-4 inline-flex items-center gap-1">
-        {'\u2190'} Back to Techniques
-      </Link>
-
-      {/* Header */}
-      <div className="flex items-start justify-between mb-4">
-        <div>
-          <h1 className="text-xl font-bold text-ui">{technique.name}</h1>
-          <div className="flex items-center gap-2 mt-1">
-            <span className={`glass-badge ${badge.cls}`}>{badge.label}</span>
-            <span className="text-xs text-ui/25">v{technique.version}</span>
-            {technique.authorAgentName && <span className="text-xs text-ui/25">by {technique.authorAgentName}</span>}
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handlePublishToggle}
-            className={isPublished ? 'glass-btn glass-btn-secondary text-sm' : 'glass-btn glass-btn-primary text-sm'}
-          >
+    <>
+      {/* Self-headered panel: the page owns its .phead. State pill + version
+          sit in the meta; Edit (opens the trainer Mat) is the primary action. */}
+      <header className="phead">
+        <button
+          type="button"
+          className="link"
+          style={{ background: 'transparent', border: 0, marginRight: 4 }}
+          onClick={() => navigate('/techniques')}
+          title="Back to all techniques"
+        >
+          {'‹'} Techniques
+        </button>
+        <h2 className="phead__title">{technique.name}</h2>
+        <span className="phead__meta">
+          v{technique.version}{technique.authorAgentName ? ` · by ${technique.authorAgentName}` : ''}
+        </span>
+        <div className="phead__actions">
+          <span className={`pill ${badge.cls}`}>{badge.label}</span>
+          <button type="button" className="btn btn--sm" onClick={handlePublishToggle}>
             {isPublished ? 'Unpublish' : 'Publish'}
           </button>
-          <button
-            onClick={() => navigate(`/techniques/${id}/edit`)}
-            className="glass-btn glass-btn-secondary text-sm"
-          >
+          <button type="button" className="btn btn--sm btn--primary" onClick={() => navigate(`/techniques/${id}/edit`)}>
             Edit
           </button>
           <button
+            type="button"
+            className="btn btn--sm"
+            style={{ color: 'var(--dojo3-rust)' }}
             onClick={handleDelete}
-            className="glass-btn glass-btn-destructive text-sm"
           >
             Delete
           </button>
         </div>
+      </header>
+
+      {/* Tab strip — same .tabs pill rail as the rest of the redesign. */}
+      <div className="toolbar">
+        <div className="tabs" role="tablist">
+          {tabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.key}
+              className={`tab${activeTab === tab.key ? ' is-active' : ''}`}
+              onClick={() => setActiveTab(tab.key)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 mb-4 border-b border-ui/[0.06] pb-1">
-        {tabs.map(tab => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
-            className={`px-3 py-1.5 text-xs rounded-t-lg transition-colors ${
-              activeTab === tab.key
-                ? 'bg-ui/[0.08] text-ui font-medium'
-                : 'text-ui/40 hover:text-ui/70'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Tab content — all read-only */}
-      {activeTab === 'overview' && <OverviewTab technique={technique} />}
+      {activeTab === 'overview' && <OverviewTab technique={technique} navigate={navigate} />}
       {activeTab === 'instructions' && <InstructionsTab technique={technique} />}
       {activeTab === 'files' && <FilesTab technique={technique} />}
       {activeTab === 'usage' && <UsageTab techniqueId={technique.id} />}
       {activeTab === 'versions' && <VersionsTab techniqueId={technique.id} />}
-    </div>
+    </>
   );
 };
 
 // ── Overview Tab (read-only) ──
 
-const OverviewTab = ({ technique }: { technique: TechniqueData }) => (
-  <div className="space-y-4 max-w-2xl">
-    <div className="glass-card p-4 space-y-2">
-      <h3 className="card-header">Description</h3>
-      <p className="text-sm text-ui/70">{technique.description || <span className="text-ui/25 italic">No description</span>}</p>
+const OverviewTab = ({ technique, navigate }: { technique: TechniqueData; navigate: (to: string) => void }) => (
+  <div className="scards">
+    <div className="tile">
+      <div className="scard__title">Description</div>
+      <div className="scard__desc" style={{ marginBottom: 0 }}>
+        {technique.description || 'No description.'}
+      </div>
     </div>
 
     {technique.tags.length > 0 && (
-      <div className="glass-card p-4 space-y-2">
-        <h3 className="card-header">Tags</h3>
-        <div className="flex flex-wrap gap-1.5">
-          {technique.tags.map(tag => (
-            <span key={tag} className="glass-badge glass-badge-blue text-xs">{tag}</span>
+      <div className="tile">
+        <div className="scard__title">Tags</div>
+        <div className="tagrow">
+          {technique.tags.map((tag) => (
+            <span key={tag} className="tag">{tag}</span>
           ))}
         </div>
       </div>
     )}
 
-    <div className="glass-card p-4 space-y-2">
-      <h3 className="card-header">Stats</h3>
-      <div className="grid grid-cols-2 gap-2 text-xs text-ui/55">
-        <div>Usage count: <span className="text-ui/70">{technique.usageCount}</span></div>
-        <div>Last used: <span className="text-ui/70">{technique.lastUsedAt ? formatDate(technique.lastUsedAt) : 'Never'}</span></div>
-        <div>Created: <span className="text-ui/70">{formatDate(technique.createdAt)}</span></div>
-        <div>Updated: <span className="text-ui/70">{formatDate(technique.updatedAt)}</span></div>
-        {technique.publishedAt && <div>Published: <span className="text-ui/70">{formatDate(technique.publishedAt)}</span></div>}
-        {technique.buildProjectId && <div>Build project: <Link to={`/tracker?project=${technique.buildProjectId}`} className="text-cp-blue hover:underline">{technique.buildProjectId.slice(0, 8)}</Link></div>}
-      </div>
+    <div className="tile">
+      <div className="scard__title">Stats</div>
+      <div className="brow"><span className="brow__label">Usage count</span><span className="brow__val">{technique.usageCount}</span></div>
+      <div className="brow"><span className="brow__label">Last used</span><span className="brow__val">{technique.lastUsedAt ? formatDate(technique.lastUsedAt) : 'Never'}</span></div>
+      <div className="brow"><span className="brow__label">Created</span><span className="brow__val">{formatDate(technique.createdAt)}</span></div>
+      <div className="brow"><span className="brow__label">Updated</span><span className="brow__val">{formatDate(technique.updatedAt)}</span></div>
+      {technique.publishedAt && (
+        <div className="brow"><span className="brow__label">Published</span><span className="brow__val">{formatDate(technique.publishedAt)}</span></div>
+      )}
+      {technique.buildProjectId && (
+        <div className="brow">
+          <span className="brow__label">Build project</span>
+          <span className="brow__val">
+            <button type="button" className="link" style={{ background: 'transparent', border: 0 }} onClick={() => navigate(`/tracker?project=${technique.buildProjectId}`)}>
+              {technique.buildProjectId.slice(0, 8)}
+            </button>
+          </span>
+        </div>
+      )}
     </div>
   </div>
 );
@@ -220,13 +243,13 @@ const OverviewTab = ({ technique }: { technique: TechniqueData }) => (
 // ── Instructions Tab (read-only) ──
 
 const InstructionsTab = ({ technique }: { technique: TechniqueData }) => (
-  <div className="glass-card p-4">
+  <div className="tile">
     {technique.instructions ? (
       <pre className="text-sm text-ui/70 font-mono whitespace-pre-wrap overflow-auto max-h-[600px]">
         {technique.instructions}
       </pre>
     ) : (
-      <p className="text-ui/25 text-sm italic">No instructions yet.</p>
+      <div className="scard__desc" style={{ marginBottom: 0 }}>No instructions yet.</div>
     )}
   </div>
 );
@@ -251,13 +274,14 @@ const FilesTab = ({ technique }: { technique: TechniqueData }) => {
 
   return (
     <div className="flex gap-4 min-h-[400px]">
-      <div className="w-64 shrink-0 glass-card p-3 overflow-y-auto">
+      <div className="tile w-64 shrink-0 overflow-y-auto" style={{ padding: 10 }}>
         {dirs.map(d => (
           <div key={d.path} className="text-xs text-ui/40 py-1 pl-1">{'\u{1F4C1}'} {d.path}/</div>
         ))}
         {files.map(f => (
           <button
             key={f.path}
+            type="button"
             onClick={() => loadFile(f.path)}
             className={`w-full text-left text-xs py-1.5 px-2 rounded transition-colors ${
               selectedFile === f.path ? 'bg-ui/[0.08] text-ui' : 'text-ui/55 hover:text-ui/70 hover:bg-ui/[0.05]'
@@ -269,7 +293,7 @@ const FilesTab = ({ technique }: { technique: TechniqueData }) => {
         {files.length === 0 && <p className="text-xs text-ui/25 py-2">No files</p>}
       </div>
 
-      <div className="flex-1 glass-card p-4">
+      <div className="tile flex-1">
         {selectedFile ? (
           loadingFile ? (
             <p className="text-ui/40 text-sm">Loading...</p>
@@ -301,10 +325,12 @@ const UsageTab = ({ techniqueId }: { techniqueId: string }) => {
   }, [techniqueId]);
 
   if (loading) return <p className="text-ui/40">Loading usage...</p>;
-  if (usage.length === 0) return <p className="text-ui/25 text-sm">No usage recorded yet.</p>;
+  if (usage.length === 0) {
+    return <div className="tile"><div className="scard__desc" style={{ marginBottom: 0 }}>No usage recorded yet.</div></div>;
+  }
 
   return (
-    <div className="glass-card overflow-hidden">
+    <div className="tile overflow-hidden" style={{ padding: 0 }}>
       <table className="w-full text-sm">
         <thead>
           <tr className="text-xs text-ui/40 border-b border-ui/[0.06]">
@@ -349,10 +375,12 @@ const VersionsTab = ({ techniqueId }: { techniqueId: string }) => {
         {versions.map(v => (
           <button
             key={v.id}
+            type="button"
             onClick={() => setSelectedVersion(v)}
-            className={`w-full text-left glass-nested p-3 rounded-lg transition-colors ${
+            className={`tile w-full text-left transition-colors ${
               selectedVersion?.id === v.id ? 'ring-1 ring-cp-amber/40' : 'hover:bg-ui/[0.05]'
             }`}
+            style={{ padding: 12 }}
           >
             <div className="text-sm text-ui/70">Version {v.versionNumber}</div>
             <div className="text-xs text-ui/40 mt-0.5">{v.changeSummary ?? 'No description'}</div>
@@ -363,7 +391,7 @@ const VersionsTab = ({ techniqueId }: { techniqueId: string }) => {
         ))}
       </div>
 
-      <div className="flex-1 glass-card p-4">
+      <div className="tile flex-1">
         {selectedVersion ? (
           <>
             <div className="flex items-center justify-between mb-3">

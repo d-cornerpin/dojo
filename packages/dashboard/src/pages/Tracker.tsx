@@ -83,12 +83,11 @@ const TaskDetailPanel = ({
   };
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end">
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-
-      {/* Panel */}
-      <div className="glass-panel relative w-full max-w-md overflow-y-auto">
+    <div className="glass-modal-backdrop" onClick={onClose}>
+      <div
+        className="glass-modal max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="p-6 space-y-6">
           {/* Header */}
           <div className="flex items-start justify-between">
@@ -532,16 +531,14 @@ const CreateProjectModal = ({
         </div>
 
         <div className="flex gap-3 justify-end mt-6">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm text-ui/55 hover:text-ui/90 transition-colors"
-          >
+          <button type="button" onClick={onClose} className="btn">
             Cancel
           </button>
           <button
+            type="button"
             onClick={handleCreate}
             disabled={saving || !title.trim()}
-            className="px-4 py-2 text-sm glass-btn-primary rounded-lg transition-colors"
+            className="btn btn--primary"
           >
             {saving ? 'Creating...' : 'Create Project'}
           </button>
@@ -578,8 +575,8 @@ const OverrideQueuePanel = ({
     if (res.ok) onResolved();
   };
   return (
-    <div className="mb-4 glass-card border border-cp-amber/30 p-4">
-      <h2 className="text-sm font-semibold text-cp-amber uppercase tracking-wide mb-3">
+    <div className="tile" style={{ marginBottom: 16, padding: 16 }}>
+      <h2 style={{ font: '500 10.5px/1 var(--dojo3-font-mono)', letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--dojo3-amber-deep)', marginBottom: 12 }}>
         Override requests ({overrides.length})
       </h2>
       <div className="space-y-3">
@@ -609,16 +606,18 @@ const OverrideQueuePanel = ({
             )}
             <div className="flex gap-2 mt-2">
               <button
+                type="button"
                 disabled={resolving === o.id}
                 onClick={() => handle(o.id, true)}
-                className="px-3 py-1 text-xs glass-btn-primary rounded-lg disabled:opacity-50"
+                className="btn btn--primary btn--sm"
               >
                 Approve
               </button>
               <button
+                type="button"
                 disabled={resolving === o.id}
                 onClick={() => handle(o.id, false)}
-                className="px-3 py-1 text-xs glass-btn-secondary rounded-lg disabled:opacity-50"
+                className="btn btn--sm"
               >
                 Deny
               </button>
@@ -657,31 +656,30 @@ const HygienePanel = ({
   const totalPmCost = hygiene.pmCost.reduce((s, p) => s + (p.cost_24h ?? 0), 0);
 
   return (
-    <div className="mb-4 glass-card border border-cp-teal/30">
+    <div className="tile tile--ok anim" style={{ marginBottom: 16, '--ci': '0ms' } as React.CSSProperties}>
       <button
         type="button"
         onClick={onToggle}
-        className="w-full flex items-center justify-between px-4 py-2 hover:bg-ui/5 transition-colors"
+        className="hygiene"
+        style={{ margin: 0, padding: 0, width: '100%', background: 'transparent', border: 0, cursor: 'pointer' }}
         aria-expanded={expanded}
       >
-        <div className="flex items-center gap-3">
-          <span className={`text-cp-teal text-sm transition-transform ${expanded ? 'rotate-90' : ''}`}>▶</span>
-          <h2 className="text-sm font-semibold text-cp-teal uppercase tracking-wide">
-            Tracker hygiene
-          </h2>
-        </div>
-        <div className="flex items-center gap-3 text-xs text-ui/70">
-          <span><span className="text-cp-teal">{totalValidates}</span> blessed</span>
-          {totalRejects > 0 && <span><span className="text-cp-coral">{totalRejects}</span> rejected</span>}
-          {totalSmells > 0 && <span><span className="text-cp-amber">{totalSmells}</span> smell</span>}
-          {pendingOverrides > 0 && <span><span className="text-cp-amber">{pendingOverrides}</span> overrides</span>}
-          {elevatedCount > 0 && <span><span className="text-cp-coral">{elevatedCount}</span> elevated</span>}
-          {totalPmCost > 0 && <span className="text-ui/55">${totalPmCost.toFixed(2)}/24h</span>}
+        <span className="hygiene__title">
+          <span style={{ display: 'inline-block', transition: 'transform .2s ease', transform: expanded ? 'rotate(90deg)' : 'none' }}>{'▶'}</span>
+          Tracker Hygiene
+        </span>
+        <div className="hygiene__stats">
+          <span><b className="ok">{totalValidates}</b> blessed</span>
+          {totalRejects > 0 && <span><b className="bad">{totalRejects}</b> rejected</span>}
+          {totalSmells > 0 && <span><b className="warn">{totalSmells}</b> smell</span>}
+          {pendingOverrides > 0 && <span><b className="warn">{pendingOverrides}</b> overrides</span>}
+          {elevatedCount > 0 && <span><b className="warn">{elevatedCount}</b> elevated</span>}
+          {totalPmCost > 0 && <span>${totalPmCost.toFixed(2)}/24h</span>}
         </div>
       </button>
 
       {!expanded ? null : (
-      <div className="px-4 pb-4">
+      <div className="px-4 pb-4" style={{ marginTop: 14 }}>
       <div className="text-xs text-ui/55 mb-2">7-day window</div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         <div className="glass-nested rounded-lg p-3">
@@ -916,10 +914,22 @@ export const Tracker = () => {
   // selected project transitions out of 'active' (e.g. just got closed).
   const activeProjects = projects.filter(p => p.status === 'active');
 
-  if (loading) return <div className="flex-1 loading-state">Loading...</div>;
+  if (loading) return <div className="loading-state">Loading...</div>;
+
+  const selectedProjectTitle = projects.find(p => p.id === selectedProjectId)?.title;
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 p-6">
+    <>
+      {/* Self-headered panel: the page owns its prototype .phead. */}
+      <header className="phead">
+        <h2 className="phead__title">Tracker</h2>
+        <span className="phead__meta">{tasks.length} task{tasks.length !== 1 ? 's' : ''}</span>
+        <div className="phead__actions">
+          <button type="button" className="btn" onClick={() => setShowCreateTask(true)}>+ Create Task</button>
+          <button type="button" className="btn btn--primary" onClick={() => setShowCreateProject(true)}>+ Create Project</button>
+        </div>
+      </header>
+
       {/* Phase B.1: override request queue. Visible whenever there are
           pending requests; this is actionable work the user should see. */}
       {overrides.length > 0 && (
@@ -933,8 +943,8 @@ export const Tracker = () => {
         />
       )}
 
-      {/* Phase D: tracker hygiene + telemetry panel. Collapsed by default;
-          click the chevron to expand. */}
+      {/* Phase D: tracker hygiene + telemetry banner. Collapsed by default;
+          click to expand. */}
       {hygiene && (
         <HygienePanel
           hygiene={hygiene}
@@ -947,98 +957,77 @@ export const Tracker = () => {
         />
       )}
 
-      {/* Top Bar */}
-      <div className="shrink-0 mb-6 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <h1 className="text-lg sm:text-xl font-bold text-ui">Tracker</h1>
+      {/* Toolbar: project filter. Dropdown lists active projects only;
+          closed/cancelled ones live in history, not the working view. */}
+      <div className="toolbar">
+        <span className="toolbar__label">View project</span>
+        <select
+          className="field field--select"
+          aria-label="Project filter"
+          value={selectedProjectId}
+          onChange={(e) => { setSelectedProjectId(e.target.value); setConfirmDeleteProject(false); }}
+        >
+          <option value="all">All active projects</option>
+          {activeProjects.map((p) => (
+            <option key={p.id} value={p.id}>{p.title}</option>
+          ))}
+        </select>
+      </div>
 
-            {/* Project filter — narrows the kanban to one project. Dropdown
-                lists active projects only; closed/cancelled ones live in
-                history, not in the working view. */}
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-semibold text-ui/55 uppercase tracking-wide">View project:</label>
-              <select
-                value={selectedProjectId}
-                onChange={(e) => { setSelectedProjectId(e.target.value); setConfirmDeleteProject(false); }}
-                className="glass-select"
-              >
-                <option value="all">All active projects</option>
-                {activeProjects.map((p) => (
-                  <option key={p.id} value={p.id}>{p.title}</option>
-                ))}
-              </select>
-            </div>
+      {/* Project action bar — shows when a specific project is selected. */}
+      {selectedProjectId !== 'all' && (
+        <div className="tile" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', padding: '11px 16px', margin: '0 2px 16px' }}>
+          <div style={{ font: '400 12px/1.4 var(--dojo3-font-body)', color: 'var(--dojo3-ink-2)' }}>
+            Project: <b style={{ color: 'var(--dojo3-ink)' }}>{selectedProjectTitle}</b>
+            <span style={{ marginLeft: 12, color: 'var(--dojo3-ink-4)' }}>{tasks.length} task{tasks.length !== 1 ? 's' : ''}</span>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowCreateTask(true)} className="glass-btn glass-btn-secondary text-sm">+ Create Task</button>
-            <button onClick={() => setShowCreateProject(true)} className="glass-btn glass-btn-primary text-sm">+ Create Project</button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="btn btn--sm"
+              onClick={() => setCloseProjectModalOpen(true)}
+              title="Mark the project and every open task as resolved in one call — leaves an audit note on each task. Use when the project was abandoned, duplicated, or finished but never closed out."
+            >
+              Close + Resolve Open Tasks
+            </button>
+
+            {confirmDeleteProject ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ font: '500 11px/1 var(--dojo3-font-mono)', color: 'var(--dojo3-rust)' }}>Delete this project and all its tasks?</span>
+                <button
+                  type="button"
+                  className="btn btn--sm"
+                  onClick={async () => {
+                    await api.deleteProject(selectedProjectId);
+                    setSelectedProjectId('all');
+                    setConfirmDeleteProject(false);
+                    loadData();
+                  }}
+                >
+                  Yes, delete
+                </button>
+                <button type="button" className="btn btn--sm" onClick={() => setConfirmDeleteProject(false)}>
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button type="button" className="btn btn--sm" onClick={() => setConfirmDeleteProject(true)}>
+                Delete Project
+              </button>
+            )}
           </div>
         </div>
-
-        {/* Project action bar — shows when a specific project is selected */}
-        {selectedProjectId !== 'all' && (
-          <div className="flex items-center justify-between glass-card px-4 py-2">
-            <div className="text-sm text-ui/70">
-              Project: <span className="font-medium text-ui">{projects.find(p => p.id === selectedProjectId)?.title}</span>
-              <span className="text-ui/40 ml-3">{tasks.length} task{tasks.length !== 1 ? 's' : ''}</span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setCloseProjectModalOpen(true)}
-                className="px-3 py-1 text-sm text-cp-amber hover:text-cp-amber/80 border border-cp-amber/30 hover:border-cp-amber/50 rounded-lg transition-colors"
-                title="Mark the project and every open task as resolved in one call — leaves an audit note on each task. Use when the project was abandoned, duplicated, or finished but never closed out."
-              >
-                Close + Resolve Open Tasks
-              </button>
-
-              {confirmDeleteProject ? (
-                <div className="flex items-center gap-3">
-                  <span className="text-sm text-cp-coral">Delete this project and all its tasks?</span>
-                  <button
-                    onClick={async () => {
-                      await api.deleteProject(selectedProjectId);
-                      setSelectedProjectId('all');
-                      setConfirmDeleteProject(false);
-                      loadData();
-                    }}
-                    className="px-3 py-1 text-sm bg-cp-coral hover:bg-cp-coral/80 text-[var(--btn-primary-text)] rounded-lg transition-colors"
-                  >
-                    Yes, delete
-                  </button>
-                  <button
-                    onClick={() => setConfirmDeleteProject(false)}
-                    className="px-3 py-1 text-sm text-ui/55 hover:text-ui/90 transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              ) : (
-                <button
-                  onClick={() => setConfirmDeleteProject(true)}
-                  className="px-3 py-1 text-sm text-cp-coral hover:text-cp-coral/80 border border-cp-coral/30 rounded-lg hover:border-cp-coral/50 transition-colors"
-                >
-                  Delete Project
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-
-      </div>
+      )}
 
       {/* Kanban Board */}
-      <div className="flex-1 min-h-0">
-        <KanbanBoard
-          tasks={tasks}
-          workingAgentIds={new Set(agents.filter(a => a.status === 'working').map(a => a.id))}
-          onTaskClick={(taskId) => setSelectedTaskId(taskId)}
-          onStatusChange={handleStatusChange}
-          onTaskDeleted={loadData}
-        />
-      </div>
+      <KanbanBoard
+        tasks={tasks}
+        workingAgentIds={new Set(agents.filter(a => a.status === 'working').map(a => a.id))}
+        onTaskClick={(taskId) => setSelectedTaskId(taskId)}
+        onStatusChange={handleStatusChange}
+        onTaskDeleted={loadData}
+      />
 
       {/* Task Detail Panel */}
       {selectedTask && (
@@ -1083,7 +1072,7 @@ export const Tracker = () => {
           }}
         />
       )}
-    </div>
+    </>
   );
 };
 
@@ -1162,13 +1151,14 @@ const CloseProjectModal = ({
         </div>
 
         <div className="flex gap-3 justify-end mt-6">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-ui/55 hover:text-ui/90 transition-colors">
+          <button type="button" onClick={onClose} className="btn">
             Cancel
           </button>
           <button
+            type="button"
             onClick={handleClose}
             disabled={saving || reason.trim().length < 4}
-            className="px-4 py-2 text-sm glass-btn-primary rounded-lg transition-colors"
+            className="btn btn--primary"
           >
             {saving ? 'Closing...' : `Close & resolve ${openTaskCount} task${openTaskCount === 1 ? '' : 's'}`}
           </button>
@@ -1292,8 +1282,8 @@ const CreateTaskModal = ({
         </div>
 
         <div className="flex gap-3 justify-end mt-6">
-          <button onClick={onClose} className="glass-btn glass-btn-ghost">Cancel</button>
-          <button onClick={handleCreate} disabled={saving || !title.trim()} className="glass-btn glass-btn-primary">
+          <button type="button" onClick={onClose} className="btn">Cancel</button>
+          <button type="button" onClick={handleCreate} disabled={saving || !title.trim()} className="btn btn--primary">
             {saving ? 'Creating...' : 'Create Task'}
           </button>
         </div>

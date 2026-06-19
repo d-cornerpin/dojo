@@ -21,6 +21,10 @@ const ABSOLUTE_PATH_RE = /(?:^|(?<=\s|\(|\[|"|'))~?\/[\w./\-_+@%]+/g;
 export function sanitizeForSpeech(text: string): string {
   let s = text;
 
+  // 0. Drop the orb mood marker (`((mood: NAME))`) so it is never spoken — it
+  //    only animates the on-screen orb and is invisible to the user.
+  s = s.replace(/\(\(\s*mood\s*:\s*[a-z]+\s*\)\)/gi, '');
+
   // 1. Drop fenced code blocks entirely (Kevin uses them for tool examples /
   //    config snippets; spoken word doesn't benefit from "import os newline
   //    def main colon").

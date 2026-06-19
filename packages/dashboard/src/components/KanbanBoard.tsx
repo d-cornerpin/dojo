@@ -1,6 +1,86 @@
-import { useState, type DragEvent } from 'react';
+import { useState, useRef, useEffect, useCallback, type DragEvent } from 'react';
 import type { Task } from '@dojo/shared';
 import { TaskCard } from './TaskCard';
+
+// Subtle horizontal scrollbar rendered ABOVE the board. The board itself hides
+// its native scrollbar (scrollbar-width: none), and a native one would sit at
+// the bottom — below the fold when columns are tall. This thin track is always
+// visible at the top so mouse users (no horizontal trackpad swipe) can drag to
+// scroll the columns. Bidirectionally synced with the board's scrollLeft.
+const KanbanScrollbar = ({ boardRef }: { boardRef: React.RefObject<HTMLDivElement> }) => {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ startX: number; startScroll: number } | null>(null);
+  const [m, setM] = useState({ visible: false, widthPct: 0, leftPct: 0 });
+
+  const recompute = useCallback(() => {
+    const board = boardRef.current;
+    if (!board) return;
+    const { scrollWidth, clientWidth, scrollLeft } = board;
+    if (scrollWidth <= clientWidth + 1) {
+      setM((prev) => (prev.visible ? { visible: false, widthPct: 0, leftPct: 0 } : prev));
+      return;
+    }
+    setM({
+      visible: true,
+      widthPct: (clientWidth / scrollWidth) * 100,
+      leftPct: (scrollLeft / scrollWidth) * 100,
+    });
+  }, [boardRef]);
+
+  useEffect(() => {
+    const board = boardRef.current;
+    if (!board) return;
+    recompute();
+    board.addEventListener('scroll', recompute, { passive: true });
+    const ro = new ResizeObserver(recompute);
+    ro.observe(board);
+    return () => {
+      board.removeEventListener('scroll', recompute);
+      ro.disconnect();
+    };
+  }, [boardRef, recompute]);
+
+  const onThumbDown = (e: React.PointerEvent) => {
+    const board = boardRef.current;
+    if (!board) return;
+    e.preventDefault();
+    e.stopPropagation();
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    drag.current = { startX: e.clientX, startScroll: board.scrollLeft };
+  };
+  const onThumbMove = (e: React.PointerEvent) => {
+    const board = boardRef.current;
+    const track = trackRef.current;
+    if (!drag.current || !board || !track) return;
+    const dx = e.clientX - drag.current.startX;
+    board.scrollLeft = drag.current.startScroll + dx * (board.scrollWidth / track.clientWidth);
+  };
+  const onThumbUp = (e: React.PointerEvent) => {
+    drag.current = null;
+    (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+  };
+  const onTrackDown = (e: React.PointerEvent) => {
+    const board = boardRef.current;
+    const track = trackRef.current;
+    if (!board || !track || e.target !== track) return;
+    const rect = track.getBoundingClientRect();
+    const clickPct = (e.clientX - rect.left) / rect.width;
+    board.scrollLeft = clickPct * board.scrollWidth - board.clientWidth / 2;
+  };
+
+  if (!m.visible) return null;
+  return (
+    <div className="kscroll" ref={trackRef} onPointerDown={onTrackDown}>
+      <div
+        className="kscroll__thumb"
+        style={{ width: `${m.widthPct}%`, left: `${m.leftPct}%` }}
+        onPointerDown={onThumbDown}
+        onPointerMove={onThumbMove}
+        onPointerUp={onThumbUp}
+      />
+    </div>
+  );
+};
 
 interface KanbanBoardProps {
   tasks: Task[];
@@ -13,22 +93,25 @@ interface KanbanBoardProps {
 interface ColumnDef {
   key: Task['status'];
   label: string;
-  headerColor: string;
+  // Prototype kcol flavor modifier. On Deck has no flavor (the plain .kcol);
+  // the others map onto the four prototype colors.
+  flavor: '' | 'kcol--progress' | 'kcol--paused' | 'kcol--complete' | 'kcol--blocked';
 }
 
 const columns: ColumnDef[] = [
-  { key: 'on_deck', label: 'On Deck', headerColor: 'text-ui/55' },
-  { key: 'in_progress', label: 'In Progress', headerColor: 'text-cp-amber' },
-  { key: 'paused', label: 'Paused', headerColor: 'text-cp-purple' },
-  { key: 'complete', label: 'Complete', headerColor: 'text-cp-teal' },
-  { key: 'blocked', label: 'Blocked', headerColor: 'text-cp-amber-light' },
-  { key: 'fallen', label: 'Fallen', headerColor: 'text-cp-coral' },
+  { key: 'on_deck', label: 'On Deck', flavor: '' },
+  { key: 'in_progress', label: 'In Progress', flavor: 'kcol--progress' },
+  { key: 'paused', label: 'Paused', flavor: 'kcol--paused' },
+  { key: 'complete', label: 'Complete', flavor: 'kcol--complete' },
+  { key: 'blocked', label: 'Blocked', flavor: 'kcol--blocked' },
+  { key: 'fallen', label: 'Fallen', flavor: 'kcol--blocked' },
 ];
 
 const KanbanColumn = ({
   column,
   tasks,
   workingAgentIds,
+  index,
   onTaskClick,
   onTaskDeleted,
   onDrop,
@@ -36,6 +119,7 @@ const KanbanColumn = ({
   column: ColumnDef;
   tasks: Task[];
   workingAgentIds?: Set<string>;
+  index: number;
   onTaskClick: (taskId: string) => void;
   onTaskDeleted?: () => void;
   onDrop: (taskId: string, newStatus: Task['status']) => void;
@@ -63,43 +147,30 @@ const KanbanColumn = ({
 
   return (
     <div
-      className={`flex-1 min-w-[200px] flex flex-col rounded-xl transition-colors ${
-        dragOver ? 'bg-cp-blue/10 ring-2 ring-cp-blue/40' : ''
-      }`}
+      className={`kcol anim ${column.flavor}`}
+      style={{ '--ci': `${40 + index * 40}ms` } as React.CSSProperties}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {/* Column header */}
-      <div className="flex items-center gap-2 mb-3 px-2">
-        <h3 className={`text-sm font-semibold ${column.headerColor}`}>{column.label}</h3>
-        <span className="text-xs text-ui/40 bg-ui/[0.05] px-1.5 py-0.5 rounded-full">
-          {tasks.length}
-        </span>
+      <div className="kcol__head">
+        <span className="kcol__title">{column.label}</span>
+        <span className="kcol__count">{tasks.length}</span>
       </div>
 
-      {/* Cards */}
-      <div className={`flex-1 space-y-2 overflow-y-auto min-h-[80px] px-1 pb-1 rounded-lg ${
-        dragOver ? 'bg-cp-blue/5' : ''
-      }`}>
-        {tasks.map((task) => (
-          <DraggableTaskCard
-            key={task.id}
-            task={task}
-            agentIsWorking={!!(task.assignedTo && workingAgentIds?.has(task.assignedTo))}
-            onClick={() => onTaskClick(task.id)}
-            onDeleted={onTaskDeleted}
-          />
-        ))}
+      {tasks.map((task) => (
+        <DraggableTaskCard
+          key={task.id}
+          task={task}
+          agentIsWorking={!!(task.assignedTo && workingAgentIds?.has(task.assignedTo))}
+          onClick={() => onTaskClick(task.id)}
+          onDeleted={onTaskDeleted}
+        />
+      ))}
 
-        {tasks.length === 0 && (
-          <div className={`text-center py-8 text-xs rounded-lg border border-dashed ${
-            dragOver ? 'border-cp-blue/40 text-cp-blue' : 'text-ui/25 text-ui/25'
-          }`}>
-            {dragOver ? 'Drop here' : 'No tasks'}
-          </div>
-        )}
-      </div>
+      {tasks.length === 0 && (
+        <div className="kempty">{dragOver ? 'Drop here' : 'No tasks'}</div>
+      )}
     </div>
   );
 };
@@ -132,7 +203,7 @@ const DraggableTaskCard = ({
       draggable
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
-      className={`cursor-grab active:cursor-grabbing ${dragging ? 'opacity-40' : ''}`}
+      style={{ cursor: 'grab', opacity: dragging ? 0.4 : undefined }}
     >
       <TaskCard task={task} agentIsWorking={agentIsWorking} onClick={onClick} onDeleted={onDeleted} />
     </div>
@@ -198,19 +269,25 @@ export const KanbanBoard = ({ tasks, workingAgentIds, onTaskClick, onStatusChang
     }
   };
 
+  const boardRef = useRef<HTMLDivElement>(null);
+
   return (
-    <div className="flex gap-4 h-full overflow-x-auto pb-2">
-      {columns.map((col) => (
-        <KanbanColumn
-          key={col.key}
-          column={col}
-          tasks={tasksByStatus[col.key] || []}
-          workingAgentIds={workingAgentIds}
-          onTaskClick={onTaskClick}
-          onTaskDeleted={onTaskDeleted}
-          onDrop={handleDrop}
-        />
-      ))}
+    <div className="kanban-wrap">
+      <KanbanScrollbar boardRef={boardRef} />
+      <div className="kanban" ref={boardRef}>
+        {columns.map((col, i) => (
+          <KanbanColumn
+            key={col.key}
+            column={col}
+            index={i}
+            tasks={tasksByStatus[col.key] || []}
+            workingAgentIds={workingAgentIds}
+            onTaskClick={onTaskClick}
+            onTaskDeleted={onTaskDeleted}
+            onDrop={handleDrop}
+          />
+        ))}
+      </div>
     </div>
   );
 };

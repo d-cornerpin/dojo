@@ -44,83 +44,86 @@ export const GroupCard = ({ group, agents, models, providerNameById, onReload }:
   };
 
   return (
-    <div
-      className={`glass-card p-5 mb-6 transition-all ${dragOver && !isSystem ? 'ring-2 ring-cp-amber/50 bg-ui/[0.03]' : ''}`}
+    <section
+      className="group"
+      style={dragOver && !isSystem ? { outline: '2px solid rgba(217,165,92,.5)', outlineOffset: 6, borderRadius: 8 } : undefined}
       onDragOver={(e) => { if (!isSystem) { e.preventDefault(); setDragOver(true); } }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
     >
-      {/* Group header with colored bar */}
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex items-center gap-3">
-          {/* group.color is a literal hex stored on agent_groups at create
-              time (see server/src/agent/groups.ts GROUP_COLORS). It does NOT
-              follow Feng Shui theme switches. Migrating to a color-slot model
-              that resolves to theme vars at render time is tracked separately
-              — see the Compliance Audit section in FENG-SHUI-THEME-SPEC.md. */}
-          <div className="w-1 h-10 rounded-full" style={{ background: group.color }} />
-          <div>
-            {editing ? (
-              <input value={name} onChange={(e) => setName(e.target.value)} autoFocus
-                className="glass-input text-base font-semibold py-1 px-2 w-48" />
-            ) : (
-              <h3 className="text-base font-semibold text-ui">{group.name}</h3>
-            )}
-            {editing ? (
-              <textarea value={description} onChange={(e) => setDescription(e.target.value)}
-                className="glass-textarea text-xs mt-1 py-1 px-2 min-h-[40px]" rows={2} />
-            ) : (
-              group.description && <p className="text-xs text-ui/40 mt-0.5">{group.description}</p>
-            )}
-            {editing && (
-              <label className="mt-2 flex items-center gap-2 text-xs text-ui/55 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={dreamerIgnore}
-                  onChange={(e) => setDreamerIgnore(e.target.checked)}
-                  className="accent-cp-teal"
-                />
-                Skip in Dreamer cycle (members' chats won't enter the vault)
-              </label>
-            )}
-            {!editing && group.dreamerIgnore === true && (
-              <p className="mt-1 text-[10px] text-cp-amber/80">Dreamer ignore: ON — members' chats are not archived for the nightly cycle.</p>
-            )}
-          </div>
+      <div className="group__head">
+        <div style={{ minWidth: 0, flex: 1 }}>
+          {editing ? (
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+              className="field"
+              style={{ width: 240, marginBottom: 8 }}
+            />
+          ) : (
+            <div className="group__title">{group.name}</div>
+          )}
+          {editing ? (
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="field"
+              rows={2}
+              style={{ width: '100%', maxWidth: 420, height: 'auto', borderRadius: 12, padding: '8px 12px', lineHeight: 1.5, display: 'block' }}
+            />
+          ) : (
+            group.description && <div className="group__desc">{group.description}</div>
+          )}
+          {editing && (
+            <label style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }} className="text-secondary">
+              <input
+                type="checkbox"
+                checked={dreamerIgnore}
+                onChange={(e) => setDreamerIgnore(e.target.checked)}
+              />
+              Skip in Dreamer cycle (members' chats won't enter the vault)
+            </label>
+          )}
+          {!editing && group.dreamerIgnore === true && (
+            <div className="group__note">Dreamer ignore: ON · members' chats are not archived for the nightly cycle.</div>
+          )}
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-ui/25">{agents.length} agent{agents.length !== 1 ? 's' : ''}</span>
+
+        <div className="group__side">
+          <span>{agents.length} agent{agents.length !== 1 ? 's' : ''}</span>
           {editing ? (
             <>
-              <button onClick={handleSave} className="glass-btn glass-btn-primary text-xs py-1 px-3">Save</button>
-              <button onClick={() => setEditing(false)} className="glass-btn glass-btn-ghost text-xs py-1 px-2">Cancel</button>
+              <button type="button" className="group__action" onClick={handleSave}>Save</button>
+              <button type="button" className="group__action" onClick={() => setEditing(false)}>Cancel</button>
             </>
           ) : !isSystem ? (
             <>
-              <button onClick={() => setEditing(true)} className="text-xs text-ui/25 hover:text-ui/55 transition-colors">Edit</button>
+              <button type="button" className="group__action" onClick={() => setEditing(true)}>Edit</button>
               {confirmDelete ? (
-                <div className="flex items-center gap-1">
-                  <button onClick={handleDelete} className="glass-btn glass-btn-destructive text-xs py-1 px-2">Delete Group</button>
-                  <button onClick={() => setConfirmDelete(false)} className="text-xs text-ui/40">Cancel</button>
-                </div>
+                <>
+                  <button type="button" className="group__action" style={{ color: 'var(--dojo3-rust)' }} onClick={handleDelete}>Confirm delete</button>
+                  <button type="button" className="group__action" onClick={() => setConfirmDelete(false)}>Cancel</button>
+                </>
               ) : (
-                <button onClick={() => setConfirmDelete(true)} className="text-xs text-ui/25 hover:text-cp-coral transition-colors">Delete</button>
+                <button type="button" className="group__action" onClick={() => setConfirmDelete(true)}>Delete</button>
               )}
             </>
           ) : null}
         </div>
       </div>
 
-      {/* Agent cards grid */}
       {agents.length === 0 ? (
-        <p className="text-sm text-ui/25 text-center py-4">No agents in this group</p>
+        <p className="text-tertiary" style={{ fontSize: 12, padding: '16px 2px 2px' }}>
+          {dragOver && !isSystem ? 'Drop here to add to this squad' : 'No agents in this group'}
+        </p>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {agents.map((agent) => (
-            <AgentCard key={agent.id} agent={agent} models={models} providerNameById={providerNameById} onModelChanged={onReload} />
+        <div className="cards">
+          {agents.map((agent, i) => (
+            <AgentCard key={agent.id} agent={agent} models={models} providerNameById={providerNameById} onModelChanged={onReload} index={i} />
           ))}
         </div>
       )}
-    </div>
+    </section>
   );
 };

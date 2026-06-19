@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createLogger } from '../../logger.js';
+import { inlineHtmlAssets } from '../../services/canvas-html.js';
+import { renderOfficeToHtml, isOfficeRenderable } from '../../services/office-render.js';
 
 const logger = createLogger('upload');
 
@@ -396,12 +398,125 @@ uploadRouter.get('/download/:fileId', async (c) => {
     return c.json({ ok: false, error: `File was registered but no longer exists on disk at: ${row.file_path}` }, 404);
   }
 
-  const content = await fs.promises.readFile(row.file_path);
+  // `?inline=1` serves the file for in-page rendering (Content-Disposition:
+  // inline) instead of forcing a download. The right-dock canvas uses this so
+  // an HTML file written by file_write renders in the iframe rather than
+  // dropping into the browser's download queue. Default stays attachment so
+  // existing "download this file" links are unchanged.
+  const inline = c.req.query('inline') === '1' || c.req.query('disposition') === 'inline';
+  const ext = path.extname(row.filename).toLowerCase();
+  const isHtml = ext === '.html' || ext === '.htm' || row.mime_type === 'text/html';
+
+  let content: Buffer;
+  let contentType = row.mime_type;
+  if (inline && isHtml) {
+    // Inline the HTML's local sibling assets (relative <img>/<link>/url() refs)
+    // as data URIs so they render in the canvas iframe, which otherwise can't
+    // resolve filesystem-relative paths and 404s every local asset.
+    content = Buffer.from(inlineHtmlAssets(row.file_path), 'utf-8');
+    contentType = 'text/html; charset=utf-8';
+  } else {
+    content = await fs.promises.readFile(row.file_path);
+  }
+
   return new Response(content, {
     headers: {
-      'Content-Type': row.mime_type,
-      'Content-Disposition': `attachment; filename="${row.filename}"`,
-      'Cache-Control': 'public, max-age=86400',
+      'Content-Type': contentType,
+      'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${row.filename}"`,
+      'Cache-Control': inline && isHtml ? 'no-store' : 'public, max-age=86400',
+    },
+  });
+});
+
+// GET /render/:fileId — render a Word/Excel file to HTML for the canvas iframe.
+// Office docs are binary OOXML the browser can't display, so we convert them
+// server-side (mammoth for .docx, SheetJS for spreadsheets) and serve the HTML.
+uploadRouter.get('/render/:fileId', async (c) => {
+  const fileId = c.req.param('fileId');
+  let db;
+  try {
+    db = (await import('../../db/connection.js')).getDb();
+  } catch {
+    return c.json({ ok: false, error: 'Database not available' }, 500);
+  }
+  const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='shared_files'").get();
+  if (!tableExists) return c.json({ ok: false, error: 'File sharing not available' }, 500);
+
+  const row = db.prepare('SELECT file_path, filename FROM shared_files WHERE id = ?').get(fileId) as {
+    file_path: string; filename: string;
+  } | undefined;
+  if (!row) return c.json({ ok: false, error: 'File not found' }, 404);
+  if (!fs.existsSync(row.file_path)) return c.json({ ok: false, error: 'File no longer exists on disk' }, 404);
+
+  const html = await renderOfficeToHtml(row.file_path);
+  if (html == null) {
+    return c.json({ ok: false, error: 'This file type cannot be previewed in the canvas.' }, 415);
+  }
+  return new Response(html, {
+    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+  });
+});
+
+// GET /describe/:fileId — metadata for a shared file, for the right-dock canvas.
+// Authed (returns the on-disk path + text content), unlike /download which is
+// public-by-unguessable-id. Returns the inline + download URLs, the file's
+// type, and — for text-like files under a size cap — the current text content
+// (read fresh from disk) so the canvas can render Markdown/text/code itself.
+const CANVAS_TEXT_EXTS = new Set([
+  '.md', '.markdown', '.txt', '.text', '.json', '.csv', '.tsv', '.log',
+  '.xml', '.yaml', '.yml', '.html', '.htm', '.css', '.js', '.ts', '.jsx',
+  '.tsx', '.py', '.rb', '.go', '.rs', '.java', '.c', '.h', '.cpp', '.sh',
+  '.sql', '.toml', '.ini', '.env', '.svg',
+]);
+const CANVAS_TEXT_MAX_BYTES = 512 * 1024; // 512 KB — larger files render via iframe
+
+uploadRouter.get('/describe/:fileId', async (c) => {
+  const fileId = c.req.param('fileId');
+  let db;
+  try {
+    db = (await import('../../db/connection.js')).getDb();
+  } catch {
+    return c.json({ ok: false, error: 'Database not available' }, 500);
+  }
+
+  const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='shared_files'").get();
+  if (!tableExists) {
+    return c.json({ ok: false, error: 'File sharing not available' }, 500);
+  }
+
+  const row = db.prepare('SELECT file_path, filename, mime_type FROM shared_files WHERE id = ?').get(fileId) as {
+    file_path: string; filename: string; mime_type: string;
+  } | undefined;
+  if (!row) return c.json({ ok: false, error: 'File not found' }, 404);
+  if (!fs.existsSync(row.file_path)) {
+    return c.json({ ok: false, error: 'File no longer exists on disk' }, 404);
+  }
+
+  const ext = path.extname(row.filename).toLowerCase();
+  const stat = await fs.promises.stat(row.file_path);
+  const isText = CANVAS_TEXT_EXTS.has(ext) || row.mime_type.startsWith('text/');
+  let text: string | undefined;
+  if (isText && stat.size <= CANVAS_TEXT_MAX_BYTES) {
+    try {
+      text = await fs.promises.readFile(row.file_path, 'utf-8');
+    } catch { /* leave undefined — frontend falls back to the inline URL */ }
+  }
+
+  return c.json({
+    ok: true,
+    data: {
+      fileId,
+      filename: row.filename,
+      mime: row.mime_type,
+      ext,
+      size: stat.size,
+      path: row.file_path,
+      text,
+      // Relative URLs — the dashboard resolves them against its own origin.
+      inlineUrl: `/api/upload/download/${fileId}?inline=1`,
+      downloadUrl: `/api/upload/download/${fileId}`,
+      // Word/Excel render to HTML via /render; null for everything else.
+      renderUrl: isOfficeRenderable(ext) ? `/api/upload/render/${fileId}` : null,
     },
   });
 });

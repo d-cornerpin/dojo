@@ -1,14 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import * as api from '../lib/api';
-import { BarChart, PercentageBar } from '../components/CostCharts';
-import { BudgetConfig } from '../components/BudgetConfig';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { formatDate } from '../lib/dates';
-import { cssVar } from '../lib/theme';
 
 type Period = '24h' | '7d' | '30d' | 'all';
-type SortField = 'time' | 'agent' | 'model' | 'tier' | 'inputTokens' | 'outputTokens' | 'cost' | 'latency';
-type SortDir = 'asc' | 'desc';
 
 interface CostSummary {
   totalSpend: number;
@@ -16,20 +11,6 @@ interface CostSummary {
   byModel: Array<Record<string, unknown>>;
   byAgent: Array<Record<string, unknown>>;
   byTier: Array<Record<string, unknown> & { tier: string }>;
-}
-
-interface CostRecord {
-  id: string;
-  time: string;
-  agentId: string;
-  agentName: string;
-  modelId: string;
-  modelName: string;
-  tier: string;
-  inputTokens: number;
-  outputTokens: number;
-  cost: number;
-  latencyMs: number;
 }
 
 interface BudgetData {
@@ -48,27 +29,39 @@ interface AgentOption {
   name: string;
 }
 
-// Theme-aware tier and model palettes. Read from CSS vars at render time
-// so a Feng Shui theme switch updates the chart colors live.
-const tierColor = (tier: string): string => {
-  switch (tier) {
-    case 'tier1': return cssVar('--cp-purple-deep') || '#a855f7';
-    case 'tier2': return cssVar('--cp-blue') || '#3b82f6';
-    case 'tier3': return cssVar('--cp-teal') || '#22c55e';
-    default: return cssVar('--text-tertiary') || '#6b7280';
-  }
+const num = (v: unknown): number => (typeof v === 'number' ? v : 0);
+const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+const spendOf = (r: Record<string, unknown>): number => num(r.spend ?? r.totalCost ?? 0);
+
+// ── Spend breakdown rows (.brow shape) ──
+
+const BrowList = ({
+  rows,
+  barClass,
+  formatVal,
+}: {
+  rows: Array<{ label: string; value: number }>;
+  barClass?: string;
+  formatVal: (v: number) => string;
+}) => {
+  if (rows.length === 0) return <p className="text-tertiary" style={{ fontSize: 12 }}>No data</p>;
+  const max = Math.max(...rows.map((r) => r.value), 1);
+  return (
+    <>
+      {rows.map((r) => (
+        <div className="brow" key={r.label}>
+          <span className="brow__label" title={r.label}>{r.label}</span>
+          <span className="bar">
+            <i className={barClass} style={{ width: `${Math.max((r.value / max) * 100, 1)}%` }} />
+          </span>
+          <span className="brow__val">{formatVal(r.value)}</span>
+        </div>
+      ))}
+    </>
+  );
 };
 
-const modelColors = (): string[] => [
-  cssVar('--cp-blue') || '#3b82f6',
-  cssVar('--cp-purple') || '#8b5cf6',
-  cssVar('--cp-coral') || '#ec4899',
-  cssVar('--cp-amber') || '#f97316',
-  cssVar('--cp-teal') || '#06b6d4',
-  cssVar('--cp-teal-light') || '#84cc16',
-];
-
-// ── OpenRouter Budget ──
+// ── OpenRouter Balance (.tile + .tech__head + .tech__foot) ──
 
 const OpenRouterBudget = () => {
   const [credits, setCredits] = useState<{ total_credits: number; total_usage: number; balance: number } | null>(null);
@@ -87,7 +80,6 @@ const OpenRouterBudget = () => {
         }
       })
       .catch(() => { /* silently hide if anything fails */ });
-    // Load saved threshold (default $5)
     api.request<{ value: string }>('/config/openrouter/threshold')
       .then(res => {
         if (mounted) {
@@ -115,45 +107,49 @@ const OpenRouterBudget = () => {
 
   const balance = Math.round((credits.balance ?? 0) * 100) / 100;
   const totalUsage = Math.round((credits.total_usage ?? 0) * 100) / 100;
-  const balanceColor = balance >= 100 ? 'text-cp-teal' : balance >= 25 ? 'text-cp-amber' : 'text-cp-coral';
+  const balanceColor = balance >= 100 ? 'var(--dojo3-green-ink)' : balance >= 25 ? 'var(--dojo3-amber-ink)' : 'var(--dojo3-rust)';
 
   return (
-    <div className="glass-card p-4 mb-6">
-      <div className="flex items-center justify-between">
-        <h2 className="card-header">OpenRouter Balance</h2>
-        <div className="flex items-center gap-3">
-          <p className={`text-lg font-semibold ${balanceColor}`}>${balance.toFixed(2)}</p>
-          <a
-            href="https://openrouter.ai/settings/credits"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-cp-teal hover:text-cp-teal/80 transition-colors"
-            title="Open OpenRouter credits page in a new tab"
-          >
-            Add ↗
-          </a>
-        </div>
-      </div>
-      <p className="text-xs text-ui/25 mt-1">Lifetime spend: ${totalUsage.toFixed(2)}</p>
-      <div className="flex items-center gap-2 mt-3 pt-3 border-t border-ui/[0.06]">
-        <span className="text-xs text-ui/40">Warning threshold: $</span>
-        <input
-          type="number"
-          step="1"
-          min="0"
-          value={threshold}
-          onChange={(e) => setThreshold(e.target.value)}
-          placeholder="e.g., 10"
-          className="glass-input w-20"
-        />
-        <button
-          onClick={handleSaveThreshold}
-          disabled={savingThreshold || !threshold}
-          className="px-2 py-1 glass-btn-primary text-xs font-medium rounded transition-colors"
+    <div className="tile anim" style={{ marginTop: 14 }}>
+      <div className="tech__head">
+        <div className="scard__title" style={{ margin: 0 }}>OpenRouter Balance</div>
+        <span className="stat__value" style={{ color: balanceColor, fontSize: 17 }}>${balance.toFixed(2)}</span>
+        <a
+          href="https://openrouter.ai/settings/credits"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="link"
+          title="Open OpenRouter credits page in a new tab"
         >
-          {savingThreshold ? '...' : 'Save'}
-        </button>
-        {savedThreshold && <span className="text-xs text-cp-teal">Saved</span>}
+          Add &#8599;
+        </a>
+      </div>
+      <div className="rows">
+        <div><span className="k">Lifetime spend</span><span className="v">${totalUsage.toFixed(2)}</span></div>
+      </div>
+      <div className="tech__foot">
+        <span>Warning threshold</span>
+        <span className="srow">
+          <input
+            className="finput"
+            type="number"
+            step="1"
+            min="0"
+            value={threshold}
+            onChange={(e) => setThreshold(e.target.value)}
+            placeholder="e.g., 10"
+            aria-label="Warning threshold"
+          />
+          <button
+            type="button"
+            className="btn btn--primary btn--sm"
+            onClick={handleSaveThreshold}
+            disabled={savingThreshold || !threshold}
+          >
+            {savingThreshold ? '...' : 'Save'}
+          </button>
+          {savedThreshold && <span className="link" style={{ color: 'var(--dojo3-green-ink)' }}>Saved</span>}
+        </span>
       </div>
     </div>
   );
@@ -204,56 +200,59 @@ const DeepSeekBudget = () => {
   const balance = Math.round((credits.balance ?? 0) * 100) / 100;
   const granted = Math.round((credits.granted_balance ?? 0) * 100) / 100;
   const toppedUp = Math.round((credits.topped_up_balance ?? 0) * 100) / 100;
-  const balanceColor = balance >= 100 ? 'text-cp-teal' : balance >= 25 ? 'text-cp-amber' : 'text-cp-coral';
+  const balanceColor = balance >= 100 ? 'var(--dojo3-green-ink)' : balance >= 25 ? 'var(--dojo3-amber-ink)' : 'var(--dojo3-rust)';
 
   return (
-    <div className="glass-card p-4 mb-6">
-      <div className="flex items-center justify-between">
-        <h2 className="card-header">DeepSeek Balance</h2>
-        <div className="flex items-center gap-3">
-          <p className={`text-lg font-semibold ${balanceColor}`}>${balance.toFixed(2)}</p>
-          <a
-            href="https://platform.deepseek.com/top_up"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-cp-teal hover:text-cp-teal/80 transition-colors"
-            title="Open DeepSeek top-up page in a new tab"
-          >
-            Add ↗
-          </a>
+    <div className="tile anim" style={{ marginTop: 14 }}>
+      <div className="tech__head">
+        <div className="scard__title" style={{ margin: 0 }}>DeepSeek Balance</div>
+        <span className="stat__value" style={{ color: balanceColor, fontSize: 17 }}>${balance.toFixed(2)}</span>
+        <a
+          href="https://platform.deepseek.com/top_up"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="link"
+          title="Open DeepSeek top-up page in a new tab"
+        >
+          Add &#8599;
+        </a>
+      </div>
+      <div className="rows">
+        <div>
+          <span className="k">Topped up</span>
+          <span className="v">${toppedUp.toFixed(2)}{granted > 0 ? ` · Granted $${granted.toFixed(2)}` : ''}</span>
         </div>
       </div>
-      <p className="text-xs text-ui/25 mt-1">
-        Topped up: ${toppedUp.toFixed(2)}{granted > 0 ? ` · Granted credits: $${granted.toFixed(2)}` : ''}
-      </p>
-      <div className="flex items-center gap-2 mt-3 pt-3 border-t border-ui/[0.06]">
-        <span className="text-xs text-ui/40">Warning threshold: $</span>
-        <input
-          type="number"
-          step="1"
-          min="0"
-          value={threshold}
-          onChange={(e) => setThreshold(e.target.value)}
-          placeholder="e.g., 10"
-          className="glass-input w-20"
-        />
-        <button
-          onClick={handleSaveThreshold}
-          disabled={savingThreshold || !threshold}
-          className="px-2 py-1 glass-btn-primary text-xs font-medium rounded transition-colors"
-        >
-          {savingThreshold ? '...' : 'Save'}
-        </button>
-        {savedThreshold && <span className="text-xs text-cp-teal">Saved</span>}
+      <div className="tech__foot">
+        <span>Warning threshold</span>
+        <span className="srow">
+          <input
+            className="finput"
+            type="number"
+            step="1"
+            min="0"
+            value={threshold}
+            onChange={(e) => setThreshold(e.target.value)}
+            placeholder="e.g., 10"
+            aria-label="Warning threshold"
+          />
+          <button
+            type="button"
+            className="btn btn--primary btn--sm"
+            onClick={handleSaveThreshold}
+            disabled={savingThreshold || !threshold}
+          >
+            {savingThreshold ? '...' : 'Save'}
+          </button>
+          {savedThreshold && <span className="link" style={{ color: 'var(--dojo3-green-ink)' }}>Saved</span>}
+        </span>
       </div>
     </div>
   );
 };
 
-// Status pill for the LiteLLM price index refresh that runs on boot
-// (and on-demand via the Refresh button). Green check = last run pulled
-// fresh prices for Anthropic / OpenAI / DeepSeek; red x = the fetch
-// failed and we're still on the previously-saved numbers.
+// ── Pricing index hygiene banner (.tile.hygiene) ──
+
 const PricingSyncBadge = () => {
   const [status, setStatus] = useState<api.LitellmSyncStatus | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -275,99 +274,240 @@ const PricingSyncBadge = () => {
   const ok = status?.lastStatus === 'success';
   const failed = status?.lastStatus === 'failure';
   const when = status?.lastRunAt ? formatDate(status.lastRunAt) : null;
+  const count = status?.lastUpdatedCount;
 
   return (
-    <div className="glass-card p-3 sm:p-4 mb-4 sm:mb-6 flex items-center justify-between gap-3 flex-wrap">
-      <div className="flex items-center gap-3 min-w-0">
-        {ok && (
-          <span
-            className="w-7 h-7 rounded-full flex items-center justify-center bg-cp-teal/15 text-cp-teal font-bold shrink-0"
-            title="Last sync succeeded"
-            aria-label="success"
-          >
-            ✓
-          </span>
-        )}
-        {failed && (
-          <span
-            className="w-7 h-7 rounded-full flex items-center justify-center bg-cp-coral/15 text-cp-coral font-bold shrink-0"
-            title={status?.lastError ?? 'Last sync failed'}
-            aria-label="failure"
-          >
-            ✗
-          </span>
-        )}
-        {!ok && !failed && (
-          <span
-            className="w-7 h-7 rounded-full flex items-center justify-center bg-ui/[0.08] text-ui/40 font-bold shrink-0"
-            aria-label="never run"
-          >
-            ?
-          </span>
-        )}
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-ui truncate">Pricing Index</p>
-          <p className="text-xs text-ui/40 truncate">
-            {ok && when && `Updated ${when}`}
-            {ok && status?.lastUpdatedCount !== null && status?.lastUpdatedCount !== undefined && (
-              <span className="ml-1">&middot; {status.lastUpdatedCount} model{status.lastUpdatedCount === 1 ? '' : 's'} refreshed</span>
-            )}
-            {failed && when && `Failed ${when}`}
-            {failed && status?.lastError && (
-              <span className="ml-1 text-cp-coral/70">&middot; {status.lastError}</span>
-            )}
-            {!ok && !failed && 'Has not run yet'}
-          </p>
-        </div>
-      </div>
+    <div className="tile hygiene anim" style={{ '--ci': '0ms' } as React.CSSProperties}>
+      <span className="hygiene__title">
+        {ok && <span className="pill pill--ok"><i className="dot" />OK</span>}
+        {failed && <span className="pill pill--down"><i className="dot" />FAIL</span>}
+        {!ok && !failed && <span className="pill pill--norm"><i className="dot" />--</span>}
+        Pricing Index
+      </span>
+      <span className="hygiene__stats" style={{ textTransform: 'none', letterSpacing: '.02em' }}>
+        {ok && when && <span>Updated {when}{count !== null && count !== undefined ? ` · ${count} model${count === 1 ? '' : 's'} refreshed` : ''}</span>}
+        {failed && when && <span className="bad">Failed {when}{status?.lastError ? ` · ${status.lastError}` : ''}</span>}
+        {!ok && !failed && <span>Has not run yet</span>}
+      </span>
       <button
+        type="button"
+        className="btn btn--sm"
+        style={{ marginLeft: 'auto' }}
         onClick={handleRefresh}
         disabled={refreshing}
-        className="px-3 py-1.5 text-xs font-medium rounded-lg bg-ui/[0.08] hover:bg-ui/[0.12] border border-ui/[0.15] text-ui/80 transition-colors disabled:opacity-40 shrink-0"
       >
-        {refreshing ? 'Refreshing…' : 'Refresh'}
+        {refreshing ? 'Refreshing...' : 'Refresh'}
       </button>
     </div>
   );
 };
 
+// ── Budget Configuration (.tile + .rows + .bar + .srow) ──
+
+const BudgetConfigTile = ({
+  budgets,
+  agents,
+  onUpdateGlobal,
+  onUpdateAgent,
+}: {
+  budgets: BudgetData;
+  agents: AgentOption[];
+  onUpdateGlobal: (limitUsd: number) => Promise<void>;
+  onUpdateAgent: (agentId: string, limitUsd: number, period: string) => Promise<void>;
+}) => {
+  const [globalLimit, setGlobalLimit] = useState(budgets.global?.limitUsd?.toString() ?? '');
+  const [savingGlobal, setSavingGlobal] = useState(false);
+  const [savedGlobal, setSavedGlobal] = useState(false);
+  const [agentsOpen, setAgentsOpen] = useState(false);
+
+  const handleSaveGlobal = async () => {
+    const val = parseFloat(globalLimit);
+    if (isNaN(val) || val < 0) return;
+    setSavingGlobal(true);
+    await onUpdateGlobal(val);
+    setSavingGlobal(false);
+    setSavedGlobal(true);
+    setTimeout(() => setSavedGlobal(false), 2000);
+  };
+
+  const spent = budgets.global?.spentUsd ?? 0;
+  const limit = budgets.global?.limitUsd ?? 0;
+  const pct = limit > 0 ? Math.min((spent / limit) * 100, 100) : 0;
+
+  // Agents not yet given an explicit budget still get a row, matching the
+  // prior per-agent editor behaviour.
+  const explicitIds = new Set(budgets.agents.map((a) => a.agentId));
+  const extraAgents = agents.filter((a) => !explicitIds.has(a.id));
+
+  return (
+    <div className="tile anim" style={{ marginTop: 14 }}>
+      <div className="scard__title">Budget Configuration</div>
+      <div className="rows" style={{ marginTop: 6 }}>
+        <div>
+          <span className="k">Global daily budget &middot; spent today ${spent.toFixed(2)}</span>
+          <span className="v">Limit: ${limit.toFixed(2)} &middot; {pct.toFixed(0)}%</span>
+        </div>
+      </div>
+      <div className="bar" style={{ margin: '10px 0 14px' }}>
+        <i className="is-green" style={{ width: `${Math.max(pct, 0)}%` }} />
+      </div>
+      <div className="srow">
+        <input
+          className="finput"
+          type="number"
+          step="0.01"
+          min="0"
+          value={globalLimit}
+          onChange={(e) => setGlobalLimit(e.target.value)}
+          placeholder="e.g., 300"
+          aria-label="Daily budget"
+        />
+        <button
+          type="button"
+          className="btn btn--primary btn--sm"
+          onClick={handleSaveGlobal}
+          disabled={savingGlobal || !globalLimit}
+        >
+          {savingGlobal ? '...' : 'Save'}
+        </button>
+        {savedGlobal && <span className="link" style={{ color: 'var(--dojo3-green-ink)' }}>Saved</span>}
+        <span className="toolbar__spacer" />
+        <span className="toolbar__label">Per-agent budgets</span>
+        <button
+          type="button"
+          className="btn btn--sm"
+          onClick={() => setAgentsOpen((o) => !o)}
+          aria-expanded={agentsOpen}
+        >
+          {agentsOpen ? '−' : '+'}
+        </button>
+      </div>
+
+      {agentsOpen && (
+        <div className="rows" style={{ marginTop: 14 }}>
+          {budgets.agents.length === 0 && extraAgents.length === 0 ? (
+            <div><span className="k">No agents configured.</span></div>
+          ) : (
+            <>
+              {budgets.agents.map((ab) => (
+                <AgentBudgetRow
+                  key={ab.agentId}
+                  agentId={ab.agentId}
+                  agentName={ab.agentName}
+                  limitUsd={ab.limitUsd}
+                  period={ab.period}
+                  spentUsd={ab.spentUsd}
+                  onSave={onUpdateAgent}
+                />
+              ))}
+              {extraAgents.map((a) => (
+                <AgentBudgetRow
+                  key={a.id}
+                  agentId={a.id}
+                  agentName={a.name}
+                  limitUsd={0}
+                  period="daily"
+                  spentUsd={0}
+                  onSave={onUpdateAgent}
+                />
+              ))}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const AgentBudgetRow = ({
+  agentId,
+  agentName,
+  limitUsd,
+  period,
+  spentUsd,
+  onSave,
+}: {
+  agentId: string;
+  agentName: string;
+  limitUsd: number;
+  period: string;
+  spentUsd: number;
+  onSave: (agentId: string, limitUsd: number, period: string) => Promise<void>;
+}) => {
+  const [limit, setLimit] = useState(limitUsd > 0 ? limitUsd.toString() : '');
+  const [selectedPeriod, setSelectedPeriod] = useState(period);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const handleSave = async () => {
+    const val = parseFloat(limit);
+    if (isNaN(val) || val < 0) return;
+    setSaving(true);
+    await onSave(agentId, val, selectedPeriod);
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  return (
+    <div style={{ alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <span className="k" style={{ minWidth: 120 }} title={agentName}>
+        {agentName}
+        {limitUsd > 0 ? <span className="text-tertiary"> &middot; ${spentUsd.toFixed(2)} used</span> : null}
+      </span>
+      <span className="srow">
+        <input
+          className="finput"
+          type="number"
+          step="0.01"
+          min="0"
+          value={limit}
+          onChange={(e) => setLimit(e.target.value)}
+          placeholder="--"
+          aria-label={`${agentName} budget`}
+        />
+        <select
+          className="field field--select"
+          value={selectedPeriod}
+          onChange={(e) => setSelectedPeriod(e.target.value)}
+          style={{ height: 34 }}
+        >
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+          <option value="monthly">Monthly</option>
+        </select>
+        <button
+          type="button"
+          className="btn btn--primary btn--sm"
+          onClick={handleSave}
+          disabled={saving}
+        >
+          {saving ? '...' : 'Set'}
+        </button>
+        {saved && <span className="link" style={{ color: 'var(--dojo3-green-ink)' }}>OK</span>}
+      </span>
+    </div>
+  );
+};
+
+// ── Main page ──
+
 export const Costs = () => {
   const [period, setPeriod] = useState<Period>('24h');
   const [summary, setSummary] = useState<CostSummary | null>(null);
-  const [records, setRecords] = useState<CostRecord[]>([]);
   const [budgets, setBudgets] = useState<BudgetData | null>(null);
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [loading, setLoading] = useState(true);
-  const [budgetOpen, setBudgetOpen] = useState(false);
-  const [sortField, setSortField] = useState<SortField>('time');
-  const [sortDir, setSortDir] = useState<SortDir>('desc');
   const { subscribe } = useWebSocket();
 
   const loadData = useCallback(async () => {
     try {
-      const [summaryRes, recordsRes, budgetRes, agentsRes] = await Promise.all([
+      const [summaryRes, budgetRes, agentsRes] = await Promise.all([
         api.getCostSummary(period),
-        api.getCostRecords({ period }),
         api.getBudgets(),
         api.getAgents(),
       ]);
       if (summaryRes.ok) setSummary(summaryRes.data as CostSummary);
-      if (recordsRes.ok) {
-        const rd = recordsRes.data as { records?: Array<Record<string, unknown>>; total?: number };
-        setRecords((rd.records ?? []).map((r): CostRecord => ({
-          id: (r.id ?? '') as string,
-          time: (r.time ?? r.createdAt ?? '') as string,
-          agentId: (r.agentId ?? '') as string,
-          agentName: (r.agentName ?? r.agentId ?? '') as string,
-          modelId: (r.modelId ?? '') as string,
-          modelName: (r.modelName ?? r.modelId ?? '') as string,
-          tier: (r.tier ?? r.requestType ?? '--') as string,
-          inputTokens: (r.inputTokens ?? 0) as number,
-          outputTokens: (r.outputTokens ?? 0) as number,
-          cost: (r.cost ?? r.costUsd ?? 0) as number,
-          latencyMs: (r.latencyMs ?? 0) as number,
-        })));
-      }
       if (budgetRes.ok) {
         const bd = budgetRes.data as Record<string, unknown>;
         const globalRaw = bd.global as Record<string, unknown> | null;
@@ -391,318 +531,145 @@ export const Costs = () => {
   // Refresh on cost-related WS events
   useEffect(() => {
     const unsub = subscribe('chat:message', () => {
-      // Refresh after a short delay to let cost records settle
       setTimeout(loadData, 1000);
     });
     return unsub;
   }, [subscribe, loadData]);
 
-  const handleSort = (field: SortField) => {
-    if (sortField === field) {
-      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setSortField(field);
-      setSortDir(field === 'time' ? 'desc' : 'asc');
-    }
-  };
-
-  const sortedRecords = [...records].sort((a, b) => {
-    const dir = sortDir === 'asc' ? 1 : -1;
-    switch (sortField) {
-      case 'time':
-        return (new Date(a.time).getTime() - new Date(b.time).getTime()) * dir;
-      case 'agent':
-        return a.agentName.localeCompare(b.agentName) * dir;
-      case 'model':
-        return a.modelName.localeCompare(b.modelName) * dir;
-      case 'tier':
-        return a.tier.localeCompare(b.tier) * dir;
-      case 'inputTokens':
-        return (a.inputTokens - b.inputTokens) * dir;
-      case 'outputTokens':
-        return (a.outputTokens - b.outputTokens) * dir;
-      case 'cost':
-        return (a.cost - b.cost) * dir;
-      case 'latency':
-        return (a.latencyMs - b.latencyMs) * dir;
-      default:
-        return 0;
-    }
-  });
-
   const mostExpensiveModel = summary?.byModel?.length
-    ? summary.byModel.reduce((a: Record<string, unknown>, b: Record<string, unknown>) =>
-        ((a.spend ?? a.totalCost ?? 0) as number) > ((b.spend ?? b.totalCost ?? 0) as number) ? a : b)
+    ? summary.byModel.reduce((a, b) => (spendOf(a) > spendOf(b) ? a : b))
     : null;
   const mostExpensiveAgent = summary?.byAgent?.length
-    ? summary.byAgent.reduce((a: Record<string, unknown>, b: Record<string, unknown>) =>
-        ((a.spend ?? a.totalCost ?? 0) as number) > ((b.spend ?? b.totalCost ?? 0) as number) ? a : b)
+    ? summary.byAgent.reduce((a, b) => (spendOf(a) > spendOf(b) ? a : b))
     : null;
 
-  const budgetUtilPct = budgets?.global
-    ? (budgets.global.limitUsd ?? 0) > 0
-      ? ((budgets.global.spentUsd ?? 0) / budgets.global.limitUsd) * 100
-      : 0
-    : 0;
+  if (loading) return <div className="loading-state">Loading...</div>;
 
-  if (loading) return <div className="flex-1 loading-state">Loading...</div>;
+  const totalSpend = summary?.totalSpend ?? 0;
+  const dailyAvg = summary?.dailyAvg ?? 0;
+  const budgetLimit = budgets?.global?.limitUsd ?? 0;
+  const budgetSpent = budgets?.global?.spentUsd ?? 0;
+  const budgetPct = budgetLimit > 0 ? Math.min((budgetSpent / budgetLimit) * 100, 100) : 0;
 
-  // Compute palette once per render so a theme switch updates chart colors live.
-  const modelPalette = modelColors();
+  const topModelName = mostExpensiveModel
+    ? str(mostExpensiveModel.modelName) || str(mostExpensiveModel.modelId) || '--'
+    : '--';
+  const topAgentName = mostExpensiveAgent
+    ? str(mostExpensiveAgent.agentName) || str(mostExpensiveAgent.agentId) || '--'
+    : '--';
+
+  const modelRows = (summary?.byModel ?? []).map((m) => ({
+    label: str(m.modelName) || str(m.modelId) || 'Unknown',
+    value: spendOf(m),
+  }));
+  const agentRows = (summary?.byAgent ?? []).map((a) => ({
+    label: str(a.agentName) || str(a.agentId) || 'Unknown',
+    value: spendOf(a),
+  }));
+  const tierRows = (summary?.byTier ?? []).map((t) => ({
+    label: t.tier,
+    value: num((t as Record<string, unknown>).requestCount ?? (t as Record<string, unknown>).count ?? 0),
+  }));
+
+  const usd = (v: number) => `$${v.toFixed(2)}`;
+  const count = (v: number) => v.toLocaleString();
 
   return (
-    <div className="flex-1 p-3 sm:p-6 overflow-y-auto">
-      <div className="flex items-center justify-between mb-4 sm:mb-6">
-        <h1 className="text-lg sm:text-xl font-bold text-ui">Costs</h1>
-
-        {/* Time range selector */}
-        <div className="flex gap-1 bg-ui/[0.05] rounded-lg p-1">
-          {(['24h', '7d', '30d', 'all'] as Period[]).map((p) => (
-            <button
-              key={p}
-              onClick={() => setPeriod(p)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                period === p
-                  ? 'bg-cp-amber text-cp-bg'
-                  : 'text-ui/55 hover:text-ui/90'
-              }`}
-            >
-              {p === 'all' ? 'All' : p.toUpperCase()}
-            </button>
-          ))}
+    <>
+      <header className="phead">
+        <h2 className="phead__title">Ledger</h2>
+        <span className="phead__meta">Costs</span>
+        <div className="phead__actions">
+          <div className="tabs" role="tablist">
+            {(['24h', '7d', '30d', 'all'] as Period[]).map((p) => (
+              <button
+                key={p}
+                type="button"
+                role="tab"
+                aria-selected={period === p}
+                className={`tab${period === p ? ' is-active' : ''}`}
+                onClick={() => setPeriod(p)}
+              >
+                {p === 'all' ? 'All' : p.toUpperCase()}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      </header>
 
       {/* Pricing-index sync status — boot-time + on-demand LiteLLM refresh */}
       <PricingSyncBadge />
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-1 xs:grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4 mb-4 sm:mb-6">
-        <SummaryCard
-          label="Total Spend"
-          value={`$${(summary?.totalSpend ?? 0).toFixed(2)}`}
-        />
-        <SummaryCard
-          label="Daily Average"
-          value={`$${(summary?.dailyAvg ?? 0).toFixed(2)}`}
-        />
-        <SummaryCard
-          label="Top Model"
-          value={((mostExpensiveModel as Record<string, unknown>)?.modelName ?? (mostExpensiveModel as Record<string, unknown>)?.modelId ?? '--') as string}
-          sub={mostExpensiveModel ? `$${(((mostExpensiveModel as Record<string, unknown>).spend ?? (mostExpensiveModel as Record<string, unknown>).totalCost ?? 0) as number).toFixed(2)}` : undefined}
-        />
-        <SummaryCard
-          label="Top Agent"
-          value={((mostExpensiveAgent as Record<string, unknown>)?.agentName ?? (mostExpensiveAgent as Record<string, unknown>)?.agentId ?? '--') as string}
-          sub={mostExpensiveAgent ? `$${(((mostExpensiveAgent as Record<string, unknown>).spend ?? (mostExpensiveAgent as Record<string, unknown>).totalCost ?? 0) as number).toFixed(2)}` : undefined}
-        />
-        <div className="glass-card p-4">
-          <p className="text-xs text-ui/40 uppercase tracking-wider mb-1">Budget</p>
-          {budgets?.global && budgets.global.limitUsd > 0 ? (
+      {/* Summary stat cells */}
+      <div className="stats">
+        <div className="tile anim" style={{ '--ci': '40ms' } as React.CSSProperties}>
+          <div className="stat__label">Total Spend</div>
+          <div className="stat__value">{usd(totalSpend)}</div>
+        </div>
+        <div className="tile anim" style={{ '--ci': '70ms' } as React.CSSProperties}>
+          <div className="stat__label">Daily Average</div>
+          <div className="stat__value">{usd(dailyAvg)}</div>
+        </div>
+        <div className="tile anim" style={{ '--ci': '100ms' } as React.CSSProperties}>
+          <div className="stat__label">Top Model</div>
+          <div className="stat__value" title={topModelName}>{topModelName}</div>
+          {mostExpensiveModel && <div className="stat__sub">{usd(spendOf(mostExpensiveModel))}</div>}
+        </div>
+        <div className="tile anim" style={{ '--ci': '130ms' } as React.CSSProperties}>
+          <div className="stat__label">Top Agent</div>
+          <div className="stat__value" title={topAgentName}>{topAgentName}</div>
+          {mostExpensiveAgent && <div className="stat__sub">{usd(spendOf(mostExpensiveAgent))}</div>}
+        </div>
+        <div className="tile anim" style={{ '--ci': '160ms' } as React.CSSProperties}>
+          <div className="stat__label">Budget</div>
+          {budgetLimit > 0 ? (
             <>
-              <p className="text-lg font-semibold text-ui mb-1">
-                ${budgets.global.spentUsd.toFixed(2)} / ${budgets.global.limitUsd.toFixed(2)}
-              </p>
-              <PercentageBar value={budgets.global.spentUsd} max={budgets.global.limitUsd} />
+              <div className="stat__value">{usd(budgetSpent)} / {usd(budgetLimit)}</div>
+              <div className="bar" style={{ marginTop: 9 }}>
+                <i style={{ width: `${Math.max(budgetPct, 0)}%` }} />
+              </div>
             </>
           ) : (
-            <p className="text-lg font-semibold text-ui/25">No limit</p>
+            <div className="stat__value">No limit</div>
           )}
         </div>
       </div>
 
-      {/* Charts */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 mb-4 sm:mb-6">
-        {/* Spend by model */}
-        <div className="glass-card p-4">
-          <h3 className="card-header mb-3">Spend by Model</h3>
-          <BarChart
-            data={(summary?.byModel ?? []).map((m: Record<string, unknown>, i: number) => ({
-              label: (m.modelName ?? m.modelId ?? 'Unknown') as string,
-              value: (m.spend ?? m.totalCost ?? 0) as number,
-              color: modelPalette[i % modelPalette.length],
-            }))}
-          />
+      {/* Spend breakdown cards */}
+      <div className="cards" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))' }}>
+        <div className="tile anim" style={{ '--ci': '190ms' } as React.CSSProperties}>
+          <div className="scard__title">Spend by Model</div>
+          <BrowList rows={modelRows} barClass="is-blue" formatVal={usd} />
         </div>
-
-        {/* Spend by agent */}
-        <div className="glass-card p-4">
-          <h3 className="card-header mb-3">Spend by Agent</h3>
-          <BarChart
-            data={(summary?.byAgent ?? []).map((a: Record<string, unknown>, i: number) => ({
-              label: (a.agentName ?? a.agentId ?? 'Unknown') as string,
-              value: (a.spend ?? a.totalCost ?? 0) as number,
-              color: modelPalette[(i + 2) % modelPalette.length],
-            }))}
-          />
+        <div className="tile anim" style={{ '--ci': '220ms' } as React.CSSProperties}>
+          <div className="scard__title">Spend by Agent</div>
+          <BrowList rows={agentRows} barClass="is-green" formatVal={usd} />
         </div>
-
-        {/* Tier distribution */}
-        <div className="glass-card p-4">
-          <h3 className="card-header mb-3">Tier Distribution</h3>
-          <div className="space-y-3">
-            {(summary?.byTier ?? []).map((t) => {
-              const count = (t as Record<string, unknown>).requestCount as number ?? (t as Record<string, unknown>).count as number ?? 0;
-              const pct = (t as Record<string, unknown>).percentage as number ?? 0;
-              return (
-                <div key={t.tier}>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs text-ui/55 capitalize">{t.tier}</span>
-                    <span className="text-xs text-ui/40">
-                      {count.toLocaleString()} calls{pct > 0 ? ` (${pct.toFixed(0)}%)` : ''}
-                    </span>
-                  </div>
-                  <PercentageBar
-                    value={pct > 0 ? pct : (count > 0 ? 100 : 0)}
-                    max={100}
-                    color={tierColor(t.tier)}
-                  />
-                </div>
-              );
-            })}
-            {(summary?.byTier ?? []).length === 0 && (
-              <p className="text-sm text-ui/25">No data</p>
-            )}
-          </div>
+        <div className="tile anim" style={{ '--ci': '250ms' } as React.CSSProperties}>
+          <div className="scard__title">Tier Distribution</div>
+          <BrowList rows={tierRows} barClass="is-dim" formatVal={count} />
         </div>
       </div>
 
-      {/* Budget config */}
+      {/* Budget configuration */}
       {budgets && (
-        <div className="glass-card p-4 mb-6">
-          <h2 className="card-header mb-3">Budget Configuration</h2>
-            <BudgetConfig
-              budgets={budgets}
-              agents={agents}
-              onUpdateGlobal={async (limitUsd) => {
-                await api.setGlobalBudget(limitUsd);
-                loadData();
-              }}
-              onUpdateAgent={async (agentId, limitUsd, agentPeriod) => {
-                await api.setAgentBudget(agentId, limitUsd, agentPeriod);
-                loadData();
-              }}
-            />
-        </div>
+        <BudgetConfigTile
+          budgets={budgets}
+          agents={agents}
+          onUpdateGlobal={async (limitUsd) => {
+            await api.setGlobalBudget(limitUsd);
+            loadData();
+          }}
+          onUpdateAgent={async (agentId, limitUsd, agentPeriod) => {
+            await api.setAgentBudget(agentId, limitUsd, agentPeriod);
+            loadData();
+          }}
+        />
       )}
 
-      {/* OpenRouter Budget */}
+      {/* Provider balances */}
       <OpenRouterBudget />
-
-      {/* DeepSeek Budget */}
       <DeepSeekBudget />
-
-      {/* Recent API calls table */}
-      <div className="glass-card overflow-hidden">
-        <div className="px-4 py-3 border-b border-ui/[0.06] flex items-center justify-between">
-          <h3 className="card-header">Recent API Calls</h3>
-          <span className="text-xs text-ui/25">{records.length} records</span>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-ui/[0.05]">
-              <tr className="text-left text-ui/40 text-xs uppercase tracking-wider">
-                <SortableHeader field="time" label="Time" current={sortField} dir={sortDir} onSort={handleSort} />
-                <SortableHeader field="agent" label="Agent" current={sortField} dir={sortDir} onSort={handleSort} />
-                <SortableHeader field="model" label="Model" current={sortField} dir={sortDir} onSort={handleSort} />
-                <SortableHeader field="tier" label="Tier" current={sortField} dir={sortDir} onSort={handleSort} />
-                <SortableHeader field="inputTokens" label="In Tokens" current={sortField} dir={sortDir} onSort={handleSort} />
-                <SortableHeader field="outputTokens" label="Out Tokens" current={sortField} dir={sortDir} onSort={handleSort} />
-                <SortableHeader field="cost" label="Cost" current={sortField} dir={sortDir} onSort={handleSort} />
-                <SortableHeader field="latency" label="Latency" current={sortField} dir={sortDir} onSort={handleSort} />
-              </tr>
-            </thead>
-            <tbody>
-              {sortedRecords.map((r) => (
-                <tr key={r.id} className="border-t border-ui/[0.06] hover:text-ui/25">
-                  <td className="px-4 py-1.5 text-xs text-ui/40 font-mono whitespace-nowrap">
-                    {r.time ? formatDate(r.time) : '--'}
-                  </td>
-                  <td className="px-4 py-1.5 text-xs text-ui/70">{r.agentName || r.agentId}</td>
-                  <td className="px-4 py-1.5 text-xs text-ui/55">{r.modelName || r.modelId?.slice(0, 8)}</td>
-                  <td className="px-4 py-1.5">
-                    <TierBadge tier={r.tier} />
-                  </td>
-                  <td className="px-4 py-1.5 text-xs text-ui/55 text-right font-mono">
-                    {(r.inputTokens ?? 0).toLocaleString()}
-                  </td>
-                  <td className="px-4 py-1.5 text-xs text-ui/55 text-right font-mono">
-                    {(r.outputTokens ?? 0).toLocaleString()}
-                  </td>
-                  <td className="px-4 py-1.5 text-xs text-ui/70 text-right font-mono">
-                    ${(r.cost ?? 0).toFixed(4)}
-                  </td>
-                  <td className="px-4 py-1.5 text-xs text-ui/55 text-right font-mono">
-                    {(r.latencyMs ?? 0).toLocaleString()}ms
-                  </td>
-                </tr>
-              ))}
-              {sortedRecords.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-ui/25 text-sm">
-                    No cost records for this period
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+    </>
   );
 };
-
-const SummaryCard = ({
-  label,
-  value,
-  sub,
-}: {
-  label: string;
-  value: string;
-  sub?: string;
-}) => (
-  <div className="glass-card p-4">
-    <p className="text-xs text-ui/40 uppercase tracking-wider mb-1">{label}</p>
-    <p className="text-lg font-semibold text-ui truncate" title={value}>{value}</p>
-    {sub && <p className="text-xs text-ui/40 mt-0.5">{sub}</p>}
-  </div>
-);
-
-const TierBadge = ({ tier }: { tier: string }) => {
-  const colors: Record<string, string> = {
-    tier1: 'bg-cp-purple-deep/20 text-cp-purple',
-    tier2: 'bg-cp-amber/20 text-cp-amber',
-    tier3: 'bg-cp-teal/20 text-cp-teal',
-  };
-  return (
-    <span className={`text-xs px-1.5 py-0.5 rounded ${colors[tier] || 'bg-ui/[0.08] text-ui/70'}`}>
-      {tier}
-    </span>
-  );
-};
-
-const SortableHeader = ({
-  field,
-  label,
-  current,
-  dir,
-  onSort,
-}: {
-  field: SortField;
-  label: string;
-  current: SortField;
-  dir: SortDir;
-  onSort: (field: SortField) => void;
-}) => (
-  <th
-    className="px-4 py-2 cursor-pointer hover:text-ui/70 transition-colors select-none"
-    onClick={() => onSort(field)}
-  >
-    <span className="inline-flex items-center gap-1">
-      {label}
-      {current === field && (
-        <span className="text-cp-blue">{dir === 'asc' ? '^' : 'v'}</span>
-      )}
-    </span>
-  </th>
-);

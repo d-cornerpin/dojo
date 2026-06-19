@@ -18,7 +18,7 @@ type RightPanel = 'detail' | 'search' | 'briefing' | 'none';
 type MainTab = 'dag' | 'vault' | 'dreams' | 'forensic' | 'credentials' | 'contacts';
 
 export const Memory = () => {
-  // Agent selection — default to 'primary' alias (server resolves to actual ID)
+  // Agent selection, default to 'primary' alias (server resolves to actual ID)
   const [agentId, setAgentId] = useState('primary');
   const [agents, setAgents] = useState<{ id: string; name: string }[]>([]);
 
@@ -196,53 +196,33 @@ export const Memory = () => {
     setInjecting(false);
   };
 
+  const TABS: { id: MainTab; label: string }[] = [
+    { id: 'vault', label: 'Entries' },
+    { id: 'dag', label: 'DAG' },
+    { id: 'dreams', label: 'Dreams' },
+    { id: 'forensic', label: 'Forensic' },
+    { id: 'contacts', label: 'Contacts' },
+    { id: 'credentials', label: 'Credentials' },
+  ];
+
   return (
-    <div className="flex flex-col h-full">
-      {/* Top bar. flex-wrap lets the toolbar split onto a second row
-          on narrow viewports (the existing 6-tab strip + agent selector
-          + search input together overflow a phone-width container).
-          The tab strip itself scrolls horizontally so it never clips
-          on the smallest screens. */}
-      <div className="flex flex-wrap items-center justify-between gap-2 px-3 sm:px-6 py-3 sm:py-4 border-b border-ui/[0.06]">
-        <div className="flex flex-wrap items-center gap-2 sm:gap-4 min-w-0">
-          <h2 className="text-lg font-semibold text-ui shrink-0">Vault</h2>
-          {/* Tabs */}
-          <div className="flex items-center gap-1 bg-ui/[0.03] rounded-lg p-0.5 overflow-x-auto max-w-full">
-            {(['vault', 'dag', 'dreams', 'forensic', 'contacts', 'credentials'] as MainTab[]).map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setMainTab(tab)}
-                className={`shrink-0 px-3 py-1 text-xs rounded-md transition-colors whitespace-nowrap ${
-                  mainTab === tab
-                    ? 'bg-ui/[0.12] text-ui'
-                    : 'text-ui/40 hover:text-ui/70'
-                }`}
-              >
-                {tab === 'vault' ? 'Entries' : tab === 'dag' ? 'DAG' : tab === 'dreams' ? 'Dreams' : tab === 'forensic' ? 'Forensic' : tab === 'contacts' ? 'Contacts' : 'Credentials'}
-              </button>
-            ))}
-          </div>
-          {mainTab === 'dag' && (
-            <select
-              value={agentId}
-              onChange={(e) => setAgentId(e.target.value)}
-              className="glass-select"
-            >
-              {agents.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
+    <>
+      {/* Self-headered panel: page owns its phead. The type filter and
+          search input live in the header actions and only apply on the
+          Entries tab. */}
+      <header className="phead">
+        <h2 className="phead__title">Vault</h2>
+        <span className="phead__meta">
+          {vaultStats ? `${vaultStats.totalEntries} entries` : 'Vault'}
+        </span>
+        <div className="phead__actions">
           {mainTab === 'vault' && (
             <>
               <select
+                className="field field--select"
+                aria-label="Type filter"
                 value={vaultTypeFilter}
                 onChange={(e) => setVaultTypeFilter(e.target.value)}
-                className="glass-select"
               >
                 <option value="">All types</option>
                 <option value="fact">Facts</option>
@@ -254,64 +234,91 @@ export const Memory = () => {
                 <option value="note">Notes</option>
               </select>
               <input
+                className="field"
                 type="text"
-                placeholder="Search vault..."
+                placeholder="Search vault"
+                aria-label="Search vault"
                 value={vaultSearch}
                 onChange={(e) => setVaultSearchText(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && loadVault()}
-                className="glass-input w-48"
               />
             </>
           )}
           {mainTab === 'dag' && (
-            <button
-              onClick={() =>
-                setRightPanel(rightPanel === 'search' ? 'none' : 'search')
-              }
-              className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
-                rightPanel === 'search'
-                  ? 'bg-cp-amber/20 text-cp-amber'
-                  : 'bg-ui/[0.05] text-ui/55 hover:text-ui/90'
-              }`}
-            >
-              Search
-            </button>
+            <>
+              <select
+                className="field field--select"
+                aria-label="Agent"
+                value={agentId}
+                onChange={(e) => setAgentId(e.target.value)}
+              >
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className={`btn btn--sm${rightPanel === 'search' ? ' btn--primary' : ''}`}
+                onClick={() => setRightPanel(rightPanel === 'search' ? 'none' : 'search')}
+              >
+                Search
+              </button>
+            </>
           )}
+        </div>
+      </header>
+
+      {/* Tab strip */}
+      <div className="toolbar">
+        <div className="tabs" role="tablist">
+          {TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={mainTab === tab.id}
+              className={`tab${mainTab === tab.id ? ' is-active' : ''}`}
+              onClick={() => setMainTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Stats bar (vault tab only) */}
-      {mainTab === 'vault' && <VaultStats stats={vaultStats} loading={vaultLoading} onArchivesDiscarded={loadVault} />}
-
-      {/* Main content area */}
-      <div className="flex-1 flex min-h-0">
-        {/* Vault Entries Tab */}
-        {mainTab === 'vault' && (
-          <div className="flex-1 overflow-y-auto p-4">
-            {vaultLoading ? (
-              <div className="text-center text-ui/40 text-sm py-8">Loading vault entries...</div>
-            ) : vaultEntries.length === 0 ? (
-              <div className="text-center text-ui/40 text-sm py-8">
+      {/* Vault Entries Tab */}
+      {mainTab === 'vault' && (
+        <>
+          <VaultStats stats={vaultStats} loading={vaultLoading} onArchivesDiscarded={loadVault} />
+          {vaultLoading ? (
+            <div className="stub"><p className="stub__line">Loading vault entries...</p></div>
+          ) : vaultEntries.length === 0 ? (
+            <div className="stub">
+              <p className="stub__line">
                 No vault entries yet. Agents will populate the vault as they learn, or the dreaming cycle will extract knowledge from conversations.
-              </div>
-            ) : (
-              <div className="space-y-2 max-w-4xl mx-auto">
-                {vaultEntries.map((entry) => (
-                  <VaultEntryCard
-                    key={entry.id}
-                    entry={entry}
-                    onUpdated={loadVault}
-                    onDeleted={loadVault}
-                  />
-                ))}
-              </div>
-            )}
+              </p>
+            </div>
+          ) : (
+            vaultEntries.map((entry, i) => (
+              <VaultEntryCard
+                key={entry.id}
+                entry={entry}
+                index={i}
+                onUpdated={loadVault}
+                onDeleted={loadVault}
+              />
+            ))
+          )}
+          <div style={{ marginTop: 16 }}>
+            <button type="button" className="btn btn--sm" onClick={loadVault}>Refresh</button>
           </div>
-        )}
+        </>
+      )}
 
-        {/* DAG Tab */}
-        {mainTab === 'dag' && (
-          <>
+      {/* DAG Tab keeps its split-pane layout; given a fixed height so the
+          internal flex-1 columns size correctly inside the scrolling body. */}
+      {mainTab === 'dag' && (
+        <div className="flex min-h-0" style={{ height: 560 }}>
             <div className="w-80 border-r border-ui/[0.06] flex flex-col bg-ui/[0.03]">
               <div className="px-4 py-2 border-b border-ui/[0.06] flex items-center justify-between">
                 <span className="text-xs font-medium text-ui/40 uppercase tracking-wider">
@@ -354,119 +361,102 @@ export const Memory = () => {
                 </div>
               )}
             </div>
-          </>
-        )}
+        </div>
+      )}
 
-        {/* Forensic Tab */}
-        {mainTab === 'forensic' && <ForensicSearchPanel />}
-
-        {/* Credentials Tab */}
-        {mainTab === 'contacts' && <ContactsPanel />}
-        {mainTab === 'credentials' && <CredentialsPanel />}
-
-        {/* Dreams Tab */}
-        {mainTab === 'dreams' && (
-          <div className="flex-1 overflow-y-auto p-4">
-            <div className="max-w-3xl mx-auto space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="card-header">Dream Reports</h3>
-                <button
-                  onClick={handleDreamNow}
-                  disabled={dreaming}
-                  className="px-3 py-1.5 text-xs rounded-lg bg-cp-purple/20 text-cp-purple hover:bg-cp-purple/30 transition-colors disabled:opacity-50"
-                >
-                  {dreaming ? 'Dreaming...' : 'Dream Now'}
-                </button>
-              </div>
-              {dreamReports.length === 0 ? (
-                <div className="text-center text-ui/25 text-sm py-8">
-                  No dream reports yet. The dreaming cycle runs nightly at the configured time, or you can trigger it manually.
-                </div>
-              ) : (
-                dreamReports.map((report) => (
-                  <div key={report.id} className="border border-ui/[0.06] rounded-lg p-4 bg-ui/[0.03]">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs text-ui/55">
-                        {formatDate(report.createdAt)}
-                      </span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-cp-purple/20 text-cp-purple">
-                        {report.dreamMode}
-                      </span>
-                    </div>
-                    <pre className="text-xs text-ui/70 whitespace-pre-wrap font-mono leading-relaxed">
-                      {report.reportText}
-                    </pre>
-                    {report.durationMs && (
-                      <div className="text-[10px] text-ui/25 mt-2">
-                        Duration: {(report.durationMs / 1000).toFixed(1)}s
-                      </div>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Bottom bar */}
-      <div className="flex items-center justify-between px-6 py-3 border-t border-ui/[0.06] bg-ui/[0.03]">
-        <div className="flex items-center gap-2">
-          {mainTab === 'dag' && (
-            <>
-              <button
-                onClick={() => setInjectOpen(!injectOpen)}
-                className="px-3 py-1.5 text-xs rounded-lg bg-ui/[0.05] text-ui/70 hover:bg-ui/[0.08] transition-colors"
-              >
-                Inject Memory
-              </button>
-              <button
-                onClick={handleCompact}
-                disabled={compacting}
-                className="px-3 py-1.5 text-xs rounded-lg bg-ui/[0.05] text-ui/70 hover:bg-ui/[0.08] transition-colors disabled:opacity-50"
-              >
-                {compacting ? 'Compacting...' : 'Compact Now'}
-              </button>
-              <button
-                onClick={() =>
-                  setRightPanel(rightPanel === 'briefing' ? 'none' : 'briefing')
-                }
-                className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
-                  rightPanel === 'briefing'
-                    ? 'bg-cp-amber/20 text-cp-amber'
-                    : 'bg-ui/[0.05] text-ui/70 hover:bg-ui/[0.08]'
-                }`}
-              >
-                View Briefing
-              </button>
-            </>
-          )}
-          {mainTab === 'vault' && (
-            <button
-              onClick={loadVault}
-              className="px-3 py-1.5 text-xs rounded-lg bg-ui/[0.05] text-ui/70 hover:bg-ui/[0.08] transition-colors"
+      {/* DAG actions row (formerly the bottom bar). Inject / Compact /
+          Briefing live here so the DAG view keeps its full operator set. */}
+      {mainTab === 'dag' && (
+        <div className="toolbar" style={{ marginTop: 14 }}>
+          <button type="button" className="btn btn--sm" onClick={() => setInjectOpen(!injectOpen)}>
+            Inject Memory
+          </button>
+          <button type="button" className="btn btn--sm" onClick={handleCompact} disabled={compacting}>
+            {compacting ? 'Compacting...' : 'Compact Now'}
+          </button>
+          <button
+            type="button"
+            className={`btn btn--sm${rightPanel === 'briefing' ? ' btn--primary' : ''}`}
+            onClick={() => setRightPanel(rightPanel === 'briefing' ? 'none' : 'briefing')}
+          >
+            View Briefing
+          </button>
+          {compactResult && (
+            <span
+              className="toolbar__label"
+              style={{
+                marginLeft: 'auto',
+                textTransform: 'none',
+                letterSpacing: 'normal',
+                color: compactResult.startsWith('Error') ? 'var(--dojo3-rust)' : 'var(--dojo3-green-ink)',
+              }}
             >
-              Refresh
-            </button>
+              {compactResult}
+            </span>
           )}
         </div>
-        {compactResult && (
-          <span
-            className={`text-xs ${
-              compactResult.startsWith('Error')
-                ? 'text-cp-coral'
-                : 'text-cp-teal'
-            }`}
-          >
-            {compactResult}
-          </span>
-        )}
-      </div>
+      )}
+
+      {/* Forensic Tab */}
+      {mainTab === 'forensic' && (
+        <div className="flex flex-col min-h-0" style={{ height: 560 }}>
+          <ForensicSearchPanel />
+        </div>
+      )}
+
+      {/* Contacts / Credentials Tabs */}
+      {mainTab === 'contacts' && (
+        <div className="flex flex-col min-h-0" style={{ height: 560 }}>
+          <ContactsPanel />
+        </div>
+      )}
+      {mainTab === 'credentials' && <CredentialsPanel />}
+
+      {/* Dreams Tab */}
+      {mainTab === 'dreams' && (
+        <>
+          <div className="toolbar">
+            <span className="toolbar__label">Dream Reports</span>
+            <div className="toolbar__spacer" />
+            <button type="button" className="btn btn--sm" onClick={handleDreamNow} disabled={dreaming}>
+              {dreaming ? 'Dreaming...' : 'Dream Now'}
+            </button>
+          </div>
+          {dreamReports.length === 0 ? (
+            <div className="stub">
+              <p className="stub__line">
+                No dream reports yet. The dreaming cycle runs nightly at the configured time, or you can trigger it manually.
+              </p>
+            </div>
+          ) : (
+            dreamReports.map((report, i) => (
+              <article
+                key={report.id}
+                className="tile anim"
+                style={{ '--ci': `${i * 40}ms`, marginBottom: 12 } as React.CSSProperties}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs text-ui/55">{formatDate(report.createdAt)}</span>
+                  <span className="pill pill--norm">{report.dreamMode}</span>
+                </div>
+                <pre className="text-xs text-ui/70 whitespace-pre-wrap font-mono leading-relaxed">
+                  {report.reportText}
+                </pre>
+                {report.durationMs && (
+                  <div className="text-[10px] text-ui/25 mt-2">
+                    Duration: {(report.durationMs / 1000).toFixed(1)}s
+                  </div>
+                )}
+              </article>
+            ))
+          )}
+        </>
+      )}
 
       {/* Inject Memory modal */}
       {injectOpen && (
-        <div className="glass-modal-backdrop">
-          <div className="glass-modal w-full max-w-lg mx-4 shadow-2xl">
+        <div className="glass-modal-backdrop fixed inset-0 z-50 flex items-center justify-center">
+          <div className="glass-modal rounded-2xl w-full max-w-lg mx-4">
             <div className="px-5 py-4 border-b border-ui/[0.06]">
               <h3 className="text-sm font-medium text-ui">Inject Memory</h3>
               <p className="text-xs text-ui/40 mt-1">
@@ -483,18 +473,20 @@ export const Memory = () => {
             </div>
             <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-ui/[0.06]">
               <button
+                type="button"
+                className="btn btn--sm"
                 onClick={() => {
                   setInjectOpen(false);
                   setInjectContent('');
                 }}
-                className="px-4 py-2 text-xs rounded-lg bg-ui/[0.05] text-ui/70 hover:bg-ui/[0.08] transition-colors"
               >
                 Cancel
               </button>
               <button
+                type="button"
+                className="btn btn--sm btn--primary"
                 onClick={handleInject}
                 disabled={injecting || !injectContent.trim()}
-                className="px-4 py-2 text-xs rounded-lg glass-btn-primary transition-colors"
               >
                 {injecting ? 'Injecting...' : 'Inject'}
               </button>
@@ -502,6 +494,6 @@ export const Memory = () => {
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 };

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import { useRightDock } from './RightDockProvider';
 
 interface Attachment {
   fileId: string;
@@ -8,6 +9,8 @@ interface Attachment {
   size: number;
   path: string;
   category: string;
+  /** A canvas-viewable doc the agent showed — gets an "Open in canvas" chip. */
+  openInCanvas?: boolean;
 }
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
@@ -230,17 +233,139 @@ const VideoChip = ({ att }: { att: Attachment }) => {
   );
 };
 
-export const AttachmentChips = ({ attachments }: { attachments: Attachment[] }) => {
+// Media card (dojo3 chat): an image or video rendered as the prototype `.media`
+// poster + filename/size meta row. Images open the lightbox on click; videos keep
+// their native controls inside the poster region, so download/open behavior is
+// preserved. Styling lives under .dojo3-stage so other surfaces are unaffected.
+const ImageMediaCard = ({ att, onOpen }: { att: Attachment; onOpen: (src: string, alt: string) => void }) => {
+  const url = getImageUrl(att);
+  return (
+    <div className="media">
+      <div className="media__poster" onClick={() => onOpen(url, att.filename)}>
+        <img src={url} alt={att.filename} />
+      </div>
+      <div className="media__meta">
+        <span>{att.filename}</span>
+        <span>{formatSize(att.size)}</span>
+      </div>
+    </div>
+  );
+};
+
+const VideoMediaCard = ({ att }: { att: Attachment }) => {
+  const url = getImageUrl(att);
+  return (
+    <div className="media">
+      <div className="media__poster">
+        <video controls preload="metadata" src={url} className="w-full h-full object-contain bg-black/30" style={{ position: 'absolute', inset: 0 }} />
+      </div>
+      <div className="media__meta">
+        <span>{att.filename}</span>
+        <span>{formatSize(att.size)}</span>
+      </div>
+    </div>
+  );
+};
+
+// An agent-produced document the canvas can render — a button that (re)opens it
+// in the right dock, so the user can return to it after closing the canvas.
+const CanvasOpenChip = ({ att }: { att: Attachment }) => {
+  const { open } = useRightDock();
+  return (
+    <button
+      type="button"
+      className="dojo3-canvas-chip"
+      title={`Open ${att.filename} in the canvas`}
+      onClick={() =>
+        open({
+          kind: 'canvas',
+          title: att.filename,
+          url: `/api/upload/download/${att.fileId}?inline=1`,
+          path: att.path,
+        })
+      }
+    >
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="4" width="18" height="16" rx="2" /><path d="M15 4v16" />
+      </svg>
+      <span className="dojo3-canvas-chip__label">Open in canvas</span>
+      <span className="dojo3-canvas-chip__name">{att.filename}</span>
+    </button>
+  );
+};
+
+export const AttachmentChips = ({
+  attachments,
+  variant = 'chips',
+}: {
+  attachments: Attachment[];
+  // 'media' renders image/video attachments as prototype `.media` cards (dojo3
+  // chat); 'chips' (default) keeps the compact thumbnail/native-player chips used
+  // by user bubbles, agent-detail, and the technique builder.
+  variant?: 'chips' | 'media';
+}) => {
   const [lightboxSrc, setLightboxSrc] = useState<{ src: string; alt: string } | null>(null);
 
   if (!attachments || attachments.length === 0) return null;
 
-  const images = attachments.filter(a => IMAGE_TYPES.has(a.mimeType));
-  const audios = attachments.filter(a => !IMAGE_TYPES.has(a.mimeType) && isAudio(a.mimeType));
-  const videos = attachments.filter(a => !IMAGE_TYPES.has(a.mimeType) && isVideo(a.mimeType));
+  const canvasDocs = attachments.filter(a => a.openInCanvas);
+  const images = attachments.filter(a => !a.openInCanvas && IMAGE_TYPES.has(a.mimeType));
+  const audios = attachments.filter(a => !a.openInCanvas && !IMAGE_TYPES.has(a.mimeType) && isAudio(a.mimeType));
+  const videos = attachments.filter(a => !a.openInCanvas && !IMAGE_TYPES.has(a.mimeType) && isVideo(a.mimeType));
   const files = attachments.filter(a =>
-    !IMAGE_TYPES.has(a.mimeType) && !isAudio(a.mimeType) && !isVideo(a.mimeType)
+    !a.openInCanvas && !IMAGE_TYPES.has(a.mimeType) && !isAudio(a.mimeType) && !isVideo(a.mimeType)
   );
+
+  if (variant === 'media') {
+    return (
+      <>
+        {lightboxSrc && (
+          <ImageLightbox src={lightboxSrc.src} alt={lightboxSrc.alt} onClose={() => setLightboxSrc(null)} />
+        )}
+        <div className="flex flex-col gap-2 mt-2">
+          {canvasDocs.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {canvasDocs.map((att, i) => (
+                <CanvasOpenChip key={att.fileId || `c-${i}`} att={att} />
+              ))}
+            </div>
+          )}
+          {images.map((att, i) => (
+            <ImageMediaCard
+              key={att.fileId || `m-${i}`}
+              att={att}
+              onOpen={(src, alt) => setLightboxSrc({ src, alt })}
+            />
+          ))}
+          {videos.map((att, i) => (
+            <VideoMediaCard key={att.fileId || `mv-${i}`} att={att} />
+          ))}
+          {/* Audio and non-previewable files keep the existing chip look. */}
+          {(audios.length > 0 || files.length > 0) && (
+            <div className="flex flex-wrap gap-1.5">
+              {audios.map((att, i) => (
+                <AudioChip key={att.fileId || `a-${i}`} att={att} />
+              ))}
+              {files.map((att, i) => {
+                const ext = att.filename.split('.').pop()?.toUpperCase() || '?';
+                const icon = getFileIcon(att.category, ext);
+                return (
+                  <div
+                    key={att.fileId || `f-${i}`}
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-ui/[0.08] border border-ui/[0.10] text-[11px]"
+                  >
+                    <span>{icon}</span>
+                    <span className="text-ui/70 truncate max-w-[120px]">{att.filename}</span>
+                    <span className="text-ui/25">{formatSize(att.size)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -249,6 +374,10 @@ export const AttachmentChips = ({ attachments }: { attachments: Attachment[] }) 
       )}
 
       <div className="flex flex-wrap gap-1.5 mt-2">
+        {/* Open-in-canvas docs */}
+        {canvasDocs.map((att, i) => (
+          <CanvasOpenChip key={att.fileId || `c-${i}`} att={att} />
+        ))}
         {/* Image thumbnails */}
         {images.length > 0 && (
           <div className="flex gap-1">

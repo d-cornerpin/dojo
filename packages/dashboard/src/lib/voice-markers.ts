@@ -18,6 +18,23 @@
 
 const DELIVER_CUE_RE = /^\s*\(\(\s*deliver\s*:\s*[^)]*?\s*\)\)\s*/i;
 const PAUSE_MARKER_RE = /\s*\[(?:long\s+)?pause\]\s*/gi;
+/** Orb mood marker `((mood: NAME))` — drives the orb's emotion, never shown to
+ *  the user. Stripped anywhere it appears (agents lead a reply with it). */
+const MOOD_MARKER_RE = /\(\(\s*mood\s*:\s*[a-z]+\s*\)\)/gi;
+
+/**
+ * Pull the mood name out of the last `((mood: NAME))` marker in the text (the
+ * most recent one wins so a mid-message shift takes over), lowercased; null if
+ * none. Validation against the orb's known emotions happens at the call site.
+ */
+export function parseMoodMarker(text: string): string | null {
+  if (!text) return null;
+  let last: string | null = null;
+  for (const m of text.matchAll(MOOD_MARKER_RE)) {
+    last = m[0].replace(/\(\(\s*mood\s*:\s*/i, '').replace(/\s*\)\)$/, '').trim().toLowerCase();
+  }
+  return last;
+}
 /** Engine-control `[no-reply]` sentinel, optionally wrapped in markdown emphasis (backtick / asterisk / underscore). */
 const NO_REPLY_MARKER_RE = /\s*[`*_]*\s*\[no-reply\]\s*[`*_]*\s*/gi;
 
@@ -43,7 +60,9 @@ const TRAILING_PARTIAL_NO_REPLY_RE =
  */
 export function stripVoiceMarkers(text: string): string {
   if (!text) return text;
-  let out = text.replace(DELIVER_CUE_RE, '');
+  // Orb mood marker — invisible to the user (it only animates the orb).
+  let out = text.replace(MOOD_MARKER_RE, '');
+  out = out.replace(DELIVER_CUE_RE, '');
   // Engine `[no-reply]` sentinel: never user-facing under any
   // circumstance. Drop completely (no inserted space — the agent
   // typically writes it on its own line or at end-of-message).

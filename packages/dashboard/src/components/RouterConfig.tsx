@@ -183,7 +183,7 @@ const TierPanel = ({
   };
 
   return (
-    <div className={`bg-ui/[0.05] border rounded-xl p-4 ${tierColors[tier.id] || 'text-ui/25'}`}>
+    <div className={`glass-card rounded-xl p-4 ${tierColors[tier.id] || 'text-ui/25'}`}>
       <div className="mb-3">
         <h4 className="text-sm font-medium text-ui">{tier.name}</h4>
         <p className="text-xs text-ui/40 mt-0.5">{tier.description}</p>

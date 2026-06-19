@@ -27,6 +27,7 @@
     "hume": "^0.15.17",
     "jsonwebtoken": "^9.0.2",
     "kokoro-js": "^1.2.1",
+    "mammoth": "^1.12.0",
     "openai": "^6.32.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.6.205",
