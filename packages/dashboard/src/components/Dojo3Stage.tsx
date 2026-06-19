@@ -60,7 +60,7 @@ export function Dojo3Stage({
   const activeAgent = useActiveAgent();
   const isPrimary = activeAgent.isPrimary;
   const techSession = useTechniqueSession();
-  const { dock, width: dockWidth, open: openDock, setWidth: setDockWidth } = useRightDock();
+  const { dock, width: dockWidth, height: dockHeight, open: openDock, setWidth: setDockWidth, setHeight: setDockHeight } = useRightDock();
   const { subscribe } = useWebSocket();
   const [resizing, setResizing] = useState(false);
 
@@ -101,12 +101,33 @@ export function Dojo3Stage({
     el.addEventListener('pointercancel', onUp);
   };
 
+  // Mobile vertical resize: the canvas is a top panel and its bottom edge is the
+  // grabber. clientY (distance from the top of the screen) IS the panel height.
+  const startResizeV = (e: React.PointerEvent) => {
+    e.preventDefault();
+    setResizing(true);
+    const el = e.currentTarget as HTMLElement;
+    const pointerId = e.pointerId;
+    try { el.setPointerCapture(pointerId); } catch { /* not fatal */ }
+    const onMove = (ev: PointerEvent) => setDockHeight(ev.clientY);
+    const onUp = () => {
+      setResizing(false);
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('pointerup', onUp);
+      el.removeEventListener('pointercancel', onUp);
+      try { el.releasePointerCapture(pointerId); } catch { /* already released */ }
+    };
+    el.addEventListener('pointermove', onMove);
+    el.addEventListener('pointerup', onUp);
+    el.addEventListener('pointercancel', onUp);
+  };
+
   // Keep the orb centred in the (now narrower) main area when the dock opens,
   // closes, or is resized.
   useEffect(() => {
     const id = requestAnimationFrame(() => dojoOrb.resize());
     return () => cancelAnimationFrame(id);
-  }, [dock, dockWidth, dojoOrb]);
+  }, [dock, dockWidth, dockHeight, dojoOrb]);
 
   /* Drive the orb's task glyph (image/audio/song/video/compaction/dreamer/
      healer) from real engine work, and react to errors. */
@@ -150,13 +171,12 @@ export function Dojo3Stage({
 
   /* Click-away closes the front layer (throughout the dojo): an open fan
      folds back into the orb unless you click a lens or the orb; an open
-     panel closes unless you click one of its content elements (a card,
-     control, header) or the orb/composer/close. */
+     panel closes only when you click OUTSIDE it (the blurred chat showing
+     around its edges) or on the orb/composer/close — a touch anywhere inside
+     the panel keeps it open, so scrolling by pressing on empty space / the gaps
+     between cards never dismisses it. */
   useEffect(() => {
     if (!fanOpen && !panel) return;
-    const KEEP = '.tile, .agent-card, .vrow, .kcard, .kempty, .kcol__head, button, a,'
-      + ' input, select, textarea, label, .switch, .tab, .pill, .tag, .phead, .stub,'
-      + ' .vstats, .radio-card, .field, .finput, .brow, .rows';
     const onDown = (e: PointerEvent) => {
       const t = e.target as HTMLElement;
       // A modal / overlay (Recruit Agent, New Contact, confirms, image
@@ -183,8 +203,9 @@ export function Dojo3Stage({
         const onChrome = t.closest(
           '.dojo3-orb-hit, .dojo3-panel__close, .composer, .voice-capsule, .dojo3-wordmark',
         );
-        const onContent = t.closest('.dojo3-panel') && t.closest(KEEP);
-        if (!onChrome && !onContent) {
+        // Inside the panel (content OR its padding/gaps) -> keep open. Only a
+        // press on the area OUTSIDE the panel dismisses it.
+        if (!onChrome && !t.closest('.dojo3-panel')) {
           setFanOpen(false);
           navigate('/');
         }
@@ -257,7 +278,7 @@ export function Dojo3Stage({
     <div
       className={`dojo3-stage ${fanOpen ? 'fan-open' : ''} ${panel ? 'panel-open' : ''} ${isAway ? 'is-out' : ''} ${dock ? 'dock-open' : ''} ${resizing ? 'is-resizing' : ''}`}
       data-orb-state={orbState}
-      style={{ '--dock-w': dock ? `${dockWidth}px` : '0px' } as CSSProperties}
+      style={{ '--dock-w': dock ? `${dockWidth}px` : '0px', '--dock-h': dock ? `${dockHeight}px` : '0px' } as CSSProperties}
     >
       <div ref={stageRef} className="dojo3-stage__main">
       <div className="dojo3-backdrop" aria-hidden="true" />
@@ -376,6 +397,15 @@ export function Dojo3Stage({
       )}
       <aside className="dojo3-dock" aria-hidden={!dock}>
         {dock && <RightDock dock={dock} />}
+        {dock && isMediaDock(dock) && (
+          <div
+            className="dojo3-dock-resizer--bottom"
+            onPointerDown={startResizeV}
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize canvas"
+          />
+        )}
       </aside>
     </div>
   );

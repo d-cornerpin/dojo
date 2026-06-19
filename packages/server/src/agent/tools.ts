@@ -10,6 +10,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { setCurrentCanvas, getCurrentCanvas, viewCanvas } from './canvas-view.js';
+import { queueCanvasDoc } from './pending-attachments.js';
 import { memoryGrep, memoryDescribe, memoryExpand, memorySearch } from '../memory/retrieval.js';
 import { checkRequired, friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer, type FieldSpec } from './tool-helpers.js';
 // Phase 3.5 (2026-05-04) — `shouldIntercept` / `interceptLargeFile` removed
@@ -55,7 +56,7 @@ import { plaudReadToolDefinitions, executePlaudTool } from '../plaud/tools-read.
 import { isPlaudConnected } from '../plaud/auth.js';
 import { credentialsToolDefinitions, executeCredentialTool } from '../credentials/tools.js';
 import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../microsoft/tools-write.js';
-import { officeCreateToolDefinitions, officeEditToolDefinitions, executeOfficeTool } from '../microsoft/tools-office.js';
+import { officeCreateToolDefinitions, officeWordEditToolDefinitions, officeEditToolDefinitions, executeOfficeTool } from '../microsoft/tools-office.js';
 import { getAgentMicrosoftAccessLevel, getEnabledMsServices, isMicrosoftConnected, getMicrosoftWorkspaceConfig } from '../microsoft/auth.js';
 import { areOfficePackagesInstalled } from '../microsoft/office-packages.js';
 import { getTunnelStatus } from '../services/tunnel.js';
@@ -127,15 +128,61 @@ function broadcastCanvasUpdate(filePath: string): void {
   } catch { /* best effort — never let a UI ping break a file write */ }
 }
 
-// Documents the right-dock canvas can render (and that are worth auto-showing).
-const CANVAS_DOC_EXTS = new Set(['.html', '.htm', '.md', '.markdown', '.txt', '.text']);
+// Everything the canvas can render. Used both to AUTO-OPEN a file the moment
+// it's written/created (file_write, office, pdf) and to drop an "Open in
+// canvas" chip on the reply so the user can re-open it later. Per the owner's
+// choice, every type here auto-opens — documents, data, AND source/config code.
+const CANVAS_VIEWABLE_EXTS = new Set([
+  '.html', '.htm', '.md', '.markdown', '.txt', '.text', '.json', '.csv',
+  '.docx', '.xlsx', '.xls', '.xlsm', '.pdf', '.svg',
+  '.js', '.ts', '.tsx', '.jsx', '.py', '.css', '.xml', '.yaml', '.yml',
+  '.sh', '.sql', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.toml',
+]);
+
+function canvasMime(ext: string): string {
+  switch (ext) {
+    case '.pdf': return 'application/pdf';
+    case '.html': case '.htm': return 'text/html';
+    case '.json': return 'application/json';
+    case '.csv': return 'text/csv';
+    case '.docx': return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case '.xlsx': case '.xls': case '.xlsm': return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    case '.md': case '.markdown': return 'text/markdown';
+    default: return 'text/plain';
+  }
+}
+
+// Queue an "Open in canvas" reference onto the agent's reply for a doc it just
+// showed, so the user can re-open it from the chat after closing the canvas.
+function queueCanvasDocAttachment(agentId: string, filePath: string, downloadUrl: string | null): void {
+  try {
+    const ext = path.extname(filePath).toLowerCase();
+    if (!CANVAS_VIEWABLE_EXTS.has(ext)) return;
+    const fileId = downloadUrl?.match(/\/download\/([^/?#]+)/)?.[1];
+    if (!fileId) return;
+    const stat = fs.statSync(filePath);
+    const category = ext === '.pdf' ? 'pdf'
+      : ext === '.docx' || ext === '.xlsx' || ext === '.xls' || ext === '.xlsm' ? 'office'
+      : 'text';
+    queueCanvasDoc(agentId, {
+      fileId,
+      filename: path.basename(filePath),
+      mimeType: canvasMime(ext),
+      size: stat.size,
+      path: filePath,
+      category,
+      openInCanvas: true,
+    });
+  } catch { /* best effort — never let a UI chip break a tool */ }
+}
 
 // Keep the canvas in sync after writing a file. If the canvas is already showing
-// this exact file, just refresh it. Otherwise, if it's a renderable document
-// (html / markdown / text), AUTO-OPEN it in the dock — so "write me a page /
-// doc" lands in the canvas without the model having to remember show_canvas
-// (weaker models routinely don't, even when explicitly told to). Non-document
-// writes only ping (a no-op unless some canvas already watches that path).
+// this exact file, just refresh it. Otherwise, if it's anything the canvas can
+// render (CANVAS_VIEWABLE_EXTS — documents, data, AND source/config code),
+// AUTO-OPEN it in the dock — so "write me a page / doc / script" lands in the
+// canvas without the model having to remember show_canvas (weaker models
+// routinely don't, even when explicitly told to). Non-renderable writes only
+// ping (a no-op unless some canvas already watches that path).
 function syncCanvasAfterWrite(agentId: string, filePath: string, downloadUrl: string | null): { opened: boolean } {
   const cur = getCurrentCanvas();
   if (cur?.kind === 'canvas' && cur.path === filePath) {
@@ -143,7 +190,7 @@ function syncCanvasAfterWrite(agentId: string, filePath: string, downloadUrl: st
     return { opened: false };
   }
   const ext = path.extname(filePath).toLowerCase();
-  if (!CANVAS_DOC_EXTS.has(ext) || !downloadUrl) {
+  if (!CANVAS_VIEWABLE_EXTS.has(ext) || !downloadUrl) {
     broadcastCanvasUpdate(filePath);
     return { opened: false };
   }
@@ -155,10 +202,55 @@ function syncCanvasAfterWrite(agentId: string, filePath: string, downloadUrl: st
   try {
     broadcast({ type: 'dock:open', data: { kind: 'canvas', url, title, path: filePath } });
     setCurrentCanvas({ kind: 'canvas', url, path: filePath, title });
+    queueCanvasDocAttachment(agentId, filePath, downloadUrl);
     return { opened: true };
   } catch {
     return { opened: false };
   }
+}
+
+// Open an arbitrary on-disk file in the canvas (register it, then broadcast the
+// dock:open). Used to AUTO-OPEN Office documents the moment they're created —
+// the same "it just appears in the canvas" behaviour html/md/txt get from
+// syncCanvasAfterWrite. Without this the model has to pick show_canvas over
+// show_to_user / share_file, and weak models reliably pick the wrong one (a
+// .docx via show_to_user is a useless download chip, not a preview).
+function openFileInCanvas(agentId: string, filePath: string): { opened: boolean } {
+  try {
+    if (!fs.existsSync(filePath)) return { opened: false };
+    // Already showing this exact file (e.g. an in-place edit to the open doc)?
+    // Just refresh it rather than re-opening — the canvas re-fetches/re-renders.
+    const cur = getCurrentCanvas();
+    if (cur?.kind === 'canvas' && cur.path === filePath) {
+      broadcastCanvasUpdate(filePath);
+      return { opened: true };
+    }
+    const registered = registerSharedFile(agentId, filePath);
+    if (!registered) return { opened: false };
+    let url = registered;
+    if (/\/api\/upload\/download\/[^?#]+/.test(url) && !/[?&]inline=1\b/.test(url)) {
+      url += (url.includes('?') ? '&' : '?') + 'inline=1';
+    }
+    const title = path.basename(filePath);
+    broadcast({ type: 'dock:open', data: { kind: 'canvas', url, title, path: filePath } });
+    setCurrentCanvas({ kind: 'canvas', url, path: filePath, title });
+    queueCanvasDocAttachment(agentId, filePath, registered);
+    return { opened: true };
+  } catch {
+    return { opened: false };
+  }
+}
+
+// Office tools report the saved file as "...created locally at <path> (<n>
+// bytes)" (create) or "Saved to <path>." (in-place edit). Pull that local path
+// back out so we can auto-open / refresh the canvas. Only the local-save
+// branch matches (OneDrive results carry a file_id + webUrl, no on-disk path).
+// Uploads filenames are sanitized (no spaces), so \S+ is safe.
+function localOfficePathFromResult(result: string): string | null {
+  const created = result.match(/created locally at (\/\S+\.(?:docx|xlsx|xls|xlsm))\s*\(\d+\s*bytes\)/i);
+  if (created) return created[1];
+  const saved = result.match(/\bSaved to (\/\S+\.(?:docx|xlsx|xls|xlsm))\./i);
+  return saved ? saved[1] : null;
 }
 
 // ── Filtered tools per agent (based on permissions + tools policy) ──
@@ -462,15 +554,19 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   // msAccess === 'none': no Microsoft tools added
 
   // ── Office document tools ──
-  // Split into two halves with different gating:
-  //   - CREATE tools (Word / Excel / PowerPoint generation) are local-
-  //     only when Microsoft isn't connected — they write to disk under
-  //     ~/.dojo/uploads/<agentId>/ just like pdf_create. We expose them
-  //     to every agent whose Office npm packages are present.
-  //   - EDIT/READ tools operate on OneDrive file_ids and genuinely need
-  //     the Graph connection. They stay gated behind msAccess === 'full'.
+  // Three tiers of gating:
+  //   - CREATE tools (Word / Excel / PowerPoint generation) write to disk
+  //     under ~/.dojo/uploads/<agentId>/ when Microsoft isn't connected,
+  //     just like pdf_create. Exposed to every agent with the npm packages.
+  //   - WORD EDIT/READ tools (append/insert/replace/delete/outline/read)
+  //     now operate on a LOCAL path too, so they're granted alongside the
+  //     creates — otherwise a local-only setup could create Word docs but
+  //     not edit them, forcing wasteful full-document regeneration.
+  //   - The remaining EDIT/READ tools (Excel workbook + PowerPoint slide
+  //     ops) genuinely need the Graph connection — gated behind 'full'.
   if (areOfficePackagesInstalled()) {
     filtered.push(...officeCreateToolDefinitions);
+    filtered.push(...officeWordEditToolDefinitions);
   }
   if (msAccess === 'full' && areOfficePackagesInstalled()) {
     filtered.push(...officeEditToolDefinitions);
@@ -961,7 +1057,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'show_canvas',
     description:
-      'Open a canvas in the user\'s right dock — a side panel where you and the user look at a working document together. The dojo interface slides left to make room and the canvas renders on the right. Use this to show the user something you have produced: an HTML page, a Markdown doc, a plain-text/code file, a report, a chart, a mockup.\n\nNOTE: writing an .html / .md / .txt file with file_write already opens it in the canvas automatically — you usually do not need to call show_canvas at all. Use show_canvas to (re)show an existing file, or to render inline `html` / a `url`.\n\nThree ways to fill it (use ONE):\n  • `path` — the absolute path to a file on disk you wrote with file_write (e.g. "/Users/.../uploads/kevin/report.md"). BEST for documents you will keep editing: HTML renders, Markdown renders formatted, text/code shows monospaced, and the canvas gets a download button. After you call show_canvas({path}), any later file_write / file_patch / file_append to that SAME path auto-refreshes the canvas — you do NOT need to call show_canvas again. For HTML, relative asset paths resolve against the file\'s own folder, so reference local images as <img src="photo.png"> with the image saved next to the .html file and it will render.\n  • `html` — inline HTML markup to render directly (runs sandboxed); no file needed. Inline markup cannot reference local files — embed images as data: URIs or write a file with the image beside it instead.\n  • `url` — content already hosted at a URL (a file_write download URL also works).\n\nExamples:\n  • show_canvas({ title: "Spec", path: "/Users/me/uploads/kevin/spec.md" })\n  • show_canvas({ title: "Q3", html: "<h1>Q3</h1><p>...</p>" })',
+      'Open a canvas in the user\'s right dock — a side panel where you and the user look at a working document together. The dojo interface slides left to make room and the canvas renders on the right. Use this to show the user something you have produced or have on disk: an HTML page, a Markdown doc, a plain-text/code file, a report, a chart, a mockup, or a Word / Excel / PDF document (these render as a formatted preview).\n\nNOTE: any canvas-renderable file already opens in the canvas automatically the moment you create it — writing one with file_write (HTML, Markdown, text, code, JSON, CSV, SVG, ...) and creating a Word / Excel / PDF document all auto-open. You usually do NOT need to call show_canvas at all. Use show_canvas to (re)show an existing file, or to render inline `html` / a `url`.\n\nThree ways to fill it (use ONE):\n  • `path` — the absolute path to a file on disk you wrote with file_write (e.g. "/Users/.../uploads/kevin/report.md"). BEST for documents you will keep editing: HTML renders, Markdown renders formatted, text/code shows monospaced, and the canvas gets a download button. After you call show_canvas({path}), any later file_write / file_patch / file_append to that SAME path auto-refreshes the canvas — you do NOT need to call show_canvas again. For HTML, relative asset paths resolve against the file\'s own folder, so reference local images as <img src="photo.png"> with the image saved next to the .html file and it will render.\n  • `html` — inline HTML markup to render directly (runs sandboxed); no file needed. Inline markup cannot reference local files — embed images as data: URIs or write a file with the image beside it instead.\n  • `url` — content already hosted at a URL (a file_write download URL also works).\n\nExamples:\n  • show_canvas({ title: "Spec", path: "/Users/me/uploads/kevin/spec.md" })\n  • show_canvas({ title: "Q3", html: "<h1>Q3</h1><p>...</p>" })',
     input_schema: {
       type: 'object',
       properties: {
@@ -3951,6 +4047,17 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
     if (pdfToolNames.includes(name)) {
       content = await executePdfTool(name, args, agentId);
       isError = content.startsWith('Error');
+      // Auto-open the produced PDF in the canvas (it renders natively). Every
+      // PDF tool that writes an output reports it as ".../<file>.pdf"; the
+      // read-only tools (pdf_read / pdf_get_info) don't produce a new file, so
+      // skip them to avoid re-opening an input the agent was only inspecting.
+      const PDF_READ_ONLY = name === 'pdf_read' || name === 'pdf_get_info';
+      if (!isError && !PDF_READ_ONLY) {
+        const pdfPath = content.match(/(\/\S+\.pdf)\b/i)?.[1];
+        if (pdfPath && openFileInCanvas(agentId, pdfPath).opened) {
+          content += '\n\nThis PDF is now open in the canvas — the user can see it. No need to call show_canvas, show_to_user, or share_file to show it; just tell them it is on the canvas (share the download link only if they ask to save it).';
+        }
+      }
       return { toolCallId: id, name, content, isError };
     }
 
@@ -4317,6 +4424,8 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         const title = typeof args.title === 'string' ? args.title : undefined;
         broadcast({ type: 'dock:open', data: { kind: 'canvas', html, url, title, path: canvasPath } });
         setCurrentCanvas({ kind: 'canvas', html, url, path: canvasPath, title });
+        // Drop an "Open in canvas" chip on this reply for file-backed canvases.
+        if (canvasPath) queueCanvasDocAttachment(agentId, canvasPath, url ?? null);
         content = `Canvas opened in the user's right dock${title ? ` ("${title}")` : ''}. The user can now see it.${canvasPath ? ' Edits you make to this file (file_write/file_patch/file_append) will refresh the canvas automatically.' : ''} Call view_canvas if you need to look at it yourself.`;
         break;
       }
@@ -8813,6 +8922,26 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         content = await executeOfficeTool(name, args, agentId, agentRow?.name ?? agentId);
         isError = content.startsWith('Error');
+        // Auto-open / refresh the canvas for Word & Excel writes that touch a
+        // LOCAL file — creates AND in-place edits (replace/insert/delete/append
+        // save back to the same path). The canvas renders them as a formatted
+        // preview; for an edit to the already-open doc openFileInCanvas just
+        // refreshes it. PowerPoint isn't canvas-renderable, so it's excluded.
+        // OneDrive results carry no local path, so this is a no-op for them.
+        const OFFICE_LOCAL_CANVAS_TOOLS = new Set([
+          'office_create_word_document', 'office_append_to_word_document',
+          'office_replace_in_word_document', 'office_insert_in_word_document',
+          'office_delete_block_in_word_document', 'office_create_spreadsheet',
+          'office_write_spreadsheet_range', 'office_append_spreadsheet_rows',
+          'office_add_sheet', 'office_delete_sheet',
+        ]);
+        if (!isError && OFFICE_LOCAL_CANVAS_TOOLS.has(name)) {
+          const localPath = localOfficePathFromResult(content);
+          if (localPath && openFileInCanvas(agentId, localPath).opened) {
+            const verb = name === 'office_create_word_document' || name === 'office_create_spreadsheet' ? 'is now open' : 'has been updated';
+            content += `\n\nThis document ${verb} in the canvas — the user can see it as a formatted preview. No need to call show_canvas, show_to_user, or share_file; just tell them it is on the canvas (share the download link only if they ask to save it).`;
+          }
+        }
         break;
       }
 

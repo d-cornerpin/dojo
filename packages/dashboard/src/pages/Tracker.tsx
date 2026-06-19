@@ -83,12 +83,11 @@ const TaskDetailPanel = ({
   };
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end">
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-
-      {/* Panel */}
-      <div className="glass-panel relative w-full max-w-md overflow-y-auto">
+    <div className="glass-modal-backdrop" onClick={onClose}>
+      <div
+        className="glass-modal max-w-lg w-full mx-4 max-h-[85vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="p-6 space-y-6">
           {/* Header */}
           <div className="flex items-start justify-between">

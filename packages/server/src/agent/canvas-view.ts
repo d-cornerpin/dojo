@@ -24,6 +24,8 @@ import { createLogger } from '../logger.js';
 import { callModel } from './model.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
 import { inlineHtmlAssets } from '../services/canvas-html.js';
+import { renderOfficeToHtml, isOfficeRenderable } from '../services/office-render.js';
+import { broadcast } from '../gateway/ws.js';
 
 const logger = createLogger('canvas-view');
 
@@ -38,8 +40,39 @@ export interface CanvasState {
 // The dojo has a single dock surface, so a single "current canvas" matches the
 // UI. Updated whenever the agent opens something in the dock.
 let currentCanvas: CanvasState | null = null;
+
+// Live re-render: watch the file currently shown in the canvas and tell the
+// client to re-fetch whenever it changes on disk — NO MATTER how it was edited.
+// The proper edit tools (file_write/file_patch, office_*) already ping the
+// canvas, but weak models routinely reach for shell hacks instead (sed -i,
+// python-docx, a heredoc redirect). Those bypass the in-tool ping, so without a
+// disk watcher the canvas would show stale content after such an edit. Polling
+// stat() (vs fs.watch) catches in-place writes AND atomic rename-replaces, on
+// every platform.
+let watchedPath: string | null = null;
+function stopCanvasWatch(): void {
+  if (watchedPath) {
+    try { fs.unwatchFile(watchedPath); } catch { /* best effort */ }
+    watchedPath = null;
+  }
+}
+function startCanvasWatch(filePath: string): void {
+  if (watchedPath === filePath) return;
+  stopCanvasWatch();
+  try {
+    fs.watchFile(filePath, { interval: 700 }, (curr, prev) => {
+      if (curr.mtimeMs !== prev.mtimeMs) {
+        try { broadcast({ type: 'canvas:updated', data: { path: filePath } }); } catch { /* best effort */ }
+      }
+    });
+    watchedPath = filePath;
+  } catch { /* best effort — never let watching break a canvas open */ }
+}
+
 export function setCurrentCanvas(state: CanvasState | null): void {
   currentCanvas = state;
+  if (state?.kind === 'canvas' && state.path) startCanvasWatch(state.path);
+  else stopCanvasWatch();
 }
 export function getCurrentCanvas(): CanvasState | null {
   return currentCanvas;
@@ -171,6 +204,15 @@ export async function viewCanvas(agentId: string, args: Record<string, unknown>)
           truncated = `\n\n[...truncated — file is ${stat.size} bytes; showing the first ${TEXT_MAX_BYTES}.]`;
         }
         return `The canvas is showing ${path.basename(filePath)} (${ext} file). Its current contents:\n\n${text}${truncated}`;
+      }
+      // Word / Excel -> render the SAME HTML preview the canvas shows.
+      if (isOfficeRenderable(ext)) {
+        const officeHtml = await renderOfficeToHtml(filePath);
+        if (officeHtml) {
+          const png = await renderToPng({ html: officeHtml });
+          return await describeImage(agentId, png.toString('base64'), 'image/png', prompt);
+        }
+        return `The canvas is showing ${path.basename(filePath)} (${ext}). It can't be rendered for preview; it's available to download.`;
       }
       // HTML -> render the SAME self-contained markup the canvas iframe shows
       // (relative assets inlined), so what the agent sees here matches exactly

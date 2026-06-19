@@ -52,7 +52,7 @@ const TreeNode = ({ summary, childrenMap, selectedId, onSelect, level }: TreeNod
   return (
     <div>
       <div
-        className={`flex items-start gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
+        className={`dag-row flex items-start gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
           isSelected
             ? 'bg-ui/[0.08] ring-1 ring-cp-blue'
             : 'hover:bg-ui/[0.05]'

@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createLogger } from '../../logger.js';
 import { inlineHtmlAssets } from '../../services/canvas-html.js';
+import { renderOfficeToHtml, isOfficeRenderable } from '../../services/office-render.js';
 
 const logger = createLogger('upload');
 
@@ -427,6 +428,35 @@ uploadRouter.get('/download/:fileId', async (c) => {
   });
 });
 
+// GET /render/:fileId — render a Word/Excel file to HTML for the canvas iframe.
+// Office docs are binary OOXML the browser can't display, so we convert them
+// server-side (mammoth for .docx, SheetJS for spreadsheets) and serve the HTML.
+uploadRouter.get('/render/:fileId', async (c) => {
+  const fileId = c.req.param('fileId');
+  let db;
+  try {
+    db = (await import('../../db/connection.js')).getDb();
+  } catch {
+    return c.json({ ok: false, error: 'Database not available' }, 500);
+  }
+  const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='shared_files'").get();
+  if (!tableExists) return c.json({ ok: false, error: 'File sharing not available' }, 500);
+
+  const row = db.prepare('SELECT file_path, filename FROM shared_files WHERE id = ?').get(fileId) as {
+    file_path: string; filename: string;
+  } | undefined;
+  if (!row) return c.json({ ok: false, error: 'File not found' }, 404);
+  if (!fs.existsSync(row.file_path)) return c.json({ ok: false, error: 'File no longer exists on disk' }, 404);
+
+  const html = await renderOfficeToHtml(row.file_path);
+  if (html == null) {
+    return c.json({ ok: false, error: 'This file type cannot be previewed in the canvas.' }, 415);
+  }
+  return new Response(html, {
+    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+  });
+});
+
 // GET /describe/:fileId — metadata for a shared file, for the right-dock canvas.
 // Authed (returns the on-disk path + text content), unlike /download which is
 // public-by-unguessable-id. Returns the inline + download URLs, the file's
@@ -485,6 +515,8 @@ uploadRouter.get('/describe/:fileId', async (c) => {
       // Relative URLs — the dashboard resolves them against its own origin.
       inlineUrl: `/api/upload/download/${fileId}?inline=1`,
       downloadUrl: `/api/upload/download/${fileId}`,
+      // Word/Excel render to HTML via /render; null for everything else.
+      renderUrl: isOfficeRenderable(ext) ? `/api/upload/render/${fileId}` : null,
     },
   });
 });

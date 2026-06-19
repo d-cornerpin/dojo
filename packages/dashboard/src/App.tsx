@@ -2,10 +2,9 @@ import { Routes, Route, Navigate, useNavigate, useLocation, Outlet } from 'react
 import { useEffect, useState, useCallback } from 'react';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { WebSocketProvider, useWebSocket } from './hooks/useWebSocket';
-import { ToastProvider, ToastContainer, useToast } from './hooks/useToast';
+import { ToastProvider, useToast } from './hooks/useToast';
 import { V2CutoverNotice } from './components/V2CutoverNotice';
 import type { WsEvent } from '@dojo/shared';
-import { Sidebar } from './components/Sidebar';
 import { Login } from './pages/Login';
 import { Setup } from './pages/Setup';
 import { Chat } from './pages/Chat';
@@ -91,14 +90,6 @@ const WebSocketShell = () => {
 
 // ── Dashboard layout with sidebar ──
 
-const GradientBlobs = () => (
-  <div className="gradient-blob-layer">
-    <div className="blob blob-purple" />
-    <div className="blob blob-teal" />
-    <div className="blob blob-warm" />
-  </div>
-);
-
 // Shared chrome for every authenticated surface: the toast system + the
 // cutover notice. Both the dojo3 stage and the full-page surfaces render
 // inside it via <Outlet/>.
@@ -145,23 +136,6 @@ const Dojo3Shell = () => {
   );
 };
 
-// Full-page surfaces (agent detail, technique builder/detail) keep the
-// classic dark layout with the sidebar. Reached from within panels; the
-// orb is not present here (a deliberate context switch).
-const FullPageChrome = () => (
-  <>
-    <GradientBlobs />
-    <div className="h-dvh flex overflow-hidden relative z-[1]">
-      <Sidebar />
-      <main className="flex-1 flex flex-col h-full overflow-hidden pt-[48px] md:pt-0">
-        <PostMigrationBanner />
-        <GlobalAlerts />
-        <Outlet />
-      </main>
-    </div>
-    <ToastContainer />
-  </>
-);
 
 // ── Routes ──
 
@@ -196,9 +170,9 @@ const AppRoutes = () => {
                     right. The controller renders null (see Dojo3Shell). */}
                 <Route path="techniques/new" element={<TechniqueSessionRoute />} />
                 <Route path="techniques/:id/edit" element={<TechniqueSessionRoute />} />
-              </Route>
-              {/* Full-page surfaces (dark, sidebar) */}
-              <Route element={<FullPageChrome />}>
+                {/* Technique detail renders as a dojo3 panel like every other
+                    page (it self-headers via .phead). The more specific
+                    new/edit routes above out-rank this :id match. */}
                 <Route path="techniques/:id" element={<TechniqueDetail />} />
               </Route>
             </Route>

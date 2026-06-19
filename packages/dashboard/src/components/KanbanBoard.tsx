@@ -1,6 +1,86 @@
-import { useState, type DragEvent } from 'react';
+import { useState, useRef, useEffect, useCallback, type DragEvent } from 'react';
 import type { Task } from '@dojo/shared';
 import { TaskCard } from './TaskCard';
+
+// Subtle horizontal scrollbar rendered ABOVE the board. The board itself hides
+// its native scrollbar (scrollbar-width: none), and a native one would sit at
+// the bottom — below the fold when columns are tall. This thin track is always
+// visible at the top so mouse users (no horizontal trackpad swipe) can drag to
+// scroll the columns. Bidirectionally synced with the board's scrollLeft.
+const KanbanScrollbar = ({ boardRef }: { boardRef: React.RefObject<HTMLDivElement> }) => {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ startX: number; startScroll: number } | null>(null);
+  const [m, setM] = useState({ visible: false, widthPct: 0, leftPct: 0 });
+
+  const recompute = useCallback(() => {
+    const board = boardRef.current;
+    if (!board) return;
+    const { scrollWidth, clientWidth, scrollLeft } = board;
+    if (scrollWidth <= clientWidth + 1) {
+      setM((prev) => (prev.visible ? { visible: false, widthPct: 0, leftPct: 0 } : prev));
+      return;
+    }
+    setM({
+      visible: true,
+      widthPct: (clientWidth / scrollWidth) * 100,
+      leftPct: (scrollLeft / scrollWidth) * 100,
+    });
+  }, [boardRef]);
+
+  useEffect(() => {
+    const board = boardRef.current;
+    if (!board) return;
+    recompute();
+    board.addEventListener('scroll', recompute, { passive: true });
+    const ro = new ResizeObserver(recompute);
+    ro.observe(board);
+    return () => {
+      board.removeEventListener('scroll', recompute);
+      ro.disconnect();
+    };
+  }, [boardRef, recompute]);
+
+  const onThumbDown = (e: React.PointerEvent) => {
+    const board = boardRef.current;
+    if (!board) return;
+    e.preventDefault();
+    e.stopPropagation();
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    drag.current = { startX: e.clientX, startScroll: board.scrollLeft };
+  };
+  const onThumbMove = (e: React.PointerEvent) => {
+    const board = boardRef.current;
+    const track = trackRef.current;
+    if (!drag.current || !board || !track) return;
+    const dx = e.clientX - drag.current.startX;
+    board.scrollLeft = drag.current.startScroll + dx * (board.scrollWidth / track.clientWidth);
+  };
+  const onThumbUp = (e: React.PointerEvent) => {
+    drag.current = null;
+    (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+  };
+  const onTrackDown = (e: React.PointerEvent) => {
+    const board = boardRef.current;
+    const track = trackRef.current;
+    if (!board || !track || e.target !== track) return;
+    const rect = track.getBoundingClientRect();
+    const clickPct = (e.clientX - rect.left) / rect.width;
+    board.scrollLeft = clickPct * board.scrollWidth - board.clientWidth / 2;
+  };
+
+  if (!m.visible) return null;
+  return (
+    <div className="kscroll" ref={trackRef} onPointerDown={onTrackDown}>
+      <div
+        className="kscroll__thumb"
+        style={{ width: `${m.widthPct}%`, left: `${m.leftPct}%` }}
+        onPointerDown={onThumbDown}
+        onPointerMove={onThumbMove}
+        onPointerUp={onThumbUp}
+      />
+    </div>
+  );
+};
 
 interface KanbanBoardProps {
   tasks: Task[];
@@ -189,20 +269,25 @@ export const KanbanBoard = ({ tasks, workingAgentIds, onTaskClick, onStatusChang
     }
   };
 
+  const boardRef = useRef<HTMLDivElement>(null);
+
   return (
-    <div className="kanban">
-      {columns.map((col, i) => (
-        <KanbanColumn
-          key={col.key}
-          column={col}
-          index={i}
-          tasks={tasksByStatus[col.key] || []}
-          workingAgentIds={workingAgentIds}
-          onTaskClick={onTaskClick}
-          onTaskDeleted={onTaskDeleted}
-          onDrop={handleDrop}
-        />
-      ))}
+    <div className="kanban-wrap">
+      <KanbanScrollbar boardRef={boardRef} />
+      <div className="kanban" ref={boardRef}>
+        {columns.map((col, i) => (
+          <KanbanColumn
+            key={col.key}
+            column={col}
+            index={i}
+            tasks={tasksByStatus[col.key] || []}
+            workingAgentIds={workingAgentIds}
+            onTaskClick={onTaskClick}
+            onTaskDeleted={onTaskDeleted}
+            onDrop={handleDrop}
+          />
+        ))}
+      </div>
     </div>
   );
 };

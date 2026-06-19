@@ -4164,26 +4164,48 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // as its own assistant bubble. Model-independent — the link lands
         // whether or not the agent remembered it (correctness-floor rule).
         {
+          // A file shown in the canvas already has a download button right
+          // there, so a user AT the dashboard doesn't need a follow-up link
+          // bubble. But an AWAY user (reply routing to iMessage/SMS) can't see
+          // the canvas, so the link must still ride along to the channel. Hence
+          // the split: channel delivery covers every undelivered URL; the
+          // dashboard link bubble is suppressed for the doc currently on canvas.
+          const { getCurrentCanvas } = await import('../canvas-view.js');
+          const currentCanvasPath = getCurrentCanvas()?.path ?? null;
           const replyText = state.lastAssistantTextForIM;
-          const undelivered: string[] = [];
+          const undeliveredForChannel: string[] = [];
+          const undeliveredForDashboard: string[] = [];
           const seen = new Set<string>();
           for (const tr of state.toolResults) {
             if (tr.isError) continue;
             if (tr.name !== 'file_write' && tr.name !== 'file_append') continue;
             const matches = tr.content.match(/Download:\s*(\S+)/g);
             if (!matches) continue;
+            const pathMatch =
+              tr.content.match(/File written successfully:\s*(.+?)\s*\(\d+\s*bytes\)/) ||
+              tr.content.match(/Appended \d+ bytes to\s*(.+?)\.\s*Total size/);
+            const filePath = pathMatch ? pathMatch[1].trim() : null;
+            const shownInCanvas = !!filePath && !!currentCanvasPath && filePath === currentCanvasPath;
             for (const line of matches) {
               const url = line.replace(/^Download:\s*/, '').trim();
               if (!url || seen.has(url)) continue;
               seen.add(url);
-              if (!replyText.includes(url)) undelivered.push(url);
+              if (replyText.includes(url)) continue; // the agent already shared it
+              undeliveredForChannel.push(url);
+              if (!shownInCanvas) undeliveredForDashboard.push(url);
             }
           }
-          if (undelivered.length > 0) {
-            const linkBlock = undelivered.map(u => `Download: ${u}`).join('\n');
+          // Channel safety net: ensure links reach an away user via the routed
+          // text (inert when the reply stays on the dashboard).
+          if (undeliveredForChannel.length > 0) {
+            const linkBlock = undeliveredForChannel.map(u => `Download: ${u}`).join('\n');
             state = advance(state, {
               lastAssistantTextForIM: `${replyText.trimEnd()}\n\n${linkBlock}`,
             });
+          }
+          // Dashboard link bubble: only for files NOT already on the canvas.
+          if (undeliveredForDashboard.length > 0) {
+            const linkBlock = undeliveredForDashboard.map(u => `Download: ${u}`).join('\n');
             const linkMsgId = uuidv4();
             db.prepare(`
               INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
@@ -4200,7 +4222,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               },
             });
             logger.info('delivered file download link(s) the reply omitted', {
-              agentId, count: undelivered.length, turnNumber,
+              agentId, count: undeliveredForDashboard.length, turnNumber,
             }, agentId);
           }
         }

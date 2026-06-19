@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import { useRightDock } from './RightDockProvider';
 
 interface Attachment {
   fileId: string;
@@ -8,6 +9,8 @@ interface Attachment {
   size: number;
   path: string;
   category: string;
+  /** A canvas-viewable doc the agent showed — gets an "Open in canvas" chip. */
+  openInCanvas?: boolean;
 }
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
@@ -264,6 +267,33 @@ const VideoMediaCard = ({ att }: { att: Attachment }) => {
   );
 };
 
+// An agent-produced document the canvas can render — a button that (re)opens it
+// in the right dock, so the user can return to it after closing the canvas.
+const CanvasOpenChip = ({ att }: { att: Attachment }) => {
+  const { open } = useRightDock();
+  return (
+    <button
+      type="button"
+      className="dojo3-canvas-chip"
+      title={`Open ${att.filename} in the canvas`}
+      onClick={() =>
+        open({
+          kind: 'canvas',
+          title: att.filename,
+          url: `/api/upload/download/${att.fileId}?inline=1`,
+          path: att.path,
+        })
+      }
+    >
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="4" width="18" height="16" rx="2" /><path d="M15 4v16" />
+      </svg>
+      <span className="dojo3-canvas-chip__label">Open in canvas</span>
+      <span className="dojo3-canvas-chip__name">{att.filename}</span>
+    </button>
+  );
+};
+
 export const AttachmentChips = ({
   attachments,
   variant = 'chips',
@@ -278,11 +308,12 @@ export const AttachmentChips = ({
 
   if (!attachments || attachments.length === 0) return null;
 
-  const images = attachments.filter(a => IMAGE_TYPES.has(a.mimeType));
-  const audios = attachments.filter(a => !IMAGE_TYPES.has(a.mimeType) && isAudio(a.mimeType));
-  const videos = attachments.filter(a => !IMAGE_TYPES.has(a.mimeType) && isVideo(a.mimeType));
+  const canvasDocs = attachments.filter(a => a.openInCanvas);
+  const images = attachments.filter(a => !a.openInCanvas && IMAGE_TYPES.has(a.mimeType));
+  const audios = attachments.filter(a => !a.openInCanvas && !IMAGE_TYPES.has(a.mimeType) && isAudio(a.mimeType));
+  const videos = attachments.filter(a => !a.openInCanvas && !IMAGE_TYPES.has(a.mimeType) && isVideo(a.mimeType));
   const files = attachments.filter(a =>
-    !IMAGE_TYPES.has(a.mimeType) && !isAudio(a.mimeType) && !isVideo(a.mimeType)
+    !a.openInCanvas && !IMAGE_TYPES.has(a.mimeType) && !isAudio(a.mimeType) && !isVideo(a.mimeType)
   );
 
   if (variant === 'media') {
@@ -292,6 +323,13 @@ export const AttachmentChips = ({
           <ImageLightbox src={lightboxSrc.src} alt={lightboxSrc.alt} onClose={() => setLightboxSrc(null)} />
         )}
         <div className="flex flex-col gap-2 mt-2">
+          {canvasDocs.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {canvasDocs.map((att, i) => (
+                <CanvasOpenChip key={att.fileId || `c-${i}`} att={att} />
+              ))}
+            </div>
+          )}
           {images.map((att, i) => (
             <ImageMediaCard
               key={att.fileId || `m-${i}`}
@@ -336,6 +374,10 @@ export const AttachmentChips = ({
       )}
 
       <div className="flex flex-wrap gap-1.5 mt-2">
+        {/* Open-in-canvas docs */}
+        {canvasDocs.map((att, i) => (
+          <CanvasOpenChip key={att.fileId || `c-${i}`} att={att} />
+        ))}
         {/* Image thumbnails */}
         {images.length > 0 && (
           <div className="flex gap-1">
