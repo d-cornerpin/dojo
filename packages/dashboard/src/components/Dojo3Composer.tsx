@@ -87,9 +87,15 @@ export function Dojo3Composer({
   const waveRefs = useRef<(HTMLSpanElement | null)[]>([]);
   const waveRafRef = useRef<number | null>(null);
 
-  /* Resolve the stage element for the capsule portal once mounted. */
+  /* Resolve the portal target for the voice capsule once mounted. Portal into
+     the stage's MAIN column (not the full stage row) so the capsule stays
+     centered on the chat/orb and shifts left with them when the canvas dock
+     opens. Falls back to the full stage if main isn't found. */
   useEffect(() => {
-    setStageEl(composerRef.current?.closest('.dojo3-stage') as HTMLElement | null);
+    const main =
+      (composerRef.current?.closest('.dojo3-stage__main') as HTMLElement | null) ??
+      (composerRef.current?.closest('.dojo3-stage') as HTMLElement | null);
+    setStageEl(main);
   }, []);
 
   /* Track when the session went live so the timer can count up. */
@@ -603,7 +609,8 @@ export function Dojo3Composer({
         </div>
       </div>
 
-      {/* VOICE CAPSULE — portaled into the stage so it docks under the orb */}
+      {/* VOICE CAPSULE — portaled into the stage's main column so it docks
+          under the orb and follows the leftward shift when the dock opens */}
       {stageEl &&
         createPortal(
           <div
