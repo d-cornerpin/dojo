@@ -111,7 +111,30 @@ export async function generateToolDocs(): Promise<{ count: number }> {
     }
   }
 
-  logger.info('Tool docs generated', { count, dir: TOOLS_DIR });
+  // Prune ghost docs: the dir is written but historically never cleaned, so
+  // renamed/removed tools left stale `<name>.md` files behind (e.g.
+  // audio_create.md after that tool became tts_create). A stale doc is mostly
+  // inert — there's no executor and it's in no category — but load_tool_docs
+  // could still return it, and it clutters the dir. Delete any `.md` whose
+  // tool name isn't in the current definition set.
+  let pruned = 0;
+  try {
+    for (const file of fs.readdirSync(TOOLS_DIR)) {
+      if (!file.endsWith('.md')) continue;
+      const toolName = file.slice(0, -'.md'.length);
+      if (seen.has(toolName)) continue;
+      try {
+        fs.unlinkSync(path.join(TOOLS_DIR, file));
+        pruned++;
+      } catch (err) {
+        logger.warn(`Failed to prune stale tool doc ${file}`, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  } catch { /* dir read failed — non-fatal, nothing to prune */ }
+
+  logger.info('Tool docs generated', { count, pruned, dir: TOOLS_DIR });
   return { count };
 }
 

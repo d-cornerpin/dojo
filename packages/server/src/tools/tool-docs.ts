@@ -110,7 +110,6 @@ export const DREAMER_AGENT_ALWAYS_LOADED = [
   'vault_search',
   'vault_forget',
   'vault_update',
-  'vault_describe',
   'contact_remember',
   'contact_search',
   'contact_describe',
