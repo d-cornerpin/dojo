@@ -31,6 +31,7 @@ import { createCueExtractor } from './cue-parser.js';
 import { getDb } from '../db/connection.js';
 import { getPrimaryAgentName } from '../config/platform.js';
 import { WHISPER_MODELS, type WhisperSize } from './model-manager.js';
+import { predictTurnComplete, TURN_COMPLETE_THRESHOLD, warmUpSmartTurn } from './smart-turn.js';
 import type { WsEvent } from '@dojo/shared';
 
 const logger = createLogger('voice-ws');
@@ -457,6 +458,10 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
         logger.warn('Kokoro preload failed', { error: err instanceof Error ? err.message : String(err) });
       });
     }
+    // Preload Smart Turn v3 (downloads ~8.6 MB on first use, then warms one
+    // inference). Until ready, the turn-taking gate falls back to the legacy
+    // conjunction heuristic, so this is pure best-effort.
+    void warmUpSmartTurn();
     // Subscribe the proactive watcher so unsolicited agent messages
     // (watchers firing, A2A pokes, scheduled triggers, etc.) also get TTS.
     session.unsubscribeProactive = subscribeProactiveWatcher(session);
@@ -804,6 +809,12 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
     return;
   }
 
+  // Kick off semantic end-of-turn detection in parallel with transcription so
+  // its ~12 ms cost is fully hidden behind STT. Consumed at the turn-taking
+  // decision below; resolves to null when the model is unavailable, in which
+  // case we fall back to the lexical-conjunction heuristic.
+  const turnCompletePromise = predictTurnComplete(pcm, session.pcmSampleRate);
+
   sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'transcribing' });
   const wav = pcmFloatToWav(pcm, session.pcmSampleRate);
 
@@ -912,14 +923,26 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
     session.pendingTurnExtension = null;
   }
 
-  // Phase 6 — does THIS utterance end on a conjunction? If so, hold it
-  // for 500ms before submitting. The user may still be mid-thought; the
-  // VAD just fired on a natural breath. If they keep talking, the next
-  // handleUtteranceEnd call merges and submits a combined turn. If they
-  // don't, the timer below submits the held transcript on its own.
-  if (endsWithUnfinishedConjunction(transcript)) {
-    logger.debug('Holding transcript on unfinished conjunction', {
+  // Turn-taking decision. Smart Turn v3 predicts acoustically whether the
+  // user finished their thought (trailing intonation / pause shape), which is
+  // far better than the old lexical-conjunction guess: it catches mid-thought
+  // pauses that DON'T end on a conjunction, and it submits immediately when the
+  // user is clearly done even if they happened to end on "and"/"so" — so the
+  // common (complete) case pays no debounce at all. We fall back to the
+  // conjunction heuristic only when the model is unavailable (returns null).
+  //
+  // If we believe the user is mid-thought, hold the transcript briefly so a
+  // continuation utterance can merge (the Phase 6 mechanism); if no
+  // continuation arrives, the timer submits the held transcript on its own.
+  const turnComplete = await turnCompletePromise;
+  const holdForContinuation = turnComplete !== null
+    ? turnComplete < TURN_COMPLETE_THRESHOLD
+    : endsWithUnfinishedConjunction(transcript);
+
+  if (holdForContinuation) {
+    logger.debug('Holding transcript — turn looks unfinished', {
       agentId: session.agentId, transcript,
+      reason: turnComplete !== null ? `smart-turn p=${turnComplete.toFixed(3)}` : 'conjunction',
     });
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
     const heldTranscript = transcript;
