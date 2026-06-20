@@ -127,6 +127,12 @@ interface VoiceSession {
    * this is true, so if the real reply beats the opener we drop the opener
    * rather than play it out of order.
    */
+  /**
+   * Timestamp (ms) of the last utterance_end we actually processed. Used to
+   * drop vad-web's duplicate onSpeechEnd double-fire (~10-15 ms apart) so one
+   * utterance isn't transcribed + merged onto itself.
+   */
+  lastUtteranceEndAt: number;
   openerWindowOpen: boolean;
   /**
    * True once the fast-opener has been spoken this turn. Suppresses the
@@ -442,6 +448,7 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
       cloudDescription: saved.cloudDescription,
       cloudSpeed: saved.cloudSpeed,
       activeBurstPush: null,
+      lastUtteranceEndAt: 0,
       openerWindowOpen: false,
       openerSpoken: false,
     };
@@ -743,6 +750,81 @@ const BACKCHANNELS = new Set([
 const TURN_TAKING_CONJUNCTIONS = new Set(['and', 'but', 'so', 'because', 'or']);
 const TURN_EXTENSION_MS = 500;
 
+// vad-web double-fires onSpeechEnd ~10-15 ms apart for one utterance; coalesce
+// utterance_end signals that land within this window (well below any real
+// continuation gap, which is hundreds of ms).
+const DOUBLE_FIRE_GUARD_MS = 250;
+
+// ── Smart Turn hold policy ──
+// When Smart Turn says the user is mid-thought, the old flat 500ms wait was
+// far too short to catch a real thinking pause, so the fragment submitted and
+// the agent answered an unfinished sentence. Instead, wait LONGER the more
+// confident the model is that they're not done (lower p), bounded below by a
+// snappy floor and above by a cap that keeps a wrong "incomplete" from feeling
+// stuck. A continuation utterance arriving in this window merges + re-runs the
+// model; if none arrives, the held transcript submits on its own.
+// Turn-taking patience dial — how long to wait for the user to continue a
+// mid-thought turn. Driven by the `voice.vad_sensitivity` setting (repurposed
+// from the old client VAD-redemption knob into a pure patience control). Each
+// level is a [min, max] hold range; the confidence-scaled hold lands inside it
+// (lower p ⇒ more certain they're mid-thought ⇒ closer to max).
+const HOLD_RANGES: Record<'quick' | 'normal' | 'patient', { min: number; max: number }> = {
+  quick:   { min: 300,  max: 1000 },
+  normal:  { min: 700,  max: 2500 },
+  patient: { min: 1200, max: 4000 },
+};
+
+function getTurnPatience(): 'quick' | 'normal' | 'patient' {
+  try {
+    const row = getDb()
+      .prepare("SELECT value FROM config WHERE key = 'voice.vad_sensitivity'")
+      .get() as { value: string } | undefined;
+    const v = row?.value;
+    if (v === 'quick' || v === 'patient') return v;
+  } catch { /* fall back to normal */ }
+  return 'normal';
+}
+
+function smartTurnHoldMs(pComplete: number, threshold: number): number {
+  const { min, max } = HOLD_RANGES[getTurnPatience()];
+  // frac = 0 at the threshold (barely incomplete), 1 at p=0 (certain mid-thought).
+  const frac = Math.max(0, Math.min(1, (threshold - pComplete) / Math.max(threshold, 1e-6)));
+  return Math.round(min + frac * (max - min));
+}
+
+// Decision threshold: P(complete) at/above this submits, below holds. Tunable
+// live via the `voice.turn_complete_threshold` config key (0..1) — higher =
+// more patient (fewer cut-offs, but more latency when the model wrongly thinks
+// a finished turn is unfinished). Defaults to the Smart Turn module default.
+function getTurnCompleteThreshold(): number {
+  try {
+    const row = getDb()
+      .prepare("SELECT value FROM config WHERE key = 'voice.turn_complete_threshold'")
+      .get() as { value: string } | undefined;
+    const v = row?.value ? Number(row.value) : NaN;
+    if (Number.isFinite(v) && v > 0 && v < 1) return v;
+  } catch { /* fall back to default */ }
+  return TURN_COMPLETE_THRESHOLD;
+}
+
+// Merge a held transcript with a continuation, deduping the case where they are
+// really the SAME utterance (a vad double-fire that slipped past the time guard,
+// or overlapping canonical buffers). A genuine continuation adds NEW words; a
+// duplicate just repeats them — concatenating those gives "make this make this".
+function mergeHeldTranscript(held: string, next: string): string {
+  const h = held.trim();
+  const n = next.trim();
+  if (!h) return n;
+  if (!n) return h;
+  const norm = (s: string) => s.toLowerCase().replace(/[.,!?;:]+$/g, '').trim();
+  const nh = norm(h);
+  const nn = norm(n);
+  if (nh === nn) return n.length >= h.length ? n : h; // exact duplicate → keep one
+  if (nn.startsWith(nh)) return n;                    // next already contains held
+  if (nh.startsWith(nn)) return h;                    // held already contains next
+  return `${h} ${n}`.trim();                          // genuine continuation
+}
+
 function endsWithUnfinishedConjunction(transcript: string): boolean {
   const cleaned = transcript.trim().replace(/[.!?,;:]+$/g, '').toLowerCase();
   if (!cleaned) return false;
@@ -812,6 +894,22 @@ function lastAssistantWasQuestion(agentId: string): boolean {
 }
 
 async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
+  // vad-web can emit onSpeechEnd twice ~10-15 ms apart for a single utterance;
+  // the client sends a full canonical-frame + utterance_end sequence each time,
+  // so without a guard we transcribe and process the SAME utterance twice — and
+  // with the hold/merge path enabled, the second copy gets merged onto the
+  // first ("make this make this"). A genuine continuation utterance is hundreds
+  // of ms away, never ~10 ms, so coalesce end signals inside a short window.
+  const nowMs = Date.now();
+  if (nowMs - session.lastUtteranceEndAt < DOUBLE_FIRE_GUARD_MS) {
+    logger.debug('Dropping duplicate utterance_end (vad double-fire)', {
+      agentId: session.agentId, gapMs: nowMs - session.lastUtteranceEndAt,
+    });
+    session.pcmChunks = [];
+    return;
+  }
+  session.lastUtteranceEndAt = nowMs;
+
   const chunks = session.pcmChunks;
   session.pcmChunks = [];
   // Reset partial state — next utterance starts fresh, no carryover.
@@ -939,7 +1037,7 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
   // twice.
   if (session.pendingTurnExtension) {
     clearTimeout(session.pendingTurnExtension.timer);
-    transcript = `${session.pendingTurnExtension.transcript} ${transcript}`.trim();
+    transcript = mergeHeldTranscript(session.pendingTurnExtension.transcript, transcript);
     session.pendingTurnExtension = null;
   }
 
@@ -954,14 +1052,21 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
   // If we believe the user is mid-thought, hold the transcript briefly so a
   // continuation utterance can merge (the Phase 6 mechanism); if no
   // continuation arrives, the timer submits the held transcript on its own.
+  const threshold = getTurnCompleteThreshold();
   const turnComplete = await turnCompletePromise;
   const holdForContinuation = turnComplete !== null
-    ? turnComplete < TURN_COMPLETE_THRESHOLD
+    ? turnComplete < threshold
     : endsWithUnfinishedConjunction(transcript);
+  const holdMs = turnComplete !== null ? smartTurnHoldMs(turnComplete, threshold) : TURN_EXTENSION_MS;
+
+  logger.debug('Smart Turn decision', {
+    agentId: session.agentId, pComplete: turnComplete, threshold,
+    hold: holdForContinuation, holdMs: holdForContinuation ? holdMs : undefined,
+  });
 
   if (holdForContinuation) {
     logger.debug('Holding transcript — turn looks unfinished', {
-      agentId: session.agentId, transcript,
+      agentId: session.agentId, transcript, holdMs,
       reason: turnComplete !== null ? `smart-turn p=${turnComplete.toFixed(3)}` : 'conjunction',
     });
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'listening' });
@@ -972,7 +1077,7 @@ async function handleUtteranceEnd(session: VoiceSession): Promise<void> {
       if (session.pendingTurnExtension?.timer !== timer) return;
       session.pendingTurnExtension = null;
       void submitTranscriptAndStartTts(session, heldTranscript);
-    }, TURN_EXTENSION_MS);
+    }, holdMs);
     session.pendingTurnExtension = { transcript: heldTranscript, timer };
     return;
   }

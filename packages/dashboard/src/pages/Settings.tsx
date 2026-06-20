@@ -5008,9 +5008,9 @@ const RollbackSection = ({ currentVersion }: { currentVersion: string | null }) 
 // ── Voice Tab ──
 
 const VAD_OPTIONS: Array<{ id: 'quick' | 'normal' | 'patient'; label: string; hint: string }> = [
-  { id: 'quick',   label: 'Quick',   hint: '200ms — picks up on short pauses, may interrupt' },
-  { id: 'normal',  label: 'Normal',  hint: '500ms — balanced' },
-  { id: 'patient', label: 'Patient', hint: '1s — waits longer, better for long thoughts' },
+  { id: 'quick',   label: 'Quick',   hint: 'Jumps in fast — best for quick back-and-forth' },
+  { id: 'normal',  label: 'Normal',  hint: 'Balanced — waits a beat for you to finish a thought' },
+  { id: 'patient', label: 'Patient', hint: 'Waits longest — best for slow, thoughtful speech' },
 ];
 
 const STT_LABELS: Record<string, string> = {
@@ -5787,11 +5787,13 @@ const VoiceTab = () => {
       </div>
       </>)}
 
-      {/* VAD sensitivity */}
+      {/* Turn-taking patience */}
       <div className="tile space-y-3">
-        <h3 className="scard__title">Voice activity sensitivity</h3>
+        <h3 className="scard__title">Turn-taking patience</h3>
         <p className="text-xs text-ui/40">
-          How quickly {primaryAgentName} decides you've finished speaking after you pause.
+          How long {primaryAgentName} waits for you to finish a thought when you pause mid-sentence.
+          {primaryAgentName} uses semantic turn detection to tell a real pause from a finished turn;
+          this dial sets how patient it is before responding.
         </p>
         <div className="flex flex-col gap-2">
           {VAD_OPTIONS.map((opt) => (

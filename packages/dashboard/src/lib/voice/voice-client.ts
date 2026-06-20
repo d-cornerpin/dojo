@@ -53,13 +53,14 @@ export interface VoiceClientOptions {
   soundEffectsEnabled?: boolean;
 }
 
-const VAD_REDEMPTION_MS: Record<'quick' | 'normal' | 'patient', number> = {
-  // Silence duration after voice activity before we declare end-of-utterance.
-  // Tuned by Settings → Voice → "Voice activity sensitivity".
-  quick: 200,
-  normal: 500,
-  patient: 1000,
-};
+// Silence after voice activity before we declare end-of-utterance and hand the
+// buffer to the server. Smart Turn v3 now owns the SEMANTIC end-of-turn
+// decision server-side, so the VAD only needs a short, fixed redemption to spot
+// a pause quickly and hand off — completed turns stay snappy, and the old
+// quick/normal/patient knob is repurposed into a server-side "turn-taking
+// patience" hold window (Settings → Voice). Short enough to be responsive,
+// long enough not to fire on every micro-pause.
+const VAD_REDEMPTION_MS = 250;
 
 export interface VoiceClientEvents {
   'state-change': (state: VoiceState) => void;
@@ -412,9 +413,9 @@ export class VoiceClient {
         // echoCancellation outside WebRTC, so this also helps iPhone — but
         // it's not enough on iPhone loudspeaker, which is why Phase 5.2
         // disables the mic track entirely during TTS playback.
-        // How long after speech ends before we declare end-of-utterance.
-        // Tied to Settings → Voice → "Voice activity sensitivity".
-        redemptionMs: VAD_REDEMPTION_MS[this.vadSensitivity],
+        // Short fixed redemption — Smart Turn v3 makes the real end-of-turn
+        // call server-side (see VAD_REDEMPTION_MS above).
+        redemptionMs: VAD_REDEMPTION_MS,
         onSpeechStart: () => {
           this.isCapturing = true;
           this.handleSpeechStart();
