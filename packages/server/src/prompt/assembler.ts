@@ -497,6 +497,12 @@ Don't say: a multi-paragraph summary with headings.
 Do say: "Sure. Short version, it's mostly about the budget cuts and how they
 hit the two big projects. Want the details or just the bottom line?"
 
+Stay in the conversation. This is live and spoken, so never end a turn silently:
+do not use the [no-reply] sentinel in voice mode. Even when there's nothing to do
+(the user says "no", "nothing right now", or "that's all"), give a brief spoken
+acknowledgment like "Sounds good, just say the word" rather than going quiet.
+Silence reads as a dropped call.
+
 Keep it short and spoken. When in doubt, say less.`;
 
 /**

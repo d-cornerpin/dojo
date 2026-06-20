@@ -2185,11 +2185,29 @@ export async function runV2Turn(agentId: string): Promise<void> {
           persistedContent = cleaned;
         }
       }
-      if (
-        persistedContent &&
+      const isBareNoReply =
+        persistedContent !== null &&
         result.toolCalls.length === 0 &&
-        /^\s*[`*_]*\s*\[no-reply\]\s*[`*_]*\s*$/i.test(persistedContent)
-      ) {
+        /^\s*[`*_]*\s*\[no-reply\]\s*[`*_]*\s*$/i.test(persistedContent);
+
+      if (isBareNoReply && latestUserSource === 'voice') {
+        // Voice is a LIVE conversation, so going silent reads as a dropped
+        // call. The voice-conduct prompt block tells the agent not to use
+        // [no-reply] here, but the weakest model (the correctness floor)
+        // still emits it sometimes, so the engine enforces the floor: swap
+        // the bare sentinel for a short spoken acknowledgment and let it flow
+        // through the normal persist + TTS path instead of swallowing into
+        // dead air.
+        const voiceAcks = [
+          'Okay, just say the word.',
+          "Sounds good, I'm here when you need me.",
+          "Got it. Holler when you're ready.",
+        ];
+        persistedContent = voiceAcks[Math.floor(Math.random() * voiceAcks.length)];
+        logger.info('v2: [no-reply] on a voice turn, substituted a brief spoken acknowledgment to avoid dead air', {
+          agentId, loopCount: state.loopCount,
+        }, agentId);
+      } else if (isBareNoReply) {
         persistedContent = null;
         // Clear the streaming bubble in the dashboard. We need BOTH events:
         //  - chat:chunk done:true ends the bubble's streaming state (without
