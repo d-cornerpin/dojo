@@ -2572,11 +2572,10 @@
   top: calc(var(--dojo3-orb-top) + var(--dojo3-orb-size) + 20px);
   left: 50%;
   transform: translateX(-50%) translateY(-8px);
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 9px 12px 9px 18px;
-  border-radius: 999px;
+  width: min(280px, 92vw);
+  height: 78px;
+  border-radius: 28px;
+  overflow: hidden;
   border: 1px solid transparent;
   background:
     linear-gradient(180deg, var(--dojo3-glass-hi), var(--dojo3-glass-lo)) padding-box,
@@ -2598,6 +2597,54 @@
   pointer-events: auto;
 }
 
+/* Top row pinned to the top of the pill. A 3-column grid keeps the waveform
+   dead-centered (timer hard-left, end button hard-right) regardless of the
+   timer/button widths. */
+.dojo3-stage .voice-capsule__main {
+  position: absolute;
+  top: 13px;
+  left: 26px;
+  right: 22px;
+  height: 28px;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+}
+.dojo3-stage .voice-capsule__main .voice-capsule__timer { justify-self: start; }
+.dojo3-stage .voice-capsule__main .voice-capsule__wave { justify-self: center; }
+.dojo3-stage .voice-capsule__main .voice-capsule__end { justify-self: end; }
+
+/* Live transcription line beneath the waveform. Fixed-size box (the pill never
+   changes shape), so the row is always reserved and only the text fades.
+   The inner span is translated so the newest words sit at the right edge and
+   older text slides off to the left; the left edge fades so words dissolve as
+   they leave. The fade-out (opacity) is driven by the .is-visible toggle a
+   couple seconds after the user stops speaking. */
+.dojo3-stage .voice-capsule__transcript {
+  position: absolute;
+  left: 26px;
+  right: 26px;
+  bottom: 13px;
+  height: 20px;
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.8s ease;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 30px, #000 calc(100% - 22px), transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 30px, #000 calc(100% - 22px), transparent 100%);
+}
+.dojo3-stage .voice-capsule__transcript.is-visible { opacity: 1; }
+.dojo3-stage .voice-capsule__transcript span {
+  display: inline-block;
+  white-space: nowrap;
+  font: 500 15px/20px "Instrument Sans", var(--font-sans), system-ui, sans-serif;
+  color: #b8863c;
+  letter-spacing: 0.005em;
+  transform: translateX(0);
+  transition: transform 0.3s ease-out;
+  will-change: transform;
+}
+
 .dojo3-stage .voice-capsule__timer {
   font: 500 12px/1 var(--dojo3-font-mono);
   letter-spacing: .04em;
@@ -2607,7 +2654,7 @@
 }
 .dojo3-stage .voice-capsule__wave {
   display: flex; align-items: center; gap: 2.5px;
-  height: 22px; width: 110px;
+  height: 22px; width: 124px;
   justify-content: center;
 }
 .dojo3-stage .voice-capsule__wave span {
@@ -2626,7 +2673,8 @@
 }
 .dojo3-stage .voice-capsule__end {
   appearance: none; border: 0; cursor: pointer;
-  width: 30px; height: 30px; border-radius: 50%;
+  width: 28px; height: 28px; border-radius: 50%;
+  flex: 0 0 auto;
   display: grid; place-items: center;
   background: rgba(150, 126, 94, 0.12);
   color: #6b5a42;
@@ -2638,7 +2686,7 @@
   box-shadow: 0 0 12px -2px rgba(178, 120, 92, 0.40);
 }
 .dojo3-stage .voice-capsule__end:focus-visible { outline: 2px solid var(--dojo3-focus); outline-offset: 2px; }
-.dojo3-stage .voice-capsule__end svg { width: 13px; height: 13px; }
+.dojo3-stage .voice-capsule__end svg { width: 14px; height: 14px; }
 
 @keyframes dojo3-voice-pulse {
   0%, 100% { box-shadow:

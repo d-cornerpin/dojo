@@ -86,6 +86,15 @@ export function Dojo3Composer({
   const voiceStartRef = useRef<number | null>(null);
   const waveRefs = useRef<(HTMLSpanElement | null)[]>([]);
   const waveRafRef = useRef<number | null>(null);
+  const transcriptRef = useRef<HTMLSpanElement | null>(null);
+  const transcriptHideRef = useRef<number | null>(null);
+  const prevTranscriptRef = useRef('');
+  const [displayTranscript, setDisplayTranscript] = useState('');
+  const [transcriptShown, setTranscriptShown] = useState(false);
+
+  // Live transcript for the voice capsule: the in-progress partial while the
+  // user speaks, falling back to the last finalized utterance between turns.
+  const transcriptText = voice.partialTranscript ?? voice.lastTranscript ?? '';
 
   /* Resolve the portal target for the voice capsule once mounted. Portal into
      the stage's MAIN column (not the full stage row) so the capsule stays
@@ -107,6 +116,42 @@ export function Dojo3Composer({
       setElapsed(0);
     }
   }, [voice.enabled]);
+
+  /* Surface the live transcript: keep it visible as words land, then fade it
+     out a couple seconds after the user stops. The pill stays a fixed size;
+     only the text below the waveform fades. */
+  useEffect(() => {
+    if (!transcriptText) return;
+    setDisplayTranscript(transcriptText);
+    setTranscriptShown(true);
+    if (transcriptHideRef.current) clearTimeout(transcriptHideRef.current);
+    transcriptHideRef.current = window.setTimeout(() => setTranscriptShown(false), 2500);
+  }, [transcriptText]);
+  useEffect(() => () => { if (transcriptHideRef.current) clearTimeout(transcriptHideRef.current); }, []);
+
+  /* Side-scroll the transcript so the newest words sit at the right edge and
+     older text slides off to the left. Pin the text's right end to the
+     container's right edge; the CSS transition on the span makes the slide
+     smooth. A new utterance (text that isn't an extension of the previous one)
+     snaps into place instead of visibly rewinding from the old position. */
+  useEffect(() => {
+    const span = transcriptRef.current;
+    const wrap = span?.parentElement;
+    if (!span || !wrap) return;
+    const isAppend =
+      prevTranscriptRef.current.length > 0 && displayTranscript.startsWith(prevTranscriptRef.current);
+    prevTranscriptRef.current = displayTranscript;
+    const dx = Math.round(wrap.clientWidth - span.scrollWidth);
+    if (isAppend) {
+      span.style.transform = `translateX(${dx}px)`;
+    } else {
+      const prevTransition = span.style.transition;
+      span.style.transition = 'none';
+      span.style.transform = `translateX(${dx}px)`;
+      void span.offsetWidth; // force reflow so the snap lands before re-enabling transition
+      span.style.transition = prevTransition;
+    }
+  }, [displayTranscript]);
 
   /* RAF loop: timer + center-weighted waveform driven by audioLevel. */
   useEffect(() => {
@@ -618,25 +663,33 @@ export function Dojo3Composer({
             role="group"
             aria-label="Voice session"
           >
-            <span className="voice-capsule__timer">{timerLabel}</span>
-            <div className="voice-capsule__wave" aria-hidden="true">
-              {Array.from({ length: WAVE_BARS }).map((_, i) => (
-                <span
-                  key={i}
-                  ref={(el) => {
-                    waveRefs.current[i] = el;
-                  }}
-                />
-              ))}
+            <div className="voice-capsule__main">
+              <span className="voice-capsule__timer">{timerLabel}</span>
+              <div className="voice-capsule__wave" aria-hidden="true">
+                {Array.from({ length: WAVE_BARS }).map((_, i) => (
+                  <span
+                    key={i}
+                    ref={(el) => {
+                      waveRefs.current[i] = el;
+                    }}
+                  />
+                ))}
+              </div>
+              <button
+                type="button"
+                className="voice-capsule__end"
+                aria-label="End voice session"
+                onClick={() => { void voice.toggle(); }}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+              </button>
             </div>
-            <button
-              type="button"
-              className="voice-capsule__end"
-              aria-label="End voice session"
-              onClick={() => { void voice.toggle(); }}
+            <div
+              className={`voice-capsule__transcript ${transcriptShown ? 'is-visible' : ''}`}
+              aria-live="polite"
             >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
-            </button>
+              <span ref={transcriptRef}>{displayTranscript}</span>
+            </div>
           </div>,
           stageEl,
         )}

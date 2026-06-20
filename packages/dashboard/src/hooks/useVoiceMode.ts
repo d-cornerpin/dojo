@@ -182,6 +182,15 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
         if (s !== 'capturing' && s !== 'listening') setAudioLevel(0);
         // Clear partial when speech ends — final-transcript handler takes over.
         if (s === 'transcribing' || s === 'waiting' || s === 'speaking') setPartialTranscript(null);
+        // Voice mode turned off (or errored): return the composer mic to its
+        // default unmuted state. The mute icon should only ever show while
+        // voice mode is on. The client re-inits unmuted on the next start, so
+        // this just keeps the React state in step. Also drop stale transcripts.
+        if (s === 'idle' || s === 'error') {
+          setMutedState(false);
+          setPartialTranscript(null);
+          setLastTranscript(null);
+        }
       });
       client.on('error', (msg) => setError(msg));
       client.on('partial-transcript', (text) => setPartialTranscript(text));
