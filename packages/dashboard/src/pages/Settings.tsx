@@ -596,8 +596,6 @@ const PlatformTab = () => {
     <div className="scards">
       <AgentLimitsSettings />
       <OllamaSettings />
-      <SystemModelConfig />
-      <VoiceOpenerModelConfig />
       <RemoteAccessSettings />
       <SearchSettings />
       <MigrationSettings />
@@ -3696,6 +3694,8 @@ const ModelsTab = () => {
         <AudioGenModelCard models={models} />
         <MusicGenModelCard models={models} />
         <TranscriptionModelCard models={models} />
+        <SystemModelConfig />
+        <VoiceOpenerModelConfig />
       </div>
     </div>
   );

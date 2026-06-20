@@ -355,14 +355,18 @@ const DimensionRow = ({
   );
 };
 
-// ── System Model (relocated from the Router tab to Settings -> Dojo) ──
-// The 'system' tier is not router-related: its (local-only) model runs the
-// multi-step classifier and the watchdog's smart alerts. Self-contained: loads
-// the router config + available models itself and saves via updateTierModels.
+// ── System Model ──
+// The 'system' tier is not router-related: its model runs the multi-step
+// classifier and the watchdog's smart alerts. Rendered as a single-pulldown
+// card matching the other model-picker cards (image/video/etc). Still backed
+// by the 'system' router tier (so getSystemModel keeps working) — we just save
+// a single model at priority 0.
 export const SystemModelConfig = () => {
-  const [tier, setTier] = useState<Tier | null>(null);
-  const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
+  const [selectedId, setSelectedId] = useState('');
+  const [models, setModels] = useState<AvailableModel[]>([]);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   const load = async () => {
     const [cfgRes, modelsRes] = await Promise.all([
@@ -372,18 +376,10 @@ export const SystemModelConfig = () => {
     if (cfgRes.ok) {
       const data = cfgRes.data as Record<string, unknown>;
       const raw = (data.tiers as Array<Record<string, unknown>>).find((t) => t.id === 'system');
-      setTier(
-        raw
-          ? {
-              id: raw.id as string,
-              name: (raw.displayName ?? raw.name) as string,
-              description: (raw.description ?? '') as string,
-              models: (raw.models ?? []) as TierModel[],
-            }
-          : null,
-      );
+      const tierModels = (raw?.models ?? []) as TierModel[];
+      setSelectedId(tierModels[0]?.modelId ?? '');
     }
-    if (modelsRes.ok) setAvailableModels(modelsRes.data);
+    if (modelsRes.ok) setModels(modelsRes.data);
     setLoading(false);
   };
 
@@ -392,23 +388,64 @@ export const SystemModelConfig = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleUpdate = async (models: Array<{ modelId: string; priority: number }>) => {
-    await api.updateTierModels('system', models);
-    await load();
+  const flash = () => { setSaved(true); setTimeout(() => setSaved(false), 2000); };
+
+  const handleSave = async () => {
+    setSaving(true);
+    await api.updateTierModels('system', selectedId ? [{ modelId: selectedId, priority: 0 }] : []);
+    setSaving(false);
+    flash();
   };
 
-  if (loading) return <div className="tile loading-state">Loading...</div>;
-  if (!tier) return null;
+  const handleClear = async () => {
+    setSaving(true);
+    await api.updateTierModels('system', []);
+    setSelectedId('');
+    setSaving(false);
+    flash();
+  };
+
+  if (loading) return null;
 
   return (
-    <div className="tile">
-      <div className="scard__title">System Model</div>
-      <div className="scard__desc">
-        The local model that runs the multi-step classifier and the watchdog's smart alerts.
-        Local-only (Ollama) so it keeps working with no network. This is a system function, not
-        part of the model router.
+    <div className="tile space-y-4">
+      <div>
+        <div className="scard__title">System Model</div>
+        <p className="text-xs text-ui/40 mt-1">
+          Runs the multi-step classifier and the watchdog's smart alerts. A small, fast model is
+          ideal — a local (Ollama) one keeps working with no network. Not part of the model router.
+        </p>
       </div>
-      <TierPanel tier={tier} availableModels={availableModels} onUpdate={handleUpdate} bare />
+
+      {!selectedId && (
+        <div className="alert-banner alert-warning">No system model selected. Pick one below.</div>
+      )}
+
+      <div>
+        <label className="flabel">System model</label>
+        <select
+          value={selectedId}
+          onChange={(e) => setSelectedId(e.target.value)}
+          className="finput field--select"
+        >
+          <option value="">(none)</option>
+          {models.map((m) => (
+            <option key={m.id} value={m.id}>{m.name}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="srow">
+        <button type="button" onClick={handleSave} disabled={saving} className="btn btn--primary btn--sm">
+          {saving ? 'Saving...' : 'Save'}
+        </button>
+        {selectedId && (
+          <button type="button" onClick={handleClear} disabled={saving} className="btn btn--sm">
+            Clear
+          </button>
+        )}
+        {saved && <span className="text-xs text-cp-teal">Saved!</span>}
+      </div>
     </div>
   );
 };
@@ -418,19 +455,21 @@ export const SystemModelConfig = () => {
 //   ''    → Auto (use the System model)
 //   'off' → disabled (no opener)
 //   <id>  → a specific (ideally low-TTFT) model
+// Single-pulldown card matching the other model-picker cards.
 export const VoiceOpenerModelConfig = () => {
-  const [value, setValue] = useState<string>('');
-  const [models, setModels] = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedId, setSelectedId] = useState('');
+  const [models, setModels] = useState<AvailableModel[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   const load = async () => {
     const [setRes, modelsRes] = await Promise.all([
       api.getSetting('voice.opener_model'),
       api.getAvailableRouterModels(),
     ]);
-    if (setRes.ok) setValue(setRes.data.value ?? '');
-    if (modelsRes.ok) setModels(modelsRes.data.map((m) => ({ id: m.id, name: m.name })));
+    if (setRes.ok) setSelectedId(setRes.data.value ?? '');
+    if (modelsRes.ok) setModels(modelsRes.data);
     setLoading(false);
   };
 
@@ -439,35 +478,64 @@ export const VoiceOpenerModelConfig = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleChange = async (next: string) => {
-    setValue(next);
+  const flash = () => { setSaved(true); setTimeout(() => setSaved(false), 2000); };
+
+  const handleSave = async () => {
     setSaving(true);
-    await api.setSetting('voice.opener_model', next);
+    await api.setSetting('voice.opener_model', selectedId);
     setSaving(false);
+    flash();
   };
 
-  if (loading) return <div className="tile loading-state">Loading...</div>;
+  // "Clear" returns to Auto (System model) — the unset default.
+  const handleClear = async () => {
+    setSaving(true);
+    await api.setSetting('voice.opener_model', '');
+    setSelectedId('');
+    setSaving(false);
+    flash();
+  };
+
+  if (loading) return null;
 
   return (
-    <div className="tile">
-      <div className="scard__title">Voice Opener Model{saving ? ' (saving…)' : ''}</div>
-      <div className="scard__desc">
-        In voice chats, this model speaks a short contextual bridge ("sure, let me pull that up")
-        the instant you finish talking, while the full agent spins up. It never states facts, so it
-        can't contradict the answer. Pick a low-latency model (Haiku / Groq-tier) for the snappiest
-        feel. Auto uses your System model; Off disables the opener.
+    <div className="tile space-y-4">
+      <div>
+        <div className="scard__title">Voice Opener Model</div>
+        <p className="text-xs text-ui/40 mt-1">
+          In voice chats, this model speaks a short contextual bridge ("sure, let me pull that up")
+          the instant you finish talking, while the full agent spins up. It never states facts, so it
+          can't contradict the answer. Pick a low-latency model (Haiku / Groq-tier) for the snappiest
+          feel. Auto uses your System model; Off disables the opener.
+        </p>
       </div>
-      <select
-        className="glass-select"
-        value={value}
-        onChange={(e) => handleChange(e.target.value)}
-      >
-        <option value="">Auto (System model)</option>
-        <option value="off">Off (no opener)</option>
-        {models.map((m) => (
-          <option key={m.id} value={m.id}>{m.name}</option>
-        ))}
-      </select>
+
+      <div>
+        <label className="flabel">Opener model</label>
+        <select
+          value={selectedId}
+          onChange={(e) => setSelectedId(e.target.value)}
+          className="finput field--select"
+        >
+          <option value="">Auto (System model)</option>
+          <option value="off">Off (no opener)</option>
+          {models.map((m) => (
+            <option key={m.id} value={m.id}>{m.name}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="srow">
+        <button type="button" onClick={handleSave} disabled={saving} className="btn btn--primary btn--sm">
+          {saving ? 'Saving...' : 'Save'}
+        </button>
+        {selectedId && (
+          <button type="button" onClick={handleClear} disabled={saving} className="btn btn--sm">
+            Clear
+          </button>
+        )}
+        {saved && <span className="text-xs text-cp-teal">Saved!</span>}
+      </div>
     </div>
   );
 };
