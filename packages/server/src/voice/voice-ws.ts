@@ -120,6 +120,20 @@ interface VoiceSession {
    * filler-phrase feature works regardless of TTS engine choice.
    */
   activeBurstPush: ((text: string) => void) | null;
+  /**
+   * Fast first-responder window. Set true when a voice prompt is submitted;
+   * the burst's chat:chunk listener flips it false the instant the FULL
+   * agent's first real content arrives. The fast-opener only speaks while
+   * this is true, so if the real reply beats the opener we drop the opener
+   * rather than play it out of order.
+   */
+  openerWindowOpen: boolean;
+  /**
+   * True once the fast-opener has been spoken this turn. Suppresses the
+   * loop's generic pre-tool filler so the user doesn't hear a contextual
+   * opener AND a generic "on it" back to back. Reset each submit.
+   */
+  openerSpoken: boolean;
 }
 
 /**
@@ -351,6 +365,10 @@ const sessions = new Map<WSContext, VoiceSession>();
 export function pushVoiceFiller(agentId: string, phrase: string): boolean {
   for (const session of sessions.values()) {
     if (session.agentId !== agentId) continue;
+    // If a contextual fast-opener already spoke this turn, skip the generic
+    // filler — the user would otherwise hear "let me pull that up" followed by
+    // a redundant "on it". One bridge per turn.
+    if (session.openerSpoken) return false;
     if (!session.activeBurstPush) return false;
     try {
       session.activeBurstPush(phrase);
@@ -424,6 +442,8 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
       cloudDescription: saved.cloudDescription,
       cloudSpeed: saved.cloudSpeed,
       activeBurstPush: null,
+      openerWindowOpen: false,
+      openerSpoken: false,
     };
     sessions.set(ws, session);
     // Heartbeat every 25s — under Cloudflare Tunnel's default WS idle timeout
@@ -979,8 +999,107 @@ async function submitTranscriptAndStartTts(session: VoiceSession, transcript: st
   // plays a "message sent" chime on this event.
   sendJson(session.ws, { type: 'voice:prompt_submitted', agentId: session.agentId });
 
+  // Fast first-responder: open the opener window, start the burst (which sets
+  // activeBurstPush synchronously), then race a low-TTFT model to speak a
+  // short CONTEXTUAL BRIDGE ("sure, let me pull that up") while the full agent
+  // spins up. The opener shares this burst, so it plays first and the real
+  // reply streams in right behind it. The opener never states facts, so it
+  // can't contradict the answer. If the full agent's reply beats the opener,
+  // openerWindowOpen is already false and the opener is dropped (no out-of-
+  // order playback).
+  session.openerWindowOpen = true;
+  session.openerSpoken = false;
+
   // Subscribe to assistant chunks for this agent; pipe into TTS.
   startTtsForAgent(session);
+
+  void fireFastOpener(session, transcript);
+}
+
+// ── Fast first-responder (contextual bridge) ──
+//
+// Tightly constrained: the opener is a SPOKEN BRIDGE, never an answer. It must
+// not state facts, numbers, names, or opinions — only acknowledge the request
+// and signal "I'm on it" — so it can never contradict the full agent's reply.
+const OPENER_SYSTEM_PROMPT =
+  'You are the voice of an assistant. The user just spoke a request. Reply with ONE very short ' +
+  'spoken bridge phrase (3 to 8 words) that warmly acknowledges the request and signals you are ' +
+  'about to handle it — like a person saying "sure, let me take a look" or "good question, one sec". ' +
+  'Hard rules: do NOT answer the request; do NOT state any fact, number, name, date, or opinion; ' +
+  'do NOT ask a question; do NOT repeat the request back. Output ONLY the phrase, no quotes, no prose.';
+
+const OPENER_TIMEOUT_MS = 1500;
+const OPENER_MAX_CHARS = 80;
+
+/**
+ * Resolve the model used for the spoken opener. Prefers the dedicated
+ * `voice.opener_model` config (a low-TTFT model the user picks); falls back to
+ * the System model so the feature works out of the box. `voice.opener_model`
+ * set to 'off' disables the opener entirely.
+ */
+async function resolveOpenerModel(): Promise<string | null> {
+  let configured: string | undefined;
+  try {
+    const row = getDb()
+      .prepare("SELECT value FROM config WHERE key = 'voice.opener_model'")
+      .get() as { value: string } | undefined;
+    configured = row?.value?.trim();
+  } catch { /* config table read failed — fall through to system model */ }
+  if (configured === 'off') return null;
+  if (configured) return configured;
+  try {
+    const { getSystemModel } = await import('../router/selector.js');
+    return getSystemModel() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Tidy the model's opener: strip wrapping quotes, collapse to one line, cap
+ *  length, and ensure clean terminal punctuation for the TTS clause splitter. */
+function sanitizeOpener(raw: string): string {
+  let t = raw.trim().replace(/\s+/g, ' ');
+  // Strip a single pair of wrapping quotes the model may have added.
+  t = t.replace(/^["'“”‘’]+/, '').replace(/["'“”‘’]+$/, '').trim();
+  // Keep only the first line / sentence-ish — openers should be one clause.
+  t = t.split('\n')[0].trim();
+  if (t.length > OPENER_MAX_CHARS) t = t.slice(0, OPENER_MAX_CHARS).trim();
+  if (t && !/[.!?,…]$/.test(t)) t += '.';
+  return t;
+}
+
+/**
+ * Race a fast model to speak a contextual opener while the full agent spins
+ * up. Fully best-effort: any failure (no model, timeout, torn-down burst, real
+ * reply already started) silently does nothing. Never throws.
+ */
+async function fireFastOpener(session: VoiceSession, transcript: string): Promise<void> {
+  try {
+    const modelId = await resolveOpenerModel();
+    if (!modelId) return;
+    const { callModel } = await import('../agent/model.js');
+    const result = await callModel({
+      agentId: session.agentId,
+      modelId,
+      systemPrompt: OPENER_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: transcript }],
+      tools: false,
+      abortSignal: AbortSignal.timeout(OPENER_TIMEOUT_MS),
+    });
+    const text = sanitizeOpener(result.content ?? '');
+    if (!text) return;
+    // Ordering guard: only speak if the full agent's real reply hasn't already
+    // started (and the burst is still alive).
+    if (!session.openerWindowOpen || !session.activeBurstPush) return;
+    session.activeBurstPush(text);
+    session.openerSpoken = true;
+    logger.info('Voice fast-opener spoken', { agentId: session.agentId, model: modelId, text });
+  } catch (err) {
+    logger.warn('Voice fast-opener failed (non-fatal)', {
+      agentId: session.agentId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 /**
@@ -1271,6 +1390,9 @@ function startTtsForAgent(session: VoiceSession, initialContent?: string): void 
       // we'll re-evaluate when the next done arrives.
       cancelQuietTimer();
       if (event.content) {
+        // Real agent content has begun — close the fast-opener window so a
+        // late opener doesn't play out of order behind the actual reply.
+        session.openerWindowOpen = false;
         bubbleChars += event.content.length;
         bubbleDoneSeen = false;  // new content means this bubble isn't done anymore
         pushContent(event.content);
@@ -1636,6 +1758,8 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
         if (event.agentId !== session.agentId) return;
         cancelQuietTimer();
         if (event.content) {
+          // Real agent content has begun — close the fast-opener window.
+          session.openerWindowOpen = false;
           bubbleChars += event.content.length;
           bubbleDoneSeen = false;
           pushContent(event.content);

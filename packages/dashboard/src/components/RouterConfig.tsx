@@ -412,3 +412,62 @@ export const SystemModelConfig = () => {
     </div>
   );
 };
+
+// Voice fast first-responder: which model speaks the short contextual opener
+// while the full agent spins up. Stored in config key `voice.opener_model`.
+//   ''    → Auto (use the System model)
+//   'off' → disabled (no opener)
+//   <id>  → a specific (ideally low-TTFT) model
+export const VoiceOpenerModelConfig = () => {
+  const [value, setValue] = useState<string>('');
+  const [models, setModels] = useState<Array<{ id: string; name: string }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    const [setRes, modelsRes] = await Promise.all([
+      api.getSetting('voice.opener_model'),
+      api.getAvailableRouterModels(),
+    ]);
+    if (setRes.ok) setValue(setRes.data.value ?? '');
+    if (modelsRes.ok) setModels(modelsRes.data.map((m) => ({ id: m.id, name: m.name })));
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleChange = async (next: string) => {
+    setValue(next);
+    setSaving(true);
+    await api.setSetting('voice.opener_model', next);
+    setSaving(false);
+  };
+
+  if (loading) return <div className="tile loading-state">Loading...</div>;
+
+  return (
+    <div className="tile">
+      <div className="scard__title">Voice Opener Model{saving ? ' (saving…)' : ''}</div>
+      <div className="scard__desc">
+        In voice chats, this model speaks a short contextual bridge ("sure, let me pull that up")
+        the instant you finish talking, while the full agent spins up. It never states facts, so it
+        can't contradict the answer. Pick a low-latency model (Haiku / Groq-tier) for the snappiest
+        feel. Auto uses your System model; Off disables the opener.
+      </div>
+      <select
+        className="glass-select"
+        value={value}
+        onChange={(e) => handleChange(e.target.value)}
+      >
+        <option value="">Auto (System model)</option>
+        <option value="off">Off (no opener)</option>
+        {models.map((m) => (
+          <option key={m.id} value={m.id}>{m.name}</option>
+        ))}
+      </select>
+    </div>
+  );
+};
