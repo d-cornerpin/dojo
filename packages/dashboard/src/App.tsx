@@ -125,6 +125,7 @@ const Dojo3Shell = () => {
           <TechniqueSessionProvider>
             <PostMigrationBanner />
             <GlobalAlerts />
+            <NavigationHandler />
             <div className="h-dvh w-full overflow-hidden relative z-[1]">
               <Chat panel={showPanel ? { content: <Outlet /> } : null} />
               {isTechniqueBuild && <Outlet />}
@@ -225,6 +226,35 @@ const GlobalAlerts = () => {
   }, [subscribe, toast]);
 
   return null; // rendering is handled by ToastContainer
+};
+
+// ── Agent-driven navigation ──
+//
+// Lets the agent move the user's view (open a page or a Settings tab) in
+// response to "take me to X" / "where do I change Y?". The server emits
+// ui:navigate (from the open_page / open_settings tools); this handler is
+// the only place that consumes it. Mounted inside Dojo3Shell so it sits
+// within both the router (useNavigate) and the WebSocket context.
+const NavigationHandler = () => {
+  const { subscribe } = useWebSocket();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const unsub = subscribe('ui:navigate', (event: WsEvent) => {
+      if (event.type !== 'ui:navigate') return;
+      const { path, tab, section } = event.data;
+      if (path === '/settings' && tab) {
+        const q = new URLSearchParams({ tab });
+        if (section) q.set('section', section);
+        navigate(`/settings?${q.toString()}`);
+      } else if (typeof path === 'string' && path.startsWith('/')) {
+        navigate(path);
+      }
+    });
+    return unsub;
+  }, [subscribe, navigate]);
+
+  return null;
 };
 
 export const App = () => {

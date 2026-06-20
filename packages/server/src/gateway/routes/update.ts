@@ -161,13 +161,28 @@ function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-export const updateRouter = new Hono<AppEnv>();
+// ── Reusable core (shared by the routes and the agent's update tools) ──
 
-// ── Check for updates ──
+export interface UpdateCheckResult {
+  currentVersion: string;
+  latestVersion: string | null;
+  latestTag?: string;
+  releaseName?: string;
+  publishedAt?: string;
+  releaseNotes?: string | null;
+  updateAvailable: boolean;
+  downloadUrl?: string | null;
+  downloadSize?: number | null;
+  error?: string;
+}
 
-updateRouter.get('/check', async (c) => {
+/**
+ * Read-only update check: compares the installed version against the latest
+ * GitHub release. Never throws — network/API problems come back as `error`
+ * with `updateAvailable: false` so callers can surface them plainly.
+ */
+export async function checkForUpdate(): Promise<UpdateCheckResult> {
   const currentVersion = getCurrentVersion();
-
   try {
     const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
       headers: { 'Accept': 'application/vnd.github.v3+json' },
@@ -175,32 +190,177 @@ updateRouter.get('/check', async (c) => {
     });
 
     if (!response.ok) {
-      return c.json({ ok: true, data: { currentVersion, latestVersion: null, updateAvailable: false, error: `GitHub API: ${response.status}` } });
+      return { currentVersion, latestVersion: null, updateAvailable: false, error: `GitHub API: ${response.status}` };
     }
 
     const release = await response.json() as { tag_name: string; name: string; published_at: string; body: string; assets: Array<{ name: string; browser_download_url: string; size: number }> };
     const latestVersion = release.tag_name.replace(/^v/, '');
     const updateAvailable = compareVersions(latestVersion, currentVersion) > 0;
-
     const zipAsset = release.assets.find(a => a.name === 'dojo-platform.zip');
 
-    return c.json({
-      ok: true,
-      data: {
-        currentVersion,
-        latestVersion,
-        latestTag: release.tag_name,
-        releaseName: release.name,
-        publishedAt: release.published_at,
-        releaseNotes: release.body?.slice(0, 1000) ?? null,
-        updateAvailable,
-        downloadUrl: zipAsset?.browser_download_url ?? null,
-        downloadSize: zipAsset?.size ?? null,
-      },
-    });
+    return {
+      currentVersion,
+      latestVersion,
+      latestTag: release.tag_name,
+      releaseName: release.name,
+      publishedAt: release.published_at,
+      releaseNotes: release.body?.slice(0, 1000) ?? null,
+      updateAvailable,
+      downloadUrl: zipAsset?.browser_download_url ?? null,
+      downloadSize: zipAsset?.size ?? null,
+    };
   } catch (err) {
-    return c.json({ ok: true, data: { currentVersion, latestVersion: null, updateAvailable: false, error: err instanceof Error ? err.message : String(err) } });
+    return { currentVersion, latestVersion: null, updateAvailable: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+export interface ApplyUpdateResult {
+  ok: boolean;
+  message: string;
+  previousVersion?: string;
+  newVersion?: string;
+  backupDir?: string;
+  /** Suggested HTTP status for the route wrapper when ok=false. */
+  status?: number;
+}
+
+/**
+ * Download + install the latest release, then schedule a process restart
+ * (launchd brings us back up). Production installs only. Shared by the
+ * POST /apply route and the agent's apply_update tool. The restart is
+ * scheduled internally on success, mirroring the original route behavior.
+ */
+export async function applyUpdate(): Promise<ApplyUpdateResult> {
+  const currentVersion = getCurrentVersion();
+
+  const isProduction = fs.existsSync(PLATFORM_DIR) && fs.existsSync(path.join(PLATFORM_DIR, 'package.json'));
+  if (!isProduction) {
+    return { ok: false, message: 'Updates are only supported for production installs (~/.dojo/platform). For development, use git pull.', status: 400 };
+  }
+
+  try {
+    // 1. Get the latest release download URL
+    const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+      headers: { 'Accept': 'application/vnd.github.v3+json' },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      return { ok: false, message: `Failed to check GitHub releases: ${response.status}`, status: 500 };
+    }
+
+    const release = await response.json() as { tag_name: string; assets: Array<{ name: string; browser_download_url: string }> };
+    const zipAsset = release.assets.find(a => a.name === 'dojo-platform.zip');
+
+    if (!zipAsset) {
+      return { ok: false, message: 'No dojo-platform.zip found in latest release', status: 500 };
+    }
+
+    const latestVersion = release.tag_name.replace(/^v/, '');
+    if (compareVersions(latestVersion, currentVersion) <= 0) {
+      return { ok: true, message: 'Already up to date', newVersion: currentVersion };
+    }
+
+    logger.info('Starting update', { from: currentVersion, to: latestVersion, url: zipAsset.browser_download_url });
+
+    // 2. Download the zip to a temp location
+    const tmpDir = path.join(os.tmpdir(), `dojo-update-${Date.now()}`);
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const zipPath = path.join(tmpDir, 'dojo-platform.zip');
+
+    await execAsync(`curl -L -o "${zipPath}" "${zipAsset.browser_download_url}"`, { timeout: 120000 });
+
+    // 3. Extract the zip
+    await execAsync(`unzip -o "${zipPath}" -d "${tmpDir}"`, { timeout: 60000 });
+
+    // 4. Find the extracted platform directory
+    // The zip structure is: dojo-platform/platform/{packages,package.json,...}
+    const extractedDir = path.join(tmpDir, 'dojo-platform', 'platform');
+    if (!fs.existsSync(extractedDir)) {
+      // Fallback: maybe zip structure changed
+      const fallback = path.join(tmpDir, 'dojo-platform');
+      if (fs.existsSync(path.join(fallback, 'package.json'))) {
+        // package.json at top level means flat structure
+        return { ok: false, message: 'Unexpected zip structure -- package.json at dojo-platform/ root', status: 500 };
+      }
+      return { ok: false, message: 'Extracted zip does not contain dojo-platform/platform directory', status: 500 };
+    }
+
+    // 5. Backup the current platform
+    const backupDir = `${PLATFORM_DIR}.backup-${currentVersion}`;
+    if (fs.existsSync(backupDir)) {
+      fs.rmSync(backupDir, { recursive: true });
+    }
+    logger.info('Backing up current platform', { from: PLATFORM_DIR, to: backupDir });
+    await execAsync(`cp -R "${PLATFORM_DIR}" "${backupDir}"`, { timeout: 30000 });
+
+    // 6. Copy new files over (preserve node_modules, data, secrets)
+    // Use rsync to properly overwrite existing directories
+    // --delete ensures old files that no longer exist in the update are removed
+    const env = { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH}` };
+    const entries = fs.readdirSync(extractedDir);
+    for (const entry of entries) {
+      if (entry === 'node_modules') continue;
+      const src = path.join(extractedDir, entry);
+      const dest = path.join(PLATFORM_DIR, entry);
+      const stat = fs.statSync(src);
+      if (stat.isDirectory()) {
+        // For directories: rsync with trailing slashes to merge/overwrite properly
+        await execAsync(`rsync -a --delete "${src}/" "${dest}/"`, { timeout: 30000, env });
+      } else {
+        // For files: simple copy
+        await execAsync(`cp -f "${src}" "${dest}"`, { timeout: 30000 });
+      }
+    }
+
+    logger.info('Files updated, running npm install');
+
+    // 7. Install production dependencies (no build needed -- zip includes pre-compiled dist/)
+    await execAsync('npm install --omit=dev', { cwd: PLATFORM_DIR, timeout: 120000, env });
+
+    // Note: system-dependency installation (brew packages like whisper-cpp)
+    // runs at server STARTUP via packages/server/src/services/ensure-system-deps.ts,
+    // not here. That way deps get installed on the next launchd-driven reboot
+    // regardless of which old version's update.ts shipped the files.
+
+    // 8. Clean up temp files
+    fs.rmSync(tmpDir, { recursive: true });
+
+    // 8b. Prune old backups - fire-and-forget. Background `rm -rf` keeps
+    // the apply response fast and never blocks Cloudflare's 100s timeout.
+    pruneOldBackupsAsync().catch(err => {
+      logger.warn('Backup prune after update failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    });
+
+    logger.info('Update complete', { from: currentVersion, to: latestVersion });
+
+    // 9. Schedule the restart. Small delay so the caller's response (HTTP
+    // body or tool result) flushes first; launchd restarts us.
+    setTimeout(() => {
+      logger.info('Restarting server after update');
+      process.exit(0); // launchd will restart us
+    }, 1000);
+
+    return {
+      ok: true,
+      message: `Updated from ${currentVersion} to ${latestVersion}. Server is restarting...`,
+      previousVersion: currentVersion,
+      newVersion: latestVersion,
+      backupDir,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Update failed', { error: msg });
+    return { ok: false, message: `Update failed: ${msg}`, status: 500 };
+  }
+}
+
+export const updateRouter = new Hono<AppEnv>();
+
+// ── Check for updates ──
+
+updateRouter.get('/check', async (c) => {
+  return c.json({ ok: true, data: await checkForUpdate() });
 });
 
 // ── Current version ──
@@ -359,132 +519,12 @@ updateRouter.post('/rollback', async (c) => {
 // ── Apply update ──
 
 updateRouter.post('/apply', async (c) => {
-  const currentVersion = getCurrentVersion();
-
-  // Check if we're in a production install (platform dir exists)
-  const isProduction = fs.existsSync(PLATFORM_DIR) && fs.existsSync(path.join(PLATFORM_DIR, 'package.json'));
-
-  if (!isProduction) {
-    return c.json({ ok: false, error: 'Updates are only supported for production installs (~/.dojo/platform). For development, use git pull.' }, 400);
+  const result = await applyUpdate();
+  if (!result.ok) {
+    return c.json({ ok: false, error: result.message }, (result.status ?? 500) as 400 | 500);
   }
-
-  try {
-    // 1. Get the latest release download URL
-    const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
-      headers: { 'Accept': 'application/vnd.github.v3+json' },
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (!response.ok) {
-      return c.json({ ok: false, error: `Failed to check GitHub releases: ${response.status}` }, 500);
-    }
-
-    const release = await response.json() as { tag_name: string; assets: Array<{ name: string; browser_download_url: string }> };
-    const zipAsset = release.assets.find(a => a.name === 'dojo-platform.zip');
-
-    if (!zipAsset) {
-      return c.json({ ok: false, error: 'No dojo-platform.zip found in latest release' }, 500);
-    }
-
-    const latestVersion = release.tag_name.replace(/^v/, '');
-    if (compareVersions(latestVersion, currentVersion) <= 0) {
-      return c.json({ ok: true, data: { message: 'Already up to date', version: currentVersion } });
-    }
-
-    logger.info('Starting update', { from: currentVersion, to: latestVersion, url: zipAsset.browser_download_url });
-
-    // 2. Download the zip to a temp location
-    const tmpDir = path.join(os.tmpdir(), `dojo-update-${Date.now()}`);
-    fs.mkdirSync(tmpDir, { recursive: true });
-    const zipPath = path.join(tmpDir, 'dojo-platform.zip');
-
-    await execAsync(`curl -L -o "${zipPath}" "${zipAsset.browser_download_url}"`, { timeout: 120000 });
-
-    // 3. Extract the zip
-    await execAsync(`unzip -o "${zipPath}" -d "${tmpDir}"`, { timeout: 60000 });
-
-    // 4. Find the extracted platform directory
-    // The zip structure is: dojo-platform/platform/{packages,package.json,...}
-    const extractedDir = path.join(tmpDir, 'dojo-platform', 'platform');
-    if (!fs.existsSync(extractedDir)) {
-      // Fallback: maybe zip structure changed
-      const fallback = path.join(tmpDir, 'dojo-platform');
-      if (fs.existsSync(path.join(fallback, 'package.json'))) {
-        // package.json at top level means flat structure
-        return c.json({ ok: false, error: 'Unexpected zip structure -- package.json at dojo-platform/ root' }, 500);
-      }
-      return c.json({ ok: false, error: 'Extracted zip does not contain dojo-platform/platform directory' }, 500);
-    }
-
-    // 5. Backup the current platform
-    const backupDir = `${PLATFORM_DIR}.backup-${currentVersion}`;
-    if (fs.existsSync(backupDir)) {
-      fs.rmSync(backupDir, { recursive: true });
-    }
-    logger.info('Backing up current platform', { from: PLATFORM_DIR, to: backupDir });
-    await execAsync(`cp -R "${PLATFORM_DIR}" "${backupDir}"`, { timeout: 30000 });
-
-    // 6. Copy new files over (preserve node_modules, data, secrets)
-    // Use rsync to properly overwrite existing directories
-    // --delete ensures old files that no longer exist in the update are removed
-    const env = { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH}` };
-    const entries = fs.readdirSync(extractedDir);
-    for (const entry of entries) {
-      if (entry === 'node_modules') continue;
-      const src = path.join(extractedDir, entry);
-      const dest = path.join(PLATFORM_DIR, entry);
-      const stat = fs.statSync(src);
-      if (stat.isDirectory()) {
-        // For directories: rsync with trailing slashes to merge/overwrite properly
-        await execAsync(`rsync -a --delete "${src}/" "${dest}/"`, { timeout: 30000, env });
-      } else {
-        // For files: simple copy
-        await execAsync(`cp -f "${src}" "${dest}"`, { timeout: 30000 });
-      }
-    }
-
-    logger.info('Files updated, running npm install');
-
-    // 7. Install production dependencies (no build needed -- zip includes pre-compiled dist/)
-    await execAsync('npm install --omit=dev', { cwd: PLATFORM_DIR, timeout: 120000, env });
-
-    // Note: system-dependency installation (brew packages like whisper-cpp)
-    // runs at server STARTUP via packages/server/src/services/ensure-system-deps.ts,
-    // not here. That way deps get installed on the next launchd-driven reboot
-    // regardless of which old version's update.ts shipped the files.
-
-    // 8. Clean up temp files
-    fs.rmSync(tmpDir, { recursive: true });
-
-    // 8b. Prune old backups - fire-and-forget. Background `rm -rf` keeps
-    // the apply response fast and never blocks Cloudflare's 100s timeout.
-    pruneOldBackupsAsync().catch(err => {
-      logger.warn('Backup prune after update failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
-    });
-
-    logger.info('Update complete', { from: currentVersion, to: latestVersion });
-
-    // 9. Send success response before restarting
-    // Use a small delay so the response gets sent
-    setTimeout(() => {
-      logger.info('Restarting server after update');
-      process.exit(0); // launchd will restart us
-    }, 1000);
-
-    return c.json({
-      ok: true,
-      data: {
-        message: `Updated from ${currentVersion} to ${latestVersion}. Server is restarting...`,
-        previousVersion: currentVersion,
-        newVersion: latestVersion,
-        backupDir,
-      },
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error('Update failed', { error: msg });
-    return c.json({ ok: false, error: `Update failed: ${msg}` }, 500);
-  }
+  const { ok: _ok, message, status: _status, ...rest } = result;
+  return c.json({ ok: true, data: { message, ...rest } });
 });
 
 // ── Backup listing + manual cleanup ──

@@ -352,7 +352,7 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
 
   // Only primary-level agents should have group management, session, and presence tools
   if (!isPrimaryAgent(agentId)) {
-    removeTools.push('create_agent_group', 'update_group', 'assign_to_group', 'delete_group', 'reset_session', 'set_user_presence', 'update_agent_model', 'update_agent_profile', 'get_agent_profile', 'tunnel_start', 'tunnel_stop', 'tunnel_restart');
+    removeTools.push('create_agent_group', 'update_group', 'assign_to_group', 'delete_group', 'reset_session', 'set_user_presence', 'update_agent_model', 'update_agent_profile', 'get_agent_profile', 'tunnel_start', 'tunnel_stop', 'tunnel_restart', 'open_settings', 'open_page', 'set_capability_model', 'check_for_update', 'apply_update', 'set_voice', 'set_channel');
   }
 
   // Technique tools: only Sensei can save/publish/update, everyone can use/list
@@ -3053,6 +3053,120 @@ export const toolDefinitions: ToolDefinition[] = [
     input_schema: { type: 'object', properties: {}, required: [] },
     concurrency: 'safe',
     maxResultTokens: 1500,
+  },
+  {
+    name: 'open_settings',
+    description: 'Open the dashboard Settings panel to a specific tab (and optionally scroll to a section) on the user\'s screen. Use when the user asks where a setting lives or asks you to take them to it ("where do I change my voice?", "open my channel settings", "take me to where I add a provider"). This only moves the UI for a user who has the dashboard open; it changes no settings on its own. Pick the tab that holds what they asked about: platform (Dojo capacity, Ollama, system model, remote access, web search, migration, restart), providers (LLM provider API keys), models (enable models, pricing, and the image/video/TTS/music/vision/transcription model pickers), router (model routing + test), profile (your name, about-you), security (dashboard password), sensei (dreamer + healer schedules), channels (iMessage, Twilio/SMS, Google + Microsoft accounts), integrations (Plaud), voice (TTS/STT voice, speed, wake word), update (version + software update). Optionally pass `section` as the heading of the specific card to scroll to (e.g. "Hands-free wake word", "Playback speed", "Twilio", "Remote Access") — it best-effort matches a section title within the tab. To actually CHANGE a capability model yourself, prefer set_capability_model; use this when the user wants to see/change it themselves.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tab: {
+          type: 'string',
+          enum: ['platform', 'providers', 'models', 'router', 'profile', 'security', 'sensei', 'channels', 'integrations', 'voice', 'update'],
+          description: 'Which settings tab to open.',
+        },
+        section: {
+          type: 'string',
+          description: 'Optional. The heading of the specific section/card to scroll to within the tab (e.g. "Hands-free wake word", "Twilio", "Web Search Provider"). Best-effort match against the section titles on that tab.',
+        },
+      },
+      required: ['tab'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 300,
+  },
+  {
+    name: 'open_page',
+    description: 'Navigate the user\'s dashboard to a top-level page. Use when the user asks you to take them somewhere ("show me the cost dashboard", "open the tracker", "pull up my agents"). Only moves the UI for a user who has the dashboard open; changes nothing on its own. For the Settings page use open_settings instead. Pages: chat (main conversation), agents (agent roster), techniques (saved workflows), tracker (tasks + projects), memory (vault + memories), costs (spend dashboard), health (system health).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        page: {
+          type: 'string',
+          enum: ['chat', 'agents', 'techniques', 'tracker', 'memory', 'costs', 'health'],
+          description: 'Which page to open.',
+        },
+      },
+      required: ['page'],
+    },
+    concurrency: 'safe',
+    maxResultTokens: 300,
+  },
+  {
+    name: 'set_capability_model',
+    description: 'Change which model the DOJO uses for a media/perception capability, on the user\'s behalf ("use Flux for image generation", "switch the video model to Veo", "use the on-device whisper for transcription"). Do this yourself with this tool when asked — don\'t tell the user to go change it in Settings. The model must already be added and enabled in Settings → Models and actually have that capability — if it isn\'t, this changes nothing and returns the list of valid models so you can pick correctly. Capabilities: image (the image_create tool), video (video_create), tts (tts_create / spoken audio), music (music_create), vision (the fallback model that reads images + screenshots), transcription (speech-to-text; also accepts local:whisper or local:moonshine for the on-device engines). NOTE: this is only for the platform capability models — to change the PRIMARY agent\'s own chat model, use update_agent_model instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        capability: {
+          type: 'string',
+          enum: ['image', 'video', 'tts', 'music', 'vision', 'transcription'],
+          description: 'Which capability\'s model to set.',
+        },
+        model_id: {
+          type: 'string',
+          description: 'The model id to use (must be enabled and have the capability). For transcription you may also pass local:whisper or local:moonshine. Use list_models to find the right id if unsure.',
+        },
+      },
+      required: ['capability', 'model_id'],
+    },
+    concurrency: 'serial',
+    maxResultTokens: 1500,
+  },
+  {
+    name: 'check_for_update',
+    description: 'Check whether a newer version of the DOJO platform is available — compares the installed version against the latest GitHub release. Read-only: reports the current version, the latest version, whether an update is available, and the release notes. Use when the user asks "is there an update?", "am I on the latest version?", or as a precursor to apply_update so you can tell them what they\'d be getting.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+    concurrency: 'safe',
+    maxResultTokens: 1500,
+  },
+  {
+    name: 'apply_update',
+    description: 'Download and install the latest DOJO platform update, then restart the server. Do this ONLY when the user explicitly asks you to update ("update the dojo", "install the new version", "go ahead and update"). The DOJO will be briefly unavailable while it restarts (a few seconds under normal supervision), so let the user know it\'s restarting. Only works on production installs, not a dev server. If already up to date it just says so. Prefer calling check_for_update first so you can confirm what\'s changing.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+    concurrency: 'serial',
+    maxResultTokens: 1000,
+  },
+  {
+    name: 'set_voice',
+    description: 'Change the voice you speak with and/or its playback speed, on the user\'s behalf ("use the Bella voice", "switch to a British voice", "slow your voice down", "talk a bit faster"). Do this yourself with this tool when asked — don\'t tell the user to change it in Settings. The voice name is matched against the on-device Kokoro voices (built-in + any the user imported) first, then the Hume cloud library if cloud voice is set up; if nothing matches it returns some valid voice names instead of changing anything. Speed is 0.5–2 where 1 is normal. Provide a voice, a speed, or both. Changes take effect the next time voice mode starts.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        voice: {
+          type: 'string',
+          description: 'A voice name or id (e.g. "Bella", "am_michael"). Matched against on-device then cloud voices.',
+        },
+        speed: {
+          type: 'number',
+          description: 'Playback speed, 0.5–2 (1 = normal). Optional.',
+        },
+      },
+      required: [],
+    },
+    concurrency: 'serial',
+    maxResultTokens: 1000,
+  },
+  {
+    name: 'set_channel',
+    description: 'Turn a communication channel on or off on the user\'s behalf ("turn on the iMessage bridge", "disable SMS", "enable Twilio voice calls"). This is something you DO for the user with this tool — do NOT tell them to go flip it in the dashboard themselves; that is exactly what this tool is for. Channels: imessage (the iMessage bridge — needs a bridge recipient already configured in Settings → Channels), twilio (the Twilio integration master switch — needs Twilio credentials configured), sms (Twilio text messaging), voice_calls (Twilio phone calls). If a prerequisite is missing it tells you what to set up first rather than half-enabling a broken channel. To add someone to a channel\'s allowed-sender list, use add_safe_sender instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        channel: {
+          type: 'string',
+          enum: ['imessage', 'twilio', 'sms', 'voice_calls'],
+          description: 'Which channel to toggle.',
+        },
+        enabled: {
+          type: 'boolean',
+          description: 'true to enable, false to disable.',
+        },
+      },
+      required: ['channel', 'enabled'],
+    },
+    concurrency: 'serial',
+    maxResultTokens: 1000,
   },
 ];
 
@@ -8602,6 +8716,108 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         const { buildChannelInspectReport } = await import('../services/channel-inspect.js');
         content = buildChannelInspectReport();
         isError = false;
+        break;
+      }
+
+      case 'open_settings': {
+        const tab = typeof args.tab === 'string' ? args.tab : '';
+        const validTabs = ['platform', 'providers', 'models', 'router', 'profile', 'security', 'sensei', 'channels', 'integrations', 'voice', 'update'];
+        if (!validTabs.includes(tab)) {
+          content = `Unknown settings tab "${tab}". Valid tabs: ${validTabs.join(', ')}.`;
+          isError = true;
+          break;
+        }
+        const section = typeof args.section === 'string' && args.section.trim() ? args.section.trim() : undefined;
+        broadcast({ type: 'ui:navigate', data: { path: '/settings', tab, section } });
+        content = `Opened Settings → ${tab}${section ? ` (scrolling to "${section}")` : ''} on the dashboard. (It only shows if the user is looking at the dashboard; if they're on iMessage/voice, it'll be there next time they open it.)`;
+        isError = false;
+        break;
+      }
+
+      case 'open_page': {
+        const page = typeof args.page === 'string' ? args.page : '';
+        const pagePaths: Record<string, string> = {
+          chat: '/', agents: '/agents', techniques: '/techniques',
+          tracker: '/tracker', memory: '/memory', costs: '/costs', health: '/health',
+        };
+        const navPath = pagePaths[page];
+        if (!navPath) {
+          content = `Unknown page "${page}". Valid pages: ${Object.keys(pagePaths).join(', ')}.`;
+          isError = true;
+          break;
+        }
+        broadcast({ type: 'ui:navigate', data: { path: navPath } });
+        content = `Opened the ${page} page on the dashboard. (It only shows if the user is looking at the dashboard.)`;
+        isError = false;
+        break;
+      }
+
+      case 'set_capability_model': {
+        const capModelErr = checkRequired([
+          { name: 'capability', value: args.capability, type: 'string' },
+          { name: 'model_id', value: args.model_id, type: 'string' },
+        ]);
+        if (capModelErr) { content = capModelErr; isError = true; break; }
+        const { setCapabilityModel } = await import('../services/agent-controls.js');
+        const capResult = setCapabilityModel(
+          args.capability as Parameters<typeof setCapabilityModel>[0],
+          args.model_id as string,
+        );
+        content = capResult.message;
+        isError = !capResult.ok;
+        break;
+      }
+
+      case 'check_for_update': {
+        const { checkForUpdate } = await import('../gateway/routes/update.js');
+        const info = await checkForUpdate();
+        if (info.error) {
+          content = `Installed version: ${info.currentVersion}. Couldn't reach GitHub to check for updates right now (${info.error}).`;
+        } else if (info.updateAvailable) {
+          content = `An update is available.\nInstalled: ${info.currentVersion}\nLatest: ${info.latestVersion}${info.releaseName ? ` (${info.releaseName})` : ''}\n\nRelease notes:\n${info.releaseNotes ?? '(none provided)'}\n\nIf the user wants it, call apply_update to install and restart.`;
+        } else {
+          content = `The DOJO is on the latest version (${info.currentVersion}).`;
+        }
+        isError = false;
+        break;
+      }
+
+      case 'apply_update': {
+        const { applyUpdate } = await import('../gateway/routes/update.js');
+        const applyResult = await applyUpdate();
+        content = applyResult.message;
+        isError = !applyResult.ok;
+        break;
+      }
+
+      case 'set_voice': {
+        const voiceArg = typeof args.voice === 'string' ? args.voice : undefined;
+        const speedArg = typeof args.speed === 'number' ? args.speed : undefined;
+        if (voiceArg === undefined && speedArg === undefined) {
+          content = 'Provide a voice and/or a speed to change.';
+          isError = true;
+          break;
+        }
+        const { setVoice } = await import('../services/agent-controls.js');
+        const voiceResult = await setVoice({ voice: voiceArg, speed: speedArg });
+        content = voiceResult.message;
+        isError = !voiceResult.ok;
+        break;
+      }
+
+      case 'set_channel': {
+        const chanErr = checkRequired([
+          { name: 'channel', value: args.channel, type: 'string' },
+          { name: 'enabled', value: args.enabled, type: 'boolean' },
+        ]);
+        if (chanErr) { content = chanErr; isError = true; break; }
+        const { setChannelEnabled } = await import('../services/agent-controls.js');
+        const chanResult = await setChannelEnabled(
+          args.channel as Parameters<typeof setChannelEnabled>[0],
+          args.enabled as boolean,
+        );
+        content = chanResult.message;
+        isError = !chanResult.ok;
         break;
       }
 

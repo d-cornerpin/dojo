@@ -315,7 +315,8 @@ export type WsEvent =
   | VoiceWakeDetectedEvent
   | VoiceSleepDetectedEvent
   | DockOpenEvent
-  | CanvasUpdatedEvent;
+  | CanvasUpdatedEvent
+  | UiNavigateEvent;
 
 /**
  * Open the right dock for the user (slides the chat left). Emitted by the
@@ -348,6 +349,26 @@ export interface CanvasUpdatedEvent {
   data: {
     /** absolute path of the file that changed */
     path: string;
+  };
+}
+
+/**
+ * Tells the dashboard to navigate the user's view — open a top-level page
+ * or a specific Settings tab. Emitted by the agent (via the open_page /
+ * open_settings tools) so it can take the user where they asked to go
+ * ("show me my cost dashboard", "where do I change my voice?"). Purely a
+ * UI move: it only does something for a user who has the dashboard open,
+ * and changes no state on its own. `path` is a react-router path (e.g. '/',
+ * '/settings', '/costs'); `tab` is the Settings tab id when path is
+ * '/settings'; `section` is an optional human label matched against a
+ * section heading within that tab to scroll it into view.
+ */
+export interface UiNavigateEvent {
+  type: 'ui:navigate';
+  data: {
+    path: string;
+    tab?: string;
+    section?: string;
   };
 }
 

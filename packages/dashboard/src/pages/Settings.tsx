@@ -39,6 +39,29 @@ export const Settings = () => {
     }
   }, [tabFromUrl]);
 
+  // Agent-driven deep-link: when navigated with ?section=, scroll the matching
+  // settings card into view once its tab has rendered. Matches against the
+  // section heading text (.scard__title) so no per-section anchors are needed.
+  // The agent emits this via the open_settings tool (ui:navigate -> URL).
+  const sectionParam = searchParams.get('section');
+  useEffect(() => {
+    if (!sectionParam) return;
+    const want = sectionParam.trim().toLowerCase();
+    if (!want) return;
+    const tryScroll = (): boolean => {
+      const titles = Array.from(document.querySelectorAll('.scard__title')) as HTMLElement[];
+      const match = titles.find(t => (t.textContent ?? '').trim().toLowerCase().includes(want));
+      if (!match) return false;
+      (match.closest('.tile') ?? match).scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return true;
+    };
+    if (tryScroll()) return;
+    // The tab content may still be mounting — retry a few times, then give up
+    // (tab-level navigation already landed them in the right place).
+    const timers = [60, 180, 400].map(d => window.setTimeout(tryScroll, d));
+    return () => { timers.forEach(clearTimeout); };
+  }, [activeTab, sectionParam]);
+
   const handleTabChange = (tab: Tab) => {
     setActiveTab(tab);
     setSearchParams({ tab });
