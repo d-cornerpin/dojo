@@ -45,3 +45,9 @@ deploy/dist/
 # Voice mode runtime assets (copied from node_modules at dev/build time)
 packages/dashboard/public/vad/
 packages/dashboard/public/ort/
+
+# Internal planning docs — kept local, never in the public repo (see a041b8d).
+# Ignored so they can't be accidentally re-staged.
+/DOJO-ORB-REDESIGN-PLAN.md
+/docs/error-handling-spec.md
+/packages/server/src/agent/v2/PRESERVATION_CHECKLIST.md
