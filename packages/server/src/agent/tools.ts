@@ -671,6 +671,17 @@ export interface ToolDefinition {
   maxResultTokens?: number;
 }
 
+// Membership sets for dispatch routing. The Google/Microsoft definition arrays
+// already include the user_* slot variants (the generators push them at module
+// load), so these sets cover base + user_ tools uniformly. executeTool routes
+// by membership (in the default case) rather than a hand-maintained switch list,
+// which silently dropped newer base tools and most user_* variants into
+// "Unknown tool" even when the account was connected.
+const GOOGLE_WRITE_TOOL_NAMES = new Set(googleWriteToolDefinitions.map(t => t.name));
+const GOOGLE_READ_TOOL_NAMES = new Set(googleReadToolDefinitions.map(t => t.name));
+const MS_WRITE_TOOL_NAMES = new Set(microsoftWriteToolDefinitions.map(t => t.name));
+const MS_READ_TOOL_NAMES = new Set(microsoftReadToolDefinitions.map(t => t.name));
+
 export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'approve_destructive_action',
@@ -8958,7 +8969,9 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent â
             { name: 'attachment_id', value: args.attachment_id, type: 'string' },
           ],
           calendar_create: [
-            { name: 'summary', value: args.summary, type: 'string' },
+            // title is the preferred param; summary/subject are accepted aliases
+            // (the tool resolves them). Validate against whichever was passed.
+            { name: 'title', value: args.title ?? args.summary ?? args.subject, type: 'string' },
             { name: 'start', value: args.start, type: 'string' },
           ],
           calendar_update: [{ name: 'event_id', value: args.event_id, type: 'string' }],
@@ -9165,10 +9178,42 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent â
         break;
       }
 
-      default:
-        content = `Unknown tool: ${name}`;
-        isError = true;
-        auditLog(agentId, 'tool_call', name, 'error', 'Unknown tool');
+      default: {
+        // Membership-based routing for Google / Microsoft tools that the
+        // explicit cases above don't list â€” newer base tools (drive_move,
+        // gmail_create_label, docs_insert_text, sheets_format, calendar_freebusy,
+        // â€¦) and the user_* slot variants (user_calendar_create, user_docs_create,
+        // â€¦). Without this they fell through to "Unknown tool" even with the
+        // account connected. The executors handle the user_ prefix + slot.
+        if (GOOGLE_WRITE_TOOL_NAMES.has(name) || MS_WRITE_TOOL_NAMES.has(name)) {
+          if (!isPrimaryAgent(agentId)) {
+            content = 'Permission denied: only the primary agent can use Workspace write tools.';
+            isError = true;
+            auditLog(agentId, name, null, 'denied', 'Workspace write tool restricted to primary agent');
+            break;
+          }
+        }
+        const dispatchAgentName =
+          (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined)?.name ?? agentId;
+        if (GOOGLE_WRITE_TOOL_NAMES.has(name)) {
+          content = await executeGoogleWriteTool(name, args, agentId, dispatchAgentName);
+          isError = content.startsWith('Error');
+        } else if (GOOGLE_READ_TOOL_NAMES.has(name)) {
+          content = prependUserMailboxBanner(await executeGoogleReadTool(name, args, agentId, dispatchAgentName), name);
+          isError = content.startsWith('Error');
+        } else if (MS_WRITE_TOOL_NAMES.has(name)) {
+          content = await executeMicrosoftWriteTool(name, args, agentId, dispatchAgentName);
+          isError = content.startsWith('Error');
+        } else if (MS_READ_TOOL_NAMES.has(name)) {
+          content = await executeMicrosoftReadTool(name, args, agentId, dispatchAgentName);
+          isError = content.startsWith('Error');
+        } else {
+          content = `Unknown tool: ${name}`;
+          isError = true;
+          auditLog(agentId, 'tool_call', name, 'error', 'Unknown tool');
+        }
+        break;
+      }
     }
   } catch (err) {
     content = `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`;
