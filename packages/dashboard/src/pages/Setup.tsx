@@ -1,9 +1,13 @@
-import { useState, useEffect, useCallback, type FormEvent } from 'react';
+import { useState, useEffect, useCallback, useRef, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Model, Provider } from '@dojo/shared';
 import * as api from '../lib/api';
 import { SetupDeps, SetupPermissions } from '../components/SetupDeps';
 import { VoiceSetupStep } from '../components/VoiceSetupStep';
+import { OrbProvider, useDojoOrb } from '../components/orb/OrbProvider';
+import { DojoOrb } from '../components/orb/DojoOrb';
+import { WebSocketProvider } from '../hooks/useWebSocket';
+import { DojoTutorial } from '../components/DojoTutorial';
 
 // FENG-SHUI EXEMPTION: setup wizard uses standard Tailwind status colors
 // (text-red-500, text-green-500, text-blue-400, text-yellow-400) for
@@ -34,12 +38,42 @@ const STEP_LABELS: Record<Step, string> = {
   complete: 'Enter the Dojo',
 };
 
-export const Setup = () => {
+// The setup wizard renders OUTSIDE the authenticated chrome (and thus outside
+// the app-wide OrbProvider + WebSocketProvider), so it brings its own — the
+// same way Login does for the orb. The WebSocketProvider is needed because the
+// voice step subscribes to live model-download progress over the socket.
+export const Setup = () => (
+  <OrbProvider>
+    <WebSocketProvider>
+      <SetupWizard />
+    </WebSocketProvider>
+  </OrbProvider>
+);
+
+const SetupWizard = () => {
   const [currentStep, setCurrentStep] = useState<Step>('welcome');
   const [depsReady, setDepsReady] = useState(false);
   const [stepReady, setStepReady] = useState<Record<string, boolean>>({});
   const [visitedSteps, setVisitedSteps] = useState<Set<Step>>(new Set(['welcome']));
   const navigate = useNavigate();
+  const stageRef = useRef<HTMLDivElement>(null);
+  const dojoOrb = useDojoOrb();
+
+  // The orb sits at the top of the stage, observing — a calm, attentive presence
+  // (curious mood over the idle base) watching the user equip their dojo.
+  useEffect(() => {
+    dojoOrb.setState('listening');
+    dojoOrb.setEmotion('curious');
+  }, [dojoOrb]);
+
+  // Re-run orb layout once after mount: the engine reads --dojo3-orb-top /
+  // --dojo3-orb-size at create time and can resolve to the fallback on the
+  // first synchronous read (WebKit), parking the orb. A post-paint resize()
+  // re-reads them once settled. (Same fix Login uses.)
+  useEffect(() => {
+    const id = requestAnimationFrame(() => dojoOrb.resize());
+    return () => cancelAnimationFrame(id);
+  }, [dojoOrb]);
 
   const markReady = useCallback((step: Step, ready: boolean) => {
     setStepReady(prev => {
@@ -106,49 +140,38 @@ export const Setup = () => {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center px-4 py-12 relative">
-      <div className="gradient-blob-layer">
-        <div className="blob blob-purple" />
-        <div className="blob blob-teal" />
-        <div className="blob blob-warm" />
-      </div>
-      <div className="w-full max-w-2xl relative z-[1]">
-        {/* Header */}
-        <div className="text-center mb-8">
-          <img src="/dojologo.svg" alt="DOJO" className="w-12 h-12 mx-auto mb-3" />
-          <h1 className="text-2xl font-bold text-ui">Agent D.O.J.O.</h1>
-          <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Delegated Operations & Job Orchestration</p>
-        </div>
+    <div ref={stageRef} className="dojo3-stage dojo3-setup">
+      <div className="dojo3-stage__main">
+        <div className="dojo3-backdrop" aria-hidden="true" />
+        <DojoOrb stageRef={stageRef} />
+        <div className="dojo3-setup__layout">
+          {/* Fixed chrome — the orb (above), the DOJO wordmark, the progress, and
+              the step label all stay put; only the card below scrolls */}
+          <div className="dojo3-setup__chrome">
+            <span className="dojo3-setup__wordmark">DOJO</span>
 
-        {/* Progress */}
-        <div className="flex items-center justify-center gap-1 mb-8">
-          {STEPS.map((step, i) => (
-            <div key={step} className="flex items-center">
-              <div
-                className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-semibold transition-all duration-300 ${
-                  i < currentIndex
-                    ? 'bg-cp-teal text-[var(--btn-success-text)]'
-                    : i === currentIndex
-                      ? 'bg-cp-amber text-[var(--btn-primary-text)] ring-2 ring-cp-amber/40 shadow-glass-glow'
-                      : 'bg-ui/[0.08] text-ui/25'
-                }`}
-              >
+            {/* Progress */}
+            <div className="dojo3-setup__progress" aria-label={`Step ${currentIndex + 1} of ${STEPS.length}`}>
+              {STEPS.map((step, i) => (
+                <div key={step} className="dojo3-setup__progseg">
+                  <span className={`dojo3-setup__dot ${i < currentIndex ? 'is-done' : i === currentIndex ? 'is-current' : ''}`}>
                 {i < currentIndex ? '\u2713' : i + 1}
-              </div>
-              {i < STEPS.length - 1 && (
-                <div className={`w-5 h-0.5 mx-0.5 transition-colors duration-300 ${i < currentIndex ? 'bg-cp-teal' : 'bg-ui/[0.08]'}`} />
-              )}
+                  </span>
+                  {i < STEPS.length - 1 && (
+                    <span className={`dojo3-setup__rail ${i < currentIndex ? 'is-done' : ''}`} />
+                  )}
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
 
-        {/* Step Label */}
-        <h2 className="text-lg font-semibold text-ui text-center mb-6">
-          {STEP_LABELS[currentStep]}
-        </h2>
+            {/* Step Label */}
+            <h2 className="dojo3-setup__step">{STEP_LABELS[currentStep]}</h2>
+          </div>
 
-        {/* Step Content — steps stay mounted once visited so state is preserved on back/next */}
-        <div className="glass-card p-6">
+          {/* Only this region scrolls */}
+          <div className="dojo3-setup__scroll">
+            {/* Step Content — steps stay mounted once visited so state is preserved on back/next */}
+            <div className="dojo3-setup__card">
           <div style={{ display: currentStep === 'welcome' ? 'block' : 'none' }}>
             {visitedSteps.has('welcome') && <WelcomeStep />}
           </div>
@@ -215,26 +238,31 @@ export const Setup = () => {
           </div>
         )}
 
-        {/* Navigation */}
-        <div className="flex justify-between mt-6">
-          <button
-            onClick={goBack}
-            disabled={currentIndex === 0}
-            className="glass-btn glass-btn-ghost disabled:opacity-30"
-          >
-            Back
-          </button>
-          {currentStep === 'complete' ? (
-            <LaunchButton />
-          ) : (
-            <button
-              onClick={goNext}
-              disabled={isNextDisabled}
-              className="glass-btn glass-btn-primary disabled:opacity-30 disabled:cursor-not-allowed"
-            >
-              Next
-            </button>
-          )}
+          </div>
+
+          {/* Fixed footer — the nav stays put while the card scrolls */}
+          <div className="dojo3-setup__footer">
+            <div className="dojo3-setup__nav">
+              <button
+                onClick={goBack}
+                disabled={currentIndex === 0}
+                className="btn dojo3-setup__back disabled:opacity-30"
+              >
+                Back
+              </button>
+              {currentStep === 'complete' ? (
+                <LaunchButton />
+              ) : (
+                <button
+                  onClick={goNext}
+                  disabled={isNextDisabled}
+                  className="btn btn--primary disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  Next
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -281,9 +309,8 @@ const WelcomeStep = () => {
   return (
     <div className="space-y-6">
       <div className="text-center">
-        <img src="/dojologo.svg" alt="DOJO" className="w-16 h-16 mx-auto mb-4" />
         <p className="text-ui/70">
-          Prepare to enter the <strong className="text-ui">D.O.J.O.</strong>
+          Prepare to enter the <strong className="text-ui">DOJO</strong>.
         </p>
         <p className="text-sm text-ui/40 mt-2">
           The path to mastery begins with a single step. Take yours.
@@ -299,7 +326,7 @@ const WelcomeStep = () => {
             { label: 'Database', ok: health?.db },
           ].map((check) => (
             <div key={check.label} className="flex items-center gap-3">
-              <span className={`text-lg ${check.ok ? 'text-green-500' : 'text-red-500'}`}>
+              <span className={`text-lg ${check.ok ? 'text-green-700' : 'text-red-500'}`}>
                 {check.ok ? '\u2713' : '\u2717'}
               </span>
               <span className="text-ui/70">{check.label}</span>
@@ -418,9 +445,9 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
   const [status, setStatus] = useState<'idle' | 'validating' | 'valid' | 'invalid'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [providerId, setProviderId] = useState<string | null>(null);
-  const [hasOllama, setHasOllama] = useState(false);
   const [hasCloudProvider, setHasCloudProvider] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [providers, setProviders] = useState<Provider[]>([]);
 
   const presetConfig = (() => {
     switch (preset) {
@@ -445,18 +472,19 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
   // Always allow Next (we handle the "are you sure" in the parent via onReady)
   useEffect(() => { onReady?.(true); }, [onReady]);
 
-  // Check existing providers on mount
-  useEffect(() => {
-    api.getProviders().then(r => {
-      if (r.ok) {
-        const providers = r.data as Provider[];
-        setHasOllama(providers.some(p => p.type === 'ollama' && p.isValidated));
-        const hasCloud = providers.some(p => p.type !== 'ollama' && p.isValidated);
-        setHasCloudProvider(hasCloud);
-        onCloudProviderChange?.(hasCloud);
-      }
-    });
-  }, []);
+  // Load existing providers (on mount + after adding one) so the step shows
+  // everything already set up, not just a generic badge.
+  const loadProviders = useCallback(async () => {
+    const r = await api.getProviders();
+    if (!r.ok) return;
+    const list = r.data as Provider[];
+    setProviders(list);
+    const hasCloud = list.some(p => p.type !== 'ollama' && p.isValidated);
+    setHasCloudProvider(hasCloud);
+    onCloudProviderChange?.(hasCloud);
+  }, [onCloudProviderChange]);
+
+  useEffect(() => { void loadProviders(); }, [loadProviders]);
 
   const handleAdd = async (e: FormEvent) => {
     e.preventDefault();
@@ -484,12 +512,11 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
     const valResult = await api.validateProvider(id);
     if (valResult.ok && valResult.data.valid) {
       setStatus('valid');
-      if (preset === 'ollama') {
-        setHasOllama(true);
-      } else {
+      if (preset !== 'ollama') {
         setHasCloudProvider(true);
         onCloudProviderChange?.(true);
       }
+      void loadProviders();
     } else {
       setStatus('invalid');
       setError(`Provider added but validation failed: ${!valResult.ok ? valResult.error : 'Unexpected result'}`);
@@ -502,19 +529,25 @@ const ProviderStep = ({ onReady, onCloudProviderChange }: { onReady?: (ready: bo
         Connect a cloud AI provider for your agents. You can add more providers later in Settings.
       </p>
 
-      {/* Ollama status */}
-      {hasOllama && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cp-teal/10 border border-cp-teal/20">
-          <span className="text-cp-teal">{'\u2713'}</span>
-          <span className="text-sm text-cp-teal">Ollama (local) is configured</span>
-        </div>
-      )}
-
-      {/* Cloud provider added confirmation */}
-      {hasCloudProvider && status === 'valid' && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cp-teal/10 border border-cp-teal/20">
-          <span className="text-cp-teal">{'\u2713'}</span>
-          <span className="text-sm text-cp-teal">Cloud provider validated!</span>
+      {/* Everything already configured \u2014 so a re-run of the wizard shows what's
+          set up instead of looking empty */}
+      {providers.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium text-ui/70">Configured providers</h3>
+          <div className="space-y-1.5">
+            {providers.map((p) => (
+              <div key={p.id} className="flex items-center justify-between glass-nested px-3 py-2 rounded-lg">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={p.isValidated ? 'text-green-700' : 'text-ui/30'}>{p.isValidated ? '\u2713' : '\u25cb'}</span>
+                  <span className="text-sm text-ui/90 truncate">{p.name}</span>
+                  <span className="text-[10px] text-ui/40 uppercase tracking-wide shrink-0">{p.type}</span>
+                </div>
+                <span className={`text-[10px] shrink-0 ${p.isValidated ? 'text-green-700' : 'text-ui/40'}`}>
+                  {p.isValidated ? 'Validated' : 'Not validated'}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -793,18 +826,21 @@ const ModelsStep = () => {
         <>
           <p className="text-sm text-ui/55">Select which models to enable. You can change this later in Settings.</p>
           <div className="space-y-2 max-h-64 overflow-y-auto">
-            {models.map((model) => (
+            {models.map((model) => {
+              const providerName = providers.find((p) => p.id === model.providerId)?.name;
+              return (
               <label key={model.id} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-ui/[0.05] cursor-pointer">
                 <input type="checkbox" checked={selected.has(model.id)} onChange={() => toggleModel(model.id)}
                   className="w-4 h-4 rounded text-ui/25 bg-ui/[0.08] text-cp-amber focus:ring-cp-amber focus:ring-offset-0" />
-                <div>
+                <div className="min-w-0">
                   <span className="text-sm text-ui/90">{model.name}</span>
-                  {model.contextWindow && (
-                    <span className="text-xs text-ui/40 ml-2">{Math.round(model.contextWindow / 1000)}k ctx</span>
+                  {providerName && (
+                    <span className="text-[11px] text-ui/45 ml-2">{providerName}</span>
                   )}
                 </div>
               </label>
-            ))}
+              );
+            })}
           </div>
           <button onClick={handleSave} disabled={selected.size === 0}
             className={`px-4 py-2 text-ui text-sm font-medium rounded-lg transition-colors ${
@@ -837,6 +873,27 @@ const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =>
 
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
+  // Hydrate from existing config so re-running the wizard shows what's already
+  // set up instead of forcing re-entry. If it's already configured the step
+  // starts "saved" (gate satisfied), so you can step through without changing
+  // anything on the server.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [nameRes, idRes] = await Promise.all([
+        api.getSetting('user_name'),
+        api.getIdentity('USER.md'),
+      ]);
+      if (cancelled) return;
+      const name = nameRes.ok ? (nameRes.data.value ?? '') : '';
+      const about = idRes.ok ? (idRes.data.content ?? '') : '';
+      if (name) setUserName(name);
+      if (about) setAboutYou(about);
+      if (name && about.trim()) setSaved(true);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const handleSave = async () => {
     if (userName.trim()) {
       await api.setSetting('user_name', userName.trim());
@@ -857,7 +914,7 @@ const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =>
 
       <div>
         <label className="block text-sm font-medium text-ui/70 mb-1">Your Name</label>
-        <input type="text" value={userName} onChange={(e) => setUserName(e.target.value)} placeholder="e.g., Alex"
+        <input type="text" value={userName} onChange={(e) => { setUserName(e.target.value); setSaved(false); }} placeholder="e.g., Alex"
           className="glass-input" />
       </div>
 
@@ -866,7 +923,7 @@ const YourProfileStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =>
         <p className="text-xs text-ui/40 mb-2">
           Your work, preferences, projects, communication style — anything you want your agents to know about you.
         </p>
-        <textarea value={aboutYou} onChange={(e) => setAboutYou(e.target.value)} rows={5}
+        <textarea value={aboutYou} onChange={(e) => { setAboutYou(e.target.value); setSaved(false); }} rows={5}
           placeholder="I run a small tech company in Seattle. I prefer concise, direct communication..."
           className="glass-textarea resize-none" />
       </div>
@@ -898,14 +955,33 @@ const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
 
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
+  // Hydrate from the existing primary agent (name + model) so re-running the
+  // wizard shows what's set up. Already-configured → starts "saved" so you can
+  // step through without re-entering or re-saving.
   useEffect(() => {
-    api.getModels().then(r => {
-      if (r.ok) {
-        const enabled = r.data.filter((m: Model) => m.isEnabled);
-        setModels(enabled);
-        if (enabled.length > 0) setSelectedModel(enabled[0].id);
+    let cancelled = false;
+    (async () => {
+      const [modelsRes, nameRes, idRes] = await Promise.all([
+        api.getModels(),
+        api.getSetting('primary_agent_name'),
+        api.getSetting('primary_agent_id'),
+      ]);
+      if (cancelled) return;
+      const enabled = modelsRes.ok ? modelsRes.data.filter((m: Model) => m.isEnabled) : [];
+      setModels(enabled);
+      const existingName = nameRes.ok ? (nameRes.data.value ?? '') : '';
+      const existingId = idRes.ok ? (idRes.data.value ?? '') : '';
+      let existingModel = '';
+      if (existingId) {
+        const agentRes = await api.getAgent(existingId);
+        if (!cancelled && agentRes.ok) existingModel = agentRes.data.modelId ?? '';
       }
-    });
+      if (cancelled) return;
+      if (existingName) setAgentName(existingName);
+      setSelectedModel(existingModel || (enabled[0]?.id ?? ''));
+      if (existingName) setSaved(true);
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   const handleSave = async () => {
@@ -960,14 +1036,14 @@ const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
 
       <div>
         <label className="block text-sm font-medium text-ui/70 mb-1">Agent Name</label>
-        <input type="text" value={agentName} onChange={(e) => setAgentName(e.target.value)} placeholder="e.g., Atlas, Friday, Jarvis"
+        <input type="text" value={agentName} onChange={(e) => { setAgentName(e.target.value); setSaved(false); }} placeholder="e.g., Atlas, Friday, Jarvis"
           className="glass-input" />
       </div>
 
       {models.length > 0 && (
         <div>
           <label className="block text-sm font-medium text-ui/70 mb-1">Model</label>
-          <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}
+          <select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); setSaved(false); }}
             className="glass-select w-full">
             {models.map((m) => <option key={m.id} value={m.id}>{m.name} ({m.apiModelId})</option>)}
           </select>
@@ -979,7 +1055,7 @@ const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
         <div className="flex gap-4">
           {['casual', 'balanced', 'formal'].map((s) => (
             <label key={s} className="flex items-center gap-2 cursor-pointer">
-              <input type="radio" name="style" value={s} checked={style === s} onChange={() => setStyle(s)}
+              <input type="radio" name="style" value={s} checked={style === s} onChange={() => { setStyle(s); setSaved(false); }}
                 className="w-4 h-4 text-cp-amber bg-ui/[0.08] text-ui/25 focus:ring-cp-amber" />
               <span className="text-sm text-ui/70 capitalize">{s}</span>
             </label>
@@ -995,7 +1071,7 @@ const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
           Describe how this agent should behave — its tone, areas of expertise, things to avoid, or any special instructions.
           You can edit this later from the agent's Config tab.
         </p>
-        <textarea value={personality} onChange={(e) => setPersonality(e.target.value)} rows={4}
+        <textarea value={personality} onChange={(e) => { setPersonality(e.target.value); setSaved(false); }} rows={4}
           placeholder="e.g., Always explain your reasoning. Be proactive about suggesting improvements. Avoid making changes without asking first."
           className="glass-textarea resize-none" />
       </div>
@@ -1028,16 +1104,26 @@ const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
   useEffect(() => {
-    api.getModels().then(r => {
-      if (r.ok) {
-        const enabled = r.data.filter((m: Model) => m.isEnabled);
-        setModels(enabled);
-        // Default to cheapest model (last in list, or first Ollama model)
-        const ollamaModel = enabled.find((m: Model) => m.inputCostPerM === 0 || m.inputCostPerM === null);
-        const cheapest = ollamaModel ?? enabled[enabled.length - 1];
-        if (cheapest) setSelectedModel(cheapest.id);
-      }
-    });
+    let cancelled = false;
+    (async () => {
+      const [modelsRes, nameRes, modelRes] = await Promise.all([
+        api.getModels(),
+        api.getSetting('pm_agent_name'),
+        api.getSetting('pm_agent_model'),
+      ]);
+      if (cancelled) return;
+      const enabled = modelsRes.ok ? modelsRes.data.filter((m: Model) => m.isEnabled) : [];
+      setModels(enabled);
+      const existingName = nameRes.ok ? (nameRes.data.value ?? '') : '';
+      const existingModel = modelRes.ok ? (modelRes.data.value ?? '') : '';
+      // Default to cheapest model (last in list, or first Ollama model)
+      const ollamaModel = enabled.find((m: Model) => m.inputCostPerM === 0 || m.inputCostPerM === null);
+      const cheapest = ollamaModel ?? enabled[enabled.length - 1];
+      if (existingName) setPmName(existingName);
+      setSelectedModel(existingModel || cheapest?.id || '');
+      if (existingName) setSaved(true);   // already set up → step through freely
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   const handleSave = async () => {
@@ -1111,15 +1197,25 @@ const TrainerAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
   useEffect(() => {
-    api.getModels().then(r => {
-      if (r.ok) {
-        const enabledModels = r.data.filter((m: Model) => m.isEnabled);
-        setModels(enabledModels);
-        const ollamaModel = enabledModels.find((m: Model) => m.inputCostPerM === 0 || m.inputCostPerM === null);
-        const cheapest = ollamaModel ?? enabledModels[enabledModels.length - 1];
-        if (cheapest) setSelectedModel(cheapest.id);
-      }
-    });
+    let cancelled = false;
+    (async () => {
+      const [modelsRes, nameRes, modelRes] = await Promise.all([
+        api.getModels(),
+        api.getSetting('trainer_agent_name'),
+        api.getSetting('trainer_agent_model'),
+      ]);
+      if (cancelled) return;
+      const enabledModels = modelsRes.ok ? modelsRes.data.filter((m: Model) => m.isEnabled) : [];
+      setModels(enabledModels);
+      const existingName = nameRes.ok ? (nameRes.data.value ?? '') : '';
+      const existingModel = modelRes.ok ? (modelRes.data.value ?? '') : '';
+      const ollamaModel = enabledModels.find((m: Model) => m.inputCostPerM === 0 || m.inputCostPerM === null);
+      const cheapest = ollamaModel ?? enabledModels[enabledModels.length - 1];
+      if (existingName) setTrainerName(existingName);
+      setSelectedModel(existingModel || cheapest?.id || '');
+      if (existingName) setSaved(true);
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   const handleSave = async () => {
@@ -1194,16 +1290,26 @@ const DreamerStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
 
   useEffect(() => {
-    api.getModels().then(r => {
-      if (r.ok) {
-        const enabledModels = r.data.filter((m: Model) => m.isEnabled);
-        setModels(enabledModels);
-        // Default to a Sonnet-class model, or cheapest available
-        const sonnet = enabledModels.find((m: Model) => m.apiModelId.includes('sonnet'));
-        const fallback = enabledModels.find((m: Model) => m.inputCostPerM === 0 || m.inputCostPerM === null) ?? enabledModels[0];
-        setSelectedModel((sonnet ?? fallback)?.id ?? '');
-      }
-    });
+    let cancelled = false;
+    (async () => {
+      const [modelsRes, cfgRes] = await Promise.all([
+        api.getModels(),
+        api.getDreamingConfig(),
+      ]);
+      if (cancelled) return;
+      const enabledModels = modelsRes.ok ? modelsRes.data.filter((m: Model) => m.isEnabled) : [];
+      setModels(enabledModels);
+      const cfg = cfgRes.ok ? cfgRes.data : null;
+      // Default to a Sonnet-class model, or cheapest available
+      const sonnet = enabledModels.find((m: Model) => m.apiModelId.includes('sonnet'));
+      const fallback = enabledModels.find((m: Model) => m.inputCostPerM === 0 || m.inputCostPerM === null) ?? enabledModels[0];
+      setSelectedModel(cfg?.modelId || (sonnet ?? fallback)?.id || '');
+      if (cfg?.dreamTime) setDreamTime(cfg.dreamTime);
+      if (cfg?.dreamMode === 'full' || cfg?.dreamMode === 'light') setDreamMode(cfg.dreamMode);
+      // An existing dreamer config (a model was chosen) → step through freely.
+      if (cfg?.modelId) setSaved(true);
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   const handleSave = async () => {
@@ -1351,6 +1457,31 @@ const IMessageStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
+
+  // Hydrate from existing iMessage config so re-running the wizard shows the
+  // current approved senders. If it's been configured before (the key exists),
+  // start "saved" so you can step through without re-saving / re-sending the
+  // welcome message.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [enRes, sendersRes] = await Promise.all([
+        api.getSetting('imessage_enabled'),
+        api.getSetting('imessage_approved_senders'),
+      ]);
+      if (cancelled) return;
+      const configured = enRes.ok && enRes.data.value !== null;
+      if (enRes.ok && enRes.data.value === 'true') setEnabled(true);
+      if (sendersRes.ok && sendersRes.data.value) {
+        try {
+          const parsed = JSON.parse(sendersRes.data.value);
+          if (Array.isArray(parsed) && parsed.length > 0) setSenders(parsed as SetupSafeSender[]);
+        } catch { /* malformed — ignore */ }
+      }
+      if (configured) setSaved(true);
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const addSender = () => {
     const address = newAddress.trim();
@@ -1730,11 +1861,26 @@ const WebSearchStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
   const [provider, setProvider] = useState('brave');
   const [apiKey, setApiKey] = useState('');
   const [saved, setSaved] = useState(false);
+  const [hasExistingKey, setHasExistingKey] = useState(false);
 
   useEffect(() => { onReady?.(saved); }, [saved, onReady]);
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState<'valid' | 'invalid' | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Hydrate from existing search config. The key is a secret (never echoed), but
+  // hasKey tells us it's configured — pre-fill the provider and mark ready so you
+  // can step through without re-entering the key.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const res = await api.getSearchConfig();
+      if (cancelled || !res.ok) return;
+      if (res.data.provider) setProvider(res.data.provider);
+      if (res.data.hasKey) { setSaved(true); setHasExistingKey(true); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const handleSave = async () => {
     if (!apiKey.trim()) {
@@ -1790,7 +1936,10 @@ const WebSearchStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
         <div className="px-3 py-2 rounded-lg glass-badge-teal border border-cp-teal/20 text-sm">API key validated!</div>
       )}
       {error && <div className="px-3 py-2 rounded-lg bg-cp-coral/10 border border-cp-coral/20 text-cp-coral text-sm">{error}</div>}
-      {saved && !apiKey.trim() && (
+      {hasExistingKey && !apiKey.trim() && (
+        <div className="px-3 py-2 rounded-lg glass-badge-teal border border-cp-teal/20 text-sm">Web search is already configured. Enter a new key to replace it.</div>
+      )}
+      {!hasExistingKey && saved && !apiKey.trim() && (
         <div className="px-3 py-2 rounded-lg bg-ui/[0.05] text-ui/40 text-sm">Web search skipped. You can add a key later in Settings.</div>
       )}
 
@@ -1807,36 +1956,24 @@ const WebSearchStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
 // ── Complete ──
 
 const CompleteStep = () => {
-  const [primaryName, setPrimaryName] = useState('');
-  const [pmName, setPmName] = useState('');
-  const [trainerName, setTrainerName] = useState('');
-
-  useEffect(() => {
-    const load = async () => {
-      const [pn, pm, tn] = await Promise.all([
-        api.getSetting('primary_agent_name'),
-        api.getSetting('pm_agent_name'),
-        api.getSetting('trainer_agent_name'),
-      ]);
-      if (pn.ok && pn.data.value) setPrimaryName(pn.data.value);
-      if (pm.ok && pm.data.value) setPmName(pm.data.value);
-      if (tn.ok && tn.data.value) setTrainerName(tn.data.value);
-    };
-    load();
-  }, []);
+  const [showTutorial, setShowTutorial] = useState(false);
 
   return (
     <div className="text-center space-y-4">
-      <div className="text-5xl">&#128640;</div>
       <h3 className="text-xl font-semibold text-ui">You're all set!</h3>
-      <div className="text-sm text-ui/55 space-y-1">
-        <p>Primary agent: <strong className="text-ui/90">{primaryName || 'Agent'}</strong></p>
-        {pmName && <p>Project manager: <strong className="text-ui/90">{pmName}</strong></p>}
-        {trainerName && <p>Technique trainer: <strong className="text-ui/90">{trainerName}</strong></p>}
+      <p className="text-sm text-ui/55">
+        New to the dojo? Take a quick tour of how it all fits together — the orb, your team of agents,
+        memory, and more.
+      </p>
+      <div>
+        <button type="button" onClick={() => setShowTutorial(true)} className="btn dojo3-tut-open">
+          Show me around
+        </button>
       </div>
       <p className="text-sm text-ui/40">
-        Click <strong className="text-green-400">Launch</strong> to enter the dashboard and start chatting.
+        Or click <strong className="text-green-700">Enter</strong> to open the dashboard and start chatting.
       </p>
+      {showTutorial && <DojoTutorial onClose={() => setShowTutorial(false)} />}
     </div>
   );
 };
@@ -1855,8 +1992,8 @@ const LaunchButton = () => {
 
   return (
     <button onClick={handleLaunch} disabled={launching}
-      className="px-6 py-2.5 bg-cp-amber hover:bg-cp-amber-light disabled:bg-ui/[0.12] text-ui text-sm font-semibold rounded-lg transition-colors">
-      {launching ? 'Launching...' : 'Launch'}
+      className="btn btn--primary disabled:opacity-30 disabled:cursor-not-allowed">
+      {launching ? 'Entering…' : 'Enter'}
     </button>
   );
 };

@@ -4811,7 +4811,7 @@ const UpdateTab = () => {
         <div>
           <div className="scard__title">Software Update</div>
           <p className="text-xs text-ui/40 mt-1">
-            Check for and install updates from the Agent D.O.J.O. repository.
+            Check for and install updates from the Agent DOJO repository.
           </p>
         </div>
 

@@ -5,7 +5,7 @@ import { useState, useEffect, useCallback } from 'react';
 // ════════════════════════════════════════
 //
 // FENG-SHUI EXEMPTION: this component intentionally uses standard Tailwind
-// status colors (text-green-400, text-yellow-400) for installed/installing
+// status colors (text-green-700, text-yellow-400) for installed/installing
 // status. Setup wizard is explicitly exempt per FENG-SHUI-THEME-SPEC.md.
 
 const API = '/api/setup';
@@ -58,7 +58,7 @@ const DepItem = ({ label, status, detail, error, onRetry }: {
     : status === 'failed' ? '\u274C'
     : '\u2B1C';
 
-  const color = status === 'installed' ? 'text-green-400'
+  const color = status === 'installed' ? 'text-green-700'
     : status === 'installing' ? 'text-yellow-400'
     : status === 'checking' ? 'text-yellow-400'
     : status === 'failed' ? 'text-red-400'
@@ -433,7 +433,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
                 <p className="text-xs text-ui/40 mt-1">Good balance of capability and speed for machines with 16GB+ RAM. Free, runs locally.</p>
               </div>
               {installedModels.some(m => m.name.includes('qwen3.5')) ? (
-                <span className="text-xs text-green-400 shrink-0">{'\u2705'} Installed</span>
+                <span className="text-xs text-green-700 shrink-0">{'\u2705'} Installed</span>
               ) : (
                 <button
                   onClick={() => pullModel('qwen3.5:9b')}
@@ -634,7 +634,7 @@ export const SetupPermissions = () => {
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {status === 'granted' ? (
-                    <span className="text-[10px] text-green-400">Granted</span>
+                    <span className="text-[10px] text-green-700">Granted</span>
                   ) : (
                     <>
                       <button
@@ -672,7 +672,7 @@ export const SetupPermissions = () => {
           Re-check permissions
         </button>
         {allGranted && (
-          <span className="text-xs text-green-400">All permissions granted</span>
+          <span className="text-xs text-green-700">All permissions granted</span>
         )}
       </div>
     </div>

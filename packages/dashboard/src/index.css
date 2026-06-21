@@ -1771,6 +1771,312 @@
   .dojo3-login .dojo3-orb__glass.orb-canvas { animation: none; }
 }
 
+/* ── Setup wizard: the dojo's onboarding on the cream stage. The orb observes
+   from the top (stays put) while the wizard content scrolls beneath it. Reuses
+   the stage's token system + the login card's quiet glass for one consistent
+   v3 look. ── */
+.dojo3-stage.dojo3-setup {
+  position: fixed;
+  inset: 0;
+  /* fixed-px orb metrics — the engine reads these via parseFloat, so a
+     clamp()/calc() would parse to NaN and park the orb at the top. */
+  --dojo3-orb-top: 40px;
+  --dojo3-orb-size: 104px;
+  /* Flip the channel that drives every Tailwind `text-ui/*`, `bg-ui/*`, and the
+     glass-* surfaces from the legacy dark-theme white to the dojo's dark ink, so
+     the wizard's existing step markup reads correctly on the cream stage (the
+     light-theme flip the token system was built for). */
+  --ui-on-base-ch: 61 50 38;
+}
+@media (max-width: 768px) {
+  .dojo3-stage.dojo3-setup {
+    --dojo3-orb-top: 28px;
+    --dojo3-orb-size: 88px;
+  }
+}
+/* A flex column filling the stage below the orb: a fixed chrome (wordmark +
+   progress + step label) at top, a fixed footer (nav) at bottom, and ONLY the
+   card scrolling in between. The orb (a child of the stage, absolutely
+   positioned) stays observing above it all. */
+.dojo3-setup__layout {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: calc(var(--dojo3-orb-top) + var(--dojo3-orb-size) + 14px) 20px 0;
+}
+.dojo3-setup__chrome {
+  flex: none;
+  width: 100%;
+  max-width: 540px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 16px;
+}
+.dojo3-setup__scroll {
+  flex: 1 1 auto;
+  min-height: 0;            /* let the flex child shrink so it actually scrolls */
+  width: 100%;
+  max-width: 540px;
+  overflow-y: auto;
+  padding: 14px 4px 16px;   /* room for the card's shadow + the fade band */
+  /* a soft opacity fade at the top + bottom so the card melts away as it
+     scrolls under the fixed chrome and above the footer (no hard cut) */
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 22px, #000 calc(100% - 22px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 22px, #000 calc(100% - 22px), transparent 100%);
+}
+.dojo3-setup__footer {
+  flex: none;
+  width: 100%;
+  max-width: 540px;
+  padding: 16px 0 24px;
+}
+/* the wordmark: thin + widely tracked, matching the in-app + login DOJO mark */
+.dojo3-setup__wordmark {
+  font: 300 clamp(26px, 6vw, 32px)/1 var(--dojo3-font-ui);
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+  text-transform: uppercase;
+  color: var(--dojo3-ink);
+}
+/* progress: champagne (current) / teal (done) dots joined by rails */
+.dojo3-setup__progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.dojo3-setup__progseg { display: flex; align-items: center; }
+.dojo3-setup__dot {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 19px;
+  height: 19px;
+  border-radius: 999px;
+  font: 600 8.5px/1 var(--dojo3-font-mono);
+  color: var(--dojo3-ink-4);
+  background: rgba(120, 96, 60, 0.10);
+  transition: background 0.3s ease, color 0.3s ease, box-shadow 0.3s ease;
+}
+.dojo3-setup__dot.is-current {
+  color: var(--btn-primary-text);
+  background: linear-gradient(180deg, var(--dojo3-champagne-hot), var(--dojo3-champagne));
+  box-shadow: 0 0 0 3px rgba(217, 165, 92, 0.22);
+}
+.dojo3-setup__dot.is-done {
+  color: var(--btn-success-text);
+  background: var(--cp-teal);
+}
+.dojo3-setup__rail {
+  flex: none;
+  width: 10px;
+  height: 2px;
+  margin: 0 1px;
+  border-radius: 2px;
+  background: rgba(120, 96, 60, 0.14);
+  transition: background 0.3s ease;
+}
+.dojo3-setup__rail.is-done { background: var(--cp-teal); }
+.dojo3-setup__step {
+  margin: 0;
+  text-align: center;
+  font: 600 16px/1.2 var(--dojo3-font-ui);
+  color: var(--dojo3-ink);
+}
+/* the step card: the same quiet glass as the login card */
+.dojo3-setup__card {
+  padding: 22px;
+  border-radius: 18px;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(180deg, var(--dojo3-glass-hi), var(--dojo3-glass-lo)) padding-box,
+    var(--dojo3-edge-soft) border-box;
+  backdrop-filter: blur(26px) saturate(1.2);
+  -webkit-backdrop-filter: blur(26px) saturate(1.2);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 18px 44px -28px rgba(80, 58, 30, 0.5);
+}
+.dojo3-setup__nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+/* a quiet ghost "Back" that doesn't compete with the champagne "Next" */
+.dojo3-setup__back {
+  background: transparent;
+  box-shadow: none;
+  color: var(--dojo3-ink-3);
+}
+.dojo3-setup__back:hover:not(:disabled) { color: var(--dojo3-ink); }
+
+/* the soft champagne "Show me around" button on the final step — clearly a
+   secondary action that doesn't compete with the champagne "Enter" in the nav */
+.dojo3-setup .dojo3-tut-open,
+.dojo3-setup .dojo3-tut-open:hover {
+  color: var(--dojo3-amber-ink);
+  font-weight: 600;
+  background:
+    linear-gradient(180deg, rgba(255, 248, 234, 0.85), rgba(246, 226, 187, 0.55)) padding-box,
+    linear-gradient(135deg, rgba(217, 165, 92, 0.5), rgba(217, 165, 92, 0.28)) border-box;
+  border: 1px solid transparent;
+}
+.dojo3-setup .dojo3-tut-open:hover {
+  background:
+    linear-gradient(180deg, rgba(255, 250, 240, 0.95), rgba(246, 226, 187, 0.7)) padding-box,
+    linear-gradient(135deg, rgba(217, 165, 92, 0.6), rgba(217, 165, 92, 0.38)) border-box;
+}
+
+/* ── "How the dojo works" tutorial modal (final setup step) ── */
+.dojo3-tut-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: rgba(58, 44, 28, 0.34);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+.dojo3-tut {
+  width: 100%;
+  max-width: 560px;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 20px;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(180deg, var(--dojo3-glass-hi), var(--dojo3-glass-lo)) padding-box,
+    var(--dojo3-edge-soft) border-box;
+  backdrop-filter: blur(30px) saturate(1.2);
+  -webkit-backdrop-filter: blur(30px) saturate(1.2);
+  box-shadow: 0 34px 90px -34px rgba(58, 40, 16, 0.6);
+  overflow: hidden;
+}
+.dojo3-tut--wide { max-width: 760px; }
+.dojo3-tut__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 15px 18px 13px;
+  border-bottom: 1px solid rgba(120, 96, 60, 0.12);
+}
+.dojo3-tut__title {
+  margin: 0;
+  font: 600 16px/1.2 var(--dojo3-font-ui);
+  color: var(--dojo3-ink);
+}
+.dojo3-tut__close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--dojo3-ink-3);
+  padding: 2px 7px;
+  border-radius: 8px;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.dojo3-tut__close:hover { color: var(--dojo3-ink); background: rgba(120, 96, 60, 0.08); }
+
+/* two panes: chapter nav (left) + scrolling content (right) */
+.dojo3-tut__main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+.dojo3-tut__nav {
+  flex: none;
+  width: 172px;
+  overflow-y: auto;
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-right: 1px solid rgba(120, 96, 60, 0.12);
+}
+.dojo3-tut__navbtn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  padding: 8px 11px;
+  border-radius: 9px;
+  font: 500 12.5px/1.25 var(--dojo3-font-ui);
+  color: var(--dojo3-ink-3);
+  transition: background 0.16s ease, color 0.16s ease;
+}
+.dojo3-tut__navbtn:hover { background: rgba(120, 96, 60, 0.07); color: var(--dojo3-ink); }
+.dojo3-tut__navbtn.is-active {
+  color: var(--dojo3-amber-ink);
+  font-weight: 600;
+  background: linear-gradient(180deg, rgba(246, 226, 187, 0.6), rgba(217, 165, 92, 0.16));
+}
+.dojo3-tut__content {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 18px 20px 22px;
+}
+.dojo3-tut__sec-title {
+  margin: 0 0 8px;
+  font: 600 15px/1.3 var(--dojo3-font-ui);
+  color: var(--dojo3-ink);
+}
+.dojo3-tut__sec-body {
+  margin: 0 0 12px;
+  font: 400 13px/1.55 var(--dojo3-font-body);
+  color: var(--dojo3-ink-2);
+}
+.dojo3-tut__img {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 4px;
+  border-radius: 12px;
+  border: 1px solid rgba(120, 96, 60, 0.16);
+  box-shadow: 0 12px 30px -20px rgba(58, 40, 16, 0.5);
+}
+.dojo3-tut__foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-top: 1px solid rgba(120, 96, 60, 0.12);
+}
+.dojo3-tut__count {
+  font: 500 11px/1 var(--dojo3-font-mono);
+  letter-spacing: 0.08em;
+  color: var(--dojo3-ink-4);
+}
+.dojo3-tut__back { background: transparent; box-shadow: none; color: var(--dojo3-ink-3); }
+.dojo3-tut__back:hover:not(:disabled) { color: var(--dojo3-ink); }
+/* mobile: stack the chapter nav into a horizontal scroller above the content */
+@media (max-width: 640px) {
+  .dojo3-tut__main { flex-direction: column; }
+  .dojo3-tut__nav {
+    width: 100%;
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid rgba(120, 96, 60, 0.12);
+    gap: 4px;
+  }
+  .dojo3-tut__navbtn { white-space: nowrap; flex: none; }
+}
+
 /* ── Focal haze: stacked backdrop-blur bands (ported from prototype
    1307-1367, scoped). The conversation lives in a volume; content
    drifting up past the orb or down under the composer defocuses. ── */

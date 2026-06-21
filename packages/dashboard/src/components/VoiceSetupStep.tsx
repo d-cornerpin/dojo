@@ -123,7 +123,7 @@ export const VoiceSetupStep = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-lg font-semibold text-ui mb-1">Talk to your dojo (optional)</h3>
+        <h3 className="text-lg font-semibold text-ui mb-1">Talk to your agents (optional)</h3>
         <p className="text-sm text-ui/55">
           Set up voice mode so you can have spoken conversations with your primary agent.
           Everything runs locally — no audio leaves your machine. You can skip this and turn it on later
