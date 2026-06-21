@@ -107,6 +107,29 @@ export function outputPersistenceClassifier(
   return { decision: 'persist', reason: 'normal text persistence' };
 }
 
+// ── Generic-closeout detection ──
+
+// Matches text that is ENTIRELY a generic acknowledgment/closeout and nothing
+// else: "Done.", "All set.", "Got it.", "Done. Locked in.". Used by the loop
+// to suppress a redundant closeout on a continuation iteration AFTER a real
+// reply already surfaced this turn. Deliberately strict — anything with
+// substantive content (a sentence, a specific confirmation like "Cancelled the
+// noon reminder.", anything past ~30 chars) does NOT match and is never
+// suppressed.
+const CLOSEOUT_PHRASE =
+  '(?:done|all done|all set|you\'?re all set|you are all set|all cleared|all wrapped|wrapped up|complete|completed|task complete|marked complete|finished|all good|noted|got it|on it|roger|understood|will do|consider it done|locked in)';
+const CLOSEOUT_WHOLE_RE = new RegExp(
+  `^[\\s\`*_>-]*${CLOSEOUT_PHRASE}(?:[.!,\\s—–-]+${CLOSEOUT_PHRASE})*[.!\\s\`*_]*$`,
+  'i',
+);
+
+export function isGenericCloseout(text: string | null): boolean {
+  if (!text) return false;
+  const t = text.trim();
+  if (t.length === 0 || t.length > 30) return false; // real closeouts are short
+  return CLOSEOUT_WHOLE_RE.test(t);
+}
+
 // ── Sanitization ──
 
 /**

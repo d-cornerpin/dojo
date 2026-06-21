@@ -171,6 +171,12 @@ export interface AgentTurnState {
 
   // ── Engine-tracked turn flags ──
   sentToAgentThisTurn: boolean;
+  // True once a user-facing reply has surfaced earlier THIS turn. Used by the
+  // engine to suppress a redundant trailing closeout ("Done." / "All set.") on
+  // a later continuation iteration — the deterministic floor for "respond once
+  // per request" so a weak model that forgets [no-reply] can't spam closeouts.
+  // The first reply is never touched (this is false until one lands).
+  surfacedReplyThisTurn: boolean;
   lastAssistantTextForIM: string | null;
   // v2.7.23 — set when the agent calls a channel-specific send tool
   // (imessage_send, teams_send_message) successfully this turn. The
@@ -413,6 +419,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     inboundContext: params.inboundContext,
 
     sentToAgentThisTurn: false,
+    surfacedReplyThisTurn: false,
     lastAssistantTextForIM: null,
     explicitSendThisTurn: {},
     trackerToolCalledThisTurn: false,

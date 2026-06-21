@@ -112,7 +112,7 @@ import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD } from '../../memory/compaction.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
-import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText } from './classifiers/output.js';
+import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout } from './classifiers/output.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
 import { permissionAlternativeFinder } from './classifiers/permission.js';
 import { semanticTechniqueMatches, SEMANTIC_STRONG_THRESHOLD, buildTechniqueMatchQuery } from './classifiers/technique.js';
@@ -2257,6 +2257,46 @@ export async function runV2Turn(agentId: string): Promise<void> {
         logger.info('v2: agent ended turn silently via [no-reply] sentinel', {
           agentId, loopCount: state.loopCount,
         }, agentId);
+      }
+
+      // ── Redundant-closeout floor (engine-enforced "respond once") ──
+      // If a user-facing reply already surfaced earlier THIS turn and this
+      // continuation iteration is nothing but a generic closeout ("Done.",
+      // "All set.", "Got it.") with no tool calls, swallow it the same way a
+      // bare [no-reply] is swallowed — clear the already-streamed bubble so it
+      // doesn't linger. This is the deterministic backstop for the model
+      // forgetting to [no-reply] a redundant closeout. It can ONLY ever drop a
+      // duplicate: the first reply is never touched (surfacedReplyThisTurn is
+      // false until one lands), and substantive text never matches
+      // isGenericCloseout. No system marker — the agent already replied.
+      if (
+        persistedContent &&
+        result.toolCalls.length === 0 &&
+        state.surfacedReplyThisTurn &&
+        isGenericCloseout(persistedContent)
+      ) {
+        persistedContent = null;
+        broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
+        broadcast({
+          type: 'chat:message',
+          agentId,
+          message: {
+            id: messageId, agentId, role: 'assistant' as const,
+            content: '',
+            tokenCount: null, modelId: null, cost: null, latencyMs: null,
+            createdAt: new Date().toISOString(),
+          },
+        });
+        logger.info('v2: suppressed redundant closeout (a reply already surfaced this turn)', {
+          agentId, loopCount: state.loopCount,
+        }, agentId);
+      }
+
+      // Arm the floor: once any user-facing reply surfaces this turn, later
+      // generic closeouts get suppressed (above). Set AFTER the suppression
+      // checks so a just-swallowed closeout (now null) doesn't arm it.
+      if (persistedContent && persistedContent.trim().length > 0 && !state.surfacedReplyThisTurn) {
+        state = advance(state, { surfacedReplyThisTurn: true });
       }
 
 
