@@ -78,7 +78,7 @@ export function Dojo3Composer({
   const voice = useVoiceMode({ agentId });
   const dojoOrb = useDojoOrb();
   const { warning: toastWarning } = useToast();
-  const { isAway, toggle: togglePresence } = usePresence();
+  const { presence, isAway, toggle: togglePresence } = usePresence();
 
   /* ---- voice session timing + wave ---- */
   const [stageEl, setStageEl] = useState<HTMLElement | null>(null);
@@ -584,6 +584,10 @@ export function Dojo3Composer({
 
         {/* BAR: presence (left) + attach / voice / send-or-stop (right) */}
         <div className="composer__bar">
+          {/* Presence (in-dojo / away) only matters when the iMessage bridge is
+              enabled — that's the channel that reaches the user while away. Hide
+              it entirely otherwise. */}
+          {presence?.imessageConfigured && (
           <button
             type="button"
             className={`composer__presence ${isAway ? 'is-out' : ''}`}
@@ -595,6 +599,7 @@ export function Dojo3Composer({
             <span className="composer__presence-dot" aria-hidden="true" />
             <span className="composer__presence-text">{isAway ? 'Out · iMessage' : 'In the Dojo'}</span>
           </button>
+          )}
 
           <div className="composer__actions">
             {/* ATTACH — toggles the in-box drop zone */}

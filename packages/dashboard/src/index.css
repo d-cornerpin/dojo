@@ -2613,6 +2613,9 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  /* Keep the action buttons right-aligned even when the presence pill on the
+     left is hidden (iMessage bridge disabled). */
+  margin-left: auto;
 }
 
 /* presence toggle (bottom-left): in the dojo vs out / iMessage */

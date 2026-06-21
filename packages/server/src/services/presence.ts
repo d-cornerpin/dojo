@@ -39,3 +39,15 @@ export function isImessageConfigured(): boolean {
   // "Configured" means senders are set up — the bridge doesn't need to be actively running
   return (status.enabled || status.running) && !!getDefaultSender();
 }
+
+/**
+ * Stricter than isImessageConfigured: the bridge's enable toggle is actually ON
+ * (not merely set up or lingering as running) AND a default sender exists.
+ * Gates the composer's in-dojo/away presence toggle so "away" only appears when
+ * messages can really forward via iMessage — if the bridge is disabled, the
+ * toggle is hidden entirely.
+ */
+export function isImessageEnabled(): boolean {
+  const status = getIMBridgeStatus();
+  return status.enabled && !!getDefaultSender();
+}

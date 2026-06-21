@@ -10,7 +10,7 @@ import { getResourceInfo } from '../../services/resource-monitor.js';
 import { checkOllamaHealth, getOllamaStatus, listOllamaModels } from '../../services/ollama.js';
 import { getOllamaLock, getActiveOllamaModelsByProvider, getOllamaMaxConcurrent } from '../../services/ollama-lock.js';
 import { getWSStatus } from '../ws.js';
-import { getPresence, setPresence, isImessageConfigured, type PresenceStatus } from '../../services/presence.js';
+import { getPresence, setPresence, isImessageEnabled, type PresenceStatus } from '../../services/presence.js';
 import {
   getTunnelStatus, enableTunnel, disableTunnel, startTunnel, stopTunnel,
   isCloudflaredInstalled, installCloudflared, setTunnelToken,
@@ -229,7 +229,10 @@ servicesRouter.get('/presence', (c) => {
     ok: true,
     data: {
       status: getPresence(),
-      imessageConfigured: isImessageConfigured(),
+      // Gates the composer's in-dojo/away toggle: only show it when the iMessage
+      // bridge is actually ENABLED (not merely set up), so a disabled bridge
+      // hides the toggle entirely.
+      imessageConfigured: isImessageEnabled(),
     },
   });
 });
