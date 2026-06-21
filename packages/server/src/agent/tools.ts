@@ -51,14 +51,14 @@ import { googleWriteToolDefinitions, executeGoogleWriteTool } from '../google/to
 import { slidesToolDefinitions, slidesToolNames, executeGoogleSlidesTool } from '../google/tools-slides.js';
 import { pdfToolDefinitions, pdfToolNames, executePdfTool } from './pdf-tools.js';
 import { formsToolDefinitions, formsToolNames, executeGoogleFormsTool } from '../google/tools-forms.js';
-import { getAgentGoogleAccessLevel, getEnabledServices, isGoogleConnected, getGoogleWorkspaceConfig } from '../google/auth.js';
+import { getAgentGoogleAccessLevel, getEnabledServices, isGoogleConnected, getGoogleWorkspaceConfig, isAnyGoogleAccountConnected, isGoogleServiceEnabledForKind } from '../google/auth.js';
 import { microsoftReadToolDefinitions, executeMicrosoftReadTool } from '../microsoft/tools-read.js';
 import { plaudReadToolDefinitions, executePlaudTool } from '../plaud/tools-read.js';
 import { isPlaudConnected } from '../plaud/auth.js';
 import { credentialsToolDefinitions, executeCredentialTool } from '../credentials/tools.js';
 import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../microsoft/tools-write.js';
 import { officeCreateToolDefinitions, officeWordEditToolDefinitions, officeEditToolDefinitions, executeOfficeTool } from '../microsoft/tools-office.js';
-import { getAgentMicrosoftAccessLevel, getEnabledMsServices, isMicrosoftConnected, getMicrosoftWorkspaceConfig } from '../microsoft/auth.js';
+import { getAgentMicrosoftAccessLevel, isMicrosoftConnected, getMicrosoftWorkspaceConfig, isAnyMicrosoftAccountConnected, isMsServiceEnabledForKind } from '../microsoft/auth.js';
 import { areOfficePackagesInstalled } from '../microsoft/office-packages.js';
 import { getTunnelStatus } from '../services/tunnel.js';
 import { getModelCapabilities } from '../services/capabilities.js';
@@ -452,15 +452,13 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   const isPM = isPMAgent(agentId);
 
   const googleAccess = getAgentGoogleAccessLevel(agentId, isPrimary, isPM);
-  const enabledSvcAgent = getEnabledServices('agent');
-  const enabledSvcUser = getEnabledServices('user');
-  // v2.7.0 — per-slot connection state. Determines whether agent_* /
-  // user_* tool variants belong in the index at all. Without this,
-  // disconnecting one slot leaves a half-broken tool surface visible
-  // to the agent (calls return "Not authenticated"); the agent burns
-  // tokens trying the wrong tool, then has to recover.
-  const agentSlotConnected = isGoogleConnected('agent');
-  const userSlotConnected = isGoogleConnected('user');
+  // Path B: a kind's tools belong in the index if ANY of that kind's connected
+  // accounts has the service enabled — not just the position-1 row. Without
+  // this, a half-connected kind leaves a broken tool surface visible to the
+  // agent (calls return "Not authenticated"); the agent burns tokens trying
+  // the wrong tool, then has to recover.
+  const agentKindConnected = isAnyGoogleAccountConnected('agent');
+  const userKindConnected = isAnyGoogleAccountConnected('user');
 
   // Service-to-tool-prefix mapping for filtering by enabled service.
   const serviceToolPrefixes: Record<string, string[]> = {
@@ -474,26 +472,26 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   };
 
   /**
-   * Two filters in one: (1) is this tool's slot connected? (2) is the
-   * underlying service enabled on that slot? Both must pass.
+   * Two filters in one: (1) is this tool's kind connected (any account)?
+   * (2) does any connected account of that kind have the underlying service
+   * enabled? Both must pass.
    *
-   * `user_*` tools route through the user slot; everything else routes
-   * through the agent slot. The check strips `user_` to find the
-   * service prefix so `user_gmail_inbox` correctly maps to the Gmail
-   * service (not the catch-all "always allowed" branch).
+   * `user_*` tools route through the user kind; everything else through the
+   * agent kind. The check strips `user_` to find the service prefix so
+   * `user_gmail_inbox` correctly maps to the Gmail service (not the catch-all
+   * "always allowed" branch).
    */
   function isToolEnabledByService(toolName: string): boolean {
-    const isUserSlot = toolName.startsWith('user_');
-    const canonical = isUserSlot ? toolName.slice('user_'.length) : toolName;
-    const slotConnected = isUserSlot ? userSlotConnected : agentSlotConnected;
-    if (!slotConnected) return false;
-    const enabledForSlot = isUserSlot ? enabledSvcUser : enabledSvcAgent;
+    const isUserKind = toolName.startsWith('user_');
+    const canonical = isUserKind ? toolName.slice('user_'.length) : toolName;
+    const kind = isUserKind ? 'user' : 'agent';
+    if (!(isUserKind ? userKindConnected : agentKindConnected)) return false;
     for (const [service, prefixes] of Object.entries(serviceToolPrefixes)) {
       if (prefixes.some(p => canonical.startsWith(p))) {
-        return enabledForSlot[service as keyof typeof enabledForSlot] === true;
+        return isGoogleServiceEnabledForKind(kind, service as Parameters<typeof isGoogleServiceEnabledForKind>[1]);
       }
     }
-    return true; // tools not matching any service are always enabled when the slot is connected
+    return true; // tools not matching any service are always enabled when the kind is connected
   }
 
   if (googleAccess === 'full') {
@@ -532,10 +530,8 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
 
   // ── Microsoft 365 tools (access-level gated) ──
   const msAccess = getAgentMicrosoftAccessLevel(agentId, isPrimary, isPM);
-  const enabledMsSvcAgent = getEnabledMsServices('agent');
-  const enabledMsSvcUser = getEnabledMsServices('user');
-  const agentSlotMsConnected = isMicrosoftConnected('agent');
-  const userSlotMsConnected = isMicrosoftConnected('user');
+  const agentSlotMsConnected = isAnyMicrosoftAccountConnected('agent');
+  const userSlotMsConnected = isAnyMicrosoftAccountConnected('user');
 
   const msServiceToolPrefixes: Record<string, string[]> = {
     outlook: ['outlook_'],
@@ -547,16 +543,17 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
     tasks: ['tasks_'],
   };
 
-  /** Same two-stage gate as the Google version: slot connected AND service enabled on that slot. */
+  /** Same two-stage gate as the Google version, multi-account aware: the kind
+   *  must have a connected account AND some connected account of that kind must
+   *  have the service enabled. */
   function isMsToolEnabledByService(toolName: string): boolean {
-    const isUserSlot = toolName.startsWith('user_');
-    const canonical = isUserSlot ? toolName.slice('user_'.length) : toolName;
-    const slotConnected = isUserSlot ? userSlotMsConnected : agentSlotMsConnected;
-    if (!slotConnected) return false;
-    const enabledForSlot = isUserSlot ? enabledMsSvcUser : enabledMsSvcAgent;
+    const isUserKind = toolName.startsWith('user_');
+    const canonical = isUserKind ? toolName.slice('user_'.length) : toolName;
+    const kind = isUserKind ? 'user' : 'agent';
+    if (!(isUserKind ? userSlotMsConnected : agentSlotMsConnected)) return false;
     for (const [service, patterns] of Object.entries(msServiceToolPrefixes)) {
       if (patterns.some(p => canonical.startsWith(p) || canonical === p)) {
-        return enabledForSlot[service as keyof typeof enabledForSlot] === true;
+        return isMsServiceEnabledForKind(kind, service as Parameters<typeof isMsServiceEnabledForKind>[1]);
       }
     }
     return true;
@@ -617,8 +614,8 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   // Pull fresh emails from config here (not at module load) so a
   // reconnect to a different account updates the annotations on the
   // very next agent turn — no server restart needed.
-  const agentGoogleEmail = agentSlotConnected ? getGoogleWorkspaceConfig('agent').accountEmail : null;
-  const userGoogleEmail = userSlotConnected ? getGoogleWorkspaceConfig('user').accountEmail : null;
+  const agentGoogleEmail = agentKindConnected ? getGoogleWorkspaceConfig('agent').accountEmail : null;
+  const userGoogleEmail = userKindConnected ? getGoogleWorkspaceConfig('user').accountEmail : null;
   const agentMsEmail = agentSlotMsConnected ? getMicrosoftWorkspaceConfig('agent').accountEmail : null;
   const userMsEmail = userSlotMsConnected ? getMicrosoftWorkspaceConfig('user').accountEmail : null;
 
@@ -7053,24 +7050,18 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
             // Check sending capability on the target slot. Also read the
             // account email so error/success messages can name the actual
             // mailbox (e.g., "user@example.com (user slot)") rather than
-            // just "user slot" which is opaque. Config keys match the
-            // existing slotKey helpers in google/auth.ts + microsoft/auth.ts
-            // (agent = unprefixed; user = `_user_` infix).
+            // just "user slot" which is opaque. Both providers read through
+            // their table-backed config getters (Path B).
             let sendingEnabled = false;
             let accountEmail: string | null = null;
-            const emailKey = channelArg === 'gmail'
-              ? (slot === 'agent' ? 'gws_account_email' : 'gws_user_account_email')
-              : (slot === 'agent' ? 'ms_account_email' : 'ms_user_account_email');
-            try {
-              const row = getDb().prepare('SELECT value FROM config WHERE key = ?').get(emailKey) as { value: string } | undefined;
-              accountEmail = row?.value ?? null;
-            } catch { /* best effort */ }
             if (channelArg === 'gmail') {
-              const { isEmailSendingEnabled } = await import('../google/auth.js');
+              const { isEmailSendingEnabled, getGoogleWorkspaceConfig } = await import('../google/auth.js');
               sendingEnabled = isEmailSendingEnabled(slot);
+              accountEmail = getGoogleWorkspaceConfig(slot).accountEmail;
             } else { // outlook
-              const { isMsEmailSendingEnabled } = await import('../microsoft/auth.js');
+              const { isMsEmailSendingEnabled, getMicrosoftWorkspaceConfig } = await import('../microsoft/auth.js');
               sendingEnabled = isMsEmailSendingEnabled(slot);
+              accountEmail = getMicrosoftWorkspaceConfig(slot).accountEmail;
             }
             if (!sendingEnabled) {
               const acctLabel = accountEmail ? `${accountEmail} (the ${slot} slot)` : `the ${slot} slot`;
