@@ -337,6 +337,20 @@ async function main(): Promise<void> {
     }
   }
 
+  // 4i-2. Start the daily update checker — refreshes a DB cache of the latest
+  // release once a day (model-free). The agent reads it on demand via
+  // check_for_update; the owner decides whether to check on a schedule.
+  {
+    try {
+      const { startUpdateChecker } = await import('./services/update-checker.js');
+      startUpdateChecker();
+    } catch (err) {
+      logger.warn('Update checker failed to start', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // 4j. Backfill model capabilities for any model whose capabilities array is
   // empty. Runs in the background so HTTP boot isn't blocked by Ollama
   // /api/show latency or OpenRouter catalog fetches.

@@ -3115,7 +3115,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'check_for_update',
-    description: 'Check whether a newer version of the DOJO platform is available — compares the installed version against the latest GitHub release. Read-only: reports the current version, the latest version, whether an update is available, and the release notes. Use when the user asks "is there an update?", "am I on the latest version?", or as a precursor to apply_update so you can tell them what they\'d be getting.',
+    description: 'Check whether a newer version of the DOJO platform is available, comparing the installed version against the latest GitHub release. Read-only: reports the installed version, the latest version, whether an update is available, the release notes (what changed), and when the check was last run. Reads a snapshot the engine refreshes once a day, so it answers instantly without hitting the network (the timestamp tells you how fresh it is). Use when the user asks "is there an update?", "am I on the latest version?", "what\'s in the new version?", or as a precursor to apply_update so you can tell them what they\'d be getting. If the user has set up a recurring task to check for updates, this is the tool that task calls.',
     input_schema: { type: 'object', properties: {}, required: [] },
     concurrency: 'safe',
     maxResultTokens: 1500,
@@ -8769,14 +8769,18 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
       }
 
       case 'check_for_update': {
-        const { checkForUpdate } = await import('../gateway/routes/update.js');
-        const info = await checkForUpdate();
-        if (info.error) {
-          content = `Installed version: ${info.currentVersion}. Couldn't reach GitHub to check for updates right now (${info.error}).`;
+        // Read the daily cache the engine maintains (services/update-checker.ts)
+        // — no GitHub round-trip per call. Cold start (cache empty because the
+        // daily check hasn't run yet): do one live check and populate it.
+        const { getUpdateCache, refreshUpdateCache } = await import('../gateway/routes/update.js');
+        const info = getUpdateCache() ?? await refreshUpdateCache();
+        const asOf = info.checkedAt ? ` (as of ${info.checkedAt.slice(0, 16).replace('T', ' ')} UTC)` : '';
+        if (info.error && !info.latestVersion) {
+          content = `Installed version: ${info.currentVersion}. The last update check${asOf} couldn't reach GitHub (${info.error}).`;
         } else if (info.updateAvailable) {
-          content = `An update is available.\nInstalled: ${info.currentVersion}\nLatest: ${info.latestVersion}${info.releaseName ? ` (${info.releaseName})` : ''}\n\nRelease notes:\n${info.releaseNotes ?? '(none provided)'}\n\nIf the user wants it, call apply_update to install and restart.`;
+          content = `An update is available${asOf}.\nInstalled: ${info.currentVersion}\nLatest: ${info.latestVersion}${info.releaseName ? ` (${info.releaseName})` : ''}\n\nRelease notes:\n${info.releaseNotes ?? '(none provided)'}\n\nIf the user wants it, call apply_update to install and restart.`;
         } else {
-          content = `The DOJO is on the latest version (${info.currentVersion}).`;
+          content = `The DOJO is on the latest version (${info.currentVersion})${asOf}.`;
         }
         isError = false;
         break;

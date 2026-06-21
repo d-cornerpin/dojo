@@ -10,6 +10,7 @@ import path from 'node:path';
 import os from 'node:os';
 import type { AppEnv } from '../server.js';
 import { createLogger } from '../../logger.js';
+import { getDb } from '../../db/connection.js';
 
 const execAsync = promisify(exec);
 const logger = createLogger('updater');
@@ -211,6 +212,49 @@ export async function checkForUpdate(): Promise<UpdateCheckResult> {
     };
   } catch (err) {
     return { currentVersion, latestVersion: null, updateAvailable: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ── Cached daily update snapshot ──
+// The update checker (services/update-checker.ts) writes a fresh snapshot here
+// once a day so the agent's check_for_update tool can read it without a GitHub
+// round-trip per call (and without us spending a model call to push updates at
+// anyone). The snapshot holds both the installed and latest versions plus the
+// release notes, so "is there a new version + what's in it" is one DB read.
+
+const UPDATE_CACHE_KEY = 'update_check_cache';
+
+export interface UpdateCacheEntry extends UpdateCheckResult {
+  /** When this snapshot was taken (ISO). */
+  checkedAt: string;
+}
+
+/** Hit GitHub, write the result to the DB cache, and return it. */
+export async function refreshUpdateCache(): Promise<UpdateCacheEntry> {
+  const result = await checkForUpdate();
+  const entry: UpdateCacheEntry = { ...result, checkedAt: new Date().toISOString() };
+  try {
+    const json = JSON.stringify(entry);
+    getDb().prepare(`
+      INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
+    `).run(UPDATE_CACHE_KEY, json, json);
+  } catch (err) {
+    logger.warn('Failed to write update cache', { error: err instanceof Error ? err.message : String(err) });
+  }
+  return entry;
+}
+
+/** Read the last cached snapshot, or null if the daily check hasn't run yet. */
+export function getUpdateCache(): UpdateCacheEntry | null {
+  try {
+    const row = getDb()
+      .prepare(`SELECT value FROM config WHERE key = ?`)
+      .get(UPDATE_CACHE_KEY) as { value: string } | undefined;
+    if (!row?.value) return null;
+    return JSON.parse(row.value) as UpdateCacheEntry;
+  } catch {
+    return null;
   }
 }
 
