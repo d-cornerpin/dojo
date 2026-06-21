@@ -88,6 +88,22 @@ function getDownloadUrl(fileId: string): string {
   return `http://localhost:${port}/api/upload/download/${fileId}`;
 }
 
+/**
+ * Strip the scheme+host off a download URL, leaving a same-origin path
+ * (`/api/upload/download/<id>`). Use this for anything rendered INSIDE the
+ * dashboard (<img>/<iframe> src). getDownloadUrl bakes in an absolute host
+ * (the tunnel URL, else localhost:3001) which is only correct on the server's
+ * own machine. When the dashboard is loaded from a LAN IP or the Cloudflare
+ * tunnel, that "localhost" points at the viewing device, so the asset 404s
+ * (broken-image icon). A bare path resolves against whatever origin the
+ * user actually loaded the page from, so it works for localhost, a LAN IP, and
+ * the tunnel alike. The download route is auth-exempt (unguessable UUID), so a
+ * pathless <img> with no token still loads.
+ */
+function toDashboardPath(downloadUrl: string): string {
+  return downloadUrl.replace(/^https?:\/\/[^/]+/, '');
+}
+
 /** Register a file for sharing and return its full download URL */
 function registerSharedFile(agentId: string, filePath: string): string | null {
   try {
@@ -4533,7 +4549,10 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
             isError = true;
             break;
           }
-          url = registered;
+          // Same-origin path so the canvas resolves over localhost, a LAN IP,
+          // or the tunnel (see toDashboardPath). External `args.url` values are
+          // left untouched; only our own download URL is rewritten here.
+          url = toDashboardPath(registered);
         }
         if (!html && !url) {
           content = 'Error: show_canvas requires one of `path` (a file on disk), `html` (markup to render), or `url` (a page/file to load).';
@@ -4578,16 +4597,19 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           fs.writeFileSync(pngPath, png);
           let pngUrl = registerSharedFile(agentId, pngPath);
           if (!pngUrl) throw new Error('could not serve the screenshot file');
+          // Render same-origin so the <img> resolves over localhost, a LAN IP,
+          // or the tunnel, not just on the server's own machine.
+          pngUrl = toDashboardPath(pngUrl);
           pngUrl += (pngUrl.includes('?') ? '&' : '?') + 'inline=1';
           broadcast({ type: 'dock:open', data: { kind: 'screenshot', url: pngUrl, sourceUrl: targetUrl, title } });
           setCurrentCanvas({ kind: 'screenshot', url: pngUrl, sourceUrl: targetUrl, title });
-          content = `${targetUrl} blocks iframe embedding, so I opened a full-page screenshot in the user's dock. It has an "Open in new window" button to view the live, interactive site.`;
+          content = `Note for you (relay this to the user): ${targetUrl} blocks being embedded in the dock (X-Frame-Options / CSP frame-ancestors), so a live, interactive view inside the canvas is not possible. Instead the tool captured a full-page screenshot and opened it in the user's right dock. That screenshot is a STATIC snapshot (links and buttons in it are not clickable), but the dock has an "Open in new window" button that opens the real, interactive site in a new browser tab. Tell the user it is a snapshot because the site can't be embedded, and that they can click "Open in new window" to use the live site.`;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           // Last resort: still hand the iframe over (may render partially).
           broadcast({ type: 'dock:open', data: { kind: 'iframe', url: targetUrl, title } });
           setCurrentCanvas({ kind: 'iframe', url: targetUrl, title });
-          content = `Opened ${targetUrl} in the user's right dock. It blocks embedding and the screenshot fallback failed (${msg}); the user may need to open it directly.`;
+          content = `Note for you (relay this to the user): ${targetUrl} blocks being embedded in the dock, and the screenshot fallback also failed (${msg}). The dock may show little or nothing. Tell the user the site can't be embedded and offer to open it directly in their browser instead.`;
         }
         break;
       }
