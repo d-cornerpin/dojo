@@ -14,6 +14,7 @@ import { stripVoiceMarkers, stripVoiceMarkersForStream, parseMoodMarker } from '
 import { useDojoOrb } from '../components/orb/OrbProvider';
 import type { OrbEmotionName } from '../components/orb/dojoOrbEngine';
 import { stripAttachmentTags } from '../lib/attachment-tags';
+import { parseMailboxEvent } from '../lib/mailbox-event';
 import { Markdown } from '../components/Markdown';
 import { Dojo3Composer } from '../components/Dojo3Composer';
 import { useActiveAgent } from '../components/ActiveAgentProvider';
@@ -135,9 +136,14 @@ const UserBubble = ({ msg, wordyMode = false }: { msg: ChatMessage; wordyMode?: 
     if (msg.attachments?.length) displayContent = stripAttachmentTags(displayContent);
   }
 
+  // Engine inbox-watcher notifications render as a clean email card in non-wordy
+  // mode (the raw [MAILBOX EVENT] framing + Message ID + tool hint are hidden;
+  // the account header replaces the generic "via email" badge).
+  const mailbox = !wordyMode ? parseMailboxEvent(msg.content) : null;
+
   return (
     <div className="flex flex-col items-end">
-      {badge && (
+      {badge && !mailbox && (
         <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono mb-1 mr-1">
           <span className="text-ui/40">{badge.emoji}</span>
           <span>{badge.label}</span>
@@ -155,10 +161,28 @@ const UserBubble = ({ msg, wordyMode = false }: { msg: ChatMessage; wordyMode?: 
         </div>
       )}
       <div className="bubble-user max-w-[92%] sm:max-w-[75%] px-3 py-2 sm:px-4 sm:py-3 text-ui">
-        {displayContent && (
-          <pre className="whitespace-pre-wrap font-sans text-xs sm:text-sm leading-relaxed break-words">
-            {displayContent}
-          </pre>
+        {mailbox ? (
+          <div className="text-xs sm:text-sm leading-relaxed break-words space-y-1">
+            <div className="flex items-center gap-1.5 font-mono text-[10px] sm:text-[11px] text-tertiary mb-0.5">
+              <span>{'✉️'}</span>
+              <span>Email{mailbox.account ? ` · ${mailbox.account}` : ''}</span>
+            </div>
+            {mailbox.from && (
+              <div><span className="text-tertiary">From: </span>{mailbox.from}</div>
+            )}
+            {mailbox.subject && (
+              <div><span className="text-tertiary">Subject: </span>{mailbox.subject}</div>
+            )}
+            {mailbox.body && (
+              <pre className="whitespace-pre-wrap font-sans break-words mt-1 opacity-80">{mailbox.body}</pre>
+            )}
+          </div>
+        ) : (
+          displayContent && (
+            <pre className="whitespace-pre-wrap font-sans text-xs sm:text-sm leading-relaxed break-words">
+              {displayContent}
+            </pre>
+          )
         )}
         {msg.attachments && msg.attachments.length > 0 && (
           <AttachmentChips attachments={msg.attachments} />
