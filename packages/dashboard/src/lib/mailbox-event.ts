@@ -31,7 +31,11 @@ export interface MailboxEvent {
  * trigger, which has no From/Subject block, returns null and renders normally).
  */
 export function parseMailboxEvent(content: string): MailboxEvent | null {
-  if (!content.includes('[MAILBOX EVENT]')) return null;
+  // Both inbox-watcher framings render as the same clean card in non-wordy mode:
+  // [MAILBOX EVENT] (third-party context) and [DIRECT MESSAGE] (a known sender
+  // writing to the agent's own mailbox). The account still parses from the
+  // [SOURCE: …] tag for the direct-message variant.
+  if (!content.includes('[MAILBOX EVENT]') && !content.includes('[DIRECT MESSAGE]')) return null;
 
   // The per-email detail message has the From/Subject/Preview block; the
   // summary trigger does not. Require Subject so we only card-ify the detail.

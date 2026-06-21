@@ -501,39 +501,36 @@ export async function runV2Turn(agentId: string): Promise<void> {
     lastUserMessageContent?.includes('[SOURCE: OUTLOOK NOTIFICATION') ||
     lastUserMessageContent?.includes('[SOURCE: GMAIL NOTIFICATION')
   ) {
-    // v2.7.24 — email inbound routing. Only treat as inbound-REPLY (auto-
-    // route the agent's response back via email) when all of these are
-    // true:
-    //   (a) subject starts with "Re:" (case-insensitive)
-    //   (b) the From address is on the per-slot safe-sender list for the
-    //       mailbox that received this notification (parsed from the
-    //       notification's "(agent)" or "(user)" suffix)
-    //   (c) we have a Message ID to reply against
-    // Per-slot lists match the per-slot "Allow sending email" toggle —
-    // adding Sarah to the agent slot's gmail list does NOT authorize
-    // auto-reply to Sarah's emails arriving at the user slot's gmail.
+    // Email inbound routing — auto-route the agent's reply back via email ONLY
+    // when mail came to the AGENT's own mailbox from a known contact:
+    //   (a) the notification is for an AGENT-kind account. Mail to a USER
+    //       account is the human's mail — the agent never replies on their
+    //       behalf, even from a safe sender.
+    //   (b) the From address is on the agent gmail/outlook safe-sender list.
+    //   (c) we have a Message ID to reply against.
+    // No "Re:" requirement: a safe sender writing to the agent — new thread or
+    // reply — is a direct message to the agent and gets an email reply.
     const subjectMatch = lastUserMessageContent.match(/^Subject:\s*(.+)$/im);
     const fromMatch = lastUserMessageContent.match(/^From:\s*(.+)$/im);
     const messageIdMatch = lastUserMessageContent.match(/^Message ID:\s*(\S+)/im);
     const isOutlook = lastUserMessageContent.includes('[SOURCE: OUTLOOK NOTIFICATION');
-    // Format: [SOURCE: GMAIL NOTIFICATION — <address> (agent)]
-    // The parenthesized suffix is the slot. Default to 'agent' on parse
-    // failure (most common slot for monitored inboxes).
+    // The parenthesized suffix names the mailbox KIND ("agent's …" / "user's …").
+    // Substring check (not ===) so it survives wording like "user's Google account".
     const slotMatch = lastUserMessageContent.match(/\[SOURCE: (?:GMAIL|OUTLOOK) NOTIFICATION[^()]*\(([^)]+)\)\]/i);
-    const inboundSlot: 'agent' | 'user' = slotMatch?.[1]?.toLowerCase() === 'user' ? 'user' : 'agent';
+    const inboundSlot: 'agent' | 'user' = slotMatch?.[1]?.toLowerCase().includes('user') ? 'user' : 'agent';
     const subject = subjectMatch?.[1]?.trim() ?? '';
     const fromRaw = fromMatch?.[1]?.trim() ?? '';
     const emailMatch = fromRaw.match(/<([^>]+)>/) ?? fromRaw.match(/(\S+@\S+)/);
     const fromAddress = emailMatch?.[1]?.toLowerCase() ?? '';
-    const looksLikeReply = /^re:\s/i.test(subject);
+    // Safe-sender check only matters for agent-kind mailboxes.
     let fromIsKnownSafeSender = false;
-    if (fromAddress) {
+    if (inboundSlot === 'agent' && fromAddress) {
       const channelList = isOutlook
-        ? getOutlookSafeSenders(inboundSlot)
-        : getGmailSafeSenders(inboundSlot);
+        ? getOutlookSafeSenders('agent')
+        : getGmailSafeSenders('agent');
       fromIsKnownSafeSender = channelList.some(s => addressesMatch(s.address, fromAddress));
     }
-    if (looksLikeReply && fromIsKnownSafeSender && messageIdMatch?.[1]) {
+    if (inboundSlot === 'agent' && fromIsKnownSafeSender && messageIdMatch?.[1]) {
       inboundChannel = 'email';
       inboundContext = {
         emailMessageId: messageIdMatch[1],
