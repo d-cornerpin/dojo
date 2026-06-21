@@ -82,24 +82,45 @@ export function generateManifest(dbSizeBytes: number, prompts: string[], techniq
   const providerRows = db.prepare('SELECT name FROM providers').all() as Array<{ name: string }>;
   const providers = providerRows.map(p => p.name);
 
-  // Google workspace
+  // Google workspace (Path B: connection lives in google_accounts; the legacy
+  // gws_connected/gws_account_email keys are frozen). Read any connected
+  // account from the table — agent-kind preferred — and fall back to the legacy
+  // keys for DBs exported before the migration.
   let googleConnected = false;
   let googleEmail: string | null = null;
   try {
-    const gwRow = db.prepare("SELECT value FROM config WHERE key = 'gws_connected'").get() as { value: string } | undefined;
-    googleConnected = gwRow?.value === 'true';
-    if (googleConnected) {
-      const emailRow = db.prepare("SELECT value FROM config WHERE key = 'gws_account_email'").get() as { value: string } | undefined;
-      googleEmail = emailRow?.value ?? null;
+    const acctRow = db.prepare(
+      "SELECT email FROM google_accounts WHERE connected = 1 ORDER BY kind = 'user', position LIMIT 1",
+    ).get() as { email: string | null } | undefined;
+    if (acctRow) {
+      googleConnected = true;
+      googleEmail = acctRow.email ?? null;
     }
-  } catch { /* table may not exist */ }
+  } catch { /* table may not exist on legacy dbs */ }
+  if (!googleConnected) {
+    try {
+      const gwRow = db.prepare("SELECT value FROM config WHERE key = 'gws_connected'").get() as { value: string } | undefined;
+      googleConnected = gwRow?.value === 'true';
+      if (googleConnected) {
+        const emailRow = db.prepare("SELECT value FROM config WHERE key = 'gws_account_email'").get() as { value: string } | undefined;
+        googleEmail = emailRow?.value ?? null;
+      }
+    } catch { /* table may not exist */ }
+  }
 
-  // Microsoft
+  // Microsoft (Path B: connection lives in microsoft_accounts; legacy
+  // ms_connected key is frozen). Table first, legacy fallback for old exports.
   let msConnected = false;
   try {
-    const msRow = db.prepare("SELECT value FROM config WHERE key = 'ms_connected'").get() as { value: string } | undefined;
-    msConnected = msRow?.value === 'true';
-  } catch { /* table may not exist */ }
+    const acctRow = db.prepare('SELECT 1 FROM microsoft_accounts WHERE connected = 1 LIMIT 1').get();
+    if (acctRow) msConnected = true;
+  } catch { /* table may not exist on legacy dbs */ }
+  if (!msConnected) {
+    try {
+      const msRow = db.prepare("SELECT value FROM config WHERE key = 'ms_connected'").get() as { value: string } | undefined;
+      msConnected = msRow?.value === 'true';
+    } catch { /* table may not exist */ }
+  }
 
   const manifest: ExportManifest = {
     version: '1.0',

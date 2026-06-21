@@ -559,7 +559,7 @@ async function getOrCreateDriveFolder(
   parentId: string | undefined,
   agentId: string,
   agentName: string,
-  slot: AccountSlot,
+  slot: string,
 ): Promise<FolderResult> {
   const escapedName = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
   const parentClause = parentId ? ` and '${parentId}' in parents` : " and 'root' in parents";
@@ -597,7 +597,7 @@ async function uploadAttachmentToDrive(
   att: LocalAttachment,
   agentId: string,
   agentName: string,
-  slot: AccountSlot,
+  slot: string,
 ): Promise<{ ok: true; url: string; name: string } | { ok: false; error: string }> {
   const rootFolder = await getOrCreateDriveFolder(ATTACHMENTS_ROOT_FOLDER, undefined, agentId, agentName, slot);
   if (!rootFolder.ok) return { ok: false, error: `couldn't prepare Drive folder: ${rootFolder.error}` };
@@ -682,7 +682,7 @@ async function fetchOriginalAttachments(
   payload: GmailMessagePart,
   agentId: string,
   agentName: string,
-  slot: AccountSlot,
+  slot: string,
 ): Promise<{ ok: true; attachments: LocalAttachment[] } | { ok: false; error: string }> {
   const parts: GmailMessagePart[] = [];
   collectAttachmentParts(payload, parts);
@@ -736,6 +736,20 @@ function loadUserAttachmentsForGmail(
   return readLocalAttachments(paths);
 }
 
+// Path B (layer 3): every Google write tool can target a specific connected
+// account of its kind via an `account` param (the account's email). Optional —
+// omit to use the only connected account. Injected once across base + user_
+// variants (which share the same input_schema object), so it stays in sync.
+for (const def of googleWriteToolDefinitions) {
+  const schema = def.input_schema as { properties?: Record<string, unknown> };
+  if (schema.properties && !schema.properties.account) {
+    schema.properties.account = {
+      type: 'string',
+      description: "Which connected account to act on, by its email address. Omit to use the only connected account of this type; required when more than one is connected.",
+    };
+  }
+}
+
 // ── Tool Execution ──
 
 const googleWriteToolDefByName = new Map(googleWriteToolDefinitions.map(t => [t.name, t]));
@@ -746,14 +760,14 @@ export async function executeGoogleWriteTool(
   agentId: string,
   agentName: string,
 ): Promise<string> {
-  // v2.7.1 — strip user_ prefix on user-slot send tools and route via slot.
-  // Only send/reply/forward currently have user_ variants (see
-  // USER_SLOT_SEND_TOOLS above); other write tools still operate solely on
-  // the agent slot.
-  let slot: import('./auth.js').AccountSlot = 'agent';
+  // The user_ prefix selects the KIND (the permission boundary); the `account`
+  // param selects WHICH of that kind's connected accounts. `kind` drives
+  // permission/service checks; `slot` carries the resolved account id and is
+  // threaded into every client/helper call.
+  let kind: AccountSlot = 'agent';
   let canonicalName = name;
   if (name.startsWith('user_')) {
-    slot = 'user';
+    kind = 'user';
     canonicalName = name.slice('user_'.length);
   }
 
@@ -762,15 +776,18 @@ export async function executeGoogleWriteTool(
   const schemaErr = validateAgainstSchema(canonicalName, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
   if (schemaErr) return schemaErr;
 
-  // Send-permission gate. Refuse with a structured message that tells the
-  // agent (and via logs, the user) exactly which switch to flip. Applies
-  // to send, reply, and forward — and to both slots, since the toggle
-  // defaults off everywhere.
+  const { resolveGoogleAccountForTool } = await import('./accounts.js');
+  const resolved = resolveGoogleAccountForTool(kind, args.account as string | undefined);
+  if ('error' in resolved) return `Error: ${resolved.error}`;
+  const slot = resolved.account.id;
+
+  // Send-permission gate, checked on the RESOLVED account (each account has
+  // its own send toggle). Refuse with a structured message that names the
+  // account and the switch to flip. Applies to send, reply, and forward.
   if (canonicalName === 'gmail_send' || canonicalName === 'gmail_reply' || canonicalName === 'gmail_forward') {
-    const { isEmailSendingEnabled } = await import('./auth.js');
-    if (!isEmailSendingEnabled(slot)) {
-      const slotLabel = slot === 'user' ? "user's Google account" : "agent's Google account";
-      return `Error: sending email from the ${slotLabel} is disabled. Open Settings → Google and turn on "Allow sending email" for the ${slot === 'user' ? 'User' : 'Agent'} slot, then try again.`;
+    if (!resolved.account.sendEmail) {
+      const who = resolved.account.email ?? (kind === 'user' ? "the user's Google account" : "the agent's Google account");
+      return `Error: sending email from ${who} is disabled. Open Settings → Google and turn on "Allow sending email" for that account, then try again.`;
     }
   }
 

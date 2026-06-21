@@ -4,7 +4,8 @@
 // ════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
-import { getValidAccessToken, type AccountSlot } from './auth.js';
+import { getValidAccessTokenForAccount } from './auth.js';
+import { getMicrosoftAccount } from './accounts.js';
 import { logMicrosoftActivity } from './activity-log.js';
 import { broadcast } from '../gateway/ws.js';
 
@@ -53,14 +54,18 @@ async function graphFetch(
   method: string,
   endpoint: string,
   body?: unknown,
-  slot: AccountSlot = 'agent',
+  // The account whose token to use. 'agent'/'user' are the ids of the
+  // position-1 rows, so callers passing a kind keep working; tool executors
+  // pass a specific resolved account id for multi-account.
+  accountId: string = 'agent',
 ): Promise<MsGraphResult> {
   const url = endpoint.startsWith('http') ? endpoint : `${GRAPH_BASE}/${endpoint}`;
-  const token = await getValidAccessToken(slot);
+  const token = await getValidAccessTokenForAccount(accountId);
 
   if (!token) {
-    const slotLabel = slot === 'user' ? "user's" : "agent's";
-    return { ok: false, data: null, error: `Not authenticated with Microsoft (${slotLabel} account). Connect in Settings > Microsoft.`, apiEndpoint: url };
+    const acc = getMicrosoftAccount(accountId);
+    const label = acc?.email ? acc.email : (acc?.kind === 'user' ? "user's account" : "agent's account");
+    return { ok: false, data: null, error: `Not authenticated with Microsoft (${label}). Connect in Settings > Microsoft.`, apiEndpoint: url };
   }
 
   const headers: Record<string, string> = {
@@ -134,12 +139,12 @@ export function msGraphRead(
   agentName: string,
   action: string,
   details: Record<string, unknown>,
-  slot: AccountSlot = 'agent',
+  accountId: string = 'agent',
 ): Promise<MsGraphResult> {
-  return graphFetch('GET', endpoint, undefined, slot).then(result => {
+  return graphFetch('GET', endpoint, undefined, accountId).then(result => {
     logMicrosoftActivity({
       agentId, agentName, action, actionType: 'read',
-      details: JSON.stringify({ ...details, slot }),
+      details: JSON.stringify({ ...details, account: accountId }),
       apiEndpoint: result.apiEndpoint,
       success: result.ok,
       error: result.error,
@@ -156,12 +161,12 @@ export function msGraphWrite(
   agentName: string,
   action: string,
   details: Record<string, unknown>,
-  slot: AccountSlot = 'agent',
+  accountId: string = 'agent',
 ): Promise<MsGraphResult> {
-  return graphFetch(method, endpoint, body, slot).then(result => {
+  return graphFetch(method, endpoint, body, accountId).then(result => {
     logMicrosoftActivity({
       agentId, agentName, action, actionType: 'write',
-      details: JSON.stringify({ ...details, slot }),
+      details: JSON.stringify({ ...details, account: accountId }),
       apiEndpoint: result.apiEndpoint,
       success: result.ok,
       error: result.error,
@@ -170,7 +175,7 @@ export function msGraphWrite(
     // Broadcast write actions to dashboard
     broadcast({
       type: 'microsoft:activity',
-      data: { agentId, agentName, action, actionType: 'write', details: { ...details, slot } },
+      data: { agentId, agentName, action, actionType: 'write', details: { ...details, account: accountId } },
     } as never);
 
     return result;

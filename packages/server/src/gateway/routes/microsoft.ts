@@ -12,19 +12,29 @@ import {
   getClientId,
   buildAuthUrl,
   exchangeCodeForTokens,
-  getStoredVerifier,
-  getStoredRedirectUri,
-  getSlotForState,
+  getFlowForState,
+  clearOAuthFlow,
   testMicrosoftAuth,
   disconnectMicrosoft,
+  disconnectMicrosoftAccount,
   setEnabledMsServices,
+  setEnabledMsServicesForAccount,
   isMsEmailMonitoringEnabled,
   setMsEmailMonitoringEnabled,
+  setMsEmailMonitoringEnabledForAccount,
   isMsEmailSendingEnabled,
   setMsEmailSendingEnabled,
-  ACCOUNT_SLOTS,
+  setMsEmailSendingEnabledForAccount,
+  listMicrosoftAccountViews,
   type AccountSlot,
+  type OAuthTarget,
 } from '../../microsoft/auth.js';
+import {
+  getMicrosoftAccount,
+  getPrimaryMicrosoftAccount,
+  countMicrosoftAccounts,
+  MAX_MS_ACCOUNTS_PER_KIND,
+} from '../../microsoft/accounts.js';
 import { queryMicrosoftActivity, getTodayMsActivityCounts, getLastMsActivityTimestamp } from '../../microsoft/activity-log.js';
 import { getInstallStatus, installOfficePackages, checkAndUpdateStatus } from '../../microsoft/office-packages.js';
 
@@ -68,8 +78,11 @@ microsoftRouter.get('/status', (c) => {
     ok: true,
     data: {
       clientId: getClientId(),
-      // Per-slot detail
+      // Per-slot detail (legacy: position-1 of each kind)
       slots,
+      // Path B: full per-account list (up to 5 per kind) + the cap.
+      accounts: listMicrosoftAccountViews(),
+      maxPerKind: MAX_MS_ACCOUNTS_PER_KIND,
       lastActivity,
       todayActivity: todayCounts,
       officeTools: officeStatus,
@@ -84,16 +97,36 @@ microsoftRouter.get('/status', (c) => {
   });
 });
 
-// POST /api/microsoft/connect?slot=agent|user
+// POST /api/microsoft/connect — three shapes (see Google /connect):
+//   ?slot=agent|user            reconnect/connect that kind's primary
+//   ?add=true&kind=agent|user   add a NEW account to the kind (cap-enforced)
+//   ?accountId=<id>             reconnect a specific existing account
 microsoftRouter.post('/connect', async (c) => {
   try {
-    const slot = parseSlot(c.req.query('slot'));
     const body = await c.req.json().catch(() => ({})) as { redirectUri?: string };
     const redirectUri = body.redirectUri?.trim() || 'http://localhost:3001/api/microsoft/callback';
-    const { authUrl } = buildAuthUrl(redirectUri, slot);
 
-    logger.info('Microsoft auth URL generated', { slot, redirectUri });
-    return c.json({ ok: true, data: { authUrl, redirectUri, slot } });
+    let target: OAuthTarget;
+    const accountIdQ = c.req.query('accountId');
+    const add = c.req.query('add') === 'true';
+    if (accountIdQ) {
+      const acc = getMicrosoftAccount(accountIdQ);
+      if (!acc) return c.json({ ok: false, error: 'Unknown account.' }, 400);
+      target = { kind: acc.kind, accountId: acc.id };
+    } else if (add) {
+      const kind = parseSlot(c.req.query('kind'));
+      if (countMicrosoftAccounts(kind) >= MAX_MS_ACCOUNTS_PER_KIND) {
+        return c.json({ ok: false, error: `Limit of ${MAX_MS_ACCOUNTS_PER_KIND} ${kind} Microsoft accounts reached.` }, 409);
+      }
+      target = { kind };
+    } else {
+      const slot = parseSlot(c.req.query('slot'));
+      target = { kind: slot, accountId: getPrimaryMicrosoftAccount(slot)?.id };
+    }
+
+    const { authUrl } = buildAuthUrl(redirectUri, target);
+    logger.info('Microsoft auth URL generated', { target, redirectUri });
+    return c.json({ ok: true, data: { authUrl, redirectUri, kind: target.kind, accountId: target.accountId ?? null } });
   } catch (err) {
     return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
   }
@@ -117,36 +150,27 @@ microsoftRouter.get('/callback', async (c) => {
     return c.redirect(`${dashboardBase}/settings?tab=microsoft&error=No+authorization+code+or+state+received`);
   }
 
-  const slot = getSlotForState(state);
-  if (!slot) {
+  const flow = getFlowForState(state);
+  if (!flow) {
     return c.redirect(`${dashboardBase}/settings?tab=microsoft&error=Unknown+state+token.+Try+connecting+again.`);
   }
 
-  const verifier = getStoredVerifier(slot);
-  const redirectUri = getStoredRedirectUri(slot) ?? 'http://localhost:3001/api/microsoft/callback';
+  const result = await exchangeCodeForTokens(code, flow.redirectUri, flow.verifier, flow.target);
+  clearOAuthFlow(state);
 
-  if (!verifier) {
-    return c.redirect(`${dashboardBase}/settings?tab=microsoft&error=PKCE+verifier+missing.+Try+connecting+again.`);
-  }
-
-  const result = await exchangeCodeForTokens(code, redirectUri, verifier, slot);
-
+  const slot = flow.target.kind;
   if (result.success) {
     logger.info('Microsoft OAuth successful', { slot, email: result.email, accountType: result.accountType });
 
-    // Restart the Teams watcher only for the agent slot — the watcher
-    // only knows about one account (the agent's). User-slot Teams use
-    // is on-demand via tool calls; no background polling.
-    if (slot === 'agent') {
-      try {
-        const { stopTeamsWatcher, startTeamsWatcher } = await import('../../services/teams-watcher.js');
-        stopTeamsWatcher();
-        startTeamsWatcher();
-      } catch (err) {
-        logger.warn('Failed to restart Teams watcher after Microsoft reconnect', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+    // Restart the Teams watcher so it re-scans all connected accounts.
+    try {
+      const { stopTeamsWatcher, startTeamsWatcher } = await import('../../services/teams-watcher.js');
+      stopTeamsWatcher();
+      startTeamsWatcher();
+    } catch (err) {
+      logger.warn('Failed to restart Teams watcher after Microsoft reconnect', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     return c.redirect(`${dashboardBase}/settings?tab=microsoft&connected=true&slot=${slot}`);
@@ -156,8 +180,15 @@ microsoftRouter.get('/callback', async (c) => {
   }
 });
 
-// POST /api/microsoft/disconnect?slot=agent|user
+// POST /api/microsoft/disconnect?slot=agent|user  (or ?accountId=)
 microsoftRouter.post('/disconnect', (c) => {
+  const accountId = c.req.query('accountId');
+  if (accountId) {
+    const acc = getMicrosoftAccount(accountId);
+    if (!acc) return c.json({ ok: false, error: 'Unknown account.' }, 400);
+    disconnectMicrosoftAccount(accountId);
+    return c.json({ ok: true, data: { accountId, kind: acc.kind } });
+  }
   const slot = parseSlot(c.req.query('slot'));
   disconnectMicrosoft(slot);
   return c.json({ ok: true, data: { slot } });
@@ -170,26 +201,37 @@ microsoftRouter.post('/test', async (c) => {
   return c.json({ ok: true, data: { working: auth.authenticated, email: auth.email, slot } });
 });
 
-// PUT /api/microsoft/services?slot=agent|user
+// PUT /api/microsoft/services?slot=agent|user  (or ?accountId=)
 microsoftRouter.put('/services', async (c) => {
   try {
-    const slot = parseSlot(c.req.query('slot'));
+    const accountId = c.req.query('accountId');
     const body = await c.req.json() as Partial<{ outlook: boolean; calendar: boolean; onedrive: boolean; teams: boolean; contacts: boolean; onenote: boolean; tasks: boolean }>;
-    setEnabledMsServices(body, slot);
-    return c.json({ ok: true, data: { slot } });
+    if (accountId) {
+      if (!getMicrosoftAccount(accountId)) return c.json({ ok: false, error: 'Unknown account.' }, 400);
+      setEnabledMsServicesForAccount(accountId, body);
+      return c.json({ ok: true, data: { accountId } });
+    }
+    setEnabledMsServices(body, parseSlot(c.req.query('slot')));
+    return c.json({ ok: true, data: { slot: parseSlot(c.req.query('slot')) } });
   } catch { return c.json({ ok: false, error: 'Invalid request body' }, 400); }
 });
 
-// PUT /api/microsoft/watch-email?slot=agent|user — toggle Outlook watcher per slot
+// PUT /api/microsoft/watch-email?slot=agent|user  (or ?accountId=)
 microsoftRouter.put('/watch-email', async (c) => {
   try {
+    const accountId = c.req.query('accountId');
     const slot = parseSlot(c.req.query('slot'));
     const body = await c.req.json() as { enabled?: boolean };
     if (typeof body.enabled !== 'boolean') {
       return c.json({ ok: false, error: 'enabled boolean is required' }, 400);
     }
-    setMsEmailMonitoringEnabled(body.enabled, slot);
-    logger.info('Outlook email-monitoring toggled', { slot, enabled: body.enabled });
+    if (accountId) {
+      if (!getMicrosoftAccount(accountId)) return c.json({ ok: false, error: 'Unknown account.' }, 400);
+      setMsEmailMonitoringEnabledForAccount(accountId, body.enabled);
+    } else {
+      setMsEmailMonitoringEnabled(body.enabled, slot);
+    }
+    logger.info('Outlook email-monitoring toggled', { accountId: accountId ?? slot, enabled: body.enabled });
 
     // Bounce the watcher so a fresh enable picks up lastCheckedAt seeding.
     // See google route for the same pattern + rationale.
@@ -203,25 +245,31 @@ microsoftRouter.put('/watch-email', async (c) => {
       });
     }
 
-    return c.json({ ok: true, data: { slot, enabled: body.enabled } });
+    return c.json({ ok: true, data: { accountId: accountId ?? null, slot, enabled: body.enabled } });
   } catch {
     return c.json({ ok: false, error: 'Invalid request body' }, 400);
   }
 });
 
-// PUT /api/microsoft/send-email?slot=agent|user — toggle agent's permission
-// to send/reply/forward email from this slot. Pure config flip; enforced
-// in the tool executor.
+// PUT /api/microsoft/send-email?slot=agent|user  (or ?accountId=) — toggle the
+// agent's permission to send/reply/forward. Pure config flip; enforced in the
+// tool executor.
 microsoftRouter.put('/send-email', async (c) => {
   try {
+    const accountId = c.req.query('accountId');
     const slot = parseSlot(c.req.query('slot'));
     const body = await c.req.json() as { enabled?: boolean };
     if (typeof body.enabled !== 'boolean') {
       return c.json({ ok: false, error: 'enabled boolean is required' }, 400);
     }
-    setMsEmailSendingEnabled(body.enabled, slot);
-    logger.info('Outlook email-sending toggled', { slot, enabled: body.enabled });
-    return c.json({ ok: true, data: { slot, enabled: body.enabled } });
+    if (accountId) {
+      if (!getMicrosoftAccount(accountId)) return c.json({ ok: false, error: 'Unknown account.' }, 400);
+      setMsEmailSendingEnabledForAccount(accountId, body.enabled);
+    } else {
+      setMsEmailSendingEnabled(body.enabled, slot);
+    }
+    logger.info('Outlook email-sending toggled', { accountId: accountId ?? slot, enabled: body.enabled });
+    return c.json({ ok: true, data: { accountId: accountId ?? null, slot, enabled: body.enabled } });
   } catch {
     return c.json({ ok: false, error: 'Invalid request body' }, 400);
   }
@@ -243,5 +291,3 @@ microsoftRouter.get('/activity', (c) => {
   const entries = queryMicrosoftActivity({ agentId, action, actionType, limit, offset });
   return c.json({ ok: true, data: entries });
 });
-// Silence unused-var warning if ACCOUNT_SLOTS isn't referenced elsewhere here.
-void ACCOUNT_SLOTS;

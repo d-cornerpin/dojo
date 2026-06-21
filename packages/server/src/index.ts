@@ -136,6 +136,20 @@ async function main(): Promise<void> {
   // 3. Run database migrations
   runMigrations();
 
+  // 3a0. Seed Workspace account rows from legacy per-key config (Path B,
+  //      layer 1). Idempotent: only copies existing gws_*/gws_user_* into
+  //      position-1 rows once; leaves the legacy keys in place.
+  try {
+    const { seedGoogleAccountsFromConfig } = await import('./google/accounts.js');
+    seedGoogleAccountsFromConfig();
+    const { seedMicrosoftAccountsFromConfig } = await import('./microsoft/accounts.js');
+    seedMicrosoftAccountsFromConfig();
+  } catch (err) {
+    logger.warn('Workspace account seed failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   // 3a. Load saved migration checks (if any from a recent import)
   try {
     const { loadSavedChecks } = await import('./migration/checks.js');

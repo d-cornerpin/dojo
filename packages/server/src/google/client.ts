@@ -5,7 +5,8 @@
 // ════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
-import { getValidAccessToken, type AccountSlot } from './auth.js';
+import { getValidAccessTokenForAccount } from './auth.js';
+import { getGoogleAccount } from './accounts.js';
 import { logGoogleActivity } from './activity-log.js';
 import { broadcast } from '../gateway/ws.js';
 
@@ -36,13 +37,17 @@ async function googleFetch(
   url: string,
   body?: unknown,
   contentType?: string,
-  slot: AccountSlot = 'agent',
+  // The account whose token to use. 'agent'/'user' are the ids of the
+  // position-1 rows, so callers that still pass a kind keep working; the
+  // tool executors pass a specific resolved account id for multi-account.
+  accountId: string = 'agent',
 ): Promise<GoogleApiResult> {
-  const token = await getValidAccessToken(slot);
+  const token = await getValidAccessTokenForAccount(accountId);
 
   if (!token) {
-    const slotLabel = slot === 'user' ? "user's" : "agent's";
-    return { ok: false, data: null, error: `Not authenticated with Google (${slotLabel} account). Connect in Settings > Google.`, apiEndpoint: url };
+    const acc = getGoogleAccount(accountId);
+    const label = acc?.email ? acc.email : (acc?.kind === 'user' ? "user's account" : "agent's account");
+    return { ok: false, data: null, error: `Not authenticated with Google (${label}). Connect in Settings > Google.`, apiEndpoint: url };
   }
 
   const headers: Record<string, string> = {
@@ -116,12 +121,12 @@ export function googleRead(
   agentName: string,
   action: string,
   details: Record<string, unknown>,
-  slot: AccountSlot = 'agent',
+  accountId: string = 'agent',
 ): Promise<GoogleApiResult> {
-  return googleFetch('GET', url, undefined, undefined, slot).then(result => {
+  return googleFetch('GET', url, undefined, undefined, accountId).then(result => {
     logGoogleActivity({
       agentId, agentName, action, actionType: 'read',
-      details: JSON.stringify({ ...details, slot }),
+      details: JSON.stringify({ ...details, account: accountId }),
       gwsCommand: result.apiEndpoint,
       success: result.ok,
       error: result.error,
@@ -139,12 +144,12 @@ export function googleWrite(
   action: string,
   details: Record<string, unknown>,
   contentType?: string,
-  slot: AccountSlot = 'agent',
+  accountId: string = 'agent',
 ): Promise<GoogleApiResult> {
-  return googleFetch(method, url, body, contentType, slot).then(result => {
+  return googleFetch(method, url, body, contentType, accountId).then(result => {
     logGoogleActivity({
       agentId, agentName, action, actionType: 'write',
-      details: JSON.stringify({ ...details, slot }),
+      details: JSON.stringify({ ...details, account: accountId }),
       gwsCommand: result.apiEndpoint,
       success: result.ok,
       error: result.error,
@@ -152,7 +157,7 @@ export function googleWrite(
 
     broadcast({
       type: 'google:activity',
-      data: { agentId, agentName, action, actionType: 'write', details: { ...details, slot } },
+      data: { agentId, agentName, action, actionType: 'write', details: { ...details, account: accountId } },
     } as never);
 
     return result;
@@ -172,7 +177,7 @@ export function googleSilentFetch(
   url: string,
   body?: unknown,
   contentType?: string,
-  slot: AccountSlot = 'agent',
+  accountId: string = 'agent',
 ): Promise<GoogleApiResult> {
-  return googleFetch(method, url, body, contentType, slot);
+  return googleFetch(method, url, body, contentType, accountId);
 }

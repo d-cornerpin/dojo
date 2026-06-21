@@ -1,19 +1,29 @@
 // ════════════════════════════════════════
 // Microsoft 365 Auth — Public Client with PKCE
-// Single registered app, no client secret, works for personal + work/school
+// Single registered app, no client secret, works for personal + work/school.
 //
-// v2.7.0 — multi-account support. Same pattern as google/auth.ts:
-// agent slot uses legacy unprefixed keys (zero migration); user slot
-// uses '_user_' infixed keys. Every public function takes an optional
-// `slot` parameter that defaults to 'agent' so existing callers are
-// unchanged.
+// Path B (multi-account): storage lives in the microsoft_accounts table via
+// microsoft/accounts.ts. The legacy slot ('agent'/'user') resolves to that
+// KIND's position-1 row; getters read it, setters create on demand. Token
+// resolution is account-id-keyed. Mirrors google/auth.ts.
 // ════════════════════════════════════════
 
 import crypto from 'node:crypto';
-import { getDb } from '../db/connection.js';
-import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
+import { createLogger } from '../logger.js';
 import { sendAlert } from '../services/imessage-bridge.js';
+import {
+  countMicrosoftAccounts,
+  deleteMicrosoftAccount,
+  getMicrosoftAccount,
+  getPrimaryMicrosoftAccount,
+  insertMicrosoftAccount,
+  listMicrosoftAccounts,
+  updateMicrosoftAccount,
+  MAX_MS_ACCOUNTS_PER_KIND,
+  type MicrosoftAccount,
+  type MicrosoftAccountType,
+} from './accounts.js';
 
 const logger = createLogger('ms-auth');
 
@@ -48,11 +58,6 @@ const SCOPES = [
 export type AccountSlot = 'agent' | 'user';
 export const ACCOUNT_SLOTS: readonly AccountSlot[] = ['agent', 'user'];
 
-function slotKey(slot: AccountSlot, field: string): string {
-  if (slot === 'agent') return `ms_${field}`;
-  return `ms_user_${field}`;
-}
-
 export interface MicrosoftWorkspaceConfig {
   enabled: boolean;
   connected: boolean;
@@ -70,11 +75,6 @@ export interface MicrosoftWorkspaceConfig {
   lastVerifiedAt: string | null;
 }
 
-// contacts/onenote/tasks added 2026-06-17 — these tool families shipped with
-// no per-slot toggle and were always-on when connected. Default true so
-// existing installs keep them, but they're now gated like every other service
-// (and get user_* variants). The {...DEFAULT_SERVICES, ...stored} merge in
-// getMicrosoftWorkspaceConfig backfills the new keys into old saved configs.
 const DEFAULT_SERVICES = {
   outlook: true,
   calendar: true,
@@ -85,134 +85,186 @@ const DEFAULT_SERVICES = {
   tasks: true,
 };
 
-// ── Config Helpers ──
+// ── Slot → account resolution ──
 
-function getConfigValue(key: string): string | null {
-  try {
-    const db = getDb();
-    const row = db.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined;
-    return row?.value ?? null;
-  } catch { return null; }
+function slotAccount(slot: AccountSlot): MicrosoftAccount | null {
+  return getPrimaryMicrosoftAccount(slot);
 }
 
-function setConfigValue(key: string, value: string): void {
-  const db = getDb();
-  db.prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-  `).run(key, value, value);
+function ensureSlotAccount(slot: AccountSlot): MicrosoftAccount {
+  const existing = getPrimaryMicrosoftAccount(slot);
+  if (existing) return existing;
+  return insertMicrosoftAccount({
+    id: slot,
+    kind: slot,
+    position: 1,
+    watchEmail: slot === 'agent',
+    sendEmail: slot === 'agent',
+  });
 }
 
-function deleteConfigValue(key: string): void {
-  try { getDb().prepare('DELETE FROM config WHERE key = ?').run(key); } catch { /* best effort */ }
+function parseServices(json: string | null): MicrosoftWorkspaceConfig['enabledServices'] {
+  let services = { ...DEFAULT_SERVICES };
+  if (json) {
+    try { services = { ...DEFAULT_SERVICES, ...JSON.parse(json) }; } catch { /* defaults */ }
+  }
+  return services;
 }
 
 // ── Config Getters ──
 
 export function getMicrosoftWorkspaceConfig(slot: AccountSlot = 'agent'): MicrosoftWorkspaceConfig {
-  const servicesRaw = getConfigValue(slotKey(slot, 'enabled_services'));
-  let services = { ...DEFAULT_SERVICES };
-  if (servicesRaw) {
-    try { services = { ...DEFAULT_SERVICES, ...JSON.parse(servicesRaw) }; } catch { /* defaults */ }
-  }
+  const acc = slotAccount(slot);
   return {
-    enabled: getConfigValue(slotKey(slot, 'enabled')) === 'true',
-    connected: getConfigValue(slotKey(slot, 'connected')) === 'true',
-    accountEmail: getConfigValue(slotKey(slot, 'account_email')),
-    accountType: (getConfigValue(slotKey(slot, 'account_type')) as 'msa' | 'entra') ?? null,
-    enabledServices: services,
-    lastVerifiedAt: getConfigValue(slotKey(slot, 'last_verified_at')),
+    enabled: acc?.enabled ?? false,
+    connected: acc?.connected ?? false,
+    accountEmail: acc?.email ?? null,
+    accountType: acc?.accountType ?? null,
+    enabledServices: parseServices(acc?.enabledServices ?? null),
+    lastVerifiedAt: acc?.lastVerifiedAt ?? null,
   };
 }
 
-export function isMicrosoftEnabled(slot: AccountSlot = 'agent'): boolean { return getConfigValue(slotKey(slot, 'enabled')) === 'true'; }
-export function isMicrosoftConnected(slot: AccountSlot = 'agent'): boolean { return getConfigValue(slotKey(slot, 'connected')) === 'true'; }
+export function isMicrosoftEnabled(slot: AccountSlot = 'agent'): boolean { return slotAccount(slot)?.enabled ?? false; }
+export function isMicrosoftConnected(slot: AccountSlot = 'agent'): boolean { return slotAccount(slot)?.connected ?? false; }
 export function getEnabledMsServices(slot: AccountSlot = 'agent'): MicrosoftWorkspaceConfig['enabledServices'] { return getMicrosoftWorkspaceConfig(slot).enabledServices; }
-export function getMsAccountType(slot: AccountSlot = 'agent'): 'msa' | 'entra' | null { return (getConfigValue(slotKey(slot, 'account_type')) as 'msa' | 'entra') ?? null; }
+export function getMsAccountType(slot: AccountSlot = 'agent'): 'msa' | 'entra' | null { return slotAccount(slot)?.accountType ?? null; }
 export function getClientId(): string { return CLIENT_ID; }
 
-/**
- * Whether the Outlook watcher should poll this slot's inbox for new mail and
- * forward notifications to the primary agent. Agent slot defaults true to
- * preserve single-account v2.6 behavior; user slot defaults false so adding
- * a personal Microsoft account doesn't surprise the user with forwarded
- * personal mail. Migration runs on first boot via seedDefaultEmailMonitoring().
- */
+// ── Kind-level aggregation (multi-account aware) ──
+
+export function isAnyMicrosoftAccountConnected(slot: AccountSlot): boolean {
+  return listMicrosoftAccounts(slot).some(a => a.connected);
+}
+
+export function isMsServiceEnabledForKind(
+  slot: AccountSlot,
+  service: keyof MicrosoftWorkspaceConfig['enabledServices'],
+): boolean {
+  return listMicrosoftAccounts(slot).some(a => a.connected && parseServices(a.enabledServices)[service]);
+}
+
 export function isMsEmailMonitoringEnabled(slot: AccountSlot = 'agent'): boolean {
-  const v = getConfigValue(slotKey(slot, 'watch_email'));
-  if (v !== null) return v === 'true';
+  const acc = slotAccount(slot);
+  if (acc) return acc.watchEmail;
   return slot === 'agent';
 }
 
 export function setMsEmailMonitoringEnabled(enabled: boolean, slot: AccountSlot = 'agent'): void {
-  setConfigValue(slotKey(slot, 'watch_email'), String(enabled));
+  updateMicrosoftAccount(ensureSlotAccount(slot).id, { watchEmail: enabled });
 }
 
-/**
- * Per-slot send permission. Agent slot defaults true (preserves prior
- * behavior); user slot defaults false (explicit opt-in for personal
- * accounts). See isEmailSendingEnabled in google/auth.ts.
- */
 export function isMsEmailSendingEnabled(slot: AccountSlot = 'agent'): boolean {
-  const v = getConfigValue(slotKey(slot, 'send_email'));
-  if (v !== null) return v === 'true';
+  const acc = slotAccount(slot);
+  if (acc) return acc.sendEmail;
   return slot === 'agent';
 }
 
 export function setMsEmailSendingEnabled(enabled: boolean, slot: AccountSlot = 'agent'): void {
-  setConfigValue(slotKey(slot, 'send_email'), String(enabled));
+  updateMicrosoftAccount(ensureSlotAccount(slot).id, { sendEmail: enabled });
 }
 
 // ── Config Setters ──
 
 export function setMicrosoftConnected(connected: boolean, email?: string, accountType?: 'msa' | 'entra', slot: AccountSlot = 'agent'): void {
-  setConfigValue(slotKey(slot, 'connected'), String(connected));
-  if (email) setConfigValue(slotKey(slot, 'account_email'), email);
-  if (accountType) setConfigValue(slotKey(slot, 'account_type'), accountType);
+  const patch: Partial<Omit<MicrosoftAccount, 'id' | 'kind' | 'position'>> = { connected };
+  if (email) patch.email = email;
+  if (accountType) patch.accountType = accountType;
+  if (connected) patch.lastVerifiedAt = new Date().toISOString();
+  updateMicrosoftAccount(ensureSlotAccount(slot).id, patch);
   if (connected) {
-    setConfigValue(slotKey(slot, 'last_verified_at'), new Date().toISOString());
     broadcast({ type: 'microsoft:connected', data: { email: email ?? '', slot } } as never);
   } else {
     broadcast({ type: 'microsoft:disconnected', data: { slot } } as never);
   }
 }
 
-export function setMicrosoftEnabled(enabled: boolean, slot: AccountSlot = 'agent'): void { setConfigValue(slotKey(slot, 'enabled'), String(enabled)); }
+export function setMicrosoftEnabled(enabled: boolean, slot: AccountSlot = 'agent'): void {
+  updateMicrosoftAccount(ensureSlotAccount(slot).id, { enabled });
+}
 
 export function setEnabledMsServices(services: Partial<MicrosoftWorkspaceConfig['enabledServices']>, slot: AccountSlot = 'agent'): void {
   const current = getEnabledMsServices(slot);
-  setConfigValue(slotKey(slot, 'enabled_services'), JSON.stringify({ ...current, ...services }));
+  updateMicrosoftAccount(ensureSlotAccount(slot).id, { enabledServices: JSON.stringify({ ...current, ...services }) });
+}
+
+// ── Per-account setters (dashboard manages individual accounts by id) ──
+
+export function setEnabledMsServicesForAccount(accountId: string, services: Partial<MicrosoftWorkspaceConfig['enabledServices']>): void {
+  const acc = getMicrosoftAccount(accountId);
+  if (!acc) return;
+  const current = parseServices(acc.enabledServices);
+  updateMicrosoftAccount(accountId, { enabledServices: JSON.stringify({ ...current, ...services }) });
+}
+
+export function setMsEmailMonitoringEnabledForAccount(accountId: string, enabled: boolean): void {
+  if (!getMicrosoftAccount(accountId)) return;
+  updateMicrosoftAccount(accountId, { watchEmail: enabled });
+}
+
+export function setMsEmailSendingEnabledForAccount(accountId: string, enabled: boolean): void {
+  if (!getMicrosoftAccount(accountId)) return;
+  updateMicrosoftAccount(accountId, { sendEmail: enabled });
+}
+
+/** Sanitized per-account view for the dashboard — never includes tokens. */
+export interface MicrosoftAccountView {
+  id: string;
+  kind: AccountSlot;
+  position: number;
+  email: string | null;
+  accountType: 'msa' | 'entra' | null;
+  enabled: boolean;
+  connected: boolean;
+  services: MicrosoftWorkspaceConfig['enabledServices'];
+  watchEmail: boolean;
+  sendEmail: boolean;
+  lastVerified: string | null;
+}
+
+export function listMicrosoftAccountViews(): MicrosoftAccountView[] {
+  return listMicrosoftAccounts().map(a => ({
+    id: a.id,
+    kind: a.kind,
+    position: a.position,
+    email: a.email,
+    accountType: a.accountType,
+    enabled: a.enabled,
+    connected: a.connected,
+    services: parseServices(a.enabledServices),
+    watchEmail: a.watchEmail,
+    sendEmail: a.sendEmail,
+    lastVerified: a.lastVerifiedAt,
+  }));
 }
 
 // ── Token Management ──
 
-export function getAccessToken(slot: AccountSlot = 'agent'): string | null { return getConfigValue(slotKey(slot, 'access_token')); }
-function getRefreshToken(slot: AccountSlot): string | null { return getConfigValue(slotKey(slot, 'refresh_token')); }
-function getTokenExpiresAt(slot: AccountSlot): number { const v = getConfigValue(slotKey(slot, 'token_expires_at')); return v ? parseInt(v, 10) : 0; }
+export function getAccessToken(slot: AccountSlot = 'agent'): string | null { return slotAccount(slot)?.accessToken ?? null; }
 
-function storeTokens(slot: AccountSlot, accessToken: string, refreshToken: string | null, expiresIn: number): void {
-  setConfigValue(slotKey(slot, 'access_token'), accessToken);
-  if (refreshToken) setConfigValue(slotKey(slot, 'refresh_token'), refreshToken);
-  setConfigValue(slotKey(slot, 'token_expires_at'), String(Date.now() + expiresIn * 1000));
-}
+const refreshPromises: Map<string, Promise<string | null> | null> = new Map();
 
-// Per-slot refresh mutex.
-const refreshPromises: Map<AccountSlot, Promise<string | null> | null> = new Map();
-
-export async function getValidAccessToken(slot: AccountSlot = 'agent'): Promise<string | null> {
-  const token = getAccessToken(slot);
-  const expiresAt = getTokenExpiresAt(slot);
-  if (token && Date.now() < expiresAt - 5 * 60 * 1000) return token;
-  const existing = refreshPromises.get(slot);
+export async function getValidAccessTokenForAccount(accountId: string): Promise<string | null> {
+  const acc = getMicrosoftAccount(accountId);
+  if (!acc) return null;
+  if (acc.accessToken && Date.now() < (acc.tokenExpiresAt ?? 0) - 5 * 60 * 1000) return acc.accessToken;
+  const existing = refreshPromises.get(accountId);
   if (existing) return existing;
-  const promise = refreshAccessToken(slot).finally(() => { refreshPromises.set(slot, null); });
-  refreshPromises.set(slot, promise);
+  const promise = refreshAccessTokenForAccount(accountId).finally(() => { refreshPromises.set(accountId, null); });
+  refreshPromises.set(accountId, promise);
   return promise;
 }
 
-async function refreshAccessToken(slot: AccountSlot): Promise<string | null> {
-  const refreshToken = getRefreshToken(slot);
-  if (!refreshToken) { logger.warn('No refresh token', { slot }); return null; }
+export async function getValidAccessToken(slot: AccountSlot = 'agent'): Promise<string | null> {
+  const acc = getPrimaryMicrosoftAccount(slot);
+  if (!acc) return null;
+  return getValidAccessTokenForAccount(acc.id);
+}
+
+async function refreshAccessTokenForAccount(accountId: string): Promise<string | null> {
+  const acc = getMicrosoftAccount(accountId);
+  const refreshToken = acc?.refreshToken ?? null;
+  if (!refreshToken) { logger.warn('No refresh token', { accountId }); return null; }
 
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
@@ -230,20 +282,27 @@ async function refreshAccessToken(slot: AccountSlot): Promise<string | null> {
 
     if (!resp.ok) {
       const err = await resp.text();
-      logger.error('Token refresh failed', { slot, status: resp.status, error: err });
+      logger.error('Token refresh failed', { accountId, status: resp.status, error: err });
       if (resp.status === 400 || resp.status === 401) {
-        setMicrosoftConnected(false, undefined, undefined, slot);
-        const slotLabel = slot === 'user' ? "user's" : "agent's";
-        try { sendAlert(`Microsoft 365 (${slotLabel} account) connection expired. Re-authenticate in Settings > Microsoft.`, 'critical'); } catch {}
+        updateMicrosoftAccount(accountId, { connected: false });
+        broadcast({ type: 'microsoft:disconnected', data: { slot: acc?.kind ?? 'agent' } } as never);
+        const label = acc?.kind === 'user' ? "user's" : "agent's";
+        const who = acc?.email ? ` (${acc.email})` : '';
+        try { sendAlert(`Microsoft 365 ${label} account${who} connection expired. Re-authenticate in Settings > Microsoft.`, 'critical'); } catch {}
       }
       return null;
     }
 
     const data = await resp.json() as { access_token: string; refresh_token?: string; expires_in: number };
-    storeTokens(slot, data.access_token, data.refresh_token ?? null, data.expires_in);
+    const patch: Partial<Omit<MicrosoftAccount, 'id' | 'kind' | 'position'>> = {
+      accessToken: data.access_token,
+      tokenExpiresAt: Date.now() + data.expires_in * 1000,
+    };
+    if (data.refresh_token) patch.refreshToken = data.refresh_token;
+    updateMicrosoftAccount(accountId, patch);
     return data.access_token;
   } catch (err) {
-    logger.error('Token refresh error', { slot, error: err instanceof Error ? err.message : String(err) });
+    logger.error('Token refresh error', { accountId, error: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }
@@ -256,33 +315,32 @@ export function generatePKCE(): { verifier: string; challenge: string } {
   return { verifier, challenge };
 }
 
-// Per-slot PKCE state. Each slot has its own in-flight OAuth context.
-interface OAuthState { verifier: string; redirectUri: string; stateToken: string }
-const oauthStateBySlot: Map<AccountSlot, OAuthState | null> = new Map();
-const slotByStateToken: Map<string, AccountSlot> = new Map();
-
-export function getStoredVerifier(slot: AccountSlot = 'agent'): string | null {
-  return oauthStateBySlot.get(slot)?.verifier ?? null;
-}
-export function getStoredRedirectUri(slot: AccountSlot = 'agent'): string | null {
-  return oauthStateBySlot.get(slot)?.redirectUri ?? null;
-}
-/** Reverse-lookup slot for a state token recovered from /callback. */
-export function getSlotForState(state: string): AccountSlot | null {
-  return slotByStateToken.get(state) ?? null;
-}
-
 // ── OAuth Flow ──
 
-export function buildAuthUrl(redirectUri: string, slot: AccountSlot = 'agent'): { authUrl: string; verifier: string; state: string } {
-  // Evict stale state from a previous abandoned attempt for this slot.
-  const prior = oauthStateBySlot.get(slot);
-  if (prior) slotByStateToken.delete(prior.stateToken);
+export interface OAuthTarget { kind: AccountSlot; accountId?: string }
+
+interface OAuthFlow { verifier: string; redirectUri: string; target: OAuthTarget; createdAt: number }
+const oauthFlows = new Map<string, OAuthFlow>();
+const OAUTH_FLOW_TTL_MS = 10 * 60 * 1000;
+
+export function getFlowForState(state: string): { verifier: string; redirectUri: string; target: OAuthTarget } | null {
+  const flow = oauthFlows.get(state);
+  return flow ? { verifier: flow.verifier, redirectUri: flow.redirectUri, target: flow.target } : null;
+}
+
+export function clearOAuthFlow(state: string): void {
+  oauthFlows.delete(state);
+}
+
+export function buildAuthUrl(redirectUri: string, target: OAuthTarget): { authUrl: string; state: string } {
+  const now = Date.now();
+  for (const [s, f] of oauthFlows) {
+    if (now - f.createdAt > OAUTH_FLOW_TTL_MS) oauthFlows.delete(s);
+  }
 
   const { verifier, challenge } = generatePKCE();
   const stateToken = crypto.randomBytes(16).toString('hex');
-  oauthStateBySlot.set(slot, { verifier, redirectUri, stateToken });
-  slotByStateToken.set(stateToken, slot);
+  oauthFlows.set(stateToken, { verifier, redirectUri, target, createdAt: now });
 
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
@@ -296,15 +354,16 @@ export function buildAuthUrl(redirectUri: string, slot: AccountSlot = 'agent'): 
     state: stateToken,
   });
 
-  return { authUrl: `${AUTH_BASE}/authorize?${params.toString()}`, verifier, state: stateToken };
+  return { authUrl: `${AUTH_BASE}/authorize?${params.toString()}`, state: stateToken };
 }
 
-export async function exchangeCodeForTokens(code: string, redirectUri: string, codeVerifier: string, slot: AccountSlot = 'agent'): Promise<{
+export async function exchangeCodeForTokens(code: string, redirectUri: string, codeVerifier: string, target: OAuthTarget): Promise<{
   success: boolean;
   email?: string;
   accountType?: 'msa' | 'entra';
   error?: string;
 }> {
+  const slot = target.kind;
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
     grant_type: 'authorization_code',
@@ -327,10 +386,9 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
     }
 
     const data = await resp.json() as { access_token: string; refresh_token?: string; expires_in: number; id_token?: string };
-    storeTokens(slot, data.access_token, data.refresh_token ?? null, data.expires_in);
 
     // Detect account type from id_token
-    let accountType: 'msa' | 'entra' = 'entra';
+    let accountType: MicrosoftAccountType = 'entra';
     if (data.id_token) {
       try {
         const payload = JSON.parse(Buffer.from(data.id_token.split('.')[1], 'base64url').toString());
@@ -348,36 +406,66 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
       }
     } catch {}
 
-    setMicrosoftConnected(true, email, accountType, slot);
-    setMicrosoftEnabled(true, slot);
-    if (accountType === 'msa') setEnabledMsServices({ teams: false }, slot);
-
-    // Clean up the OAuth state for this slot.
-    const stored = oauthStateBySlot.get(slot);
-    if (stored) {
-      slotByStateToken.delete(stored.stateToken);
-      oauthStateBySlot.set(slot, null);
-    }
-
-    // Same-email soft warning (see Google version for rationale).
-    if (email) {
-      const otherSlot: AccountSlot = slot === 'agent' ? 'user' : 'agent';
-      const otherEmail = getConfigValue(slotKey(otherSlot, 'account_email'));
-      if (otherEmail && otherEmail.toLowerCase() === email.toLowerCase() && isMicrosoftConnected(otherSlot)) {
-        logger.warn('Microsoft: same email connected to both slots', { slot, otherSlot, email });
+    // Resolve which account row receives these tokens (reconnect / dedupe / create).
+    let accountId: string;
+    if (target.accountId) {
+      const acc = getMicrosoftAccount(target.accountId);
+      if (!acc) return { success: false, error: 'That account no longer exists. Refresh Settings and try again.' };
+      accountId = acc.id;
+    } else {
+      const existing = email
+        ? listMicrosoftAccounts(slot).find(a => (a.email ?? '').toLowerCase() === email.toLowerCase())
+        : null;
+      if (existing) {
+        accountId = existing.id;
+      } else {
+        if (countMicrosoftAccounts(slot) >= MAX_MS_ACCOUNTS_PER_KIND) {
+          return { success: false, error: `Limit of ${MAX_MS_ACCOUNTS_PER_KIND} ${slot} Microsoft accounts reached. Remove one before adding another.` };
+        }
+        const created = insertMicrosoftAccount({
+          kind: slot,
+          email,
+          accountType,
+          watchEmail: slot === 'agent',
+          sendEmail: slot === 'agent',
+          // Personal (msa) accounts can't use Teams — disable it up front.
+          ...(accountType === 'msa' ? { enabledServices: JSON.stringify({ ...DEFAULT_SERVICES, teams: false }) } : {}),
+        });
+        accountId = created.id;
       }
     }
 
-    logger.info('Microsoft 365 connected', { slot, email, accountType });
+    updateMicrosoftAccount(accountId, {
+      accessToken: data.access_token,
+      tokenExpiresAt: Date.now() + data.expires_in * 1000,
+      ...(data.refresh_token ? { refreshToken: data.refresh_token } : {}),
+      email: email || undefined,
+      accountType,
+      connected: true,
+      enabled: true,
+      lastVerifiedAt: new Date().toISOString(),
+    });
+    if (accountType === 'msa') setEnabledMsServicesForAccount(accountId, { teams: false });
+    broadcast({ type: 'microsoft:connected', data: { email, slot } } as never);
 
-    // Install Office document packages in the background (idempotent).
-    // Only fire when the agent slot connects to avoid double-install.
-    if (slot === 'agent') {
-      try {
-        const { installOfficePackages } = await import('./office-packages.js');
-        installOfficePackages();
-      } catch { /* best effort */ }
+    // Same-email soft warning across kinds.
+    if (email) {
+      const otherSlot: AccountSlot = slot === 'agent' ? 'user' : 'agent';
+      const otherMatch = listMicrosoftAccounts(otherSlot).some(
+        a => a.connected && (a.email ?? '').toLowerCase() === email.toLowerCase(),
+      );
+      if (otherMatch) {
+        logger.warn('Microsoft: same email connected as both agent and user', { slot, otherSlot, email });
+      }
     }
+
+    logger.info('Microsoft 365 connected', { slot, accountId, email, accountType });
+
+    // Install Office document packages in the background (idempotent), once.
+    try {
+      const { installOfficePackages } = await import('./office-packages.js');
+      installOfficePackages();
+    } catch { /* best effort */ }
 
     return { success: true, email, accountType };
   } catch (err) {
@@ -394,7 +482,7 @@ export async function testMicrosoftAuth(slot: AccountSlot = 'agent'): Promise<{ 
     const resp = await fetch(`${GRAPH_BASE}/me`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) });
     if (!resp.ok) return { authenticated: false, email: null };
     const me = await resp.json() as { mail?: string; userPrincipalName?: string };
-    setConfigValue(slotKey(slot, 'last_verified_at'), new Date().toISOString());
+    updateMicrosoftAccount(ensureSlotAccount(slot).id, { lastVerifiedAt: new Date().toISOString() });
     return { authenticated: true, email: me.mail ?? me.userPrincipalName ?? null };
   } catch { return { authenticated: false, email: null }; }
 }
@@ -411,18 +499,37 @@ export async function checkMicrosoftOnStartup(): Promise<void> {
 // ── Disconnect ──
 
 export function disconnectMicrosoft(slot: AccountSlot = 'agent'): void {
-  const fields = ['enabled', 'connected', 'account_email', 'account_type', 'access_token', 'refresh_token', 'token_expires_at', 'last_verified_at', 'enabled_services'];
-  for (const field of fields) {
-    deleteConfigValue(slotKey(slot, field));
+  const acc = slotAccount(slot);
+  if (acc) {
+    updateMicrosoftAccount(acc.id, {
+      enabled: false, connected: false, email: null, accountType: null,
+      accessToken: null, refreshToken: null, tokenExpiresAt: null,
+      lastVerifiedAt: null, enabledServices: null,
+    });
   }
   broadcast({ type: 'microsoft:disconnected', data: { slot } } as never);
   logger.info('Microsoft 365 disconnected', { slot });
 }
 
+export function disconnectMicrosoftAccount(accountId: string): void {
+  const acc = getMicrosoftAccount(accountId);
+  if (!acc) return;
+  if (acc.position === 1) {
+    updateMicrosoftAccount(acc.id, {
+      enabled: false, connected: false, email: null, accountType: null,
+      accessToken: null, refreshToken: null, tokenExpiresAt: null,
+      lastVerifiedAt: null, enabledServices: null,
+    });
+  } else {
+    deleteMicrosoftAccount(acc.id);
+  }
+  broadcast({ type: 'microsoft:disconnected', data: { slot: acc.kind } } as never);
+  logger.info('Microsoft account disconnected', { accountId, kind: acc.kind, position: acc.position });
+}
+
 // ── Access Level ──
 
 export function getAgentMicrosoftAccessLevel(_agentId: string, isPrimary: boolean, isPM: boolean): 'full' | 'read' | 'none' {
-  // Same any-slot-counts rule as Google.
   const anyEnabled = isMicrosoftEnabled('agent') || isMicrosoftEnabled('user');
   const anyConnected = isMicrosoftConnected('agent') || isMicrosoftConnected('user');
   if (!anyEnabled || !anyConnected) return 'none';

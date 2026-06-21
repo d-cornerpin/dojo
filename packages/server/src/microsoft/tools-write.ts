@@ -685,9 +685,9 @@ async function getOrCreateOneDriveFolder(
 
 async function uploadAttachmentToOneDrive(
   att: LocalAttachment,
-  slot: AccountSlot,
+  slot: string,
 ): Promise<{ ok: true; url: string; name: string } | { ok: false; error: string }> {
-  const token = (await import('./auth.js')).getAccessToken(slot);
+  const token = await (await import('./auth.js')).getValidAccessTokenForAccount(slot);
   if (!token) return { ok: false, error: 'not authenticated with Microsoft' };
 
   const root = await getOrCreateOneDriveFolder(ATTACHMENTS_ROOT_FOLDER, 'root', token);
@@ -787,7 +787,7 @@ async function uploadAttachmentToOneDrive(
  */
 async function prepareOutlookAttachments(
   paths: readonly string[] | undefined,
-  slot: AccountSlot,
+  slot: string,
 ): Promise<{
   ok: true;
   inline: GraphFileAttachment[];
@@ -821,6 +821,18 @@ async function prepareOutlookAttachments(
 
 // ── Tool Execution ──
 
+// Path B (multi-account): every Microsoft write tool can target a specific
+// connected account of its kind via an `account` param (the account's email).
+for (const def of microsoftWriteToolDefinitions) {
+  const schema = def.input_schema as { properties?: Record<string, unknown> };
+  if (schema.properties && !schema.properties.account) {
+    schema.properties.account = {
+      type: 'string',
+      description: "Which connected account to act on, by its email address. Omit to use the only connected account of this type; required when more than one is connected.",
+    };
+  }
+}
+
 const microsoftWriteToolDefByName = new Map(microsoftWriteToolDefinitions.map(t => [t.name, t]));
 
 export async function executeMicrosoftWriteTool(
@@ -829,13 +841,14 @@ export async function executeMicrosoftWriteTool(
   agentId: string,
   agentName: string,
 ): Promise<string> {
-  // v2.7.1 — same pattern as google/tools-write.ts. Only outlook_send/reply/
-  // forward have user_ variants today; other Microsoft writes still target
-  // the agent slot exclusively.
-  let slot: import('./auth.js').AccountSlot = 'agent';
+  // The user_ prefix selects the KIND (permission boundary); the `account`
+  // param selects which of that kind's connected accounts. `kind` drives
+  // permission checks; `slot` carries the resolved account id, threaded into
+  // every msGraph/helper call.
+  let kind: AccountSlot = 'agent';
   let canonicalName = name;
   if (name.startsWith('user_')) {
-    slot = 'user';
+    kind = 'user';
     canonicalName = name.slice('user_'.length);
   }
 
@@ -844,12 +857,16 @@ export async function executeMicrosoftWriteTool(
   const schemaErr = validateAgainstSchema(canonicalName, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
   if (schemaErr) return schemaErr;
 
-  // Send-permission gate. Default off → must opt in per slot.
+  const { resolveMicrosoftAccountForTool } = await import('./accounts.js');
+  const resolved = resolveMicrosoftAccountForTool(kind, args.account as string | undefined);
+  if ('error' in resolved) return `Error: ${resolved.error}`;
+  const slot = resolved.account.id;
+
+  // Send-permission gate, checked on the RESOLVED account's own send toggle.
   if (canonicalName === 'outlook_send' || canonicalName === 'outlook_reply' || canonicalName === 'outlook_forward') {
-    const { isMsEmailSendingEnabled } = await import('./auth.js');
-    if (!isMsEmailSendingEnabled(slot)) {
-      const slotLabel = slot === 'user' ? "user's Microsoft account" : "agent's Microsoft account";
-      return `Error: sending email from the ${slotLabel} is disabled. Open Settings → Microsoft and turn on "Allow sending email" for the ${slot === 'user' ? 'User' : 'Agent'} slot, then try again.`;
+    if (!resolved.account.sendEmail) {
+      const who = resolved.account.email ?? (kind === 'user' ? "the user's Microsoft account" : "the agent's Microsoft account");
+      return `Error: sending email from ${who} is disabled. Open Settings → Microsoft and turn on "Allow sending email" for that account, then try again.`;
     }
   }
 
@@ -1052,7 +1069,7 @@ export async function executeMicrosoftWriteTool(
 
       const stat = fs.statSync(filePath);
       const fileSize = stat.size;
-      const token = (await import('./auth.js')).getAccessToken();
+      const token = await (await import('./auth.js')).getValidAccessTokenForAccount(slot);
       if (!token) return 'Error: Not authenticated with Microsoft';
 
       const itemPath = folderId
@@ -1571,7 +1588,7 @@ export async function executeMicrosoftWriteTool(
       if (!filePaths || filePaths.length === 0) return 'Error: file_paths must be a non-empty array';
 
       const fs = await import('node:fs');
-      const token = (await import('./auth.js')).getAccessToken();
+      const token = await (await import('./auth.js')).getValidAccessTokenForAccount(slot);
       if (!token) return 'Error: Not authenticated with Microsoft';
 
       type UploadResult = { path: string; ok: boolean; message: string };
@@ -1875,7 +1892,7 @@ export async function executeMicrosoftWriteTool(
       const bodyHtml = isHtml ? body : `<p>${escapeHtml(body).replace(/\n/g, '<br>')}</p>`;
       const html = `<!DOCTYPE html><html><head><title>${escapedTitle}</title></head><body>${bodyHtml}</body></html>`;
 
-      const token = (await import('./auth.js')).getAccessToken();
+      const token = await (await import('./auth.js')).getValidAccessTokenForAccount(slot);
       if (!token) return 'Error: not authenticated with Microsoft.';
       try {
         const resp = await fetch(`https://graph.microsoft.com/v1.0/me/onenote/sections/${sectionId}/pages`, {
@@ -1907,7 +1924,7 @@ export async function executeMicrosoftWriteTool(
       const contentHtml = isHtml ? body : `<p>${escapeHtml(body).replace(/\n/g, '<br>')}</p>`;
       const commands = [{ target: 'body', action: 'append', content: contentHtml }];
 
-      const token = (await import('./auth.js')).getAccessToken();
+      const token = await (await import('./auth.js')).getValidAccessTokenForAccount(slot);
       if (!token) return 'Error: not authenticated with Microsoft.';
       try {
         const resp = await fetch(`https://graph.microsoft.com/v1.0/me/onenote/pages/${pageId}/content`, {

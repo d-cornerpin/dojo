@@ -14,18 +14,30 @@ import {
   setEnabledServices,
   buildAuthUrl,
   exchangeCodeForTokens,
-  getStoredRedirectUri,
-  getSlotForState,
+  getFlowForState,
+  clearOAuthFlow,
   disconnectGoogle,
+  disconnectGoogleAccount,
   getMissingScopes,
   discoverGrantedScopes,
   isEmailMonitoringEnabled,
   setEmailMonitoringEnabled,
+  setEmailMonitoringEnabledForAccount,
   isEmailSendingEnabled,
   setEmailSendingEnabled,
+  setEmailSendingEnabledForAccount,
+  setEnabledServicesForAccount,
+  listGoogleAccountViews,
   ACCOUNT_SLOTS,
   type AccountSlot,
+  type OAuthTarget,
 } from '../../google/auth.js';
+import {
+  getGoogleAccount,
+  getPrimaryGoogleAccount,
+  countGoogleAccounts,
+  MAX_ACCOUNTS_PER_KIND,
+} from '../../google/accounts.js';
 import { queryGoogleActivity, getTodayActivityCounts, getLastActivityTimestamp } from '../../google/activity-log.js';
 
 const logger = createLogger('google-routes');
@@ -58,8 +70,11 @@ googleRouter.get('/status', async (c) => {
   return c.json({
     ok: true,
     data: {
-      // Per-slot detail
+      // Per-slot detail (legacy: position-1 of each kind)
       slots,
+      // Path B: full per-account list (up to 5 per kind) + the cap.
+      accounts: listGoogleAccountViews(),
+      maxPerKind: MAX_ACCOUNTS_PER_KIND,
       // Aggregate counters (not slot-specific)
       lastActivity,
       todayActivity: todayCounts,
@@ -89,16 +104,38 @@ function buildSlotPayload(slot: AccountSlot) {
   };
 }
 
-// POST /api/google/connect?slot=agent|user — start OAuth flow for a slot
+// POST /api/google/connect — start an OAuth flow. Three shapes:
+//   ?slot=agent|user            reconnect/connect that kind's primary (back-compat)
+//   ?add=true&kind=agent|user   add a NEW account to the kind (cap-enforced)
+//   ?accountId=<id>             reconnect a specific existing account
 googleRouter.post('/connect', (c) => {
   try {
-    const slot = parseSlot(c.req.query('slot'));
     const url = new URL(c.req.url);
     const redirectUri = `${url.protocol}//${url.host}/api/google/callback`;
-    const { authUrl } = buildAuthUrl(redirectUri, slot);
 
-    logger.info('Google OAuth flow started', { slot, redirectUri });
-    return c.json({ ok: true, data: { authUrl, slot } });
+    let target: OAuthTarget;
+    const accountIdQ = c.req.query('accountId');
+    const add = c.req.query('add') === 'true';
+    if (accountIdQ) {
+      const acc = getGoogleAccount(accountIdQ);
+      if (!acc) return c.json({ ok: false, error: 'Unknown account.' }, 400);
+      target = { kind: acc.kind, accountId: acc.id };
+    } else if (add) {
+      const kind = parseSlot(c.req.query('kind'));
+      if (countGoogleAccounts(kind) >= MAX_ACCOUNTS_PER_KIND) {
+        return c.json({ ok: false, error: `Limit of ${MAX_ACCOUNTS_PER_KIND} ${kind} Google accounts reached.` }, 409);
+      }
+      target = { kind };
+    } else {
+      const slot = parseSlot(c.req.query('slot'));
+      // Reconnect the kind's primary (position-1) in place when it exists, so a
+      // different email replaces it rather than spawning a second account.
+      target = { kind: slot, accountId: getPrimaryGoogleAccount(slot)?.id };
+    }
+
+    const { authUrl } = buildAuthUrl(redirectUri, target);
+    logger.info('Google OAuth flow started', { target, redirectUri });
+    return c.json({ ok: true, data: { authUrl, kind: target.kind, accountId: target.accountId ?? null } });
   } catch (err) {
     return c.json({ ok: false, error: `Failed to start auth: ${err instanceof Error ? err.message : String(err)}` }, 500);
   }
@@ -119,22 +156,18 @@ googleRouter.get('/callback', async (c) => {
     return c.html('<html><body><h2>Missing authorization code or state</h2><p>You can close this tab.</p></body></html>');
   }
 
-  // Recover slot from the state token. Each in-flight OAuth flow has its
-  // own state, so the state→slot map is the authoritative source of
-  // truth for "which slot is this callback completing."
-  const slot = getSlotForState(state);
-  if (!slot) {
+  // Recover the flow (kind + target account + redirect) from the state token.
+  // The state→flow map is the authoritative "which flow is this completing."
+  const flow = getFlowForState(state);
+  if (!flow) {
     logger.warn('Google OAuth callback with unknown state', { state });
     return c.html('<html><body><h2>Invalid state parameter</h2><p>Please try connecting again from Settings.</p></body></html>');
   }
 
-  const redirectUri = getStoredRedirectUri(slot);
-  if (!redirectUri) {
-    return c.html('<html><body><h2>Session expired</h2><p>Please try connecting again from Settings.</p></body></html>');
-  }
+  const result = await exchangeCodeForTokens(code, flow.redirectUri, flow.target);
+  clearOAuthFlow(state);
 
-  const result = await exchangeCodeForTokens(code, redirectUri, slot);
-
+  const slot = flow.target.kind;
   if (result.success) {
     logger.info('Google OAuth completed', { slot, email: result.email });
     const slotLabel = slot === 'user' ? "user's" : "agent's";
@@ -145,8 +178,16 @@ googleRouter.get('/callback', async (c) => {
   return c.html(`<html><body><h2>Connection failed</h2><p>${result.error}</p><p>You can close this tab and try again from Settings.</p></body></html>`);
 });
 
-// POST /api/google/disconnect?slot=agent|user
+// POST /api/google/disconnect?slot=agent|user  (resets that kind's primary)
+//                            ?accountId=<id>     (disconnects/removes one account)
 googleRouter.post('/disconnect', (c) => {
+  const accountId = c.req.query('accountId');
+  if (accountId) {
+    const acc = getGoogleAccount(accountId);
+    if (!acc) return c.json({ ok: false, error: 'Unknown account.' }, 400);
+    disconnectGoogleAccount(accountId);
+    return c.json({ ok: true, data: { accountId, kind: acc.kind } });
+  }
   const slot = parseSlot(c.req.query('slot'));
   disconnectGoogle(slot);
   return c.json({ ok: true, data: { slot } });
@@ -167,10 +208,11 @@ googleRouter.post('/test', async (c) => {
   });
 });
 
-// PUT /api/google/services?slot=agent|user — enable/disable services per slot
+// PUT /api/google/services?slot=agent|user  (or ?accountId=) — enable/disable
+// services for a kind's primary account, or a specific account.
 googleRouter.put('/services', async (c) => {
   try {
-    const slot = parseSlot(c.req.query('slot'));
+    const accountId = c.req.query('accountId');
     const body = await c.req.json() as Partial<{
       gmail: boolean;
       calendar: boolean;
@@ -181,6 +223,13 @@ googleRouter.put('/services', async (c) => {
       forms: boolean;
     }>;
 
+    if (accountId) {
+      if (!getGoogleAccount(accountId)) return c.json({ ok: false, error: 'Unknown account.' }, 400);
+      setEnabledServicesForAccount(accountId, body);
+      logger.info('Google Workspace services updated', { accountId, ...body });
+      return c.json({ ok: true, data: { accountId } });
+    }
+    const slot = parseSlot(c.req.query('slot'));
     setEnabledServices(body, slot);
     logger.info('Google Workspace services updated', { slot, ...body });
     return c.json({ ok: true, data: { slot } });
@@ -189,16 +238,23 @@ googleRouter.put('/services', async (c) => {
   }
 });
 
-// PUT /api/google/watch-email?slot=agent|user — toggle Gmail watcher per slot
+// PUT /api/google/watch-email?slot=agent|user  (or ?accountId=) — toggle the
+// Gmail watcher for a kind's primary account, or a specific account.
 googleRouter.put('/watch-email', async (c) => {
   try {
+    const accountId = c.req.query('accountId');
     const slot = parseSlot(c.req.query('slot'));
     const body = await c.req.json() as { enabled?: boolean };
     if (typeof body.enabled !== 'boolean') {
       return c.json({ ok: false, error: 'enabled boolean is required' }, 400);
     }
-    setEmailMonitoringEnabled(body.enabled, slot);
-    logger.info('Gmail email-monitoring toggled', { slot, enabled: body.enabled });
+    if (accountId) {
+      if (!getGoogleAccount(accountId)) return c.json({ ok: false, error: 'Unknown account.' }, 400);
+      setEmailMonitoringEnabledForAccount(accountId, body.enabled);
+    } else {
+      setEmailMonitoringEnabled(body.enabled, slot);
+    }
+    logger.info('Gmail email-monitoring toggled', { accountId: accountId ?? slot, enabled: body.enabled });
 
     // Bounce the watcher so the change takes effect immediately. The poll
     // loop reads isEmailMonitoringEnabled on every tick, so this is mostly
@@ -216,26 +272,32 @@ googleRouter.put('/watch-email', async (c) => {
       });
     }
 
-    return c.json({ ok: true, data: { slot, enabled: body.enabled } });
+    return c.json({ ok: true, data: { accountId: accountId ?? null, slot, enabled: body.enabled } });
   } catch {
     return c.json({ ok: false, error: 'Invalid request body' }, 400);
   }
 });
 
-// PUT /api/google/send-email?slot=agent|user — toggle agent's permission to
-// send/reply/forward email from this slot. Pure config flip; enforcement
-// happens in the tool executor right before the Gmail API call. No watcher
-// to bounce.
+// PUT /api/google/send-email?slot=agent|user  (or ?accountId=) — toggle the
+// agent's permission to send/reply/forward from a kind's primary account, or a
+// specific account. Pure config flip; enforcement happens in the tool executor
+// right before the Gmail API call. No watcher to bounce.
 googleRouter.put('/send-email', async (c) => {
   try {
+    const accountId = c.req.query('accountId');
     const slot = parseSlot(c.req.query('slot'));
     const body = await c.req.json() as { enabled?: boolean };
     if (typeof body.enabled !== 'boolean') {
       return c.json({ ok: false, error: 'enabled boolean is required' }, 400);
     }
-    setEmailSendingEnabled(body.enabled, slot);
-    logger.info('Gmail email-sending toggled', { slot, enabled: body.enabled });
-    return c.json({ ok: true, data: { slot, enabled: body.enabled } });
+    if (accountId) {
+      if (!getGoogleAccount(accountId)) return c.json({ ok: false, error: 'Unknown account.' }, 400);
+      setEmailSendingEnabledForAccount(accountId, body.enabled);
+    } else {
+      setEmailSendingEnabled(body.enabled, slot);
+    }
+    logger.info('Gmail email-sending toggled', { accountId: accountId ?? slot, enabled: body.enabled });
+    return c.json({ ok: true, data: { accountId: accountId ?? null, slot, enabled: body.enabled } });
   } catch {
     return c.json({ ok: false, error: 'Invalid request body' }, 400);
   }

@@ -1,7 +1,7 @@
 // ════════════════════════════════════════
-// Outlook Watcher: Polls each connected slot's inbox for new emails and
-// notifies the primary agent. Multi-slot (agent + user) as of v2.7.1.
-// Mirror of gmail-watcher.ts — see that file for the per-slot rationale.
+// Outlook Watcher: Polls each connected ACCOUNT's inbox for new emails and
+// notifies the primary agent. Multi-account (Path B) — mirror of
+// gmail-watcher.ts; see that file for the per-account rationale.
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
@@ -11,10 +11,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { msGraphRead } from '../microsoft/client.js';
-import {
-  isMicrosoftEnabled, isMicrosoftConnected, getEnabledMsServices,
-  isMsEmailMonitoringEnabled, ACCOUNT_SLOTS, type AccountSlot,
-} from '../microsoft/auth.js';
+import { listMicrosoftAccountViews, type MicrosoftAccountView } from '../microsoft/auth.js';
 import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError } from './watcher-status.js';
 
 const logger = createLogger('outlook-watcher');
@@ -24,9 +21,9 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 const POLL_INTERVAL_MS = 300_000;
 const MAX_RESULTS_PER_POLL = 50;
 
-// ── Per-slot transient state ──
+// ── Per-account transient state ──
 
-interface SlotState {
+interface AccountWatchState {
   lastCheckedAt: string | null;
   lastPollAt: string | null;
   lastPollOk: boolean | null;
@@ -41,12 +38,18 @@ interface SlotState {
   notificationsSinceFailureAlert: number;
 }
 
-const slotState: Record<AccountSlot, SlotState> = {
-  agent: makeEmptyState(),
-  user: makeEmptyState(),
-};
+const accountState = new Map<string, AccountWatchState>();
 
-function makeEmptyState(): SlotState {
+function stateFor(accountId: string): AccountWatchState {
+  let s = accountState.get(accountId);
+  if (!s) {
+    s = makeEmptyState();
+    accountState.set(accountId, s);
+  }
+  return s;
+}
+
+function makeEmptyState(): AccountWatchState {
   return {
     lastCheckedAt: null,
     lastPollAt: null,
@@ -63,30 +66,33 @@ function makeEmptyState(): SlotState {
   };
 }
 
+function isMonitored(v: MicrosoftAccountView): boolean {
+  return v.enabled && v.connected && v.watchEmail && v.services.outlook;
+}
+
 // ── Aggregated status ──
 
 export function getOutlookWatcherStatus(): WatcherStatus {
-  const slots = ACCOUNT_SLOTS.map(s => ({ slot: s, state: slotState[s] }));
-  const monitored = slots.filter(({ slot }) =>
-    isMicrosoftEnabled(slot) && isMicrosoftConnected(slot) && isMsEmailMonitoringEnabled(slot) && getEnabledMsServices(slot).outlook,
-  );
+  const views = listMicrosoftAccountViews();
+  const entries = views.map(v => ({ view: v, state: stateFor(v.id) }));
+  const monitored = views.filter(isMonitored);
 
   const enabled = monitored.length > 0;
-  const connected = ACCOUNT_SLOTS.some(s => isMicrosoftConnected(s));
-  const lastPollAt = pickLatest(slots.map(s => s.state.lastPollAt));
-  const lastNotifiedAt = pickLatest(slots.map(s => s.state.lastNotifiedAt));
-  const totalPolls = slots.reduce((a, s) => a + s.state.totalPolls, 0);
-  const totalNotifications = slots.reduce((a, s) => a + s.state.totalNotifications, 0);
-  const lastCheckedAt = pickLatest(slots.map(s => s.state.lastCheckedAt));
+  const connected = views.some(v => v.connected);
+  const lastPollAt = pickLatest(entries.map(e => e.state.lastPollAt));
+  const lastNotifiedAt = pickLatest(entries.map(e => e.state.lastNotifiedAt));
+  const totalPolls = entries.reduce((a, e) => a + e.state.totalPolls, 0);
+  const totalNotifications = entries.reduce((a, e) => a + e.state.totalNotifications, 0);
+  const lastCheckedAt = pickLatest(entries.map(e => e.state.lastCheckedAt));
 
-  const ok = slots.map(s => s.state.lastPollOk).filter((v): v is boolean => v !== null);
+  const ok = entries.map(e => e.state.lastPollOk).filter((v): v is boolean => v !== null);
   const lastPollOk: boolean | null = ok.length === 0 ? null : ok.every(v => v);
-  const lastPollError = slots.find(s => s.state.lastPollOk === false)?.state.lastPollError ?? null;
-  const consecutiveFailures = slots.reduce((a, s) => Math.max(a, s.state.consecutiveFailures), 0);
-  const firstFailureAt = pickEarliest(slots.map(s => s.state.firstFailureAt).filter((v): v is string => v !== null));
+  const lastPollError = entries.find(e => e.state.lastPollOk === false)?.state.lastPollError ?? null;
+  const consecutiveFailures = entries.reduce((a, e) => Math.max(a, e.state.consecutiveFailures), 0);
+  const firstFailureAt = pickEarliest(entries.map(e => e.state.firstFailureAt).filter((v): v is string => v !== null));
 
-  const merged: RecentNotification[] = slots
-    .flatMap(s => s.state.recentNotifications)
+  const merged: RecentNotification[] = entries
+    .flatMap(e => e.state.recentNotifications)
     .sort((a, b) => (a.at < b.at ? 1 : -1))
     .slice(0, 10);
 
@@ -120,44 +126,46 @@ function pickEarliest(times: string[]): string | null {
   return times.sort()[0];
 }
 
-// ── Per-slot persistence ──
+// ── Per-account persistence ──
 
-function lastCheckedKey(slot: AccountSlot): string {
-  return slot === 'agent' ? 'outlook_last_checked_at' : `outlook_last_checked_at_${slot}`;
+function lastCheckedKey(accountId: string): string {
+  return accountId === 'agent' ? 'outlook_last_checked_at' : `outlook_last_checked_at_${accountId}`;
 }
 
-function notifiedKey(slot: AccountSlot): string {
-  return slot === 'agent' ? 'outlook_notified_ids' : `outlook_notified_ids_${slot}`;
+function notifiedKey(accountId: string): string {
+  return accountId === 'agent' ? 'outlook_notified_ids' : `outlook_notified_ids_${accountId}`;
 }
 
-function loadLastCheckedAt(slot: AccountSlot): string | null {
+function loadLastCheckedAt(accountId: string): string | null {
   try {
     const db = getDb();
-    const row = db.prepare('SELECT value FROM config WHERE key = ?').get(lastCheckedKey(slot)) as { value: string } | undefined;
+    const row = db.prepare('SELECT value FROM config WHERE key = ?').get(lastCheckedKey(accountId)) as { value: string } | undefined;
     return row?.value ?? null;
   } catch {
     return null;
   }
 }
 
-function saveLastCheckedAt(slot: AccountSlot, timestamp: string): void {
+function saveLastCheckedAt(accountId: string, timestamp: string): void {
   try {
     const db = getDb();
     db.prepare(`
       INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
       ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
-    `).run(lastCheckedKey(slot), timestamp, timestamp);
+    `).run(lastCheckedKey(accountId), timestamp, timestamp);
   } catch (err) {
     logger.error('Failed to save outlook_last_checked_at', {
-      slot, error: err instanceof Error ? err.message : String(err),
+      accountId, error: err instanceof Error ? err.message : String(err),
     });
   }
 }
 
-// ── Per-slot polling ──
+// ── Per-account polling ──
 
-async function pollSlot(slot: AccountSlot): Promise<void> {
-  const s = slotState[slot];
+async function pollAccount(view: MicrosoftAccountView): Promise<void> {
+  const accountId = view.id;
+  const kind = view.kind;
+  const s = stateFor(accountId);
   s.totalPolls++;
   const pollStartIso = new Date().toISOString();
 
@@ -168,7 +176,7 @@ async function pollSlot(slot: AccountSlot): Promise<void> {
     s.consecutiveFailures = 0;
     s.firstFailureAt = null;
     if (s.alreadyAlerted) {
-      logger.info('Outlook watcher recovered — sending recovery alert', { slot });
+      logger.info('Outlook watcher recovered — sending recovery alert', { accountId });
       s.alreadyAlerted = maybeAlertOnRecovery({
         name: 'outlook', alreadyAlerted: s.alreadyAlerted, totalNotificationsSinceFailure: s.notificationsSinceFailureAlert,
       });
@@ -192,25 +200,23 @@ async function pollSlot(slot: AccountSlot): Promise<void> {
     });
   };
 
-  if (!isMicrosoftEnabled(slot) || !isMicrosoftConnected(slot)) {
+  const label = view.email ?? `${kind} account`;
+  if (!view.enabled || !view.connected) {
     s.lastPollAt = new Date().toISOString();
     s.lastPollOk = null;
-    s.lastPollError = !isMicrosoftEnabled(slot)
-      ? `${slot} slot: Microsoft integration disabled`
-      : `${slot} slot: not connected`;
+    s.lastPollError = !view.enabled ? `${label}: Microsoft integration disabled` : `${label}: not connected`;
     return;
   }
-  if (!isMsEmailMonitoringEnabled(slot)) {
+  if (!view.watchEmail) {
     s.lastPollAt = new Date().toISOString();
     s.lastPollOk = null;
-    s.lastPollError = `${slot} slot: email monitoring disabled`;
+    s.lastPollError = `${label}: email monitoring disabled`;
     return;
   }
-  const services = getEnabledMsServices(slot);
-  if (!services.outlook) {
+  if (!view.services.outlook) {
     s.lastPollAt = new Date().toISOString();
     s.lastPollOk = null;
-    s.lastPollError = `${slot} slot: Outlook service disabled`;
+    s.lastPollError = `${label}: Outlook service disabled`;
     return;
   }
 
@@ -219,10 +225,10 @@ async function pollSlot(slot: AccountSlot): Promise<void> {
     const filterClause = filter ? `&$filter=${encodeURIComponent(filter)}` : '';
     const endpoint = `me/mailFolders/inbox/messages?$top=${MAX_RESULTS_PER_POLL}${filterClause}&$select=id,from,subject,receivedDateTime,bodyPreview,isRead&$orderby=receivedDateTime desc`;
 
-    const result = await msGraphRead(endpoint, 'system', 'Outlook Watcher', 'outlook_inbox_poll', { filter, slot }, slot);
+    const result = await msGraphRead(endpoint, 'system', 'Outlook Watcher', 'outlook_inbox_poll', { filter, account: accountId }, accountId);
 
     if (!result.ok) {
-      logger.warn('Outlook poll failed', { slot, error: result.error });
+      logger.warn('Outlook poll failed', { accountId, error: result.error });
       recordFailure(result.error ?? 'Unknown poll error');
       return;
     }
@@ -230,14 +236,14 @@ async function pollSlot(slot: AccountSlot): Promise<void> {
     const data = result.data as { value?: Array<{ id: string; from?: { emailAddress?: { name?: string; address?: string } }; subject?: string; receivedDateTime?: string; bodyPreview?: string }> };
     if (!data?.value || data.value.length === 0) {
       s.lastCheckedAt = pollStartIso;
-      saveLastCheckedAt(slot, pollStartIso);
+      saveLastCheckedAt(accountId, pollStartIso);
       recordSuccess();
       return;
     }
 
     const db = getDb();
     const primaryId = getPrimaryAgentId();
-    const nKey = notifiedKey(slot);
+    const nKey = notifiedKey(accountId);
     let notifiedIds: Set<string>;
     try {
       const row = db.prepare('SELECT value FROM config WHERE key = ?').get(nKey) as { value: string } | undefined;
@@ -246,16 +252,9 @@ async function pollSlot(slot: AccountSlot): Promise<void> {
       notifiedIds = new Set();
     }
 
-    const accountEmailKey = slot === 'agent' ? 'ms_account_email' : 'ms_user_account_email';
-    const accountEmail = (() => {
-      try {
-        const row = db.prepare('SELECT value FROM config WHERE key = ?').get(accountEmailKey) as { value: string } | undefined;
-        return row?.value ?? null;
-      } catch { return null; }
-    })();
-    const notifyAccount = accountEmail ?? slot;
-    const accountSuffix = slot === 'user' ? "user's Microsoft account" : "agent's Microsoft account";
-    const toolHint = slot === 'agent' ? 'outlook_read' : 'user_outlook_read';
+    const notifyAccount = view.email ?? kind;
+    const accountSuffix = kind === 'user' ? "user's Microsoft account" : "agent's Microsoft account";
+    const toolHint = kind === 'agent' ? 'outlook_read' : 'user_outlook_read';
 
     let newCount = 0;
 
@@ -279,7 +278,7 @@ async function pollSlot(slot: AccountSlot): Promise<void> {
         `Read it as third-party context. If it looks important and ${ownerName} should see it, surface it; ` +
         `if it looks like routine traffic, spam, or a notification ${ownerName} can handle later, ignore.\n\n` +
         `From: ${from}\nSubject: ${subject}\nDate: ${date}\nPreview: ${snippet}\nMessage ID: ${msg.id}\n` +
-        `Use \`${toolHint}\` to read the full body before deciding.`;
+        `Use \`${toolHint}\`${kind === 'user' ? ` (account: ${notifyAccount})` : ''} to read the full body before deciding.`;
 
       const msgId = uuidv4();
       db.prepare(`
@@ -315,7 +314,7 @@ async function pollSlot(slot: AccountSlot): Promise<void> {
       });
 
       logger.info('New Outlook email notification sent to primary agent', {
-        slot, from, subject, messageId: msg.id,
+        accountId, from, subject, messageId: msg.id,
       });
     }
 
@@ -329,7 +328,7 @@ async function pollSlot(slot: AccountSlot): Promise<void> {
 
       runtime.handleMessage(primaryId, summary).catch(err => {
         logger.error('Failed to trigger runtime for new Outlook notification', {
-          slot, error: err instanceof Error ? err.message : String(err),
+          accountId, error: err instanceof Error ? err.message : String(err),
         });
       });
     }
@@ -341,22 +340,22 @@ async function pollSlot(slot: AccountSlot): Promise<void> {
     `).run(nKey, JSON.stringify(recentIds), JSON.stringify(recentIds));
 
     s.lastCheckedAt = pollStartIso;
-    saveLastCheckedAt(slot, pollStartIso);
+    saveLastCheckedAt(accountId, pollStartIso);
     recordSuccess();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error('Outlook poll threw', { slot, error: msg });
+    logger.error('Outlook poll threw', { accountId, error: msg });
     recordFailure(msg);
   }
 }
 
-async function pollAllSlots(): Promise<void> {
-  for (const slot of ACCOUNT_SLOTS) {
+async function pollAllAccounts(): Promise<void> {
+  for (const view of listMicrosoftAccountViews()) {
     try {
-      await pollSlot(slot);
+      await pollAccount(view);
     } catch (err) {
-      logger.error('Outlook pollSlot threw outside catch', {
-        slot, error: err instanceof Error ? err.message : String(err),
+      logger.error('Outlook pollAccount threw outside catch', {
+        accountId: view.id, error: err instanceof Error ? err.message : String(err),
       });
     }
   }
@@ -370,31 +369,31 @@ export function startOutlookWatcher(): void {
     return;
   }
 
-  for (const slot of ACCOUNT_SLOTS) {
-    slotState[slot].lastCheckedAt = loadLastCheckedAt(slot);
-    if (!slotState[slot].lastCheckedAt && isMicrosoftConnected(slot) && isMsEmailMonitoringEnabled(slot)) {
+  const views = listMicrosoftAccountViews();
+  for (const v of views) {
+    const s = stateFor(v.id);
+    s.lastCheckedAt = loadLastCheckedAt(v.id);
+    if (!s.lastCheckedAt && v.connected && v.watchEmail) {
       const now = new Date().toISOString();
-      slotState[slot].lastCheckedAt = now;
-      saveLastCheckedAt(slot, now);
-      logger.info('Outlook watcher: first run, seeded lastCheckedAt to now', { slot });
+      s.lastCheckedAt = now;
+      saveLastCheckedAt(v.id, now);
+      logger.info('Outlook watcher: first run, seeded lastCheckedAt to now', { accountId: v.id });
     }
   }
 
-  const monitoredSlots = ACCOUNT_SLOTS.filter(s =>
-    isMicrosoftConnected(s) && isMsEmailMonitoringEnabled(s) && getEnabledMsServices(s).outlook,
-  );
-  if (monitoredSlots.length === 0) {
-    logger.info('Outlook watcher: no slots have email monitoring enabled, skipping');
+  const monitored = views.filter(isMonitored);
+  if (monitored.length === 0) {
+    logger.info('Outlook watcher: no accounts have email monitoring enabled, skipping');
     return;
   }
 
   logger.info('Starting Outlook watcher', {
     pollInterval: POLL_INTERVAL_MS,
-    monitoredSlots,
+    monitoredAccounts: monitored.map(v => v.email ?? v.id),
   });
 
   pollTimer = setInterval(() => {
-    pollAllSlots().catch(err => {
+    pollAllAccounts().catch(err => {
       logger.error('Outlook poll cycle failed', {
         error: err instanceof Error ? err.message : String(err),
       });
@@ -402,7 +401,7 @@ export function startOutlookWatcher(): void {
   }, POLL_INTERVAL_MS);
 
   setTimeout(() => {
-    pollAllSlots().catch(() => { /* logged inside */ });
+    pollAllAccounts().catch(() => { /* logged inside */ });
   }, 10_000);
 }
 

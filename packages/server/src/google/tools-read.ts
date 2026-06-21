@@ -269,6 +269,19 @@ for (const def of googleReadToolDefinitions) {
   if (def.maxResultTokens) registerMaxResultTokens(def.name, def.maxResultTokens);
 }
 
+// Path B (layer 3): every Google read tool can target a specific connected
+// account of its kind via an `account` param (the account's email). Optional —
+// omit to use the only connected account.
+for (const def of googleReadToolDefinitions) {
+  const schema = def.input_schema as { properties?: Record<string, unknown> };
+  if (schema.properties && !schema.properties.account) {
+    schema.properties.account = {
+      type: 'string',
+      description: "Which connected account to act on, by its email address. Omit to use the only connected account of this type; required when more than one is connected.",
+    };
+  }
+}
+
 // ── Tool Execution ──
 
 const googleReadToolDefByName = new Map(googleReadToolDefinitions.map(t => [t.name, t]));
@@ -279,12 +292,13 @@ export async function executeGoogleReadTool(
   agentId: string,
   agentName: string,
 ): Promise<string> {
-  // Strip user_ prefix → resolve account slot. Canonical name drives
-  // validation + dispatch; `slot` is threaded into googleRead/googleWrite.
-  let slot: import('./auth.js').AccountSlot = 'agent';
+  // The user_ prefix selects the KIND; the `account` param selects which of
+  // that kind's connected accounts. `slot` carries the resolved account id,
+  // threaded into googleRead/googleWrite.
+  let kind: import('./auth.js').AccountSlot = 'agent';
   let canonicalName = name;
   if (name.startsWith('user_')) {
-    slot = 'user';
+    kind = 'user';
     canonicalName = name.slice('user_'.length);
   }
 
@@ -292,6 +306,11 @@ export async function executeGoogleReadTool(
   const def = googleReadToolDefByName.get(canonicalName);
   const schemaErr = validateAgainstSchema(canonicalName, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
   if (schemaErr) return schemaErr;
+
+  const { resolveGoogleAccountForTool } = await import('./accounts.js');
+  const resolved = resolveGoogleAccountForTool(kind, args.account as string | undefined);
+  if ('error' in resolved) return `Error: ${resolved.error}`;
+  const slot = resolved.account.id;
 
   switch (canonicalName) {
     case 'gmail_search': {

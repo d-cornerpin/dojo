@@ -513,6 +513,18 @@ for (const def of microsoftReadToolDefinitions) {
   if (def.maxResultTokens) registerMaxResultTokens(def.name, def.maxResultTokens);
 }
 
+// Path B (multi-account): every Microsoft read tool can target a specific
+// connected account of its kind via an `account` param (the account's email).
+for (const def of microsoftReadToolDefinitions) {
+  const schema = def.input_schema as { properties?: Record<string, unknown> };
+  if (schema.properties && !schema.properties.account) {
+    schema.properties.account = {
+      type: 'string',
+      description: "Which connected account to act on, by its email address. Omit to use the only connected account of this type; required when more than one is connected.",
+    };
+  }
+}
+
 // ── Tool Execution ──
 
 const microsoftReadToolDefByName = new Map(microsoftReadToolDefinitions.map(t => [t.name, t]));
@@ -523,12 +535,13 @@ export async function executeMicrosoftReadTool(
   agentId: string,
   agentName: string,
 ): Promise<string> {
-  // Strip user_ prefix → resolve account slot. Canonical name drives
-  // validation + dispatch; `slot` is threaded into msGraphRead/Write.
-  let slot: import('./auth.js').AccountSlot = 'agent';
+  // The user_ prefix selects the KIND; the `account` param selects which of
+  // that kind's connected accounts. `slot` carries the resolved account id,
+  // threaded into msGraphRead/Write.
+  let kind: import('./auth.js').AccountSlot = 'agent';
   let canonicalName = name;
   if (name.startsWith('user_')) {
-    slot = 'user';
+    kind = 'user';
     canonicalName = name.slice('user_'.length);
   }
 
@@ -538,6 +551,11 @@ export async function executeMicrosoftReadTool(
   const def = microsoftReadToolDefByName.get(canonicalName);
   const schemaErr = validateAgainstSchema(canonicalName, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
   if (schemaErr) return schemaErr;
+
+  const { resolveMicrosoftAccountForTool } = await import('./accounts.js');
+  const resolved = resolveMicrosoftAccountForTool(kind, args.account as string | undefined);
+  if ('error' in resolved) return `Error: ${resolved.error}`;
+  const slot = resolved.account.id;
 
   switch (canonicalName) {
     case 'outlook_search': {
@@ -1153,7 +1171,7 @@ export async function executeMicrosoftReadTool(
       const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
       // getSchedule is a POST that returns availability views. Use raw fetch
       // because msGraphRead is GET-only.
-      const token = (await import('./auth.js')).getAccessToken(slot);
+      const token = await (await import('./auth.js')).getValidAccessTokenForAccount(slot);
       if (!token) return 'Error: not authenticated with Microsoft.';
       try {
         const resp = await fetch('https://graph.microsoft.com/v1.0/me/calendar/getSchedule', {
@@ -1386,7 +1404,7 @@ export async function executeMicrosoftReadTool(
       const limit = Math.min(Math.max((args.limit as number) ?? 16000, 100), 50000);
       // OneNote returns raw HTML from the `/content` endpoint, NOT JSON.
       // msGraphRead expects JSON, so use a raw fetch via the auth token here.
-      const token = (await import('./auth.js')).getAccessToken(slot);
+      const token = await (await import('./auth.js')).getValidAccessTokenForAccount(slot);
       if (!token) return 'Error: not authenticated with Microsoft.';
       try {
         const resp = await fetch(`https://graph.microsoft.com/v1.0/me/onenote/pages/${pageId}/content`, {

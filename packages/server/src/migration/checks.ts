@@ -147,7 +147,7 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
   }
 
   // Google Workspace — check manifest OR the restored DB directly
-  const googleWasConnected = manifest.contents.google_workspace_connected || checkDbConfigFlag('gws_connected');
+  const googleWasConnected = manifest.contents.google_workspace_connected || checkDbGoogleConnected();
   if (googleWasConnected) {
     const gwsInstalled = checkCommandExists('gws');
     currentChecks.push({
@@ -168,7 +168,7 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
 
   // Microsoft — check manifest OR the restored DB directly
   // Microsoft OAuth tokens are always machine-specific, so always flag for re-auth
-  const msWasConnected = manifest.contents.microsoft_connected || checkDbConfigFlag('ms_connected');
+  const msWasConnected = manifest.contents.microsoft_connected || checkDbMicrosoftConnected();
   if (msWasConnected) {
     currentChecks.push({
       id: 'microsoft-auth',
@@ -228,6 +228,26 @@ function checkDbConfigFlag(key: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Google connection now lives in google_accounts (Path B); the legacy
+ *  gws_connected key is frozen. Check the table, falling back to the legacy
+ *  flag for DBs restored from a pre-migration export. */
+function checkDbGoogleConnected(): boolean {
+  try {
+    const row = getDb().prepare('SELECT 1 FROM google_accounts WHERE connected = 1 LIMIT 1').get();
+    if (row) return true;
+  } catch { /* table may not exist on legacy dbs */ }
+  return checkDbConfigFlag('gws_connected');
+}
+
+/** Microsoft connection now lives in microsoft_accounts (Path B). */
+function checkDbMicrosoftConnected(): boolean {
+  try {
+    const row = getDb().prepare('SELECT 1 FROM microsoft_accounts WHERE connected = 1 LIMIT 1').get();
+    if (row) return true;
+  } catch { /* table may not exist on legacy dbs */ }
+  return checkDbConfigFlag('ms_connected');
 }
 
 function checkCommandExists(cmd: string): boolean {
