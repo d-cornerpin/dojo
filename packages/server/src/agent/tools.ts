@@ -10,6 +10,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { setCurrentCanvas, getCurrentCanvas, viewCanvas } from './canvas-view.js';
+import { isEmbeddable, captureSiteScreenshot } from './site-snapshot.js';
 import { queueCanvasDoc } from './pending-attachments.js';
 import { memoryGrep, memoryDescribe, memoryExpand, memorySearch } from '../memory/retrieval.js';
 import { checkRequired, friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer, type FieldSpec } from './tool-helpers.js';
@@ -4557,10 +4558,37 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       case 'open_browser': {
         const obErr = checkRequired([{ name: 'url', value: args.url, type: 'string' }]);
         if (obErr) { content = obErr; isError = true; break; }
+        const targetUrl = args.url as string;
         const title = typeof args.title === 'string' ? args.title : undefined;
-        broadcast({ type: 'dock:open', data: { kind: 'iframe', url: args.url as string, title } });
-        setCurrentCanvas({ kind: 'iframe', url: args.url as string, title });
-        content = `Opened ${args.url} in the user's right dock. (If it shows blank, that site blocks embedding — but you can still view_canvas to look at the page yourself.)`;
+        // Hybrid: many sites refuse iframe embedding (X-Frame-Options / CSP
+        // frame-ancestors). Try a live iframe when allowed; otherwise render a
+        // full-page screenshot server-side so SOMETHING always shows.
+        const embeddable = await isEmbeddable(targetUrl);
+        if (embeddable) {
+          broadcast({ type: 'dock:open', data: { kind: 'iframe', url: targetUrl, title } });
+          setCurrentCanvas({ kind: 'iframe', url: targetUrl, title });
+          content = `Opened ${targetUrl} in the user's right dock.`;
+          break;
+        }
+        try {
+          const png = await captureSiteScreenshot(targetUrl);
+          const shotsDir = path.join(os.homedir(), '.dojo', 'data', 'canvas-shots');
+          fs.mkdirSync(shotsDir, { recursive: true });
+          const pngPath = path.join(shotsDir, `${uuidv4()}.png`);
+          fs.writeFileSync(pngPath, png);
+          let pngUrl = registerSharedFile(agentId, pngPath);
+          if (!pngUrl) throw new Error('could not serve the screenshot file');
+          pngUrl += (pngUrl.includes('?') ? '&' : '?') + 'inline=1';
+          broadcast({ type: 'dock:open', data: { kind: 'screenshot', url: pngUrl, sourceUrl: targetUrl, title } });
+          setCurrentCanvas({ kind: 'screenshot', url: pngUrl, sourceUrl: targetUrl, title });
+          content = `${targetUrl} blocks iframe embedding, so I opened a full-page screenshot in the user's dock. It has an "Open in new window" button to view the live, interactive site.`;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          // Last resort: still hand the iframe over (may render partially).
+          broadcast({ type: 'dock:open', data: { kind: 'iframe', url: targetUrl, title } });
+          setCurrentCanvas({ kind: 'iframe', url: targetUrl, title });
+          content = `Opened ${targetUrl} in the user's right dock. It blocks embedding and the screenshot fallback failed (${msg}); the user may need to open it directly.`;
+        }
         break;
       }
       case 'view_canvas':

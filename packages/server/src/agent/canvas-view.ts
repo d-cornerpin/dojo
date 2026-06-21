@@ -30,11 +30,13 @@ import { broadcast } from '../gateway/ws.js';
 const logger = createLogger('canvas-view');
 
 export interface CanvasState {
-  kind: 'canvas' | 'iframe';
+  kind: 'canvas' | 'iframe' | 'screenshot';
   html?: string;
   url?: string;
   path?: string;
   title?: string;
+  /** screenshot: the original website URL behind the captured PNG. */
+  sourceUrl?: string;
 }
 
 // The dojo has a single dock surface, so a single "current canvas" matches the

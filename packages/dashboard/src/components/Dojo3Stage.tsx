@@ -70,6 +70,7 @@ export function Dojo3Stage({
       if (e.type !== 'dock:open') return;
       const d = e.data;
       if (d.kind === 'iframe' && d.url) openDock({ kind: 'iframe', title: d.title, url: d.url });
+      else if (d.kind === 'screenshot' && d.url && d.sourceUrl) openDock({ kind: 'screenshot', title: d.title, url: d.url, sourceUrl: d.sourceUrl });
       else if (d.kind === 'canvas') openDock({ kind: 'canvas', title: d.title, html: d.html, url: d.url, path: d.path });
     });
     return unsub;

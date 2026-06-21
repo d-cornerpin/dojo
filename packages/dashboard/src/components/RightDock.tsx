@@ -32,11 +32,30 @@ export function RightDock({ dock }: { dock: DockSpec }) {
   }
 
   const media = isMediaDock(dock);
-  const title = dock.title ?? (dock.kind === 'iframe' ? 'Browser' : 'Panel');
+  const title = dock.title ?? (dock.kind === 'iframe' || dock.kind === 'screenshot' ? 'Browser' : 'Panel');
 
   let frame: React.ReactNode = null;
   if (dock.kind === 'iframe') {
     frame = <iframe key={refreshKey} src={dock.url} title={title} className="dojo3-dock__frame" />;
+  } else if (dock.kind === 'screenshot') {
+    // This site blocks iframe embedding, so we show a full-page screenshot
+    // captured server-side. The overlay button opens the real, interactive
+    // site in a new browser tab.
+    frame = (
+      <div className="dojo3-dock__shot-wrap">
+        <div key={refreshKey} className="dojo3-dock__shot">
+          <img src={dock.url} alt={title} className="dojo3-dock__shot-img" />
+        </div>
+        <button
+          type="button"
+          className="dojo3-dock__shot-open"
+          onClick={() => window.open(dock.sourceUrl, '_blank', 'noopener,noreferrer')}
+          title="Open the live site in a new browser window"
+        >
+          Open in new window ↗
+        </button>
+      </div>
+    );
   }
 
   return (

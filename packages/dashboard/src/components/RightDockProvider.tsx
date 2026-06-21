@@ -22,10 +22,11 @@ declare global {
 export type DockSpec =
   | { kind: 'canvas'; title?: string; html?: string; url?: string; path?: string }
   | { kind: 'iframe'; title?: string; url: string }
+  | { kind: 'screenshot'; title?: string; url: string; sourceUrl: string }
   | { kind: 'panel'; title?: string; content: ReactNode };
 
 export function isMediaDock(d: DockSpec | null): boolean {
-  return d?.kind === 'canvas' || d?.kind === 'iframe';
+  return d?.kind === 'canvas' || d?.kind === 'iframe' || d?.kind === 'screenshot';
 }
 
 export interface RightDockApi {

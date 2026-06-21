@@ -326,16 +326,20 @@ export type WsEvent =
 export interface DockOpenEvent {
   type: 'dock:open';
   data: {
-    kind: 'canvas' | 'iframe';
+    kind: 'canvas' | 'iframe' | 'screenshot';
     title?: string;
     /** canvas: inline HTML to render */
     html?: string;
-    /** canvas (a hosted doc) or iframe: the url to load */
+    /** canvas (a hosted doc) or iframe: the url to load. screenshot: the served
+     *  PNG of the page (used when the site blocks iframe embedding). */
     url?: string;
     /** canvas: absolute path of the backing file, when the canvas shows a file
      *  on disk. Lets the dock auto-refresh when the agent edits that file and
      *  enables the download affordance. */
     path?: string;
+    /** screenshot: the original website URL, so the dock's "Open in new window"
+     *  button can launch the real, interactive site in a browser tab. */
+    sourceUrl?: string;
   };
 }
 
