@@ -125,6 +125,43 @@ export interface InboundChannelMatch {
   sender: string | null;
 }
 
+// Structured inbound routing record (v3.0.9). The channel PRODUCER stamps this
+// JSON onto the inbound message row (messages.inbound_meta) at injection
+// time, so the engine routes the reply off reliable structured data instead
+// of re-parsing the [SOURCE: ...] prose. The prose markers stay (the agent
+// reads them; the dashboard badges off them) — but THIS is what decides
+// where the reply goes. Re-wording a notification can no longer break
+// routing, which is the recurring failure this design closes.
+//
+//   channel     — the channel the message physically arrived on. 'voice' is
+//                 in-person dashboard speech; 'dashboard' is typed chat.
+//   accountKind — the kind of account that RECEIVED it. 'agent' = the
+//                 agent's own channel (auto-reply eligible). 'user' = a
+//                 user-owned account the agent only monitors — never an
+//                 auto-reply on the human's behalf, even from a safe sender.
+//   authorized  — the producer's verdict (agent-kind + safe-sender) on
+//                 whether this message earns an auto-reply. The engine
+//                 trusts it: false => treat the turn as a dashboard
+//                 notification (the agent reads it, decides, no auto-route).
+export interface InboundMeta {
+  channel: ChannelKind | 'dashboard' | 'voice';
+  accountKind?: 'agent' | 'user';
+  authorized?: boolean;
+  sender?: string | null;
+  // Reply-addressing context (mirrors the server-side ChannelInboundContext).
+  recipientAddress?: string;
+  emailMessageId?: string;
+  emailService?: 'gmail' | 'outlook';
+  emailAccount?: string;
+  emailSubject?: string;
+  chatId?: string;
+  chatType?: 'dm' | 'group';
+  smsFromNumber?: string;
+  smsToNumber?: string;
+  phoneCallSid?: string;
+  phoneFromNumber?: string;
+}
+
 export interface OutboundRoutingMatch {
   channel: ChannelKind;
   recipient: string | null;

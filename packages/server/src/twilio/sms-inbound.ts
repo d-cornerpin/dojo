@@ -7,6 +7,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getOwnerName } from '../config/platform.js';
@@ -101,6 +102,19 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
     INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
     VALUES (?, ?, 'user', ?, datetime('now'))
   `).run(msgId, primaryId, content);
+  // v3.0.9 — structured routing metadata. knownSender already encodes the
+  // safe-sender verdict; an unknown number => authorized:false => the agent
+  // sees a notification (it decides whether to surface it) and does not
+  // auto-text back.
+  recordInboundMeta(msgId, {
+    channel: 'sms',
+    accountKind: 'agent',
+    authorized: knownSender,
+    sender: payload.fromNumber,
+    smsFromNumber: payload.fromNumber,
+    smsToNumber: payload.toNumber,
+    recipientAddress: payload.fromNumber,
+  });
 
   broadcast({
     type: 'chat:message',

@@ -14,10 +14,10 @@ import { generateTechniqueIndex, generateDraftTechniqueContext } from '../techni
 import { getContextWindow } from '../agent/model.js';
 import { getModelCapabilities } from '../services/capabilities.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
-import { isIMBridgeRunning, addressesMatch } from '../services/imessage-bridge.js';
+import { isIMBridgeRunning } from '../services/imessage-bridge.js';
 import { getPresence, isImessageConfigured } from '../services/presence.js';
 import { resolveReplyDestination, type ReplyDestination } from '../agent/v2/reply-destination.js';
-import { getGmailSafeSenders, getOutlookSafeSenders, getTeamsSafeSenders } from '../services/channel-safe-senders.js';
+import { resolveInbound } from '../agent/v2/inbound-channel.js';
 import { getTwilioConfig } from '../twilio/auth.js';
 
 // (The v1 per-model prompt-tier scaler was deleted with remediation Phase 3:
@@ -1057,70 +1057,30 @@ export function resolveInboundContext(agentId: string): InboundContext {
   try {
     const db = getDb();
     const lastRow = db.prepare(
-      `SELECT content FROM messages
+      `SELECT content, source, inbound_meta FROM messages
            WHERE agent_id = ?
              AND role = 'user'
              AND content NOT LIKE '[SOURCE: SYSTEM%'
              AND content NOT LIKE '[A2A:%'
              AND content NOT LIKE '[SOURCE: AGENT MESSAGE FROM%'
            ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-    ).get(agentId) as { content: string } | undefined;
+    ).get(agentId) as { content: string; source: string | null; inbound_meta: string | null } | undefined;
     const lastContent = lastRow?.content ?? '';
-    let inboundChannel: ReplyDestination | null = null;
-    let smsFromNumber: string | null = null;
-    let phoneFromNumber: string | null = null;
-    if (lastContent.includes('[SOURCE: IMESSAGE FROM')) {
-      inboundChannel = 'imessage';
-    } else if (lastContent.includes('[SOURCE: TEAMS MESSAGE FROM')) {
-      const senderHeader = lastContent.match(/\[SOURCE: TEAMS MESSAGE FROM ([^\]]+)\]/i);
-      const senderRaw = senderHeader?.[1] ?? '';
-      const emailMatch = senderRaw.match(/<([^>]+)>/) ?? senderRaw.match(/\(([^)]+)\)/) ?? senderRaw.match(/(\S+@\S+)/);
-      const senderAddress = emailMatch?.[1]?.toLowerCase() ?? '';
-      const senderIsKnown = senderAddress
-        ? getTeamsSafeSenders().some(s => addressesMatch(s.address, senderAddress))
-        : false;
-      inboundChannel = senderIsKnown ? 'teams' : 'dashboard';
-    } else if (
-      (lastContent.includes('[SOURCE: OUTLOOK NOTIFICATION') ||
-       lastContent.includes('[SOURCE: GMAIL NOTIFICATION'))
-    ) {
-      const subjectMatch = lastContent.match(/^Subject:\s*(.+)$/im);
-      const fromMatch = lastContent.match(/^From:\s*(.+)$/im);
-      const isOutlook = lastContent.includes('[SOURCE: OUTLOOK NOTIFICATION');
-      const slotMatch = lastContent.match(/\[SOURCE: (?:GMAIL|OUTLOOK) NOTIFICATION[^()]*\(([^)]+)\)\]/i);
-      const inboundSlot: 'agent' | 'user' = slotMatch?.[1]?.toLowerCase() === 'user' ? 'user' : 'agent';
-      const subject = subjectMatch?.[1]?.trim() ?? '';
-      const fromRaw = fromMatch?.[1]?.trim() ?? '';
-      const emailMatch = fromRaw.match(/<([^>]+)>/) ?? fromRaw.match(/(\S+@\S+)/);
-      const fromAddress = emailMatch?.[1]?.toLowerCase() ?? '';
-      const looksLikeReply = /^re:\s/i.test(subject);
-      let fromIsKnownSafeSender = false;
-      if (fromAddress) {
-        const channelList = isOutlook
-          ? getOutlookSafeSenders(inboundSlot)
-          : getGmailSafeSenders(inboundSlot);
-        fromIsKnownSafeSender = channelList.some(s => addressesMatch(s.address, fromAddress));
-      }
-      inboundChannel = (looksLikeReply && fromIsKnownSafeSender) ? 'email' : 'dashboard';
-    } else if (lastContent.includes('[SOURCE: PHONE CALL FROM')) {
-      const fm = lastContent.match(/\[SOURCE: PHONE CALL FROM ([^\]]+)\]/);
-      if (fm?.[1]) {
-        inboundChannel = 'phone';
-        phoneFromNumber = fm[1].trim();
-      } else {
-        inboundChannel = 'dashboard';
-      }
-    } else if (lastContent.includes('[SOURCE: SMS FROM')) {
-      const fromMatch = lastContent.match(/\[SOURCE: SMS FROM ([^\]]+)\]/);
-      if (fromMatch?.[1]) {
-        inboundChannel = 'sms';
-        smsFromNumber = fromMatch[1].trim();
-      } else {
-        inboundChannel = 'dashboard';
-      }
-    } else if (lastContent) {
-      inboundChannel = 'dashboard';
-    }
+    // v3.0.9 — the agent's [Reply destination] hint is computed from the SAME
+    // resolver the engine uses to actually route the reply (inbound-channel.ts).
+    // Previously this was a third, drifted copy of the channel-detection logic
+    // (it still required a "Re:" subject and mis-read the agent/user suffix),
+    // so the hint shown to the agent could disagree with where the reply truly
+    // went. Sharing one resolver makes the hint and the routing always agree.
+    const resolved = resolveInbound({
+      agentId,
+      content: lastContent || null,
+      source: lastRow?.source ?? null,
+      inboundMeta: lastRow?.inbound_meta ?? null,
+    });
+    const inboundChannel: ReplyDestination | null = resolved.inboundChannel;
+    const smsFromNumber: string | null = resolved.inboundContext?.smsFromNumber ?? null;
+    const phoneFromNumber: string | null = resolved.inboundContext?.phoneFromNumber ?? null;
 
     const replyDestination = resolveReplyDestination({
       state: { inboundChannel },
@@ -1152,6 +1112,8 @@ export function renderReplyDestination(
     return `[Reply destination: SMS to ${smsFromNumber ?? '(unknown number)'} — write in SMS voice (no markdown, no headers, no bullet lists, keep it short). Just write the reply text; the engine delivers it via Twilio automatically. Use [no-reply] if nothing worth sending. The sms_send tool is reserved for proactive texts, sending to someone other than the inbound sender, or rich actions.]`;
   } else if (replyDestination === 'phone') {
     return `[Reply destination: phone call to ${phoneFromNumber ?? '(unknown)'} — write what you want SPOKEN. Conversational, short, no markdown, no headers, no bullet lists; the engine TTS's your text over the live call. Use [no-reply] if there is nothing worth saying (the engine will hold the silence). The call stays open until either side hangs up or you call voice_call_end.]`;
+  } else if (replyDestination === 'voice') {
+    return `[Reply destination: voice (spoken aloud) — ${ownerName} is talking to you out loud, so reply out loud. Write what you want SPOKEN: conversational, no markdown, no headers, no bullet lists; your text is read back via TTS. This stays a voice conversation — do NOT switch to texting them. Use [no-reply] if there is nothing to say.]`;
   }
   return `[Reply destination: dashboard chat — normal voice, markdown ok. Use [no-reply] if nothing worth sending.]`;
 }

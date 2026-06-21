@@ -40,6 +40,7 @@ import {
 import { getTwilioConfig } from './auth.js';
 import { getTwilioVoiceSafeCallers } from '../services/channel-safe-senders.js';
 import { addressesMatch } from '../services/imessage-bridge.js';
+import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 
 const logger = createLogger('twilio-call-session');
 
@@ -529,6 +530,19 @@ export class CallSession {
         INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
         VALUES (?, ?, 'user', ?, datetime('now'))
       `).run(msgId, primaryId, content);
+      // v3.0.9 — structured routing metadata. Stamped synchronously before
+      // handleMessage runs below so the turn reads it. A live call is already
+      // connected, so the reply is always spoken back via TTS to whoever is
+      // on the line (authorized:true — no safe-sender gate; you answered).
+      recordInboundMeta(msgId, {
+        channel: 'phone',
+        accountKind: 'agent',
+        authorized: true,
+        sender: this.fromNumber,
+        phoneCallSid: this.callSid,
+        phoneFromNumber: this.fromNumber,
+        recipientAddress: this.fromNumber,
+      });
       broadcast({
         type: 'chat:message',
         agentId: primaryId,

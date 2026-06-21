@@ -31,7 +31,7 @@
 
 import type { AgentTurnState } from './state.js';
 
-export type ReplyDestination = 'imessage' | 'teams' | 'email' | 'sms' | 'phone' | 'dashboard';
+export type ReplyDestination = 'imessage' | 'teams' | 'email' | 'sms' | 'phone' | 'voice' | 'dashboard';
 
 export interface ResolveReplyDestinationParams {
   state: Pick<AgentTurnState, 'inboundChannel'>;
@@ -50,6 +50,11 @@ export function resolveReplyDestination(params: ResolveReplyDestinationParams): 
   if (state.inboundChannel === 'email') return 'email';
   if (state.inboundChannel === 'sms') return 'sms';
   if (state.inboundChannel === 'phone') return 'phone';
+  // Voice is in-person speech: the reply is spoken back via TTS. It must NOT
+  // fall through to the away override below — a person talking to you out
+  // loud doesn't get a text on their phone instead. Returning 'voice' here
+  // keeps the reply on the voice channel regardless of presence.
+  if (state.inboundChannel === 'voice') return 'voice';
 
   // Layer 2: dashboard inbound or proactive turn → default to dashboard,
   // then apply the away override if applicable. (Away override only

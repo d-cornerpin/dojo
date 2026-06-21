@@ -53,13 +53,8 @@ import {
   isAwaitingIMResponse,
   clearIMResponseFlag,
   getInboundSenderFor,
-  addressesMatch,
 } from '../../services/imessage-bridge.js';
-import {
-  getGmailSafeSenders,
-  getOutlookSafeSenders,
-  getTeamsSafeSenders,
-} from '../../services/channel-safe-senders.js';
+import { resolveInbound } from './inbound-channel.js';
 // recordCost intentionally NOT imported — callModel records cost internally.
 import { queueEmbedding } from '../../memory/embeddings.js';
 import { isPrimaryAgent, isTrainerAgent, isPMAgent } from '../../config/platform.js';
@@ -407,14 +402,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // `[A2A:`, and the primary's next-turn reply auto-routes to
   // dashboard instead of back to the original iMessage thread.
   const triggerRow = db.prepare(
-    `SELECT content, source FROM messages
+    `SELECT content, source, inbound_meta FROM messages
        WHERE agent_id = ?
          AND role = 'user'
          AND content NOT LIKE '[SOURCE: SYSTEM%'
          AND content NOT LIKE '[A2A:%'
          AND content NOT LIKE '[SOURCE: AGENT MESSAGE FROM%'
        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-  ).get(agentId) as { content: string; source: string | null } | undefined;
+  ).get(agentId) as { content: string; source: string | null; inbound_meta: string | null } | undefined;
   const lastUserMessageContent = triggerRow?.content ?? null;
   // Phase 3 — bind the inbound source for the whole turn. Computed once
   // here and threaded into every assembleContext call below so the
@@ -455,137 +450,26 @@ export async function runV2Turn(agentId: string): Promise<void> {
   let phoneStreamBuffer = '';
   let phoneStreamFlushedAny = false;
 
-  // v2.7.23 — structural inbound channel binding. Parse the source tag from
-  // the most recent user message to determine which channel the turn was
-  // triggered from. The reply-destination resolver reads these at end of
-  // turn to auto-route the model's terminal text back to the source
-  // channel (OpenClaw-inspired pattern). For replies inside an active
-  // iMessage thread, the bridge sets pendingIMResponseMap[agentId] with
-  // the inbound sender — we read it via getInboundSenderFor so the agent
-  // doesn't have to embed the recipient in its reply.
-  let inboundChannel: 'imessage' | 'teams' | 'email' | 'sms' | 'phone' | 'dashboard' | null = null;
-  let inboundContext: import('./state.js').ChannelInboundContext | null = null;
-  if (triggeredByIMessage) {
-    inboundChannel = 'imessage';
-    const pendingSender = getInboundSenderFor(agentId);
-    inboundContext = { recipientAddress: pendingSender ?? undefined, chatType: 'dm' };
-  } else if (lastUserMessageContent?.includes('[SOURCE: TEAMS MESSAGE FROM')) {
-    // v2.7.24 — Teams inbound routing. The auto-route ONLY fires when the
-    // sender is on the per-channel Teams safe-sender allowlist. Without
-    // this check, ANY Teams DM (including from external/unvetted contacts)
-    // would trigger an auto-reply.
-    const chatIdMatch = lastUserMessageContent.match(/Chat ID:\s*([^\s\]]+)/i);
-    const chatTypeMatch = lastUserMessageContent.match(/Chat:[^()\n]*\(([^)]+)\)/i);
-    const isGroup = chatTypeMatch?.[1]?.toLowerCase().includes('group') ?? false;
-    // Sender format from teams-watcher.ts: "FROM Name <email@x>" or "FROM Name (email@x)".
-    const senderHeader = lastUserMessageContent.match(/\[SOURCE: TEAMS MESSAGE FROM ([^\]]+)\]/i);
-    const senderRaw = senderHeader?.[1] ?? '';
-    const emailMatch = senderRaw.match(/<([^>]+)>/) ?? senderRaw.match(/\(([^)]+)\)/) ?? senderRaw.match(/(\S+@\S+)/);
-    const senderAddress = emailMatch?.[1]?.toLowerCase() ?? '';
-    const senderIsKnown = senderAddress
-      ? getTeamsSafeSenders().some(s => addressesMatch(s.address, senderAddress))
-      : false;
-    if (senderIsKnown && chatIdMatch?.[1]) {
-      inboundChannel = 'teams';
-      inboundContext = {
-        chatId: chatIdMatch[1],
-        chatType: isGroup ? 'group' : 'dm',
-        recipientAddress: senderAddress,
-      };
-    } else {
-      // Unknown Teams sender → notification flow only. Agent reads the
-      // message, decides whether to surface or engage; auto-route stays off.
-      inboundChannel = 'dashboard';
-    }
-  } else if (
-    lastUserMessageContent?.includes('[SOURCE: OUTLOOK NOTIFICATION') ||
-    lastUserMessageContent?.includes('[SOURCE: GMAIL NOTIFICATION')
-  ) {
-    // Email inbound routing — auto-route the agent's reply back via email ONLY
-    // when mail came to the AGENT's own mailbox from a known contact:
-    //   (a) the notification is for an AGENT-kind account. Mail to a USER
-    //       account is the human's mail — the agent never replies on their
-    //       behalf, even from a safe sender.
-    //   (b) the From address is on the agent gmail/outlook safe-sender list.
-    //   (c) we have a Message ID to reply against.
-    // No "Re:" requirement: a safe sender writing to the agent — new thread or
-    // reply — is a direct message to the agent and gets an email reply.
-    const subjectMatch = lastUserMessageContent.match(/^Subject:\s*(.+)$/im);
-    const fromMatch = lastUserMessageContent.match(/^From:\s*(.+)$/im);
-    const messageIdMatch = lastUserMessageContent.match(/^Message ID:\s*(\S+)/im);
-    const isOutlook = lastUserMessageContent.includes('[SOURCE: OUTLOOK NOTIFICATION');
-    // The parenthesized suffix names the mailbox KIND ("agent's …" / "user's …").
-    // Substring check (not ===) so it survives wording like "user's Google account".
-    const slotMatch = lastUserMessageContent.match(/\[SOURCE: (?:GMAIL|OUTLOOK) NOTIFICATION[^()]*\(([^)]+)\)\]/i);
-    const inboundSlot: 'agent' | 'user' = slotMatch?.[1]?.toLowerCase().includes('user') ? 'user' : 'agent';
-    const subject = subjectMatch?.[1]?.trim() ?? '';
-    const fromRaw = fromMatch?.[1]?.trim() ?? '';
-    const emailMatch = fromRaw.match(/<([^>]+)>/) ?? fromRaw.match(/(\S+@\S+)/);
-    const fromAddress = emailMatch?.[1]?.toLowerCase() ?? '';
-    // Safe-sender check only matters for agent-kind mailboxes.
-    let fromIsKnownSafeSender = false;
-    if (inboundSlot === 'agent' && fromAddress) {
-      const channelList = isOutlook
-        ? getOutlookSafeSenders('agent')
-        : getGmailSafeSenders('agent');
-      fromIsKnownSafeSender = channelList.some(s => addressesMatch(s.address, fromAddress));
-    }
-    if (inboundSlot === 'agent' && fromIsKnownSafeSender && messageIdMatch?.[1]) {
-      inboundChannel = 'email';
-      inboundContext = {
-        emailMessageId: messageIdMatch[1],
-        emailService: isOutlook ? 'outlook' : 'gmail',
-        emailSubject: subject,
-        recipientAddress: fromAddress,
-      };
-    } else {
-      inboundChannel = 'dashboard';
-    }
-  } else if (lastUserMessageContent?.includes('[SOURCE: PHONE CALL FROM')) {
-    // v2.9.18 — Twilio phone call inbound utterance. The agent's
-    // terminal text auto-routes back via TTS over the active
-    // CallSession.
-    const fromMatch = lastUserMessageContent.match(/\[SOURCE: PHONE CALL FROM ([^\]]+)\]/);
-    const callSidMatch = lastUserMessageContent.match(/Call SID:\s*(\S+)/);
-    if (fromMatch?.[1] && callSidMatch?.[1]) {
-      inboundChannel = 'phone';
-      inboundContext = {
-        phoneCallSid: callSidMatch[1].trim(),
-        phoneFromNumber: fromMatch[1].trim(),
-        recipientAddress: fromMatch[1].trim(),
-      };
-      // v2.9.23 — bind the streaming TTS sink for this turn. The
-      // onChunk callback on the model call writes text into
-      // phoneStreamBuffer as it arrives; sentence-complete chunks
-      // flush to the CallSession's queueAgentSay immediately, so
-      // audio starts playing while the model is still generating.
-      phoneStreamCallSid = callSidMatch[1].trim();
-    } else {
-      inboundChannel = 'dashboard';
-    }
-  } else if (lastUserMessageContent?.includes('[SOURCE: SMS FROM')) {
-    // v2.9.18 - Twilio SMS inbound routing. Same auto-route-on-known-
-    // sender pattern as Teams: known sender → auto-route reply via
-    // Twilio; unknown sender → notification flow, agent decides.
-    // sms-inbound.ts already gates on the safe-sender list when
-    // building the source tag, so anything tagged `[SOURCE: SMS FROM`
-    // here is from a known sender. Unknown senders carry the
-    // `[SOURCE: SMS NOTIFICATION` tag instead and fall through to
-    // dashboard.
-    const fromMatch = lastUserMessageContent.match(/\[SOURCE: SMS FROM ([^\]]+)\]/);
-    const toMatch = lastUserMessageContent.match(/^To:\s*(\S+)/im);
-    if (fromMatch?.[1]) {
-      inboundChannel = 'sms';
-      inboundContext = {
-        smsFromNumber: fromMatch[1].trim(),
-        smsToNumber: toMatch?.[1]?.trim(),
-        recipientAddress: fromMatch[1].trim(),
-      };
-    } else {
-      inboundChannel = 'dashboard';
-    }
-  } else if (lastUserMessageContent) {
-    inboundChannel = 'dashboard';
+  // v3.0.9 — inbound channel + reply context resolved in ONE place
+  // (inbound-channel.ts). Priority: structured metadata (messages.inbound_meta,
+  // stamped by the producer) → voice (source='voice') → a behavior-preserving
+  // parse of the [SOURCE: ...] prose. Routing no longer depends on the engine
+  // re-parsing notification wording, which is the recurring failure this
+  // closes. The reply-destination resolver reads these at end of turn to
+  // auto-route the model's terminal text back to the source channel.
+  const resolvedInbound = resolveInbound({
+    agentId,
+    content: lastUserMessageContent,
+    source: triggerRow?.source ?? null,
+    inboundMeta: triggerRow?.inbound_meta ?? null,
+  });
+  const inboundChannel = resolvedInbound.inboundChannel;
+  const inboundContext = resolvedInbound.inboundContext;
+  // v2.9.23 — bind the streaming TTS sink for a live phone call so audio
+  // starts playing while the model is still generating (the onChunk callback
+  // on the model call flushes sentence-complete chunks to queueAgentSay).
+  if (inboundChannel === 'phone' && inboundContext?.phoneCallSid) {
+    phoneStreamCallSid = inboundContext.phoneCallSid;
   }
   // v2.5.31 — A2A reply context now sources from the durable a2a_replies
   // table, not just "is the most recent user message an [A2A:...] tag."

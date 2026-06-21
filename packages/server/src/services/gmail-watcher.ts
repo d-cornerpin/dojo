@@ -14,6 +14,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getOwnerName } from '../config/platform.js';
@@ -366,6 +367,21 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
         INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
         VALUES (?, ?, 'user', ?, datetime('now'))
       `).run(msgId, primaryId, content);
+      // v3.0.9 — structured routing metadata so the engine auto-routes the
+      // reply off reliable data, not by re-parsing this prose. isDirectToAgent
+      // already encodes the auth verdict (agent-kind mailbox + safe sender);
+      // a user-kind mailbox or unknown sender => authorized:false => the agent
+      // reads it as a notification and never auto-replies on the human's behalf.
+      recordInboundMeta(msgId, {
+        channel: 'email',
+        accountKind: kind,
+        authorized: isDirectToAgent,
+        sender: fromAddr || from,
+        emailMessageId: msg.id,
+        emailService: 'gmail',
+        emailAccount: notifyAccount,
+        emailSubject: subject,
+      });
 
       broadcast({
         type: 'chat:message',

@@ -11,6 +11,8 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
+import { isSenderAuthorized } from '../agent/v2/channel-auth.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
@@ -292,6 +294,19 @@ async function pollForNewMessages(): Promise<void> {
           INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
           VALUES (?, ?, 'user', ?, datetime('now'))
         `).run(msgId, primaryId, content);
+        // v3.0.9 — structured routing metadata. Teams is an agent-kind channel
+        // (the watcher is agent-only); the shared auth check applies the
+        // agent-kind gate, so an unknown sender => authorized:false => the
+        // agent reads it as a notification and does not auto-reply.
+        recordInboundMeta(msgId, {
+          channel: 'teams',
+          accountKind: 'agent',
+          authorized: isSenderAuthorized('teams', senderEmail, 'agent'),
+          sender: senderEmail,
+          chatId: chat.id,
+          chatType: chat.chatType === 'group' ? 'group' : 'dm',
+          recipientAddress: senderEmail ?? undefined,
+        });
 
         broadcast({
           type: 'chat:message',

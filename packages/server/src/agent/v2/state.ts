@@ -166,7 +166,7 @@ export interface AgentTurnState {
   // 2.7.22 "model must call imessage_send for every reply" pattern,
   // which the model couldn't follow reliably for short conversational
   // replies (per imessage_not_working.txt investigation).
-  readonly inboundChannel: 'imessage' | 'teams' | 'email' | 'sms' | 'phone' | 'dashboard' | null;
+  readonly inboundChannel: 'imessage' | 'teams' | 'email' | 'sms' | 'phone' | 'voice' | 'dashboard' | null;
   readonly inboundContext: ChannelInboundContext | null;
 
   // ── Engine-tracked turn flags ──
@@ -355,7 +355,7 @@ export interface InitStateParams {
   imFlagSetAtRunStart: boolean;
   lastUserMessageContent: string | null;
   // v2.7.23 — structural inbound channel binding; see AgentTurnState fields
-  inboundChannel: 'imessage' | 'teams' | 'email' | 'sms' | 'phone' | 'dashboard' | null;
+  inboundChannel: 'imessage' | 'teams' | 'email' | 'sms' | 'phone' | 'voice' | 'dashboard' | null;
   inboundContext: ChannelInboundContext | null;
   shouldNudgeTracker: boolean;
   /**

@@ -6,6 +6,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
@@ -295,6 +296,17 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
         INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
         VALUES (?, ?, 'user', ?, datetime('now'))
       `).run(msgId, primaryId, content);
+      // v3.0.9 — structured routing metadata (see gmail-watcher for rationale).
+      recordInboundMeta(msgId, {
+        channel: 'email',
+        accountKind: kind,
+        authorized: isDirectToAgent,
+        sender: fromAddr || from,
+        emailMessageId: msg.id,
+        emailService: 'outlook',
+        emailAccount: notifyAccount,
+        emailSubject: subject,
+      });
 
       broadcast({
         type: 'chat:message',
