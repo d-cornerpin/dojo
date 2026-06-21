@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
+import { CollapseToggle, usePanelCollapse } from './CollapseToggle';
 
 // Twilio channel card. Lives on the Channels tab (it's a messaging channel,
 // like the iMessage bridge). A master-enable toggle gates the whole panel:
@@ -19,6 +20,8 @@ export const TwilioSettings = () => {
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const { collapsed, toggle } = usePanelCollapse('channels.collapse.twilio');
+  const isCollapsed = collapsed['twilio'] ?? true;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -103,27 +106,55 @@ export const TwilioSettings = () => {
           <h3 className="scard__title">Twilio</h3>
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-cp-amber/20 text-cp-amber uppercase tracking-wide font-mono">Beta</span>
         </div>
-        {config.configured && (
-          <span className="text-xs px-2 py-0.5 rounded-full bg-cp-teal/20 text-cp-teal">Connected</span>
-        )}
+        <div className="flex items-center gap-2">
+          {config.configured && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-cp-teal/20 text-cp-teal">Connected</span>
+          )}
+          <CollapseToggle collapsed={isCollapsed} onClick={() => toggle('twilio')} label="Twilio" />
+        </div>
       </div>
-      <p className="text-xs text-ui/40">
-        Twilio gives your agents two new channels: SMS (text the user, text people on their behalf, receive replies) and Voice (place + receive phone calls, real-time spoken conversation). Personal Twilio accounts only. No call recording.
-      </p>
+
+      {isCollapsed && (
+        <div className="space-y-1.5">
+          {config.configured ? (
+            config.numbers.length > 0 ? (
+              config.numbers.map(n => (
+                <div key={n.number} className="flex items-center gap-2 text-sm text-ui/60">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cp-teal shrink-0" />
+                  <span>{n.number}</span>
+                  {n.isDefault && <span className="text-[10px] text-ui/30">default</span>}
+                </div>
+              ))
+            ) : (
+              <p className="text-xs text-ui/40">Connected · no numbers added yet</p>
+            )
+          ) : (
+            <p className="text-xs text-ui/40">{config.enabled ? 'Enabled · not connected' : 'Not enabled'}</p>
+          )}
+        </div>
+      )}
+
+      {!isCollapsed && (
+        <p className="text-xs text-ui/40">
+          Twilio gives your agents two new channels: SMS (text the user, text people on their behalf, receive replies) and Voice (place + receive phone calls, real-time spoken conversation). Personal Twilio accounts only. No call recording.
+        </p>
+      )}
 
       {/* Master enable — mirrors the iMessage Bridge toggle. When off, the rest
           of the panel collapses. */}
-      <div className="flex items-center justify-between">
-        <label className="text-sm text-ui/70">Enable Twilio</label>
-        <button
-          type="button"
-          aria-pressed={config.enabled}
-          onClick={() => void handlePatch({ enabled: !config.enabled })}
-          className={`switch ${config.enabled ? 'is-on' : ''}`}
-        />
-      </div>
+      {!isCollapsed && (
+        <div className="flex items-center justify-between">
+          <label className="text-sm text-ui/70">Enable Twilio</label>
+          <button
+            type="button"
+            aria-pressed={config.enabled}
+            onClick={() => void handlePatch({ enabled: !config.enabled })}
+            className={`switch ${config.enabled ? 'is-on' : ''}`}
+          />
+        </div>
+      )}
 
-      {config.enabled && (
+      {!isCollapsed && config.enabled && (
         <>
           {!config.configured && (
             <ConnectForm

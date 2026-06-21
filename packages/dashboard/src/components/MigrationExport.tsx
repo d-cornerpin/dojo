@@ -70,8 +70,9 @@ export const MigrationExport = () => {
   return (
     <>
       <button
+        type="button"
         onClick={() => setShowModal(true)}
-        className="px-4 py-2 glass-btn-primary text-sm font-medium rounded-lg transition-colors"
+        className="btn btn--primary"
       >
         Export Dojo
       </button>

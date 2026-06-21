@@ -3411,6 +3411,64 @@
 }
 .dojo3-stage .btn--primary:hover { color: #fffaf0; box-shadow: inset 0 1px 0 rgba(255,255,255,.65), inset 0 -6px 10px -4px rgba(146,96,34,.35), 0 14px 26px -10px rgba(160,110,44,.55), 0 0 20px -2px rgba(238,188,110,.6); }
 .dojo3-stage .btn--sm { height: 28px; padding: 0 12px; font-size: 11px; }
+.dojo3-stage .btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+/* Destructive action — keeps the glass-pill silhouette of .btn but tints the
+   label coral, matching the subtle "Disconnect / Remove / Delete" intent
+   rather than a loud filled-red button. */
+.dojo3-stage .btn--danger { color: var(--cp-coral); }
+.dojo3-stage .btn--danger:hover { color: var(--cp-coral); box-shadow: inset 0 1px 0 rgba(255,255,255,.85), 0 12px 24px -10px rgba(108,80,42,.45), 0 0 16px -4px rgb(var(--cp-coral-ch) / 0.45); }
+
+/* The wrapper is a pure CSS scope, not a layout box — display:contents makes
+   it generate no box, so the page lays out exactly as it did before the
+   wrapper was added, while .settings-page still works as an ancestor selector. */
+.dojo3-stage .settings-page { display: contents; }
+
+/* ── Settings-panel button normalization ──────────────────────────────────
+   Every button inside the Settings page (.settings-page wrapper) is forced
+   onto the .btn design system, even when authored with the legacy glass-btn-*
+   classes or ad-hoc Tailwind. New buttons added to settings inherit the pill
+   silhouette automatically — DON'T hand-roll button CSS here: use `btn` /
+   `btn--primary` / `btn--sm` / `btn--danger`, or a `glass-btn-*` class and it
+   gets normalized. The (0,3,0) selector outranks inline utilities (px-*,
+   rounded-*, text-*), so per-button overrides can't drift the look. */
+.dojo3-stage .settings-page .glass-btn,
+.dojo3-stage .settings-page .glass-btn-primary,
+.dojo3-stage .settings-page .glass-btn-secondary,
+.dojo3-stage .settings-page .glass-btn-destructive,
+.dojo3-stage .settings-page .glass-btn-ghost {
+  appearance: none; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 34px; padding: 0 16px; border-radius: 999px;
+  font: 500 12px/1 var(--dojo3-font-ui); letter-spacing: .03em; color: #5e4d36;
+  border: 1px solid transparent;
+  background: linear-gradient(180deg, var(--dojo3-glass-hi), var(--dojo3-glass-lo)) padding-box, var(--dojo3-edge) border-box;
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.8), 0 8px 18px -10px rgba(108,80,42,.4);
+  transition: transform .2s ease, box-shadow .2s ease, color .2s ease; white-space: nowrap;
+}
+.dojo3-stage .settings-page .glass-btn:not(:disabled):hover,
+.dojo3-stage .settings-page .glass-btn-primary:not(:disabled):hover,
+.dojo3-stage .settings-page .glass-btn-secondary:not(:disabled):hover,
+.dojo3-stage .settings-page .glass-btn-ghost:not(:disabled):hover {
+  transform: translateY(-1px); color: #4a3a26;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.85), 0 12px 24px -10px rgba(108,80,42,.45), 0 0 16px -4px rgba(243,221,180,.5);
+}
+.dojo3-stage .settings-page .glass-btn-primary {
+  color: #fffaf0;
+  background: linear-gradient(180deg, #f9e2b2, #e0a958) padding-box, linear-gradient(135deg, rgba(255,238,204,.95), rgba(212,148,68,.95)) border-box;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.65), inset 0 -6px 10px -4px rgba(146,96,34,.35), 0 10px 22px -10px rgba(160,110,44,.5);
+}
+.dojo3-stage .settings-page .glass-btn-primary:not(:disabled):hover {
+  color: #fffaf0;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.65), inset 0 -6px 10px -4px rgba(146,96,34,.35), 0 14px 26px -10px rgba(160,110,44,.55), 0 0 20px -2px rgba(238,188,110,.6);
+}
+.dojo3-stage .settings-page .glass-btn-destructive { color: var(--cp-coral); }
+.dojo3-stage .settings-page .glass-btn-destructive:not(:disabled):hover { color: var(--cp-coral); box-shadow: inset 0 1px 0 rgba(255,255,255,.85), 0 12px 24px -10px rgba(108,80,42,.45), 0 0 16px -4px rgb(var(--cp-coral-ch) / 0.45); }
+.dojo3-stage .settings-page .glass-btn:disabled,
+.dojo3-stage .settings-page .glass-btn-primary:disabled,
+.dojo3-stage .settings-page .glass-btn-secondary:disabled,
+.dojo3-stage .settings-page .glass-btn-destructive:disabled,
+.dojo3-stage .settings-page .glass-btn-ghost:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+
 .dojo3-stage .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 2px 18px; }
 .dojo3-stage .toolbar__label { font: 500 9.5px/1 var(--dojo3-font-mono); letter-spacing: .16em; text-transform: uppercase; color: var(--dojo3-ink-4); }
 .dojo3-stage .toolbar__spacer { margin-left: auto; }

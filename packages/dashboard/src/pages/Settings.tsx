@@ -10,6 +10,7 @@ import { GoogleWorkspaceSettings } from '../components/GoogleWorkspaceSettings';
 import { MicrosoftWorkspaceSettings } from '../components/MicrosoftWorkspaceSettings';
 import { PlaudSettings } from '../components/PlaudSettings';
 import { TwilioSettings } from '../components/TwilioSettings';
+import { CollapseChevron } from '../components/CollapseToggle';
 import { formatDate } from '../lib/dates';
 import { MigrationExport } from '../components/MigrationExport';
 import { MigrationImport } from '../components/MigrationImport';
@@ -82,7 +83,7 @@ export const Settings = () => {
   ];
 
   return (
-    <>
+    <div className="settings-page">
       {/* Self-headered panel: the page owns its prototype .phead. */}
       <header className="phead">
         <h2 className="phead__title">Settings</h2>
@@ -145,7 +146,7 @@ export const Settings = () => {
       )}
       {activeTab === 'voice' && <VoiceTab />}
       {activeTab === 'update' && <UpdateTab />}
-    </>
+    </div>
   );
 };
 
@@ -1988,7 +1989,7 @@ const ProviderModelGroup = ({
           <span>{provider.name}</span>
           <span className="text-xs text-ui/25">{enabledCount}/{models.length} enabled</span>
         </div>
-        <span className="text-ui/40">{open ? '[-]' : '[+]'}</span>
+        <CollapseChevron collapsed={!open} className="text-ui/40" />
       </button>
       {open && (
         <div className="px-4 pb-4 space-y-2">
@@ -4163,25 +4164,25 @@ const DreamingTab = () => {
           {runStatus.kind === 'ok' && <span className="text-xs text-cp-teal">{runStatus.message}</span>}
           {runStatus.kind === 'err' && <span className="text-xs text-cp-coral">{runStatus.message}</span>}
         </div>
+
+        {/* Last dream report — lives inside the Dreamer panel, not its own card. */}
+        {lastDream && (
+          <div className="border-t border-ui/[0.06] pt-3 space-y-2">
+            <div className="flabel">Last Dream</div>
+            <p className="text-[10px] text-ui/25">
+              {formatDate(lastDream.createdAt)}
+              {lastDream.durationMs && ` (${(lastDream.durationMs / 1000).toFixed(1)}s)`}
+            </p>
+            <pre className="text-xs text-ui/55 whitespace-pre-wrap font-mono bg-ui/[0.03] rounded p-2">
+              {lastDream.reportText ?? 'No report text available'}
+            </pre>
+          </div>
+        )}
       </div>
 
       {/* Healer card — self-healing sensei */}
       <HealerCard models={models} />
       </div>
-
-      {/* Last Dream Report — full width below the grid */}
-      {lastDream && (
-        <div className="tile space-y-2 mt-6">
-          <div className="scard__title">Last Dream</div>
-          <p className="text-[10px] text-ui/25">
-            {formatDate(lastDream.createdAt)}
-            {lastDream.durationMs && ` (${(lastDream.durationMs / 1000).toFixed(1)}s)`}
-          </p>
-          <pre className="text-xs text-ui/55 whitespace-pre-wrap font-mono bg-ui/[0.03] rounded p-2">
-            {lastDream.reportText ?? 'No report text available'}
-          </pre>
-        </div>
-      )}
     </div>
   );
 };
@@ -5491,9 +5492,28 @@ const VoiceTab = () => {
         {previewError && <p className="text-xs text-cp-coral">{previewError}</p>}
       </div>
 
+      {/* Playback speed */}
+      <div className="tile space-y-3">
+        <h3 className="scard__title">Playback speed</h3>
+        <p className="text-xs text-ui/40">How fast {primaryAgentName}'s voice plays back. 1.0 is the natural Kokoro rate.</p>
+        <div className="flex items-center gap-3">
+          <input
+            type="range"
+            min={0.8} max={1.4} step={0.05}
+            value={speed}
+            onChange={(e) => setSpeed(Number(e.target.value))}
+            onMouseUp={() => void saveSetting('voice.playback_speed', String(speed), 'speed')}
+            onTouchEnd={() => void saveSetting('voice.playback_speed', String(speed), 'speed')}
+            className="flex-1 accent-cp-teal"
+          />
+          <span className="text-sm font-mono text-ui w-12 text-right">{speed.toFixed(2)}x</span>
+          {savedKey === 'speed' && <span className="text-xs text-cp-teal">Saved!</span>}
+        </div>
+      </div>
+
       {/* Custom voice imports — full-width inside the grid so the form has room
           to breathe. Visible even when no customs exist (the form is the main
-          surface). */}
+          surface). It sits last in the Kokoro section. */}
       <div className="tile space-y-3 md:col-span-2">
         <h3 className="scard__title">Custom voice imports</h3>
         <p className="text-xs text-ui/40">
@@ -5603,24 +5623,6 @@ const VoiceTab = () => {
         </div>
       </div>
 
-      {/* Playback speed */}
-      <div className="tile space-y-3">
-        <h3 className="scard__title">Playback speed</h3>
-        <p className="text-xs text-ui/40">How fast {primaryAgentName}'s voice plays back. 1.0 is the natural Kokoro rate.</p>
-        <div className="flex items-center gap-3">
-          <input
-            type="range"
-            min={0.8} max={1.4} step={0.05}
-            value={speed}
-            onChange={(e) => setSpeed(Number(e.target.value))}
-            onMouseUp={() => void saveSetting('voice.playback_speed', String(speed), 'speed')}
-            onTouchEnd={() => void saveSetting('voice.playback_speed', String(speed), 'speed')}
-            className="flex-1 accent-cp-teal"
-          />
-          <span className="text-sm font-mono text-ui w-12 text-right">{speed.toFixed(2)}x</span>
-          {savedKey === 'speed' && <span className="text-xs text-cp-teal">Saved!</span>}
-        </div>
-      </div>
       </>)}
 
       {ttsTab === 'cloud' && (<>
