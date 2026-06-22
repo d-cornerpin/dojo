@@ -3,6 +3,10 @@
 // ════════════════════════════════════════
 
 import { Hono } from 'hono';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 import type { AppEnv } from '../server.js';
 import { createExport } from '../../migration/export.js';
 import { readManifestFromZip, performImport } from '../../migration/import.js';
@@ -11,6 +15,7 @@ import { terminateAgent } from '../../agent/spawner.js';
 import { getDb, closeDb } from '../../db/connection.js';
 import { runMigrations } from '../../db/migrations.js';
 import { getDashboardPasswordHash, getJwtSecret } from '../../config/loader.js';
+import { broadcast } from '../ws.js';
 import { createLogger } from '../../logger.js';
 
 const logger = createLogger('migration-routes');
@@ -144,6 +149,37 @@ migrationRouter.get('/import/status', (c) => {
 migrationRouter.post('/import/dismiss', (c) => {
   dismissMigration();
   return c.json({ ok: true, data: { dismissed: true } });
+});
+
+// POST /api/migration/run-dependency-setup — run the bundled technique
+// dependency installer (setup-dependencies.sh) and stream its output over WS
+// (migration:depsetup events). User-triggered from the post-import wizard.
+migrationRouter.post('/run-dependency-setup', (c) => {
+  const scriptPath = path.join(os.homedir(), '.dojo', 'setup-dependencies.sh');
+  if (!fs.existsSync(scriptPath)) {
+    return c.json({ ok: false, error: 'No dependency installer was bundled with this import.' }, 404);
+  }
+  try {
+    const child = spawn('bash', [scriptPath], { cwd: os.homedir(), env: process.env });
+    const emit = (line: string) => broadcast({ type: 'migration:depsetup', data: { line } } as never);
+    const onData = (buf: Buffer) => {
+      for (const line of buf.toString().split('\n')) if (line.length > 0) emit(line);
+    };
+    child.stdout.on('data', onData);
+    child.stderr.on('data', onData);
+    child.on('close', (code) => {
+      broadcast({ type: 'migration:depsetup', data: { done: true, ok: code === 0, exitCode: code } } as never);
+      logger.info('Dependency setup script finished', { exitCode: code });
+    });
+    child.on('error', (err) => {
+      broadcast({ type: 'migration:depsetup', data: { done: true, ok: false, error: err.message } } as never);
+      logger.error('Dependency setup script failed to start', { error: err.message });
+    });
+    logger.info('Dependency setup script started');
+    return c.json({ ok: true, data: { started: true } });
+  } catch (err) {
+    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+  }
 });
 
 export { migrationRouter };

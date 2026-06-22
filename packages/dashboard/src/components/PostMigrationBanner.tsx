@@ -48,6 +48,9 @@ export const PostMigrationBanner = () => {
   const [checks, setChecks] = useState<PostMigrationCheck[]>([]);
   const [dismissed, setDismissed] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [depRunning, setDepRunning] = useState(false);
+  const [depLines, setDepLines] = useState<string[]>([]);
+  const [depDone, setDepDone] = useState<null | { ok: boolean }>(null);
   const { subscribe } = useWebSocket();
 
   const getHeaders = useCallback((): Record<string, string> => {
@@ -81,6 +84,45 @@ export const PostMigrationBanner = () => {
     });
     return unsub;
   }, [subscribe]);
+
+  // Stream output from the technique-dependency installer.
+  useEffect(() => {
+    const unsub = subscribe('migration:depsetup', (event: any) => {
+      const d = event.data || {};
+      if (typeof d.line === 'string') setDepLines((prev) => [...prev, d.line]);
+      if (d.done) { setDepDone({ ok: !!d.ok }); setDepRunning(false); }
+    });
+    return unsub;
+  }, [subscribe]);
+
+  const runDependencySetup = async () => {
+    setDepRunning(true);
+    setDepLines([]);
+    setDepDone(null);
+    const token = localStorage.getItem('dojo_token');
+    const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
+    const csrf = csrfMatch ? csrfMatch[1] : null;
+    try {
+      const res = await fetch('/api/migration/run-dependency-setup', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+        },
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setDepLines([`Error: ${data.error || 'could not start installer'}`]);
+        setDepDone({ ok: false });
+        setDepRunning(false);
+      }
+    } catch (e) {
+      setDepLines([`Error: ${e instanceof Error ? e.message : String(e)}`]);
+      setDepDone({ ok: false });
+      setDepRunning(false);
+    }
+  };
 
   const handleDismiss = async () => {
     const token = localStorage.getItem('dojo_token');
@@ -141,13 +183,39 @@ export const PostMigrationBanner = () => {
 
       <div className="space-y-1.5">
         {checks.map((check) => (
-          <div key={check.id} className="flex items-center gap-2 text-sm">
-            <span className="w-5 text-center">{statusIcon(check.status)}</span>
-            <span className={check.status === 'ok' ? 'text-ui/55' : 'text-ui/70'}>{check.label}</span>
-            {check.status === 'action_needed' && getActionLink(check)}
+          <div key={check.id} className="text-sm">
+            <div className="flex items-center gap-2">
+              <span className="w-5 text-center">{statusIcon(check.status)}</span>
+              <span className={check.status === 'ok' ? 'text-ui/55' : 'text-ui/70'}>{check.label}</span>
+              {check.status === 'action_needed' && getActionLink(check)}
+            </div>
+            {check.detail && check.status === 'action_needed' && (
+              <div className="ml-7 mt-0.5 text-xs text-ui/40 font-mono whitespace-pre-wrap break-words">
+                {check.detail}
+              </div>
+            )}
           </div>
         ))}
       </div>
+
+      {checks.some((c) => c.id.startsWith('technique-deps-')) && (
+        <div className="mt-3 pt-3 border-t border-blue-500/20">
+          <button
+            onClick={runDependencySetup}
+            disabled={depRunning}
+            className="text-xs px-3 py-1.5 rounded-md bg-blue-500/20 text-blue-300 hover:bg-blue-500/30 disabled:opacity-50"
+          >
+            {depRunning ? 'Installing dependencies...' : 'Install technique dependencies'}
+          </button>
+          <span className="text-[11px] text-ui/25 ml-2">Runs the bundled installer for your techniques (brew, pip, npm, git).</span>
+          {(depLines.length > 0 || depDone) && (
+            <pre className="mt-2 max-h-48 overflow-auto text-[11px] font-mono text-ui/55 bg-black/20 rounded-md p-2 whitespace-pre-wrap">
+              {depLines.join('\n')}
+              {depDone ? `\n\n${depDone.ok ? 'Dependencies installed.' : 'Some steps failed. Review the output above and install those manually.'}` : ''}
+            </pre>
+          )}
+        </div>
+      )}
     </div>
   );
 };

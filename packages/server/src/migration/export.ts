@@ -17,6 +17,34 @@ const logger = createLogger('migration-export');
 const DOJO_DIR = path.join(os.homedir(), '.dojo');
 const GWS_DIR = path.join(os.homedir(), '.config', 'gws');
 
+// Deny-list for the comprehensive ~/.dojo copy. Top-level entries we never
+// export because they are installer/runtime APP CODE or assets (the target
+// machine's own installer provides them), not user data:
+//   platform/      — the live installed app (node_modules + dist), per-arch
+//   watchdog/      — the installed watchdog daemon (node_modules + dist)
+//   scripts/       — installer-provided helper scripts (start/stop/etc.)
+//   tools/         — tool docs, regenerated on boot
+//   bin/           — built binaries (e.g. imsg), per-arch, rebuilt on install
+//   logs/          — runtime noise
+//   dojologo.pdf   — installer-provided app icon
+// Plus platform.backup-<version>/ dirs (the updater's full app-code backups;
+// disposable, often many GB) — matched by prefix below.
+//
+// IMPORTANT: if the installer ever adds a NEW app-code dir under ~/.dojo, add it
+// here AND to the import's preserve list. Everything else (user data) migrates
+// automatically by design.
+const TOP_LEVEL_SKIP = new Set(['platform', 'watchdog', 'scripts', 'tools', 'bin', 'logs', 'dojologo.pdf']);
+const PLATFORM_BACKUP_PREFIX = 'platform.backup-';
+// voice/ is mostly large, re-downloadable model weights (kokoro/moonshine/...).
+// We migrate only the user's custom imports; the base models re-download on
+// first use on the new machine.
+const VOICE_KEEP_SUBDIR = 'custom';
+// Files inside data/ we skip because the DB is snapshotted via the backup API
+// (a raw copy of an open WAL database would be inconsistent). dojo.sqlite is an
+// empty legacy artifact.
+const DATA_FILE_SKIP = new Set(['dojo.db', 'dojo.db-shm', 'dojo.db-wal', 'dojo.sqlite']);
+const JUNK = new Set(['.DS_Store']);
+
 export interface ExportProgress {
   stage: string;
   progress: number;
@@ -84,64 +112,52 @@ export async function createExport(password: string): Promise<{ filePath: string
     const dbSize = fs.statSync(dbBackupPath).size;
     logger.info('Database snapshot complete', { size: dbSize });
 
-    // Step 1b: Copy large file cache (memory system)
-    const filesDir = path.join(DOJO_DIR, 'data', 'files');
-    if (fs.existsSync(filesDir)) {
-      copyDirRecursive(filesDir, path.join(tmpDir, 'data', 'files'));
-      logger.info('Large file cache copied');
-    }
+    // Step 2: Comprehensive copy of ~/.dojo (DENY-LIST, not allow-list).
+    // Everything in the dojo directory migrates so the new machine is the exact
+    // same dojo — prompts, techniques (with their files + dependency manifests),
+    // uploads + all generated media, the memory file cache, custom voice imports,
+    // the imessage archive, receipts, canvas screenshots, secrets.yaml, config,
+    // and anything added in the future. We skip only:
+    //   - tools/  (re-created by the dojo installer on the target machine)
+    //   - logs/   (machine-local runtime noise)
+    //   - the live DB files in data/ (snapshotted above via the backup API)
+    // We also skip the installed app code (platform/) and the updater's
+    // platform.backup-<version>/ dirs — that's per-machine app code, not user
+    // data, and would add gigabytes. Using a deny-list is deliberate: new user
+    // folders are picked up automatically, so this never falls behind.
+    broadcastProgress('files', 40, 'Packaging your dojo...');
+    copyDojoTree(DOJO_DIR, tmpDir);
+    logger.info('Dojo tree copied (deny-list)');
 
-    // Step 2: Copy prompts
-    broadcastProgress('prompts', 25, 'Packaging prompts and techniques...');
-    const promptsDir = path.join(DOJO_DIR, 'prompts');
-    const promptFiles = listFiles(promptsDir);
-    if (promptFiles.length > 0) {
-      const destPrompts = path.join(tmpDir, 'prompts');
-      fs.mkdirSync(destPrompts, { recursive: true });
-      for (const file of promptFiles) {
-        fs.copyFileSync(path.join(promptsDir, file), path.join(destPrompts, file));
-      }
-    }
-
-    // Step 3: Copy techniques (recursive)
-    const techniquesDir = path.join(DOJO_DIR, 'techniques');
-    const techniqueNames: string[] = [];
-    if (fs.existsSync(techniquesDir)) {
-      const destTech = path.join(tmpDir, 'techniques');
-      copyDirRecursive(techniquesDir, destTech);
-      techniqueNames.push(...fs.readdirSync(techniquesDir).filter(f => {
-        return fs.statSync(path.join(techniquesDir, f)).isDirectory();
-      }));
-    }
-
-    // Step 4: Copy uploads
-    broadcastProgress('uploads', 40, 'Packaging uploads...');
-    const uploadsDir = path.join(DOJO_DIR, 'uploads');
-    const uploadsSize = getDirSize(uploadsDir);
-    if (fs.existsSync(uploadsDir) && uploadsSize > 0) {
-      copyDirRecursive(uploadsDir, path.join(tmpDir, 'uploads'));
-    }
-
-    // Step 5: Copy secrets.yaml
-    broadcastProgress('secrets', 50, 'Securing secrets...');
-    const secretsPath = path.join(DOJO_DIR, 'secrets.yaml');
-    if (fs.existsSync(secretsPath)) {
-      fs.copyFileSync(secretsPath, path.join(tmpDir, 'secrets.yaml'));
-    }
-
-    // Step 6: Copy config directory
-    const configDir = path.join(DOJO_DIR, 'config');
-    if (fs.existsSync(configDir)) {
-      copyDirRecursive(configDir, path.join(tmpDir, 'config'));
-    }
-
-    // Step 7: Copy Google Workspace auth (if exists)
+    // Step 3: Google Workspace auth lives OUTSIDE ~/.dojo (legacy ~/.config/gws).
     if (fs.existsSync(GWS_DIR)) {
       copyDirRecursive(GWS_DIR, path.join(tmpDir, 'gws'));
     }
 
-    // Step 8: Generate manifest
+    // Step 3b: Generate the technique-dependency installer. It travels in the
+    // archive (setup-dependencies.sh) so the new machine can one-click install
+    // the external tools techniques rely on. Generated from the structured
+    // dependency manifests only (injection-safe).
+    try {
+      const { generateDependencySetupScript } = await import('./dependency-script.js');
+      const dep = generateDependencySetupScript(new Date().toISOString());
+      if (dep.script) {
+        fs.writeFileSync(path.join(tmpDir, 'setup-dependencies.sh'), dep.script, { mode: 0o755 });
+        logger.info('Dependency setup script bundled', {
+          techniqueCount: dep.techniqueCount, stepCount: dep.stepCount,
+        });
+      }
+    } catch (err) {
+      logger.warn('Dependency setup script generation failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // Step 4: Generate manifest (descriptive summary of what's inside).
     broadcastProgress('manifest', 60, 'Generating manifest...');
+    const promptFiles = listFiles(path.join(DOJO_DIR, 'prompts'));
+    const techniqueNames = listTechniqueNames();
+    const uploadsSize = getDirSize(path.join(DOJO_DIR, 'uploads'));
     const manifest = generateManifest(dbSize, promptFiles, techniqueNames, uploadsSize);
 
     // Step 9: Create inner archive (everything except manifest)
@@ -184,6 +200,7 @@ function copyDirRecursive(src: string, dest: string): void {
   fs.mkdirSync(dest, { recursive: true });
   const entries = fs.readdirSync(src, { withFileTypes: true });
   for (const entry of entries) {
+    if (JUNK.has(entry.name)) continue;
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
     if (entry.isDirectory()) {
@@ -192,6 +209,58 @@ function copyDirRecursive(src: string, dest: string): void {
       fs.copyFileSync(srcPath, destPath);
     }
   }
+}
+
+// Copy the entire ~/.dojo tree into the export staging dir, applying the
+// deny-list: skip tools/ and logs/ at the top level, and skip the live DB
+// files inside data/ (the consistent snapshot is written separately). The DB
+// snapshot is written to <dest>/data/dojo.db before this runs, so the data/
+// copy here just merges the rest (files/, canvas-shots/, slides_styles.json…).
+function copyDojoTree(srcRoot: string, destRoot: string): void {
+  for (const entry of fs.readdirSync(srcRoot, { withFileTypes: true })) {
+    if (JUNK.has(entry.name) || TOP_LEVEL_SKIP.has(entry.name)) continue;
+    if (entry.name.startsWith(PLATFORM_BACKUP_PREFIX)) continue; // disposable update backups
+    const src = path.join(srcRoot, entry.name);
+    const dest = path.join(destRoot, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === 'data') {
+        copyDirRecursiveExcept(src, dest, DATA_FILE_SKIP);
+      } else if (entry.name === 'voice') {
+        // Only the user's custom voice imports; skip the re-downloadable models.
+        const customSrc = path.join(src, VOICE_KEEP_SUBDIR);
+        if (fs.existsSync(customSrc)) {
+          copyDirRecursive(customSrc, path.join(dest, VOICE_KEEP_SUBDIR));
+        }
+      } else {
+        copyDirRecursive(src, dest);
+      }
+    } else {
+      fs.mkdirSync(destRoot, { recursive: true });
+      fs.copyFileSync(src, dest);
+    }
+  }
+}
+
+// Like copyDirRecursive but skips the given top-level names (used for data/ to
+// exclude the live DB files).
+function copyDirRecursiveExcept(src: string, dest: string, skipTopLevel: Set<string>): void {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    if (JUNK.has(entry.name) || skipTopLevel.has(entry.name)) continue;
+    const s = path.join(src, entry.name);
+    const d = path.join(dest, entry.name);
+    if (entry.isDirectory()) copyDirRecursive(s, d);
+    else fs.copyFileSync(s, d);
+  }
+}
+
+// Technique directory names (for the manifest summary).
+function listTechniqueNames(): string[] {
+  const dir = path.join(DOJO_DIR, 'techniques');
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).filter(f => {
+    try { return fs.statSync(path.join(dir, f)).isDirectory(); } catch { return false; }
+  });
 }
 
 function createZipFromDir(dirPath: string, outputPath: string, exclude: string[] = []): Promise<void> {

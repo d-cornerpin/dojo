@@ -11,6 +11,7 @@ import { getProviderCredential } from '../config/loader.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import type { ExportManifest } from './manifest.js';
+import { readDependencyManifest, type DependencyManifest } from '../techniques/dependencies.js';
 
 const logger = createLogger('migration-checks');
 
@@ -67,6 +68,71 @@ function broadcastChecks(): void {
   } as any);
 }
 
+// ── Technique dependency check ──
+
+function expandHome(p: string): string {
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+function formatTechniqueDeps(m: DependencyManifest): { commands: string[]; manual: string[] } {
+  const commands: string[] = [];
+  for (const p of m.system_packages) {
+    commands.push(`${p.manager} install ${p.package}${p.version ? ` (${p.version})` : ''}`);
+  }
+  for (const p of m.language_packages) {
+    commands.push(`${p.manager} install ${p.package}${p.version ? `@${p.version}` : ''}`);
+  }
+  for (const r of m.repos) {
+    commands.push(`git clone ${r.url}${r.ref ? ` (${r.ref})` : ''}`);
+  }
+  for (const a of m.models_or_assets) {
+    commands.push(`download ${a.url} -> ${a.destination}`);
+  }
+  return { commands, manual: m.manual_steps };
+}
+
+// Each migrated technique can declare external dependencies (brew/npm/pip
+// packages, git repos, downloads, manual steps) in its dependencies.json. The
+// technique files migrate, but those external installs do NOT — so surface what
+// each technique needs so the user can set it up on the new machine. Only
+// techniques that actually declare something get a row.
+function checkTechniqueDependencies(): void {
+  let techs: Array<{ name: string; directory_path: string | null }> = [];
+  try {
+    const db = getDb();
+    techs = db
+      .prepare('SELECT name, directory_path FROM techniques WHERE directory_path IS NOT NULL')
+      .all() as Array<{ name: string; directory_path: string | null }>;
+  } catch {
+    return; // techniques table absent on legacy dbs
+  }
+  for (const t of techs) {
+    if (!t.directory_path) continue;
+    const dir = expandHome(t.directory_path);
+    if (!fs.existsSync(dir)) continue;
+    let manifest: DependencyManifest;
+    try {
+      manifest = readDependencyManifest(dir);
+    } catch {
+      continue;
+    }
+    const { commands, manual } = formatTechniqueDeps(manifest);
+    if (commands.length === 0 && manual.length === 0) continue;
+    const detailParts: string[] = [];
+    if (commands.length) detailParts.push('Install: ' + commands.join('; '));
+    if (manual.length) detailParts.push('Manual: ' + manual.join('; '));
+    currentChecks.push({
+      id: `technique-deps-${t.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`,
+      label: `Technique "${t.name}" needs its dependencies installed`,
+      status: 'action_needed',
+      action: 'Set up this technique on this machine (see details)',
+      detail: detailParts.join('  |  '),
+    });
+  }
+}
+
 // ── Run All Checks ──
 
 export async function runPostMigrationChecks(manifest: ExportManifest): Promise<PostMigrationCheck[]> {
@@ -91,6 +157,10 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
       status: 'ok',
     });
   }
+
+  // Technique external dependencies (brew/npm/pip/git/manual) — the files come
+  // over, but the installs don't. Flag each technique that declares any.
+  checkTechniqueDependencies();
 
   // Vault restored
   if (manifest.contents.vault_entries_count > 0) {
@@ -162,7 +232,7 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
       id: 'google-auth',
       label: 'Google Workspace needs re-authentication',
       status: googleAuthValid ? 'ok' : 'action_needed',
-      action: googleAuthValid ? undefined : 'Re-connect in Settings > Google',
+      action: googleAuthValid ? undefined : 'Re-connect in Settings > Channels > Google. Do it on this machine via localhost (the sign-in redirect only works there).',
     });
   }
 
@@ -175,6 +245,18 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
       label: 'Microsoft 365 needs re-authentication',
       status: 'action_needed',
       action: 'Re-authenticate in Settings > Microsoft (tokens are machine-specific)',
+    });
+  }
+
+  // iMessage — Full Disk Access is a macOS permission that does NOT transfer
+  // between machines, so flag it whenever the source had iMessage configured.
+  if (manifest.contents.imessage_configured) {
+    currentChecks.push({
+      id: 'imessage-fda',
+      label: 'iMessage needs Full Disk Access on this Mac',
+      status: 'action_needed',
+      action: 'Grant Full Disk Access, then reconnect in Settings > Channels',
+      detail: 'System Settings > Privacy & Security > Full Disk Access: enable it for Terminal (and the DOJO app). The iMessage bridge reconnects once access is granted.',
     });
   }
 

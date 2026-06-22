@@ -120,68 +120,68 @@ export async function performImport(
     // Recreate dojo dir
     fs.mkdirSync(DOJO_DIR, { recursive: true });
 
-    // Step 7: Restore database
-    broadcastProgress('database', 60, 'Restoring database...');
-    const srcDb = path.join(tmpDir, 'data', 'dojo.db');
-    if (fs.existsSync(srcDb)) {
-      const destDb = path.join(DOJO_DIR, 'data');
-      fs.mkdirSync(destDb, { recursive: true });
-      fs.copyFileSync(srcDb, path.join(destDb, 'dojo.db'));
-      // Also copy WAL/SHM if they exist
-      for (const ext of ['-wal', '-shm']) {
-        const walPath = path.join(tmpDir, 'data', `dojo.db${ext}`);
-        if (fs.existsSync(walPath)) {
-          fs.copyFileSync(walPath, path.join(destDb, `dojo.db${ext}`));
-        }
-      }
-
-      // Restore large file cache (memory system)
-      const srcFiles = path.join(tmpDir, 'data', 'files');
-      if (fs.existsSync(srcFiles)) {
-        copyDirRecursive(srcFiles, path.join(destDb, 'files'));
+    // Step 7: Restore the ENTIRE dojo tree. The payload mirrors ~/.dojo (minus
+    // the installer's tools/ and logs/, and with a consistent DB snapshot in
+    // data/dojo.db), so we copy it all in — database, prompts, techniques,
+    // uploads + generated media, voice, the imessage archive, receipts, config,
+    // secrets.yaml, and anything else. The one entry that belongs OUTSIDE
+    // ~/.dojo is gws/, routed separately below.
+    broadcastProgress('database', 60, 'Restoring your dojo...');
+    for (const entry of fs.readdirSync(tmpDir, { withFileTypes: true })) {
+      if (entry.name === 'gws') continue; // belongs at ~/.config/gws (below)
+      const src = path.join(tmpDir, entry.name);
+      const dest = path.join(DOJO_DIR, entry.name);
+      if (entry.isDirectory()) {
+        copyDirRecursive(src, dest);
+      } else {
+        fs.copyFileSync(src, dest);
       }
     }
 
-    // Step 8: Restore prompts
-    broadcastProgress('prompts', 70, 'Restoring prompts and techniques...');
-    const srcPrompts = path.join(tmpDir, 'prompts');
-    if (fs.existsSync(srcPrompts)) {
-      copyDirRecursive(srcPrompts, path.join(DOJO_DIR, 'prompts'));
-    }
-
-    // Step 9: Restore techniques
-    const srcTech = path.join(tmpDir, 'techniques');
-    if (fs.existsSync(srcTech)) {
-      copyDirRecursive(srcTech, path.join(DOJO_DIR, 'techniques'));
-    }
-
-    // Step 10: Restore uploads
-    const srcUploads = path.join(tmpDir, 'uploads');
-    if (fs.existsSync(srcUploads)) {
-      copyDirRecursive(srcUploads, path.join(DOJO_DIR, 'uploads'));
-    }
-
-    // Step 11: Restore secrets
-    broadcastProgress('config', 80, 'Restoring configuration...');
-    const srcSecrets = path.join(tmpDir, 'secrets.yaml');
-    if (fs.existsSync(srcSecrets)) {
-      fs.copyFileSync(srcSecrets, path.join(DOJO_DIR, 'secrets.yaml'));
-      fs.chmodSync(path.join(DOJO_DIR, 'secrets.yaml'), 0o600);
-    }
-
-    // Step 12: Restore config directory
-    const srcConfig = path.join(tmpDir, 'config');
-    if (fs.existsSync(srcConfig)) {
-      copyDirRecursive(srcConfig, path.join(DOJO_DIR, 'config'));
-    }
-
-    // Step 13: Restore Google Workspace auth
+    // Step 8: Restore Google Workspace auth (lives at ~/.config/gws).
     const srcGws = path.join(tmpDir, 'gws');
     if (fs.existsSync(srcGws)) {
       copyDirRecursive(srcGws, GWS_DIR);
     }
 
-    // Recreate logs directory
+    // Step 9: Preserve THIS machine's installer/runtime app code + assets from
+    // the pre-import backup. The export omits these (they're per-machine app
+    // code, mirror of the export deny-list), and we recreated ~/.dojo fresh, so
+    // without this the new machine's running install would be gone after restart:
+    //   platform/ — the live app (node_modules + dist); the app self-updates and
+    //               runs from ~/.dojo/platform in production.
+    //   watchdog/ — the installed watchdog daemon.
+    //   scripts/  — installer helper scripts (start/stop/status/uninstall).
+    //   tools/    — tool docs.
+    //   bin/      — built binaries (imsg), per-arch.
+    //   dojologo.pdf — app icon.
+    // platform.backup-* dirs are intentionally NOT restored (disposable update
+    // history). Voice models are not restored either (they re-download on use).
+    broadcastProgress('config', 80, 'Finalizing configuration...');
+    if (backupDir && fs.existsSync(backupDir)) {
+      for (const appItem of ['platform', 'watchdog', 'scripts', 'tools', 'bin', 'dojologo.pdf']) {
+        const src = path.join(backupDir, appItem);
+        if (!fs.existsSync(src)) continue;
+        const dest = path.join(DOJO_DIR, appItem);
+        if (fs.statSync(src).isDirectory()) copyDirRecursive(src, dest);
+        else fs.copyFileSync(src, dest);
+      }
+    }
+
+    // Step 10: Lock down secrets.yaml (restored as part of the tree above).
+    const restoredSecretsPath = path.join(DOJO_DIR, 'secrets.yaml');
+    if (fs.existsSync(restoredSecretsPath)) {
+      fs.chmodSync(restoredSecretsPath, 0o600);
+    }
+
+    // Make the bundled technique-dependency installer executable (zip transport
+    // may not preserve the mode). The wizard runs it on user click.
+    const depScriptPath = path.join(DOJO_DIR, 'setup-dependencies.sh');
+    if (fs.existsSync(depScriptPath)) {
+      try { fs.chmodSync(depScriptPath, 0o755); } catch { /* non-fatal */ }
+    }
+
+    // Recreate logs directory (not exported).
     fs.mkdirSync(path.join(DOJO_DIR, 'logs'), { recursive: true });
 
     // Step 14: Path migration

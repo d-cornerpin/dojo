@@ -5,6 +5,7 @@
 import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { getDb } from '../db/connection.js';
+import { isImessageConfigured } from '../services/presence.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('migration-manifest');
@@ -32,6 +33,7 @@ export interface ExportManifest {
     google_workspace_connected: boolean;
     google_workspace_email: string | null;
     microsoft_connected: boolean;
+    imessage_configured: boolean;
     ollama_models: string[];
     providers: string[];
     uploads_size_bytes: number;
@@ -145,6 +147,7 @@ export function generateManifest(dbSizeBytes: number, prompts: string[], techniq
       google_workspace_connected: googleConnected,
       google_workspace_email: googleEmail,
       microsoft_connected: msConnected,
+      imessage_configured: (() => { try { return isImessageConfigured(); } catch { return false; } })(),
       ollama_models: getOllamaModels(),
       providers,
       uploads_size_bytes: uploadsSize,
