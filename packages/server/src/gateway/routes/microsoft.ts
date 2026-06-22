@@ -236,7 +236,12 @@ microsoftRouter.put('/watch-email', async (c) => {
     // Bounce the watcher so a fresh enable picks up lastCheckedAt seeding.
     // See google route for the same pattern + rationale.
     try {
-      const { stopOutlookWatcher, startOutlookWatcher } = await import('../../services/outlook-watcher.js');
+      const { stopOutlookWatcher, startOutlookWatcher, markOutlookWatchBaselineNow } =
+        await import('../../services/outlook-watcher.js');
+      // Turning monitoring ON means "from now on": reset the cursor to now so the
+      // restarted watcher notifies only mail arriving after this moment, never the
+      // existing inbox (first enable) or mail that arrived while it was off (re-enable).
+      if (body.enabled) markOutlookWatchBaselineNow(accountId ?? slot);
       stopOutlookWatcher();
       startOutlookWatcher();
     } catch (err) {

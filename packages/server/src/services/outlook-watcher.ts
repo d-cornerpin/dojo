@@ -163,6 +163,17 @@ function saveLastCheckedAt(accountId: string, timestamp: string): void {
   }
 }
 
+/**
+ * Reset an account's watch cursor to "now" so monitoring notifies only mail that
+ * arrives FROM THIS POINT ON. Called when watch-email is toggled ON (first enable
+ * or re-enable) so the watcher never replays the existing inbox or mail that
+ * arrived while monitoring was off. The watcher bounce that follows re-hydrates
+ * this value from the DB.
+ */
+export function markOutlookWatchBaselineNow(accountId: string): void {
+  saveLastCheckedAt(accountId, new Date().toISOString());
+}
+
 // ── Per-account polling ──
 
 async function pollAccount(view: MicrosoftAccountView): Promise<void> {
@@ -224,6 +235,20 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
   }
 
   try {
+    // First poll of a newly-monitored account: establish the baseline at "now"
+    // and do NOT backfill. "Monitor" means notify on mail that arrives FROM HERE
+    // ON, not flood in the existing inbox. Subsequent polls filter on
+    // receivedDateTime gt this baseline, so pre-existing mail is never notified.
+    // (Belt-and-suspenders with the startup seed below — this also covers an
+    // account added mid-session or toggled to watch after boot.)
+    if (!s.lastCheckedAt) {
+      s.lastCheckedAt = pollStartIso;
+      saveLastCheckedAt(accountId, pollStartIso);
+      recordSuccess();
+      logger.info('Outlook watcher: baseline set for newly-monitored account, skipping inbox backfill', { accountId });
+      return;
+    }
+
     const filter = s.lastCheckedAt ? `receivedDateTime gt ${s.lastCheckedAt}` : null;
     const filterClause = filter ? `&$filter=${encodeURIComponent(filter)}` : '';
     const endpoint = `me/mailFolders/inbox/messages?$top=${MAX_RESULTS_PER_POLL}${filterClause}&$select=id,from,subject,receivedDateTime,bodyPreview,isRead&$orderby=receivedDateTime desc`;

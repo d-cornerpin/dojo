@@ -263,7 +263,12 @@ googleRouter.put('/watch-email', async (c) => {
     // connected slot the watcher needs the per-slot lastCheckedAt seeded —
     // which only happens in startGmailWatcher().
     try {
-      const { stopGmailWatcher, startGmailWatcher } = await import('../../services/gmail-watcher.js');
+      const { stopGmailWatcher, startGmailWatcher, markGmailWatchBaselineNow } =
+        await import('../../services/gmail-watcher.js');
+      // Turning monitoring ON means "from now on": reset the cursor to now so the
+      // restarted watcher notifies only mail arriving after this moment, never the
+      // existing inbox (first enable) or mail that arrived while it was off (re-enable).
+      if (body.enabled) markGmailWatchBaselineNow(accountId ?? slot);
       stopGmailWatcher();
       startGmailWatcher();
     } catch (err) {

@@ -248,6 +248,18 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
   }
 
   try {
+    // First poll of a newly-monitored account: establish the baseline at "now"
+    // and do NOT backfill. "Monitor" means notify on mail that arrives FROM HERE
+    // ON — not flood in everything already sitting in the inbox. Subsequent polls
+    // query `after:` this baseline, so pre-existing mail is never notified.
+    if (!s.lastCheckedAt) {
+      s.lastCheckedAt = pollStartIso;
+      saveLastCheckedAt(accountId, pollStartIso);
+      recordSuccess();
+      logger.info('Gmail watcher: baseline set for newly-monitored account, skipping inbox backfill', { accountId });
+      return;
+    }
+
     let query = 'in:inbox';
     if (s.lastCheckedAt) {
       const cursorMs = new Date(s.lastCheckedAt).getTime() - LOOKBACK_MARGIN_MS;
@@ -458,6 +470,17 @@ async function pollAllAccounts(): Promise<void> {
 }
 
 // ── Start/Stop ──
+
+/**
+ * Reset an account's watch cursor to "now" so monitoring notifies only mail that
+ * arrives FROM THIS POINT ON. Called when watch-email is toggled ON (first enable
+ * or re-enable) so the watcher never replays the existing inbox or mail that
+ * arrived while monitoring was off. The watcher bounce that follows re-hydrates
+ * this value from the DB.
+ */
+export function markGmailWatchBaselineNow(accountId: string): void {
+  saveLastCheckedAt(accountId, new Date().toISOString());
+}
 
 export function startGmailWatcher(): void {
   if (pollTimer) {
