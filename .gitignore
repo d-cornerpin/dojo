@@ -51,3 +51,7 @@ packages/dashboard/public/ort/
 /DOJO-ORB-REDESIGN-PLAN.md
 /docs/error-handling-spec.md
 /packages/server/src/agent/v2/PRESERVATION_CHECKLIST.md
+/SEMANTIC-ROUTER-PLAN.md
+
+# Local router test harness (dev-only; run via: npx tsx packages/server/scripts/router-harness.mts)
+/packages/server/scripts/router-harness.mts

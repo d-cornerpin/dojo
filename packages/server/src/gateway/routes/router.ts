@@ -293,6 +293,20 @@ routerRouter.get('/stats', (c) => {
     LIMIT 10
   `).all() as Array<{ modelId: string; count: number }>;
 
+  // How the tier was chosen (semantic / heuristic / fallback / structural).
+  // Rows logged before migration 074 have a null method.
+  const byMethod = db.prepare(`
+    SELECT COALESCE(method, 'legacy') as method, COUNT(*) as count
+    FROM router_log ${filter}
+    GROUP BY COALESCE(method, 'legacy') ORDER BY count DESC
+  `).all() as Array<{ method: string; count: number }>;
+
+  // Whether the feature is even active: distinguishes "no agent on auto-router"
+  // from "enabled but nothing routed yet" in the dashboard empty state.
+  const autoRouterEnabled = (db.prepare(
+    "SELECT EXISTS(SELECT 1 FROM agents WHERE model_id = 'auto') AS e"
+  ).get() as { e: number }).e === 1;
+
   return c.json({
     ok: true,
     data: {
@@ -301,6 +315,8 @@ routerRouter.get('/stats', (c) => {
       fallbackRate: totalDecisions > 0 ? fallbackCount / totalDecisions : 0,
       byTier,
       byModel,
+      byMethod,
+      autoRouterEnabled,
     },
   });
 });

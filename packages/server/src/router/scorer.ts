@@ -83,8 +83,10 @@ function extractScoringText(systemPrompt: string, messages: Array<{ role: string
     ? extractMessageText(assistantMessages[assistantMessages.length - 1])
     : '';
 
-  // Repeat the user's message so its keywords dominate the score
-  const parts = [lastUserText, lastUserText, lastUserText];
+  // Count each keyword once. Earlier versions repeated the user's message 3x
+  // to make it "dominant", but that tripled every keyword count and pushed
+  // borderline queries into higher match buckets, biasing toward heavy.
+  const parts = [lastUserText];
 
   // Include last assistant message once for context
   if (lastAssistantText) {
@@ -351,19 +353,23 @@ function scoreAgenticIndicators(text: string): number {
     if (found) matches += found.length;
   }
 
+  // Softened: these words ("research", "search", "tool", "file", "command")
+  // fire on nearly every agent turn, so a strong push here meant almost
+  // everything routed heavy. Keep it as a mild nudge, not a dominant signal.
   if (matches === 0) return 0.0;
-  if (matches < 3) return 0.2;
-  if (matches < 6) return 0.5;
-  return 0.8;
+  if (matches < 3) return 0.1;
+  if (matches < 6) return 0.25;
+  return 0.4;
 }
 
 function scoreToolCallPresence(text: string): number {
-  // If recent context includes tool calls, the agent is mid-task — needs a capable model
+  // Recent tool calls suggest mid-task work, but in an agent this is the common
+  // case, not the exception. Softened so it nudges rather than forces heavy.
   const toolCalls = (text.match(/\[TOOL_CALL\]/g) ?? []).length;
   if (toolCalls === 0) return 0.0;
-  if (toolCalls < 3) return 0.3;
-  if (toolCalls < 6) return 0.6;
-  return 0.9; // Heavy tool use — definitely needs a strong model
+  if (toolCalls < 3) return 0.15;
+  if (toolCalls < 6) return 0.3;
+  return 0.5; // Heavy tool use — a real signal, but no longer overwhelming
 }
 
 function scoreConversationMomentum(text: string, messages: Array<{ role: string; content: string | object[] }>): number {

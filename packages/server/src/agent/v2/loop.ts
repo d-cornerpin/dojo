@@ -1606,6 +1606,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // the model across tool loops so we don't switch mid-task.
       let modelId: string;
       let routerTier: string | null = null;
+      // Captured for the (gated, off-by-default) low-confidence shadow probe
+      // that harvests over-routing labels. Only the fresh-decision path probes,
+      // never the mid-task locked-model reuse.
+      let routerConfidence = 0;
+      let routerFreshDecision = false;
       const excludedModels: string[] = [];
 
       if (isAutoRouted) {
@@ -1616,20 +1621,30 @@ export async function runV2Turn(agentId: string): Promise<void> {
             modelId, tier: routerTier,
           }, agentId);
         } else {
-          const { scoreQuery } = await import('../../router/scorer.js');
+          const { decideTier } = await import('../../router/decide.js');
           const { selectModel, logRouterDecision } = await import('../../router/selector.js');
-          const scoringResult = scoreQuery(
+          // Layered decision: structural rules -> semantic classifier ->
+          // keyword heuristic fallback. See router/decide.ts.
+          const decision = await decideTier(
             systemPrompt,
             messages as Array<{ role: string; content: string | object[] }>,
+            agentId,
+            // Authoritative user query, clean of engine injections (technique
+            // hints etc.) that ride in the messages array as user-role entries.
+            lastUserMessageContent,
           );
-          routerTier = scoringResult.tier;
-          const selected = selectModel(scoringResult.tier, agentId, undefined, ['tools']);
+          routerTier = decision.tier;
+          routerConfidence = decision.confidence;
+          routerFreshDecision = true;
+          const selected = selectModel(decision.tier, agentId, undefined, ['tools']);
           if (!selected) {
             throw new AgentError('Auto-router: no models available in any tier', agentId, { code: 'NO_MODEL' });
           }
           modelId = selected.modelId;
-          logger.info(`v2 auto-router: tier=${scoringResult.tier} → ${modelId}`, {
-            tier: scoringResult.tier,
+          logger.info(`v2 auto-router: tier=${decision.tier} (${decision.method}) → ${modelId}`, {
+            tier: decision.tier,
+            method: decision.method,
+            confidence: Number(decision.confidence.toFixed(3)),
             modelId,
             fallbackUsed: selected.fallbackUsed,
           }, agentId);
@@ -1639,12 +1654,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // too would double-count.
           logRouterDecision(
             agentId,
-            scoringResult.scores,
-            scoringResult.rawScore,
-            scoringResult.tier,
+            decision.scores,
+            decision.rawScore,
+            decision.tier,
             modelId,
             selected.fallbackUsed,
-            scoringResult.latencyMs,
+            decision.latencyMs,
+            decision.method,
+            decision.confidence,
+            decision.headVersion,
+            decision.queryPreview,
           );
         }
       } else {
@@ -1843,6 +1862,38 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
       if (!callSucceeded || !result) {
         throw new AgentError('Model call failed after all attempts', agentId, { code: 'MODEL_CALL_FAILED' });
+      }
+
+      // ── Low-confidence shadow probe (gated, off by default) ──
+      // After the real answer is in hand, optionally re-run this turn at the
+      // next-lower tier in the background to learn whether we over-routed. Fully
+      // best-effort and budget-capped; never delays or affects this response.
+      // Only on the fresh-decision path, and only for text-only turns (skip when
+      // the model kicked off tool calls — a no-tools shadow can't be compared).
+      if (
+        isAutoRouted && routerFreshDecision && routerTier &&
+        result.toolCalls.length === 0 && result.content
+      ) {
+        const probeTier = routerTier;
+        const probeConfidence = routerConfidence;
+        const probeContent = result.content;
+        // The authoritative user query, clean of engine injections.
+        const probeMsgs = messages as Array<{ role: string; content: string | object[] }>;
+        const probeQuery = lastUserMessageContent ?? '';
+        void (async () => {
+          try {
+            const { maybeProbe } = await import('../../router/probe.js');
+            maybeProbe({
+              agentId,
+              systemPrompt,
+              messages: probeMsgs as Array<{ role: 'user' | 'assistant'; content: string | object[] }>,
+              tier: probeTier as 'light' | 'standard' | 'heavy',
+              confidence: probeConfidence,
+              query: probeQuery,
+              realAnswer: probeContent,
+            });
+          } catch { /* best effort */ }
+        })();
       }
 
       // ── Lock model for tool loops ──

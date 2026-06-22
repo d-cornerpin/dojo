@@ -158,22 +158,31 @@ export function logRouterDecision(
   modelId: string,
   fallbackUsed: boolean,
   latencyMs: number,
+  method?: string,
+  confidence?: number,
+  headVersion?: string | null,
+  inputPreview?: string | null,
 ): void {
   try {
     const db = getDb();
     db.prepare(`
       INSERT INTO router_log (id, agent_id, input_preview, dimension_scores, raw_score,
-                               tier_id, selected_model_id, fallback_used, latency_ms, created_at)
-      VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, datetime('now'))
+                               tier_id, selected_model_id, fallback_used, latency_ms,
+                               method, confidence, head_version, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `).run(
       uuidv4(),
       agentId,
+      inputPreview ?? null,
       JSON.stringify(scores),
       rawScore,
       tier,
       modelId,
       fallbackUsed ? 1 : 0,
       Math.round(latencyMs),
+      method ?? null,
+      confidence ?? null,
+      headVersion ?? null,
     );
   } catch (err) {
     logger.error('Failed to log router decision', {

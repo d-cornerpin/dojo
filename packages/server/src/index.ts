@@ -252,6 +252,26 @@ async function main(): Promise<void> {
     }
   }
 
+  // 4c6. Router background tasks: embedder keep-warm + the sparse self-training
+  //      maintenance loop. Both internally gate on an agent actually being on
+  //      auto-router (see router/gating.ts), so they are cheap no-ops otherwise.
+  {
+    const { isSetupCompleted: isSetupDone } = await import('./config/platform.js');
+    if (isSetupDone()) {
+      try {
+        const { startEmbedderWarmer } = await import('./router/semantic.js');
+        startEmbedderWarmer();
+        const { startRouterMaintenance } = await import('./router/maintenance.js');
+        startRouterMaintenance();
+        logger.info('Router background tasks started');
+      } catch (err) {
+        logger.warn('Failed to start router background tasks', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
   // 4c5. Ensure Dreamer agent exists (permanent resident)
   {
     const { isSetupCompleted: isSetupDone } = await import('./config/platform.js');

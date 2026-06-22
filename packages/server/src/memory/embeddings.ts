@@ -57,7 +57,10 @@ export function setEmbeddingConfig(config: Partial<EmbeddingConfig>): void {
 
 // ── Embedding Generation ──
 
-export async function generateEmbedding(text: string): Promise<Float32Array> {
+export async function generateEmbedding(
+  text: string,
+  opts?: { keepAlive?: string | number },
+): Promise<Float32Array> {
   const config = getEmbeddingConfig();
 
   // Truncate text to prevent very large inputs
@@ -71,6 +74,10 @@ export async function generateEmbedding(text: string): Promise<Float32Array> {
       body: JSON.stringify({
         model: config.model,
         prompt: truncated,
+        // keep_alive: how long Ollama holds the model resident after this call.
+        // The router warmer passes a window so the embedder stays loaded while
+        // auto-router is in use (no cold ~300ms reloads per route).
+        ...(opts?.keepAlive !== undefined ? { keep_alive: opts.keepAlive } : {}),
       }),
       signal: AbortSignal.timeout(30000),
     });

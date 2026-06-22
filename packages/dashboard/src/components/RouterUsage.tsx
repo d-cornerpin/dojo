@@ -14,10 +14,22 @@ const PERIODS: Period[] = ['24h', '7d', '30d', 'all'];
 const TIER_ORDER = ['light', 'standard', 'heavy'] as const;
 const TIER_LABEL: Record<string, string> = { light: 'Light', standard: 'Standard', heavy: 'Heavy' };
 
+// How the tier was chosen. Order from most to least preferred path.
+const METHOD_ORDER = ['semantic', 'heuristic', 'fallback', 'structural', 'legacy'] as const;
+const METHOD_LABEL: Record<string, string> = {
+  semantic: 'Semantic',
+  heuristic: 'Heuristic',
+  fallback: 'Fallback',
+  structural: 'Structural',
+  legacy: 'Legacy',
+};
+
 interface RouterStats {
   totalDecisions: number;
   fallbackRate: number;
   byTier: Array<{ tierId: string; count: number }>;
+  byMethod: Array<{ method: string; count: number }>;
+  autoRouterEnabled: boolean;
 }
 
 export const RouterUsage = () => {
@@ -43,6 +55,13 @@ export const RouterUsage = () => {
   const total = TIER_ORDER.reduce((sum, id) => sum + (counts[id] ?? 0), 0);
   const max = Math.max(...TIER_ORDER.map((id) => counts[id] ?? 0), 1);
 
+  const methodCounts: Record<string, number> = {};
+  for (const m of stats?.byMethod ?? []) methodCounts[m.method] = m.count;
+  const methodKeys = METHOD_ORDER.filter((k) => (methodCounts[k] ?? 0) > 0);
+  const methodMax = Math.max(...methodKeys.map((k) => methodCounts[k] ?? 0), 1);
+
+  const autoRouterEnabled = stats?.autoRouterEnabled ?? false;
+
   return (
     <div>
       <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
@@ -66,6 +85,10 @@ export const RouterUsage = () => {
       <div className="glass-card" style={{ padding: 16 }}>
         {loading ? (
           <p className="text-tertiary" style={{ fontSize: 12 }}>Loading...</p>
+        ) : !autoRouterEnabled && total === 0 ? (
+          <p className="text-tertiary" style={{ fontSize: 12 }}>
+            Auto-router is not enabled for any agent. Set an agent's model to Auto to start routing by tier.
+          </p>
         ) : total === 0 ? (
           <p className="text-tertiary" style={{ fontSize: 12 }}>
             No routing decisions recorded in this period yet. The chart fills in as the auto-router runs.
@@ -84,6 +107,27 @@ export const RouterUsage = () => {
                 </div>
               );
             })}
+
+            {methodKeys.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <div className="text-tertiary" style={{ fontSize: 11, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  How tiers were chosen
+                </div>
+                {methodKeys.map((k) => {
+                  const value = methodCounts[k] ?? 0;
+                  return (
+                    <div className="brow" key={k}>
+                      <span className="brow__label" title={METHOD_LABEL[k]}>{METHOD_LABEL[k]}</span>
+                      <span className="bar">
+                        <i className="is-dim" style={{ width: `${Math.max((value / methodMax) * 100, 1)}%` }} />
+                      </span>
+                      <span className="brow__val">{value.toLocaleString()}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
             <div className="text-tertiary" style={{ fontSize: 11, marginTop: 12 }}>
               {total.toLocaleString()} routing decision{total === 1 ? '' : 's'}
               {stats && stats.fallbackRate > 0 ? ` · ${Math.round(stats.fallbackRate * 100)}% fell back to another tier` : ''}

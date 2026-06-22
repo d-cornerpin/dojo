@@ -1449,6 +1449,8 @@ export const getRouterStats = async (
   fallbackRate: number;
   byTier: Array<{ tierId: string; count: number; avgLatencyMs: number; avgRawScore: number }>;
   byModel: Array<{ modelId: string; count: number }>;
+  byMethod: Array<{ method: string; count: number }>;
+  autoRouterEnabled: boolean;
 }>> => {
   return request(`/router/stats?period=${encodeURIComponent(period)}`);
 };
