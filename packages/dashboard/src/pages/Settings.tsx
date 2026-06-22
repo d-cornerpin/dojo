@@ -10,6 +10,7 @@ import { GoogleWorkspaceSettings } from '../components/GoogleWorkspaceSettings';
 import { MicrosoftWorkspaceSettings } from '../components/MicrosoftWorkspaceSettings';
 import { PlaudSettings } from '../components/PlaudSettings';
 import { TwilioSettings } from '../components/TwilioSettings';
+import { ScreenShareSettings } from '../components/ScreenSharePanel';
 import { CollapseChevron } from '../components/CollapseToggle';
 import { formatDate } from '../lib/dates';
 import { MigrationExport } from '../components/MigrationExport';
@@ -141,6 +142,7 @@ export const Settings = () => {
       )}
       {activeTab === 'integrations' && (
         <div className="scards">
+          <ScreenShareSettings />
           <PlaudSettings />
         </div>
       )}

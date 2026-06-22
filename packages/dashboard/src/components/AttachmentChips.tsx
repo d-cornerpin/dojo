@@ -11,6 +11,8 @@ interface Attachment {
   category: string;
   /** A canvas-viewable doc the agent showed — gets an "Open in canvas" chip. */
   openInCanvas?: boolean;
+  /** The live screen-share viewer — gets an "Open screen" chip that re-opens it. */
+  screenShare?: boolean;
 }
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
@@ -294,6 +296,24 @@ const CanvasOpenChip = ({ att }: { att: Attachment }) => {
   );
 };
 
+// Re-opens the live screen-share viewer in the dock after the user closed it.
+const ScreenOpenChip = () => {
+  const { open } = useRightDock();
+  return (
+    <button
+      type="button"
+      className="dojo3-canvas-chip"
+      title="Open the shared screen"
+      onClick={() => open({ kind: 'screen', title: 'Screen' })}
+    >
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" />
+      </svg>
+      <span className="dojo3-canvas-chip__label">Open screen</span>
+    </button>
+  );
+};
+
 export const AttachmentChips = ({
   attachments,
   variant = 'chips',
@@ -308,12 +328,13 @@ export const AttachmentChips = ({
 
   if (!attachments || attachments.length === 0) return null;
 
-  const canvasDocs = attachments.filter(a => a.openInCanvas);
-  const images = attachments.filter(a => !a.openInCanvas && IMAGE_TYPES.has(a.mimeType));
-  const audios = attachments.filter(a => !a.openInCanvas && !IMAGE_TYPES.has(a.mimeType) && isAudio(a.mimeType));
-  const videos = attachments.filter(a => !a.openInCanvas && !IMAGE_TYPES.has(a.mimeType) && isVideo(a.mimeType));
+  const screenChips = attachments.filter(a => a.screenShare);
+  const canvasDocs = attachments.filter(a => a.openInCanvas && !a.screenShare);
+  const images = attachments.filter(a => !a.openInCanvas && !a.screenShare && IMAGE_TYPES.has(a.mimeType));
+  const audios = attachments.filter(a => !a.openInCanvas && !a.screenShare && !IMAGE_TYPES.has(a.mimeType) && isAudio(a.mimeType));
+  const videos = attachments.filter(a => !a.openInCanvas && !a.screenShare && !IMAGE_TYPES.has(a.mimeType) && isVideo(a.mimeType));
   const files = attachments.filter(a =>
-    !a.openInCanvas && !IMAGE_TYPES.has(a.mimeType) && !isAudio(a.mimeType) && !isVideo(a.mimeType)
+    !a.openInCanvas && !a.screenShare && !IMAGE_TYPES.has(a.mimeType) && !isAudio(a.mimeType) && !isVideo(a.mimeType)
   );
 
   if (variant === 'media') {
@@ -323,11 +344,12 @@ export const AttachmentChips = ({
           <ImageLightbox src={lightboxSrc.src} alt={lightboxSrc.alt} onClose={() => setLightboxSrc(null)} />
         )}
         <div className="flex flex-col gap-2 mt-2">
-          {canvasDocs.length > 0 && (
+          {(canvasDocs.length > 0 || screenChips.length > 0) && (
             <div className="flex flex-wrap gap-1.5">
               {canvasDocs.map((att, i) => (
                 <CanvasOpenChip key={att.fileId || `c-${i}`} att={att} />
               ))}
+              {screenChips.length > 0 && <ScreenOpenChip />}
             </div>
           )}
           {images.map((att, i) => (
@@ -378,6 +400,8 @@ export const AttachmentChips = ({
         {canvasDocs.map((att, i) => (
           <CanvasOpenChip key={att.fileId || `c-${i}`} att={att} />
         ))}
+        {/* Re-open the shared screen */}
+        {screenChips.length > 0 && <ScreenOpenChip />}
         {/* Image thumbnails */}
         {images.length > 0 && (
           <div className="flex gap-1">

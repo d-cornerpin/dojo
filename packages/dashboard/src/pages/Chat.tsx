@@ -83,7 +83,7 @@ interface ChatMessage {
    *  streaming, auto-collapsed once the final answer starts arriving. */
   reasoningContent?: string | null;
   isReasoningStreaming?: boolean;
-  attachments?: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: string; openInCanvas?: boolean }>;
+  attachments?: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: string; openInCanvas?: boolean; screenShare?: boolean }>;
   /** Where this message came from. 'voice' = dictated via voice mode. */
   source?: 'voice' | null;
 }

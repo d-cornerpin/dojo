@@ -11,7 +11,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { setCurrentCanvas, getCurrentCanvas, viewCanvas } from './canvas-view.js';
 import { isEmbeddable, captureSiteScreenshot } from './site-snapshot.js';
-import { queueCanvasDoc } from './pending-attachments.js';
+import { queueCanvasDoc, queueScreenChip } from './pending-attachments.js';
 import { memoryGrep, memoryDescribe, memoryExpand, memorySearch } from '../memory/retrieval.js';
 import { checkRequired, friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer, type FieldSpec } from './tool-helpers.js';
 // Phase 3.5 (2026-05-04) — `shouldIntercept` / `interceptLargeFile` removed
@@ -1101,6 +1101,22 @@ export const toolDefinitions: ToolDefinition[] = [
         title: {
           type: 'string',
           description: 'Optional short label shown in the canvas header.',
+        },
+      },
+      required: [],
+    },
+    concurrency: 'safe',
+  },
+  {
+    name: 'screen_share',
+    description:
+      "Show the user THIS Mac's screen, live, in their right-dock canvas. Use this whenever the user wants to SEE your screen or control this Mac — phrasings like \"show me your screen\", \"let me see your screen\", \"share your screen\", \"can I see what you're doing\", \"open your screen so I can click something\". This is the right tool for that, NOT screen_read (which only screenshots the screen for you to read, and shows the user nothing).\n\nUse it proactively whenever you need a HUMAN to do something on THIS Mac that you can't do yourself: approve a macOS permission/confirmation dialog, hit OK on a prompt, or complete a sign-in / re-authenticate an account (e.g. a Google or Microsoft re-auth, which opens a login window in the browser on this Mac). The flow is: kick off the action that needs them (so the dialog or sign-in window appears on this Mac), then open the screen with this tool so they can take control and finish it. Judge local vs remote first: if the user is sitting AT this Mac, just ask them to do it on their screen directly — no need to share. If they're remote (over the tunnel) and can't reach the Mac, that's exactly when to open the screen. (One caveat to relay if it comes up: a few highly-secured macOS dialogs — like granting Accessibility/Screen Recording permissions — may refuse remote clicks and need someone physically at the Mac.)\n\nIt opens view-only. The user clicks \"Take control\" at the top of the canvas to use the mouse and keyboard, and enters the screen-sharing (VNC) password to connect — that's their second factor, on top of being logged in.\n\nThis only works if the user has turned the feature on in Settings > Integrations > Screen Sharing (it's disabled by default; one-time setup needs approval on the Mac). If it's off, calling this returns step-by-step setup instructions — relay them and offer to walk the user through enabling it. So if the user asks how to set up screen sharing, or you think it would help, just call this tool: when it's off you'll get the exact steps to guide them. Takes no required arguments.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: {
+          type: 'string',
+          description: 'Optional short label shown in the canvas header (e.g. "Approve this dialog").',
         },
       },
       required: [],
@@ -2569,7 +2585,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'screen_read',
-    description: 'Take a screenshot and describe what is visible using a vision model. Returns a text description with approximate coordinates for interactive elements. Use before mouse_click to find targets. Pass `query` to focus the description on what you\'re looking for (recommended).',
+    description: 'Take a screenshot and describe what is visible using a vision model — this is for YOU to perceive the screen (then act, e.g. before mouse_click to find targets). Returns a text description with approximate coordinates for interactive elements. Pass `query` to focus the description on what you\'re looking for (recommended).\n\nIMPORTANT — do NOT use this to "show the user the screen." If the user wants to SEE your live screen, watch what you are doing, or take control of this Mac remotely (common when they\'re away and need to click/approve something here), use `screen_share` instead — it opens a live, interactive viewer in their canvas. screen_read only gives YOU a still snapshot; it shows the user nothing.',
     input_schema: {
       type: 'object',
       properties: {
@@ -4569,6 +4585,24 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         // Drop an "Open in canvas" chip on this reply for file-backed canvases.
         if (canvasPath) queueCanvasDocAttachment(agentId, canvasPath, url ?? null);
         content = `Canvas opened in the user's right dock${title ? ` ("${title}")` : ''}. The user can now see it.${canvasPath ? ' Edits you make to this file (file_write/file_patch/file_append) will refresh the canvas automatically.' : ''} Call view_canvas if you need to look at it yourself.`;
+        break;
+      }
+      case 'screen_share': {
+        const { isScreenShareEnabled } = await import('../screen-share/manager.js');
+        if (!isScreenShareEnabled()) {
+          content = "Screen sharing is OFF (it's disabled by default). It's a one-time setup done on this Mac. Offer to walk the user through it, then tell them these steps:\n\n" +
+            "1. Open Settings > Integrations > Screen Sharing and click Enable. A macOS admin-password prompt will appear ON THIS MAC — approve it. (macOS may also ask to approve Screen Sharing in System Settings > Privacy & Security; approve that too.)\n" +
+            "2. Set a screen-sharing password they'll remember: open System Settings > General > Sharing, click the (i) next to Screen Sharing > Computer Settings, check \"VNC viewers may control screen with password\", and set a password.\n" +
+            "3. That's it. When you open the screen for them, they'll type that password to connect, and click \"Take control\" to use the mouse and keyboard.\n\n" +
+            "Note: this one-time setup has to be done while at this Mac (the prompts appear on it). If they can see the screen later but can't control it, have them make sure macOS \"Remote Management\" is turned off (it can limit connections to view-only) and just \"Screen Sharing\" is on. Once they've enabled it, call screen_share again.";
+          break;
+        }
+        const screenTitle = typeof args.title === 'string' ? args.title : undefined;
+        broadcast({ type: 'dock:open', data: { kind: 'screen', title: screenTitle } });
+        // Drop an "Open screen" chip on this reply so the user can re-open the
+        // viewer after closing the canvas.
+        queueScreenChip(agentId);
+        content = "A LIVE view of this Mac's screen is now open in the user's canvas. This is NOT a file, document, or attachment — it is your actual screen, streaming in real time. When you reply, say something like \"I've put my screen up for you\" or \"my screen is open — go ahead and take control to click what you need.\" Do NOT call it files/a document, and do NOT say things like \"here are the files.\"\n\nThe user enters the screen-sharing (VNC) password to start it (their second factor) and clicks \"Take control\" to use the mouse and keyboard. This all happens on the user's end — you will NOT get any confirmation here that it connected, and you cannot see the screen yourself this way. Do NOT call screen_share again (it's already open) and do NOT use screen_read to 'check' — just tell the user it's open and wait for them to say what they see or need.";
         break;
       }
       case 'open_browser': {

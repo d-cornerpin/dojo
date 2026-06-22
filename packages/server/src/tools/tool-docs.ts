@@ -55,6 +55,9 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'sms_send',
   'image_create',
   'show_to_user',
+  // Pre-loaded so "show me your screen" works in one call — without it the
+  // model reaches for screen_read (which only screenshots for itself) instead.
+  'screen_share',
   'recall_recent_thread',
   'scratchpad_set',
   'technique_read',

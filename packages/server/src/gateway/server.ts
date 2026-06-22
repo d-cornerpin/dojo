@@ -15,6 +15,8 @@ import { systemRouter } from './routes/system.js';
 import { memoryRouter } from './routes/memory.js';
 import { trackerRouter } from './routes/tracker.js';
 import { routerRouter } from './routes/router.js';
+import { screenShareRouter } from './routes/screen-share.js';
+import { createVncBridge } from '../screen-share/bridge.js';
 import { costsRouter } from './routes/costs.js';
 import { servicesRouter } from './routes/services.js';
 import { techniquesRouter } from './routes/techniques.js';
@@ -153,6 +155,19 @@ export function createServer() {
     };
   }));
 
+  // Screen-share VNC bridge — binary WebSocket piped to local Screen Sharing
+  // (TCP 5900). JWT-gated and gated on the feature being enabled; noVNC does the
+  // VNC auth handshake (second factor). See screen-share/bridge.ts.
+  app.get('/api/screen/vnc', upgradeWebSocket((c) => {
+    const bridge = createVncBridge(c.req.url);
+    return {
+      onOpen: (_evt, ws) => bridge.open(ws),
+      onMessage: (evt, _ws) => bridge.message(evt.data),
+      onClose: (_evt, _ws) => bridge.close(),
+      onError: (err, _ws) => bridge.error(err),
+    };
+  }));
+
   // Voice mode WebSocket — separate endpoint because it carries binary audio
   // frames in both directions and runs its own per-session state machine.
   app.get('/api/ws/voice', upgradeWebSocket((c) => {
@@ -239,6 +254,7 @@ export function createServer() {
   app.route('/api/memory', memoryRouter); // /api/memory/:agentId/*
   app.route('/api/tracker', trackerRouter); // /api/tracker/projects/*, /api/tracker/tasks/*
   app.route('/api/router', routerRouter);  // /api/router/config, /api/router/test, etc.
+  app.route('/api/screen-share', screenShareRouter); // /api/screen-share/status, /enable, /disable
   app.route('/api/costs', costsRouter);    // /api/costs/summary, /api/costs/records, etc.
   app.route('/api/system', servicesRouter); // /api/system/watchdog, /api/system/resources, etc.
   app.route('/api/control', controlRouter); // /api/control/mouse-click, /api/control/screen-read, etc.

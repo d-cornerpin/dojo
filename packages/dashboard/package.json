@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@dojo/shared": "*",
+    "@novnc/novnc": "^1.4.0",
     "@ricky0123/vad-web": "^0.0.30",
     "onnxruntime-web": "^1.26.0",
     "react": "^18.3.1",

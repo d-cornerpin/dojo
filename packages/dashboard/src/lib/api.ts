@@ -1455,6 +1455,32 @@ export const getRouterStats = async (
   return request(`/router/stats?period=${encodeURIComponent(period)}`);
 };
 
+// ── Screen Share ──
+
+export interface ScreenShareStatus {
+  enabled: boolean;
+  managedByDojo: boolean;
+  running: boolean;
+}
+
+export interface ScreenShareActionResult {
+  state: 'ready' | 'error';
+  status: ScreenShareStatus;
+  error?: string;
+}
+
+export const getScreenShareStatus = () =>
+  request<ScreenShareStatus>('/screen-share/status');
+
+export const enableScreenShare = () =>
+  request<ScreenShareActionResult>('/screen-share/enable', { method: 'POST' });
+
+export const disableScreenShare = () =>
+  request<{ success: boolean; status: ScreenShareStatus; error?: string }>(
+    '/screen-share/disable', { method: 'POST' },
+  );
+
+
 // ── Costs ──
 
 export const getCostSummary = async (

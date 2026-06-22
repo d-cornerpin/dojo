@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useRightDock, isMediaDock, type DockSpec } from './RightDockProvider';
 import { CanvasView } from './CanvasView';
+import { ScreenShareViewer } from './ScreenShareViewer';
 
 function RefreshIcon() {
   return (
@@ -32,7 +33,11 @@ export function RightDock({ dock }: { dock: DockSpec }) {
   }
 
   const media = isMediaDock(dock);
-  const title = dock.title ?? (dock.kind === 'iframe' || dock.kind === 'screenshot' ? 'Browser' : 'Panel');
+  const title = dock.title ?? (
+    dock.kind === 'iframe' || dock.kind === 'screenshot' ? 'Browser'
+    : dock.kind === 'screen' ? 'Screen'
+    : 'Panel'
+  );
 
   let frame: React.ReactNode = null;
   if (dock.kind === 'iframe') {
@@ -56,6 +61,8 @@ export function RightDock({ dock }: { dock: DockSpec }) {
         </button>
       </div>
     );
+  } else if (dock.kind === 'screen') {
+    frame = <ScreenShareViewer />;
   }
 
   return (

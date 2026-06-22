@@ -29,7 +29,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     // the chat. show_canvas renders agent-produced HTML/docs; open_browser
     // loads a live website. Both are view-together surfaces, not file writes.
     label: 'Shared Workspace (right dock)',
-    tools: ['show_canvas', 'open_browser', 'view_canvas'],
+    tools: ['show_canvas', 'open_browser', 'view_canvas', 'screen_share'],
   },
   {
     // Platform-capability media generators. Each dispatches to the model

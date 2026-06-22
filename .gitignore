@@ -55,3 +55,4 @@ packages/dashboard/public/ort/
 
 # Local router test harness (dev-only; run via: npx tsx packages/server/scripts/router-harness.mts)
 /packages/server/scripts/router-harness.mts
+/SCREEN-SHARE-PLAN.md

@@ -326,7 +326,8 @@ export type WsEvent =
 export interface DockOpenEvent {
   type: 'dock:open';
   data: {
-    kind: 'canvas' | 'iframe' | 'screenshot';
+    // 'screen' = live VNC screen-share viewer (needs no extra data fields).
+    kind: 'canvas' | 'iframe' | 'screenshot' | 'screen';
     title?: string;
     /** canvas: inline HTML to render */
     html?: string;
