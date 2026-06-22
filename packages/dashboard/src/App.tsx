@@ -33,8 +33,8 @@ const RequireAuth = () => {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-        <div className="text-gray-500">Loading...</div>
+      <div className="min-h-screen bg-[#f0e6d2] flex items-center justify-center">
+        <div className="text-[#7a6a52]">Loading...</div>
       </div>
     );
   }
@@ -67,8 +67,8 @@ const SetupGate = () => {
 
   if (!checked) {
     return (
-      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
-        <div className="text-gray-500">Loading...</div>
+      <div className="min-h-screen bg-[#f0e6d2] flex items-center justify-center">
+        <div className="text-[#7a6a52]">Loading...</div>
       </div>
     );
   }

@@ -99,8 +99,13 @@
     /* ── Overlay backdrop ── */
     --overlay-dark: rgba(0, 0, 0, 0.88);
 
-    /* ── Page background gradient ── */
-    --bg-gradient: linear-gradient(135deg, rgb(11 15 26) 0%, #1a1040 25%, #0d2137 50%, #1a0f2e 75%, rgb(11 15 26) 100%);
+    /* ── Page background gradient ──
+       Champagne by default so the body never flashes the old dark gradient
+       before the active theme loads or during page transitions. This is the
+       :root base (used by the default theme, which loads no extra CSS), and it
+       matches the app shell (.dojo3-backdrop), which is champagne regardless of
+       theme. Non-default themes can still override --bg-gradient in their CSS. */
+    --bg-gradient: linear-gradient(135deg, #faf6ee 0%, #f0e6d2 25%, #f5ebd9 50%, #ede4d4 75%, #faf6ee 100%);
 
     /* ── Gradient blobs ── */
     --blob-1-color: #7c3aed;
