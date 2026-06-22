@@ -209,6 +209,11 @@ export function verifyAndTrackClient(ws: WSContext, url: string): boolean {
 
     logger.info('WS client connected', { clientId, userId: payload.userId, totalClients: clients.size });
 
+    // Flush any one-time Google re-auth toast queued by the broker migration, so
+    // the first dashboard to open after an update reliably sees it (dynamic
+    // import avoids a static cycle with the notice module).
+    void import('../google/reauth-notice.js').then(m => m.flushPendingGoogleReauthToast()).catch(() => {});
+
     return true;
   } catch (err) {
     logger.warn('WS rejected: invalid token', { error: err instanceof Error ? err.message : String(err) });

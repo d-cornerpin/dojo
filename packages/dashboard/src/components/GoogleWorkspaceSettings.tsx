@@ -261,7 +261,10 @@ export const GoogleWorkspaceSettings = () => {
         const meta = SLOT_META[kind];
         const accounts = status.accounts.filter(a => a.kind === kind).sort((a, b) => a.position - b.position);
         const connectedCount = accounts.filter(a => a.connected).length;
-        const hasAny = accounts.some(a => a.connected);
+        // Show the account list whenever ROWS exist (connected or not). A
+        // disconnected/broken account must stay visible with a Reconnect
+        // affordance, never silently vanish into the empty "sign in" state.
+        const hasRows = accounts.length > 0;
         const atCap = connectedCount >= status.maxPerKind;
         const adding = connecting?.key === `add:${kind}`;
         const isCollapsed = collapsed[kind] ?? true;
@@ -280,12 +283,13 @@ export const GoogleWorkspaceSettings = () => {
 
             {isCollapsed ? (
               <div className="space-y-2">
-                {hasAny ? (
+                {hasRows ? (
                   <>
-                    {accounts.filter(a => a.connected).map(a => (
+                    {accounts.map(a => (
                       <div key={a.id} className="flex items-center gap-2 text-sm text-ui/60">
-                        <span className="w-1.5 h-1.5 rounded-full bg-cp-teal shrink-0" />
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${a.connected ? 'bg-cp-teal' : 'bg-cp-coral'}`} />
                         <span className="truncate">{a.email ?? a.id}</span>
+                        {!a.connected && <span className="text-[11px] text-cp-coral/80 shrink-0">disconnected</span>}
                       </div>
                     ))}
                     <button onClick={() => handleAdd(kind, false)} disabled={adding || atCap}
@@ -300,7 +304,7 @@ export const GoogleWorkspaceSettings = () => {
                   </button>
                 )}
               </div>
-            ) : !hasAny ? (
+            ) : !hasRows ? (
               <div className="space-y-3">
                 <button onClick={() => handleAdd(kind, true)} disabled={adding}
                   className="btn btn--primary w-full justify-center">

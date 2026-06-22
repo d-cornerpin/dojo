@@ -35,12 +35,21 @@ import { sendAlert } from '../services/imessage-bridge.js';
 
 const logger = createLogger('google-auth');
 
-// ── Hardcoded OAuth client — registered once by Cornerpin ──
-const CLIENT_ID = '910593387780-tasrtdi6f1r4dktt7arg9bqfeq89vvrj.apps.googleusercontent.com';
-const CLIENT_SECRET = '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';
+// ── Shared OAuth client + token broker (Cornerpin-hosted) ──
+// Google requires a client secret in the token exchange for every client type
+// usable by a self-hosted app (Web and Desktop both), so there is no secretless
+// flow like Microsoft's. To avoid shipping the secret to any install or the
+// public repo, the two secret-requiring calls (code exchange + refresh) go
+// through a Cornerpin broker: a tiny Cloudflare Worker that holds the secret and
+// injects it. The app never sees the secret. PKCE is still used end to end as
+// defense in depth. Both constants below are public product values, identical on
+// every install — users connect with one click and configure nothing.
+const CLIENT_ID = '910593387780-mhtqug66aa0bf2m2bojknskvgolnqefe.apps.googleusercontent.com';
 
 const AUTH_BASE = 'https://accounts.google.com/o/oauth2/v2/auth';
-const TOKEN_URL = 'https://oauth2.googleapis.com/token';
+// Token endpoint = the broker (NOT Google directly). The broker adds the secret
+// and forwards to https://oauth2.googleapis.com/token.
+const TOKEN_URL = 'https://googleconnect.theagentdojo.com/';
 
 const SCOPES = [
   'openid',
@@ -376,10 +385,11 @@ async function refreshAccessTokenForAccount(accountId: string): Promise<string |
 
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
-    client_secret: CLIENT_SECRET,
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
   });
+  // No client secret here: the broker injects it server-side before forwarding
+  // to Google. The app never holds a secret.
 
   try {
     const resp = await fetch(TOKEN_URL, {
@@ -428,16 +438,26 @@ async function refreshAccessTokenForAccount(accountId: string): Promise<string |
  */
 export interface OAuthTarget { kind: AccountSlot; accountId?: string }
 
+// PKCE (RFC 7636): proves possession of the authorization request via a
+// per-flow verifier, layered on top of the broker as defense in depth, exactly
+// like the Microsoft side. S256 challenge.
+function generatePKCE(): { verifier: string; challenge: string } {
+  const verifier = crypto.randomBytes(32).toString('base64url');
+  const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+  return { verifier, challenge };
+}
+
 // In-flight OAuth flows, keyed by the state token (the authoritative identity
 // for "which flow is this callback completing"). Each click of "Connect" /
-// "Add another" starts an independent flow.
-interface OAuthFlow { redirectUri: string; target: OAuthTarget; createdAt: number }
+// "Add another" starts an independent flow. The PKCE verifier is held here
+// across the redirect and consumed at code exchange.
+interface OAuthFlow { verifier: string; redirectUri: string; target: OAuthTarget; createdAt: number }
 const oauthFlows = new Map<string, OAuthFlow>();
 const OAUTH_FLOW_TTL_MS = 10 * 60 * 1000;
 
-export function getFlowForState(state: string): { redirectUri: string; target: OAuthTarget } | null {
+export function getFlowForState(state: string): { verifier: string; redirectUri: string; target: OAuthTarget } | null {
   const flow = oauthFlows.get(state);
-  return flow ? { redirectUri: flow.redirectUri, target: flow.target } : null;
+  return flow ? { verifier: flow.verifier, redirectUri: flow.redirectUri, target: flow.target } : null;
 }
 
 /** Drop a completed/failed flow so its state token can't be replayed. */
@@ -452,8 +472,9 @@ export function buildAuthUrl(redirectUri: string, target: OAuthTarget): { authUr
     if (now - f.createdAt > OAUTH_FLOW_TTL_MS) oauthFlows.delete(s);
   }
 
+  const { verifier, challenge } = generatePKCE();
   const state = crypto.randomBytes(16).toString('hex');
-  oauthFlows.set(state, { redirectUri, target, createdAt: now });
+  oauthFlows.set(state, { verifier, redirectUri, target, createdAt: now });
 
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
@@ -462,13 +483,15 @@ export function buildAuthUrl(redirectUri: string, target: OAuthTarget): { authUr
     scope: SCOPES,
     access_type: 'offline',
     prompt: 'consent',
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
     state,
   });
 
   return { authUrl: `${AUTH_BASE}?${params.toString()}` };
 }
 
-export async function exchangeCodeForTokens(code: string, redirectUri: string, target: OAuthTarget): Promise<{
+export async function exchangeCodeForTokens(code: string, redirectUri: string, codeVerifier: string, target: OAuthTarget): Promise<{
   success: boolean;
   email?: string;
   error?: string;
@@ -476,11 +499,13 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, t
   const slot = target.kind;
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
-    client_secret: CLIENT_SECRET,
     code,
     grant_type: 'authorization_code',
     redirect_uri: redirectUri,
+    code_verifier: codeVerifier,
   });
+  // No client secret here: the broker injects it server-side. PKCE
+  // (code_verifier) secures the exchange from the app's side.
 
   try {
     const resp = await fetch(TOKEN_URL, {

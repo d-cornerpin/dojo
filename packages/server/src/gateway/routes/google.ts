@@ -164,7 +164,7 @@ googleRouter.get('/callback', async (c) => {
     return c.html('<html><body><h2>Invalid state parameter</h2><p>Please try connecting again from Settings.</p></body></html>');
   }
 
-  const result = await exchangeCodeForTokens(code, flow.redirectUri, flow.target);
+  const result = await exchangeCodeForTokens(code, flow.redirectUri, flow.verifier, flow.target);
   clearOAuthFlow(state);
 
   const slot = flow.target.kind;

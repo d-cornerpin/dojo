@@ -124,6 +124,18 @@ async function main(): Promise<void> {
           error: err instanceof Error ? err.message : String(err),
         });
       }
+      // One-time post-update notice: if Google accounts were connected under the
+      // pre-broker OAuth client, they need a reconnect. Runs after migrations,
+      // the Google-account seed, and the primary agent are all ready (all done
+      // synchronously in main() well before this deferred block fires).
+      try {
+        const { notifyGoogleReauthOnce } = await import('./google/reauth-notice.js');
+        notifyGoogleReauthOnce();
+      } catch (err) {
+        logger.warn('Google re-auth notice dispatch failed (non-fatal)', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     })();
   }, 30_000);
 
