@@ -71,7 +71,7 @@ export interface GenerateImageSuccess {
 export interface GenerateImageError {
   ok: false;
   error: string;
-  code: 'MODEL_NOT_FOUND' | 'NO_CREDENTIAL' | 'CAPABILITY_MISSING' | 'HTTP_ERROR' | 'NO_IMAGE_RETURNED' | 'DECODE_ERROR' | 'WRITE_ERROR' | 'UNKNOWN';
+  code: 'MODEL_NOT_FOUND' | 'NO_CREDENTIAL' | 'CAPABILITY_MISSING' | 'HTTP_ERROR' | 'NO_IMAGE_RETURNED' | 'DECODE_ERROR' | 'WRITE_ERROR' | 'TIMEOUT' | 'UNKNOWN';
 }
 
 export type GenerateImageResult = GenerateImageSuccess | GenerateImageError;
@@ -183,6 +183,26 @@ function decodeImageUrl(url: string): { bytes: Buffer; mimeType: string } | null
   } catch { return null; }
 }
 
+// Image models (especially routed through OpenRouter under load) routinely take
+// several minutes. The old 120s cap timed out on them AND the abort fired
+// mid-body-read, surfacing as a misleading "failed to parse JSON" error. Image
+// generation runs as a background job (the agent already acked and ended its
+// turn), so holding the request open this long is fine. Unlike video — which is
+// submit-then-poll with a 30-minute poller window — image is a single blocking
+// call, so this ceiling IS the budget. 10 minutes is generous without waiting
+// forever on a truly hung provider.
+const IMAGE_GEN_TIMEOUT_MS = 600_000;
+
+// AbortSignal.timeout throws a DOMException named 'TimeoutError'; a manual abort
+// throws 'AbortError'. Either, plus the stringified variants, means we hit the
+// deadline — not a real decode/transport error.
+function isTimeoutError(err: unknown): boolean {
+  const e = err as { name?: string; message?: string } | null;
+  if (!e) return false;
+  if (e.name === 'TimeoutError' || e.name === 'AbortError') return true;
+  return typeof e.message === 'string' && /aborted|timed?\s*out|timeout/i.test(e.message);
+}
+
 export async function generateImage(req: GenerateImageRequest): Promise<GenerateImageResult> {
   const startTime = Date.now();
   ensureGeneratedImagesDir();
@@ -262,9 +282,16 @@ export async function generateImage(req: GenerateImageRequest): Promise<Generate
       method: 'POST',
       headers,
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(IMAGE_GEN_TIMEOUT_MS),
     });
   } catch (err) {
+    if (isTimeoutError(err)) {
+      return {
+        ok: false,
+        error: `Image generation timed out after ${Math.round(IMAGE_GEN_TIMEOUT_MS / 60000)} minutes. The provider or model is slow or overloaded right now. Try again in a moment, switch the image model, or simplify the prompt.`,
+        code: 'TIMEOUT',
+      };
+    }
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, error: `Image generation request failed: ${msg}`, code: 'HTTP_ERROR' };
   }
@@ -298,6 +325,15 @@ export async function generateImage(req: GenerateImageRequest): Promise<Generate
   try {
     data = await response.json() as typeof data;
   } catch (err) {
+    // The same deadline governs the body read, so a slow provider trips here
+    // mid-stream. Report it as the timeout it is, not a parse failure.
+    if (isTimeoutError(err)) {
+      return {
+        ok: false,
+        error: `Image generation timed out after ${Math.round(IMAGE_GEN_TIMEOUT_MS / 60000)} minutes while receiving the image. The provider or model is slow or overloaded right now. Try again in a moment, switch the image model, or simplify the prompt.`,
+        code: 'TIMEOUT',
+      };
+    }
     return {
       ok: false,
       error: `Failed to parse image provider response as JSON: ${err instanceof Error ? err.message : String(err)}`,
