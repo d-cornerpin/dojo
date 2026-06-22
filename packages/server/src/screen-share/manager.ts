@@ -17,6 +17,12 @@ import net from 'node:net';
 import { execFileSync } from 'node:child_process';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+import {
+  addCredential,
+  updateCredential,
+  getCredentialByService,
+  deleteCredentialByService,
+} from '../credentials/store.js';
 
 const logger = createLogger('screen-share');
 
@@ -96,6 +102,41 @@ export async function getStatus(): Promise<ScreenShareStatus> {
 
 export function isScreenShareEnabled(): boolean {
   return getFlag('screen_share_enabled');
+}
+
+// ── Saved VNC password (opt-in) ──
+// By default the user types the VNC password every connect (the second factor).
+// They can opt to save it: after a SUCCESSFUL connect, the viewer posts it here
+// and we stash it (AES-256-GCM) in the vault credential store. Future connects
+// auto-fill it. A wrong/stale saved password is forgotten so it can't lock the
+// user out. Stored only on the user's explicit choice; never exported.
+
+const VNC_CRED_SERVICE = 'screen_share_vnc';
+
+export function saveVncPassword(password: string): void {
+  const value = { password };
+  if (getCredentialByService(VNC_CRED_SERVICE, null)) {
+    updateCredential(VNC_CRED_SERVICE, value, undefined, null);
+  } else {
+    addCredential(VNC_CRED_SERVICE, value, 'Screen sharing VNC password', null);
+  }
+}
+
+export function getSavedVncPassword(): string | null {
+  try {
+    const cred = getCredentialByService(VNC_CRED_SERVICE, null);
+    const pw = cred?.credentials?.password;
+    return typeof pw === 'string' && pw.length > 0 ? pw : null;
+  } catch {
+    // Undecryptable (e.g. master key rotated) — treat as not saved.
+    return null;
+  }
+}
+
+export function clearSavedVncPassword(): void {
+  try {
+    deleteCredentialByService(VNC_CRED_SERVICE, null);
+  } catch { /* nothing saved */ }
 }
 
 // ── Privileged execution ──

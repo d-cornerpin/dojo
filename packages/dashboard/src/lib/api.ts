@@ -1480,6 +1480,20 @@ export const disableScreenShare = () =>
     '/screen-share/disable', { method: 'POST' },
   );
 
+// Saved VNC password (opt-in auto-fill). The dojo stores it encrypted only if
+// the user checks "Save password" and the connection succeeds.
+export const getSavedVncPassword = () =>
+  request<{ password: string | null }>('/screen-share/vnc-password');
+
+export const saveVncPassword = (password: string) =>
+  request<{ saved: boolean }>('/screen-share/vnc-password', {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  });
+
+export const forgetVncPassword = () =>
+  request<{ saved: boolean }>('/screen-share/vnc-password', { method: 'DELETE' });
+
 
 // ── Costs ──
 

@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import RFB from '@novnc/novnc/core/rfb.js';
 import { useRightDock } from './RightDockProvider';
+import { getSavedVncPassword, saveVncPassword, forgetVncPassword } from '../lib/api';
 
 // Live view of the agent's Mac screen in the right dock. Connects to the JWT-
 // gated VNC bridge (/api/screen/vnc) and renders with noVNC. View-only by
 // default; "Take control" enables mouse/keyboard. The user enters the VNC
-// password set on the Mac (the second factor); the dojo stores nothing.
+// password set on the Mac (the second factor); they can opt to save it (stored
+// encrypted in the vault), and a saved password is auto-filled on later connects.
 //
 // Zoom + pan: noVNC always runs scaleViewport (so it owns the scale and input
 // mapping stays correct). We size the noVNC target to framebuffer × zoom inside
@@ -26,12 +28,20 @@ export function ScreenShareViewer() {
   const connectedRef = useRef(false);
   const submittedRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Saved-password (opt-in) plumbing: the fetched saved password, whether we've
+  // already auto-tried it this connection, and a password queued to save once
+  // the connection succeeds.
+  const savedPasswordRef = useRef<string | null>(null);
+  const triedSavedRef = useRef(false);
+  const pendingSaveRef = useRef<string | null>(null);
 
   const [status, setStatus] = useState<ViewerStatus>('connecting');
   const [controlling, setControlling] = useState(false);
   const [needsUsername, setNeedsUsername] = useState(true);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [savePref, setSavePref] = useState(false);
+  const [hasSaved, setHasSaved] = useState(false);
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [zoom, setZoom] = useState(1); // 1 = fit; >1 = zoomed in
@@ -81,71 +91,115 @@ export function ScreenShareViewer() {
     if (!el || !outer) return;
     connectedRef.current = false;
     submittedRef.current = false;
+    triedSavedRef.current = false;
+    pendingSaveRef.current = null;
     setError(''); setControlling(false); setStatus('connecting');
 
-    const token = localStorage.getItem('dojo_token') ?? '';
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${proto}://${window.location.host}/api/screen/vnc?token=${encodeURIComponent(token)}`;
+    let cancelled = false;
+    let ro: ResizeObserver | null = null;
 
-    let rfb: RFB;
-    try {
-      rfb = new RFB(el, url, {});
-    } catch {
-      setError('Could not start the screen viewer.');
-      setStatus('error');
-      return;
-    }
-    rfb.viewOnly = true;
-    rfb.scaleViewport = true;
-    rfb.background = '#0b0b0f';
+    const start = async () => {
+      // Load any saved VNC password first, so credentialsrequired can auto-fill
+      // it before we ever show the prompt.
+      let saved: string | null = null;
+      try {
+        const res = await getSavedVncPassword();
+        if (res.ok) saved = res.data.password;
+      } catch { /* treat as no saved password */ }
+      if (cancelled) return;
+      savedPasswordRef.current = saved;
+      setHasSaved(!!saved);
 
-    armTimer('Could not reach the screen-sharing service. Is Screen Sharing enabled on the Mac?');
+      const token = localStorage.getItem('dojo_token') ?? '';
+      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const url = `${proto}://${window.location.host}/api/screen/vnc?token=${encodeURIComponent(token)}`;
 
-    rfb.addEventListener('connect', () => {
-      clearTimer();
-      connectedRef.current = true;
-      setStatus('connected');
-      setError('');
-    });
-    rfb.addEventListener('disconnect', (ev: Event) => {
-      clearTimer();
-      if (connectedRef.current) {
-        setStatus('disconnected');
-      } else {
+      let rfb: RFB;
+      try {
+        rfb = new RFB(el, url, {});
+      } catch {
+        setError('Could not start the screen viewer.');
         setStatus('error');
-        const clean = (ev as CustomEvent).detail?.clean;
-        setError((prev) => prev || (clean ? 'Disconnected.' : 'Connection closed before it could log in.'));
+        return;
       }
-    });
-    rfb.addEventListener('credentialsrequired', (ev: Event) => {
-      clearTimer();
-      const types = (ev as CustomEvent).detail?.types;
-      setNeedsUsername(Array.isArray(types) ? types.includes('username') : true);
-      if (submittedRef.current) {
-        setError('Incorrect password. Try again.');
-        submittedRef.current = false;
-      }
-      setStatus('credential');
-    });
-    rfb.addEventListener('securityfailure', (ev: Event) => {
-      clearTimer();
-      const reason = (ev as CustomEvent).detail?.reason;
-      setError(reason || 'Login failed. Check the VNC password.');
-      setStatus('error');
-    });
+      rfb.viewOnly = true;
+      rfb.scaleViewport = true;
+      rfb.background = '#0b0b0f';
 
-    rfbRef.current = rfb;
+      armTimer('Could not reach the screen-sharing service. Is Screen Sharing enabled on the Mac?');
 
-    // Reapply zoom on wrapper resize (the fit scale depends on the dock size).
-    const ro = new ResizeObserver(() => {
-      if (connectedRef.current && zoomRef.current > 1) applyZoom(zoomRef.current);
-    });
-    ro.observe(outer);
+      rfb.addEventListener('connect', () => {
+        clearTimer();
+        connectedRef.current = true;
+        setStatus('connected');
+        setError('');
+        // Success: persist the password if the user opted in.
+        const toSave = pendingSaveRef.current;
+        pendingSaveRef.current = null;
+        if (toSave) {
+          void saveVncPassword(toSave).then((r) => { if (r.ok) setHasSaved(true); });
+        }
+      });
+      rfb.addEventListener('disconnect', (ev: Event) => {
+        clearTimer();
+        if (connectedRef.current) {
+          setStatus('disconnected');
+        } else {
+          setStatus('error');
+          const clean = (ev as CustomEvent).detail?.clean;
+          setError((prev) => prev || (clean ? 'Disconnected.' : 'Connection closed before it could log in.'));
+        }
+      });
+      rfb.addEventListener('credentialsrequired', (ev: Event) => {
+        clearTimer();
+        const types = (ev as CustomEvent).detail?.types;
+        const wantsUsername = Array.isArray(types) ? types.includes('username') : true;
+        setNeedsUsername(wantsUsername);
+
+        const saved = savedPasswordRef.current;
+        // Auto-fill a saved password once (password-only auth; not account auth).
+        if (saved && !wantsUsername && !triedSavedRef.current) {
+          triedSavedRef.current = true;
+          setStatus('connecting');
+          armTimer('Timed out connecting with your saved password.');
+          rfb.sendCredentials({ password: saved });
+          return;
+        }
+        // A saved password that just got rejected: forget it and re-prompt.
+        if (saved && triedSavedRef.current) {
+          savedPasswordRef.current = null;
+          setHasSaved(false);
+          void forgetVncPassword();
+          setError('Your saved password no longer works. Enter it again.');
+          setSavePref(true);
+        } else if (submittedRef.current) {
+          setError('Incorrect password. Try again.');
+          submittedRef.current = false;
+        }
+        setStatus('credential');
+      });
+      rfb.addEventListener('securityfailure', (ev: Event) => {
+        clearTimer();
+        const reason = (ev as CustomEvent).detail?.reason;
+        setError(reason || 'Login failed. Check the VNC password.');
+        setStatus('error');
+      });
+
+      rfbRef.current = rfb;
+
+      // Reapply zoom on wrapper resize (the fit scale depends on the dock size).
+      ro = new ResizeObserver(() => {
+        if (connectedRef.current && zoomRef.current > 1) applyZoom(zoomRef.current);
+      });
+      ro.observe(outer);
+    };
+    void start();
 
     return () => {
+      cancelled = true;
       clearTimer();
-      ro.disconnect();
-      try { rfb.disconnect(); } catch { /* ignore */ }
+      if (ro) ro.disconnect();
+      try { rfbRef.current?.disconnect(); } catch { /* ignore */ }
       rfbRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -161,6 +215,9 @@ export function ScreenShareViewer() {
     const rfb = rfbRef.current;
     if (!rfb || !password || (needsUsername && !username)) return;
     submittedRef.current = true;
+    // Queue the save only for password-only auth and only if opted in; it's
+    // persisted once 'connect' fires (so we never save a password that failed).
+    pendingSaveRef.current = (savePref && !needsUsername) ? password : null;
     setError('');
     setStatus('connecting');
     armTimer('Timed out connecting. Check the VNC password, or that Screen Sharing is on.');
@@ -174,6 +231,12 @@ export function ScreenShareViewer() {
     rfb.viewOnly = !next;
     setControlling(next);
     if (next) { try { rfb.focus(); } catch { /* ignore */ } }
+  };
+
+  const forgetSaved = () => {
+    void forgetVncPassword();
+    savedPasswordRef.current = null;
+    setHasSaved(false);
   };
 
   const cancel = () => {
@@ -235,6 +298,11 @@ export function ScreenShareViewer() {
             <button type="button" className="btn btn--sm" onClick={cancel} title="End the screen share and close">
               Disconnect
             </button>
+            {hasSaved && (
+              <button type="button" className="btn btn--sm" onClick={forgetSaved} title="Forget the saved VNC password on this dojo">
+                Forget password
+              </button>
+            )}
           </>
         )}
         {(status === 'error' || status === 'disconnected') && (
@@ -255,6 +323,12 @@ export function ScreenShareViewer() {
             <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus placeholder="Username" autoComplete="off" style={inputStyle} />
           )}
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus={!needsUsername} placeholder="VNC password" style={inputStyle} />
+          {!needsUsername && (
+            <label className="text-xs text-ui/55" style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, cursor: 'pointer' }}>
+              <input type="checkbox" checked={savePref} onChange={(e) => setSavePref(e.target.checked)} />
+              Save this password (stored encrypted, auto-filled next time)
+            </label>
+          )}
           <button type="submit" className="btn btn--primary btn--sm">Connect</button>
         </form>
       )}

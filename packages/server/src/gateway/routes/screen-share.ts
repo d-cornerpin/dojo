@@ -10,6 +10,9 @@ import {
   getStatus,
   enable,
   disable,
+  saveVncPassword,
+  getSavedVncPassword,
+  clearSavedVncPassword,
 } from '../../screen-share/manager.js';
 
 const logger = createLogger('screen-share-routes');
@@ -42,6 +45,28 @@ screenShareRouter.post('/disable', async (c) => {
     logger.error('disable failed', { error: err instanceof Error ? err.message : String(err) });
     return c.json({ ok: false, error: 'Disable failed' }, 500);
   }
+});
+
+// GET /vnc-password — the user's saved VNC password (or null) for auto-fill.
+// Behind JWT; returned only to the authenticated dashboard for the user's own
+// connection. Empty unless the user explicitly opted to save it.
+screenShareRouter.get('/vnc-password', (c) => {
+  return c.json({ ok: true, data: { password: getSavedVncPassword() } });
+});
+
+// POST /vnc-password — save the VNC password after a successful connect (opt-in).
+screenShareRouter.post('/vnc-password', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const password = typeof body?.password === 'string' ? body.password : '';
+  if (!password) return c.json({ ok: false, error: 'password is required' }, 400);
+  saveVncPassword(password);
+  return c.json({ ok: true, data: { saved: true } });
+});
+
+// DELETE /vnc-password — forget the saved password (manual, or after it fails).
+screenShareRouter.delete('/vnc-password', (c) => {
+  clearSavedVncPassword();
+  return c.json({ ok: true, data: { saved: false } });
 });
 
 export { screenShareRouter };
