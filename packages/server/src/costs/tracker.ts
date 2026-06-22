@@ -236,15 +236,18 @@ export function getCostSummary(period: '24h' | '7d' | '30d' | 'all'): CostSummar
     GROUP BY cr.agent_id ORDER BY totalCost DESC
   `).all() as Array<{ agentId: string; agentName: string; totalCost: number; requestCount: number }>;
 
-  // By tier (join with router_tier_models)
+  // By tier — group by the tier the auto-router ACTUALLY chose for each call
+  // (request_type), not a model->tier join. The old join mis-counted badly:
+  // untagged models all fell into 'unknown' (the bulk of records), and a model
+  // assigned to multiple tiers had its cost counted once per tier (identical
+  // phantom totals). request_type is the real per-call routing decision.
   const byTier = db.prepare(`
-    SELECT COALESCE(tm.tier_id, 'unknown') as tier,
+    SELECT cr.request_type as tier,
            COALESCE(SUM(cr.cost_usd), 0) as totalCost,
            COUNT(*) as requestCount
     FROM cost_records cr
-    LEFT JOIN router_tier_models tm ON tm.model_id = cr.model_id
-    WHERE 1=1 ${filter.replace(/created_at/g, 'cr.created_at')}
-    GROUP BY tm.tier_id ORDER BY totalCost DESC
+    WHERE cr.request_type IN ('light', 'standard', 'heavy') ${filter.replace(/created_at/g, 'cr.created_at')}
+    GROUP BY cr.request_type ORDER BY totalCost DESC
   `).all() as Array<{ tier: string; totalCost: number; requestCount: number }>;
 
   return {

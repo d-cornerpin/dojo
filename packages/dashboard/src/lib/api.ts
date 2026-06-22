@@ -1444,8 +1444,11 @@ export const testRouter = async (
 export const getRouterStats = async (
   period: string,
 ): Promise<ApiResponse<{
-  requestsByTier: Record<string, number>;
-  requestsByModel: Record<string, number>;
+  totalDecisions: number;
+  fallbackCount: number;
+  fallbackRate: number;
+  byTier: Array<{ tierId: string; count: number; avgLatencyMs: number; avgRawScore: number }>;
+  byModel: Array<{ modelId: string; count: number }>;
 }>> => {
   return request(`/router/stats?period=${encodeURIComponent(period)}`);
 };

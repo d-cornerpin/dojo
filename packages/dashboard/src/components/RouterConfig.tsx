@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import * as api from '../lib/api';
+import { RouterUsage } from './RouterUsage';
 
 interface TierModel {
   modelId: string;
@@ -79,6 +80,9 @@ export const RouterConfig = ({ config, onUpdateTierModels, onUpdateDimension }: 
           ))}
         </div>
       </div>
+
+      {/* Tier-usage chart, directly under the tier configuration. */}
+      <RouterUsage />
 
       {/* Dimension weights */}
       <div>

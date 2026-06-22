@@ -567,12 +567,11 @@ export const Costs = () => {
     value: spendOf(a),
   }));
   const tierRows = (summary?.byTier ?? []).map((t) => ({
-    label: t.tier,
-    value: num((t as Record<string, unknown>).requestCount ?? (t as Record<string, unknown>).count ?? 0),
+    label: t.tier ? t.tier.charAt(0).toUpperCase() + t.tier.slice(1) : t.tier,
+    value: spendOf(t),
   }));
 
   const usd = (v: number) => `$${v.toFixed(2)}`;
-  const count = (v: number) => v.toLocaleString();
 
   return (
     <>
@@ -646,8 +645,8 @@ export const Costs = () => {
           <BrowList rows={agentRows} barClass="is-green" formatVal={usd} />
         </div>
         <div className="tile anim" style={{ '--ci': '250ms' } as React.CSSProperties}>
-          <div className="scard__title">Tier Distribution</div>
-          <BrowList rows={tierRows} barClass="is-dim" formatVal={count} />
+          <div className="scard__title">Spend by Tier</div>
+          <BrowList rows={tierRows} barClass="is-dim" formatVal={usd} />
         </div>
       </div>
 

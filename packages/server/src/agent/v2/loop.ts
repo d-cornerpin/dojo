@@ -1617,7 +1617,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }, agentId);
         } else {
           const { scoreQuery } = await import('../../router/scorer.js');
-          const { selectModel } = await import('../../router/selector.js');
+          const { selectModel, logRouterDecision } = await import('../../router/selector.js');
           const scoringResult = scoreQuery(
             systemPrompt,
             messages as Array<{ role: string; content: string | object[] }>,
@@ -1633,6 +1633,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
             modelId,
             fallbackUsed: selected.fallbackUsed,
           }, agentId);
+          // Record the decision so the Router tab can chart tier usage over time.
+          // Only the scored path is logged (one decision per task) — the mid-task
+          // locked-model branch above reuses this same decision, so logging it
+          // too would double-count.
+          logRouterDecision(
+            agentId,
+            scoringResult.scores,
+            scoringResult.rawScore,
+            scoringResult.tier,
+            modelId,
+            selected.fallbackUsed,
+            scoringResult.latencyMs,
+          );
         }
       } else {
         modelId = configuredModelId;
