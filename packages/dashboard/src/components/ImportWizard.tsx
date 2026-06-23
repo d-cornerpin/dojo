@@ -58,6 +58,10 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   // scan
   const [scanning, setScanning] = useState(false);
   const [preflight, setPreflight] = useState<Preflight | null>(null);
+  // When the export carries a named Cloudflare tunnel, the user must confirm
+  // they've turned it off on the OLD dojo before we proceed (two dojos can't
+  // share one named tunnel + key).
+  const [ackTunnel, setAckTunnel] = useState(false);
 
   // restore
   const [restoreProgress, setRestoreProgress] = useState<{ progress: number; message: string }>({ progress: 0, message: '' });
@@ -253,7 +257,11 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   };
 
   // ── Derived ──
-  const scanPass = !!preflight && preflight.integrityOk && preflight.passwordOk && preflight.diskOk;
+  // Scan passes when the archive is sound AND, if it carries a named Cloudflare
+  // tunnel, the user has confirmed they turned it off on the old dojo.
+  const tunnelAckNeeded = !!preflight?.manifest.contents.cloudflare_named_tunnel;
+  const scanPass = !!preflight && preflight.integrityOk && preflight.passwordOk && preflight.diskOk
+    && (!tunnelAckNeeded || ackTunnel);
   const actionCards = checks.filter((c) => c.category === 'action' && c.status !== 'ok' && !markedDone.has(c.id));
   const techniqueCards = checks.filter((c) => c.category === 'technique' && !markedDone.has(c.id));
   const automated = checks.filter((c) => c.category === 'automated' || (!c.category && c.status === 'ok'));
@@ -326,6 +334,21 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
             <div>Database {fmtBytes(preflight.manifest.contents.database_size_bytes)} · Providers: {preflight.manifest.contents.providers.join(', ') || 'none'}</div>
             {preflight.manifest.contents.google_workspace_connected && <div>Google Workspace: {preflight.manifest.contents.google_workspace_email}</div>}
             {preflight.manifest.contents.ollama_models.length > 0 && <div>Ollama models: {preflight.manifest.contents.ollama_models.join(', ')}</div>}
+          </div>
+        )}
+        {preflight?.manifest.contents.cloudflare_named_tunnel && (
+          <div className="text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-3 space-y-2">
+            <p className="text-red-300 font-medium">⚠ Turn off the Cloudflare tunnel on your OLD dojo first</p>
+            <p className="text-ui/70 text-xs">
+              This export uses a <strong>named Cloudflare tunnel</strong>. A named tunnel can only run on one
+              machine at a time — if the old dojo keeps tunneling with the same name and key, neither dojo will
+              connect. On the old machine, go to <strong>Settings → Remote Access</strong> and turn the tunnel
+              off before continuing here.
+            </p>
+            <label className="flex items-start gap-2 text-xs text-ui/80 cursor-pointer">
+              <input type="checkbox" checked={ackTunnel} onChange={(e) => setAckTunnel(e.target.checked)} className="mt-0.5" />
+              <span>I've disabled the Cloudflare tunnel on my old dojo.</span>
+            </label>
           </div>
         )}
         {!isOobe && (

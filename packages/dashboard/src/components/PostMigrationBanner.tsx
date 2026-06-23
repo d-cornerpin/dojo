@@ -34,6 +34,7 @@ export interface ExportManifest {
     ollama_models: string[];
     providers: string[];
     uploads_size_bytes: number;
+    cloudflare_named_tunnel?: boolean;
   };
   encryption: string;
   checksum: string;

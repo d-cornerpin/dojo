@@ -301,19 +301,27 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
   // access carried over; it auto-starts on boot once cloudflared is installed.
   if (checkDbConfigFlag('tunnel_enabled')) {
     let namedUrl: string | null = null;
+    let isNamed = false;
     try {
       const row = getDb().prepare("SELECT value FROM config WHERE key = 'tunnel_named_url'").get() as { value: string } | undefined;
       namedUrl = row?.value?.trim() || null;
+      const mode = getDb().prepare("SELECT value FROM config WHERE key = 'tunnel_mode'").get() as { value: string } | undefined;
+      isNamed = mode?.value === 'named';
     } catch { /* ignore */ }
+    // A named tunnel can only run on one machine. Flag it for the user to make
+    // sure the OLD dojo's tunnel is off, or the two will fight over the name/key.
+    const conflictNote = isNamed
+      ? ' IMPORTANT: a named tunnel runs on one machine only — make sure the old dojo has its tunnel turned OFF, or neither will connect.'
+      : '';
     currentChecks.push({
       id: 'cloudflare-tunnel',
-      label: 'Cloudflare tunnel configuration restored',
+      label: isNamed ? 'Cloudflare named tunnel restored — disable it on the old dojo' : 'Cloudflare tunnel configuration restored',
       status: cfInstalled ? 'ok' : 'action_needed',
-      category: 'automated',
+      category: isNamed ? 'action' : 'automated',
       cta: cfInstalled ? undefined : { type: 'run_installer', label: 'Re-run installer' },
-      detail: namedUrl
+      detail: (namedUrl
         ? `Remote access for ${namedUrl} migrated (token + credentials). Auto-starts on boot.`
-        : 'Remote access settings migrated (token + credentials). Auto-starts on boot.',
+        : 'Remote access settings migrated (token + credentials). Auto-starts on boot.') + conflictNote,
     });
   }
 
