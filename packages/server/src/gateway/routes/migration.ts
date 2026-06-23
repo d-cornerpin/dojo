@@ -88,7 +88,7 @@ migrationRouter.post('/manifest', async (c) => {
     tmpPath = path.join(os.tmpdir(), `dojo-manifest-${Date.now()}-${process.pid}.zip`);
     await pipeline(Readable.fromWeb(body as never), fs.createWriteStream(tmpPath));
 
-    const manifest = readManifestFromZip(tmpPath);
+    const manifest = await readManifestFromZip(tmpPath);
     return c.json({ ok: true, data: manifest });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

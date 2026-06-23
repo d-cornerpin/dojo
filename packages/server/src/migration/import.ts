@@ -6,7 +6,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import AdmZip from 'adm-zip';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import unzipper from 'unzipper';
 import Database from 'better-sqlite3';
 import { closeDb } from '../db/connection.js';
 import { clearSecretsCache } from '../config/loader.js';
@@ -28,30 +30,21 @@ function broadcastProgress(stage: string, progress: number, message: string): vo
   } as any);
 }
 
-// ── Decryption ──
-
-function decryptBuffer(data: Buffer, password: string): Buffer {
-  const salt = data.subarray(0, 32);
-  const iv = data.subarray(32, 48);
-  const encrypted = data.subarray(48);
-  const key = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256');
-  const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
-  return Buffer.concat([decipher.update(encrypted), decipher.final()]);
-}
-
 // ── Read Manifest from Zip (no password needed) ──
 
-// Takes a PATH to the export zip on disk (not a Buffer). AdmZip reads the
-// archive's central directory and just the manifest entry from the file, so a
-// multi-GB export never has to be held in memory as a single Buffer (which
-// blows past Node's max buffer/string length).
-export function readManifestFromZip(zipPath: string): ExportManifest {
-  const zip = new AdmZip(zipPath);
-  const manifestEntry = zip.getEntry('manifest.json');
+// Takes a PATH to the export zip on disk. Uses unzipper's seek-based reader,
+// which reads the central directory via fd seeks and only pulls the (small)
+// manifest.json entry — so a multi-GB export is never read into memory as a
+// single Buffer. (adm-zip can't do this: it fs.readFileSync()s the whole
+// archive, and both fs reads and crypto.update() cap out at 2^31-1 bytes.)
+export async function readManifestFromZip(zipPath: string): Promise<ExportManifest> {
+  const dir = await unzipper.Open.file(zipPath);
+  const manifestEntry = dir.files.find((f) => f.path === 'manifest.json');
   if (!manifestEntry) {
     throw new Error('Invalid export file: no manifest.json found');
   }
-  return JSON.parse(manifestEntry.getData().toString('utf-8'));
+  const buf = await manifestEntry.buffer();
+  return JSON.parse(buf.toString('utf-8'));
 }
 
 // ── Import ──
@@ -65,48 +58,102 @@ export async function performImport(
   /** Current password hash and JWT secret to preserve after import */
   currentAuth?: { passwordHash: string | null; jwtSecret: string },
 ): Promise<{ manifest: ExportManifest; checks: PostMigrationCheck[]; newToken?: string }> {
-  // Step 1: Read manifest
+  // The whole pipeline streams: a multi-GB export must never be held in a
+  // single Buffer. We use unzipper (seek-based, streams entries) and streaming
+  // crypto, staging intermediates on disk in tmpDir.
+
+  // Step 1: Read manifest (seek-reads just manifest.json)
   broadcastProgress('manifest', 5, 'Reading manifest...');
-  const manifest = readManifestFromZip(zipPath);
+  const manifest = await readManifestFromZip(zipPath);
   logger.info('Import started', {
     from: manifest.exported_from.hostname,
     agents: manifest.contents.agents_count,
     techniques: manifest.contents.techniques_count,
   });
 
-  // Step 2: Extract encrypted payload
-  broadcastProgress('decrypt', 15, 'Decrypting archive...');
-  const outerZip = new AdmZip(zipPath);
-  const payloadEntry = outerZip.getEntry('payload.enc');
-  if (!payloadEntry) {
-    throw new Error('Invalid export file: no encrypted payload found');
-  }
-
-  let decrypted: Buffer;
-  try {
-    decrypted = decryptBuffer(payloadEntry.getData(), password);
-  } catch (err) {
-    throw new Error('Wrong password or corrupted archive');
-  }
-
-  // Step 3: Verify checksum
-  broadcastProgress('verify', 25, 'Verifying checksum...');
-  const expectedChecksum = manifest.checksum.replace('sha256:', '');
-  const actualChecksum = crypto.createHash('sha256').update(payloadEntry.getData()).digest('hex');
-  if (expectedChecksum !== actualChecksum) {
-    throw new Error('Archive corrupted: checksum mismatch');
-  }
-  logger.info('Checksum verified');
-
-  // Step 4: Extract inner zip to temp dir
-  broadcastProgress('extract', 35, 'Extracting files...');
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-import-'));
+  // Where the decrypted inner zip is unpacked; the restore below reads this.
+  const extractRoot = path.join(tmpDir, 'extracted');
 
   try {
-    const innerZip = new AdmZip(decrypted);
-    innerZip.extractAllTo(tmpDir, true);
+    // Step 2: Stream the encrypted payload out of the outer zip to disk,
+    // hashing it as it flows so the checksum is verified without buffering it.
+    broadcastProgress('decrypt', 12, 'Reading encrypted payload...');
+    const outerDir = await unzipper.Open.file(zipPath);
+    const payloadEntry = outerDir.files.find((f) => f.path === 'payload.enc');
+    if (!payloadEntry) {
+      throw new Error('Invalid export file: no encrypted payload found');
+    }
+    const payloadPath = path.join(tmpDir, 'payload.enc');
+    const hash = crypto.createHash('sha256');
+    await pipeline(
+      payloadEntry.stream(),
+      new Transform({
+        transform(chunk, _enc, cb) {
+          hash.update(chunk);
+          cb(null, chunk);
+        },
+      }),
+      fs.createWriteStream(payloadPath),
+    );
 
-    // Step 5: Stop services
+    // Step 3: Verify checksum (over the full payload.enc bytes: salt+iv+ciphertext)
+    broadcastProgress('verify', 22, 'Verifying checksum...');
+    const expectedChecksum = manifest.checksum.replace('sha256:', '');
+    const actualChecksum = hash.digest('hex');
+    if (expectedChecksum !== actualChecksum) {
+      throw new Error('Archive corrupted: checksum mismatch');
+    }
+    logger.info('Checksum verified');
+
+    // Step 4: Stream-decrypt payload.enc → the inner zip on disk.
+    // Layout: salt(32) | iv(16) | AES-256-CBC ciphertext.
+    broadcastProgress('decrypt', 28, 'Decrypting archive...');
+    const header = Buffer.alloc(48);
+    const fd = fs.openSync(payloadPath, 'r');
+    try {
+      fs.readSync(fd, header, 0, 48, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const salt = header.subarray(0, 32);
+    const iv = header.subarray(32, 48);
+    const key = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256');
+    const innerZipPath = path.join(tmpDir, '_inner.zip');
+    try {
+      const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+      await pipeline(
+        fs.createReadStream(payloadPath, { start: 48 }),
+        decipher,
+        fs.createWriteStream(innerZipPath),
+      );
+    } catch (err) {
+      // Bad PKCS padding at decipher.final() ⇒ wrong password (or corruption).
+      throw new Error('Wrong password or corrupted archive');
+    }
+    fs.rmSync(payloadPath, { force: true });
+
+    // Step 5: Extract the inner zip — seek-based, streaming each entry to disk
+    // so even a multi-GB entry never buffers whole.
+    broadcastProgress('extract', 35, 'Extracting files...');
+    fs.mkdirSync(extractRoot, { recursive: true });
+    const innerDir = await unzipper.Open.file(innerZipPath);
+    for (const file of innerDir.files) {
+      const dest = path.join(extractRoot, file.path);
+      // zip-slip guard: every entry must resolve inside extractRoot.
+      if (dest !== extractRoot && !dest.startsWith(extractRoot + path.sep)) {
+        throw new Error(`Unsafe path in archive: ${file.path}`);
+      }
+      if (file.type === 'Directory') {
+        fs.mkdirSync(dest, { recursive: true });
+        continue;
+      }
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      await pipeline(file.stream(), fs.createWriteStream(dest));
+    }
+    fs.rmSync(innerZipPath, { force: true });
+
+    // Step 5b: Stop services
     broadcastProgress('services', 45, 'Stopping services...');
     await stopServices();
 
@@ -132,9 +179,9 @@ export async function performImport(
     // secrets.yaml, and anything else. The one entry that belongs OUTSIDE
     // ~/.dojo is gws/, routed separately below.
     broadcastProgress('database', 60, 'Restoring your dojo...');
-    for (const entry of fs.readdirSync(tmpDir, { withFileTypes: true })) {
+    for (const entry of fs.readdirSync(extractRoot, { withFileTypes: true })) {
       if (entry.name === 'gws') continue; // belongs at ~/.config/gws (below)
-      const src = path.join(tmpDir, entry.name);
+      const src = path.join(extractRoot, entry.name);
       const dest = path.join(DOJO_DIR, entry.name);
       if (entry.isDirectory()) {
         copyDirRecursive(src, dest);
@@ -144,7 +191,7 @@ export async function performImport(
     }
 
     // Step 8: Restore Google Workspace auth (lives at ~/.config/gws).
-    const srcGws = path.join(tmpDir, 'gws');
+    const srcGws = path.join(extractRoot, 'gws');
     if (fs.existsSync(srcGws)) {
       copyDirRecursive(srcGws, GWS_DIR);
     }

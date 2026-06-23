@@ -6,6 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import archiver from 'archiver';
 import { getDb, getDbPath } from '../db/connection.js';
 import { generateManifest, type ExportManifest } from './manifest.js';
@@ -60,14 +62,38 @@ function broadcastProgress(stage: string, progress: number, message: string): vo
 
 // ── Encryption ──
 
-function encryptBuffer(data: Buffer, password: string): Buffer {
+// Stream-encrypt a file on disk to payload.enc, returning the sha256 of the
+// whole output (salt+iv+ciphertext) for the manifest checksum. Streaming (not
+// a single Buffer) is required: fs.readFileSync and crypto.update() both cap at
+// 2^31-1 bytes, so a multi-GB inner archive can't go through them in one shot.
+// Output layout: salt(32) | iv(16) | AES-256-CBC ciphertext.
+async function encryptFileToFile(srcPath: string, destPath: string, password: string): Promise<string> {
   const salt = crypto.randomBytes(32);
   const iv = crypto.randomBytes(16);
   const key = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256');
   const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
-  const encrypted = Buffer.concat([cipher.update(data), cipher.final()]);
-  // Prepend salt (32) + IV (16) so decryption knows what to use
-  return Buffer.concat([salt, iv, encrypted]);
+  const hash = crypto.createHash('sha256');
+
+  const out = fs.createWriteStream(destPath);
+  // The salt + IV are part of payload.enc and the checksum, written first.
+  hash.update(salt);
+  hash.update(iv);
+  out.write(salt);
+  out.write(iv);
+
+  await pipeline(
+    fs.createReadStream(srcPath),
+    cipher,
+    new Transform({
+      transform(chunk, _enc, cb) {
+        hash.update(chunk);
+        cb(null, chunk);
+      },
+    }),
+    out,
+  );
+
+  return hash.digest('hex');
 }
 
 // ── Directory Size ──
@@ -165,20 +191,18 @@ export async function createExport(password: string): Promise<{ filePath: string
     const innerZipPath = path.join(tmpDir, '_inner.zip');
     await createZipFromDir(tmpDir, innerZipPath, ['_inner.zip']);
 
-    // Step 10: Encrypt the inner archive
+    // Step 10+11: Stream-encrypt the inner archive to payload.enc and compute
+    // its checksum in the same pass (no whole-file Buffer — see encryptFileToFile).
     broadcastProgress('encrypt', 80, 'Encrypting archive...');
-    const innerData = fs.readFileSync(innerZipPath);
-    const encrypted = encryptBuffer(innerData, password);
-
-    // Step 11: Calculate checksum of encrypted data
-    broadcastProgress('checksum', 90, 'Generating checksum...');
-    const checksum = crypto.createHash('sha256').update(encrypted).digest('hex');
+    const payloadEncPath = path.join(tmpDir, 'payload.enc');
+    const checksum = await encryptFileToFile(innerZipPath, payloadEncPath, password);
     manifest.checksum = `sha256:${checksum}`;
 
     // Step 12: Create final zip with manifest (unencrypted) + encrypted payload
+    // (streamed from disk, not buffered).
     const date = new Date().toISOString().split('T')[0];
     const outputPath = path.join(os.tmpdir(), `dojo-export-${date}.zip`);
-    await createFinalZip(outputPath, manifest, encrypted);
+    await createFinalZip(outputPath, manifest, payloadEncPath);
 
     broadcastProgress('complete', 100, 'Export complete!');
     logger.info('Export complete', { outputPath, size: fs.statSync(outputPath).size });
@@ -287,7 +311,7 @@ function createZipFromDir(dirPath: string, outputPath: string, exclude: string[]
   });
 }
 
-function createFinalZip(outputPath: string, manifest: ExportManifest, encryptedPayload: Buffer): Promise<void> {
+function createFinalZip(outputPath: string, manifest: ExportManifest, payloadEncPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const output = fs.createWriteStream(outputPath);
     const archive = archiver('zip', { zlib: { level: 1 } }); // light compression, payload already compressed
@@ -299,8 +323,8 @@ function createFinalZip(outputPath: string, manifest: ExportManifest, encryptedP
     // Manifest is unencrypted and first in the zip
     archive.append(JSON.stringify(manifest, null, 2), { name: 'manifest.json' });
 
-    // Encrypted payload
-    archive.append(encryptedPayload, { name: 'payload.enc' });
+    // Encrypted payload, streamed from disk (never buffered whole)
+    archive.file(payloadEncPath, { name: 'payload.enc' });
 
     archive.finalize();
   });
