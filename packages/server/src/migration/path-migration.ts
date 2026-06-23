@@ -36,6 +36,17 @@ export function migratePaths(oldHome: string, newHome: string, dojoDir: string):
     migrateDirectory(techniquesDir, oldHome, newHome);
   }
 
+  // 5. Update paths in the Cloudflare tunnel config (~/.cloudflared). config.yml
+  //    references the credentials file by absolute path under the old home
+  //    (e.g. credentials-file: /Users/<old>/.cloudflared/<uuid>.json); without
+  //    this the named tunnel can't find its key on the new machine. The
+  //    credentials .json itself holds only base64 secrets (no home paths), so
+  //    migrateTextFile leaves it untouched.
+  const cloudflaredDir = path.join(newHome, '.cloudflared');
+  if (fs.existsSync(cloudflaredDir)) {
+    migrateDirectory(cloudflaredDir, oldHome, newHome);
+  }
+
   logger.info('Path migration complete');
 }
 

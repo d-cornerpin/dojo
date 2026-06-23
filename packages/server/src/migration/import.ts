@@ -14,7 +14,7 @@ import { closeDb } from '../db/connection.js';
 import { clearSecretsCache } from '../config/loader.js';
 import { migratePaths } from './path-migration.js';
 import { copyTree } from './fs-copy.js';
-import { runPostMigrationChecks, type PostMigrationCheck } from './checks.js';
+import { runPostMigrationChecks, setLastManifest, type PostMigrationCheck } from './checks.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import type { ExportManifest } from './manifest.js';
@@ -23,6 +23,9 @@ const logger = createLogger('migration-import');
 
 const DOJO_DIR = path.join(os.homedir(), '.dojo');
 const GWS_DIR = path.join(os.homedir(), '.config', 'gws');
+// Cloudflare tunnel setup restores to ~/.cloudflared (mirror of the export's
+// CLOUDFLARED_DIR). Outside ~/.dojo, so routed separately like gws.
+const CLOUDFLARED_DIR = path.join(os.homedir(), '.cloudflared');
 
 function broadcastProgress(stage: string, progress: number, message: string): void {
   broadcast({
@@ -46,6 +49,68 @@ export async function readManifestFromZip(zipPath: string): Promise<ExportManife
   }
   const buf = await manifestEntry.buffer();
   return JSON.parse(buf.toString('utf-8'));
+}
+
+// ── Preflight verification (no mutation) ──
+//
+// Powers the import wizard's "scan" step: confirm the archive is intact and the
+// password is right BEFORE touching ~/.dojo. Streams payload.enc to a temp file
+// (never buffered whole — same reason as the import), verifies the sha256
+// checksum over its full bytes, then decrypts only a short prefix to confirm the
+// password yields a valid inner zip (plaintext begins with the "PK" local-file
+// header). Cleans up after itself and changes nothing on disk.
+export async function verifyArchive(
+  zipPath: string,
+  password: string,
+): Promise<{ manifest: ExportManifest; integrityOk: boolean; passwordOk: boolean }> {
+  const manifest = await readManifestFromZip(zipPath);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-verify-'));
+  const payloadPath = path.join(tmpDir, 'payload.enc');
+  try {
+    const outerDir = await unzipper.Open.file(zipPath);
+    const payloadEntry = outerDir.files.find((f) => f.path === 'payload.enc');
+    if (!payloadEntry) {
+      throw new Error('Invalid export file: no encrypted payload found');
+    }
+    const hash = crypto.createHash('sha256');
+    await pipeline(
+      payloadEntry.stream(),
+      new Transform({ transform(chunk, _enc, cb) { hash.update(chunk); cb(null, chunk); } }),
+      fs.createWriteStream(payloadPath),
+    );
+    const expected = manifest.checksum.replace('sha256:', '');
+    const integrityOk = hash.digest('hex') === expected;
+
+    // Cheap password check: decrypt only the first few cipher blocks (autopadding
+    // off so we never touch the final block) and look for the zip signature.
+    // Right key+iv ⇒ plaintext starts "PK\x03\x04"; wrong password ⇒ garbage.
+    let passwordOk = false;
+    if (integrityOk) {
+      const header = Buffer.alloc(48);
+      const cipherPrefix = Buffer.alloc(64);
+      const fd = fs.openSync(payloadPath, 'r');
+      try {
+        fs.readSync(fd, header, 0, 48, 0);
+        fs.readSync(fd, cipherPrefix, 0, 64, 48);
+      } finally {
+        fs.closeSync(fd);
+      }
+      const salt = header.subarray(0, 32);
+      const iv = header.subarray(32, 48);
+      const key = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256');
+      try {
+        const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+        decipher.setAutoPadding(false);
+        const out = decipher.update(cipherPrefix);
+        passwordOk = out.length >= 2 && out[0] === 0x50 && out[1] === 0x4b; // "PK"
+      } catch {
+        passwordOk = false;
+      }
+    }
+    return { manifest, integrityOk, passwordOk };
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 // ── Import ──
@@ -177,11 +242,12 @@ export async function performImport(
     // the installer's tools/ and logs/, and with a consistent DB snapshot in
     // data/dojo.db), so we copy it all in — database, prompts, techniques,
     // uploads + generated media, voice, the imessage archive, receipts, config,
-    // secrets.yaml, and anything else. The one entry that belongs OUTSIDE
-    // ~/.dojo is gws/, routed separately below.
+    // secrets.yaml, and anything else. The entries that belong OUTSIDE ~/.dojo
+    // are gws/ and cloudflared/, routed separately below.
     broadcastProgress('database', 60, 'Restoring your dojo...');
     for (const entry of fs.readdirSync(extractRoot, { withFileTypes: true })) {
       if (entry.name === 'gws') continue; // belongs at ~/.config/gws (below)
+      if (entry.name === 'cloudflared') continue; // belongs at ~/.cloudflared (below)
       const src = path.join(extractRoot, entry.name);
       const dest = path.join(DOJO_DIR, entry.name);
       copyTree(src, dest);
@@ -191,6 +257,21 @@ export async function performImport(
     const srcGws = path.join(extractRoot, 'gws');
     if (fs.existsSync(srcGws)) {
       copyTree(srcGws, GWS_DIR);
+    }
+
+    // Step 8a: Restore Cloudflare tunnel setup (lives at ~/.cloudflared) —
+    // cert.pem, the tunnel credentials file (the key) and config.yml. Lock the
+    // sensitive files down to 0600 (zip transport doesn't preserve mode, and
+    // cloudflared refuses world-readable credentials).
+    const srcCloudflared = path.join(extractRoot, 'cloudflared');
+    if (fs.existsSync(srcCloudflared)) {
+      copyTree(srcCloudflared, CLOUDFLARED_DIR);
+      for (const f of fs.readdirSync(CLOUDFLARED_DIR)) {
+        if (f.endsWith('.pem') || f.endsWith('.json')) {
+          try { fs.chmodSync(path.join(CLOUDFLARED_DIR, f), 0o600); } catch { /* non-fatal */ }
+        }
+      }
+      logger.info('Cloudflare tunnel config restored');
     }
 
     // Step 9: Preserve THIS machine's installer/runtime app code + assets from
@@ -267,7 +348,10 @@ export async function performImport(
     broadcastProgress('restart', 90, 'Restarting services...');
     await restartServices();
 
-    // Step 17: Run post-migration checks
+    // Step 17: Run post-migration checks. Cache the manifest first so the
+    // dependency installer and the wizard's "re-check" can re-run checks later
+    // (after deps install / after the user does a manual action) without the zip.
+    setLastManifest(manifest);
     broadcastProgress('checks', 95, 'Checking dependencies...');
     const checks = await runPostMigrationChecks(manifest);
 

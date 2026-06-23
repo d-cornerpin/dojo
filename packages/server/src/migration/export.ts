@@ -19,6 +19,12 @@ const logger = createLogger('migration-export');
 
 const DOJO_DIR = path.join(os.homedir(), '.dojo');
 const GWS_DIR = path.join(os.homedir(), '.config', 'gws');
+// Cloudflare tunnel setup lives OUTSIDE ~/.dojo, in ~/.cloudflared: the account
+// cert (cert.pem), the named-tunnel credentials file (<UUID>.json — the tunnel
+// secret/key) and config.yml. The named-tunnel connector token also lives in
+// secrets.yaml (already inside ~/.dojo), but a credentials-file / cert based
+// setup needs this directory to run on the new machine. Travels as cloudflared/.
+const CLOUDFLARED_DIR = path.join(os.homedir(), '.cloudflared');
 
 // Deny-list for the comprehensive ~/.dojo copy. Top-level entries we never
 // export because they are installer/runtime APP CODE or assets (the target
@@ -159,6 +165,15 @@ export async function createExport(password: string): Promise<{ filePath: string
     // Step 3: Google Workspace auth lives OUTSIDE ~/.dojo (legacy ~/.config/gws).
     if (fs.existsSync(GWS_DIR)) {
       copyDirRecursive(GWS_DIR, path.join(tmpDir, 'gws'));
+    }
+
+    // Step 3a: Cloudflare tunnel setup (~/.cloudflared) — cert.pem, the tunnel
+    // credentials file (the key) and config.yml. Also outside ~/.dojo, so it
+    // needs the same explicit handling as gws or the tunnel won't come up on
+    // the new machine.
+    if (fs.existsSync(CLOUDFLARED_DIR)) {
+      copyDirRecursive(CLOUDFLARED_DIR, path.join(tmpDir, 'cloudflared'));
+      logger.info('Cloudflare tunnel config bundled');
     }
 
     // Step 3b: Generate the technique-dependency installer. It travels in the

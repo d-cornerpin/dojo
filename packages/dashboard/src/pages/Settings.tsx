@@ -14,7 +14,7 @@ import { ScreenShareSettings } from '../components/ScreenSharePanel';
 import { CollapseChevron } from '../components/CollapseToggle';
 import { formatDate } from '../lib/dates';
 import { MigrationExport } from '../components/MigrationExport';
-import { MigrationImport } from '../components/MigrationImport';
+import { ImportWizard } from '../components/ImportWizard';
 import { useTheme } from '../themes';
 import { invalidateSavedVoiceSettings } from '../hooks/useVoiceMode';
 
@@ -856,19 +856,17 @@ const MigrationSettings = () => {
 
       <div className="srow">
         <MigrationExport />
-        <button
-          type="button"
-          onClick={() => setShowImport(!showImport)}
-          className="btn"
-        >
-          {showImport ? 'Cancel Import' : 'Import Dojo'}
+        <button type="button" onClick={() => setShowImport(true)} className="btn">
+          Import Dojo
         </button>
       </div>
 
       {showImport && (
-        <div className="mt-4">
-          <MigrationImport />
-        </div>
+        <ImportWizard
+          asModal
+          onClose={() => setShowImport(false)}
+          onComplete={() => window.location.reload()}
+        />
       )}
     </div>
   );
@@ -5592,7 +5590,7 @@ const VoiceTab = () => {
             <span>Voicepack file (.bin)</span>
             <div className="flex items-center gap-2">
               {/* Hide the native file input — the rest of the dashboard does
-                  the same (Techniques.tsx, MigrationImport.tsx) and triggers
+                  the same (Techniques.tsx, ImportWizard.tsx) and triggers
                   it via a styled button so themes stay consistent. */}
               <label className="px-3 py-2 glass-btn text-xs rounded-lg cursor-pointer">
                 Choose file
