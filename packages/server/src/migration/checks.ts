@@ -272,8 +272,8 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
       label: 'Reconnect Google Workspace',
       status: googleAuthValid ? 'ok' : 'action_needed',
       category: 'action',
-      detail: 'Sign-in tokens are machine-specific. Reconnect on THIS machine via localhost (the Google sign-in redirect only works there).',
-      cta: googleAuthValid ? undefined : { type: 'link', label: 'Reconnect Google', target: '/settings?tab=workspace' },
+      detail: 'Sign-in tokens are machine-specific. Click Reconnect to sign in right here (the redirect runs on this machine via localhost).',
+      cta: googleAuthValid ? undefined : { type: 'reconnect_oauth', label: 'Reconnect Google', target: 'google' },
     });
   }
 
@@ -286,8 +286,8 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
       label: 'Reconnect Microsoft 365',
       status: 'action_needed',
       category: 'action',
-      detail: 'Microsoft sign-in tokens are machine-specific and must be refreshed here.',
-      cta: { type: 'link', label: 'Reconnect Microsoft', target: '/settings?tab=microsoft' },
+      detail: 'Microsoft sign-in tokens are machine-specific. Click Reconnect to sign in right here.',
+      cta: { type: 'reconnect_oauth', label: 'Reconnect Microsoft', target: 'microsoft' },
     });
   }
 
@@ -300,7 +300,7 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
       status: 'action_needed',
       category: 'action',
       detail: 'macOS requires Full Disk Access to read Messages. Enable it for the DOJO app (and Terminal), then re-check — the iMessage bridge reconnects automatically.',
-      cta: { type: 'open_system_settings', label: 'Open System Settings', target: 'full_disk' },
+      cta: { type: 'open_system_settings', label: 'Open System Settings', target: 'full-disk-access' },
     });
   }
 

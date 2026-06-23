@@ -426,9 +426,11 @@ export interface MigrationProgressEvent {
 //   revalidate_provider  → re-test a provider's restored API key (target = provider id)
 //   run_installer        → (re)run the dependency installer
 //   recheck              → re-evaluate this check now (e.g. after a manual action)
+//   reconnect_oauth      → start an OAuth reconnect right here (target = 'google'|'microsoft');
+//                          the wizard POSTs /api/<target>/connect and opens the authUrl
 //   info                 → no action, informational only
 export interface MigrationCta {
-  type: 'link' | 'open_system_settings' | 'revalidate_provider' | 'run_installer' | 'recheck' | 'info';
+  type: 'link' | 'open_system_settings' | 'revalidate_provider' | 'run_installer' | 'recheck' | 'reconnect_oauth' | 'info';
   label: string;
   target?: string;
 }
