@@ -37,6 +37,12 @@ export interface ExportManifest {
     ollama_models: string[];
     providers: string[];
     uploads_size_bytes: number;
+    // True when the source dojo runs a NAMED Cloudflare tunnel (fixed hostname +
+    // credentials/key). The import warns about this before restoring, because a
+    // named tunnel can only run on one machine at a time — the old dojo must
+    // disable it first or neither will connect. (Quick tunnels get random URLs,
+    // so they never collide and don't trigger the warning.)
+    cloudflare_named_tunnel: boolean;
   };
   encryption: 'aes-256-cbc';
   checksum: string; // filled after encryption
@@ -124,6 +130,15 @@ export function generateManifest(dbSizeBytes: number, prompts: string[], techniq
     } catch { /* table may not exist */ }
   }
 
+  // Named Cloudflare tunnel: enabled AND mode 'named' (fixed hostname + key).
+  // The import warns about this so the old dojo's tunnel gets turned off first.
+  let cloudflareNamedTunnel = false;
+  try {
+    const enabled = db.prepare("SELECT value FROM config WHERE key = 'tunnel_enabled'").get() as { value: string } | undefined;
+    const mode = db.prepare("SELECT value FROM config WHERE key = 'tunnel_mode'").get() as { value: string } | undefined;
+    cloudflareNamedTunnel = enabled?.value === 'true' && mode?.value === 'named';
+  } catch { /* config table may not exist */ }
+
   const manifest: ExportManifest = {
     version: '1.0',
     platform_version: getPlatformVersion(),
@@ -151,6 +166,7 @@ export function generateManifest(dbSizeBytes: number, prompts: string[], techniq
       ollama_models: getOllamaModels(),
       providers,
       uploads_size_bytes: uploadsSize,
+      cloudflare_named_tunnel: cloudflareNamedTunnel,
     },
     encryption: 'aes-256-cbc',
     checksum: '', // filled after archive is created
