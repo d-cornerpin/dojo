@@ -170,13 +170,15 @@ echo "  ✓ pushed $BRANCH + $TAG"
 PRERELEASE_ARGS=()
 [ "$PREFLIGHT" = "1" ] && PRERELEASE_ARGS=(--prerelease)
 step "Creating GitHub $([ "$PREFLIGHT" = "1" ] && echo 'pre-')release $TAG with both assets"
-gh release create "$TAG" "$DIST/$ZIP_NAME" "$DIST/$PKG_NAME" --repo "$REPO" --title "$TAG" "${PRERELEASE_ARGS[@]}" "${NOTES_ARGS[@]}"
+# Note the ${arr[@]+"${arr[@]}"} guards: under `set -u`, macOS bash 3.2 treats
+# "${empty[@]}" as an unbound variable and aborts, so expand empty arrays safely.
+gh release create "$TAG" "$DIST/$ZIP_NAME" "$DIST/$PKG_NAME" --repo "$REPO" --title "$TAG" ${PRERELEASE_ARGS[@]+"${PRERELEASE_ARGS[@]}"} ${NOTES_ARGS[@]+"${NOTES_ARGS[@]}"}
 
 # ── The guard rail: do not declare victory until the release is verified ──
 step "Verifying the published release"
 VERIFY_ARGS=("$VERSION")
 [ "$PREFLIGHT" = "1" ] && VERIFY_ARGS+=(--preflight)
-if ! bash "$SCRIPT_DIR/verify-release.sh" "${VERIFY_ARGS[@]}"; then
+if ! bash "$SCRIPT_DIR/verify-release.sh" ${VERIFY_ARGS[@]+"${VERIFY_ARGS[@]}"}; then
   fail "Release $TAG was published but FAILED verification (see above). The self-update is NOT safe yet — fix the assets before announcing."
 fi
 
