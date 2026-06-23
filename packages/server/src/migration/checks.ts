@@ -5,13 +5,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync, spawn } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import type { ExportManifest } from './manifest.js';
 import { readDependencyManifest, type DependencyManifest } from '../techniques/dependencies.js';
+import { classifyManualSteps } from './step-classify.js';
 import type { PostMigrationCheck } from '@dojo/shared';
 
 const logger = createLogger('migration-checks');
@@ -53,14 +54,6 @@ export function loadDismissState(): void {
     const row = db.prepare("SELECT value FROM config WHERE key = 'migration_dismissed'").get() as { value: string } | undefined;
     migrationDismissed = row?.value === 'true';
   } catch { /* ignore */ }
-}
-
-function updateCheck(id: string, updates: Partial<PostMigrationCheck>): void {
-  const check = currentChecks.find(c => c.id === id);
-  if (check) {
-    Object.assign(check, updates);
-    broadcastChecks();
-  }
 }
 
 function broadcastChecks(): void {
@@ -122,25 +115,46 @@ function checkTechniqueDependencies(): void {
     }
     const { commands, manual } = formatTechniqueDeps(manifest);
     if (commands.length === 0 && manual.length === 0) continue;
-    const detailParts: string[] = [];
-    if (commands.length) detailParts.push('Install: ' + commands.join('; '));
-    if (manual.length) detailParts.push('Manual: ' + manual.join('; '));
-    // Structured items for the wizard's per-technique card: install steps are
-    // handled automatically by the dependency installer; manual steps are the
-    // human checklist.
-    const detailItems = [
-      ...commands.map((text) => ({ text, kind: 'install' as const })),
-      ...manual.map((text) => ({ text, kind: 'manual' as const })),
+    const slug = t.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+
+    // Classify the free-text manual steps: do the doable, verify what's
+    // checkable, drop pure info, and keep only genuine human actions. Install
+    // commands (brew/pip/git/…) are run by the combined installer → automated.
+    const classified = classifyManualSteps(manual);
+    const actionSteps = classified.filter((c) => c.bucket === 'action');
+    const autoSteps = classified.filter((c) => c.bucket === 'automated');
+
+    // Automated summary (lands in "What migrated automatically"): the installed
+    // deps + everything the classifier handled/verified.
+    const autoItems = [
+      ...commands.map((text) => ({ text: `Installed: ${text}`, kind: 'install' as const })),
+      ...autoSteps.map((c) => ({ text: c.detail ? `${c.detail}` : c.text, kind: 'install' as const })),
     ];
-    currentChecks.push({
-      id: `technique-deps-${t.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`,
-      label: t.name,
-      status: 'action_needed',
-      category: 'technique',
-      action: 'Set up this technique on this machine (see details)',
-      detail: detailParts.join('  |  '),
-      detailItems,
-    });
+    if (autoItems.length) {
+      currentChecks.push({
+        id: `technique-auto-${slug}`,
+        label: `${t.name}: set up automatically`,
+        status: 'ok',
+        category: 'automated',
+        detailItems: autoItems,
+      });
+    }
+
+    // Only genuine human actions become a "needs you" technique card. A
+    // technique whose every step was automated/info shows no card at all.
+    if (actionSteps.length) {
+      currentChecks.push({
+        id: `technique-deps-${slug}`,
+        label: t.name,
+        status: 'action_needed',
+        category: 'technique',
+        action: 'A few things only you can set up for this technique',
+        detailItems: actionSteps.map((c) => ({
+          text: c.detail ? `${c.text} — ${c.detail}` : c.text,
+          kind: 'manual' as const,
+        })),
+      });
+    }
   }
 }
 
@@ -204,15 +218,14 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
       const checkId = `ollama-model-${model}`;
       currentChecks.push({
         id: checkId,
-        label: isLocal ? `${model} downloaded` : `Downloading ${model}...`,
-        status: isLocal ? 'ok' : 'in_progress',
+        label: model,
+        status: isLocal ? 'ok' : 'action_needed',
         category: 'automated',
+        // The wizard recognizes the `ollama-model-` id prefix and drives the
+        // download itself — streaming progress + real errors + retry, mirroring
+        // OOBE — instead of a fire-and-forget spawn that swallowed errors.
+        detail: isLocal ? 'Downloaded' : 'Needs download',
       });
-
-      if (!isLocal) {
-        // Auto-pull in background
-        pullOllamaModel(model, checkId);
-      }
     }
   }
 
@@ -220,6 +233,12 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
   // Only surface the ones whose restored key fails (needs re-entry).
   for (const providerName of manifest.contents.providers) {
     const checkId = `provider-${providerName}`;
+    // The internal "System" provider is an engine sentinel with no user API key
+    // (seeded '__system__'); it migrated fine and must never be flagged for
+    // re-entry. This was the bogus "System API key needs re-entry" item.
+    if (providerName === 'System' || providerName.toLowerCase() === '__system__') {
+      continue;
+    }
     if (providerName.toLowerCase().includes('ollama')) {
       // Ollama doesn't need API key verification
       currentChecks.push({ id: checkId, label: `${providerName} configured`, status: ollamaInstalled ? 'ok' : 'action_needed', category: 'automated' });
@@ -405,27 +424,6 @@ function getLocalOllamaModels(): string[] {
   } catch {
     return [];
   }
-}
-
-function pullOllamaModel(model: string, checkId: string): void {
-  logger.info('Auto-pulling Ollama model', { model });
-  const proc = spawn('ollama', ['pull', model], { stdio: 'pipe' });
-
-  proc.on('close', (code) => {
-    if (code === 0) {
-      updateCheck(checkId, { label: `${model} downloaded`, status: 'ok' });
-      logger.info('Ollama model pulled', { model });
-    } else {
-      updateCheck(checkId, { label: `${model} download failed`, status: 'action_needed', action: `Run: ollama pull ${model}` });
-      logger.error('Ollama model pull failed', { model, code });
-    }
-
-    // Update saved checks in DB
-    try {
-      const db = getDb();
-      db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('migration_checks', ?)").run(JSON.stringify(currentChecks));
-    } catch { /* ignore */ }
-  });
 }
 
 async function checkProviderKey(providerName: string): Promise<boolean> {
