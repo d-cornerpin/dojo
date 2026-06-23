@@ -231,10 +231,37 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
 
   const openSystemSettings = async (pane: string) => {
     setBusyCta(`sys-${pane}`);
+    setError(null);
     try {
-      await fetch(`/api/setup/permissions/request/${pane}`, { method: 'POST', headers: { ...getHeaders(), 'Content-Type': 'application/json' } });
-    } catch { /* opening settings is best-effort */ }
-    finally { setBusyCta(null); }
+      const res = await fetch(`/api/setup/permissions/request/${pane}`, { method: 'POST', headers: { ...getHeaders(), 'Content-Type': 'application/json' } });
+      const data = await res.json().catch(() => ({ ok: res.ok }));
+      if (!data.ok) setError(data.error || `Couldn't open System Settings (${res.status}).`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't open System Settings.");
+    } finally { setBusyCta(null); }
+  };
+
+  // Start an OAuth reconnect right here: POST /api/<provider>/connect → open the
+  // returned authUrl so the user signs in (the redirect resolves on localhost).
+  const reconnectOAuth = async (provider: string) => {
+    setBusyCta(`oauth-${provider}`);
+    setError(null);
+    try {
+      const res = await fetch(`/api/${provider}/connect?slot=agent`, {
+        method: 'POST',
+        headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (data.ok && data.data?.authUrl) {
+        window.open(data.data.authUrl, '_blank', 'width=600,height=700');
+      } else {
+        setError(data.error || 'Could not start the reconnect. If you just imported in first-run setup, finish entering the dojo, then reconnect from Settings.');
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not start the reconnect.');
+    } finally {
+      setBusyCta(null);
+    }
   };
 
   const rerunInstaller = async () => {
@@ -303,6 +330,10 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
     }
     if (cta.type === 'open_system_settings') {
       return <button onClick={() => openSystemSettings(cta.target || 'full_disk')} disabled={busyCta === `sys-${cta.target}`} className="btn btn--primary text-xs">{cta.label}</button>;
+    }
+    if (cta.type === 'reconnect_oauth') {
+      const p = cta.target || 'google';
+      return <button onClick={() => reconnectOAuth(p)} disabled={busyCta === `oauth-${p}`} className="btn btn--primary text-xs">{busyCta === `oauth-${p}` ? 'Opening…' : cta.label}</button>;
     }
     if (cta.type === 'run_installer') {
       return <button onClick={rerunInstaller} className="btn text-xs">{cta.label}</button>;
