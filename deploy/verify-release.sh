@@ -87,6 +87,17 @@ else
   bad "$ZIP_NAME not downloadable (HTTP $CODE) at $URL"
 fi
 
+# 5. Release notes are present. We ALWAYS ship notes. A bare GitHub
+#    "**Full Changelog**" auto-link or an empty body does NOT count — strip
+#    those and require something real to remain.
+BODY="$(gh release view "$TAG" --repo "$REPO" --json body --jq '.body' 2>/dev/null || true)"
+MEAT="$(printf '%s\n' "$BODY" | grep -vE '^[[:space:]]*$|^\*\*Full Changelog\*\*' || true)"
+if [ -n "$MEAT" ]; then
+  note "✓ release notes present"
+else
+  bad "release has NO notes (empty body or only an auto changelog link) — add notes with: gh release edit $TAG --notes-file <file>"
+fi
+
 echo ""
 if [ "$ok" = "1" ]; then
   echo "✅ $TAG is a complete release — self-update will work."

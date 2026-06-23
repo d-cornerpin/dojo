@@ -114,5 +114,6 @@ The next Preflight build's base is now `new-stable + 1 patch` (the invariant in 
 
 - **Dev installs can't self-update.** `applyUpdate` only runs against a production install (`~/.dojo/platform`). On the dev server, test the toggle (it persists + re-checks); actual installs happen on a real box.
 - **Dry run anything risky:** `bash deploy/release.sh <ver> [--preflight] --dry-run` builds + verifies the embedded version, then reverts — no commit/push/release.
+- **Every release ships notes.** `release.sh` always writes them (a `Changes since <prev-tag>:` commit list, or `--notes-file` if you pass one), and `verify-release.sh` now **fails the release if the body is empty or only a GitHub auto "Full Changelog" link.** If you ever finish a release by hand, you MUST add notes: `gh release edit <tag> --repo d-cornerpin/dojo --notes-file <file>`. Never use a bare `--generate-notes` as the only source — for direct-to-branch commits it produces just a changelog link, which counts as "no notes."
 - **If a release fails verification,** it printed the exact `gh release upload … --clobber` repair command; run it, then re-run `verify-release.sh`.
 - The channel toggle + updater live in `packages/server/src/gateway/routes/update.ts` (`getUpdateChannel` / `resolveLatestRelease` / `compareVersions`) and Settings → Update (`UpdateTab`).
