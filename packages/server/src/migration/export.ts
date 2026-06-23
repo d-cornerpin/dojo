@@ -10,6 +10,7 @@ import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import archiver from 'archiver';
 import { getDb, getDbPath } from '../db/connection.js';
+import { copyTree } from './fs-copy.js';
 import { generateManifest, type ExportManifest } from './manifest.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
@@ -221,18 +222,10 @@ export async function createExport(password: string): Promise<{ filePath: string
 // ── Helpers ──
 
 function copyDirRecursive(src: string, dest: string): void {
-  fs.mkdirSync(dest, { recursive: true });
-  const entries = fs.readdirSync(src, { withFileTypes: true });
-  for (const entry of entries) {
-    if (JUNK.has(entry.name)) continue;
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) {
-      copyDirRecursive(srcPath, destPath);
-    } else {
-      fs.copyFileSync(srcPath, destPath);
-    }
-  }
+  // copyTree is symlink/special-file aware (see fs-copy.ts); JUNK is skipped at
+  // every level. The export deny-list keeps node_modules out, but user data can
+  // still hold the odd symlink — copyTree preserves it instead of crashing.
+  copyTree(src, dest, { skip: JUNK });
 }
 
 // Copy the entire ~/.dojo tree into the export staging dir, applying the
@@ -260,7 +253,7 @@ function copyDojoTree(srcRoot: string, destRoot: string): void {
       }
     } else {
       fs.mkdirSync(destRoot, { recursive: true });
-      fs.copyFileSync(src, dest);
+      copyTree(src, dest, { skip: JUNK });
     }
   }
 }
@@ -269,12 +262,9 @@ function copyDojoTree(srcRoot: string, destRoot: string): void {
 // exclude the live DB files).
 function copyDirRecursiveExcept(src: string, dest: string, skipTopLevel: Set<string>): void {
   fs.mkdirSync(dest, { recursive: true });
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    if (JUNK.has(entry.name) || skipTopLevel.has(entry.name)) continue;
-    const s = path.join(src, entry.name);
-    const d = path.join(dest, entry.name);
-    if (entry.isDirectory()) copyDirRecursive(s, d);
-    else fs.copyFileSync(s, d);
+  for (const name of fs.readdirSync(src)) {
+    if (JUNK.has(name) || skipTopLevel.has(name)) continue;
+    copyTree(path.join(src, name), path.join(dest, name), { skip: JUNK });
   }
 }
 

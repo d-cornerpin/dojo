@@ -13,6 +13,7 @@ import Database from 'better-sqlite3';
 import { closeDb } from '../db/connection.js';
 import { clearSecretsCache } from '../config/loader.js';
 import { migratePaths } from './path-migration.js';
+import { copyTree } from './fs-copy.js';
 import { runPostMigrationChecks, type PostMigrationCheck } from './checks.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
@@ -183,17 +184,13 @@ export async function performImport(
       if (entry.name === 'gws') continue; // belongs at ~/.config/gws (below)
       const src = path.join(extractRoot, entry.name);
       const dest = path.join(DOJO_DIR, entry.name);
-      if (entry.isDirectory()) {
-        copyDirRecursive(src, dest);
-      } else {
-        fs.copyFileSync(src, dest);
-      }
+      copyTree(src, dest);
     }
 
     // Step 8: Restore Google Workspace auth (lives at ~/.config/gws).
     const srcGws = path.join(extractRoot, 'gws');
     if (fs.existsSync(srcGws)) {
-      copyDirRecursive(srcGws, GWS_DIR);
+      copyTree(srcGws, GWS_DIR);
     }
 
     // Step 9: Preserve THIS machine's installer/runtime app code + assets from
@@ -215,8 +212,9 @@ export async function performImport(
         const src = path.join(backupDir, appItem);
         if (!fs.existsSync(src)) continue;
         const dest = path.join(DOJO_DIR, appItem);
-        if (fs.statSync(src).isDirectory()) copyDirRecursive(src, dest);
-        else fs.copyFileSync(src, dest);
+        // copyTree preserves the node_modules workspace symlinks (@dojo/*, .bin)
+        // instead of trying to copyfile() a symlink-to-directory (the ENOTSUP crash).
+        copyTree(src, dest);
       }
     }
 
@@ -305,20 +303,6 @@ export async function performImport(
 }
 
 // ── Helpers ──
-
-function copyDirRecursive(src: string, dest: string): void {
-  fs.mkdirSync(dest, { recursive: true });
-  const entries = fs.readdirSync(src, { withFileTypes: true });
-  for (const entry of entries) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) {
-      copyDirRecursive(srcPath, destPath);
-    } else {
-      fs.copyFileSync(srcPath, destPath);
-    }
-  }
-}
 
 function markOobeComplete(): void {
   // Open the restored database directly (main connection is closed during import)
