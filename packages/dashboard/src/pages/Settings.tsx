@@ -4764,6 +4764,8 @@ const UpdateTab = () => {
   const [updateInfo, setUpdateInfo] = useState<api.UpdateCheckResult | null>(null);
   const [updateResult, setUpdateResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [channel, setChannel] = useState<api.UpdateChannel>('stable');
+  const [switchingChannel, setSwitchingChannel] = useState(false);
 
   const checkUpdates = async () => {
     setChecking(true);
@@ -4771,6 +4773,7 @@ const UpdateTab = () => {
     const result = await api.checkForUpdates();
     if (result.ok) {
       setUpdateInfo(result.data);
+      if (result.data.channel) setChannel(result.data.channel);
       if (result.data.error) setError(result.data.error);
     } else {
       setError(result.error);
@@ -4778,7 +4781,28 @@ const UpdateTab = () => {
     setChecking(false);
   };
 
-  useEffect(() => { checkUpdates(); }, []);
+  useEffect(() => {
+    checkUpdates();
+    api.getUpdateChannel().then(r => { if (r.ok) setChannel(r.data.channel); });
+  }, []);
+
+  // Switching the channel only changes which release the updater targets — it
+  // never auto-downgrades. The returned check refreshes the panel in one trip.
+  const switchChannel = async (next: api.UpdateChannel) => {
+    if (next === channel || switchingChannel) return;
+    setSwitchingChannel(true);
+    setError(null);
+    setUpdateResult(null);
+    const r = await api.setUpdateChannel(next);
+    if (r.ok) {
+      setChannel(r.data.channel);
+      setUpdateInfo(r.data.check);
+      if (r.data.check.error) setError(r.data.check.error);
+    } else {
+      setError(r.error);
+    }
+    setSwitchingChannel(false);
+  };
 
   const handleUpdate = async () => {
     if (!confirm('This will download the latest version, update the platform, and restart the server. Continue?')) return;
@@ -4815,6 +4839,36 @@ const UpdateTab = () => {
             Check for and install updates from the Agent DOJO repository.
           </p>
         </div>
+
+        {/* Channel selector: Stable (everyone) vs Preflight (pre-release test builds) */}
+        <div className="flex items-center justify-between py-2">
+          <span className="text-sm text-ui/55">Update Channel</span>
+          <div className="flex gap-1">
+            <button
+              type="button"
+              disabled={switchingChannel}
+              onClick={() => switchChannel('stable')}
+              className={`btn btn--sm ${channel === 'stable' ? 'btn--primary' : ''}`}
+            >
+              Stable
+            </button>
+            <button
+              type="button"
+              disabled={switchingChannel}
+              onClick={() => switchChannel('preflight')}
+              className={`btn btn--sm ${channel === 'preflight' ? 'btn--primary' : ''}`}
+            >
+              Preflight
+            </button>
+          </div>
+        </div>
+
+        {channel === 'preflight' && (
+          <div className="alert-banner alert-warning text-xs">
+            Preflight installs bleeding-edge pre-release builds for testing — they may be unstable.
+            Switching back to Stable won't downgrade you automatically; it just points future updates at the stable channel.
+          </div>
+        )}
 
         <div className="flex items-center justify-between py-2">
           <span className="text-sm text-ui/55">Current Version</span>

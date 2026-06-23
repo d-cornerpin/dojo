@@ -30,11 +30,13 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST="$SCRIPT_DIR/dist"
 
 DRY_RUN=0
+PREFLIGHT=0
 NOTES_FILE=""
 VERSION=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
+    --preflight) PREFLIGHT=1; shift ;;
     --notes-file) NOTES_FILE="${2:-}"; shift 2 ;;
     -*) echo "Unknown flag: $1" >&2; exit 2 ;;
     *) VERSION="$1"; shift ;;
@@ -44,26 +46,68 @@ done
 fail() { echo "" >&2; echo "❌ $*" >&2; exit 1; }
 step() { echo ""; echo "▶ $*"; }
 
-[ -n "$VERSION" ] || fail "Usage: bash deploy/release.sh <version> [--dry-run] [--notes-file <path>]"
-echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || fail "Version must be X.Y.Z (got: $VERSION)"
-TAG="v$VERSION"
+# Stable needs an explicit X.Y.Z (released as vX.Y.Z from `main`). Preflight
+# AUTO-PICKS its number — latest stable + 1 patch — and auto-increments the
+# pre-release ordinal, so nobody has to choose it (the common foot-gun). You may
+# still pass an explicit base to --preflight to target a bigger bump (e.g. 3.2.0).
+# Preflight publishes vX.Y.Z-preflight.N from the `Preflight` branch.
+# See deploy/RELEASES.md for the full process + numbering rules.
+if [ "$PREFLIGHT" = "0" ] && [ -z "$VERSION" ]; then
+  fail "Usage: bash deploy/release.sh <X.Y.Z> [--dry-run] [--notes-file <path>]   (preflight: --preflight [<X.Y.Z>])"
+fi
+if [ -n "$VERSION" ]; then
+  echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || fail "Base version must be X.Y.Z (got: $VERSION)"
+fi
+BASE="$VERSION"
 
 cd "$ROOT"
+
+if [ "$PREFLIGHT" = "1" ]; then
+  EXPECTED_BRANCH="Preflight"
+  CHANNEL_LABEL="Preflight (pre-release)"
+else
+  EXPECTED_BRANCH="main"
+  CHANNEL_LABEL="Stable"
+fi
 
 # ── Preconditions (fail before changing anything) ──
 step "Checking preconditions"
 command -v gh >/dev/null 2>&1 || fail "gh CLI not found"
 if ! gh auth status >/dev/null 2>&1; then fail "gh is not authenticated (run: gh auth login)"; fi
 BRANCH="$(git branch --show-current)"
-[ "$BRANCH" = "main" ] || fail "Releases are cut from main (currently on: $BRANCH)"
+[ "$BRANCH" = "$EXPECTED_BRANCH" ] || fail "$CHANNEL_LABEL releases are cut from '$EXPECTED_BRANCH' (currently on: $BRANCH)"
 if [ -n "$(git status --porcelain)" ]; then fail "Working tree is not clean. Commit or stash everything first."; fi
 CURRENT="$(node -p "require('./package.json').version")"
-if ! node -e "const a='$VERSION'.split('.').map(Number),b='$CURRENT'.split('.').map(Number);for(let i=0;i<3;i++){if(a[i]>b[i])process.exit(0);if(a[i]<b[i])process.exit(1)}process.exit(1)"; then
-  fail "New version $VERSION must be greater than current $CURRENT"
+
+if [ "$PREFLIGHT" = "1" ]; then
+  # Auto-pick the base when not given: latest stable + 1 patch. Preflight must
+  # always sit ABOVE current stable, or a Preflight box would treat the equal/
+  # lower stable as newer and silently drop the test feature.
+  if [ -z "$BASE" ]; then
+    LATEST_STABLE="$(gh api "repos/$REPO/releases/latest" --jq '.tag_name' 2>/dev/null | sed 's/^v//')"
+    echo "$LATEST_STABLE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || fail "Could not read latest stable release to compute the preflight base (got '${LATEST_STABLE:-none}')."
+    BASE="$(echo "$LATEST_STABLE" | awk -F. '{printf "%d.%d.%d", $1, $2, $3 + 1}')"
+    echo "  ↪ auto base: latest stable $LATEST_STABLE → preflight target $BASE"
+  fi
+  # Auto-increment the pre-release ordinal for this base: highest existing
+  # vBASE-preflight.N on GitHub, plus 1.
+  LAST_N="$(gh release list --repo "$REPO" --limit 100 2>/dev/null \
+    | grep -oE "v${BASE}-preflight\.[0-9]+" | sed -E 's/.*preflight\.//' | sort -n | tail -1)"
+  NEXT_N=$(( ${LAST_N:-0} + 1 ))
+  VERSION="${BASE}-preflight.${NEXT_N}"
+  TAG="v$VERSION"
+else
+  VERSION="$BASE"
+  TAG="v$VERSION"
+  # Stable must strictly increase over the installed stable version.
+  if ! node -e "const a='$VERSION'.split('.').map(Number),b='$CURRENT'.replace(/-.*/,'').split('.').map(Number);for(let i=0;i<3;i++){if(a[i]>b[i])process.exit(0);if(a[i]<b[i])process.exit(1)}process.exit(1)"; then
+    fail "New version $VERSION must be greater than current $CURRENT"
+  fi
 fi
+
 if git rev-parse "$TAG" >/dev/null 2>&1; then fail "Tag $TAG already exists locally"; fi
 if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then fail "Release $TAG already exists on GitHub"; fi
-echo "  ✓ on main, clean tree, gh authed, $CURRENT → $VERSION, tag $TAG free"
+echo "  ✓ on $BRANCH, clean tree, gh authed, $CHANNEL_LABEL, $CURRENT → $VERSION, tag $TAG free"
 
 # ── Typecheck (a broken build must never ship) ──
 step "Typecheck"
@@ -91,7 +135,7 @@ echo "  ✓ zip embeds $VERSION"
 if [ "$DRY_RUN" = "1" ]; then
   step "DRY RUN — reverting the version bump; not committing, pushing, or releasing"
   git checkout -- package.json
-  echo "  Would next: commit, tag $TAG, push main + tag, create release $TAG with both assets, then verify."
+  echo "  Would next: commit, tag $TAG, push $BRANCH + tag, create $([ "$PREFLIGHT" = "1" ] && echo 'PRE-')release $TAG with both assets, then verify."
   echo ""
   echo "✅ Dry run OK. Re-run without --dry-run to release for real."
   exit 0
@@ -116,17 +160,25 @@ step "Committing, tagging, pushing"
 git add package.json
 git commit -m "release: $TAG" -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 git tag "$TAG"
-git push origin main
+git push origin "$BRANCH"
 git push origin "$TAG"
-echo "  ✓ pushed main + $TAG"
+echo "  ✓ pushed $BRANCH + $TAG"
 
 # ── Create the release WITH the assets in the same call ──
-step "Creating GitHub release $TAG with both assets"
-gh release create "$TAG" "$DIST/$ZIP_NAME" "$DIST/$PKG_NAME" --repo "$REPO" --title "$TAG" "${NOTES_ARGS[@]}"
+# Preflight builds are GitHub pre-releases so Stable's releases/latest ignores
+# them; only the Preflight channel picks them up.
+PRERELEASE_ARGS=()
+[ "$PREFLIGHT" = "1" ] && PRERELEASE_ARGS=(--prerelease)
+step "Creating GitHub $([ "$PREFLIGHT" = "1" ] && echo 'pre-')release $TAG with both assets"
+# Note the ${arr[@]+"${arr[@]}"} guards: under `set -u`, macOS bash 3.2 treats
+# "${empty[@]}" as an unbound variable and aborts, so expand empty arrays safely.
+gh release create "$TAG" "$DIST/$ZIP_NAME" "$DIST/$PKG_NAME" --repo "$REPO" --title "$TAG" ${PRERELEASE_ARGS[@]+"${PRERELEASE_ARGS[@]}"} ${NOTES_ARGS[@]+"${NOTES_ARGS[@]}"}
 
 # ── The guard rail: do not declare victory until the release is verified ──
 step "Verifying the published release"
-if ! bash "$SCRIPT_DIR/verify-release.sh" "$VERSION"; then
+VERIFY_ARGS=("$VERSION")
+[ "$PREFLIGHT" = "1" ] && VERIFY_ARGS+=(--preflight)
+if ! bash "$SCRIPT_DIR/verify-release.sh" ${VERIFY_ARGS[@]+"${VERIFY_ARGS[@]}"}; then
   fail "Release $TAG was published but FAILED verification (see above). The self-update is NOT safe yet — fix the assets before announcing."
 fi
 

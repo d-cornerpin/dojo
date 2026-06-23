@@ -152,14 +152,98 @@ function getCurrentVersion(): string {
   return '0.0.0';
 }
 
-function compareVersions(a: string, b: string): number {
-  const pa = a.replace(/^v/, '').split('.').map(Number);
-  const pb = b.replace(/^v/, '').split('.').map(Number);
+// Parse "X.Y.Z" or a preflight tag "X.Y.Z-preflight.N" into a comparable shape.
+// `pre` is null for a normal (stable) release and the numeric ordinal for a
+// pre-release.
+function parseVersion(v: string): { base: number[]; pre: number | null } {
+  const s = v.replace(/^v/, '');
+  const dash = s.indexOf('-');
+  const basePart = dash === -1 ? s : s.slice(0, dash);
+  const preTag = dash === -1 ? '' : s.slice(dash + 1);
+  const base = basePart.split('.').map(Number);
+  let pre: number | null = null;
+  if (preTag) {
+    const m = preTag.match(/(\d+)\s*$/);
+    pre = m ? Number(m[1]) : 0;
+  }
+  return { base, pre };
+}
+
+// Semver-with-prerelease precedence. Same base version: a stable release
+// (no suffix) outranks any pre-release of it (3.1.6 > 3.1.6-preflight.5), and
+// two pre-releases compare by ordinal (-preflight.2 > -preflight.1). A higher
+// base always wins (3.1.7-preflight.1 > 3.1.6). Plain X.Y.Z vs X.Y.Z behaves
+// exactly as before, so Stable-channel comparisons are unchanged.
+export function compareVersions(a: string, b: string): number {
+  const pa = parseVersion(a);
+  const pb = parseVersion(b);
   for (let i = 0; i < 3; i++) {
-    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    const diff = (pa.base[i] ?? 0) - (pb.base[i] ?? 0);
     if (diff !== 0) return diff;
   }
-  return 0;
+  if (pa.pre === null && pb.pre === null) return 0;
+  if (pa.pre === null) return 1;  // a stable, b pre-release
+  if (pb.pre === null) return -1; // a pre-release, b stable
+  return pa.pre - pb.pre;
+}
+
+// ── Update channel (Stable / Preflight) ──
+
+export type UpdateChannel = 'stable' | 'preflight';
+const UPDATE_CHANNEL_KEY = 'update_channel';
+
+export function getUpdateChannel(): UpdateChannel {
+  try {
+    const row = getDb().prepare('SELECT value FROM config WHERE key = ?').get(UPDATE_CHANNEL_KEY) as { value: string } | undefined;
+    return row?.value === 'preflight' ? 'preflight' : 'stable';
+  } catch {
+    return 'stable';
+  }
+}
+
+export function setUpdateChannel(channel: UpdateChannel): void {
+  getDb().prepare(`
+    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
+  `).run(UPDATE_CHANNEL_KEY, channel, channel);
+}
+
+interface GhRelease {
+  tag_name: string;
+  name: string;
+  published_at: string;
+  body: string;
+  draft?: boolean;
+  prerelease?: boolean;
+  assets: Array<{ name: string; browser_download_url: string; size: number }>;
+}
+
+// Resolve the release a channel should update to.
+//   stable    → GET /releases/latest (GitHub excludes drafts + pre-releases),
+//               i.e. exactly the pre-channel behavior.
+//   preflight → list releases (which DOES include pre-releases), drop drafts,
+//               and return the highest by version precedence — so a Preflight
+//               box rides the newest pre-release, and automatically takes a
+//               Stable release once its version overtakes the latest pre-release.
+async function resolveLatestRelease(channel: UpdateChannel): Promise<GhRelease | null> {
+  if (channel === 'stable') {
+    const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+      headers: { 'Accept': 'application/vnd.github.v3+json' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) throw new Error(`GitHub API: ${res.status}`);
+    return await res.json() as GhRelease;
+  }
+  const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=30`, {
+    headers: { 'Accept': 'application/vnd.github.v3+json' },
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) throw new Error(`GitHub API: ${res.status}`);
+  const all = await res.json() as GhRelease[];
+  const candidates = all.filter(r => !r.draft);
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => compareVersions(b.tag_name, a.tag_name));
+  return candidates[0];
 }
 
 // ── Reusable core (shared by the routes and the agent's update tools) ──
@@ -174,27 +258,26 @@ export interface UpdateCheckResult {
   updateAvailable: boolean;
   downloadUrl?: string | null;
   downloadSize?: number | null;
+  /** Which channel this result was resolved against. */
+  channel?: UpdateChannel;
   error?: string;
 }
 
 /**
  * Read-only update check: compares the installed version against the latest
- * GitHub release. Never throws — network/API problems come back as `error`
- * with `updateAvailable: false` so callers can surface them plainly.
+ * release on the given channel (defaults to the saved channel). Never throws —
+ * network/API problems come back as `error` with `updateAvailable: false` so
+ * callers can surface them plainly.
  */
-export async function checkForUpdate(): Promise<UpdateCheckResult> {
+export async function checkForUpdate(channel?: UpdateChannel): Promise<UpdateCheckResult> {
+  const ch = channel ?? getUpdateChannel();
   const currentVersion = getCurrentVersion();
   try {
-    const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
-      headers: { 'Accept': 'application/vnd.github.v3+json' },
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (!response.ok) {
-      return { currentVersion, latestVersion: null, updateAvailable: false, error: `GitHub API: ${response.status}` };
+    const release = await resolveLatestRelease(ch);
+    if (!release) {
+      return { currentVersion, latestVersion: null, updateAvailable: false, channel: ch };
     }
 
-    const release = await response.json() as { tag_name: string; name: string; published_at: string; body: string; assets: Array<{ name: string; browser_download_url: string; size: number }> };
     const latestVersion = release.tag_name.replace(/^v/, '');
     const updateAvailable = compareVersions(latestVersion, currentVersion) > 0;
     const zipAsset = release.assets.find(a => a.name === 'dojo-platform.zip');
@@ -209,9 +292,10 @@ export async function checkForUpdate(): Promise<UpdateCheckResult> {
       updateAvailable,
       downloadUrl: zipAsset?.browser_download_url ?? null,
       downloadSize: zipAsset?.size ?? null,
+      channel: ch,
     };
   } catch (err) {
-    return { currentVersion, latestVersion: null, updateAvailable: false, error: err instanceof Error ? err.message : String(err) };
+    return { currentVersion, latestVersion: null, updateAvailable: false, channel: ch, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -274,7 +358,8 @@ export interface ApplyUpdateResult {
  * POST /apply route and the agent's apply_update tool. The restart is
  * scheduled internally on success, mirroring the original route behavior.
  */
-export async function applyUpdate(): Promise<ApplyUpdateResult> {
+export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateResult> {
+  const ch = channel ?? getUpdateChannel();
   const currentVersion = getCurrentVersion();
 
   const isProduction = fs.existsSync(PLATFORM_DIR) && fs.existsSync(path.join(PLATFORM_DIR, 'package.json'));
@@ -283,21 +368,20 @@ export async function applyUpdate(): Promise<ApplyUpdateResult> {
   }
 
   try {
-    // 1. Get the latest release download URL
-    const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
-      headers: { 'Accept': 'application/vnd.github.v3+json' },
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (!response.ok) {
-      return { ok: false, message: `Failed to check GitHub releases: ${response.status}`, status: 500 };
+    // 1. Resolve the channel's target release + its download URL
+    let release: GhRelease | null;
+    try {
+      release = await resolveLatestRelease(ch);
+    } catch (err) {
+      return { ok: false, message: `Failed to check GitHub releases: ${err instanceof Error ? err.message : String(err)}`, status: 500 };
     }
-
-    const release = await response.json() as { tag_name: string; assets: Array<{ name: string; browser_download_url: string }> };
+    if (!release) {
+      return { ok: false, message: `No release found on the ${ch} channel`, status: 500 };
+    }
     const zipAsset = release.assets.find(a => a.name === 'dojo-platform.zip');
 
     if (!zipAsset) {
-      return { ok: false, message: 'No dojo-platform.zip found in latest release', status: 500 };
+      return { ok: false, message: 'No dojo-platform.zip found in the target release', status: 500 };
     }
 
     const latestVersion = release.tag_name.replace(/^v/, '');
@@ -305,7 +389,7 @@ export async function applyUpdate(): Promise<ApplyUpdateResult> {
       return { ok: true, message: 'Already up to date', newVersion: currentVersion };
     }
 
-    logger.info('Starting update', { from: currentVersion, to: latestVersion, url: zipAsset.browser_download_url });
+    logger.info('Starting update', { channel: ch, from: currentVersion, to: latestVersion, url: zipAsset.browser_download_url });
 
     // 2. Download the zip to a temp location
     const tmpDir = path.join(os.tmpdir(), `dojo-update-${Date.now()}`);
@@ -405,6 +489,27 @@ export const updateRouter = new Hono<AppEnv>();
 
 updateRouter.get('/check', async (c) => {
   return c.json({ ok: true, data: await checkForUpdate() });
+});
+
+// ── Update channel (Stable / Preflight) ──
+
+updateRouter.get('/channel', (c) => {
+  return c.json({ ok: true, data: { channel: getUpdateChannel() } });
+});
+
+updateRouter.post('/channel', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const channel = body?.channel;
+  if (channel !== 'stable' && channel !== 'preflight') {
+    return c.json({ ok: false, error: "channel must be 'stable' or 'preflight'" }, 400);
+  }
+  setUpdateChannel(channel);
+  logger.info('Update channel changed', { channel });
+  // Refresh the daily cache for the new channel so the UI AND the agent's
+  // check_for_update tool (which reads that cache) are immediately consistent
+  // with the switch — no stale old-channel snapshot.
+  const check = await refreshUpdateCache();
+  return c.json({ ok: true, data: { channel, check } });
 });
 
 // ── Current version ──
