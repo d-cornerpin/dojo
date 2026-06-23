@@ -48,7 +48,10 @@
        ring-ui/X — and via the rgb(var(--ui-on-base-ch) / X) channel
        pattern in CSS rules. Override in a light theme to flip the entire
        foreground/border/inset system in one line. */
-    --ui-on-base-ch: 255 255 255;
+    /* v3 ships a single readable light look: sumi ink (dark), never white.
+       Every text/border/glass token derives from this, so the baked-in
+       default is correct with zero theme CSS loaded. */
+    --ui-on-base-ch: 30 28 25;
 
     /* Accent palette */
     --cp-amber-ch: 245 166 35;

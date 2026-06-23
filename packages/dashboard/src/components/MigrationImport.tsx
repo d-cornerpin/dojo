@@ -40,15 +40,13 @@ export const MigrationImport = ({ isOobe = false, onComplete }: Props) => {
     setError(null);
     setManifest(null);
 
-    // Read manifest without password
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-
+    // Read manifest without password. The zip is sent as the raw request body
+    // (not multipart) so large exports stream instead of being buffered whole.
     try {
       const res = await fetch(`${apiBase}/manifest`, {
         method: 'POST',
-        headers: getHeaders(),
-        body: formData,
+        headers: { ...getHeaders(), 'Content-Type': 'application/octet-stream' },
+        body: selectedFile,
       });
       const data = await res.json();
       if (data.ok) {
@@ -81,15 +79,17 @@ export const MigrationImport = ({ isOobe = false, onComplete }: Props) => {
     setImporting(true);
     setStage('Importing... this may take a moment.');
 
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('password', password);
-
+    // Raw-body upload (streamed server-side) with the password in a header.
+    // URI-encode it so spaces / unicode survive the ASCII-only header.
     try {
       const res = await fetch(`${apiBase}/import`, {
         method: 'POST',
-        headers: getHeaders(),
-        body: formData,
+        headers: {
+          ...getHeaders(),
+          'Content-Type': 'application/octet-stream',
+          'X-Export-Password': encodeURIComponent(password),
+        },
+        body: file,
       });
       const data = await res.json();
       if (data.ok) {

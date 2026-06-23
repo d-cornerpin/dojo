@@ -11,27 +11,23 @@ export interface ThemeMeta {
 }
 
 /**
- * All available themes. To add a new theme:
- * 1. Create a folder under src/themes/<id>/
- * 2. Add a theme.css with :root variable overrides
- * 3. Add an entry here
+ * v3 ships a SINGLE theme: the readable light look baked into index.css :root.
+ * There is intentionally only one entry, and it IS the default — so the theme
+ * loader never injects an override stylesheet (it early-returns for the default
+ * theme), and nothing can ever swap --ui-on-base-ch back to white. The theme
+ * picker in Settings is hidden for the same reason. Re-introduce a dark theme
+ * here only once it has been fully built and verified.
  */
 export const THEMES: ThemeMeta[] = [
   {
-    id: 'miyagi',
-    name: 'Miyagi',
-    description: 'Deep space glassmorphism with warm amber accents',
-    cssPath: '/themes/miyagi/theme.css',
-  },
-  {
     id: 'sumi',
     name: 'Sumi',
-    description: 'Dark ink on washi paper — light theme with deep saturated accents',
+    description: 'Dark ink on washi paper — the readable v3 light look',
     cssPath: '/themes/sumi/theme.css',
   },
 ];
 
-export const DEFAULT_THEME = 'miyagi';
+export const DEFAULT_THEME = 'sumi';
 
 // ── Theme Context ──
 

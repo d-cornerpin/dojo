@@ -22,11 +22,18 @@ class DojoMenuBarApp: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
 
         if let button = statusItem.button {
-            // Try to load the PDF icon from the app bundle or ~/.dojo/
+            // The DOJO logo (a monochrome silhouette), loaded from the app
+            // bundle or ~/.dojo/. It's a template image so it adapts to the
+            // light/dark menu bar.
             if let icon = loadIcon() {
-                icon.isTemplate = true // Adapts to light/dark mode
+                icon.isTemplate = true
                 icon.size = NSSize(width: 18, height: 18)
                 button.image = icon
+            } else if let symbol = NSImage(systemSymbolName: "figure.martial.arts", accessibilityDescription: "DOJO") {
+                // Fallback if the logo asset is missing: a monochrome SF Symbol
+                // that also adapts to light/dark — never a raw emoji.
+                symbol.isTemplate = true
+                button.image = symbol
             } else {
                 button.title = "🥋"
             }
@@ -72,15 +79,21 @@ class DojoMenuBarApp: NSObject, NSApplicationDelegate {
     }
 
     func loadIcon() -> NSImage? {
-        // Try bundle first
-        if let bundlePath = Bundle.main.path(forResource: "dojologo", ofType: "pdf") {
-            return NSImage(contentsOfFile: bundlePath)
+        // The logo ships as a vector PDF (added to the bundle by build.sh and
+        // dropped into ~/.dojo/ by the installer). A PNG is also accepted as a
+        // fallback. Bundle copy wins; ~/.dojo/ is the runtime fallback.
+        for ext in ["pdf", "png"] {
+            if let bundlePath = Bundle.main.path(forResource: "dojologo", ofType: ext),
+               let img = NSImage(contentsOfFile: bundlePath) {
+                return img
+            }
         }
-        // Try ~/.dojo/ location
         let homeDir = FileManager.default.homeDirectoryForCurrentUser
-        let dojoIconPath = homeDir.appendingPathComponent(".dojo/dojologo.pdf").path
-        if FileManager.default.fileExists(atPath: dojoIconPath) {
-            return NSImage(contentsOfFile: dojoIconPath)
+        for ext in ["pdf", "png"] {
+            let p = homeDir.appendingPathComponent(".dojo/dojologo.\(ext)").path
+            if FileManager.default.fileExists(atPath: p), let img = NSImage(contentsOfFile: p) {
+                return img
+            }
         }
         return nil
     }

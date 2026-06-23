@@ -83,9 +83,14 @@ cp "$SCRIPT_DIR/uninstall.sh" "$DEST/"
 cp -r "$SCRIPT_DIR/scripts" "$DEST/"
 cp -r "$SCRIPT_DIR/launchd" "$DEST/"
 
-# Menu bar app + icon
+# Menu bar app + icon. The icon now lives inside the repo (deploy/dojologo.pdf);
+# the old external path ($PROJECT_ROOT/..) is only a legacy fallback. Sourcing
+# it from outside the repo is what lost the icon when the workspace moved
+# machines. The app bundle already embeds the icon (see menubar/build.sh); this
+# copy is the ~/.dojo/ runtime fallback used by install.sh.
 cp -r "$PROJECT_ROOT/menubar/build/DOJO.app" "$DEST/DOJO.app"
-ICON_PDF="$(cd "$PROJECT_ROOT/.." && pwd)/dojologo.pdf"
+ICON_PDF="$SCRIPT_DIR/dojologo.pdf"
+[[ -f "$ICON_PDF" ]] || ICON_PDF="$(cd "$PROJECT_ROOT/.." && pwd)/dojologo.pdf"
 if [[ -f "$ICON_PDF" ]]; then
     cp "$ICON_PDF" "$DEST/dojologo.pdf"
 fi

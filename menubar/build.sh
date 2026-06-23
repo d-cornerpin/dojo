@@ -28,11 +28,16 @@ swiftc "$SCRIPT_DIR/DojoMenuBar.swift" \
     -O \
     -target arm64-apple-macos13
 
-# Copy icon
-ICON_PDF="$PROJECT_ROOT/../dojologo.pdf"
+# Copy icon (the DOJO logo, a vector PDF) into the bundle. The asset now lives
+# inside the repo alongside this script; the old external path ($PROJECT_ROOT/..)
+# is kept as a fallback for legacy layouts.
+ICON_PDF="$SCRIPT_DIR/dojologo.pdf"
+[[ -f "$ICON_PDF" ]] || ICON_PDF="$PROJECT_ROOT/../dojologo.pdf"
 if [[ -f "$ICON_PDF" ]]; then
     cp "$ICON_PDF" "$APP_DIR/Contents/Resources/dojologo.pdf"
     echo "   Icon included"
+else
+    echo "   ⚠️  dojologo.pdf not found — menu bar app will use the SF Symbol fallback"
 fi
 
 # Create Info.plist

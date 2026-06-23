@@ -24,18 +24,30 @@ const setupRouter = new Hono<AppEnv>();
 setupRouter.get('/status', (c) => {
   const db = getDb();
 
+  // Count only REAL providers/models, not the internal sentinels seeded on
+  // every fresh DB (the '__system__' provider + the enabled 'auto' router
+  // model). Counting those made a brand-new install look already-configured,
+  // which is why OOBE stopped appearing on first run.
   const providerCount = (
-    db.prepare('SELECT COUNT(*) as count FROM providers').get() as { count: number }
+    db.prepare("SELECT COUNT(*) as count FROM providers WHERE id != '__system__'").get() as { count: number }
   ).count;
   const enabledModelCount = (
-    db.prepare('SELECT COUNT(*) as count FROM models WHERE is_enabled = 1').get() as {
+    db.prepare("SELECT COUNT(*) as count FROM models WHERE is_enabled = 1 AND id != 'auto'").get() as {
       count: number;
     }
   ).count;
   const hasPassword = getDashboardPasswordHash() !== null;
 
+  // The authoritative first-run signal is the explicit `setup_completed` flag
+  // written when OOBE finishes (see POST /complete). Falling back to the real
+  // provider/model counts keeps installs that were set up before that flag
+  // existed (legacy upgrades) out of the wizard.
+  const setupCompleted =
+    (db.prepare("SELECT value FROM config WHERE key = 'setup_completed'").get() as { value: string } | undefined)
+      ?.value === 'true';
+
   const status: SetupStatus = {
-    isFirstRun: providerCount === 0 || enabledModelCount === 0,
+    isFirstRun: !setupCompleted && providerCount === 0 && enabledModelCount === 0,
     steps: {
       providers: providerCount > 0,
       models: enabledModelCount > 0,

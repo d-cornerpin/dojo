@@ -41,8 +41,12 @@ function decryptBuffer(data: Buffer, password: string): Buffer {
 
 // ── Read Manifest from Zip (no password needed) ──
 
-export function readManifestFromZip(zipBuffer: Buffer): ExportManifest {
-  const zip = new AdmZip(zipBuffer);
+// Takes a PATH to the export zip on disk (not a Buffer). AdmZip reads the
+// archive's central directory and just the manifest entry from the file, so a
+// multi-GB export never has to be held in memory as a single Buffer (which
+// blows past Node's max buffer/string length).
+export function readManifestFromZip(zipPath: string): ExportManifest {
+  const zip = new AdmZip(zipPath);
   const manifestEntry = zip.getEntry('manifest.json');
   if (!manifestEntry) {
     throw new Error('Invalid export file: no manifest.json found');
@@ -53,7 +57,8 @@ export function readManifestFromZip(zipBuffer: Buffer): ExportManifest {
 // ── Import ──
 
 export async function performImport(
-  zipBuffer: Buffer,
+  // PATH to the export zip on disk (see readManifestFromZip on why not a Buffer).
+  zipPath: string,
   password: string,
   stopServices: () => Promise<void>,
   restartServices: () => Promise<void>,
@@ -62,7 +67,7 @@ export async function performImport(
 ): Promise<{ manifest: ExportManifest; checks: PostMigrationCheck[]; newToken?: string }> {
   // Step 1: Read manifest
   broadcastProgress('manifest', 5, 'Reading manifest...');
-  const manifest = readManifestFromZip(zipBuffer);
+  const manifest = readManifestFromZip(zipPath);
   logger.info('Import started', {
     from: manifest.exported_from.hostname,
     agents: manifest.contents.agents_count,
@@ -71,7 +76,7 @@ export async function performImport(
 
   // Step 2: Extract encrypted payload
   broadcastProgress('decrypt', 15, 'Decrypting archive...');
-  const outerZip = new AdmZip(zipBuffer);
+  const outerZip = new AdmZip(zipPath);
   const payloadEntry = outerZip.getEntry('payload.enc');
   if (!payloadEntry) {
     throw new Error('Invalid export file: no encrypted payload found');

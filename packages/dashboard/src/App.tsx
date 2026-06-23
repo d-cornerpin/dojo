@@ -3,7 +3,6 @@ import { useEffect, useState, useCallback } from 'react';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { WebSocketProvider, useWebSocket } from './hooks/useWebSocket';
 import { ToastProvider, useToast } from './hooks/useToast';
-import { V2CutoverNotice } from './components/V2CutoverNotice';
 import type { WsEvent } from '@dojo/shared';
 import { Login } from './pages/Login';
 import { Setup } from './pages/Setup';
@@ -90,15 +89,13 @@ const WebSocketShell = () => {
 
 // ── Dashboard layout with sidebar ──
 
-// Shared chrome for every authenticated surface: the toast system + the
-// cutover notice. Both the dojo3 stage and the full-page surfaces render
-// inside it via <Outlet/>.
+// Shared chrome for every authenticated surface: the toast system. Both the
+// dojo3 stage and the full-page surfaces render inside it via <Outlet/>.
 const DashboardChrome = () => (
   // ToastProvider is shared; the dojo3 stage renders its own orb-anchored
   // notification cards (Dojo3Notifications), while the full-page chrome below
   // keeps the classic corner ToastContainer — same queue, two surfaces.
   <ToastProvider>
-    <V2CutoverNotice />
     <Outlet />
   </ToastProvider>
 );

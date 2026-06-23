@@ -6,6 +6,8 @@ import { Hono } from 'hono';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { spawn } from 'node:child_process';
 import type { AppEnv } from '../server.js';
 import { createExport } from '../../migration/export.js';
@@ -70,33 +72,48 @@ migrationRouter.post('/export', async (c) => {
 });
 
 // POST /api/migration/manifest — read manifest from uploaded zip (no password needed)
+//
+// The export zip is sent as the raw request body (application/octet-stream),
+// NOT multipart form-data. We stream it straight to a temp file so a multi-GB
+// export never gets buffered into a single in-memory Buffer (formData() +
+// arrayBuffer() throws "length out of range" past ~2GB).
 migrationRouter.post('/manifest', async (c) => {
+  let tmpPath: string | null = null;
   try {
-    const formData = await c.req.formData();
-    const file = formData.get('file') as File | null;
-    if (!file) {
+    const body = c.req.raw.body;
+    if (!body) {
       return c.json({ ok: false, error: 'No file uploaded' }, 400);
     }
 
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const manifest = readManifestFromZip(buffer);
+    tmpPath = path.join(os.tmpdir(), `dojo-manifest-${Date.now()}-${process.pid}.zip`);
+    await pipeline(Readable.fromWeb(body as never), fs.createWriteStream(tmpPath));
 
+    const manifest = readManifestFromZip(tmpPath);
     return c.json({ ok: true, data: manifest });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Manifest read failed', { error: msg });
     return c.json({ ok: false, error: msg }, 400);
+  } finally {
+    if (tmpPath) { try { fs.unlinkSync(tmpPath); } catch { /* ignore */ } }
   }
 });
 
 // POST /api/migration/import — full import from encrypted zip
+//
+// Like /manifest, the zip is the raw request body (streamed to a temp file to
+// avoid the ~2GB single-Buffer ceiling) and the export password rides in the
+// X-Export-Password header instead of a multipart field.
 migrationRouter.post('/import', async (c) => {
+  let tmpPath: string | null = null;
   try {
-    const formData = await c.req.formData();
-    const file = formData.get('file') as File | null;
-    const password = formData.get('password') as string | null;
+    const body = c.req.raw.body;
+    // Header values must be ASCII, so the client URI-encodes the password
+    // (handles spaces / unicode); decode before use and length-check.
+    const rawPassword = c.req.header('x-export-password');
+    const password = rawPassword ? decodeURIComponent(rawPassword) : null;
 
-    if (!file) {
+    if (!body) {
       return c.json({ ok: false, error: 'No file uploaded' }, 400);
     }
     if (!password || password.length < 8) {
@@ -104,7 +121,8 @@ migrationRouter.post('/import', async (c) => {
     }
 
     logger.info('Import requested');
-    const buffer = Buffer.from(await file.arrayBuffer());
+    tmpPath = path.join(os.tmpdir(), `dojo-import-upload-${Date.now()}-${process.pid}.zip`);
+    await pipeline(Readable.fromWeb(body as never), fs.createWriteStream(tmpPath));
 
     // Capture current auth BEFORE import replaces secrets.yaml
     const currentAuth = {
@@ -128,13 +146,15 @@ migrationRouter.post('/import', async (c) => {
       runMigrations();
     };
 
-    const { manifest, checks } = await performImport(buffer, password, stopServices, restartServices, currentAuth);
+    const { manifest, checks } = await performImport(tmpPath, password, stopServices, restartServices, currentAuth);
 
     return c.json({ ok: true, data: { manifest, checks } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Import failed', { error: msg });
     return c.json({ ok: false, error: msg }, 500);
+  } finally {
+    if (tmpPath) { try { fs.unlinkSync(tmpPath); } catch { /* ignore */ } }
   }
 });
 

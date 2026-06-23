@@ -751,7 +751,7 @@ export const deleteContactApi = async (id: string): Promise<ApiResponse<{ delete
   return request<{ deleted: boolean }>(`/contacts/${encodeURIComponent(id)}`, { method: 'DELETE' });
 };
 
-// V2CutoverNotice (Part XI) — bulk-reset every idle agent's session.
+// Bulk-reset every idle agent's session.
 // Returns count breakdown { reset, busy, errors, total }.
 export interface ResetIdleSessionsResponse {
   reset: number;

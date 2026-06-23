@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { createPortal } from 'react-dom';
 
 export const MigrationExport = () => {
   const [showModal, setShowModal] = useState(false);
@@ -77,8 +78,12 @@ export const MigrationExport = () => {
         Export Dojo
       </button>
 
-      {showModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      {/* Portaled to <body>: the settings cards sit inside a CSS multi-column
+          container (.scards), which establishes a stacking context the modal
+          would otherwise be trapped under — landing it behind the Server panel.
+          Rendering at the body level lets it overlay the whole page. */}
+      {showModal && createPortal(
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] p-4">
           <div className="glass-modal-bg rounded-xl p-6 max-w-md w-full">
             <h2 className="text-lg font-bold text-ui mb-2">Export Your Dojo</h2>
             <p className="text-ui/55 text-sm mb-4">
@@ -163,7 +168,8 @@ export const MigrationExport = () => {
               </div>
             )}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );
