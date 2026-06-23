@@ -3156,14 +3156,14 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'check_for_update',
-    description: 'Check whether a newer version of the DOJO platform is available, comparing the installed version against the latest GitHub release. Read-only: reports the installed version, the latest version, whether an update is available, the release notes (what changed), and when the check was last run. Reads a snapshot the engine refreshes once a day, so it answers instantly without hitting the network (the timestamp tells you how fresh it is). Use when the user asks "is there an update?", "am I on the latest version?", "what\'s in the new version?", or as a precursor to apply_update so you can tell them what they\'d be getting. If the user has set up a recurring task to check for updates, this is the tool that task calls.',
+    description: 'Check whether a newer version of the DOJO platform is available, comparing the installed version against the latest release ON THE USER\'S SELECTED UPDATE CHANNEL. The dojo has two channels (set in Settings → Update): "Stable" (normal releases, the default) and "Preflight" (pre-release/test builds, versioned like 3.1.8-preflight.2). This tool reports whichever the user is on — the result states the channel, so relay it: never present a Preflight build as a normal stable release. Read-only: reports the installed version, the latest version, whether an update is available, the release notes (what changed), the channel, and when the check was last run. Reads a snapshot the engine refreshes once a day, so it answers instantly without hitting the network (the timestamp tells you how fresh it is). Use when the user asks "is there an update?", "am I on the latest version?", "what\'s in the new version?", or as a precursor to apply_update so you can tell them what they\'d be getting. If the user has set up a recurring task to check for updates, this is the tool that task calls.',
     input_schema: { type: 'object', properties: {}, required: [] },
     concurrency: 'safe',
     maxResultTokens: 1500,
   },
   {
     name: 'apply_update',
-    description: 'Download and install the latest DOJO platform update, then restart the server. Do this ONLY when the user explicitly asks you to update ("update the dojo", "install the new version", "go ahead and update"). The DOJO will be briefly unavailable while it restarts (a few seconds under normal supervision), so let the user know it\'s restarting. Only works on production installs, not a dev server. If already up to date it just says so. Prefer calling check_for_update first so you can confirm what\'s changing.',
+    description: 'Download and install the latest DOJO platform update FROM THE USER\'S SELECTED CHANNEL (Stable or Preflight — see check_for_update), then restart the server. If the user is on Preflight this installs a pre-release/test build; if they ask to update but you suspect they want a normal release, confirm the channel first. Do this ONLY when the user explicitly asks you to update ("update the dojo", "install the new version", "go ahead and update"). The DOJO will be briefly unavailable while it restarts (a few seconds under normal supervision), so let the user know it\'s restarting. Only works on production installs, not a dev server. If already up to date it just says so. Prefer calling check_for_update first so you can confirm what\'s changing.',
     input_schema: { type: 'object', properties: {}, required: [] },
     concurrency: 'serial',
     maxResultTokens: 1000,
@@ -8856,23 +8856,32 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
 
       case 'check_for_update': {
         // Read the daily cache the engine maintains (services/update-checker.ts)
-        // — no GitHub round-trip per call. Cold start (cache empty because the
-        // daily check hasn't run yet): do one live check and populate it.
-        const { getUpdateCache, refreshUpdateCache } = await import('../gateway/routes/update.js');
-        const info = getUpdateCache() ?? await refreshUpdateCache();
+        // — no GitHub round-trip per call. Cold start (cache empty) OR a stale
+        // cache from the OTHER channel (user just toggled Stable/Preflight): do
+        // one live check so we always report the user's CURRENT channel.
+        const { getUpdateCache, refreshUpdateCache, getUpdateChannel } = await import('../gateway/routes/update.js');
+        const channel = getUpdateChannel();
+        let info = getUpdateCache();
+        if (!info || info.channel !== channel) info = await refreshUpdateCache();
         const asOf = info.checkedAt ? ` (as of ${info.checkedAt.slice(0, 16).replace('T', ' ')} UTC)` : '';
+        // Be explicit about the channel so a pre-release is never mistaken for a
+        // normal stable release.
+        const chanNote = channel === 'preflight'
+          ? ' Channel: Preflight (pre-release/test builds — may be unstable).'
+          : ' Channel: Stable.';
         if (info.error && !info.latestVersion) {
-          content = `Installed version: ${info.currentVersion}. The last update check${asOf} couldn't reach GitHub (${info.error}).`;
+          content = `Installed version: ${info.currentVersion}.${chanNote} The last update check${asOf} couldn't reach GitHub (${info.error}).`;
         } else if (info.updateAvailable) {
-          content = `An update is available${asOf}.\nInstalled: ${info.currentVersion}\nLatest: ${info.latestVersion}${info.releaseName ? ` (${info.releaseName})` : ''}\n\nRelease notes:\n${info.releaseNotes ?? '(none provided)'}\n\nIf the user wants it, call apply_update to install and restart.`;
+          content = `An update is available${asOf}.${chanNote}\nInstalled: ${info.currentVersion}\nLatest: ${info.latestVersion}${info.releaseName ? ` (${info.releaseName})` : ''}\n\nRelease notes:\n${info.releaseNotes ?? '(none provided)'}\n\nIf the user wants it, call apply_update to install and restart.`;
         } else {
-          content = `The DOJO is on the latest version (${info.currentVersion})${asOf}.`;
+          content = `The DOJO is on the latest version (${info.currentVersion})${asOf}.${chanNote}`;
         }
         isError = false;
         break;
       }
 
       case 'apply_update': {
+        // applyUpdate() targets the user's selected channel (Stable/Preflight).
         const { applyUpdate } = await import('../gateway/routes/update.js');
         const applyResult = await applyUpdate();
         content = applyResult.message;

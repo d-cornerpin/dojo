@@ -24,7 +24,15 @@ PKG_NAME="Agent-DOJO-Installer.pkg"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-VERSION="${1:-$(node -p "require('$ROOT/package.json').version")}"
+PREFLIGHT=0
+VERSION=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --preflight) PREFLIGHT=1; shift ;;
+    *) VERSION="$1"; shift ;;
+  esac
+done
+VERSION="${VERSION:-$(node -p "require('$ROOT/package.json').version")}"
 TAG="v$VERSION"
 ok=1
 note() { echo "  $*"; }
@@ -50,12 +58,24 @@ for name in "$ZIP_NAME" "$PKG_NAME"; do
   fi
 done
 
-# 3. releases/latest resolves to this tag (the self-updater hits /releases/latest)
-LATEST="$(gh api "repos/$REPO/releases/latest" --jq '.tag_name' 2>/dev/null || true)"
-if [ "$LATEST" = "$TAG" ]; then
-  note "✓ releases/latest → $TAG"
+# 3. The updater can resolve this tag on its channel.
+if [ "$PREFLIGHT" = "1" ]; then
+  # Preflight builds MUST be GitHub pre-releases — that's what keeps them out of
+  # Stable's releases/latest and visible only to the Preflight channel.
+  IS_PRE="$(gh release view "$TAG" --repo "$REPO" --json isPrerelease --jq '.isPrerelease' 2>/dev/null || echo false)"
+  if [ "$IS_PRE" = "true" ]; then
+    note "✓ $TAG is a pre-release (Preflight channel resolves it; Stable ignores it)"
+  else
+    bad "$TAG is NOT marked pre-release — it would shadow Stable's releases/latest for everyone"
+  fi
 else
-  bad "releases/latest is '${LATEST:-none}', not $TAG (a draft/prerelease or a newer tag may be shadowing it)"
+  # Stable: the self-updater hits /releases/latest, which must resolve to this tag.
+  LATEST="$(gh api "repos/$REPO/releases/latest" --jq '.tag_name' 2>/dev/null || true)"
+  if [ "$LATEST" = "$TAG" ]; then
+    note "✓ releases/latest → $TAG"
+  else
+    bad "releases/latest is '${LATEST:-none}', not $TAG (a draft/prerelease or a newer tag may be shadowing it)"
+  fi
 fi
 
 # 4. The self-update zip is actually downloadable (range-GET one byte)

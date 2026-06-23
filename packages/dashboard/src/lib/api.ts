@@ -1933,6 +1933,8 @@ export const updateDreamingConfig = async (config: Partial<DreamingConfig>): Pro
 
 // ── Updates ──
 
+export type UpdateChannel = 'stable' | 'preflight';
+
 export interface UpdateCheckResult {
   currentVersion: string;
   latestVersion: string | null;
@@ -1943,11 +1945,23 @@ export interface UpdateCheckResult {
   updateAvailable: boolean;
   downloadUrl?: string | null;
   downloadSize?: number | null;
+  channel?: UpdateChannel;
   error?: string;
 }
 
 export const checkForUpdates = async (): Promise<ApiResponse<UpdateCheckResult>> => {
   return request<UpdateCheckResult>('/update/check');
+};
+
+export const getUpdateChannel = async (): Promise<ApiResponse<{ channel: UpdateChannel }>> => {
+  return request<{ channel: UpdateChannel }>('/update/channel');
+};
+
+export const setUpdateChannel = async (channel: UpdateChannel): Promise<ApiResponse<{ channel: UpdateChannel; check: UpdateCheckResult }>> => {
+  return request<{ channel: UpdateChannel; check: UpdateCheckResult }>('/update/channel', {
+    method: 'POST',
+    body: JSON.stringify({ channel }),
+  });
 };
 
 export const getVersion = async (): Promise<ApiResponse<{ version: string }>> => {
