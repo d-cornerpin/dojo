@@ -78,10 +78,14 @@ export const MigrationExport = () => {
         Export Dojo
       </button>
 
-      {/* Portaled to <body>: the settings cards sit inside a CSS multi-column
+      {/* Portaled out of the settings cards: they sit inside a CSS multi-column
           container (.scards), which establishes a stacking context the modal
           would otherwise be trapped under — landing it behind the Server panel.
-          Rendering at the body level lets it overlay the whole page. */}
+          Target the .dojo3-stage element (not <body>): it escapes .scards while
+          staying inside the stage's scope, so the champagne theme overrides
+          (.dojo3-stage .fixed.inset-0 .glass-modal-bg) still apply and the modal
+          stays readable. The stage has no transform/filter, so `fixed inset-0`
+          still resolves to the viewport. Falls back to <body> if no stage. */}
       {showModal && createPortal(
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] p-4">
           <div className="glass-modal-bg rounded-xl p-6 max-w-md w-full">
@@ -169,7 +173,7 @@ export const MigrationExport = () => {
             )}
           </div>
         </div>,
-        document.body
+        document.querySelector('.dojo3-stage') ?? document.body
       )}
     </>
   );
