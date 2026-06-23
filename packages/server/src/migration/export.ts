@@ -248,8 +248,29 @@ function copyDirRecursive(src: string, dest: string): void {
 // files inside data/ (the consistent snapshot is written separately). The DB
 // snapshot is written to <dest>/data/dojo.db before this runs, so the data/
 // copy here just merges the rest (files/, canvas-shots/, slides_styles.json…).
+// Copy only loose, non-.md custom files from ~/.dojo/tools (technique-owned
+// scripts). The .md tool docs and any subdirs are regeneratable and skipped.
+function copyToolsCustomFiles(src: string, dest: string): void {
+  if (!fs.existsSync(src)) return;
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    if (JUNK.has(entry.name)) continue;
+    if (entry.name.toLowerCase().endsWith('.md')) continue;
+    fs.mkdirSync(dest, { recursive: true });
+    copyTree(path.join(src, entry.name), path.join(dest, entry.name), { skip: JUNK });
+  }
+}
+
 function copyDojoTree(srcRoot: string, destRoot: string): void {
   for (const entry of fs.readdirSync(srcRoot, { withFileTypes: true })) {
+    // tools/ is deny-listed (it's ~450 regeneratable .md tool docs), BUT a
+    // technique may drop custom scripts loose at its root (e.g. validate_deck.sh,
+    // build_deck.py). Those don't regenerate, so migrate ONLY the loose non-.md
+    // files; skip the .md docs and any subdirectories.
+    if (entry.name === 'tools' && entry.isDirectory()) {
+      copyToolsCustomFiles(path.join(srcRoot, 'tools'), path.join(destRoot, 'tools'));
+      continue;
+    }
     if (JUNK.has(entry.name) || TOP_LEVEL_SKIP.has(entry.name)) continue;
     if (entry.name.startsWith(PLATFORM_BACKUP_PREFIX)) continue; // disposable update backups
     const src = path.join(srcRoot, entry.name);

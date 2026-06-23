@@ -78,6 +78,14 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   const [markedDone, setMarkedDone] = useState<Set<string>>(new Set());
   const [busyCta, setBusyCta] = useState<string | null>(null);
 
+  // Ollama model downloads — mirror OOBE: one at a time, poll byte progress,
+  // surface the real error, retry per model.
+  const [pullingModel, setPullingModel] = useState<string | null>(null);
+  const [modelProgress, setModelProgress] = useState<{ completed: number; total: number; status: string } | null>(null);
+  const [modelDone, setModelDone] = useState<Set<string>>(new Set());
+  const [modelErr, setModelErr] = useState<Record<string, string>>({});
+  const daemonStartedRef = useRef(false);
+
   const getHeaders = useCallback((): Record<string, string> => {
     const token = localStorage.getItem('dojo_token');
     const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
@@ -233,6 +241,55 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
     setStep('deps'); depsStartedRef.current = false;
   };
 
+  // ── Ollama model downloads (mirror OOBE: stream progress, real errors, retry) ──
+  // Poll byte progress while a pull is in flight.
+  useEffect(() => {
+    if (!pullingModel) return;
+    const id = setInterval(async () => {
+      try {
+        const res = await fetch('/api/setup/ollama/pull-progress', { headers: getHeaders() });
+        const data = await res.json();
+        if (data.ok && data.data && data.data.model === pullingModel) {
+          setModelProgress({ completed: data.data.completed, total: data.data.total, status: data.data.status });
+        }
+      } catch { /* ignore */ }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [pullingModel, getHeaders]);
+
+  const pullModel = useCallback(async (model: string) => {
+    setModelErr((e) => { const n = { ...e }; delete n[model]; return n; });
+    setPullingModel(model);
+    setModelProgress({ completed: 0, total: 0, status: 'starting' });
+    // brew install doesn't start the daemon — make sure it's up before the first pull.
+    if (!daemonStartedRef.current) {
+      daemonStartedRef.current = true;
+      try { await fetch('/api/setup/deps/install/ollama-start', { method: 'POST', headers: { ...getHeaders(), 'Content-Type': 'application/json' } }); } catch { /* best effort */ }
+    }
+    try {
+      const res = await fetch('/api/setup/ollama/pull', {
+        method: 'POST',
+        headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      });
+      const data = await res.json();
+      if (data.ok) setModelDone((d) => new Set(d).add(model));
+      else setModelErr((e) => ({ ...e, [model]: data.error || 'Download failed' }));
+    } catch (err) {
+      setModelErr((e) => ({ ...e, [model]: err instanceof Error ? err.message : String(err) }));
+    } finally {
+      setPullingModel(null);
+      setModelProgress(null);
+    }
+  }, [getHeaders]);
+
+  const pullAllModels = useCallback(async (models: string[]) => {
+    for (const m of models) {
+      if (modelDone.has(m)) continue;
+      await pullModel(m); // sequential — server tracks one pull at a time
+    }
+  }, [pullModel, modelDone]);
+
   // ── CTA renderer ──
   const renderCta = (chk: PostMigrationCheck) => {
     const cta = chk.cta;
@@ -264,7 +321,11 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
     && (!tunnelAckNeeded || ackTunnel);
   const actionCards = checks.filter((c) => c.category === 'action' && c.status !== 'ok' && !markedDone.has(c.id));
   const techniqueCards = checks.filter((c) => c.category === 'technique' && !markedDone.has(c.id));
-  const automated = checks.filter((c) => c.category === 'automated' || (!c.category && c.status === 'ok'));
+  // Ollama models get their own section with download progress + retry — pull
+  // them out of the generic automated list.
+  const ollamaModels = checks.filter((c) => c.id.startsWith('ollama-model-'));
+  const automated = checks.filter((c) => !c.id.startsWith('ollama-model-') && (c.category === 'automated' || (!c.category && c.status === 'ok')));
+  const missingModels = ollamaModels.filter((m) => m.status !== 'ok' && !modelDone.has(m.label)).length;
   const remaining = actionCards.length + techniqueCards.length;
 
   // ── Step bodies ──
@@ -395,7 +456,9 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
       <div className="space-y-5">
         <div className="flex items-center justify-between">
           <p className="text-sm text-ui/70">
-            {remaining === 0 ? 'Your dojo is fully set up and matches the original. ' : `${remaining} item${remaining === 1 ? '' : 's'} need your attention. Everything else is done.`}
+            {remaining === 0 && missingModels === 0
+              ? 'Your dojo is fully set up and matches the original.'
+              : `${remaining} item${remaining === 1 ? '' : 's'} need your attention${missingModels ? `${remaining ? ', plus' : ''} ${missingModels} model${missingModels === 1 ? '' : 's'} to download` : ''}. Everything else is done.`}
           </p>
           <button onClick={recheck} className="btn text-xs shrink-0">Re-check</button>
         </div>
@@ -437,6 +500,59 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {ollamaModels.length > 0 && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs uppercase tracking-wide text-ui/40">Local models</h4>
+              {ollamaModels.some((m) => m.status !== 'ok' && !modelDone.has(m.label)) && (
+                <button
+                  onClick={() => pullAllModels(ollamaModels.filter((m) => m.status !== 'ok' && !modelDone.has(m.label)).map((m) => m.label))}
+                  disabled={!!pullingModel}
+                  className="btn btn--primary text-xs shrink-0 disabled:opacity-40"
+                >
+                  {pullingModel ? 'Downloading…' : 'Download all'}
+                </button>
+              )}
+            </div>
+            {ollamaModels.map((m) => {
+              const name = m.label;
+              const done = m.status === 'ok' || modelDone.has(name);
+              const active = pullingModel === name;
+              const err = modelErr[name];
+              const pct = active && modelProgress && modelProgress.total > 0 ? Math.round((100 * modelProgress.completed) / modelProgress.total) : 0;
+              return (
+                <div key={m.id} className="glass-nested rounded-lg p-2.5">
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className={done ? 'text-green-500' : active ? 'text-blue-400 animate-pulse' : err ? 'text-red-400' : 'text-ui/40'}>
+                      {done ? '✓' : active ? '⏳' : err ? '✗' : '•'}
+                    </span>
+                    <span className="font-mono text-ui/80">{name}</span>
+                    <span className="ml-auto">
+                      {done ? (
+                        <span className="text-xs text-green-500">downloaded</span>
+                      ) : active ? (
+                        <span className="text-xs text-ui/45">
+                          {fmtBytes(modelProgress?.completed)}{modelProgress && modelProgress.total > 0 ? ` / ${fmtBytes(modelProgress.total)}` : ''}
+                        </span>
+                      ) : (
+                        <button onClick={() => pullModel(name)} disabled={!!pullingModel} className="btn text-xs disabled:opacity-40">
+                          {err ? 'Retry' : 'Download'}
+                        </button>
+                      )}
+                    </span>
+                  </div>
+                  {active && (
+                    <div className="relative h-1.5 bg-ui/[0.12] rounded-full overflow-hidden mt-2">
+                      <div className="absolute inset-y-0 left-0 bg-blue-500 rounded-full transition-all" style={{ width: `${Math.max(3, pct)}%` }} />
+                    </div>
+                  )}
+                  {err && !active && <div className="text-xs text-red-400/80 mt-1 break-words">{err}</div>}
+                </div>
+              );
+            })}
           </div>
         )}
 
