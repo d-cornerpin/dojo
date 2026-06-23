@@ -11,8 +11,9 @@ import { pipeline } from 'node:stream/promises';
 import { spawn } from 'node:child_process';
 import type { AppEnv } from '../server.js';
 import { createExport } from '../../migration/export.js';
-import { readManifestFromZip, performImport } from '../../migration/import.js';
-import { getChecks, dismissMigration, isMigrationDismissed } from '../../migration/checks.js';
+import { readManifestFromZip, performImport, verifyArchive } from '../../migration/import.js';
+import { getChecks, dismissMigration, isMigrationDismissed, runPostMigrationChecks, getLastManifest } from '../../migration/checks.js';
+import { buildCombinedInstaller } from '../../migration/dependency-script.js';
 import { terminateAgent } from '../../agent/spawner.js';
 import { getDb, closeDb } from '../../db/connection.js';
 import { runMigrations } from '../../db/migrations.js';
@@ -99,6 +100,48 @@ migrationRouter.post('/manifest', async (c) => {
   }
 });
 
+// POST /api/migration/preflight — scan the upload WITHOUT importing.
+//
+// Powers the wizard's "scan" step: verify archive integrity (checksum over the
+// full payload), the password (cheap prefix-decrypt), and that there's enough
+// free disk for the restore — before anything touches ~/.dojo. Same raw-body +
+// X-Export-Password transport as /import.
+migrationRouter.post('/preflight', async (c) => {
+  let tmpPath: string | null = null;
+  try {
+    const body = c.req.raw.body;
+    const rawPassword = c.req.header('x-export-password');
+    const password = rawPassword ? decodeURIComponent(rawPassword) : null;
+    if (!body) return c.json({ ok: false, error: 'No file uploaded' }, 400);
+    if (!password || password.length < 8) {
+      return c.json({ ok: false, error: 'Password must be at least 8 characters' }, 400);
+    }
+
+    tmpPath = path.join(os.tmpdir(), `dojo-preflight-${Date.now()}-${process.pid}.zip`);
+    await pipeline(Readable.fromWeb(body as never), fs.createWriteStream(tmpPath));
+
+    const { manifest, integrityOk, passwordOk } = await verifyArchive(tmpPath, password);
+
+    // Free-disk check: the restore stages the inner zip + extracted tree + the
+    // restored db, so require ~2x the database size free on the dojo volume.
+    let diskOk = true;
+    let freeBytes: number | null = null;
+    try {
+      const st = fs.statfsSync(os.homedir());
+      freeBytes = Number(st.bavail) * Number(st.bsize);
+      diskOk = freeBytes >= manifest.contents.database_size_bytes * 2;
+    } catch { diskOk = true; /* can't determine — don't block */ }
+
+    return c.json({ ok: true, data: { manifest, integrityOk, passwordOk, diskOk, freeBytes } });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Preflight failed', { error: msg });
+    return c.json({ ok: false, error: msg }, 400);
+  } finally {
+    if (tmpPath) { try { fs.unlinkSync(tmpPath); } catch { /* ignore */ } }
+  }
+});
+
 // POST /api/migration/import — full import from encrypted zip
 //
 // Like /manifest, the zip is the raw request body (streamed to a temp file to
@@ -171,15 +214,34 @@ migrationRouter.post('/import/dismiss', (c) => {
   return c.json({ ok: true, data: { dismissed: true } });
 });
 
+// POST /api/migration/import/recheck — re-evaluate the post-migration checks
+// against the most recent import (e.g. after the user grants Full Disk Access or
+// reconnects an account). Broadcasts migration:checks and returns the fresh set.
+migrationRouter.post('/import/recheck', async (c) => {
+  const manifest = getLastManifest();
+  if (!manifest) {
+    return c.json({ ok: false, error: 'No recent import to re-check.' }, 400);
+  }
+  try {
+    const checks = await runPostMigrationChecks(manifest);
+    return c.json({ ok: true, data: { checks } });
+  } catch (err) {
+    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
 // POST /api/migration/run-dependency-setup — run the bundled technique
 // dependency installer (setup-dependencies.sh) and stream its output over WS
 // (migration:depsetup events). User-triggered from the post-import wizard.
 migrationRouter.post('/run-dependency-setup', (c) => {
-  const scriptPath = path.join(os.homedir(), '.dojo', 'setup-dependencies.sh');
-  if (!fs.existsSync(scriptPath)) {
-    return c.json({ ok: false, error: 'No dependency installer was bundled with this import.' }, 404);
-  }
   try {
+    // Combined installer: core tools (Ollama/cloudflared, guarded) + the bundled
+    // per-technique installer. Written to a temp file and run; output streams via
+    // migration:depsetup, exactly as before.
+    const script = buildCombinedInstaller();
+    const scriptPath = path.join(os.tmpdir(), `dojo-setup-combined-${Date.now()}-${process.pid}.sh`);
+    fs.writeFileSync(scriptPath, script, { mode: 0o755 });
+
     const child = spawn('bash', [scriptPath], { cwd: os.homedir(), env: process.env });
     const emit = (line: string) => broadcast({ type: 'migration:depsetup', data: { line } } as never);
     const onData = (buf: Buffer) => {
@@ -187,15 +249,26 @@ migrationRouter.post('/run-dependency-setup', (c) => {
     };
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
-    child.on('close', (code) => {
+    child.on('close', async (code) => {
+      try { fs.unlinkSync(scriptPath); } catch { /* ignore */ }
+      // Re-run checks now that the core tools + deps are installed. This also
+      // starts the background Ollama model pulls (Ollama is on PATH now) and
+      // flips ollama/cloudflared/technique checks to green.
+      try {
+        const manifest = getLastManifest();
+        if (manifest) await runPostMigrationChecks(manifest);
+      } catch (err) {
+        logger.warn('Post-install re-check failed', { error: err instanceof Error ? err.message : String(err) });
+      }
       broadcast({ type: 'migration:depsetup', data: { done: true, ok: code === 0, exitCode: code } } as never);
-      logger.info('Dependency setup script finished', { exitCode: code });
+      logger.info('Dependency setup finished', { exitCode: code });
     });
     child.on('error', (err) => {
+      try { fs.unlinkSync(scriptPath); } catch { /* ignore */ }
       broadcast({ type: 'migration:depsetup', data: { done: true, ok: false, error: err.message } } as never);
-      logger.error('Dependency setup script failed to start', { error: err.message });
+      logger.error('Dependency setup failed to start', { error: err.message });
     });
-    logger.info('Dependency setup script started');
+    logger.info('Dependency setup started');
     return c.json({ ok: true, data: { started: true } });
   } catch (err) {
     return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);

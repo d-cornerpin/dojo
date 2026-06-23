@@ -12,20 +12,22 @@ import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import type { ExportManifest } from './manifest.js';
 import { readDependencyManifest, type DependencyManifest } from '../techniques/dependencies.js';
+import type { PostMigrationCheck } from '@dojo/shared';
 
 const logger = createLogger('migration-checks');
 
-export interface PostMigrationCheck {
-  id: string;
-  label: string;
-  status: 'ok' | 'action_needed' | 'in_progress';
-  action?: string;
-  detail?: string;
-}
+// Re-export so existing './checks.js' imports keep resolving the type.
+export type { PostMigrationCheck } from '@dojo/shared';
 
 // In-memory check state (survives page refreshes via polling)
 let currentChecks: PostMigrationCheck[] = [];
 let migrationDismissed = false;
+
+// The manifest from the most recent import. Cached so the dependency installer
+// and the wizard's "re-check" can re-run checks without re-reading the zip.
+let lastManifest: ExportManifest | null = null;
+export function setLastManifest(manifest: ExportManifest): void { lastManifest = manifest; }
+export function getLastManifest(): ExportManifest | null { return lastManifest; }
 
 export function getChecks(): PostMigrationCheck[] {
   return currentChecks;
@@ -123,12 +125,21 @@ function checkTechniqueDependencies(): void {
     const detailParts: string[] = [];
     if (commands.length) detailParts.push('Install: ' + commands.join('; '));
     if (manual.length) detailParts.push('Manual: ' + manual.join('; '));
+    // Structured items for the wizard's per-technique card: install steps are
+    // handled automatically by the dependency installer; manual steps are the
+    // human checklist.
+    const detailItems = [
+      ...commands.map((text) => ({ text, kind: 'install' as const })),
+      ...manual.map((text) => ({ text, kind: 'manual' as const })),
+    ];
     currentChecks.push({
       id: `technique-deps-${t.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`,
-      label: `Technique "${t.name}" needs its dependencies installed`,
+      label: t.name,
       status: 'action_needed',
+      category: 'technique',
       action: 'Set up this technique on this machine (see details)',
       detail: detailParts.join('  |  '),
+      detailItems,
     });
   }
 }
@@ -140,13 +151,14 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
   currentChecks = [];
 
   // Database restored (always ok if we got here)
-  currentChecks.push({ id: 'database', label: 'Database restored', status: 'ok' });
+  currentChecks.push({ id: 'database', label: 'Database restored', status: 'ok', category: 'automated' });
 
   // Agents restored
   currentChecks.push({
     id: 'agents',
     label: `Agents restored (${manifest.contents.agents_count})`,
     status: 'ok',
+    category: 'automated',
   });
 
   // Techniques restored
@@ -155,6 +167,7 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
       id: 'techniques',
       label: `Techniques restored (${manifest.contents.techniques_count})`,
       status: 'ok',
+      category: 'automated',
     });
   }
 
@@ -168,16 +181,19 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
       id: 'vault',
       label: `Vault restored (${manifest.contents.vault_entries_count} entries)`,
       status: 'ok',
+      category: 'automated',
     });
   }
 
-  // Ollama installed?
+  // Ollama installed? Auto-installed by the dependency step; if it's still
+  // missing the user can re-run the installer.
   const ollamaInstalled = checkCommandExists('ollama');
   currentChecks.push({
     id: 'ollama',
-    label: 'Ollama installed',
+    label: ollamaInstalled ? 'Ollama installed' : 'Ollama not installed yet',
     status: ollamaInstalled ? 'ok' : 'action_needed',
-    action: ollamaInstalled ? undefined : 'Install Ollama: brew install --cask ollama',
+    category: 'automated',
+    cta: ollamaInstalled ? undefined : { type: 'run_installer', label: 'Re-run installer' },
   });
 
   // Ollama models
@@ -190,6 +206,7 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
         id: checkId,
         label: isLocal ? `${model} downloaded` : `Downloading ${model}...`,
         status: isLocal ? 'ok' : 'in_progress',
+        category: 'automated',
       });
 
       if (!isLocal) {
@@ -199,20 +216,22 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     }
   }
 
-  // Provider API keys
+  // Provider API keys — restored with the vault/secrets, so most verify clean.
+  // Only surface the ones whose restored key fails (needs re-entry).
   for (const providerName of manifest.contents.providers) {
     const checkId = `provider-${providerName}`;
     if (providerName.toLowerCase().includes('ollama')) {
       // Ollama doesn't need API key verification
-      currentChecks.push({ id: checkId, label: `${providerName} configured`, status: ollamaInstalled ? 'ok' : 'action_needed' });
+      currentChecks.push({ id: checkId, label: `${providerName} configured`, status: ollamaInstalled ? 'ok' : 'action_needed', category: 'automated' });
       continue;
     }
     const hasKey = await checkProviderKey(providerName);
     currentChecks.push({
       id: checkId,
-      label: `${providerName} API key verified`,
+      label: hasKey ? `${providerName} API key verified` : `${providerName} API key needs re-entry`,
       status: hasKey ? 'ok' : 'action_needed',
-      action: hasKey ? undefined : `Re-enter API key in Settings > Providers`,
+      category: 'action',
+      cta: hasKey ? undefined : { type: 'link', label: 'Open provider settings', target: '/settings?tab=providers' },
     });
   }
 
@@ -222,17 +241,20 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     const gwsInstalled = checkCommandExists('gws');
     currentChecks.push({
       id: 'gws-cli',
-      label: 'gws CLI installed',
+      label: gwsInstalled ? 'gws CLI installed' : 'gws CLI not installed yet',
       status: gwsInstalled ? 'ok' : 'action_needed',
-      action: gwsInstalled ? undefined : 'Install via Settings > Google',
+      category: 'automated',
+      cta: gwsInstalled ? undefined : { type: 'run_installer', label: 'Re-run installer' },
     });
 
     const googleAuthValid = await checkGoogleAuth();
     currentChecks.push({
       id: 'google-auth',
-      label: 'Google Workspace needs re-authentication',
+      label: 'Reconnect Google Workspace',
       status: googleAuthValid ? 'ok' : 'action_needed',
-      action: googleAuthValid ? undefined : 'Re-connect in Settings > Channels > Google. Do it on this machine via localhost (the sign-in redirect only works there).',
+      category: 'action',
+      detail: 'Sign-in tokens are machine-specific. Reconnect on THIS machine via localhost (the Google sign-in redirect only works there).',
+      cta: googleAuthValid ? undefined : { type: 'link', label: 'Reconnect Google', target: '/settings?tab=workspace' },
     });
   }
 
@@ -242,9 +264,11 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
   if (msWasConnected) {
     currentChecks.push({
       id: 'microsoft-auth',
-      label: 'Microsoft 365 needs re-authentication',
+      label: 'Reconnect Microsoft 365',
       status: 'action_needed',
-      action: 'Re-authenticate in Settings > Microsoft (tokens are machine-specific)',
+      category: 'action',
+      detail: 'Microsoft sign-in tokens are machine-specific and must be refreshed here.',
+      cta: { type: 'link', label: 'Reconnect Microsoft', target: '/settings?tab=microsoft' },
     });
   }
 
@@ -253,21 +277,45 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
   if (manifest.contents.imessage_configured) {
     currentChecks.push({
       id: 'imessage-fda',
-      label: 'iMessage needs Full Disk Access on this Mac',
+      label: 'Grant Full Disk Access for iMessage',
       status: 'action_needed',
-      action: 'Grant Full Disk Access, then reconnect in Settings > Channels',
-      detail: 'System Settings > Privacy & Security > Full Disk Access: enable it for Terminal (and the DOJO app). The iMessage bridge reconnects once access is granted.',
+      category: 'action',
+      detail: 'macOS requires Full Disk Access to read Messages. Enable it for the DOJO app (and Terminal), then re-check — the iMessage bridge reconnects automatically.',
+      cta: { type: 'open_system_settings', label: 'Open System Settings', target: 'full_disk' },
     });
   }
 
-  // cloudflared
+  // cloudflared — auto-installed by the dependency step.
   const cfInstalled = checkCommandExists('cloudflared');
   currentChecks.push({
     id: 'cloudflared',
-    label: 'cloudflared installed',
+    label: cfInstalled ? 'cloudflared installed' : 'cloudflared not installed yet',
     status: cfInstalled ? 'ok' : 'action_needed',
-    action: cfInstalled ? undefined : 'brew install cloudflared',
+    category: 'automated',
+    cta: cfInstalled ? undefined : { type: 'run_installer', label: 'Re-run installer' },
   });
+
+  // Cloudflare tunnel — the full named-tunnel setup migrates with the export:
+  // the connector token (secrets.yaml), the ~/.cloudflared cert + credentials
+  // key, and the tunnel_* settings (DB). Surface it so the user can see remote
+  // access carried over; it auto-starts on boot once cloudflared is installed.
+  if (checkDbConfigFlag('tunnel_enabled')) {
+    let namedUrl: string | null = null;
+    try {
+      const row = getDb().prepare("SELECT value FROM config WHERE key = 'tunnel_named_url'").get() as { value: string } | undefined;
+      namedUrl = row?.value?.trim() || null;
+    } catch { /* ignore */ }
+    currentChecks.push({
+      id: 'cloudflare-tunnel',
+      label: 'Cloudflare tunnel configuration restored',
+      status: cfInstalled ? 'ok' : 'action_needed',
+      category: 'automated',
+      cta: cfInstalled ? undefined : { type: 'run_installer', label: 'Re-run installer' },
+      detail: namedUrl
+        ? `Remote access for ${namedUrl} migrated (token + credentials). Auto-starts on boot.`
+        : 'Remote access settings migrated (token + credentials). Auto-starts on boot.',
+    });
+  }
 
   broadcastChecks();
 

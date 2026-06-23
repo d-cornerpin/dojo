@@ -420,9 +420,39 @@ export interface MigrationProgressEvent {
   data: { stage: string; progress: number; message: string };
 }
 
+// A call-to-action the import wizard renders for a post-migration check.
+//   link                 → navigate within the dashboard (target = route)
+//   open_system_settings → open a macOS System Settings pane (target = pane id)
+//   revalidate_provider  → re-test a provider's restored API key (target = provider id)
+//   run_installer        → (re)run the dependency installer
+//   recheck              → re-evaluate this check now (e.g. after a manual action)
+//   info                 → no action, informational only
+export interface MigrationCta {
+  type: 'link' | 'open_system_settings' | 'revalidate_provider' | 'run_installer' | 'recheck' | 'info';
+  label: string;
+  target?: string;
+}
+
+export interface PostMigrationCheck {
+  id: string;
+  label: string;
+  status: 'ok' | 'action_needed' | 'in_progress';
+  // Grouping for the wizard's guided setup step:
+  //   automated  → handled by the dojo (deps, ollama, models); shown as status only
+  //   action     → needs the user (permissions, re-auth, missing key)
+  //   technique  → a migrated technique's own setup notes (one card per technique)
+  category?: 'automated' | 'action' | 'technique';
+  /** Legacy free-text hint (kept for back-compat); prefer cta + detailItems. */
+  action?: string;
+  detail?: string;
+  /** Structured, line-by-line setup items for technique cards. */
+  detailItems?: { text: string; kind: 'install' | 'manual' }[];
+  cta?: MigrationCta;
+}
+
 export interface MigrationChecksEvent {
   type: 'migration:checks';
-  data: { checks: Array<{ id: string; label: string; status: string; action?: string; detail?: string }>; dismissed: boolean };
+  data: { checks: PostMigrationCheck[]; dismissed: boolean };
 }
 
 // ── Voice mode events ──

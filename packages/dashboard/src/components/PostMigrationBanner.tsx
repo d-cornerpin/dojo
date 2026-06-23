@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
+import type { PostMigrationCheck } from '@dojo/shared';
 import { useWebSocket } from '../hooks/useWebSocket';
+import { ImportWizard } from './ImportWizard';
 
-// FENG-SHUI EXEMPTION: migration flow uses standard Tailwind status colors
-// (text-green-500, text-blue-400) for universal status semantics. Migration
-// is explicitly exempt per FENG-SHUI-THEME-SPEC.md.
+// FENG-SHUI EXEMPTION: migration flow uses standard Tailwind status colors.
+// Migration is explicitly exempt per FENG-SHUI-THEME-SPEC.md.
 
+// Kept here (and imported by ImportWizard as a type) so the manifest shape lives
+// in one place on the dashboard side.
 export interface ExportManifest {
   version: string;
   platform_version: string;
@@ -36,31 +39,28 @@ export interface ExportManifest {
   checksum: string;
 }
 
-interface PostMigrationCheck {
-  id: string;
-  label: string;
-  status: 'ok' | 'action_needed' | 'in_progress';
-  action?: string;
-  detail?: string;
-}
-
+// After an import, the guided "Set up" step lives in the ImportWizard. This
+// banner is just the resumability hook: if there are still items that need the
+// user, it offers to reopen the wizard at that step. No more flat check dump.
 export const PostMigrationBanner = () => {
   const [checks, setChecks] = useState<PostMigrationCheck[]>([]);
   const [dismissed, setDismissed] = useState(true);
   const [loading, setLoading] = useState(true);
-  const [depRunning, setDepRunning] = useState(false);
-  const [depLines, setDepLines] = useState<string[]>([]);
-  const [depDone, setDepDone] = useState<null | { ok: boolean }>(null);
+  const [resume, setResume] = useState(false);
   const { subscribe } = useWebSocket();
 
   const getHeaders = useCallback((): Record<string, string> => {
     const token = localStorage.getItem('dojo_token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
+    const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
+    const csrf = csrfMatch ? csrfMatch[1] : null;
+    return {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+    };
   }, []);
 
-  // Fetch initial state
   useEffect(() => {
-    const load = async () => {
+    (async () => {
       try {
         const res = await fetch('/api/migration/import/status', { headers: getHeaders() });
         const data = await res.json();
@@ -70,152 +70,52 @@ export const PostMigrationBanner = () => {
         }
       } catch { /* ignore */ }
       setLoading(false);
-    };
-    load();
+    })();
   }, [getHeaders]);
 
-  // Listen for real-time check updates
   useEffect(() => {
-    const unsub = subscribe('migration:checks', (event: any) => {
-      if (event.data) {
-        setChecks(event.data.checks || []);
-        setDismissed(event.data.dismissed);
-      }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const unsub = subscribe('migration:checks', (e: any) => {
+      if (e.data?.checks) setChecks(e.data.checks);
+      if (typeof e.data?.dismissed === 'boolean') setDismissed(e.data.dismissed);
     });
     return unsub;
   }, [subscribe]);
-
-  // Stream output from the technique-dependency installer.
-  useEffect(() => {
-    const unsub = subscribe('migration:depsetup', (event: any) => {
-      const d = event.data || {};
-      if (typeof d.line === 'string') setDepLines((prev) => [...prev, d.line]);
-      if (d.done) { setDepDone({ ok: !!d.ok }); setDepRunning(false); }
-    });
-    return unsub;
-  }, [subscribe]);
-
-  const runDependencySetup = async () => {
-    setDepRunning(true);
-    setDepLines([]);
-    setDepDone(null);
-    const token = localStorage.getItem('dojo_token');
-    const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
-    const csrf = csrfMatch ? csrfMatch[1] : null;
-    try {
-      const res = await fetch('/api/migration/run-dependency-setup', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-        },
-      });
-      const data = await res.json();
-      if (!data.ok) {
-        setDepLines([`Error: ${data.error || 'could not start installer'}`]);
-        setDepDone({ ok: false });
-        setDepRunning(false);
-      }
-    } catch (e) {
-      setDepLines([`Error: ${e instanceof Error ? e.message : String(e)}`]);
-      setDepDone({ ok: false });
-      setDepRunning(false);
-    }
-  };
 
   const handleDismiss = async () => {
-    const token = localStorage.getItem('dojo_token');
-    const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
-    const csrf = csrfMatch ? csrfMatch[1] : null;
-
     await fetch('/api/migration/import/dismiss', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
-      },
+      headers: { ...getHeaders(), 'Content-Type': 'application/json' },
     });
     setDismissed(true);
   };
 
-  if (loading || dismissed || checks.length === 0) return null;
+  // Items that still need the user: action items + technique setup cards.
+  const remaining = checks.filter(
+    (c) => c.status === 'action_needed' && (c.category === 'action' || c.category === 'technique'),
+  ).length;
 
-  const statusIcon = (status: string) => {
-    switch (status) {
-      case 'ok': return <span className="text-green-500">&#x2713;</span>;
-      case 'in_progress': return <span className="text-blue-400 animate-pulse">&#x23F3;</span>;
-      case 'action_needed': return <span className="text-amber-400">&#x26A0;&#xFE0F;</span>;
-      default: return null;
-    }
-  };
-
-  const getActionLink = (check: PostMigrationCheck) => {
-    if (!check.action) return null;
-    if (check.action.includes('Settings > Google')) {
-      return <a href="/settings?tab=workspace" className="text-blue-400 hover:text-blue-300 ml-2">Re-connect</a>;
-    }
-    if (check.action.includes('Settings > Microsoft')) {
-      return <a href="/settings?tab=microsoft" className="text-blue-400 hover:text-blue-300 ml-2">Re-authenticate</a>;
-    }
-    if (check.action.includes('Settings > Providers')) {
-      return <a href="/settings?tab=providers" className="text-blue-400 hover:text-blue-300 ml-2">Configure</a>;
-    }
-    return <span className="text-ui/25 ml-2 text-xs">{check.action}</span>;
-  };
+  if (loading || dismissed || remaining === 0) return null;
 
   return (
-    <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 mx-6 mt-4">
-      <div className="flex items-start justify-between mb-3">
-        <h3 className="text-sm font-bold text-ui">
-          {checks.some(c => c.status === 'action_needed' || c.status === 'in_progress')
-            ? 'Dojo imported successfully! A few things need attention:'
-            : 'Dojo imported successfully! Everything looks good.'}
-        </h3>
-        <button
-          onClick={handleDismiss}
-          className="text-ui/25 hover:text-ui/55 text-xs ml-4 shrink-0"
-        >
-          Dismiss
-        </button>
+    <>
+      <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl px-4 py-3 mx-6 mt-4 flex items-center gap-3">
+        <span className="text-blue-400 shrink-0">{'✨'}</span>
+        <p className="text-sm text-ui/80 flex-1">
+          Finish setting up your imported dojo — <strong className="text-ui">{remaining}</strong> item{remaining === 1 ? '' : 's'} need your attention.
+        </p>
+        <button onClick={() => setResume(true)} className="btn btn--primary text-xs shrink-0">Resume setup</button>
+        <button onClick={handleDismiss} className="text-ui/25 hover:text-ui/55 text-xs shrink-0">Dismiss</button>
       </div>
 
-      <div className="space-y-1.5">
-        {checks.map((check) => (
-          <div key={check.id} className="text-sm">
-            <div className="flex items-center gap-2">
-              <span className="w-5 text-center">{statusIcon(check.status)}</span>
-              <span className={check.status === 'ok' ? 'text-ui/55' : 'text-ui/70'}>{check.label}</span>
-              {check.status === 'action_needed' && getActionLink(check)}
-            </div>
-            {check.detail && check.status === 'action_needed' && (
-              <div className="ml-7 mt-0.5 text-xs text-ui/40 font-mono whitespace-pre-wrap break-words">
-                {check.detail}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {checks.some((c) => c.id.startsWith('technique-deps-')) && (
-        <div className="mt-3 pt-3 border-t border-blue-500/20">
-          <button
-            onClick={runDependencySetup}
-            disabled={depRunning}
-            className="text-xs px-3 py-1.5 rounded-md bg-blue-500/20 text-blue-300 hover:bg-blue-500/30 disabled:opacity-50"
-          >
-            {depRunning ? 'Installing dependencies...' : 'Install technique dependencies'}
-          </button>
-          <span className="text-[11px] text-ui/25 ml-2">Runs the bundled installer for your techniques (brew, pip, npm, git).</span>
-          {(depLines.length > 0 || depDone) && (
-            <pre className="mt-2 max-h-48 overflow-auto text-[11px] font-mono text-ui/55 bg-black/20 rounded-md p-2 whitespace-pre-wrap">
-              {depLines.join('\n')}
-              {depDone ? `\n\n${depDone.ok ? 'Dependencies installed.' : 'Some steps failed. Review the output above and install those manually.'}` : ''}
-            </pre>
-          )}
-        </div>
+      {resume && (
+        <ImportWizard
+          asModal
+          initialStep="setup"
+          onClose={() => setResume(false)}
+          onComplete={() => { setResume(false); void handleDismiss(); }}
+        />
       )}
-    </div>
+    </>
   );
 };

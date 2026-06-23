@@ -191,3 +191,81 @@ export function generateDependencySetupScript(exportedAtIso: string): DepScriptR
   logger.info('Generated dependency setup script', { techniqueCount, stepCount });
   return { script, techniqueCount, stepCount };
 }
+
+// ── Combined installer (run at import time on the NEW machine) ──
+//
+// Wraps the bundled per-technique installer with a guarded preamble that brings
+// up the core tools the migrated dojo needs but that aren't technique deps:
+// Ollama (if the dojo uses local models) and cloudflared (if a tunnel is
+// configured). Each install is guarded by `command -v`, so re-running is a
+// no-op. Ollama MODEL downloads are intentionally left out — those run in the
+// background via runPostMigrationChecks once Ollama is on PATH. Output flows
+// through the same stdout/stderr the run-dependency-setup route streams.
+export function buildCombinedInstaller(): string {
+  let needOllama = false;
+  let needCloudflared = false;
+  try {
+    const db = getDb();
+    // Ollama: any provider of type 'ollama' (or named ollama) in the restored db.
+    const ollamaRow = db
+      .prepare("SELECT 1 FROM providers WHERE type = 'ollama' OR lower(name) LIKE '%ollama%' LIMIT 1")
+      .get();
+    needOllama = !!ollamaRow;
+    // cloudflared: a tunnel was enabled on the source machine.
+    const tunnelRow = db
+      .prepare("SELECT value FROM config WHERE key = 'tunnel_enabled'")
+      .get() as { value: string } | undefined;
+    needCloudflared = tunnelRow?.value === 'true';
+  } catch { /* fresh/partial db — install nothing extra */ }
+
+  const pre: string[] = [];
+  if (needOllama || needCloudflared) {
+    pre.push('note "Core tools"');
+    pre.push('if ! command -v brew >/dev/null 2>&1; then');
+    pre.push('  echo "  ! Homebrew not found — install it from https://brew.sh, then re-run."; FAILED=1');
+    pre.push('fi');
+    if (needOllama) {
+      pre.push('command -v ollama >/dev/null 2>&1 || run brew install ollama');
+    }
+    if (needCloudflared) {
+      pre.push('command -v cloudflared >/dev/null 2>&1 || run brew install cloudflared');
+    }
+  }
+
+  const header = [
+    '#!/usr/bin/env bash',
+    '# DOJO combined dependency installer (core tools + technique deps).',
+    'set -u',
+    'FAILED=0',
+    'note() { printf "\\n=== %s ===\\n" "$1"; }',
+    'run()  { echo "+ $*"; eval "$@" || { echo "  ! FAILED: $*"; FAILED=1; }; }',
+    '',
+    'echo "Setting up your migrated dojo..."',
+    '',
+  ].join('\n');
+
+  // The bundled per-technique installer is self-contained; invoke it as a child
+  // so its own guards/exit handling stay intact. Its output streams up too.
+  const techniques = [
+    '',
+    'note "Technique dependencies"',
+    'if [ -f "$HOME/.dojo/setup-dependencies.sh" ]; then',
+    '  bash "$HOME/.dojo/setup-dependencies.sh" || FAILED=1',
+    'else',
+    '  echo "  (no technique dependency installer was bundled with this export)"',
+    'fi',
+  ].join('\n');
+
+  const footer = [
+    '',
+    'if [ "$FAILED" = "1" ]; then',
+    '  echo ""; echo "Some steps failed (see ! lines above). Install those manually, then re-run."',
+    '  exit 1',
+    'else',
+    '  echo ""; echo "All setup steps completed."',
+    'fi',
+    '',
+  ].join('\n');
+
+  return `${header}\n${pre.join('\n')}\n${techniques}\n${footer}`;
+}

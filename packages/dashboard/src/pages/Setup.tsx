@@ -14,7 +14,7 @@ import { DojoTutorial } from '../components/DojoTutorial';
 // universal error/success/info/warning. Wizard is explicitly exempt per
 // FENG-SHUI-THEME-SPEC.md. Primary-action button text IS themed (uses
 // var(--btn-primary-text) / var(--btn-success-text)).
-import { MigrationImport } from '../components/MigrationImport';
+import { ImportWizard } from '../components/ImportWizard';
 
 type Step = 'welcome' | 'dependencies' | 'permissions' | 'provider' | 'models' | 'your-profile' | 'primary-agent' | 'pm-agent' | 'trainer-agent' | 'dreamer' | 'imessage' | 'workspace' | 'web-search' | 'voice' | 'complete';
 
@@ -294,15 +294,11 @@ const WelcomeStep = () => {
 
   if (showImport) {
     return (
-      <div className="space-y-6">
-        <div className="flex items-center gap-3 mb-4">
-          <button onClick={() => setShowImport(false)} className="text-ui/40 hover:text-ui/55 text-sm">
-            &larr; Back
-          </button>
-          <h3 className="text-sm font-bold text-ui">Import Your Dojo</h3>
-        </div>
-        <MigrationImport isOobe onComplete={() => navigate('/')} />
-      </div>
+      <ImportWizard
+        isOobe
+        onClose={() => setShowImport(false)}
+        onComplete={() => navigate('/')}
+      />
     );
   }
 
