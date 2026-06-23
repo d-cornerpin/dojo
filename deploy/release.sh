@@ -90,9 +90,11 @@ if [ "$PREFLIGHT" = "1" ]; then
     echo "  ↪ auto base: latest stable $LATEST_STABLE → preflight target $BASE"
   fi
   # Auto-increment the pre-release ordinal for this base: highest existing
-  # vBASE-preflight.N on GitHub, plus 1.
+  # vBASE-preflight.N on GitHub, plus 1. The trailing `|| true` is required —
+  # under `set -euo pipefail`, grep finding no matches (the FIRST preflight build
+  # for a base) makes the pipeline exit non-zero and would abort the script.
   LAST_N="$(gh release list --repo "$REPO" --limit 100 2>/dev/null \
-    | grep -oE "v${BASE}-preflight\.[0-9]+" | sed -E 's/.*preflight\.//' | sort -n | tail -1)"
+    | grep -oE "v${BASE}-preflight\.[0-9]+" | sed -E 's/.*preflight\.//' | sort -n | tail -1 || true)"
   NEXT_N=$(( ${LAST_N:-0} + 1 ))
   VERSION="${BASE}-preflight.${NEXT_N}"
   TAG="v$VERSION"
