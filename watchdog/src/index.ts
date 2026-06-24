@@ -109,9 +109,22 @@ function sendIMessage(recipient: string, text: string): void {
     const escapedText = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     const escapedRecipient = recipient.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
+    // Positional service selection — `1st service whose service type = iMessage`
+    // throws AppleScript -10002 ("Invalid key form") on macOS 26/Sequoia.
+    // Iterate services by element (no filtered "whose" reference), falling back
+    // to `item 1 of services`.
     const script = `
       tell application "Messages"
-        set targetService to 1st service whose service type = iMessage
+        set targetService to missing value
+        repeat with s in services
+          try
+            if (service type of s) is iMessage then
+              set targetService to s
+              exit repeat
+            end if
+          end try
+        end repeat
+        if targetService is missing value then set targetService to item 1 of services
         set targetBuddy to buddy "${escapedRecipient}" of targetService
         send "${escapedText}" to targetBuddy
       end tell
