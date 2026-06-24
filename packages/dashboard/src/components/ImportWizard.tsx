@@ -236,24 +236,32 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
       const res = await fetch(`/api/setup/permissions/request/${pane}`, { method: 'POST', headers: { ...getHeaders(), 'Content-Type': 'application/json' } });
       const data = await res.json().catch(() => ({ ok: res.ok }));
       if (!data.ok) setError(data.error || `Couldn't open System Settings (${res.status}).`);
+      // The user needs a moment to toggle the permission; auto re-check after.
+      else setTimeout(() => { void recheck(); }, 6000);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't open System Settings.");
     } finally { setBusyCta(null); }
   };
 
-  // Start an OAuth reconnect right here: POST /api/<provider>/connect → open the
-  // returned authUrl so the user signs in (the redirect resolves on localhost).
-  const reconnectOAuth = async (provider: string) => {
-    setBusyCta(`oauth-${provider}`);
+  // Start an OAuth reconnect right here. target is "<provider>:<accountId>" for a
+  // specific account, or just "<provider>" for the primary (legacy). POST
+  // /api/<provider>/connect → open the returned authUrl so the user signs in
+  // (the redirect resolves on localhost), then auto re-check.
+  const reconnectOAuth = async (target: string) => {
+    const [provider, accountId] = target.split(':');
+    setBusyCta(`oauth-${target}`);
     setError(null);
     try {
-      const res = await fetch(`/api/${provider}/connect?slot=agent`, {
+      const qs = accountId ? `?accountId=${encodeURIComponent(accountId)}` : '?slot=agent';
+      const res = await fetch(`/api/${provider}/connect${qs}`, {
         method: 'POST',
         headers: { ...getHeaders(), 'Content-Type': 'application/json' },
       });
       const data = await res.json();
       if (data.ok && data.data?.authUrl) {
         window.open(data.data.authUrl, '_blank', 'width=600,height=700');
+        // Re-check after the user has had time to finish the browser sign-in.
+        setTimeout(() => { void recheck(); }, 8000);
       } else {
         setError(data.error || 'Could not start the reconnect. If you just imported in first-run setup, finish entering the dojo, then reconnect from Settings.');
       }
@@ -504,7 +512,10 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
                   <div className="text-sm text-ui/80">{c.label}</div>
                   {c.detail && <div className="text-xs text-ui/45 mt-0.5">{c.detail}</div>}
                 </div>
-                <div className="shrink-0">{renderCta(c)}</div>
+                <div className="shrink-0 flex flex-col items-end gap-1">
+                  {renderCta(c)}
+                  <button onClick={recheck} className="text-[11px] text-ui/40 hover:text-ui/70">Re-check</button>
+                </div>
               </div>
             ))}
           </div>

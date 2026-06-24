@@ -254,9 +254,11 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     });
   }
 
-  // Google Workspace — check manifest OR the restored DB directly
-  const googleWasConnected = manifest.contents.google_workspace_connected || checkDbGoogleConnected();
-  if (googleWasConnected) {
+  // Google accounts — a dojo can have MANY (up to 5 agent + 5 user). OAuth
+  // tokens are machine-specific, so EACH connected account gets its own
+  // reconnect card that re-auths that specific account by id.
+  const googleAccounts = listConnectedAccounts('google_accounts');
+  if (googleAccounts.length > 0) {
     const gwsInstalled = checkCommandExists('gws');
     currentChecks.push({
       id: 'gws-cli',
@@ -265,41 +267,64 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
       category: 'automated',
       cta: gwsInstalled ? undefined : { type: 'run_installer', label: 'Re-run installer' },
     });
-
-    const googleAuthValid = await checkGoogleAuth();
+    for (const acc of googleAccounts) {
+      currentChecks.push({
+        id: `google-account-${acc.id}`,
+        label: `Reconnect Google — ${acc.email ?? `${acc.kind} account`}`,
+        status: 'action_needed',
+        category: 'action',
+        detail: 'Sign-in tokens are machine-specific. Reconnect signs this account in here (localhost redirect).',
+        cta: { type: 'reconnect_oauth', label: 'Reconnect', target: `google:${acc.id}` },
+      });
+    }
+  } else if (manifest.contents.google_workspace_connected || checkDbGoogleConnected()) {
+    // Legacy DB without the accounts table — one generic reconnect.
     currentChecks.push({
       id: 'google-auth',
-      label: 'Reconnect Google Workspace',
-      status: googleAuthValid ? 'ok' : 'action_needed',
+      label: 'Reconnect Google',
+      status: 'action_needed',
       category: 'action',
-      detail: 'Sign-in tokens are machine-specific. Click Reconnect to sign in right here (the redirect runs on this machine via localhost).',
-      cta: googleAuthValid ? undefined : { type: 'reconnect_oauth', label: 'Reconnect Google', target: 'google' },
+      detail: 'Sign-in tokens are machine-specific. Reconnect signs in here (localhost redirect).',
+      cta: { type: 'reconnect_oauth', label: 'Reconnect Google', target: 'google' },
     });
   }
 
-  // Microsoft — check manifest OR the restored DB directly
-  // Microsoft OAuth tokens are always machine-specific, so always flag for re-auth
-  const msWasConnected = manifest.contents.microsoft_connected || checkDbMicrosoftConnected();
-  if (msWasConnected) {
+  // Microsoft accounts — covers M365 work accounts AND personal Microsoft
+  // accounts (all live in microsoft_accounts). One reconnect card per connected
+  // account; tokens are always machine-specific.
+  const microsoftAccounts = listConnectedAccounts('microsoft_accounts');
+  if (microsoftAccounts.length > 0) {
+    for (const acc of microsoftAccounts) {
+      currentChecks.push({
+        id: `microsoft-account-${acc.id}`,
+        label: `Reconnect Microsoft — ${acc.email ?? `${acc.kind} account`}`,
+        status: 'action_needed',
+        category: 'action',
+        detail: 'Microsoft sign-in tokens are machine-specific. Reconnect signs this account in here.',
+        cta: { type: 'reconnect_oauth', label: 'Reconnect', target: `microsoft:${acc.id}` },
+      });
+    }
+  } else if (manifest.contents.microsoft_connected || checkDbMicrosoftConnected()) {
     currentChecks.push({
       id: 'microsoft-auth',
-      label: 'Reconnect Microsoft 365',
+      label: 'Reconnect Microsoft',
       status: 'action_needed',
       category: 'action',
-      detail: 'Microsoft sign-in tokens are machine-specific. Click Reconnect to sign in right here.',
+      detail: 'Microsoft sign-in tokens are machine-specific. Reconnect signs in here.',
       cta: { type: 'reconnect_oauth', label: 'Reconnect Microsoft', target: 'microsoft' },
     });
   }
 
   // iMessage — Full Disk Access is a macOS permission that does NOT transfer
-  // between machines, so flag it whenever the source had iMessage configured.
+  // between machines. DOJO reads Messages as a Node process, so FDA is granted
+  // to "node" (this is what OOBE does too — not Terminal/the DOJO app).
   if (manifest.contents.imessage_configured) {
     currentChecks.push({
       id: 'imessage-fda',
       label: 'Grant Full Disk Access for iMessage',
       status: 'action_needed',
       category: 'action',
-      detail: 'macOS requires Full Disk Access to read Messages. Enable it for the DOJO app (and Terminal), then re-check — the iMessage bridge reconnects automatically.',
+      detail: 'Open Settings, then enable Full Disk Access for "node" (DOJO runs as a Node process — that\'s the right entry, not Terminal or DOJO). If "node" isn\'t listed, click + and add the path from `which node`. Then hit Re-check.',
       cta: { type: 'open_system_settings', label: 'Open System Settings', target: 'full-disk-access' },
     });
   }
@@ -344,6 +369,23 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     });
   }
 
+  // Twilio — config + numbers live in the DB (migrated) and the auth token is
+  // encrypted with the credential master key (also migrated), so it decrypts
+  // here. Surface it so the user knows to update webhook URLs if their public
+  // URL changed.
+  try {
+    const tw = getDb().prepare('SELECT account_sid FROM twilio_config WHERE id = 1').get() as { account_sid: string | null } | undefined;
+    if (tw?.account_sid) {
+      currentChecks.push({
+        id: 'twilio',
+        label: 'Twilio configuration restored',
+        status: 'ok',
+        category: 'automated',
+        detail: 'Account, numbers, and auth token migrated. If your public URL changed, update the webhook URLs in the Twilio console.',
+      });
+    }
+  } catch { /* twilio table may not exist on legacy dbs */ }
+
   broadcastChecks();
 
   // Store checks in DB for persistence
@@ -376,6 +418,21 @@ export function loadSavedChecks(): void {
 }
 
 // ── Helpers ──
+
+// All connected accounts of a kind-table (google_accounts / microsoft_accounts).
+// Used to emit one reconnect card per account. Table name is a fixed literal,
+// not user input.
+function listConnectedAccounts(
+  table: 'google_accounts' | 'microsoft_accounts',
+): Array<{ id: string; email: string | null; kind: string }> {
+  try {
+    return getDb()
+      .prepare(`SELECT id, email, kind FROM ${table} WHERE connected = 1 ORDER BY kind, position`)
+      .all() as Array<{ id: string; email: string | null; kind: string }>;
+  } catch {
+    return [];
+  }
+}
 
 function checkDbConfigFlag(key: string): boolean {
   try {
@@ -433,15 +490,6 @@ async function checkProviderKey(providerName: string): Promise<boolean> {
     if (!row) return false;
     const credential = getProviderCredential(row.id);
     return credential !== null && credential.length > 0;
-  } catch {
-    return false;
-  }
-}
-
-async function checkGoogleAuth(): Promise<boolean> {
-  try {
-    const result = execSync('gws auth status', { encoding: 'utf-8', timeout: 5000 });
-    return result.toLowerCase().includes('authenticated') || result.toLowerCase().includes('logged in');
   } catch {
     return false;
   }
