@@ -326,26 +326,39 @@ export async function checkAndCompact(
     abortSignal?: AbortSignal;
   },
 ): Promise<{ leafCreated: number; condensedCreated: number; tokensReclaimed: number }> {
-  // If the caller passed the sentinel 'auto' model id (auto-routed agent),
-  // resolve it to a real model so the summarizer can actually call it.
-  // The cheapest enabled model is a good pick — summaries are bulk work
-  // where quality matters less than not crashing.
-  if (modelId === 'auto' || modelId === '__auto__') {
+  // Resolve which model WRITES the summaries. It must be able to produce text:
+  // media-generation (image/video/music) and embedding models all cost 0, so a
+  // naive "cheapest enabled model" picked one of them and every summarization
+  // call failed — the gap trigger then re-fires every turn forever (summaries
+  // never get written). Precedence:
+  //   1) the explicit Settings → compaction model, if enabled + text-capable
+  //   2) the agent's own configured model, if it's text-capable
+  //   3) the cheapest enabled text-capable model (the floor), deterministic tiebreak
+  {
     const db = getDb();
-    const cheapest = db.prepare(`
-      SELECT m.id FROM models m
-      JOIN providers p ON p.id = m.provider_id
-      WHERE m.is_enabled = 1 AND p.id != '__system__'
-      ORDER BY COALESCE(m.input_cost_per_m, 0) ASC
-      LIMIT 1
-    `).get() as { id: string } | undefined;
-    if (cheapest) {
-      modelId = cheapest.id;
-      logger.info('Resolved auto-routed model for compaction', { resolvedModelId: modelId }, agentId);
-    } else {
-      logger.warn('No enabled models available for compaction — skipping', {}, agentId);
-      return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
+    const TEXT_FILTER = "m.capabilities NOT LIKE '%generation%' AND m.capabilities NOT LIKE '%embedding%'";
+    const isUsableTextModel = (id: string): boolean => !!db
+      .prepare(`SELECT 1 FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.id = ? AND m.is_enabled = 1 AND p.id != '__system__' AND ${TEXT_FILTER}`)
+      .get(id);
+    const cheapestTextModel = (): string | undefined => (db
+      .prepare(`SELECT m.id FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.is_enabled = 1 AND p.id != '__system__' AND ${TEXT_FILTER} ORDER BY COALESCE(m.input_cost_per_m, 0) ASC, m.id ASC LIMIT 1`)
+      .get() as { id: string } | undefined)?.id;
+
+    const explicit = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value;
+
+    if (explicit && isUsableTextModel(explicit)) {
+      modelId = explicit;
+      logger.info('Resolved compaction model (explicit setting)', { resolvedModelId: modelId }, agentId);
+    } else if (modelId === 'auto' || modelId === '__auto__' || !isUsableTextModel(modelId)) {
+      const cheapest = cheapestTextModel();
+      if (!cheapest) {
+        logger.warn('No text-capable model available for compaction — skipping', {}, agentId);
+        return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
+      }
+      modelId = cheapest;
+      logger.info('Resolved compaction model (cheapest text-capable)', { resolvedModelId: modelId }, agentId);
     }
+    // else: the agent's own configured model is text-capable — keep it.
   }
 
   const assembled = estimateAssembledTokens(agentId, contextWindow);
