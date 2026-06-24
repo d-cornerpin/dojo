@@ -74,13 +74,17 @@ export function setDreamingConfig(config: { modelId?: string; dreamTime?: string
 
 function getDefaultDreamModel(): string | null {
   const db = getDb();
+  // Must be a text-capable model: media-generation/embedding models cost 0 and
+  // would otherwise win the cost tiebreak, breaking the dream LLM call.
   const model = db.prepare(`
     SELECT id FROM models WHERE is_enabled = 1
+      AND capabilities NOT LIKE '%generation%'
+      AND capabilities NOT LIKE '%embedding%'
     ORDER BY
       CASE WHEN api_model_id LIKE '%sonnet%' THEN 0
            WHEN api_model_id LIKE '%gpt-4o%' THEN 1
            ELSE 2 END,
-      input_cost_per_m ASC
+      input_cost_per_m ASC, id ASC
     LIMIT 1
   `).get() as { id: string } | undefined;
   return model?.id ?? null;

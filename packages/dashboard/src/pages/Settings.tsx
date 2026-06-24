@@ -16,6 +16,12 @@ import { formatDate } from '../lib/dates';
 import { MigrationExport } from '../components/MigrationExport';
 import { ImportWizard } from '../components/ImportWizard';
 import { useTheme } from '../themes';
+import {
+  getOrbQualityCached,
+  refreshOrbQualityFromServer,
+  setOrbQuality,
+  type OrbQualityPref,
+} from '../components/orb/orbQuality';
 import { invalidateSavedVoiceSettings } from '../hooks/useVoiceMode';
 
 type Tab = 'platform' | 'providers' | 'models' | 'profile' | 'security' | 'router' | 'sensei' | 'channels' | 'integrations' | 'voice' | 'update';
@@ -625,6 +631,7 @@ const PlatformTab = () => {
       <RemoteAccessSettings />
       <SearchSettings />
       <MigrationSettings />
+      <OrbQualitySettings />
       {/* Feng Shui (theme) card hidden per request; component kept for easy restore. */}
       {/* <FengShuiSettings /> */}
       <ServerControlSettings />
@@ -834,6 +841,58 @@ const FengShuiSettings = () => {
             <div>
               <div className="radio-card__name">{theme.name}</div>
               <div className="radio-card__desc">{theme.description}</div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+// ── Orb (performance) ──
+
+const ORB_QUALITY_OPTIONS: { id: OrbQualityPref; name: string; desc: string }[] = [
+  { id: 'full', name: 'Full', desc: 'The standard animated glass orb.' },
+  { id: 'lite', name: 'Lite', desc: 'Same orb at lower resolution and frame rate. Noticeably lighter on the GPU (a touch softer), good for thin laptops.' },
+  { id: 'static', name: 'Static', desc: 'The orb, frozen. No animation and almost no power, but it still looks like the real orb and still shows task icons.' },
+];
+
+const OrbQualitySettings = () => {
+  const [pref, setPref] = useState<OrbQualityPref>(() => getOrbQualityCached());
+
+  useEffect(() => {
+    let cancelled = false;
+    void refreshOrbQualityFromServer().then((v) => { if (!cancelled) setPref(v); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const choose = (id: OrbQualityPref) => {
+    setPref(id);
+    setOrbQuality(id); // persists + applies live to any mounted orb
+  };
+
+  return (
+    <div className="tile">
+      <div className="scard__title">Orb</div>
+      <div className="scard__desc">
+        How much effort the animated orb spends rendering. Lower settings save power and run cooler on lightweight laptops.
+      </div>
+      {ORB_QUALITY_OPTIONS.map((opt) => {
+        const selected = pref === opt.id;
+        return (
+          <div
+            key={opt.id}
+            role="radio"
+            aria-checked={selected}
+            tabIndex={0}
+            onClick={() => choose(opt.id)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(opt.id); } }}
+            className={`radio-card ${selected ? 'is-selected' : ''}`}
+          >
+            <span className="radio-card__dot" />
+            <div>
+              <div className="radio-card__name">{opt.name}</div>
+              <div className="radio-card__desc">{opt.desc}</div>
             </div>
           </div>
         );
@@ -3718,6 +3777,7 @@ const ModelsTab = () => {
         <AudioGenModelCard models={models} />
         <MusicGenModelCard models={models} />
         <TranscriptionModelCard models={models} />
+        <CompactionModelCard models={models} />
         <SystemModelConfig />
         <VoiceOpenerModelConfig />
       </div>
@@ -4294,6 +4354,7 @@ const CapabilityModelCard = ({
   description,
   settingKey,
   capability,
+  matchFn,
   selectorLabel,
   noModelsMessage,
   noSelectionMessage,
@@ -4303,7 +4364,10 @@ const CapabilityModelCard = ({
   title: string;
   description: string;
   settingKey: string;
-  capability: string;
+  capability?: string;
+  // When provided, used to pick matching models instead of capability.includes —
+  // lets a card match e.g. "any text-capable model" rather than one tag.
+  matchFn?: (m: Model) => boolean;
   selectorLabel: string;
   noModelsMessage: string;
   noSelectionMessage: string;
@@ -4315,7 +4379,7 @@ const CapabilityModelCard = ({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  const matchingModels = models.filter(m => m.isEnabled && m.capabilities.includes(capability));
+  const matchingModels = models.filter(m => m.isEnabled && (matchFn ? matchFn(m) : !!capability && m.capabilities.includes(capability)));
   const hasAnyOption = matchingModels.length > 0 || extraOptions.length > 0;
 
   useEffect(() => {
@@ -4517,6 +4581,22 @@ const TranscriptionModelCard = ({ models }: { models: Model[] }) => (
       { id: 'local:whisper', label: 'Whisper (local, via whisper.cpp)' },
       { id: 'local:moonshine', label: 'Moonshine (local, default)' },
     ]}
+  />
+);
+
+// The model that writes memory summaries when an agent compacts. Any text model
+// works — explicitly excludes image/video/music/embedding models, which can't
+// produce text. Leaving it unset uses the cheapest text-capable model.
+const CompactionModelCard = ({ models }: { models: Model[] }) => (
+  <CapabilityModelCard
+    title="Summarization Model"
+    description="Writes memory summaries when an agent compacts its history. Summaries are bulk work, so a cheap, fast text model is ideal. Leave unset to auto-pick the cheapest text-capable model."
+    settingKey="compaction_model_id"
+    matchFn={(m) => !m.capabilities.some((c) => c.includes('generation') || c === 'embedding')}
+    selectorLabel="Summarization model"
+    noModelsMessage="No text-capable models are enabled. Enable a chat model above and come back here to pick it."
+    noSelectionMessage="Using the default: the cheapest enabled text-capable model. Pick one to set it explicitly."
+    models={models}
   />
 );
 

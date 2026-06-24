@@ -55,17 +55,19 @@ function reassignAffectedAgents(modelIds: string[]): number {
   const db = getDb();
   let reassigned = 0;
 
-  // Find a fallback model — first enabled model not in the affected set
+  // Find a fallback model — first enabled TEXT-capable model not in the affected
+  // set. Media-generation/embedding models cost 0 and would otherwise win the
+  // cost order, leaving an agent pointed at a model that can't hold a chat.
   let fallback: { id: string } | undefined;
   try {
     const placeholders = modelIds.map(() => '?').join(',');
     fallback = db.prepare(
-      `SELECT id FROM models WHERE is_enabled = 1 AND id NOT IN (${placeholders}) ORDER BY input_cost_per_m ASC LIMIT 1`
+      `SELECT id FROM models WHERE is_enabled = 1 AND id NOT IN (${placeholders}) AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' ORDER BY input_cost_per_m ASC, id ASC LIMIT 1`
     ).get(...modelIds) as { id: string } | undefined;
   } catch {
     // If query fails, try without the exclusion
     fallback = db.prepare(
-      'SELECT id FROM models WHERE is_enabled = 1 ORDER BY input_cost_per_m ASC LIMIT 1'
+      `SELECT id FROM models WHERE is_enabled = 1 AND capabilities NOT LIKE '%generation%' AND capabilities NOT LIKE '%embedding%' ORDER BY input_cost_per_m ASC, id ASC LIMIT 1`
     ).get() as { id: string } | undefined;
   }
 

@@ -1089,19 +1089,29 @@ export async function runV2Turn(agentId: string): Promise<void> {
         const gapCount = getUncompactedGapCount(agentId, contextWindow);
         if (gapCount > UNCOMPACTED_GAP_THRESHOLD && !backgroundDrains.has(agentId)) {
           backgroundDrains.add(agentId);
+          // Catch-up: a normal turn leaves only a few messages uncompacted, so 1
+          // chunk/turn keeps up. But a freshly imported/migrated agent (or one
+          // whose summarizer was broken for a while) can carry a huge backlog —
+          // at 1 chunk/turn that takes dozens of turns to clear, which reads as
+          // "compacting constantly". Scale throughput (and the wall-clock budget)
+          // to the backlog so a big gap drains in a few turns, then settles back
+          // to 1. Still background + abortable, so turns never block on it.
+          const big = gapCount > UNCOMPACTED_GAP_THRESHOLD * 4;
+          const maxChunksPerRun = big ? Math.min(10, Math.ceil(gapCount / UNCOMPACTED_GAP_THRESHOLD)) : 1;
+          const wallClockTimeoutMs = big ? 180_000 : 60_000;
           const drainAbort = new AbortController();
           const drainTimeout = setTimeout(() => {
-            logger.warn('v2: background drain wall-clock timeout (60s) — aborting', {
-              agentId,
+            logger.warn('v2: background drain wall-clock timeout — aborting', {
+              agentId, wallClockTimeoutMs,
             }, agentId);
             drainAbort.abort();
-          }, 60_000);
+          }, wallClockTimeoutMs);
           logger.info('v2: kicking off background gap-drain (fire-and-forget)', {
             agentId, gapCount, gapThreshold: UNCOMPACTED_GAP_THRESHOLD,
-            maxChunksPerRun: 1, wallClockTimeoutMs: 60_000,
+            maxChunksPerRun, wallClockTimeoutMs, catchUp: big,
           }, agentId);
           checkAndCompact(agentId, configuredModelId, contextWindow, {
-            maxChunksPerRun: 1,
+            maxChunksPerRun,
             skipContinuityBrief: true,
             abortSignal: drainAbort.signal,
           })
