@@ -65,6 +65,67 @@ for pkg in "${REQUIRED_BREW_PACKAGES[@]}"; do
     fi
 done
 
+# ── imsg (iMessage CLI: text + attachments) ─────────────────────────
+# Not a brew formula — built from source. imsg links PhoneNumberKit, whose
+# compiled .bundle MUST sit next to the executable or the binary SIGTRAPs at
+# startup on EVERY invocation. So we (a) probe that imsg actually RUNS, not just
+# exists — a presence-only check leaves a crash-on-launch binary in place
+# forever — and (b) copy the resource bundle alongside the binary, which the
+# old install missed (it copied only bin/imsg). Because this script runs at
+# every server startup, a broken imsg self-heals on the next reboot/update.
+if command -v imsg &>/dev/null && imsg --help &>/dev/null 2>&1; then
+    echo "✅ imsg already installed and working"
+    ((SKIPPED_COUNT++))
+else
+    if command -v imsg &>/dev/null; then
+        echo "📦 imsg present but not running (likely missing its PhoneNumberKit bundle) — repairing..."
+    else
+        echo "📦 Installing imsg (iMessage CLI)..."
+    fi
+    IMSG_OK=0
+    if command -v git &>/dev/null; then
+        IMSG_BUILD_DIR=$(mktemp -d)
+        if git clone --depth 1 https://github.com/steipete/imsg.git "$IMSG_BUILD_DIR" &>/dev/null \
+           && (cd "$IMSG_BUILD_DIR" && make build &>/dev/null); then
+            # Locate the Swift resource bundle(s) produced by the build.
+            IMSG_BUNDLE_DIR=""
+            for d in "$IMSG_BUILD_DIR/bin" "$IMSG_BUILD_DIR/.build/release" "$IMSG_BUILD_DIR"/.build/*/release; do
+                if ls "$d"/*.bundle &>/dev/null; then IMSG_BUNDLE_DIR="$d"; break; fi
+            done
+            # Install OVER an existing imsg (repairs in place); else first writable
+            # dir, preferring the order the engine probes (/opt/homebrew first).
+            IMSG_DEST=""
+            if command -v imsg &>/dev/null; then
+                CAND="$(dirname "$(command -v imsg)")"
+                cp "$IMSG_BUILD_DIR/bin/imsg" "$CAND/imsg" 2>/dev/null && IMSG_DEST="$CAND"
+            fi
+            if [ -z "$IMSG_DEST" ]; then
+                for d in /opt/homebrew/bin /usr/local/bin "$HOME/.dojo/bin"; do
+                    mkdir -p "$d" 2>/dev/null || true
+                    if cp "$IMSG_BUILD_DIR/bin/imsg" "$d/imsg" 2>/dev/null; then IMSG_DEST="$d"; break; fi
+                done
+            fi
+            if [ -n "$IMSG_DEST" ]; then
+                [ -n "$IMSG_BUNDLE_DIR" ] && cp -R "$IMSG_BUNDLE_DIR"/*.bundle "$IMSG_DEST"/ 2>/dev/null
+                # Verify the freshly-installed binary actually launches before
+                # claiming success — a bundle still missing means it'd SIGTRAP.
+                if "$IMSG_DEST/imsg" --help &>/dev/null 2>&1; then
+                    echo "✅ imsg installed with resource bundle → $IMSG_DEST"
+                    echo "INSTALLED:imsg"
+                    ((INSTALLED_COUNT++))
+                    IMSG_OK=1
+                fi
+            fi
+        fi
+        rm -rf "$IMSG_BUILD_DIR" 2>/dev/null
+    fi
+    if [ "$IMSG_OK" -ne 1 ]; then
+        echo "⚠️  imsg install/repair failed — iMessage attachments unavailable; text still works via the AppleScript fallback"
+        echo "FAILED:imsg"
+        ((FAILED_COUNT++))
+    fi
+fi
+
 echo ""
 echo "System dependencies: $INSTALLED_COUNT installed, $SKIPPED_COUNT already present, $FAILED_COUNT failed"
 

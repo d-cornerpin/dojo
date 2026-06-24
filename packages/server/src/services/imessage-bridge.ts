@@ -1199,9 +1199,25 @@ function sendIMessageViaAppleScript(recipient: string, text: string): void {
     .replace(/"/g, '\\"')
     .replace(/\n/g, '" & (ASCII character 10) & "');
 
+  // Select the iMessage service POSITIONALLY, not via `1st service whose
+  // service type = iMessage`. That filtered ("whose") reference throws
+  // AppleScript error -10002 ("Invalid key form") on macOS 26/Sequoia, breaking
+  // the engine's text fallback. Iterating `services` element-by-element and
+  // checking each one's type avoids the bad key form; if none reports the
+  // iMessage type, fall back to `item 1 of services` (the generic positional
+  // reference confirmed working on Sequoia).
   const script = `
     tell application "Messages"
-      set targetService to 1st service whose service type = iMessage
+      set targetService to missing value
+      repeat with s in services
+        try
+          if (service type of s) is iMessage then
+            set targetService to s
+            exit repeat
+          end if
+        end try
+      end repeat
+      if targetService is missing value then set targetService to item 1 of services
       set targetBuddy to buddy "${escapedRecipient}" of targetService
       send "${escapedText}" to targetBuddy
     end tell
@@ -1233,21 +1249,38 @@ export function sendIMessage(recipient: string, rawText: string): boolean {
 
   try {
     const imsg = getImsgPath();
+    let via: 'imsg' | 'applescript' = 'applescript';
     if (imsg) {
-      // Use execFileSync (not execSync) so the text is passed as a raw argument,
-      // bypassing the shell entirely. execSync builds a shell command string where
-      // $100 becomes a variable expansion (→ "00") and JSON-escaped \n sequences
-      // are passed literally instead of as real newlines.
-      execFileSync(
-        imsg,
-        ['send', '--to', recipient, '--text', text, '--service', 'imessage'],
-        { timeout: 15000, encoding: 'utf-8', stdio: 'pipe' },
-      );
+      try {
+        // Use execFileSync (not execSync) so the text is passed as a raw argument,
+        // bypassing the shell entirely. execSync builds a shell command string where
+        // $100 becomes a variable expansion (→ "00") and JSON-escaped \n sequences
+        // are passed literally instead of as real newlines.
+        execFileSync(
+          imsg,
+          ['send', '--to', recipient, '--text', text, '--service', 'imessage'],
+          { timeout: 15000, encoding: 'utf-8', stdio: 'pipe' },
+        );
+        via = 'imsg';
+      } catch (imsgErr) {
+        // imsg is present but FAILED — e.g. imsg v0.11.1 installed as a raw
+        // binary crashes with SIGTRAP because its compiled
+        // PhoneNumberKit_PhoneNumberKit.bundle didn't ship alongside it. Text
+        // delivery doesn't need imsg, so fall back to AppleScript instead of
+        // dropping the message. (Attachments still require imsg — see
+        // sendIMessageWithAttachment.)
+        logger.warn('imsg send failed — falling back to AppleScript', {
+          recipient,
+          error: imsgErr instanceof Error ? imsgErr.message : String(imsgErr),
+        });
+        sendIMessageViaAppleScript(recipient, text);
+        via = 'applescript';
+      }
     } else {
       sendIMessageViaAppleScript(recipient, text);
     }
 
-    logger.info('iMessage sent', { recipient, textLength: text.length, via: imsg ? 'imsg' : 'applescript' });
+    logger.info('iMessage sent', { recipient, textLength: text.length, via });
     // (v2.3.16) Dropped dedicated `imessage:sent` WS broadcast — the
     // dashboard sees outbound delivery via the [SENT VIA IMESSAGE to <owner>]
     // system marker that the loop persists in the chat stream.
