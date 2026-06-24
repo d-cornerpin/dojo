@@ -13,6 +13,8 @@ import { createLogger } from '../logger.js';
 import type { ExportManifest } from './manifest.js';
 import { readDependencyManifest, type DependencyManifest } from '../techniques/dependencies.js';
 import { classifyManualSteps } from './step-classify.js';
+import { getValidAccessTokenForAccount as getValidGoogleToken } from '../google/auth.js';
+import { getValidAccessTokenForAccount as getValidMsToken } from '../microsoft/auth.js';
 import type { PostMigrationCheck } from '@dojo/shared';
 
 const logger = createLogger('migration-checks');
@@ -254,9 +256,10 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
     });
   }
 
-  // Google accounts — a dojo can have MANY (up to 5 agent + 5 user). OAuth
-  // tokens are machine-specific, so EACH connected account gets its own
-  // reconnect card that re-auths that specific account by id.
+  // Google accounts — a dojo can have MANY (up to 5 agent + 5 user). For each,
+  // ACTUALLY validate the migrated token (refresh it): a valid one needs no
+  // action; one that fails gets a reconnect card. This is why Re-check works —
+  // once the user reconnects, the refreshed token validates and the card clears.
   const googleAccounts = listConnectedAccounts('google_accounts');
   if (googleAccounts.length > 0) {
     const gwsInstalled = checkCommandExists('gws');
@@ -268,13 +271,16 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
       cta: gwsInstalled ? undefined : { type: 'run_installer', label: 'Re-run installer' },
     });
     for (const acc of googleAccounts) {
+      const valid = await accountTokenValid('google', acc.id);
       currentChecks.push({
         id: `google-account-${acc.id}`,
-        label: `Reconnect Google — ${acc.email ?? `${acc.kind} account`}`,
-        status: 'action_needed',
-        category: 'action',
-        detail: 'Sign-in tokens are machine-specific. Reconnect signs this account in here (localhost redirect).',
-        cta: { type: 'reconnect_oauth', label: 'Reconnect', target: `google:${acc.id}` },
+        label: valid ? `Google connected — ${acc.email ?? `${acc.kind} account`}` : `Reconnect Google — ${acc.email ?? `${acc.kind} account`}`,
+        status: valid ? 'ok' : 'action_needed',
+        category: valid ? 'automated' : 'action',
+        detail: valid
+          ? 'Signed in and working on this machine.'
+          : "This account's sign-in needs refreshing here. Reconnect signs it in (localhost redirect), then it clears on Re-check.",
+        cta: valid ? undefined : { type: 'reconnect_oauth', label: 'Reconnect', target: `google:${acc.id}` },
       });
     }
   } else if (manifest.contents.google_workspace_connected || checkDbGoogleConnected()) {
@@ -295,13 +301,16 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
   const microsoftAccounts = listConnectedAccounts('microsoft_accounts');
   if (microsoftAccounts.length > 0) {
     for (const acc of microsoftAccounts) {
+      const valid = await accountTokenValid('microsoft', acc.id);
       currentChecks.push({
         id: `microsoft-account-${acc.id}`,
-        label: `Reconnect Microsoft — ${acc.email ?? `${acc.kind} account`}`,
-        status: 'action_needed',
-        category: 'action',
-        detail: 'Microsoft sign-in tokens are machine-specific. Reconnect signs this account in here.',
-        cta: { type: 'reconnect_oauth', label: 'Reconnect', target: `microsoft:${acc.id}` },
+        label: valid ? `Microsoft connected — ${acc.email ?? `${acc.kind} account`}` : `Reconnect Microsoft — ${acc.email ?? `${acc.kind} account`}`,
+        status: valid ? 'ok' : 'action_needed',
+        category: valid ? 'automated' : 'action',
+        detail: valid
+          ? 'Signed in and working on this machine.'
+          : "This account's sign-in needs refreshing here. Reconnect signs it in, then it clears on Re-check.",
+        cta: valid ? undefined : { type: 'reconnect_oauth', label: 'Reconnect', target: `microsoft:${acc.id}` },
       });
     }
   } else if (manifest.contents.microsoft_connected || checkDbMicrosoftConnected()) {
@@ -442,6 +451,21 @@ function listConnectedAccounts(
       .all() as Array<{ id: string; email: string | null; kind: string }>;
   } catch {
     return [];
+  }
+}
+
+// Validate an account's migrated token by trying to get a usable access token
+// (refreshes via the stored refresh token). Returns false on any failure so a
+// broken account surfaces a reconnect card — and true once it's been reauthed,
+// so Re-check clears the card.
+async function accountTokenValid(provider: 'google' | 'microsoft', accountId: string): Promise<boolean> {
+  try {
+    const token = provider === 'google'
+      ? await getValidGoogleToken(accountId)
+      : await getValidMsToken(accountId);
+    return !!token;
+  } catch {
+    return false;
   }
 }
 
