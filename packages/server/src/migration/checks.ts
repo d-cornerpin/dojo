@@ -319,13 +319,24 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
   // between machines. DOJO reads Messages as a Node process, so FDA is granted
   // to "node" (this is what OOBE does too — not Terminal/the DOJO app).
   if (manifest.contents.imessage_configured) {
+    // Actually DETECT whether Full Disk Access is granted by opening the Messages
+    // DB from THIS (the dojo server / node) process — the same process that
+    // reads iMessage at runtime. If it opens, FDA is on for the right node and
+    // we're done; if it throws (EPERM under macOS TCC), it's still needed. This
+    // is why Re-check works now: it re-runs this real probe instead of a
+    // hardcoded "needs you".
+    const chatDb = path.join(os.homedir(), 'Library', 'Messages', 'chat.db');
+    let fdaGranted = false;
+    try { fs.closeSync(fs.openSync(chatDb, 'r')); fdaGranted = true; } catch { /* TCC-denied or missing */ }
     currentChecks.push({
       id: 'imessage-fda',
-      label: 'Grant Full Disk Access for iMessage',
-      status: 'action_needed',
-      category: 'action',
-      detail: 'Open Settings, then enable Full Disk Access for "node" (DOJO runs as a Node process — that\'s the right entry, not Terminal or DOJO). If "node" isn\'t listed, click + and add the path from `which node`. Then hit Re-check.',
-      cta: { type: 'open_system_settings', label: 'Open System Settings', target: 'full-disk-access' },
+      label: fdaGranted ? 'Full Disk Access granted (iMessage)' : 'Grant Full Disk Access for iMessage',
+      status: fdaGranted ? 'ok' : 'action_needed',
+      category: fdaGranted ? 'automated' : 'action',
+      detail: fdaGranted
+        ? 'The dojo can read Messages — iMessage is ready.'
+        : 'Open Settings, then enable Full Disk Access for "node" (DOJO runs as a Node process — that\'s the right entry, not Terminal or DOJO). If "node" isn\'t listed, click + and add the path from `which node`. Then hit Re-check.',
+      cta: fdaGranted ? undefined : { type: 'open_system_settings', label: 'Open System Settings', target: 'full-disk-access' },
     });
   }
 

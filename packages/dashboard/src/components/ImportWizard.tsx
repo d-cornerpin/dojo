@@ -249,6 +249,11 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   // (the redirect resolves on localhost), then auto re-check.
   const reconnectOAuth = async (target: string) => {
     const [provider, accountId] = target.split(':');
+    // Open a real new TAB synchronously inside the click handler so the browser
+    // keeps the user-gesture and doesn't silently block it (a featured popup, or
+    // any window.open AFTER the await, gets blocked). We point the tab at the
+    // authUrl once the connect call returns.
+    const tab = window.open('about:blank', '_blank');
     setBusyCta(`oauth-${target}`);
     setError(null);
     try {
@@ -259,13 +264,16 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
       });
       const data = await res.json();
       if (data.ok && data.data?.authUrl) {
-        window.open(data.data.authUrl, '_blank', 'width=600,height=700');
+        if (tab) tab.location.href = data.data.authUrl;
+        else window.open(data.data.authUrl, '_blank'); // fallback: a new tab
         // Re-check after the user has had time to finish the browser sign-in.
         setTimeout(() => { void recheck(); }, 8000);
       } else {
+        if (tab) tab.close();
         setError(data.error || 'Could not start the reconnect. If you just imported in first-run setup, finish entering the dojo, then reconnect from Settings.');
       }
     } catch (e) {
+      if (tab) tab.close();
       setError(e instanceof Error ? e.message : 'Could not start the reconnect.');
     } finally {
       setBusyCta(null);
