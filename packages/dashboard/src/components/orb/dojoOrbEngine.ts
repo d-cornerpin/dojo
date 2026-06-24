@@ -23,6 +23,17 @@
    ============================================================ */
 
 export type OrbStateName = 'idle' | 'listening' | 'thinking' | 'speaking';
+/** Render quality.
+ *  'full'   — the default look (the old "heavy" outer-atmosphere effects were
+ *             retired everywhere as imperceptible-for-cost; this is what used to
+ *             be 'lite'). Native 1.0x DPR, 20fps idle.
+ *  'lite'   — same look at 0.7x DPR (~half the pixels) and a lower idle frame
+ *             rate. A bigger GPU win for weak / integrated chips; softer orb.
+ *  'static' — the full look, but frozen: time and all ambient motion are
+ *             suppressed and the loop idles at ~1fps, so it looks like the live
+ *             orb while costing almost nothing. Task/notification indicators
+ *             still animate; brief state changes settle, then re-freeze. */
+export type OrbQuality = 'full' | 'lite' | 'static';
 export type OrbEmotionName =
   | 'startled'
   | 'joyous'
@@ -73,6 +84,8 @@ export type OrbEngine = {
   /** Show a static glyph inside the glass for a notification ('alert' | 'check'
    *  | a task name), or null to clear. Overrides the spinning task glyph. */
   setNoteGlyph: (name: string | null) => void;
+  /** Switch render quality (full ↔ lite) live. See OrbQuality. */
+  setQuality: (q: OrbQuality) => void;
   destroy: () => void;
 };
 
@@ -200,6 +213,7 @@ uniform float u_disp;        /* chromatic dispersion strength */
 uniform float u_lens;        /* rim lensing mix */
 uniform vec3  u_ripple;      /* x: age s, y: angle, z: amp */
 uniform float u_haze;        /* atmosphere strength multiplier */
+uniform float u_quality;     /* 1 = full effects, 0 = lite (skip outer flare/caustic/reflect) */
 uniform float u_atmos;       /* outside cast-light (halo/flare/bloom) scale — dimmed on small screens so the orb doesn't wash out the chat */
 uniform float u_vsquash;     /* vertical stretch(+)/squash(-), volume kept */
 uniform float u_flash;       /* momentary light pulse 0..~1 */
@@ -401,7 +415,11 @@ void main(){
 
   /* motion: how fast the bubble is traveling right now */
   float speed = length(u_vel);
-  vec2 vdir = u_vel / max(speed, 0.001);
+  // When perfectly still, u_vel is (0,0): dividing gave vdir=(0,0), and
+  // atan(0,0) is UNDEFINED in GLSL (NaN on most GPUs). That NaN then flowed into
+  // r via 0.0 * NaN = NaN below and wiped the whole orb. Default to a valid unit
+  // direction when there is no motion.
+  vec2 vdir = (speed > 0.001) ? (u_vel / speed) : vec2(1.0, 0.0);
   float vAng = atan(vdir.y, vdir.x);
   float moveGate = smoothstep(4.0, 55.0, speed);
 
@@ -627,12 +645,12 @@ void main(){
     /* outer ring continuation of the lens flare */
     float oRing = exp(-d*d*900.0) * (0.35 + 0.65*u_ring);
 
-    /* the flare continuing past the glass onto the page */
-    vec4 flOut = flareF(u2, t, u_env, u_streak) * lightDim;
-    /* broad caustic ribbons cast across the page */
-    vec4 bd = bandsF(u2, t, u_env, 0.14) * lightDim;
-    /* mirrored ghost of the orb on the surface below */
-    vec4 rf = reflectF(u2, t, u_env, u_streak) * lightDim;
+    /* Retired: the flare wings, broad caustic ribbons, and mirrored ghost that
+       used to be cast onto the page were the most expensive terms here (one
+       flareF + bandsF + reflectF per pixel across the whole outer canvas) and
+       were visually imperceptible for that cost. The cheap halo glow below
+       carries the orb's cast light for every quality tier now. */
+    vec4 flOut = vec4(0.0), bd = vec4(0.0), rf = vec4(0.0);
 
     /* contact shadow under the bubble */
     float shadow = exp(-d*9.0) * smoothstep(0.0, 0.9, rel.y/r) * 0.22;
@@ -806,6 +824,15 @@ void main(){
   /* ---------------- WebGL setup ---------------- */
   const gl = canvas.getContext('webgl', {
     alpha: true,
+    // The orb is decorative; ask the browser for the low-power GPU profile so
+    // it never forces a discrete GPU (and stays gentle on integrated chips).
+    powerPreference: 'low-power',
+    // REQUIRED for the idle-throttle / static modes: we deliberately stop
+    // redrawing when the orb is calm (down to ~1fps in 'static'). With the
+    // default (false) the browser clears the canvas on frames we don't draw, so
+    // a frozen orb would vanish between redraws. Preserving the buffer keeps the
+    // last drawn frame on screen until we draw the next one.
+    preserveDrawingBuffer: true,
     // Premultiplied output (the fragment shader multiplies col by alpha at the
     // end). iOS/WebKit effectively ignores `premultipliedAlpha:false` and
     // composites the canvas as premultiplied anyway, which turned every
@@ -1064,6 +1091,7 @@ void main(){
       'u_streak',
       'u_env',
       'u_atmos',
+      'u_quality',
       'u_refr',
       'u_disp',
       'u_lens',
@@ -1173,7 +1201,10 @@ void main(){
     cssSize = Math.round(Math.min(dia * scale, innerWidth * 0.88));
     /* narrow viewport -> dim the cast light so it doesn't wash out content */
     atmosScale = 0.5 + 0.5 * Math.max(0, Math.min(1, (innerWidth - 420) / 360));
-    const dpr = Math.min(devicePixelRatio || 1, 2);
+    // Full renders at native 1.0x; 'lite' drops below native to 0.7x (~half the
+    // pixels) for a bigger GPU win on weak hardware, at the cost of a softer orb.
+    const dpr = Math.min(devicePixelRatio || 1, quality === 'lite' ? 0.7 : 1.0);
+    curDpr = dpr;
 
     canvas.style.width = cssSize + 'px';
     canvas.style.height = cssSize + 'px';
@@ -1638,10 +1669,13 @@ void main(){
     mouse.x = e.clientX;
     mouse.y = e.clientY;
     mouse.in = 1;
+    poke();
   };
   const onPointerLeave = () => (mouse.in = 0);
   let ripple = { t0: -99, ang: 0, amp: 0 };
   const onPointerDown = (e: PointerEvent) => {
+    if (quality === 'static') return; // frozen orb: a click neither ripples nor kicks it
+    poke();
     const cx = canvasPos.x + center.x + spring.x,
       cy = canvasPos.y + center.y + spring.y;
     const dx = cx - e.clientX,
@@ -1741,7 +1775,9 @@ void main(){
         this._pendingIcon = null;
       }
       if (this.amt < 0.01 && this._target === 0) this.icon = -1;
-      /* spin: agents drift slower and calmer than jobs */
+      /* spin: agents drift slower and calmer than jobs. The task glyph is an
+         informational overlay (image gen / healer / compaction…), so it keeps
+         spinning even in static — only the orb BODY is frozen, not the icon. */
       const rate = this._isAgent ? 0.7 : 2.1;
       if (this.amt > 0.01) this.spin += dt * rate;
 
@@ -1750,7 +1786,7 @@ void main(){
          glyph fade and decays out when it ends. */
       const healerOn = this._active === 'healer';
       let target = 0;
-      if (healerOn || this.heartbeat > 0.001) {
+      if ((healerOn || this.heartbeat > 0.001) && quality !== 'static') {
         this._beatT += dt;
         const period = 0.92; /* ~65 bpm */
         const p = (this._beatT % period) / period;
@@ -1852,11 +1888,61 @@ void main(){
   /* ---------------- lifecycle scaffolding ---------------- */
   let running = false;
   let rafId = 0;
+  let destroyed = false;
+  /* Power management. The heavy glass fragment shader runs per-pixel every
+     frame, so the cheapest big win is simply NOT drawing when nothing needs to:
+       - pageVisible / onScreen: pause entirely when the tab is hidden or the
+         orb is scrolled out of view.
+       - idle throttle: when the orb is calm and static, render at a low frame
+         rate (it still breathes/drifts) instead of the display's full refresh.
+       - quality: 'lite' throttles harder and (with #4) skips costly effects. */
+  let pageVisible = typeof document === 'undefined' ? true : !document.hidden;
+  let onScreen = true;
+  let quality: OrbQuality = 'full';
+  let curDpr = 1.5; // the device-pixel-ratio cap actually in use (lowered in 'lite')
+  let lastPoke = performance.now() / 1000; // bumped on any interaction / state change
+  let lastRender = 0;
+  const poke = () => { lastPoke = performance.now() / 1000; };
+  const IDLE_FPS = 20; // idle, full quality
+  const IDLE_FPS_LITE = 4; // idle, lite / reduced-motion (lighter than full)
+  // 'static' redraws the SAME frozen frame at a low rate. It can't go much
+  // lower than this without the browser clearing the canvas between redraws
+  // (the orb would vanish); the frames are identical so it still looks frozen.
+  const IDLE_FPS_STATIC = 8;
+  const ACTIVE_SETTLE = 1.2; // stay at full refresh this long after the last poke
 
   function frame(): void {
     if (!running) return;
-    const reduceMotion = reduceMotionMq.matches;
     const now = performance.now() / 1000;
+    const reduceMotion = reduceMotionMq.matches;
+    /* 'static' quality renders the full orb but freezes time + all ambient
+       motion (handled below), so the orb looks live but never animates on its
+       own. State changes still settle (they go 'active' and render), then it
+       re-freezes at ~1fps. */
+    const staticMode = quality === 'static';
+
+    /* Adaptive frame rate: full refresh while the orb is doing something
+       (emotion/system pose, wake/pulse stinger, live voice, a running task, or
+       within ACTIVE_SETTLE of the last interaction), a low idle rate otherwise.
+       Skipped frames just reschedule without touching the GPU. */
+    const active = staticMode
+      ? // frozen BODY, but keep rendering while a change settles OR while a
+        // task/notification indicator is on screen, so its glyph keeps spinning
+        // and its progress bar keeps running. The orb body itself stays still
+        // via the motion suppressions below.
+        now - lastPoke < ACTIVE_SETTLE || Task.amt > 0.01 || Note.amt > 0.01
+      : emotion !== null || system !== null || pulseFx !== null || wakeFx !== null ||
+        extEnv >= 0 || Task.amt > 0.01 || Note.amt > 0.01 ||
+        now - lastPoke < ACTIVE_SETTLE;
+    if (!active) {
+      const idleFps = staticMode ? IDLE_FPS_STATIC : quality === 'lite' || reduceMotion ? IDLE_FPS_LITE : IDLE_FPS;
+      if (now - lastRender < 1 / idleFps) {
+        rafId = requestAnimationFrame(frame);
+        return;
+      }
+    }
+    lastRender = now;
+
     let dt = Math.min(now - last, 0.05);
     last = now;
 
@@ -1876,11 +1962,13 @@ void main(){
       if (emotion.releasing && emotion.weight <= 0.01) {
         emotion = null;
       } else {
-        const m = E.motion(tE);
+        /* static: clamp the emotion's motion clock so its shape settles once
+           and then holds, instead of oscillating forever on sin(tE). */
+        const m = E.motion(staticMode ? Math.min(tE, 1.2) : tE);
         const w = emotion.weight;
         /* with reduced motion: keep the static shape language (it
            still conveys the emotion) but drop the physical theatrics */
-        const dyn = reduceMotion ? 0 : w;
+        const dyn = (reduceMotion || staticMode) ? 0 : w;
         mo = {
           dy: (m.dy || 0) * dyn,
           vs: (m.vs || 0) * dyn,
@@ -1908,12 +1996,12 @@ void main(){
     if (pulseFx) {
       const tp = now - pulseFx.t0;
       if (tp > 0.9) pulseFx = null;
-      else if (!reduceMotion) wakeFlash += 0.5 * Math.exp(-tp * 4.0);
+      else if (!reduceMotion && !staticMode) wakeFlash += 0.5 * Math.exp(-tp * 4.0);
     }
     if (wakeFx) {
       const tw = now - wakeFx.t0;
       if (tw > 1.3) wakeFx = null;
-      else if (!reduceMotion) {
+      else if (!reduceMotion && !staticMode) {
         if (tw < 0.55) wakeScale = 0.55 + 0.50 * easeOutBack(tw / 0.55);
         else wakeScale = 1.0 + 0.05 * Math.exp(-(tw - 0.55) * 6.0) * Math.cos((tw - 0.55) * 18.0);
         wakeFlash = 0.9 * Math.exp(-tw * 3.0);
@@ -1946,7 +2034,10 @@ void main(){
     }
 
     /* tempo: emotions change the orb's sense of time */
-    simT += dt * (reduceMotion ? 0.06 : cur.tempo);
+    // 'static' freezes the glass clock for a truly motionless orb. (Freezing it
+    // used to blank the orb, but that was the separate still-velocity NaN bug
+    // now fixed in the shader's vdir computation, not the clock.)
+    simT += dt * (staticMode ? 0 : reduceMotion ? 0.06 : cur.tempo);
 
     /* ease params toward composed target */
     const k = 1 - Math.exp(-dt * 3.2);
@@ -1957,11 +2048,11 @@ void main(){
 
     // Live voice: ease toward the real mic level; otherwise the simulation.
     if (extEnv >= 0) envExtSmooth += (extEnv - envExtSmooth) * Math.min(1, dt * 14);
-    const baseEnv = extEnv >= 0 ? envExtSmooth : (reduceMotion ? 0.15 : envelope(simT));
+    const baseEnv = staticMode ? 0.15 : extEnv >= 0 ? envExtSmooth : (reduceMotion ? 0.15 : envelope(simT));
     const env = Math.max(baseEnv, cur.envFloor || 0) * (cur.envScale === undefined ? 1 : cur.envScale);
 
     /* ambient drift: slow wander, larger while thinking */
-    const dAmp = reduceMotion ? 0 : cur.drift;
+    const dAmp = (reduceMotion || staticMode) ? 0 : cur.drift;
     const driftX = dAmp * (Math.sin(simT * 0.43 + 1.3) + 0.5 * Math.sin(simT * 0.97 + 4.1)) * 0.66;
     const driftY = dAmp * (Math.sin(simT * 0.37 + 2.6) + 0.5 * Math.sin(simT * 1.13 + 0.8)) * 0.5;
 
@@ -1970,7 +2061,7 @@ void main(){
     const baseCy = canvasPos.y + cssSize / 2;
     let pushX = 0,
       pushY = 0;
-    if (!reduceMotion && mouse.in) {
+    if (!reduceMotion && !staticMode && mouse.in) {
       const dx = baseCx - mouse.x,
         dy = baseCy - mouse.y;
       const md = Math.hypot(dx, dy);
@@ -1981,12 +2072,18 @@ void main(){
         pushY = (dy / md) * push;
       }
     }
-    const ks = 60,
-      cs2 = 9.5;
-    spring.vx += ((pushX - spring.x) * ks - spring.vx * cs2) * dt;
-    spring.vy += ((pushY - spring.y) * ks - spring.vy * cs2) * dt;
-    spring.x += spring.vx * dt;
-    spring.y += spring.vy * dt;
+    if (staticMode) {
+      /* no positional spring at all when frozen (also clears any kick that
+         predates a switch into static). */
+      spring.x = spring.y = spring.vx = spring.vy = 0;
+    } else {
+      const ks = 60,
+        cs2 = 9.5;
+      spring.vx += ((pushX - spring.x) * ks - spring.vx * cs2) * dt;
+      spring.vy += ((pushY - spring.y) * ks - spring.vy * cs2) * dt;
+      spring.x += spring.vx * dt;
+      spring.y += spring.vy * dt;
+    }
 
     /* fine tremor for working / mad: two incommensurate sines */
     const shakeX = mo.shake * (Math.sin(now * 55.1) + 0.6 * Math.sin(now * 47.3 + 1.0));
@@ -2009,12 +2106,13 @@ void main(){
     glc.uniform2f(U.u_viewport, innerWidth, innerHeight);
     glc.uniform2f(U.u_canvasPos, canvasPos.x, canvasPos.y);
     glc.uniform2f(U.u_canvasSize, cssSize, cssSize);
-    glc.uniform1f(U.u_dpr, Math.min(devicePixelRatio || 1, 2));
+    glc.uniform1f(U.u_dpr, curDpr);
     glc.uniform1f(U.u_time, simT);
+    glc.uniform1f(U.u_quality, quality === 'lite' ? 0.0 : 1.0);
     glc.uniform2f(U.u_center, cx, cy);
     glc.uniform1f(U.u_radius, radius * (cur.scale === undefined ? 1 : cur.scale) * wakeScale);
     glc.uniform2f(U.u_mouse, mouse.x, mouse.y);
-    glc.uniform1f(U.u_mouseIn, reduceMotion ? 0 : mouse.in);
+    glc.uniform1f(U.u_mouseIn, (reduceMotion || staticMode) ? 0 : mouse.in);
     glc.uniform2f(U.u_vel, velS.x, velS.y);
 
     glc.uniform1f(U.u_wobble, reduceMotion ? cur.wobble * 0.3 : cur.wobble);
@@ -2034,7 +2132,7 @@ void main(){
     glc.uniform1f(U.u_refr, cur.refr);
     glc.uniform1f(U.u_disp, cur.disp);
     glc.uniform1f(U.u_lens, cur.lens);
-    glc.uniform3f(U.u_ripple, now / 1 - ripple.t0, ripple.ang, ripple.amp);
+    glc.uniform3f(U.u_ripple, now / 1 - ripple.t0, ripple.ang, staticMode ? 0 : ripple.amp);
     glc.uniform1f(U.u_haze, ORB_HAZE);
     glc.uniform1f(U.u_atmos, atmosScale);
     glc.uniform1f(U.u_vsquash, mo.vs);
@@ -2095,7 +2193,7 @@ void main(){
   };
 
   function start(): void {
-    if (running) return;
+    if (running || destroyed || !pageVisible || !onScreen) return;
     running = true;
     last = performance.now() / 1000;
     rafId = requestAnimationFrame(frame);
@@ -2123,11 +2221,22 @@ void main(){
   canvas.addEventListener('webglcontextlost', onContextLost);
   canvas.addEventListener('webglcontextrestored', onContextRestored);
 
+  /* #2 — pause the whole loop only when the TAB is hidden. We deliberately do
+     NOT use an IntersectionObserver: the orb is a fixed, always-visible element,
+     so it saves nothing, and a transient layout shift on load could make IO
+     report "off-screen" and pause the loop, which showed up as the orb
+     vanishing a few seconds after it appeared. */
+  const pause = () => { running = false; cancelAnimationFrame(rafId); };
+  const onVisibility = () => {
+    pageVisible = !document.hidden;
+    if (pageVisible) start(); else pause();
+  };
+  document.addEventListener('visibilitychange', onVisibility);
+
   init();
   start();
 
   /* ---------------- teardown ---------------- */
-  let destroyed = false;
   function destroy(): void {
     if (destroyed) return;
     destroyed = true;
@@ -2138,6 +2247,7 @@ void main(){
     removeEventListener('pointermove', onPointerMove);
     removeEventListener('pointerleave', onPointerLeave);
     removeEventListener('pointerdown', onPointerDown);
+    document.removeEventListener('visibilitychange', onVisibility);
     canvas.removeEventListener('webglcontextlost', onContextLost);
     canvas.removeEventListener('webglcontextrestored', onContextRestored);
     if (reduceMotionMq.removeEventListener) reduceMotionMq.removeEventListener('change', onReduceMotionChange);
@@ -2166,19 +2276,23 @@ void main(){
      state machine; setState reassigns it). */
   void target;
 
+  /* Every external command pokes the activity clock so the orb jumps back to
+     full refresh immediately (the idle throttle only applies when nothing has
+     happened for ACTIVE_SETTLE). */
   return {
-    setState,
-    setEmotion,
-    setSystem,
-    pulse,
-    startTask: (name, o) => Task.start(name, o),
-    updateTask: (p) => Task.update(p),
-    endTask: (name) => Task.end(name),
+    setState: (n) => { poke(); setState(n); },
+    setEmotion: (n) => { poke(); setEmotion(n); },
+    setSystem: (n) => { poke(); setSystem(n); },
+    pulse: () => { poke(); pulse(); },
+    startTask: (name, o) => { poke(); Task.start(name, o); },
+    updateTask: (p) => { poke(); Task.update(p); },
+    endTask: (name) => { poke(); Task.end(name); },
     resize,
-    setHue,
-    setEnv: (level) => { extEnv = level == null ? -1 : Math.max(0, Math.min(1, level)); },
-    setAlert,
-    setNoteGlyph,
+    setHue: (deg) => { poke(); setHue(deg); },
+    setEnv: (level) => { poke(); extEnv = level == null ? -1 : Math.max(0, Math.min(1, level)); },
+    setAlert: (level) => { poke(); setAlert(level); },
+    setNoteGlyph: (name) => { poke(); setNoteGlyph(name); },
+    setQuality: (q) => { quality = q; layout(); poke(); },
     destroy,
   };
 }

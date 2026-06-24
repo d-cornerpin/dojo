@@ -1,6 +1,13 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { createOrbEngine, type OrbEngine } from './dojoOrbEngine';
 import { useOrbRegistration } from './OrbProvider';
+import {
+  getOrbQualityCached,
+  refreshOrbQualityFromServer,
+  subscribeOrbQuality,
+  engineQuality,
+  type OrbQualityPref,
+} from './orbQuality';
 
 interface DojoOrbProps {
   /* Optional explicit stage element to host the ProgressLine DOM node and
@@ -23,8 +30,22 @@ export const DojoOrb = forwardRef<OrbEngine | null, DojoOrbProps>(function DojoO
   const engineRef = useRef<OrbEngine | null>(null);
   const register = useOrbRegistration();
 
+  /* User power-saver preference. Read synchronously from the localStorage
+     mirror first (so 'off' doesn't briefly spin up WebGL), then reconcile with
+     the server and apply live changes from the Settings toggle. */
+  const [pref, setPref] = useState<OrbQualityPref>(() => getOrbQualityCached());
+  useEffect(() => {
+    let cancelled = false;
+    void refreshOrbQualityFromServer().then((v) => { if (!cancelled) setPref(v); });
+    const unsub = subscribeOrbQuality(setPref);
+    return () => { cancelled = true; unsub(); };
+  }, []);
+
   useImperativeHandle<OrbEngine | null, OrbEngine | null>(ref, () => engineRef.current, []);
 
+  /* Create the WebGL engine once. All three quality modes (full / lite /
+     static) are real WebGL render modes, so the CSS pearl fallback is reserved
+     for genuine WebGL failure. Quality is applied live below. */
   useEffect(() => {
     const canvas = canvasRef.current;
     const bgImg = imgRef.current;
@@ -54,6 +75,7 @@ export const DojoOrb = forwardRef<OrbEngine | null, DojoOrbProps>(function DojoO
       wrap.classList.add('no-webgl');
       return;
     }
+    engine.setQuality(engineQuality(getOrbQualityCached()));
     wrap.classList.remove('no-webgl');
     engineRef.current = engine;
     register(engine);
@@ -64,6 +86,11 @@ export const DojoOrb = forwardRef<OrbEngine | null, DojoOrbProps>(function DojoO
       register(null);
     };
   }, [stageRef, register]);
+
+  /* Apply quality changes (full / lite / static) live — no context recreation. */
+  useEffect(() => {
+    engineRef.current?.setQuality(engineQuality(pref));
+  }, [pref]);
 
   return (
     <div ref={wrapRef} className={`dojo3-orb-glass-wrap ${className ?? ''}`.trim()}>
