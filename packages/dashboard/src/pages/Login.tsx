@@ -119,7 +119,9 @@ function LoginStage() {
     <div ref={stageRef} className={`dojo3-stage dojo3-login ${settled ? 'is-settled' : ''}`}>
       <div className="dojo3-stage__main">
         <div className="dojo3-backdrop" aria-hidden="true" />
-        <DojoOrb stageRef={stageRef} />
+        {/* Force the full/heavy orb and skip the per-user orb_quality fetch:
+            pre-auth that authed fetch 401s → /login reload loop. */}
+        <DojoOrb stageRef={stageRef} quality="full" />
 
         <div className="dojo3-login__center">
           <span className="dojo3-login__wordmark">DOJO</span>

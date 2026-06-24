@@ -15,13 +15,18 @@ interface DojoOrbProps {
      nearest .dojo3-stage ancestor. */
   stageRef?: React.RefObject<HTMLElement | null>;
   className?: string;
+  /* Force a fixed quality and DON'T read the per-user orb_quality setting from
+     the server. Used on the login screen: the orb renders pre-auth, so fetching
+     that authed setting 401s, and the 401 handler bounces to /login — an
+     infinite reload loop. Login passes 'full' (the default/heavy look). */
+  quality?: OrbQualityPref;
 }
 
 /* DojoOrb renders the WebGL canvas, the refraction backdrop <img>, and a
    pearl fallback for the no-WebGL case. It owns the engine lifecycle and
    forwards the engine API upward through the ref. */
 export const DojoOrb = forwardRef<OrbEngine | null, DojoOrbProps>(function DojoOrb(
-  { stageRef, className },
+  { stageRef, className, quality },
   ref,
 ) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -33,13 +38,16 @@ export const DojoOrb = forwardRef<OrbEngine | null, DojoOrbProps>(function DojoO
   /* User power-saver preference. Read synchronously from the localStorage
      mirror first (so 'off' doesn't briefly spin up WebGL), then reconcile with
      the server and apply live changes from the Settings toggle. */
-  const [pref, setPref] = useState<OrbQualityPref>(() => getOrbQualityCached());
+  const [pref, setPref] = useState<OrbQualityPref>(() => quality ?? getOrbQualityCached());
   useEffect(() => {
+    // Forced quality (e.g. the login screen) — never read the per-user setting.
+    // Pre-auth that fetch 401s and the handler reloads /login in a loop.
+    if (quality) return;
     let cancelled = false;
     void refreshOrbQualityFromServer().then((v) => { if (!cancelled) setPref(v); });
     const unsub = subscribeOrbQuality(setPref);
     return () => { cancelled = true; unsub(); };
-  }, []);
+  }, [quality]);
 
   useImperativeHandle<OrbEngine | null, OrbEngine | null>(ref, () => engineRef.current, []);
 

@@ -86,8 +86,16 @@ export const request = async <T>(
     });
 
     if (response.status === 401 && !path.startsWith('/auth/login')) {
-      clearToken();
-      window.location.href = '/login';
+      // Don't bounce to /login if we're ALREADY there. The login screen renders
+      // the orb, which fetches its quality preference (orb_quality) via this
+      // authed endpoint — pre-login that 401s, and an unconditional redirect
+      // here reloads /login, remounts the orb, fetches again → infinite reload
+      // loop. Suppressing the redirect on the login page lets such pre-auth
+      // background fetches fail quietly (callers fall back to a cached default).
+      if (window.location.pathname !== '/login') {
+        clearToken();
+        window.location.href = '/login';
+      }
       return { ok: false, error: 'Unauthorized' };
     }
 
