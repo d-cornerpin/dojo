@@ -290,14 +290,15 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
       label: 'Reconnect Google',
       status: 'action_needed',
       category: 'action',
-      detail: 'Sign-in tokens are machine-specific. Reconnect signs in here (localhost redirect).',
+      detail: "Couldn't confirm this account's sign-in on this machine. Reconnect signs in here (localhost redirect), then it clears on Re-check.",
       cta: { type: 'reconnect_oauth', label: 'Reconnect Google', target: 'google' },
     });
   }
 
   // Microsoft accounts — covers M365 work accounts AND personal Microsoft
-  // accounts (all live in microsoft_accounts). One reconnect card per connected
-  // account; tokens are always machine-specific.
+  // accounts (all live in microsoft_accounts). Each migrated account is validated
+  // (refresh tokens carry over between machines, so most just work); only one that
+  // fails to refresh gets a reconnect card.
   const microsoftAccounts = listConnectedAccounts('microsoft_accounts');
   if (microsoftAccounts.length > 0) {
     for (const acc of microsoftAccounts) {
@@ -319,7 +320,7 @@ export async function runPostMigrationChecks(manifest: ExportManifest): Promise<
       label: 'Reconnect Microsoft',
       status: 'action_needed',
       category: 'action',
-      detail: 'Microsoft sign-in tokens are machine-specific. Reconnect signs in here.',
+      detail: "Couldn't confirm this account's sign-in on this machine. Reconnect signs in here, then it clears on Re-check.",
       cta: { type: 'reconnect_oauth', label: 'Reconnect Microsoft', target: 'microsoft' },
     });
   }
@@ -446,8 +447,13 @@ function listConnectedAccounts(
   table: 'google_accounts' | 'microsoft_accounts',
 ): Array<{ id: string; email: string | null; kind: string }> {
   try {
+    // Enumerate by refresh_token presence, NOT connected=1. Validating a token
+    // (getValidAccessTokenForAccount) flips connected→0 as a side effect when a
+    // refresh fails, so a connected=1 filter would make a just-failed account
+    // VANISH on the next check/recheck. An account that was ever set up keeps its
+    // refresh_token, so this keeps its reconnect card visible until reauthed.
     return getDb()
-      .prepare(`SELECT id, email, kind FROM ${table} WHERE connected = 1 ORDER BY kind, position`)
+      .prepare(`SELECT id, email, kind FROM ${table} WHERE refresh_token IS NOT NULL AND refresh_token != '' ORDER BY kind, position`)
       .all() as Array<{ id: string; email: string | null; kind: string }>;
   } catch {
     return [];

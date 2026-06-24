@@ -366,14 +366,20 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
   const tunnelAckNeeded = !!preflight?.manifest.contents.cloudflare_named_tunnel;
   const scanPass = !!preflight && preflight.integrityOk && preflight.passwordOk && preflight.diskOk
     && (!tunnelAckNeeded || ackTunnel);
-  const actionCards = checks.filter((c) => c.category === 'action' && c.status !== 'ok' && !markedDone.has(c.id));
+  // Email accounts get their own always-visible section (✓ connected / ⚠ reconnect)
+  // so they never hide in the collapsed "migrated automatically" list — pull them
+  // out of every other bucket by id-prefix.
+  const isEmailAccount = (id: string) => id.startsWith('google-account-') || id.startsWith('microsoft-account-');
+  const emailAccounts = checks.filter((c) => isEmailAccount(c.id));
+  const actionCards = checks.filter((c) => c.category === 'action' && c.status !== 'ok' && !markedDone.has(c.id) && !isEmailAccount(c.id));
   const techniqueCards = checks.filter((c) => c.category === 'technique' && !markedDone.has(c.id));
   // Ollama models get their own section with download progress + retry — pull
   // them out of the generic automated list.
   const ollamaModels = checks.filter((c) => c.id.startsWith('ollama-model-'));
-  const automated = checks.filter((c) => !c.id.startsWith('ollama-model-') && (c.category === 'automated' || (!c.category && c.status === 'ok')));
+  const automated = checks.filter((c) => !c.id.startsWith('ollama-model-') && !isEmailAccount(c.id) && (c.category === 'automated' || (!c.category && c.status === 'ok')));
   const missingModels = ollamaModels.filter((m) => m.status !== 'ok' && !modelDone.has(m.label)).length;
-  const remaining = actionCards.length + techniqueCards.length;
+  const emailNeedsAuth = emailAccounts.filter((a) => a.status !== 'ok').length;
+  const remaining = actionCards.length + techniqueCards.length + emailNeedsAuth;
 
   // ── Step bodies ──
   const StatusRow = ({ ok, label, sub }: { ok: boolean | 'pending'; label: string; sub?: string }) => (
@@ -526,6 +532,31 @@ export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onC
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {emailAccounts.length > 0 && (
+          <div className="space-y-2">
+            <h4 className="text-xs uppercase tracking-wide text-ui/40">Email accounts</h4>
+            {emailAccounts.map((c) => {
+              const ok = c.status === 'ok';
+              return (
+                <div key={c.id} className="glass-nested rounded-lg p-3 flex items-start gap-3">
+                  <span className={ok ? 'text-green-500 mt-0.5' : 'text-amber-400 mt-0.5'}>{ok ? '✓' : '⚠️'}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm text-ui/80">{c.label}</div>
+                    {c.detail && <div className="text-xs text-ui/45 mt-0.5">{ok ? 'Signed in and working on this machine.' : c.detail}</div>}
+                  </div>
+                  {!ok && (
+                    <div className="shrink-0 flex flex-col items-end gap-1">
+                      {renderCta(c)}
+                      <button onClick={recheck} className="text-[11px] text-ui/40 hover:text-ui/70">Re-check</button>
+                    </div>
+                  )}
+                  {ok && <span className="shrink-0 text-xs text-green-500 mt-0.5">connected</span>}
+                </div>
+              );
+            })}
           </div>
         )}
 
