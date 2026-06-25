@@ -61,7 +61,7 @@ import { queueEmbedding } from '../../memory/embeddings.js';
 import { isPrimaryAgent, isTrainerAgent, isPMAgent } from '../../config/platform.js';
 import os from 'node:os';
 import path from 'node:path';
-import { turnBoundary, forceA2ATurn, lastTurnWasA2A } from '../turn-state.js';
+import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind } from '../turn-state.js';
 
 import {
   stoppedAgents,
@@ -344,7 +344,12 @@ export function setAgentStatus(agentId: string, status: string): void {
         UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?
       `).run(status, agentId);
     }
-    broadcast({ type: 'agent:status', agentId, status });
+    if (status === 'idle') currentTurnKind.delete(agentId);
+    // On 'working', carry the turn kind so the composer can stay quiet on pure
+    // A2A turns (unless wordy mode). Defaults to 'user' until the counterparty
+    // is resolved early in the turn.
+    const turnKind = status === 'working' ? (currentTurnKind.get(agentId) ?? 'user') : undefined;
+    broadcast({ type: 'agent:status', agentId, status, ...(turnKind ? { turnKind } : {}) });
   } catch (err) {
     logger.warn('Failed to update agent status', {
       agentId,
@@ -549,6 +554,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
   const isA2ATurn = unrepliedAssign !== null && !hasUnansweredUser && (mostRecentIsA2A || forcedA2ATurn);
   if (isA2ATurn) lastTurnWasA2A.add(agentId); else lastTurnWasA2A.delete(agentId);
 
+  // Now that the turn kind is known, record it and re-broadcast the working
+  // status with it so the composer can stay quiet on pure A2A turns (unless
+  // wordy mode is on). The DB status was already set to 'working' at turn start;
+  // this is a broadcast-only update and the 30s heartbeat reads the same map.
+  currentTurnKind.set(agentId, isA2ATurn ? 'a2a' : 'user');
+  broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: isA2ATurn ? 'a2a' : 'user' });
+
   // Enforcer arms ONLY on A2A turns. On a user turn a pending/lingering A2A
   // must not force a send_to_agent into the user-facing reply.
   const a2aReplyContext = isA2ATurn
@@ -579,26 +591,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
     'SELECT MAX(turn_number) as max_turn FROM messages WHERE agent_id = ?',
   ).get(agentId) as { max_turn: number | null } | undefined;
   const turnNumber = (lastTurn?.max_turn ?? 0) + 1;
-
-  // [DUP-PROBE] TEMPORARY — what is this turn responding to, and what does the
-  // engine think is still waiting? Lets us see, when a duplicate happens, what
-  // the second turn triggered on. Remove before commit.
-  try {
-    logger.warn('[DUP-PROBE] turnStart', {
-      agentId,
-      turnNumber,
-      isA2ATurn,
-      chosenConvKey,
-      triggerRowid: triggerRow?.rowid ?? null,
-      triggerPreview: (triggerRow?.content ?? '').replace(/\s+/g, ' ').slice(0, 60),
-      waiting: waitingConvs.map((w) => ({
-        key: w.key,
-        oldest: w.oldestWaitingRowid,
-        latestRowid: w.latest.rowid,
-        preview: (w.latest.content ?? '').replace(/\s+/g, ' ').slice(0, 40),
-      })),
-    }, agentId);
-  } catch { /* probe must never break a turn */ }
 
   // Snapshot turn boundary so context assembly excludes mid-run user messages
   const turnStartedAt = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
@@ -2753,26 +2745,48 @@ export async function runV2Turn(agentId: string): Promise<void> {
               `  4. BLOCKED (needs escalation - user does not know yet) - tracker_update_status(task_id, status="blocked", notes="why"). PM will surface this to the primary user.\n\n` +
               `If you go idle with a task still in_progress, the engine will auto-pause it and escalate to PM. Pre-fix for non-idempotent tasks (gmail_send, sms_send, voice_call, exec hitting live APIs), PM was then forced into a re-run remediation that duplicated the side effect. Save everyone the work: close the task now.]`
             );
-            const nudgeId = uuidv4();
-            db.prepare(`
-              INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-              VALUES (?, ?, 'system', ?, ?, datetime('now'))
-            `).run(nudgeId, agentId, nudgeText, turnNumber);
-            broadcast({
-              type: 'chat:message',
-              agentId,
-              message: {
-                id: nudgeId, agentId, role: 'system' as const,
-                content: nudgeText,
-                tokenCount: null, modelId: null, cost: null, latencyMs: null,
-                createdAt: new Date().toISOString(),
-              },
-            });
+            // v3.1.10: if the agent ALREADY produced a user-facing reply this
+            // turn, do NOT re-prompt it. The weaker model treats the re-prompt
+            // as "answer again" and emits a second, slightly-reworded reply —
+            // the double-response the user reported (e.g. the Anthropic-OAuth
+            // recall question answered twice), and on a setup turn the same
+            // re-prompt makes it redo the work (the duplicate project). Set the
+            // flag and fall through to the close-out hardcap below, which
+            // reconciles the dangling task deterministically (pause one-shot /
+            // reset recurring) while the one reply already shown stands. Only
+            // re-prompt when there is NO reply yet (a silent stop), where it can
+            // safely get the agent to continue or formally close the task. Build
+            // to the weak-model floor: never rely on a re-prompt doing the right
+            // thing.
             state = advance(state, { nudgedForGoingIdleWithInProgressThisTurn: true });
-            logger.info('v2 going-idle-with-in_progress nudge fired', {
-              agentId, openTaskCount: openTasks.length, taskIds: openTasks.map(t => t.id),
-            }, agentId);
-            continue; // re-enter the loop so the model sees the nudge
+            const alreadyRepliedThisTurn = !!(persistedContent && persistedContent.trim().length > 0);
+            if (alreadyRepliedThisTurn) {
+              logger.info('v2 going-idle-with-in_progress: agent already replied this turn — skipping re-prompt, engine reconciles the dangling task', {
+                agentId, openTaskCount: openTasks.length, taskIds: openTasks.map(t => t.id),
+              }, agentId);
+              // No nudge message, no continue: fall through to the hardcap below,
+              // which pauses/resets the dangling task and keeps the single reply.
+            } else {
+              const nudgeId = uuidv4();
+              db.prepare(`
+                INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+                VALUES (?, ?, 'system', ?, ?, datetime('now'))
+              `).run(nudgeId, agentId, nudgeText, turnNumber);
+              broadcast({
+                type: 'chat:message',
+                agentId,
+                message: {
+                  id: nudgeId, agentId, role: 'system' as const,
+                  content: nudgeText,
+                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                  createdAt: new Date().toISOString(),
+                },
+              });
+              logger.info('v2 going-idle-with-in_progress nudge fired', {
+                agentId, openTaskCount: openTasks.length, taskIds: openTasks.map(t => t.id),
+              }, agentId);
+              continue; // re-enter the loop so the model sees the nudge
+            }
           }
         }
 

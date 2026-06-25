@@ -8,6 +8,13 @@ export interface AgentStatusEvent {
   type: 'agent:status';
   agentId: string;
   status: string;
+  /**
+   * When status === 'working', whether this turn is a normal user turn or an
+   * agent-to-agent (A2A) turn. Lets the composer stay quiet (no thinking dots,
+   * no stop button) while the agent is only talking to another agent — unless
+   * wordy mode is on. Absent on non-working statuses.
+   */
+  turnKind?: 'user' | 'a2a';
 }
 
 export interface ChatChunkEvent {

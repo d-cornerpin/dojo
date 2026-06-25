@@ -559,6 +559,10 @@ export const Chat = ({ panel = null }: ChatProps) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isWorking, setIsWorking] = useState(false);
+  // Kind of the current working turn, from agent:status. 'a2a' = the agent is
+  // only talking to another agent; we keep the composer quiet for those (no
+  // thinking dots / stop button) unless wordy mode is on.
+  const [turnKind, setTurnKind] = useState<'user' | 'a2a'>('user');
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
@@ -1037,10 +1041,11 @@ export const Chat = ({ panel = null }: ChatProps) => {
     // thinking dots and the send→stop button swap need to react live
     // without requiring a page reload to pick up the backend state.
     const unsubStatus = subscribe('agent:status', (event: WsEvent) => {
-      const e = event as { agentId: string; status: string };
+      const e = event as { agentId: string; status: string; turnKind?: 'user' | 'a2a' };
       if (e.agentId !== agentIdRef.current) return;
       if (e.status === 'working') {
         setIsWorking(true);
+        setTurnKind(e.turnKind ?? 'user');
       } else if (e.status === 'idle' || e.status === 'error') {
         setIsWorking(false);
         reconcileStreamingBubbles();
@@ -1285,11 +1290,16 @@ export const Chat = ({ panel = null }: ChatProps) => {
   // chat in (dojo3-agentSwitchIn). (All hooks are declared above this point,
   // so dropping the early return doesn't change hook order.)
 
+  // The agent is "working" for the UI's thinking dots + stop button only when
+  // it's a normal user turn — OR any turn while wordy mode is on. On a pure
+  // agent-to-agent (A2A) turn with wordy off, the composer stays calm.
+  const showWorkingUi = isWorking && (turnKind !== 'a2a' || wordyMode);
+
   const composer = (
     <Dojo3Composer
       agentId={AGENT_ID}
       onSend={handleSend}
-      isWorking={isWorking}
+      isWorking={showWorkingUi}
       placeholder={activeAgentName ? `Message ${activeAgentName}` : undefined}
       onStop={async () => {
         await api.stopAgent(AGENT_ID);
@@ -1324,7 +1334,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     <Dojo3Stage
       composer={composer}
       agentName={activeAgentName || agentName}
-      isWorking={isWorking}
+      isWorking={showWorkingUi}
       wordyMode={wordyMode}
       onToggleWordyMode={toggleWordyMode}
       onNewSession={startNewSession}
@@ -1499,7 +1509,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
         })}
         </div>
         )}
-        {isWorking && !messages.some(m => m.isStreaming) && <ThinkingBubble />}
+        {showWorkingUi && !messages.some(m => m.isStreaming) && <ThinkingBubble />}
         <div ref={messagesEndRef} />
       </div>
     </Dojo3Stage>

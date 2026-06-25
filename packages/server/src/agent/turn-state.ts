@@ -6,6 +6,12 @@
 // a fresh run via the wakeup mechanism.
 export const turnBoundary = new Map<string, string>();
 
+// Kind of the current turn per agent ('user' | 'a2a'), set once the turn's
+// counterparty is resolved. Threaded onto agent:status='working' broadcasts so
+// the dashboard composer can stay quiet (no thinking dots / stop button) on
+// pure agent-to-agent turns unless wordy mode is on. Cleared when idle.
+export const currentTurnKind = new Map<string, 'user' | 'a2a'>();
+
 // A2A turn isolation (v3.1.10).
 //
 // Inter-agent (A2A) traffic must never bleed into a user-facing reply: the
