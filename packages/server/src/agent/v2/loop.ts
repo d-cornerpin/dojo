@@ -580,6 +580,26 @@ export async function runV2Turn(agentId: string): Promise<void> {
   ).get(agentId) as { max_turn: number | null } | undefined;
   const turnNumber = (lastTurn?.max_turn ?? 0) + 1;
 
+  // [DUP-PROBE] TEMPORARY — what is this turn responding to, and what does the
+  // engine think is still waiting? Lets us see, when a duplicate happens, what
+  // the second turn triggered on. Remove before commit.
+  try {
+    logger.warn('[DUP-PROBE] turnStart', {
+      agentId,
+      turnNumber,
+      isA2ATurn,
+      chosenConvKey,
+      triggerRowid: triggerRow?.rowid ?? null,
+      triggerPreview: (triggerRow?.content ?? '').replace(/\s+/g, ' ').slice(0, 60),
+      waiting: waitingConvs.map((w) => ({
+        key: w.key,
+        oldest: w.oldestWaitingRowid,
+        latestRowid: w.latest.rowid,
+        preview: (w.latest.content ?? '').replace(/\s+/g, ' ').slice(0, 40),
+      })),
+    }, agentId);
+  } catch { /* probe must never break a turn */ }
+
   // Snapshot turn boundary so context assembly excludes mid-run user messages
   const turnStartedAt = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
   turnBoundary.set(agentId, turnStartedAt);
@@ -2780,30 +2800,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
             LIMIT 10
           `).all(agentId) as Array<{ id: string; title: string }>;
           if (danglerRows.length > 0) {
-            // Delete the just-streamed assistant message so the user does
-            // not see "Done" while the tracker shows in_progress.
-            try {
-              db.prepare('DELETE FROM messages WHERE id = ?').run(messageId);
-            } catch (delErr) {
-              logger.warn('v2: idle-with-in_progress hardcap — failed to delete suppressed assistant message', {
-                agentId, messageId, error: delErr instanceof Error ? delErr.message : String(delErr),
-              }, agentId);
-            }
-            try {
-              broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
-              broadcast({
-                type: 'chat:message',
-                agentId,
-                message: {
-                  id: messageId, agentId, role: 'assistant' as const,
-                  content: '',
-                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
-                  createdAt: new Date().toISOString(),
-                },
-              });
-            } catch { /* best effort */ }
+            // 2026-06-25: KEEP the agent's closeout visible to the user.
+            // Deleting it ate legitimate confirmations — the weaker model
+            // usually DID the work (created the project, wrote the file, set
+            // the reminders) and simply wrote its wrap-up without the separate,
+            // formal tracker_update_status call. Suppressing that helpful reply
+            // to protect an internal tracker-consistency invariant the user
+            // never actually sees (they read the chat, not the raw task table)
+            // was the wrong trade. We STILL reconcile the tracker below (pause
+            // the dangling one-shot task / reset the recurring schedule) and
+            // tell the agent to close tasks formally next time — but the user
+            // keeps the message the agent wrote them.
 
-            const note = `[${new Date().toISOString()}] Auto-paused by engine: agent "${agentId}" ignored the going-idle-with-in_progress nudge (produced closeout text without calling tracker_update_status). User: reassign or resolve manually from the dashboard.`;
+            const note = `[${new Date().toISOString()}] Auto-paused by engine: agent "${agentId}" produced a closeout without calling tracker_update_status. The reply was left visible to the user; this task was paused so the tracker isn't left silently in_progress. User: reassign or resolve manually from the dashboard.`;
             // v2.9.22 — engine-initiated pause is authoritative; PM does
             // not need to re-validate it via UNVALIDATED_PAUSE. The
             // dedicated escalateCloseoutMissToPM A2A below already gives
@@ -2869,8 +2878,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
               parts.push(`${recurringResetIds.length} recurring task${recurringResetIds.length === 1 ? '' : 's'} reset to fire on schedule (ids: ${recurringResetIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ')}${recurringResetIds.length > 5 ? '...' : ''}) — your missed close-out failed THIS run, not the whole schedule`);
             }
             const escMsg = (
-              `[System: idle-with-in_progress nudge was unsatisfied AND you produced user-facing text — your reply was suppressed (the bubble was removed from the user's view). ${parts.join('; ')}. ` +
-              `Next time you finish a task, the FIRST action of your final turn must be tracker_update_status(status="complete", result="...", evidence=[...]). The user did not see your closeout; there is nothing to reply to.${pausedCount > 0 ? ' PM will re-validate the paused one-shot state and may revert.' : ''}]`
+              `[System: you produced user-facing text without first calling tracker_update_status. Your reply WAS shown to the user (it is no longer suppressed), but the tracker is now out of sync with what you told them. ${parts.join('; ')}. ` +
+              `Next time you finish a task, call tracker_update_status(status="complete", result="...", evidence=[...]) BEFORE your closeout so the tracker matches your reply.${pausedCount > 0 ? ' The paused one-shot task(s) are queued for PM review.' : ''}]`
             );
             const escId = uuidv4();
             try {

@@ -436,6 +436,7 @@ class AgentRuntime {
   async handleMessage(agentId: string, _content: string): Promise<void> {
     // If agent is already running, queue a wakeup so we re-run after current loop finishes
     if (activeRuns.has(agentId)) {
+      logger.warn('[DUP-PROBE] wakeup source=handleMessage-busy', { agentId, contentPreview: (_content ?? '').replace(/\s+/g, ' ').slice(0, 70) }, agentId);
       logger.info('Agent busy — queuing wakeup for after current run', { agentId }, agentId);
       pendingWakeups.add(agentId);
       return;
@@ -599,6 +600,7 @@ class AgentRuntime {
             const head = waiting[0].oldestWaitingRowid;
             const prev = drainHead.get(agentId);
             const stuck = prev && prev.rowid === head ? prev.stuck + 1 : 0;
+            logger.warn('[DUP-PROBE] wakeup source=human-drain', { agentId, stuck, headRowid: head, waiting: waiting.map((w) => ({ key: w.key, oldest: w.oldestWaitingRowid, latestRowid: w.latest.rowid, preview: (w.latest.content ?? '').replace(/\s+/g, ' ').slice(0, 40) })) }, agentId);
             if (stuck < MAX_DRAIN_STUCK) {
               drainHead.set(agentId, { rowid: head, stuck });
               pendingWakeups.add(agentId);
