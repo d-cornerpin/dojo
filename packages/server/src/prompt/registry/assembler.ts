@@ -58,6 +58,9 @@ export function buildAssemblyContext(
     capabilities,
     contextWindow: getContextWindow(modelId),
     ownerName: getOwnerName(),
+    // The reply goes to THIS turn's counterparty (the actual inbound sender),
+    // not always the owner. Falls back to the owner for proactive/dashboard turns.
+    replyRecipientName: turnContext?.counterparty?.name ?? getOwnerName(),
     ttsEngine: resolveTtsEngine(turnContext),
     lastUserContent: inbound.lastContent,
     inboundChannel: inbound.inboundChannel,

@@ -317,7 +317,9 @@ import {
   statusHeartbeats,
 } from './shared-state.js';
 
-import { turnBoundary } from './turn-state.js';
+import { turnBoundary, forceA2ATurn, a2aTurnRetries, MAX_A2A_TURN_RETRIES, lastTurnWasA2A, drainHead, MAX_DRAIN_STUCK } from './turn-state.js';
+import { getWaitingHumanConversations } from './v2/counterparty.js';
+import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';
 
 // Recovery-streak Map and cap moved to shared-state.ts (Phase 6 2026-05-04)
 // so v2/recovery.ts and v1 catch share the same per-agent streak tracking.
@@ -508,6 +510,65 @@ class AgentRuntime {
       // Idempotent — no-op if the heartbeat was already stopped.
       stopStatusHeartbeat(agentId);
 
+      // ── A2A re-trigger (v3.1.10) ──
+      // If a wake-intent A2A is still unreplied after this turn, give it its
+      // OWN dedicated turn rather than letting it bleed into the next user
+      // reply. This is what makes "strip A2A from user turns" safe: a deferred
+      // A2A is reintroduced as an isolated A2A turn, never ignored. Bounded by
+      // MAX_A2A_TURN_RETRIES so a model that never produces a clean reply can't
+      // spin — after the cap we record a synthetic reply (stops the enforcer)
+      // and log it, accepting that the sender gets no answer over an infinite
+      // loop or a polluted user turn.
+      try {
+        const status = (getDb()
+          .prepare('SELECT status FROM agents WHERE id = ?')
+          .get(agentId) as { status?: string } | undefined)?.status;
+        if (status !== 'terminated') {
+          const owed = findUnrepliedAssignForAgent(agentId);
+          const wasA2ATurn = lastTurnWasA2A.has(agentId);
+          lastTurnWasA2A.delete(agentId);
+          if (owed) {
+            if (wasA2ATurn) {
+              // A dedicated A2A turn ran and STILL didn't clear the reply —
+              // a genuinely failed attempt. Count it against the cap.
+              const tries = (a2aTurnRetries.get(agentId) ?? 0) + 1;
+              if (tries <= MAX_A2A_TURN_RETRIES) {
+                a2aTurnRetries.set(agentId, tries);
+                forceA2ATurn.add(agentId);
+                pendingWakeups.add(agentId);
+                logger.info('Retrying dedicated A2A turn for unreplied inbound', {
+                  agentId, intent: owed.intent, thread: owed.threadShort, attempt: tries,
+                }, agentId);
+              } else {
+                logger.warn('A2A reply gave up after max dedicated turns — recording synthetic reply', {
+                  agentId, intent: owed.intent, thread: owed.threadShort, from: owed.fromName,
+                }, agentId);
+                recordA2AReply({ assignMessageId: owed.messageId, agentId, threadId: owed.threadShort, replyIntent: 'ABANDONED' });
+                a2aTurnRetries.delete(agentId);
+                forceA2ATurn.delete(agentId);
+              }
+            } else {
+              // A user/normal turn deferred the A2A (user took priority, or the
+              // A2A just arrived) — give it its own turn next. No penalty: it
+              // hasn't actually had a turn to fail yet.
+              forceA2ATurn.add(agentId);
+              pendingWakeups.add(agentId);
+              logger.info('Queuing dedicated A2A turn for deferred inbound', {
+                agentId, intent: owed.intent, thread: owed.threadShort,
+              }, agentId);
+            }
+          } else {
+            // Handled (or none owed) — clear bookkeeping.
+            a2aTurnRetries.delete(agentId);
+            forceA2ATurn.delete(agentId);
+          }
+        }
+      } catch (err) {
+        logger.warn('A2A re-trigger check failed', {
+          agentId, error: err instanceof Error ? err.message : String(err),
+        }, agentId);
+      }
+
       // v2.3.19 (finding #195) — clear any stale preempt flag so the
       // next run (the queued wakeup we're about to fire) starts with a
       // clean slate. Pre-spec, when a preempted in-flight model call
@@ -520,6 +581,38 @@ class AgentRuntime {
       // immediately on entering the loop — stalling the queued user
       // message. Cleared here as a hard guarantee.
       preemptedAgents.delete(agentId);
+
+      // ── Human conversation drain (turn continuity) ──
+      // A turn serves ONE counterparty. If other human conversations are still
+      // waiting (their messages arrived during a long turn and got no reply yet),
+      // queue a wakeup so the agent works through them instead of going idle with
+      // messages stranded — the failure the realistic battery exposed, where a
+      // big first task ate every wakeup and the other senders were never
+      // answered. Bounded by MAX_DRAIN_STUCK: if the head (oldest-waiting)
+      // conversation doesn't advance across re-triggers, the agent can't serve it
+      // (no terminal reply), so we stop self-spinning and idle until a new inbound.
+      try {
+        const drainStatus = (getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
+        if (drainStatus !== 'terminated') {
+          const waiting = getWaitingHumanConversations(agentId);
+          if (waiting.length > 0) {
+            const head = waiting[0].oldestWaitingRowid;
+            const prev = drainHead.get(agentId);
+            const stuck = prev && prev.rowid === head ? prev.stuck + 1 : 0;
+            if (stuck < MAX_DRAIN_STUCK) {
+              drainHead.set(agentId, { rowid: head, stuck });
+              pendingWakeups.add(agentId);
+            } else {
+              logger.warn('drain: head conversation not advancing — stopping re-trigger', { agentId, headRowid: head, waiting: waiting.length }, agentId);
+              drainHead.delete(agentId);
+            }
+          } else {
+            drainHead.delete(agentId);
+          }
+        }
+      } catch (err) {
+        logger.warn('drain re-trigger check failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
+      }
 
       // If a message arrived while we were busy, re-trigger the loop.
       // Don't clear turnBoundary yet — clear it AFTER the wakeup starts

@@ -13,6 +13,7 @@ import { broadcast } from '../ws.js';
 import { isPrimaryAgent, getPrimaryAgentId, getHealerAgentId, getDreamerAgentId, getImaginerAgentId } from '../../config/platform.js';
 import { sanitizeMessagesOnModelChange } from '../../agent/model-switch.js';
 import type { AgentDetail, Model, Message, AgentMessage } from '@dojo/shared';
+import { deriveOrigin } from '@dojo/shared';
 
 const logger = createLogger('agents-routes');
 const agentsRouter = new Hono();
@@ -408,6 +409,11 @@ agentsRouter.post('/:id/reset-session', async (c) => {
       "UPDATE agents SET session_started_at = ?, updated_at = ?, " +
       "config = json_remove(COALESCE(config, '{}'), '$.continuityBrief', '$.scratchpad') WHERE id = ?",
     ).run(boundary, boundary, id);
+    // Clear per-conversation served tracking on reset (turn-continuity state).
+    try {
+      const { clearServedConversations } = await import('../../agent/turn-state.js');
+      clearServedConversations(id);
+    } catch { /* ignore */ }
 
     // 3. Insert UI divider + broadcast.
     const dividerId = uuidv4();
@@ -567,6 +573,24 @@ agentsRouter.get('/:id/messages', (c) => {
     cost: row.cost as number | null,
     latencyMs: row.latency_ms as number | null,
     createdAt: row.created_at as string,
+    // Carry source through so the dashboard can hide A2A-turn output (source='a2a')
+    // and badge voice messages on reload, not just on the live broadcast path.
+    source: (row.source as 'voice' | 'a2a' | null | undefined) ?? null,
+    // Canonical attribution for the dashboard's origin-based classifier. Same
+    // projection the memory store applies; structured columns win, legacy rows
+    // resolve via the marker shim inside deriveOrigin.
+    origin: deriveOrigin({
+      role: row.role as Message['role'],
+      content: (row.content as string | null) ?? null,
+      source: (row.source as string | null) ?? null,
+      sourceAgentId: (row.source_agent_id as string | null) ?? null,
+      a2aThreadId: (row.a2a_thread_id as string | null) ?? null,
+      a2aIntent: (row.a2a_intent as string | null) ?? null,
+      a2aRequiresResponse: (row.a2a_requires_response as number | null) ?? null,
+      inboundMeta: (row.inbound_meta as string | null) ?? null,
+      originKind: (row.origin_kind as string | null) ?? null,
+      originIntent: (row.origin_intent as string | null) ?? null,
+    }),
   }));
 
   return c.json({ ok: true, data: messages });

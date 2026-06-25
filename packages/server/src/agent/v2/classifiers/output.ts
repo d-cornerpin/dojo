@@ -98,10 +98,20 @@ export function outputPersistenceClassifier(
   if (!input.responseText || input.responseText.trim().length === 0) {
     return { decision: 'suppress', reason: 'no text to persist' };
   }
-  if (input.isInterAgentTrigger && input.sentToAgentThisTurn) {
+  // v3.1.10: an inter-agent (A2A / group / PM-poke) turn is entirely
+  // agent-internal — the response goes to the other agent via send_to_agent,
+  // never to the user. ALL user-facing text on such a turn is suppressed,
+  // including intermediate planning text that rides alongside tool calls
+  // ("Let me check the tracker for that deployment ticket" + tracker_list_active).
+  // Previously this only fired once send_to_agent had been called, so the
+  // pre-reply planning text leaked into the user's dashboard. The agent's
+  // text is still seen by the enforcer (raw) so the missed-reply nudge works,
+  // and the inbound A2A + send_to_agent + tool results remain in the agent's
+  // context and in wordy mode.
+  if (input.isInterAgentTrigger) {
     return {
       decision: 'suppress',
-      reason: 'inter-agent turn with send_to_agent already called — trailing text is filler',
+      reason: 'inter-agent turn — all user-facing text is agent-internal',
     };
   }
   return { decision: 'persist', reason: 'normal text persistence' };

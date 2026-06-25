@@ -2,6 +2,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { type PromptTurnContext } from '../prompt/assembler.js';
+import { renderCounterpartyHeader, conversationKey, type TurnCounterparty } from '../agent/v2/counterparty.js';
 import { getContextWindow } from '../agent/model.js';
 import { estimateTokens, getRecentMessages } from './store.js';
 import { getContextSummaries } from './dag.js';
@@ -278,8 +279,138 @@ async function assembleContextViaRegistry(
 ): Promise<AssembledContext> {
   const ctx = buildAssemblyContext(agentId, modelId, turnContext, turnState);
   const sys = assembleSystemFromRegistry(ctx);
-  const { messages } = await assembleMessageContext(agentId, modelId, sys.text, turnContext);
-  return { systemPrompt: sys.text, messages, systemEntryIds: sys.entryIds };
+  // Attribution redesign (Phase 3): append the explicit "who you're talking to"
+  // header AFTER the stable cached prefix. It's small + volatile (per
+  // counterparty), so trailing it keeps the cacheable system body intact while
+  // giving the model an unambiguous anchor on the current counterparty.
+  let systemPrompt = sys.text;
+  if (turnContext?.counterparty) {
+    systemPrompt = `${systemPrompt}\n\n---\n\n${renderCounterpartyHeader(turnContext.counterparty)}`;
+  }
+  // Head-of-line hint (just-in-time, only when others are waiting): the engine
+  // serves one conversation at a time, so a long synchronous task makes everyone
+  // behind it wait. Offer the agent the option to ack + track big work as a
+  // project and move on, with the quick-reply default. Not a standing SOUL rule.
+  if (turnContext?.counterparty?.kind === 'user' && (turnContext.othersWaiting ?? 0) > 0) {
+    const n = turnContext.othersWaiting!;
+    systemPrompt = `${systemPrompt}\n\n[Engine hint: ${n} other conversation${n === 1 ? ' is' : 's are'} waiting for you right now. If THIS request is quick, just answer it. If it's a large or multi-step task (research, a plan, a project), don't do all the deep work now while the others wait — send a brief acknowledgment, capture it with tracker_create_project / a tracker task, and end the turn so you can serve the others; then work the project across later turns. Reply on this turn's channel as usual.]`;
+  }
+  const { messages } = await assembleMessageContext(agentId, modelId, systemPrompt, turnContext);
+  return { systemPrompt, messages, systemEntryIds: sys.entryIds };
+}
+
+/** Inbound markers that identify an A2A / inter-agent message stored as role='user'. */
+const A2A_INBOUND_RE = /^\s*(\[A2A:|\[SOURCE: AGENT MESSAGE FROM|\[SOURCE: GROUP BROADCAST FROM|\[SOURCE: PM AGENT POKE FROM)/;
+
+/**
+ * Remove inter-agent traffic from a fresh tail for a normal/user turn:
+ *   (a) inbound A2A messages (role='user', A2A marker),
+ *   (b) the agent's own send_to_agent / broadcast_to_group tool calls,
+ *   (c) the tool_results paired to those calls (matched by tool_use_id).
+ * Used only on non-A2A turns; see the caller for rationale. Pure — does not
+ * touch the DB.
+ */
+function stripA2AFromTail(tail: Message[]): Message[] {
+  const a2aToolIds = new Set<string>();
+  for (const m of tail) {
+    if (m.role !== 'assistant') continue;
+    try {
+      const blocks = JSON.parse(m.content);
+      if (Array.isArray(blocks)) {
+        for (const b of blocks) {
+          if (b && b.type === 'tool_use' && (b.name === 'send_to_agent' || b.name === 'broadcast_to_group') && b.id) {
+            a2aToolIds.add(b.id);
+          }
+        }
+      }
+    } catch { /* non-JSON assistant text — nothing to scan */ }
+  }
+  const isA2AAssistant = (content: string): boolean => {
+    try {
+      const blocks = JSON.parse(content);
+      return Array.isArray(blocks) && blocks.some((b) => b && b.type === 'tool_use' && (b.name === 'send_to_agent' || b.name === 'broadcast_to_group'));
+    } catch { return false; }
+  };
+  const isA2AToolResult = (content: string): boolean => {
+    try {
+      const blocks = JSON.parse(content);
+      return Array.isArray(blocks) && blocks.some((b) => b && b.type === 'tool_result' && a2aToolIds.has(b.tool_use_id));
+    } catch { return false; }
+  };
+  return tail.filter((m) => {
+    if (m.role === 'user' && A2A_INBOUND_RE.test(m.content ?? '')) return false;
+    if (m.role === 'assistant' && isA2AAssistant(m.content ?? '')) return false;
+    if (m.role === 'tool' && isA2AToolResult(m.content ?? '')) return false;
+    return true;
+  });
+}
+
+/**
+ * Scope a fresh tail to a single A2A thread (attribution redesign, Phase 4).
+ * On a dedicated A2A turn the live conversation is JUST that thread plus the
+ * agent's own output — the human's inbound messages, other A2A threads, and
+ * engine events are excluded so the agent never conflates the user with the
+ * agent it's replying to. The agent answers questions about the user's work
+ * from MEMORY (vault/summaries/tracker), which is assembled separately. Uses
+ * structured origin (deriveOrigin) — no marker regex.
+ */
+function scopeToA2AThread(tail: Message[], threadId: string | null): Message[] {
+  const sameThread = (t?: string | null) =>
+    !!t && !!threadId && t.slice(0, 8) === threadId.slice(0, 8);
+  return tail.filter((m) => {
+    const o = m.origin;
+    if (!o) return true;                                  // unclassified — keep
+    if (o.kind === 'agent') return sameThread(o.threadId); // only THIS thread's A2A
+    if (o.kind === 'self') {
+      // Keep the agent's tool activity (JSON content blocks) and its A2A sends;
+      // drop standalone user-facing reply TEXT (and engine acks) so the user
+      // conversation doesn't bleed into the A2A turn even via the agent's own
+      // prior lines. (m.content for tool_use/tool_result is a JSON array.)
+      const isToolActivity = typeof m.content === 'string' && m.content.trimStart().startsWith('[{');
+      return isToolActivity || o.channel === 'a2a';
+    }
+    return false;                                          // exclude human + engine
+  });
+}
+
+/**
+ * Scope a fresh tail to the ONE human conversation this turn addresses
+ * (attribution redesign, Phase 4 — human side). The A2A-turn path has its own
+ * scoper above; this is the human-turn equivalent and closes the gap that let
+ * a DIFFERENT human's inbound (e.g. a friend on iMessage) sit in — and then
+ * get merged with — the owner's dashboard turn. Without it the model saw
+ * "[SOURCE: IMESSAGE FROM Crystal] dinner? <david's question>" as one message
+ * and could not tell who asked what — the exact conflation this redesign kills.
+ *
+ * Keeps: messages whose origin resolves to the SAME conversation as the
+ * counterparty (same channel + sender, via conversationKey), the agent's own
+ * output (A2A sends already stripped), and engine events (which the caller then
+ * lifts into the EVENTS lane). Drops: every other human's inbound and all A2A.
+ * Falls back to the A2A-only strip when there's no counterparty (legacy path).
+ */
+function scopeToHumanConversation(tail: Message[], cp: TurnCounterparty | undefined): Message[] {
+  const a2aStripped = stripA2AFromTail(tail);
+  if (!cp) return a2aStripped;
+  const cpKey = conversationKey(cp.channel, cp.senderId, cp.name, cp.threadId);
+  return a2aStripped.filter((m) => {
+    const o = m.origin;
+    if (!o) return true;                       // unclassified — keep (safe default)
+    if (o.kind === 'user') {
+      // Only THIS human's conversation stays in the live tail; other humans
+      // are a separate counterparty and get their own turn.
+      return conversationKey(o.channel, o.senderId, o.senderName, o.threadId) === cpKey;
+    }
+    if (o.kind === 'self') {
+      // The agent's own output stays only if it belongs to THIS conversation
+      // (conv_key matches) or is untagged — current-turn in-progress work, not
+      // yet stamped, or legacy. Output stamped for a DIFFERENT conversation is
+      // dropped so one counterparty's work can't bleed into another's turn
+      // (the colleague-got-a-dentist-answer failure).
+      return !m.convKey || m.convKey === cpKey;
+    }
+    // engine → EVENTS lane (handled by the caller); keep here.
+    return true;
+  });
 }
 
 async function assembleMessageContext(
@@ -696,7 +827,59 @@ async function assembleMessageContext(
   // buried mid-context where the LLM might ignore them
   const freshTailCount = getFreshTailCount(contextWindow);
   const turnCutoff = turnBoundary.get(agentId);
-  const freshTail = getRecentMessages(agentId, freshTailCount, turnCutoff);
+  const freshTailRaw = getRecentMessages(agentId, freshTailCount, turnCutoff);
+
+  // Counterparty scoping (attribution redesign, Phase 4) — the live
+  // conversation is scoped to the ONE counterparty this turn addresses, so the
+  // model can never see two senders' messages mixed together (the root of the
+  // "Kelly is asking me two things" conflation).
+  //   • User turn  → the human conversation only (A2A inbound + the agent's own
+  //                  send_to_agent activity stripped; engine events stay for now,
+  //                  Phase 5 moves them to a dedicated EVENTS lane).
+  //   • A2A turn   → ONLY the current A2A thread + the agent's own output. The
+  //                  human's live messages are excluded; the agent answers about
+  //                  the user's work from MEMORY (vault/summaries/tracker), not
+  //                  the raw user tail. This is what the redesign turns on.
+  // Messages are untouched on disk — this only shapes what THIS turn's model
+  // call sees; memory/dreamer/vault are unaffected.
+  const scopedTail = turnContext?.counterparty?.kind === 'agent'
+    ? scopeToA2AThread(freshTailRaw, turnContext.counterparty.threadId)
+    : scopeToHumanConversation(freshTailRaw, turnContext?.counterparty);
+
+  // ── EVENTS lane (attribution redesign, Phase 5) ──
+  // Engine-origin messages (tracker/scheduler/healer/system notices) are events
+  // that HAPPENED — not the user or another agent talking. Today they ride in
+  // the live tail as role='user' with a [SOURCE: …] marker, so a weak model can
+  // mistake an engine notice for a peer message. Pull them OUT of the live
+  // conversation and render them as ONE clearly-labeled background block. On a
+  // clean turn (no engine events) this is a no-op — the live conversation is
+  // unchanged. Actionable engine directives (STOP / gate refusals / nudges)
+  // are tool_results or registry injections, not these role='user' notices, so
+  // they keep their salience and are unaffected.
+  // Only role='user' engine NOTICES (tracker/scheduler/healer/etc. that today
+  // masquerade as user messages) go to the EVENTS lane. role='system' engine
+  // messages are left in place — the message builder already skips them, and
+  // surfacing them here would change long-standing behavior.
+  const engineEvents = scopedTail.filter((m) => m.origin?.kind === 'engine' && m.role === 'user');
+  const engineUserIds = new Set(engineEvents.map((m) => m.id));
+  const freshTail = scopedTail.filter((m) => !engineUserIds.has(m.id));
+  if (engineEvents.length > 0) {
+    const eventLines = engineEvents.slice(-10).map((m) => {
+      const body = (typeof m.content === 'string' ? m.content : '')
+        .replace(/^\s*\[[^\]]*\]\s*/, '') // drop the leading [SOURCE: …] marker
+        .replace(/\s+/g, ' ')
+        .trim();
+      const type = m.origin?.intent ?? 'event';
+      return `• [${type}] ${body.slice(0, 400)}`;
+    });
+    messages.push({
+      role: 'user',
+      content:
+        '═══ EVENTS (things that happened — NOT messages from a person or another agent; ' +
+        'for your awareness, act only if relevant to the conversation below) ═══\n' +
+        eventLines.join('\n'),
+    });
+  }
 
   // Pre-cap oversized tool_result content BEFORE budgeting. capLargeToolResultsInPlace
   // runs later (post-parse, on the in-memory message array) but by then it's too
@@ -966,6 +1149,66 @@ async function assembleMessageContext(
       }
     }
   } catch { /* config may not exist or be malformed */ }
+
+  // ── A2A reply salience (v3.1.10) ──
+  // On a dedicated A2A turn the inbound A2A must be the SALIENT, actionable
+  // item — exactly as it is on a natural (just-arrived / preempt) turn, where
+  // the model reliably replies via send_to_agent. On a FORCED A2A turn (a
+  // still-unreplied A2A that a prior user turn deferred) the A2A is buried
+  // behind the already-answered user exchange, so a weak model never realizes
+  // it owes a reply and writes suppressed chat text instead. Fix: move the
+  // most-recent inbound A2A to the tail and prepend a reply directive, so the
+  // forced turn looks like a natural one. Only runs on A2A turns; on user turns
+  // the A2A was already stripped from the tail, so this is a no-op there.
+  if (turnContext?.isA2ATurn && merged.length > 0) {
+    // Threads this agent has ALREADY replied to (durable, survives across the
+    // tool-iterations of a single turn). Once the agent replies mid-turn, the
+    // a2a_replies row appears here, so we stop re-surfacing that A2A and remove
+    // it — otherwise the directive would re-fire each iteration and the model
+    // would send the same reply again and again.
+    const repliedShorts = new Set<string>();
+    try {
+      const rows = getDb().prepare(
+        "SELECT DISTINCT substr(thread_id,1,8) AS s FROM a2a_replies WHERE agent_id = ?",
+      ).all(agentId) as Array<{ s: string }>;
+      for (const r of rows) repliedShorts.add(r.s);
+    } catch { /* table may not exist yet */ }
+    const threadShortOf = (c: string): string | null => {
+      const m = c.match(/thread:([0-9a-f]{8})/);
+      return m ? m[1] : null;
+    };
+    const isA2AMsg = (m: { role: string; content: string | Anthropic.ContentBlockParam[] }) =>
+      m.role === 'user' && typeof m.content === 'string' && A2A_INBOUND_RE.test(m.content);
+    // Drop already-replied A2As so the agent doesn't re-engage them.
+    merged = merged.filter((m) => {
+      if (!isA2AMsg(m)) return true;
+      const short = threadShortOf(m.content as string);
+      return !(short && repliedShorts.has(short));
+    });
+    // Surface the most-recent still-unreplied A2A at the tail with a reply
+    // directive, so a forced turn looks like a natural (just-arrived) one.
+    if (merged.length > 0 && !isA2AMsg(merged[merged.length - 1])) {
+      let idx = -1;
+      for (let i = merged.length - 1; i >= 0; i--) {
+        if (isA2AMsg(merged[i])) {
+          const short = threadShortOf(merged[i].content as string);
+          if (!short || !repliedShorts.has(short)) { idx = i; break; }
+        }
+      }
+      if (idx >= 0) {
+        const [a2aMsg] = merged.splice(idx, 1);
+        if (typeof a2aMsg.content === 'string') {
+          a2aMsg.content =
+            `[Engine: inter-agent reply turn. The message below is still awaiting your reply. ` +
+            `Make exactly ONE send_to_agent call on the SAME thread_id (intent ANSWER for a QUESTION, ` +
+            `COMPLETE/STATUS/FAIL for an ASSIGN), then end your turn. Your chat text is invisible to ` +
+            `the sender and is suppressed — send_to_agent is the only way to reply. Any user messages ` +
+            `above were already handled; do not re-answer them.]\n\n${a2aMsg.content}`;
+        }
+        merged.push(a2aMsg);
+      }
+    }
+  }
 
   logger.info('Context assembled', {
     systemPromptTokens: estimateTokens(systemPrompt),

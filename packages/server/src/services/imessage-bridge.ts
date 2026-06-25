@@ -15,6 +15,7 @@ import { getAgentRuntime } from '../agent/runtime.js';
 import { v4 as uuidv4 } from 'uuid';
 import Database from 'better-sqlite3';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
+import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 
 // ── iMessage attachment pipeline ────────────────────────────────────────────
 //
@@ -678,9 +679,9 @@ export function stripSystemTags(text: string): string {
 export function sendResponseViaIMessage(
   text: string,
   agentId?: string,
+  recipientOverride?: string | null,
 ): { address: string; name: string } | null {
   if (!agentId) agentId = getPrimaryAgentId();
-  const entry = pendingIMResponseMap.get(agentId);
   // Two safety rails on the fallback path:
   //  (a) when there's no inbound trigger, default to the starred primary
   //      (getDefaultSender), NOT approvedSenders[0]. They're often the
@@ -692,6 +693,27 @@ export function sendResponseViaIMessage(
   //      authorized.
   let sender: string | null = null;
   let recipientName: string | null = null;
+  // The TURN's counterparty wins over pendingIMResponseMap. That in-memory map is
+  // set per inbound and gets overwritten when another iMessage arrives during a
+  // turn — the bug where a reply to Crystal routed to David under concurrency.
+  // When the loop passes the turn's counterparty address, use it (validated). If
+  // it is no longer a safe sender, SUPPRESS — never fall back to texting the
+  // owner an answer meant for someone else.
+  if (recipientOverride !== undefined && recipientOverride !== null) {
+    const allowed = findSafeSenderByAddress(getSafeSenders(), recipientOverride);
+    if (allowed) { sender = recipientOverride; recipientName = allowed.name; }
+    else {
+      logger.warn('Auto-reply suppressed: turn counterparty not on safe-sender list', { agentId, recipient: recipientOverride });
+      pendingIMResponseMap.delete(agentId);
+      return null;
+    }
+    pendingIMResponseMap.delete(agentId);
+    const cleanedOverride = stripSystemTags(text);
+    if (!cleanedOverride) return null;
+    sendIMessage(sender, cleanedOverride);
+    return { address: sender, name: recipientName ?? sender };
+  }
+  const entry = pendingIMResponseMap.get(agentId);
   if (entry?.sender) {
     const stillAllowed = findSafeSenderByAddress(getSafeSenders(), entry.sender);
     if (stillAllowed) {
@@ -995,6 +1017,27 @@ async function pollMessages(): Promise<void> {
             msgContent,
             attachmentResult.uploadedFiles.length > 0 ? JSON.stringify(attachmentResult.uploadedFiles) : null,
           );
+
+          // Stamp structured inbound metadata (v3.1.x attribution redesign).
+          // iMessage previously relied on the in-memory pendingIMResponseMap +
+          // prose [SOURCE: ...] marker. We now ALSO record structured meta so
+          // the origin projection can tell "the owner texting" from "a friend
+          // texting" (is_primary). recipientAddress mirrors the raw `sender`
+          // that pendingIMResponseMap + getInboundSenderFor use, so reply
+          // routing is byte-identical — this only ADDS the relation signal.
+          recordInboundMeta(msgId, {
+            channel: 'imessage',
+            accountKind: 'agent',
+            authorized: true, // the bridge already gated to approved senders
+            sender,
+            recipientAddress: sender,
+            chatType: 'dm',
+            relation: senderRecord?.is_primary
+              ? 'owner'
+              : senderRecord
+                ? 'known_contact'
+                : 'third_party',
+          });
 
           broadcast({
             type: 'chat:message',

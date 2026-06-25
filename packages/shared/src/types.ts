@@ -2,6 +2,8 @@
 // Core Domain Types
 // ════════════════════════════════════════
 
+import type { MessageOrigin } from './origin.js';
+
 export interface Provider {
   id: string;
   name: string;
@@ -204,11 +206,40 @@ export interface Message {
     category: 'image' | 'pdf' | 'text' | 'office' | 'audio' | 'video' | 'unknown';
   }>;
   /**
-   * Where this message came from. Currently only set for user messages
-   * dictated via voice mode (so the dashboard can render a small mic icon).
-   * Typed messages and legacy messages leave this null.
+   * Where this message came from. Set for user messages dictated via voice
+   * mode (`'voice'`, so the dashboard can render a small mic icon), and for
+   * assistant/tool messages produced on a dedicated A2A turn (`'a2a'`, so the
+   * dashboard hides the whole inter-agent turn — text and tool badges — in
+   * regular mode; wordy mode still shows it). Typed messages and legacy
+   * messages leave this null.
    */
-  source?: 'voice' | null;
+  source?: 'voice' | 'a2a' | null;
+  /**
+   * Structured attribution columns (migrations 027 source_agent_id, 034 a2a_*,
+   * 073 inbound_meta). Previously read from the DB and discarded by the row
+   * mapper; now surfaced so the origin projection (and any consumer) can use
+   * structured data instead of re-parsing prose markers in `content`.
+   */
+  sourceAgentId?: string | null;
+  a2aThreadId?: string | null;
+  a2aIntent?: string | null;
+  a2aRequiresResponse?: number | null;
+  inboundMeta?: string | null;
+  /**
+   * Conversation this message belongs to (migration 076). Stamped at end of
+   * turn on the agent's OWN messages (assistant/tool) with the turn's
+   * conversationKey, so the live-tail scoper keeps a self-message only for the
+   * conversation it was produced in — one counterparty's work can't bleed into
+   * another counterparty's turn. NULL on inbound user/system rows + legacy.
+   */
+  convKey?: string | null;
+  /**
+   * Canonical "who is this message from", consolidated from role + the
+   * structured columns above + (for legacy rows) the `[SOURCE: …]`/`[A2A: …]`
+   * markers in content. Computed in the row mapper via deriveOrigin(). This is
+   * the single attribution signal the engine and dashboard should read.
+   */
+  origin?: MessageOrigin;
 }
 
 export interface AuditEntry {

@@ -6,6 +6,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { toolDefinitions, getFilteredTools } from '../agent/tools.js';
 import { isPrimaryAgent, isPMAgent, isTrainerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName } from '../config/platform.js';
+import type { TurnCounterparty } from '../agent/v2/counterparty.js';
 import { getAgentGoogleAccessLevel, getGoogleWorkspaceConfig, isGoogleConnected, isEmailMonitoringEnabled, isEmailSendingEnabled } from '../google/auth.js';
 import { getAgentMicrosoftAccessLevel, getMsAccountType, getMicrosoftWorkspaceConfig, isMicrosoftConnected, isMsEmailMonitoringEnabled, isMsEmailSendingEnabled } from '../microsoft/auth.js';
 import { getChannelCapabilities, listIntegrationStatuses } from '../services/capability-registry.js';
@@ -453,6 +454,29 @@ export interface PromptTurnContext {
    * have the value cached.
    */
   ttsEngine?: 'local' | 'cloud' | null;
+  /**
+   * True when this turn is a dedicated A2A-handling turn. On a normal/user
+   * turn (false/undefined) the message-context builder strips inter-agent
+   * traffic — inbound A2A messages plus the agent's own send_to_agent
+   * activity and their tool_results — so a pending A2A can't pull the agent
+   * into engaging it inside a user-facing reply. Computed once per turn in
+   * the v2 loop; see turn-state.ts for the full rationale.
+   */
+  isA2ATurn?: boolean;
+  /**
+   * The single counterparty this turn is addressing (attribution redesign,
+   * Phase 3). The assembler renders an explicit "who you're talking to" header
+   * from it (Phase 3) and scopes the live conversation to it (Phase 4), so the
+   * model can never conflate the user with another agent or an engine event.
+   */
+  counterparty?: TurnCounterparty;
+  /**
+   * How many OTHER human conversations are waiting behind this one this turn.
+   * When > 0 the assembler adds a just-in-time hint so the agent acks + tracks a
+   * big request as a project instead of blocking everyone behind a long task
+   * (head-of-line). Situational (only when others wait), not a standing rule.
+   */
+  othersWaiting?: number;
 }
 
 /**
@@ -1099,17 +1123,23 @@ export function renderReplyDestination(
   replyDestination: ReplyDestination | null,
   smsFromNumber: string | null,
   phoneFromNumber: string | null,
+  recipientName?: string,
 ): string | null {
   if (!replyDestination) return null;
+  // The reply goes to THIS turn's actual counterparty (a friend who texted, the
+  // owner, etc.), not always the owner. Naming the real recipient — and telling
+  // the agent NOT to also call the send tool to reach them — stops the double
+  // reply where the agent sent via the channel tool AND wrote auto-routed text.
   const ownerName = getOwnerName();
+  const recipient = recipientName ?? ownerName;
   if (replyDestination === 'imessage') {
-    return `[Reply destination: iMessage to ${ownerName} — write in SMS voice (no markdown, no headers, no bullet lists). Just write the reply text; the engine delivers it via iMessage automatically. Use [no-reply] if nothing worth sending. The imessage_send tool is reserved for proactive sends, sending to someone other than ${ownerName}, or rich actions (attachments).]`;
+    return `[Reply destination: iMessage to ${recipient} — write in SMS voice (no markdown, no headers, no bullet lists). Just write your reply as plain text; the engine delivers it to ${recipient} via iMessage automatically. Do NOT also call imessage_send to reply to ${recipient} — that sends a SECOND, duplicate message. Use [no-reply] if nothing worth sending. imessage_send is ONLY for proactive sends, sending to someone OTHER than ${recipient}, or rich actions (attachments).]`;
   } else if (replyDestination === 'teams') {
-    return `[Reply destination: Teams DM — just write the reply text; the engine delivers it via Teams automatically. Conversational voice, light formatting ok. Use [no-reply] if nothing worth sending. The teams_send_message tool is reserved for starting new chats or sending to a different chat than the inbound.]`;
+    return `[Reply destination: Teams DM to ${recipient} — just write your reply as plain text; the engine delivers it to ${recipient} via Teams automatically. Do NOT also call teams_send_message to reply to ${recipient} — that sends a duplicate. Conversational voice, light formatting ok. Use [no-reply] if nothing worth sending. teams_send_message is ONLY for starting new chats or a different chat than the inbound.]`;
   } else if (replyDestination === 'email') {
-    return `[Reply destination: email reply (in-thread) — just write the reply body; the engine sends it as a Re: on the existing thread automatically. Email voice (slightly more formal than chat, but no need for a greeting/signoff if the thread is conversational). Use [no-reply] if nothing worth sending. The outlook_reply / gmail_reply / outlook_send / gmail_send tools are reserved for replies to OTHER threads or new outbound emails.]`;
+    return `[Reply destination: email reply to ${recipient} (in-thread) — just write the reply body; the engine sends it as a Re: on the existing thread automatically. Do NOT also call gmail_reply / outlook_reply / gmail_send / outlook_send to answer this thread — that sends a duplicate. Email voice (slightly more formal than chat, but no greeting/signoff needed if the thread is conversational). Use [no-reply] if nothing worth sending. Those tools are ONLY for OTHER threads or new outbound emails.]`;
   } else if (replyDestination === 'sms') {
-    return `[Reply destination: SMS to ${smsFromNumber ?? '(unknown number)'} — write in SMS voice (no markdown, no headers, no bullet lists, keep it short). Just write the reply text; the engine delivers it via Twilio automatically. Use [no-reply] if nothing worth sending. The sms_send tool is reserved for proactive texts, sending to someone other than the inbound sender, or rich actions.]`;
+    return `[Reply destination: SMS to ${smsFromNumber ?? recipient} — write in SMS voice (no markdown, no headers, no bullet lists, keep it short). Just write your reply as plain text; the engine delivers it via Twilio automatically. Do NOT also call sms_send to reply — that sends a duplicate. Use [no-reply] if nothing worth sending. sms_send is ONLY for proactive texts, someone other than the inbound sender, or rich actions.]`;
   } else if (replyDestination === 'phone') {
     return `[Reply destination: phone call to ${phoneFromNumber ?? '(unknown)'} — write what you want SPOKEN. Conversational, short, no markdown, no headers, no bullet lists; the engine TTS's your text over the live call. Use [no-reply] if there is nothing worth saying (the engine will hold the silence). The call stays open until either side hangs up or you call voice_call_end.]`;
   } else if (replyDestination === 'voice') {

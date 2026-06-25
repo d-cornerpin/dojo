@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } fro
 import type { Message } from '@dojo/shared';
 import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, WsEvent } from '@dojo/shared';
 import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting } from '@dojo/shared';
+import type { MessageOrigin } from '@dojo/shared';
 import { summarizeToolTurn, type ToolTurnSummary } from '../lib/tool-display';
 import { inboundBadge, outboundBadge } from '../lib/channel-display';
 import { ToolBadgeGroup, type ToolChipData } from '../components/ToolBadge';
@@ -84,8 +85,12 @@ interface ChatMessage {
   reasoningContent?: string | null;
   isReasoningStreaming?: boolean;
   attachments?: Array<{ fileId: string; filename: string; mimeType: string; size: number; path: string; category: string; openInCanvas?: boolean; screenShare?: boolean }>;
-  /** Where this message came from. 'voice' = dictated via voice mode. */
-  source?: 'voice' | null;
+  /** Where this message came from. 'voice' = dictated via voice mode;
+   *  'a2a' = produced on a dedicated inter-agent turn (hidden in regular mode). */
+  source?: 'voice' | 'a2a' | null;
+  /** Canonical attribution from the server (deriveOrigin). The visibility
+   *  classifier reads this to decide what shows in regular mode. */
+  origin?: MessageOrigin;
 }
 
 
@@ -682,6 +687,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             modelId: m.modelId,
             attachments: m.attachments,
             source: m.source ?? null,
+            origin: m.origin,
           })),
         );
         setHasMore(result.data.length >= 50);
@@ -722,6 +728,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
         createdAt: m.createdAt,
         attachments: m.attachments,
         source: m.source ?? null,
+        origin: m.origin,
       }));
       setMessages(prev => [...older, ...prev]);
       setHasMore(result.data.length >= 50);
@@ -1018,6 +1025,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             // only hydrated on page reload via the HTTP GET).
             attachments: e.message.attachments,
             source: e.message.source ?? null,
+            origin: e.message.origin,
           },
         ];
       });

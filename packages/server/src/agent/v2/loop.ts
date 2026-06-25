@@ -39,6 +39,7 @@ import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { broadcast } from '../../gateway/ws.js';
 import type { Message, ToolCall } from '@dojo/shared';
+import { deriveOrigin } from '@dojo/shared';
 
 import { assembleContext } from '../../memory/assembler.js';
 import { callModel, getContextWindow } from '../model.js';
@@ -60,7 +61,7 @@ import { queueEmbedding } from '../../memory/embeddings.js';
 import { isPrimaryAgent, isTrainerAgent, isPMAgent } from '../../config/platform.js';
 import os from 'node:os';
 import path from 'node:path';
-import { turnBoundary } from '../turn-state.js';
+import { turnBoundary, forceA2ATurn, lastTurnWasA2A } from '../turn-state.js';
 
 import {
   stoppedAgents,
@@ -106,6 +107,7 @@ import { trackerEnforcer } from './classifiers/tracker.js';
 import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD } from '../../memory/compaction.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
+import { resolveTurnCounterparty, getWaitingHumanConversations, type TurnCounterparty } from './counterparty.js';
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
 import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout } from './classifiers/output.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
@@ -401,15 +403,28 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // sub-agent's A2A reply lands as `role='user'` with content starting
   // `[A2A:`, and the primary's next-turn reply auto-routes to
   // dashboard instead of back to the original iMessage thread.
-  const triggerRow = db.prepare(
-    `SELECT content, source, inbound_meta FROM messages
-       WHERE agent_id = ?
-         AND role = 'user'
-         AND content NOT LIKE '[SOURCE: SYSTEM%'
-         AND content NOT LIKE '[A2A:%'
-         AND content NOT LIKE '[SOURCE: AGENT MESSAGE FROM%'
-       ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-  ).get(agentId) as { content: string; source: string | null; inbound_meta: string | null } | undefined;
+  // Recent role='user' rows with full attribution, newest first. The turn
+  // trigger / counterparty is classified by STRUCTURED origin (deriveOrigin =
+  // the origin_kind column + the legacy-marker shim), NOT a prose NOT-LIKE list.
+  // The old query only excluded [SOURCE: SYSTEM / [A2A: / [SOURCE: AGENT MESSAGE,
+  // so engine events written as role='user' (tracker / scheduler / thrash gate /
+  // healer / …) became the "trigger" and resolved to a malformed
+  // "a contact / engine / dashboard" counterparty — which then misclassified A2A
+  // turns and leaked their planning text to the dashboard. origin.kind tells
+  // human (user) from engine from agent unambiguously.
+  // ── Counterparty serialization (turn continuity) ──
+  // Serve the human conversation that has been WAITING longest with an
+  // unanswered message (FIFO). Its LATEST message is the trigger, so multi-part
+  // messages from one sender answer together. Because a turn only marks a
+  // conversation "served" when it actually delivers a reply (below), a turn that
+  // ends mid-task leaves its conversation waiting → the next turn RESUMES the
+  // SAME one and routes to it, instead of jumping to whoever is newest (which
+  // sent a Teams answer to a client's email). Same helper the runtime uses to
+  // decide whether to re-trigger and drain the rest. Engine events / A2A are not
+  // human conversations here.
+  const waitingConvs = getWaitingHumanConversations(agentId);
+  const chosenConvKey = waitingConvs[0]?.key ?? null;
+  const triggerRow = waitingConvs[0]?.latest;
   const lastUserMessageContent = triggerRow?.content ?? null;
   // Phase 3 — bind the inbound source for the whole turn. Computed once
   // here and threaded into every assembleContext call below so the
@@ -480,10 +495,60 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // the legacy parse path so any pre-fix in-flight ASSIGNs (no row in
   // a2a_replies yet) still trigger the enforcer at least once.
   const unrepliedAssign = findUnrepliedAssignForAgent(agentId);
-  const a2aReplyContext = unrepliedAssign
-    ? { intent: unrepliedAssign.intent, threadShort: unrepliedAssign.threadShort, fromName: unrepliedAssign.fromName }
-    : parseA2ATrigger(lastUserMessageContent);
-  const a2aReplyAssignMessageId = unrepliedAssign?.messageId ?? null;
+
+  // ── A2A turn classification (v3.1.10) ──
+  // A turn is a dedicated A2A-handling turn when EITHER the runtime forced one
+  // (a still-unreplied A2A that a prior user turn deferred — forceA2ATurn) OR
+  // the most-recent inbound is itself an unreplied wake-A2A and nothing newer
+  // (a real user message) supersedes it. On any other turn A2A is stripped
+  // from context (assembler) and the reply enforcer stays disarmed, so
+  // inter-agent traffic cannot bleed into a user-facing reply. A deferred A2A
+  // is not dropped: the runtime re-queues it as its own A2A turn (see
+  // runtime.ts finally + turn-state.ts).
+  const forcedA2ATurn = forceA2ATurn.has(agentId);
+  forceA2ATurn.delete(agentId);
+  const mostRecentInbound = db.prepare(
+    "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+  ).get(agentId) as { content: string } | undefined;
+  const mostRecentIsA2A = parseA2ATrigger(mostRecentInbound?.content ?? null) !== null;
+  // The user always wins: if a real user-channel message is still unanswered
+  // (newer than our last user-facing text reply), this is a user turn even if
+  // an A2A is forced/pending — answer the user now, the A2A re-defers to its
+  // own turn. Without this, a forced A2A turn hijacks a fresh user message and
+  // the user's question is silently dropped. (Assistant text replies persist
+  // as plain strings; tool-call/content-block messages persist as '[{...}]'.)
+  // Is there a GENUINE human conversation still WAITING (an unanswered message,
+  // per the per-conversation served tracking above)? This is the "user wins"
+  // signal: a waiting human means this is a user turn and any pending A2A defers
+  // to its own turn. Engine events and A2A are not human conversations, so they
+  // never make this true (the bug that forced isA2ATurn=false and leaked A2A
+  // chatter to the dashboard).
+  const hasUnansweredUser = waitingConvs.length > 0;
+  const isA2ATurn = unrepliedAssign !== null && !hasUnansweredUser && (mostRecentIsA2A || forcedA2ATurn);
+  if (isA2ATurn) lastTurnWasA2A.add(agentId); else lastTurnWasA2A.delete(agentId);
+
+  // Enforcer arms ONLY on A2A turns. On a user turn a pending/lingering A2A
+  // must not force a send_to_agent into the user-facing reply.
+  const a2aReplyContext = isA2ATurn
+    ? (unrepliedAssign
+        ? { intent: unrepliedAssign.intent, threadShort: unrepliedAssign.threadShort, fromName: unrepliedAssign.fromName }
+        : parseA2ATrigger(lastUserMessageContent))
+    : null;
+  const a2aReplyAssignMessageId = isA2ATurn ? (unrepliedAssign?.messageId ?? null) : null;
+
+  // ── Turn counterparty (attribution redesign, Phase 3) ──
+  // The single entity this turn is addressing, resolved from structured origin.
+  // Drives the explicit "who you're talking to" header (Phase 3) and the
+  // fresh-tail scoping (Phase 4). Derived from the same signals computed above.
+  const counterparty: TurnCounterparty = resolveTurnCounterparty({
+    isA2ATurn,
+    a2aFromName: a2aReplyContext?.fromName ?? null,
+    a2aThreadShort: a2aReplyContext?.threadShort ?? null,
+    triggerContent: lastUserMessageContent,
+    triggerSource: triggerRow?.source ?? null,
+    triggerInboundMeta: triggerRow?.inbound_meta ?? null,
+    inboundChannel,
+  });
 
   // Determine v2 turn_number — read max from messages, increment.
   // Per Part XVIII §E: turn_number is per-agent, monotonically increasing,
@@ -877,10 +942,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
           const steerMsgId = uuidv4();
           try {
             // Persist as role='user' so the assembler picks it up next time
-            // and the dashboard shows it inline as the engine's voice.
+            // and the dashboard shows it inline as the engine's voice. Stamp the
+            // structured engine origin (mig 075) so it's attributed as an EVENT,
+            // not parsed from the [Engine thrash gate] prose.
             db.prepare(`
-              INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-              VALUES (?, ?, 'user', ?, ?, datetime('now'))
+              INSERT OR IGNORE INTO messages (id, agent_id, role, content, origin_kind, origin_intent, turn_number, created_at)
+              VALUES (?, ?, 'user', ?, 'engine', 'thrash_gate', ?, datetime('now'))
             `).run(steerMsgId, agentId, steerMsg, turnNumber);
           } catch { /* best effort */ }
           logger.warn('v2: thrash gate activated for signature', {
@@ -1137,7 +1204,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
       // ── Phase: assemble context ──
       state = advance(state, { phase: 'assemble' });
-      const ctx = await assembleContext(agentId, contextModelId, { latestUserSource, ttsEngine: latestTtsEngine });
+      const ctx = await assembleContext(agentId, contextModelId, { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1) });
       let systemPrompt = ctx.systemPrompt;
       const messages = ctx.messages;
 
@@ -2023,14 +2090,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
       }
 
       // Broadcast streaming complete + persist assistant message.
+      // v3.1.10: drive suppression off the turn classification. lastUserMessageContent
+      // is A2A-filtered (the triggerRow query excludes A2A/agent rows), so the legacy
+      // string checks could never match an A2A turn and A2A-turn chatter leaked.
+      // isA2ATurn is the authoritative signal: the entire A2A turn is agent-internal.
+      const interAgentTurn =
+        isA2ATurn ||
+        (lastUserMessageContent?.includes('[SOURCE: GROUP BROADCAST FROM') ?? false) ||
+        (lastUserMessageContent?.includes('[SOURCE: PM AGENT POKE FROM') ?? false);
       const persistenceDecision = outputPersistenceClassifier({
         responseText: result.content ?? null,
         toolCallsThisTurn: result.toolCalls,
-        isInterAgentTrigger:
-          lastUserMessageContent?.includes('[SOURCE: AGENT MESSAGE FROM') ||
-          lastUserMessageContent?.includes('[SOURCE: GROUP BROADCAST FROM') ||
-          lastUserMessageContent?.includes('[SOURCE: PM AGENT POKE FROM') ||
-          lastUserMessageContent?.startsWith('[A2A:') || false,
+        isInterAgentTrigger: interAgentTurn,
         sentToAgentThisTurn: state.sentToAgentThisTurn,
       });
 
@@ -2046,10 +2117,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
         const cleaned = stripSystemTags(persistedContent);
         persistedContent = cleaned || null;
       }
-      if (persistenceDecision.decision === 'suppress' && result.toolCalls.length === 0) {
+      // On an inter-agent turn, suppress the text even when it accompanies tool
+      // calls (intermediate planning text leaks otherwise). On normal turns keep
+      // the long-standing "only suppress standalone trailing text" behavior.
+      if (persistenceDecision.decision === 'suppress' && (result.toolCalls.length === 0 || interAgentTurn)) {
         logger.debug('v2: suppressed trailing text', {
           agentId,
           reason: persistenceDecision.reason,
+          interAgentTurn,
         }, agentId);
         persistedContent = null;
       }
@@ -2209,6 +2284,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
             agentId, error: err instanceof Error ? err.message : String(err),
           }, agentId);
         }
+        // Turn continuity: declining ([no-reply]) IS addressing the counterparty.
+        // Tag this turn's own messages with the conversation — that conv_key is
+        // the durable "served" signal (the conversation won't be re-picked) AND
+        // the content-isolation tag (its work won't bleed into another turn).
+        if (chosenConvKey) {
+          try { db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND turn_number = ? AND role IN ('assistant','tool') AND conv_key IS NULL`).run(chosenConvKey, agentId, turnNumber); } catch { /* best effort */ }
+        }
         logger.info('v2: agent ended turn silently via [no-reply] sentinel', {
           agentId, loopCount: state.loopCount,
         }, agentId);
@@ -2367,8 +2449,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
           });
         }
         db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, token_count, model_id, cost, latency_ms, turn_number, reasoning_content, created_at)
-          VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, NULL, ?, ?, datetime('now'))
+          INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, token_count, model_id, cost, latency_ms, turn_number, reasoning_content, source, created_at)
+          VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, NULL, ?, ?, ?, datetime('now'))
         `).run(
           messageId,
           agentId,
@@ -2379,6 +2461,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
           null,
           turnNumber,
           result.reasoningContent ?? null,
+          // v3.1.10: stamp A2A-turn output so the dashboard hides the entire
+          // inter-agent turn (text + tool badges) in regular mode. A2A-turn
+          // tool calls (file_read/web_search/etc.) would otherwise flash a
+          // badge into the user's chat — content can't reveal it was an A2A turn.
+          interAgentTurn ? 'a2a' : null,
         );
         broadcast({
           type: 'chat:message',
@@ -2395,6 +2482,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             createdAt: new Date().toISOString(),
             attachments: queuedAttachments.length > 0 ? queuedAttachments : undefined,
             reasoningContent: result.reasoningContent ?? undefined,
+            source: interAgentTurn ? 'a2a' : null,
           },
         });
         // v2.7.24 — also track text-with-tools iterations as deliverable
@@ -2855,7 +2943,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
           sentToAgentThisTurn: state.sentToAgentThisTurn,
           alreadyNudgedForMissedReply:
             !!a2aReplyAssignMessageId && state.nudgedForMissedReplyOnAssignId === a2aReplyAssignMessageId,
-          agentProducedText: !!(persistedContent && persistedContent.trim().length > 0),
+          // Raw model text, NOT persistedContent — on an inter-agent turn the
+          // text is display-suppressed (persistedContent nulled) but the enforcer
+          // still needs to know the agent wrote a reply as chat instead of calling
+          // send_to_agent, so it can nudge a retry.
+          agentProducedText: !!(result.content && result.content.trim().length > 0),
           intent: a2aReplyContext?.intent,
           threadShort: a2aReplyContext?.threadShort,
           fromName: a2aReplyContext?.fromName,
@@ -3252,10 +3344,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
             };
           }
 
+          // On an A2A turn, send_to_agent / broadcast_to_group IS the agent's
+          // single legitimate reply — it must never be thrash-gated. The gates'
+          // premise ("stop verifying, respond to the USER with text") doesn't
+          // apply: there is no user, and A2A-turn text is suppressed, so blocking
+          // the reply leaves the agent with no valid exit and it loops (observed:
+          // 12 send_to_agent calls ignoring the STOP). The hard turn-end after a
+          // successful send (further below) keeps this single-shot, so exempting
+          // it from the gates cannot itself cause a loop.
+          const isA2AReplyTool =
+            counterparty.kind === 'agent' && (tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group');
+
           // Loop-break check
           const loopCheck = loopDetector(tc, recentSigs);
           recentSigs = bumpLoopSignature(recentSigs, loopCheck.signature, RECENT_TOOL_WINDOW);
-          if (loopCheck.decision === 'block') {
+          if (loopCheck.decision === 'block' && !isA2AReplyTool) {
             try {
               broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
               broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: loopCheck.refusalMessage!.slice(0, 500) });
@@ -3276,7 +3379,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // The refusal message names the exact call so DeepSeek can't
           // miss it (unlike a buried system message). Refusal count tracks
           // how many times the agent ignored the gate.
-          if (state.thrashGatedSignatures.length > 0) {
+          if (state.thrashGatedSignatures.length > 0 && !isA2AReplyTool) {
             const thisSig = canonicalToolSignature(tc.name, tc.arguments);
             if (state.thrashGatedSignatures.includes(thisSig)) {
               const argsPart = thisSig.includes(':') ? thisSig.slice(thisSig.indexOf(':') + 1) : '{}';
@@ -3972,6 +4075,27 @@ export async function runV2Turn(agentId: string): Promise<void> {
         logger.info('v2: fire-and-forget generator called, exiting loop (async delivery)', { agentId }, agentId);
         break;
       }
+      // ── A2A turn: the send_to_agent IS the response — end the turn once it
+      // fires. Without this, a weak model can loop calling send_to_agent on an
+      // inter-agent turn; the thrash gate's "respond with TEXT" escape doesn't
+      // help because A2A-turn text is suppressed, so the turn would never
+      // terminate (observed: 12 send_to_agent calls ignoring 9 STOP messages,
+      // and runaway turns that thrash send_to_agent then wander into file work
+      // and deliver attachments to the OWNER). The reply is already delivered +
+      // recorded; there is nothing else to do.
+      //
+      // Read THIS iteration's actual tool calls, not state.sentToAgentThisTurn:
+      // that flag is set via `state = advance(...)` inside the parallel
+      // `runOne` callbacks (Promise.all), where concurrent reassignments clobber
+      // each other, so it can silently fail to stick and the turn runs away.
+      // result.toolCalls is deterministic.
+      const issuedA2AReplyThisIteration = (result.toolCalls ?? []).some(
+        (tc) => tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group',
+      );
+      if (counterparty.kind === 'agent' && (state.sentToAgentThisTurn || issuedA2AReplyThisIteration)) {
+        logger.info('v2: A2A reply sent — exiting loop (send_to_agent is the response)', { agentId }, agentId);
+        break;
+      }
 
       // ── Phase: post-execution gates ──
       state = advance(state, { phase: 'postExecution' });
@@ -4270,6 +4394,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
           throw new Error('unreachable: lastAssistantTextForIM null after download-link backstop');
         }
 
+        // Turn continuity: this turn produced a terminal reply for its human
+        // counterparty. Tagging this turn's messages with the conversation's
+        // conv_key (below) is BOTH the durable "served" signal (the next turn
+        // moves on to the next waiting conversation rather than re-answering this
+        // one — and it survives a restart) AND the content-isolation tag. A turn
+        // that ends WITHOUT reaching here (interrupted by a gate/limit mid-task)
+        // tags nothing, so the conversation stays waiting and resumes under the
+        // SAME counterparty, routing correctly.
+        // Tag this turn's OWN messages with the conversation they belong to, so a
+        // later turn for a different counterparty never sees this turn's reply or
+        // work in its live tail (content bleed across conversations).
+        if (chosenConvKey) {
+          try { db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND turn_number = ? AND role IN ('assistant','tool') AND conv_key IS NULL`).run(chosenConvKey, agentId, turnNumber); } catch { /* best effort */ }
+        }
+
         const { resolveReplyDestination } = await import('./reply-destination.js');
         const { getPresence, isImessageConfigured } = await import('../../services/presence.js');
         const {
@@ -4277,11 +4416,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
           isAgentInitiatedContact, clearAgentInitiatedContact, clearIMResponseFlag,
         } = await import('../../services/imessage-bridge.js');
 
-        const destination = resolveReplyDestination({
-          state,
-          presence: getPresence(),
-          imessageBridgeConfigured: isImessageConfigured(),
-        });
+        // Invariant #2 (attribution redesign): an A2A turn's reply goes to the
+        // other agent via send_to_agent — its trailing text must NEVER route to
+        // a human channel. Without this guard, resolveReplyDestination falls
+        // through to the dashboard default and the "away" override then promotes
+        // it to iMessage, texting the OWNER an answer meant for another agent
+        // (observed: Kelly's A2A question answered by texting David). Force the
+        // no-auto-route value ('dashboard' matches none of the channel branches
+        // below) when this turn's counterparty is an agent.
+        const destination = counterparty.kind === 'agent'
+          ? 'dashboard'
+          : resolveReplyDestination({
+              state,
+              presence: getPresence(),
+              imessageBridgeConfigured: isImessageConfigured(),
+            });
 
         // Small helper: persist + broadcast the routing marker so wordy
         // mode shows it and the dashboard renderer can surface a "sent
@@ -4328,7 +4477,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // to, never a hardcoded default. If the send was suppressed (sender
           // no longer authorized, empty body), skip the marker entirely so we
           // don't claim a delivery that didn't happen.
-          const delivered = sendResponseViaIMessage(state.lastAssistantTextForIM, agentId);
+          // Route to THIS turn's counterparty (stable), not the racy in-memory
+          // pendingIMResponseMap — the fix for a reply to Crystal going to David
+          // when another iMessage arrived mid-turn. counterparty.senderId is the
+          // iMessage address for a human iMessage turn; null (proactive/away) lets
+          // the bridge fall back to the owner.
+          const imRecipient = counterparty.kind === 'user' && counterparty.channel === 'imessage' ? counterparty.senderId : undefined;
+          const delivered = sendResponseViaIMessage(state.lastAssistantTextForIM, agentId, imRecipient);
           if (delivered) {
             persistRoutingMarker(`iMessage to ${delivered.name}`);
             logger.info('v2.7.23: routed reply via iMessage', {
@@ -4521,7 +4676,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
     try {
       const { drainPendingAttachmentsWithCaptions } = await import('../pending-attachments.js');
       const stranded = drainPendingAttachmentsWithCaptions(agentId);
-      if (stranded.attachments.length > 0) {
+      // Invariant #2: on an A2A turn there is no human to surface files to — the
+      // reply goes to the other agent via send_to_agent. Still DRAIN the queue
+      // (so stray attachments can't bleed into a later human turn), but never
+      // surface "Here are the files for you." to the owner on an inter-agent turn.
+      if (stranded.attachments.length > 0 && counterparty.kind !== 'agent') {
         const captionText = stranded.captions.length > 0
           ? stranded.captions.join('\n\n')
           : 'Here are the files for you.';

@@ -10,6 +10,7 @@ import { archiveAgentConversation } from '../../vault/archive.js';
 import { replaceContextItems } from '../../memory/dag.js';
 import { broadcast } from '../ws.js';
 import type { Message } from '@dojo/shared';
+import { deriveOrigin } from '@dojo/shared';
 
 const logger = createLogger('chat-routes');
 
@@ -232,6 +233,20 @@ function rowToMessage(row: Record<string, unknown>): Message {
     reasoningContent: (row.reasoning_content as string | null) ?? null,
     attachments: row.attachments ? JSON.parse(row.attachments as string) : undefined,
     source: (row.source as 'voice' | null | undefined) ?? null,
+    // Canonical attribution for the dashboard's origin-based classifier
+    // (mirrors the memory store + agents route projection).
+    origin: deriveOrigin({
+      role: row.role as Message['role'],
+      content: (row.content as string | null) ?? null,
+      source: (row.source as string | null) ?? null,
+      sourceAgentId: (row.source_agent_id as string | null) ?? null,
+      a2aThreadId: (row.a2a_thread_id as string | null) ?? null,
+      a2aIntent: (row.a2a_intent as string | null) ?? null,
+      a2aRequiresResponse: (row.a2a_requires_response as number | null) ?? null,
+      inboundMeta: (row.inbound_meta as string | null) ?? null,
+      originKind: (row.origin_kind as string | null) ?? null,
+      originIntent: (row.origin_intent as string | null) ?? null,
+    }),
   };
 }
 
@@ -268,6 +283,12 @@ chatRouter.post('/:agentId/new-session', async (c) => {
     try {
       const { clearSessionLoadedTools } = await import('../../tools/tool-docs.js');
       clearSessionLoadedTools(agentId);
+    } catch { /* ignore */ }
+    // Clear per-conversation served tracking so a fresh session doesn't treat
+    // pre-reset conversations as already answered.
+    try {
+      const { clearServedConversations } = await import('../../agent/turn-state.js');
+      clearServedConversations(agentId);
     } catch { /* ignore */ }
 
     // 3. Set session boundary — messages before this are excluded from context

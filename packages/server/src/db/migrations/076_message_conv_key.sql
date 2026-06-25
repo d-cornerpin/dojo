@@ -1,0 +1,16 @@
+-- Per-message conversation key (turn-continuity / content-isolation).
+--
+-- A turn serves ONE counterparty. The agent's own output on that turn (reply
+-- text, tool calls, tool results) belongs to that ONE conversation. Without a
+-- tag, the live-tail scoper keeps ALL of the agent's prior output, so a later
+-- turn for a DIFFERENT counterparty sees the agent's earlier work for someone
+-- else and continues it — observed in the realistic battery: a colleague who
+-- asked about a 3pm design review got a reply about the owner's dentist
+-- appointment, because the agent's dentist work bled across.
+--
+-- conv_key = the conversationKey of the turn that produced the message (stamped
+-- at end of turn for role assistant/tool). The assembler keeps a self-message in
+-- the live tail only when its conv_key matches the current counterparty, so one
+-- conversation's work can't leak into another's. NULL for inbound user/system
+-- rows and for legacy messages (treated as belonging to no specific conversation).
+ALTER TABLE messages ADD COLUMN conv_key TEXT DEFAULT NULL;

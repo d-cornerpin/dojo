@@ -97,7 +97,7 @@ healerRouter.post('/proposals/:id', async (c) => {
         'If you resolve it, save the outcome to the vault so the Healer learns for next time.',
       ].join('\n');
 
-      db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`)
+      db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, origin_kind, origin_intent, created_at) VALUES (?, ?, 'user', ?, 'engine', 'healer', datetime('now'))`)
         .run(msgId, primaryId, content);
 
       broadcast({

@@ -235,7 +235,7 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     reason:
       'Primary only: the engine-resolved per-turn route + the voice to write in ' +
       '(SMS for iMessage, markdown for dashboard, etc.). Sole routing authority (C5).',
-    render: (ctx) => renderReplyDestination(ctx.replyDestination, ctx.smsFromNumber, ctx.phoneFromNumber),
+    render: (ctx) => renderReplyDestination(ctx.replyDestination, ctx.smsFromNumber, ctx.phoneFromNumber, ctx.replyRecipientName),
   },
   {
     id: 'sys.channel-landscape',

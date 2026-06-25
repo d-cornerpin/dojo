@@ -139,6 +139,13 @@ export interface AssemblyContext {
   capabilities: string[]; // getModelCapabilities(modelId); [] if unknown
   contextWindow: number; // getContextWindow(modelId)
   ownerName: string; // getOwnerName()
+  /** Who THIS turn's reply is addressed to — the counterparty's display name
+   *  (e.g. a friend who texted), falling back to the owner. The reply-destination
+   *  slot names this so the agent replies to the ACTUAL sender, not always the
+   *  owner. Without it the prompt said "iMessage to <owner>" even when a friend
+   *  texted, plus "use imessage_send for anyone other than <owner>" — which made
+   *  the agent send via the tool AND write auto-routed text (a double reply). */
+  replyRecipientName: string;
   ttsEngine: 'local' | 'cloud'; // resolveTtsEngine(turnContext)
 
   // ── inbound-channel resolution (shared by the front three system slots) ──

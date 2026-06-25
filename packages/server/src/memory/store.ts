@@ -1,6 +1,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import type { Message } from '@dojo/shared';
+import { deriveOrigin } from '@dojo/shared';
 
 const logger = createLogger('memory-store');
 
@@ -32,9 +33,22 @@ interface MessageRow {
   created_at: string;
   turn_number: number | null;
   reasoning_content: string | null;
+  // Attribution columns (mig 046 source, 027 source_agent_id, 034 a2a_*,
+  // 073 inbound_meta). All queries SELECT *, so these are present on the row;
+  // the mapper previously dropped them. Surfaced now for the origin projection.
+  source: string | null;
+  source_agent_id: string | null;
+  a2a_thread_id: string | null;
+  a2a_intent: string | null;
+  a2a_requires_response: number | null;
+  inbound_meta: string | null;
+  origin_kind: string | null;
+  origin_intent: string | null;
+  conv_key: string | null;
 }
 
 function rowToMessage(row: MessageRow): Message {
+  const source = (row.source === 'voice' || row.source === 'a2a') ? row.source : null;
   return {
     id: row.id,
     agentId: row.agent_id,
@@ -51,6 +65,28 @@ function rowToMessage(row: MessageRow): Message {
     // Reasoning content from thinking-mode providers (DeepSeek native,
     // OpenRouter unified reasoning, etc.). Migration 040.
     reasoningContent: row.reasoning_content,
+    // ── Attribution (previously dropped here) ──
+    source,
+    sourceAgentId: row.source_agent_id,
+    a2aThreadId: row.a2a_thread_id,
+    a2aIntent: row.a2a_intent,
+    a2aRequiresResponse: row.a2a_requires_response,
+    inboundMeta: row.inbound_meta,
+    convKey: row.conv_key,
+    // The single canonical "who is this from" signal. Structured columns win;
+    // legacy rows fall back to marker parsing via the shim in deriveOrigin.
+    origin: deriveOrigin({
+      role: row.role as Message['role'],
+      content: row.content,
+      source: row.source,
+      sourceAgentId: row.source_agent_id,
+      a2aThreadId: row.a2a_thread_id,
+      a2aIntent: row.a2a_intent,
+      a2aRequiresResponse: row.a2a_requires_response,
+      inboundMeta: row.inbound_meta,
+      originKind: row.origin_kind,
+      originIntent: row.origin_intent,
+    }),
   };
 }
 

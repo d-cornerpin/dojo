@@ -85,8 +85,11 @@ export function injectTaskAssignmentNotification(
   const messageId = uuidv4();
   try {
     db.prepare(
-      `INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, created_at)
-       VALUES (?, ?, 'user', ?, ?, datetime('now'))`,
+      // origin_kind/origin_intent (mig 075): this is an ENGINE event (a task
+      // assignment notice), not the user talking — stamped structurally so the
+      // engine/dashboard never have to parse the [SOURCE: …] prose to know that.
+      `INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, origin_kind, origin_intent, created_at)
+       VALUES (?, ?, 'user', ?, ?, 'engine', 'tracker', datetime('now'))`,
     ).run(messageId, assignedAgentId, content, creatorAgentId === 'dojo-system' ? null : creatorAgentId);
 
     broadcast({

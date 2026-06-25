@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { getJwtSecret } from '../config/loader.js';
 import { createLogger } from '../logger.js';
 import type { WsEvent } from '@dojo/shared';
+import { deriveOrigin } from '@dojo/shared';
 
 const logger = createLogger('websocket');
 
@@ -130,7 +131,33 @@ function notifyInternalListeners(event: WsEvent): void {
   }
 }
 
+// Stamp the canonical MessageOrigin onto a chat:message payload if the
+// broadcast site didn't already supply one. There are ~70 broadcast sites and
+// most build a partial Message literal (role + content, sometimes source);
+// computing origin HERE — the single seam every chat:message flows through —
+// means the dashboard's origin-based classifier (visibility.ts) gets reliable
+// attribution without each site having to remember to attach it. deriveOrigin
+// is pure and falls back to marker parsing, so a sparse payload still resolves.
+function stampChatMessageOrigin(event: WsEvent): void {
+  if (event.type !== 'chat:message') return;
+  const msg = event.message;
+  if (!msg || msg.origin) return;
+  msg.origin = deriveOrigin({
+    role: msg.role,
+    content: msg.content,
+    source: msg.source ?? null,
+    sourceAgentId: msg.sourceAgentId ?? null,
+    a2aThreadId: msg.a2aThreadId ?? null,
+    a2aIntent: msg.a2aIntent ?? null,
+    a2aRequiresResponse: msg.a2aRequiresResponse ?? null,
+    inboundMeta: msg.inboundMeta ?? null,
+  });
+}
+
 export function broadcast(event: WsEvent): void {
+  // Attribution rides on every chat:message uniformly (see stamp helper).
+  stampChatMessageOrigin(event);
+
   // In-process listeners fire even with zero connected clients (e.g. voice sessions
   // that piggyback on chat:chunk events to drive TTS).
   notifyInternalListeners(event);

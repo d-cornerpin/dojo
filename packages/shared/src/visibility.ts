@@ -16,6 +16,11 @@
 // what the agent sees. Default is regular mode.
 // ════════════════════════════════════════
 
+// Type-only import (erased at runtime, so no runtime cycle with origin.js,
+// which imports parseInboundChannel from here). The classifier reads the
+// structured MessageOrigin instead of re-parsing content markers.
+import type { MessageOrigin, Channel } from './origin.js';
+
 export type VisibilityTier = 'user-visible' | 'agent-only' | 'never-shown';
 
 // How a classified message should be rendered. The dashboard maps each
@@ -44,6 +49,31 @@ export interface DisplayClassification {
 export interface DisplayMessageInput {
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;
+  /**
+   * Optional message source. When `'a2a'`, the message was produced on a
+   * dedicated inter-agent turn and the ENTIRE message (planning text AND tool
+   * badges) is agent-only — the user never sees an A2A turn in regular mode.
+   * Content-based classification can't detect this (a file_read tool_use looks
+   * identical on a user turn vs. an A2A turn), so the engine stamps it at the
+   * source and the dashboard passes it through.
+   */
+  source?: 'voice' | 'a2a' | null;
+  /**
+   * The canonical structured attribution (origin.ts deriveOrigin). When
+   * present, the classifier reads THIS to decide visibility instead of
+   * re-parsing `content` markers — a2a/engine/agent-only vs user-visible
+   * falls straight out of `origin.kind`/`channel`. Server-fetched and
+   * broadcast messages always carry it; locally-built optimistic/streaming
+   * bubbles may not, and fall back to the legacy content path below.
+   */
+  origin?: MessageOrigin;
+}
+
+// A human message that physically arrived on one of these channels renders
+// as a user-visible inbound badge (header stripped). dashboard/voice are the
+// owner typing/speaking locally and render as plain user text.
+function isInboundChannel(ch: Channel | null | undefined): boolean {
+  return ch === 'imessage' || ch === 'teams' || ch === 'sms' || ch === 'email' || ch === 'phone';
 }
 
 // ════════════════════════════════════════
@@ -148,6 +178,14 @@ export interface InboundMeta {
   accountKind?: 'agent' | 'user';
   authorized?: boolean;
   sender?: string | null;
+  /**
+   * The sender's relationship to the owner, stamped by the producer when it
+   * knows it (e.g. the iMessage bridge knows is_primary). Lets the origin
+   * projection tell "the owner texting" from "a friend texting" without
+   * re-deriving from scattered safe-sender state. (Union mirrors origin.ts
+   * Relation; kept inline to avoid a shared-package import cycle.)
+   */
+  relation?: 'owner' | 'known_contact' | 'third_party' | 'agent' | 'engine';
   // Reply-addressing context (mirrors the server-side ChannelInboundContext).
   recipientAddress?: string;
   emailMessageId?: string;
@@ -259,6 +297,7 @@ function startsWithAny(s: string, prefixes: readonly string[]): boolean {
 export function classifyMessageForDisplay(msg: DisplayMessageInput): DisplayClassification {
   const content = msg.content ?? '';
   const trimmed = content.trim();
+  const origin = msg.origin;
 
   if (msg.role === 'tool') {
     return { tier: 'agent-only', kind: 'tool-result' };
@@ -283,19 +322,40 @@ export function classifyMessageForDisplay(msg: DisplayMessageInput): DisplayClas
   }
 
   if (msg.role === 'user') {
+    // ── Structured path (Phase 6): the message's origin decides visibility,
+    // not a regex over its content. A2A (kind='agent') and engine events
+    // (kind='engine') are agent-only; a human on a real inbound channel is a
+    // user-visible badge; the owner on dashboard/voice is plain user text.
+    // This is the same call the row mapper makes (deriveOrigin), so legacy
+    // rows still attribute correctly via the read-shim there.
+    if (origin) {
+      if (origin.kind === 'agent') {
+        return { tier: 'agent-only', kind: 'a2a' };
+      }
+      if (origin.kind === 'engine') {
+        // tracker assignments kept their 'engine-injection' render kind; every
+        // other engine event is 'system-other'. Both are agent-only — the kind
+        // is only a wordy-mode render hint (the dashboard gates on tier alone).
+        const kind: DisplayKind =
+          origin.intent && origin.intent.startsWith('tracker') ? 'engine-injection' : 'system-other';
+        return { tier: 'agent-only', kind };
+      }
+      // origin.kind === 'user' (or 'self', not expected on a user row).
+      if (isInboundChannel(origin.channel)) {
+        return { tier: 'user-visible', kind: 'inbound-channel' };
+      }
+      return { tier: 'user-visible', kind: 'user-text' };
+    }
+
+    // ── Legacy fallback (origin-less inputs: local optimistic/streaming
+    // bubbles). Retired in Phase 7 once every surface carries origin. Mirrors
+    // the pre-redesign content-marker pile exactly so behavior is unchanged.
     if (parseInboundChannel(content)) {
       return { tier: 'user-visible', kind: 'inbound-channel' };
     }
     if (trimmed.startsWith('[A2A:') || trimmed.startsWith('[SOURCE: AGENT MESSAGE FROM')) {
       return { tier: 'agent-only', kind: 'a2a' };
     }
-    // Any OTHER [SOURCE: ...] marker is an engine / coordination EVENT (tracker,
-    // scheduler, healer, engine, health alert, orphaned completion, sub-agent,
-    // system, ...), NOT a channel message. Agent-only. This generic catch is why
-    // new event types never leak into the chat: previously each had to be
-    // enumerated, so AGENT HEALTH ALERT / ORPHANED COMPLETION slipped through.
-    // Recognized channels are handled above (parseInboundChannel), so they are
-    // already excluded here.
     if (trimmed.startsWith('[SOURCE:')) {
       const kind: DisplayKind = trimmed.startsWith('[SOURCE: TRACKER TASK')
         ? 'engine-injection'
@@ -312,6 +372,16 @@ export function classifyMessageForDisplay(msg: DisplayMessageInput): DisplayClas
   }
 
   // assistant
+  // A2A-turn output is entirely agent-only — both planning text and tool
+  // badges — so an inter-agent turn never surfaces in regular mode. Wordy
+  // mode still renders it. origin.channel==='a2a' is the structured signal;
+  // msg.source==='a2a' covers streaming bubbles that predate the broadcast.
+  if (origin?.channel === 'a2a' || msg.source === 'a2a') {
+    return { tier: 'agent-only', kind: 'a2a' };
+  }
+  // Engine-emitted assistant fallback text (errors, continuity acks) is
+  // hidden. deriveOrigin marks all assistant output kind='self', so origin
+  // can't see this — the prefix match stays. (The agent's real words show.)
   if (startsWithAny(trimmed, ASSISTANT_FALLBACK_PREFIXES)) {
     return { tier: 'agent-only', kind: 'fallback' };
   }
