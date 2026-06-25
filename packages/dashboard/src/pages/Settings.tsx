@@ -1915,7 +1915,7 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
                 placeholder={
                   preset === 'deepseek' ? 'sk-... (DeepSeek API key from platform.deepseek.com)' :
                   preset === 'openai' ? 'sk-...' :
-                  authType === 'oauth' ? 'Bearer token...' : 'sk-...'
+                  authType === 'oauth' ? 'sk-ant-oat...' : 'sk-...'
                 }
                 className="finput"
               />
@@ -1935,12 +1935,17 @@ const AddProviderForm = ({ onAdded, onCancel }: { onAdded: () => void; onCancel:
                 </p>
               )}
               {preset === 'anthropic' && authType === 'oauth' && (
-                <p className="text-[11px] text-ui/40 mt-1">
-                  OAuth tokens are typically issued through a Claude Pro/Max plan.{' '}
-                  <a href="https://claude.ai/upgrade" target="_blank" rel="noopener noreferrer" className="text-cp-teal hover:text-cp-teal/80 underline">
-                    Compare plans ↗
-                  </a>
-                </p>
+                <div className="text-[11px] text-ui/40 mt-1 space-y-1">
+                  <p className="text-ui/55">Get a token with the Claude Code CLI:</p>
+                  <p>1. Install it:</p>
+                  <code className="block bg-ui/[0.05] px-2 py-1 rounded font-mono text-[10px] text-ui/55">curl -fsSL https://claude.ai/install.sh | bash</code>
+                  <p>2. Generate the token:</p>
+                  <code className="block bg-ui/[0.05] px-2 py-1 rounded font-mono text-[10px] text-ui/55">claude setup-token</code>
+                  <p>
+                    3. Paste it above (starts with <span className="font-mono">sk-ant-oat</span>). Needs a Claude{' '}
+                    <a href="https://claude.ai/upgrade" target="_blank" rel="noopener noreferrer" className="text-cp-teal hover:text-cp-teal/80 underline">Pro/Max plan ↗</a>.
+                  </p>
+                </div>
               )}
               {preset === 'openai' && (
                 <p className="text-[11px] text-ui/40 mt-1">
