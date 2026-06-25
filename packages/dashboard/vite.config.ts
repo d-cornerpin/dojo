@@ -35,6 +35,10 @@ export default defineConfig({
     },
   ],
   server: {
+    // Bind 0.0.0.0 so the dev dashboard is reachable from other devices on the
+    // LAN (open http://<host-LAN-IP>:3000). allowedHosts:true lets the host
+    // header through; /api + WS are proxied to the backend on the host machine.
+    host: true,
     port: 3000,
     allowedHosts: true as unknown as string[],
     proxy: {
