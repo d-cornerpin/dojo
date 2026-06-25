@@ -271,6 +271,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
     const tasksInput = args.tasks as Array<{
       title: string;
       description?: string;
+      goal?: string;
       assignedTo?: string;
       priority?: 'high' | 'normal' | 'low';
       stepNumber?: number;
@@ -341,6 +342,27 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       createdBy: agentId,
       tasks: tasksInput,
     });
+
+    // Give every inline task a goal. The tasks[] shape historically carried no
+    // goal field, so createProject left them goal=NULL — which makes them
+    // impossible for PM to validate ("(none recorded)"): PM reverts each
+    // completion and the agent re-submits forever (the validation ping-pong the
+    // user reported). Mirror tracker_create_task: default the goal from the
+    // caller-provided goal (if any), else the task's description, else its
+    // title. Only fill when empty — never overwrite a real goal.
+    for (let i = 0; i < result.taskIds.length; i++) {
+      const id = result.taskIds[i];
+      const t = getTask(id);
+      if (!t) continue;
+      const provided = typeof tasksInput?.[i]?.goal === 'string' ? (tasksInput[i].goal as string).trim() : '';
+      const goal = provided || (t.description ? t.description.trim() : '') || (t.title ? t.title.trim() : '');
+      if (!goal) continue;
+      try {
+        getDb().prepare(`UPDATE tasks SET goal = ? WHERE id = ? AND (goal IS NULL OR goal = '')`).run(goal, id);
+      } catch (err) {
+        logger.warn('Failed to default goal on inline project task (non-fatal)', { taskId: id, error: err instanceof Error ? err.message : String(err) }, agentId);
+      }
+    }
 
     // Auto-spawn PM agent if not running
     try {
