@@ -426,6 +426,28 @@ export async function runV2Turn(agentId: string): Promise<void> {
   const chosenConvKey = waitingConvs[0]?.key ?? null;
   const triggerRow = waitingConvs[0]?.latest;
   const lastUserMessageContent = triggerRow?.content ?? null;
+  // CLAIM this conversation the moment the turn picks it up: stamp the trigger
+  // inbound's conv_key so it reads as SERVED regardless of how this turn ends.
+  // The old design only marked a conversation served when the turn delivered a
+  // terminal reply (or [no-reply]) — so a turn that did real, NON-IDEMPOTENT
+  // work (created a project, wrote files, messaged the PM) but then ended via a
+  // suppressed reply, a gate/limit, or an A2A hand-off tagged nothing, left the
+  // conversation "waiting", and the runtime drain re-triggered the SAME message
+  // → the agent redid the work → duplicate projects (the thrash spiral). Marking
+  // the inbound at pickup is restart-durable (DB), idempotent (conv_key IS NULL
+  // guard), and invisible to content-scoping (user rows scope by origin, not by
+  // conv_key — see scopeToHumanConversation). A genuinely newer message in the
+  // same conversation has a higher rowid, so it still reads as waiting and is
+  // served on the next turn; only the self-re-trigger of the message we are
+  // handling right now is killed. Continuing a long task is the tracker/PM's job,
+  // never re-running the user's message.
+  if (chosenConvKey && triggerRow) {
+    try {
+      db.prepare(
+        `UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ? AND conv_key IS NULL`,
+      ).run(chosenConvKey, agentId, triggerRow.rowid);
+    } catch { /* best effort — served-tagging also happens at turn end */ }
+  }
   // Phase 3 — bind the inbound source for the whole turn. Computed once
   // here and threaded into every assembleContext call below so the
   // voice-conduct block stays in scope across tool-call iterations of

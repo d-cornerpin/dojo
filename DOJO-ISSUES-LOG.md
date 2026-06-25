@@ -45,6 +45,37 @@ auto-updater refresh `~/.dojo/scripts` so the script reaches boxes via update.
 
 ---
 
+## RESOLVED (PREFLIGHT.2 REGRESSION) — duplicate-project thrash spiral from turn re-trigger
+**Status: FIXED (preflight.3). Caused by the preflight.1/2 turn-serialization work.**
+A real user request (set up a recurring GI-email digest) made the agent spawn ~5
+duplicate projects, re-read the same emails each pass, suppress its own replies,
+and ignore "STOP" until the user typed "JUST STOP". Root cause: the `conv_key`
+"served" tag was written ONLY on turn-ends that reached a terminal human reply
+(`loop.ts` ~4408) or `[no-reply]` (`loop.ts` ~2292). A turn that did real,
+NON-IDEMPOTENT work but ended any OTHER way (reply suppressed by the
+idle-with-in_progress nudge, cut off by a gate/limit, or handed to the PM via
+`send_to_agent`) tagged nothing, so `getWaitingHumanConversations` kept reading
+the conversation as unanswered and the runtime drain (`runtime.ts` ~597)
+re-triggered the SAME message. The agent redid the whole task, duplicating side
+effects, until `MAX_DRAIN_STUCK` (4). The flawed assumption was in the code
+comment itself: "a turn interrupted mid-task tags nothing, so it stays waiting and
+resumes" — it equated "no terminal reply" with "did no work".
+Fix: CLAIM the conversation at turn pickup (`loop.ts` ~428) by stamping the
+trigger inbound's `conv_key`, so it reads as served regardless of how the turn
+ends. One guarded UPDATE on the single trigger row; restart-durable (DB);
+idempotent (`conv_key IS NULL`); invisible to content-scoping (user rows scope by
+origin, not `conv_key`). A genuinely newer message in the same conversation has a
+higher rowid, so it still reads as waiting and is served next; only the
+self-re-trigger of the message being handled is killed. Continuing a long task
+stays the tracker/PM's job, never a re-run of the user's message.
+Verified on dev: the same GI scenario now creates ONE project (was ~5), the
+trigger message carries `conv_key`, zero drain re-triggers, zero suppression
+loops. Regression channel routing 12/12, counterparty 5/5, and a deterministic
+fairness test confirms claiming one conversation does not strand a second waiting
+sender.
+
+---
+
 ## RESOLVED — A2A `send_to_agent` loop / agent ignoring engine STOP
 **Status: FIXED (this session).**
 On an A2A turn the agent looped `send_to_agent` (observed 12 calls) and ignored
