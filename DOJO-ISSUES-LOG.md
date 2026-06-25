@@ -12,6 +12,39 @@ All observations are from the dev server, agent `kevin` (DeepSeek V4 Pro),
 
 ---
 
+## RESOLVED (PRODUCTION REGRESSION) — v3.1.10-preflight.1 crashed on startup
+**Status: FIXED (this session). Caused by this redesign; shipped, then fixed.**
+After a production box updated 3.1.9 → 3.1.10-preflight.1 the server would not
+boot and crash-looped. `platform.stderr.log`:
+`Error: Cannot find package '.../node_modules/@dojo/shared/src/index.ts'
+imported from .../packages/server/dist/gateway/ws.js` (`ERR_MODULE_NOT_FOUND`).
+The crash is at module-load, before migrations run, so the DB was untouched.
+**Root cause:** this redesign added the first-ever *runtime* (value) imports of
+`@dojo/shared` into server code (`deriveOrigin`, `conversationKey` in `ws.ts`,
+`loop.ts`, `counterparty.ts`, `store.ts`, `chat.ts`, `agents.ts`). `@dojo/shared`'s
+`package.json` points `main`/`types` at `./src/index.ts`, and the package ships
+only `dist/`, not `src/`. Dev (`tsx`) and `typecheck` (`tsc`) both resolve the
+real `src`, so neither caught it; only the compiled, packaged artifact failed.
+Before this redesign the server only *type*-imported `@dojo/shared` (erased at
+compile), so production never resolved it at runtime.
+**Fix:**
+1. `deploy/build-package.sh` rewrites the shipped `@dojo/shared/package.json`
+   `main`/`types` → `./dist/index.js` / `./dist/index.d.ts` (the dir that is
+   actually bundled). Dev/tsx/typecheck untouched.
+2. `deploy/release.sh` now smoke-boots the packaged artifact (unzip → `npm
+   install` → `node dist/index.js`) and refuses to publish on any module
+   resolution error. Verified positive (good build boots, migrations run) AND
+   negative (reintroduced the bug → gate fails with the exact stack trace).
+3. `DOJO_SKIP_SYSTEM_DEPS=1` guard in `ensure-system-deps.ts` so the gate boot
+   never invokes Homebrew / network as a side effect.
+**Recovery used on the box:** restored `~/.dojo/platform.backup-3.1.9` (the
+backup the updater makes), then switched the channel to Stable. To make that a
+one-click action in future, added an offline menu-bar **Roll Back** (
+`deploy/scripts/rollback.sh` + `menubar/DojoMenuBar.swift`), and made the
+auto-updater refresh `~/.dojo/scripts` so the script reaches boxes via update.
+
+---
+
 ## RESOLVED — A2A `send_to_agent` loop / agent ignoring engine STOP
 **Status: FIXED (this session).**
 On an A2A turn the agent looped `send_to_agent` (observed 12 calls) and ignored

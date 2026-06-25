@@ -62,6 +62,14 @@ function parseMarkers(output: string): { installed: string[]; failed: string[] }
 }
 
 export async function ensureSystemDeps(): Promise<void> {
+  // Escape hatch for non-production boots (e.g. the release-gate smoke boot of
+  // a packaged build): skip the brew dependency check so booting the server
+  // never touches Homebrew, the network, or system state as a side effect.
+  if (process.env.DOJO_SKIP_SYSTEM_DEPS === '1') {
+    logger.info('DOJO_SKIP_SYSTEM_DEPS=1 — skipping system-dependency check');
+    return;
+  }
+
   const scriptPath = resolveScriptPath();
   if (!scriptPath) {
     logger.warn('ensure-system-deps.sh not found — skipping dep check');

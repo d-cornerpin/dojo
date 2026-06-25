@@ -60,7 +60,11 @@ chmod +x "$DEST/platform/packages/server/scripts/ensure-system-deps.sh"
 cp -r "$PROJECT_ROOT/packages/dashboard/dist" "$DEST/platform/packages/dashboard/"
 cp "$PROJECT_ROOT/packages/dashboard/package.json" "$DEST/platform/packages/dashboard/"
 cp -r "$PROJECT_ROOT/packages/shared/dist" "$DEST/platform/packages/shared/"
-cp "$PROJECT_ROOT/packages/shared/package.json" "$DEST/platform/packages/shared/"
+# The repo's shared package.json points main/types at ./src/index.ts so dev (tsx)
+# and typecheck resolve the live TypeScript. But the package ships only dist/, not
+# src/, and production runs compiled node (which cannot import a .ts file). Rewrite
+# the shipped manifest to point at the built dist so runtime resolution succeeds.
+node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('$PROJECT_ROOT/packages/shared/package.json','utf8'));p.main='./dist/index.js';p.types='./dist/index.d.ts';fs.writeFileSync('$DEST/platform/packages/shared/package.json',JSON.stringify(p,null,2)+'\n');"
 
 # Templates
 mkdir -p "$DEST/platform/templates"

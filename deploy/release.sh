@@ -133,6 +133,52 @@ EMBEDDED="$(unzip -p "$DIST/$ZIP_NAME" dojo-platform/platform/package.json | nod
 [ "$EMBEDDED" = "$VERSION" ] || fail "Zip embeds version '$EMBEDDED', expected '$VERSION'"
 echo "  ✓ zip embeds $VERSION"
 
+# ── Smoke-boot the packaged build ──
+# v3.1.10-preflight.1 shipped a build that crashed on startup: a runtime import
+# of @dojo/shared could not resolve because the package's manifest pointed at
+# .ts source that the package does not ship. typecheck and tsx-dev both passed;
+# only the compiled, packaged artifact failed. So boot the actual artifact the
+# way production does (unzip → npm install → node dist) and refuse to publish if
+# it can't reach startup. Runs in --dry-run too, so it's a real preflight gate.
+step "Smoke-booting the packaged build (catches non-resolvable imports before publish)"
+SMOKE_DIR="$(mktemp -d)"
+trap 'rm -rf "$SMOKE_DIR"' EXIT
+unzip -q "$DIST/$ZIP_NAME" -d "$SMOKE_DIR" || fail "Smoke boot: could not unzip the package"
+SMOKE_PLATFORM="$SMOKE_DIR/dojo-platform/platform"
+( cd "$SMOKE_PLATFORM" && npm install --omit=dev --no-audit --no-fund >/dev/null 2>&1 ) \
+  || fail "Smoke boot: npm install failed in the packaged build"
+SMOKE_HOME="$SMOKE_DIR/home"; mkdir -p "$SMOKE_HOME/.dojo/data"
+SMOKE_LOG="$SMOKE_DIR/boot.log"
+# DOJO_SKIP_SYSTEM_DEPS keeps the boot from invoking Homebrew. `exec` makes the
+# subshell BECOME node, so $! is node's own PID — killing it actually stops the
+# server (which otherwise loops retrying the port forever and would leak).
+( cd "$SMOKE_PLATFORM" && HOME="$SMOKE_HOME" DOJO_DATA_DIR="$SMOKE_HOME/.dojo/data" \
+    DOJO_SKIP_SYSTEM_DEPS=1 NODE_ENV=production exec node packages/server/dist/index.js ) \
+    >"$SMOKE_LOG" 2>&1 &
+SMOKE_PID=$!
+SMOKE_DOJO_LOG="$SMOKE_HOME/.dojo/logs/dojo.log"
+booted=0
+for _ in $(seq 1 40); do
+  # Reaching migrations or the port-bind stage means the whole import graph
+  # resolved — which is exactly what preflight.1 failed to do.
+  if grep -qiE "Running database migrations|Migration applied|is in use|server (listening|started)|listening on" \
+       "$SMOKE_DOJO_LOG" "$SMOKE_LOG" 2>/dev/null; then booted=1; break; fi
+  kill -0 "$SMOKE_PID" 2>/dev/null || break   # process died before reaching startup
+  sleep 1
+done
+kill "$SMOKE_PID" 2>/dev/null || true
+wait "$SMOKE_PID" 2>/dev/null || true
+if grep -qiE "ERR_MODULE_NOT_FOUND|Cannot find package|ERR_REQUIRE_ESM|ERR_PACKAGE_PATH_NOT_EXPORTED" \
+     "$SMOKE_DOJO_LOG" "$SMOKE_LOG" 2>/dev/null; then
+  echo "  ---- last boot output ----"; tail -20 "$SMOKE_LOG" 2>/dev/null
+  fail "Smoke boot: packaged build has a module-resolution error (see above). NOT publishing."
+fi
+[ "$booted" = "1" ] || {
+  echo "  ---- last boot output ----"; tail -20 "$SMOKE_LOG" 2>/dev/null
+  fail "Smoke boot: packaged build did not reach startup within 40s. NOT publishing."
+}
+echo "  ✓ packaged build boots — import graph resolves and migrations run"
+
 # ── Dry run stops here ──
 if [ "$DRY_RUN" = "1" ]; then
   step "DRY RUN — reverting the version bump; not committing, pushing, or releasing"

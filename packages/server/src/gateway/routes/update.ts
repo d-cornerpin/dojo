@@ -441,6 +441,24 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
       }
     }
 
+    // 6b. Refresh maintenance scripts (~/.dojo/scripts) from the package. The
+    // rsync above only covers entries inside platform/; the launcher/recovery
+    // scripts live as a sibling of platform/ in the package, so without this
+    // step a script-level fix or a new tool (e.g. the menu-bar rollback's
+    // rollback.sh) would only reach a box on a full reinstall. Best-effort: a
+    // script-copy failure must never abort an otherwise-good update.
+    try {
+      const scriptsSrc = path.join(tmpDir, 'dojo-platform', 'scripts');
+      const scriptsDest = path.join(path.dirname(PLATFORM_DIR), 'scripts');
+      if (fs.existsSync(scriptsSrc)) {
+        fs.mkdirSync(scriptsDest, { recursive: true });
+        await execAsync(`cp -f "${scriptsSrc}/"*.sh "${scriptsDest}/" && chmod +x "${scriptsDest}/"*.sh`, { timeout: 30000, env });
+        logger.info('Refreshed maintenance scripts from package', { dest: scriptsDest });
+      }
+    } catch (err) {
+      logger.warn('Script refresh during update failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    }
+
     logger.info('Files updated, running npm install');
 
     // 7. Install production dependencies (no build needed -- zip includes pre-compiled dist/)
