@@ -1,242 +1,220 @@
-# Message Attribution Redesign — "Every message knows who it's from"
+# Message Attribution Redesign, "every message knows who it's from, and every decision reads it"
 
-**Status:** Design proposal (not yet approved, nothing implemented)
-**Author:** drafted from a top-down research pass across loop, model calls, prompt injection, channels, multi-agent, engine messaging, storage, and visibility.
-**Goal:** Make it structurally impossible for an agent to confuse who said what. Every message the model sees carries explicit, structured attribution (who + what relationship + what channel). The model is never shown two senders' live messages mixed together. The result deletes the blockers, filters, regex markers, and per-turn hacks that exist today (including the ones added in the last few days) because they are no longer needed.
+**Status:** Revised after implementation + production exposure. The data model (the structured origin) shipped and is correct. The *consumption* was incomplete, and that incompleteness produced a string of failures (turn hijack, model relapse, ack-and-ghost, double-replies, duplicate work). This revision promotes the consumption rules to first-class, so the spec and the code finally agree.
 
----
-
-## 0. Non-negotiable invariants (must not regress)
-
-These already work and a lot of effort went into them. The redesign must **strengthen** them, never break them. Each is a required regression test that must pass at every phase before that phase is considered done:
-
-1. **Channel distinction.** The agent always knows whether a message came over iMessage, dashboard chat, email (Gmail/Outlook), Teams, SMS, phone/voice, or A2A — and who the sender is.
-2. **Reply routing stays on-channel.** A message received on iMessage is answered on iMessage; dashboard → dashboard; email → email reply; Teams → Teams; SMS → SMS; phone → spoken; A2A → send_to_agent. Replies never cross channels. (This is exactly what `resolveInbound` + `state.inboundChannel/inboundContext` → end-of-turn reply routing does today; the redesign keeps that path and feeds it the same/stronger structured data.)
-3. **Sender authorization.** "The user themselves" vs "a friend on the safe-sender list" vs "an unknown sender" is preserved; the agent does not act on an unauthorized sender's behalf.
-
-Working agreement: **build everything on the dev server, commit nothing until David approves, test exhaustively** (including the channel-routing regression above) at every step.
-
-## 1. The disease (one sentence)
-
-Every inbound — the user on dashboard, the user on iMessage, the user's friend on iMessage, another agent over A2A, the PM, the scheduler, the tracker, the healer, the rate-limiter — is stored and rendered to the model as **`role: 'user'`** (or `'system'`), distinguished **only by a text marker inside the content** (`[SOURCE: …]`, `[A2A: …]`, `[Engine …]`, `═══ … ═══`). A weak model cannot reliably parse ~30 different markers interleaved in one stream, so it collapses them into one mental counterparty: *"someone is asking me several things."*
-
-The evidence: the model's own reasoning — *"Kelly is asking me two things… 'freezing point of water' — this might be part of Kelly's message or the active user directive bleeding through."* Two different people, one perceived sender.
+**Goal:** Make it structurally impossible for an agent to confuse who said what, AND impossible for the engine itself to mis-route a turn. Every message carries explicit, structured attribution; every decision that depends on "who / what channel / should I reply" is driven by that attribution, never by a prose marker, a `kind`-only check, or a parallel signal.
 
 ---
 
-## 2. What already exists (we are not starting from zero)
+## 0. Invariants and the prime directive
 
-The `messages` table already has structured attribution columns; the assembler just doesn't use them when building the model's view:
+**Three invariants that must never regress** (each is a required regression test at every phase):
+1. **Channel distinction.** The agent always knows the channel (iMessage, dashboard, email, Teams, SMS, phone/voice, A2A) and the sender.
+2. **Reply routing stays on-channel.** iMessage is answered on iMessage, email with an email, A2A with `send_to_agent`, etc. Replies never cross channels.
+3. **Sender authorization.** "The owner" vs "a friend on the safe-sender list" vs "an unknown sender / a notification about the owner's inbox" is preserved; the agent never acts or replies on an unauthorized sender's behalf.
 
-| Column | Added | Carries | Used by model context today? |
-|---|---|---|---|
-| `role` | base | user/assistant/system/tool | yes (but only 2–3 roles reach the API) |
-| `source_agent_id` | mig 027 | which agent SENT an A2A | no (not mapped in `rowToMessage`) |
-| `a2a_thread_id` | mig 034 | A2A thread | no |
-| `a2a_intent` | mig 034 | QUESTION/ASSIGN/ANSWER/… | no |
-| `a2a_requires_response` | mig 034 | wake semantics | no |
-| `source` | mig 046 | `'voice' | 'a2a' | null` | partially (voice routing, A2A display) |
-| `inbound_meta` (JSON) | mig 073 | `{channel, accountKind, authorized, sender, recipient, …}` | only for reply-routing, not shown to model |
-| `turn_number`, `reasoning_content`, `attachments` | 037/040/011 | — | yes |
+**The prime directive (the lesson that this revision exists to encode):**
+> **Every field of `MessageOrigin` has a named consumer. A field that is computed on every message but read in only one place is a bug, not a convenience.**
 
-**Key finding:** `store.ts:rowToMessage` does `SELECT *` but maps only the base columns. `source_agent_id`, `a2a_thread_id`, `a2a_intent`, `a2a_requires_response`, `inbound_meta` are **read from the DB and thrown away** before the model ever sees them. The attribution exists; it's discarded at the seam.
+The first version of this redesign built `MessageOrigin` with an `authorized` flag and then read it in exactly one consumer. Every other decision ("is this a waiting conversation," "is this a user turn," "does this outrank a scheduled task," "what is the trigger") fell back to checking `kind` alone. The structured path existed but was bypassed, so the model still got confused and the engine made wrong turn decisions. The fix below is not new design; it is wiring the flag the design already defined into the decisions the design already described.
 
-**Gaps in the existing structured data:**
-- iMessage and dashboard do **not** stamp `inbound_meta` (iMessage uses an in-memory map; dashboard relies on `source`/null). So two of the most common channels lack structured channel+sender.
-- There is no single field for "relationship of sender to the user" (self / known-contact / third-party / agent / engine). It's implied by safe-sender `is_primary` flags and `accountKind`, scattered per channel.
-- ~30 engine-injected message types (scheduler, tracker, healer, rate-limit, budget, sub-agent completion, nudges, etc.) carry **no** structured origin at all — pure text markers.
+**Working agreement:** build on the dev server, commit nothing until David approves, and verify each phase against *real, adversarial* scenarios (a notification flood colliding with a scheduler fire, an agent finishing long PM-validated work, two senders at once), reading the **actual** assembled context, not greps. Synthetic batteries that only exercise genuine inbound are how the `authorized` gap shipped green.
 
 ---
 
-## 3. The principle: three lanes, one counterparty per turn
+## 1. The disease, in two layers
 
-Everything in an agent's context is exactly one of three things. Today all three masquerade as `role='user'`. The redesign gives each a distinct, consistent representation and never lets them impersonate each other.
+**Layer 1 (the original):** every inbound (owner on dashboard, owner on iMessage, a friend on iMessage, an agent over A2A, the PM, the scheduler, the tracker, a mailbox notification) is stored as `role='user'` and distinguished only by a text marker inside the content. A weak model cannot parse ~30 markers interleaved in one stream, so it collapses them into one mental counterparty.
 
-- **Lane 1 — The conversation.** Live back-and-forth with the **current counterparty** (the human on a channel, or one agent). Real user/assistant alternation. Scoped to **one** counterparty per turn.
-- **Lane 2 — The agent's own mind.** Identity (SOUL), memory (vault), summaries, scratchpad, briefing, knowledge, tools. The agent's knowledge of the world and itself. Framed as "what you know," never as a message from anyone.
-- **Lane 3 — Engine events.** Tracker assignments, scheduler fires, healer alerts, rate-limit notices, sub-agent completions, A2A from agents who are *not* the current counterparty, system notices. Framed as **events that happened**, never as a human talking.
+**Layer 2 (discovered in production):** even after structured attribution was added, the **consumers kept using crude proxies**. The damage from this layer was worse than Layer 1, because now the *engine* (not just the model) made wrong decisions:
+- A mailbox notification (`kind:'user'`, `authorized:false`) was counted as a real "waiting conversation," so it **outranked scheduled tasks** (the owner's automations silently stopped running) and **flipped agent turns into user turns** (suppressed A2A chatter leaked to the user as a relapse loop).
+- Suppression and turn-end logic keyed off prose `includes('[SOURCE: …]')` instead of the counterparty.
 
-**Two invariants that kill the confusion:**
-1. **One counterparty per turn.** The live conversation (Lane 1) contains exactly one sender. The turn opens by naming them: *"This turn you are responding to **David (your primary user)** over **iMessage**."* A2A from Kelly while you're talking to David is a Lane-3 event (and gets its own turn to answer). David's question never sits next to Kelly's in Lane 1.
-2. **Lanes never impersonate each other.** Memory and engine events are never `role='user'` human-shaped messages interleaved into the live tail. They live in clearly-delimited, consistently-formatted blocks. The "active user directive bleeding through" bug dies here: the directive is Lane 2 (your knowledge of the current goal), not a peer message floating next to the live chat.
+Both layers have the same cure: **decide by the structured origin, and make sure every decision actually reads it.**
 
-The asymmetry that resolves the earlier accuracy worry: **Lane 1 is one counterparty; Lanes 2 and 3 are always available.** When Kelly asks "what's the budget," the agent answers from Lane 2 (its project memory: the file it wrote, the tracker, vault, summaries) — not from David's raw Lane-1 messages. Proven already: in testing, the agent answered an A2A accurately by reading its own project file, not the user conversation.
+---
+
+## 2. What exists today (the data model is done; consumption is the gap)
+
+Shipped and correct:
+- `messages` carries the attribution columns (`source`, `source_agent_id`, `a2a_*`, `inbound_meta`), plus `origin_kind` + `origin_intent` (mig 075) for engine events and `conv_key` (mig 076) for content-isolation / served tracking.
+- `deriveOrigin(row): MessageOrigin` is the single projection; `rowToMessage` surfaces the fields on the shared `Message` type.
+- Most producers stamp a complete `inbound_meta` with the correct `authorized` verdict (the safe-sender / account-kind gate in `channel-auth.ts`).
+
+The gap is entirely on the read side: the consumers that decide turn behavior do not all read `authorized` (and a few still read prose). One producer (Twilio voicemail) still leans on the legacy prose shim instead of stamping `inbound_meta`.
+
+---
+
+## 3. The principle: three lanes, and `authorized` decides the lane for human inbound
+
+Everything in an agent's context is exactly one of three things, and **the lane is a pure function of the origin**:
+
+- **Lane 1, the conversation.** The live back-and-forth with the **one** counterparty the agent is answering this turn.
+- **Lane 2, the agent's own mind.** Identity, memory, summaries, the current goal. "What you know," never a message from anyone.
+- **Lane 3, awareness (events + notifications).** Things that happened, and things the agent should be aware of but is **not** in conversation with. Framed as events, never as a person talking to it.
+
+**The lane-assignment rule (this is the correction, stated once and consumed everywhere):**
+
+| Origin | Lane | Means |
+|---|---|---|
+| `kind:'user'` AND `authorized` | **Lane 1** (if it is the turn's counterparty) | A real conversation the agent owes a reply to. |
+| `kind:'user'` AND **not** `authorized` | **Lane 3** | A mailbox notification or an unknown sender. The agent **sees** it and may **surface it to the owner**, but never answers it as a conversation. |
+| `kind:'agent'` | Lane 1 if current counterparty, else **Lane 3** | A2A from the counterparty is the conversation; A2A from anyone else is an event with its own queued turn. |
+| `kind:'engine'` | **Lane 3** | Tracker / scheduler / healer / system events. |
+| `kind:'self'` | the agent's own output, scoped by `conv_key` | Belongs to the conversation it was produced for. |
+
+The original draft said "Lane 3 = engine events" and "Lane 1 = same human+channel conversation," and quietly assumed `kind:'user'` always meant Lane 1. That is the self-contradiction that let a notification become a conversation. The `authorized` flag is the bridge the design always intended; the table above is that bridge made explicit.
+
+**One definition derived from this rule governs the whole turn machine:**
+> **"A conversation the agent owes a reply to" = `kind:'user'` AND `authorized`** (or the current A2A counterparty).
+
+Everything that asks a version of that question reads this *one* definition: the trigger pick, the "is there an unanswered human" check, the runtime drain that re-wakes the agent, and the user-turn-vs-agent-turn classification. Fix the definition once and all of them become correct together. This is the single most important change in the revision.
 
 ---
 
 ## 4. Target architecture
 
-### 4.1 A canonical `MessageOrigin` (consolidate the scattered fields)
-
-One structured descriptor every message carries and every layer reads:
+### 4.1 `MessageOrigin` (unchanged shape; `authorized` is load-bearing)
 
 ```ts
 type OriginKind = 'user' | 'agent' | 'engine' | 'self';
-//  user  = a human (the owner OR a third party) on some channel
-//  agent = another agent (A2A)
-//  engine= the platform itself (tracker/scheduler/healer/system/nudges)
-//  self  = this agent's own prior output
-
-type Relation = 'owner' | 'known_contact' | 'third_party' | 'agent' | 'engine';
+type Relation   = 'owner' | 'known_contact' | 'third_party' | 'agent' | 'engine';
 
 interface MessageOrigin {
   kind: OriginKind;
-  relation: Relation;        // owner vs friend vs unknown vs agent vs engine
+  relation: Relation;
   channel: Channel | null;   // dashboard | imessage | teams | sms | email | phone | voice | a2a | engine
-  senderName: string | null; // "David", "Kelly", "Crystal", "+1555…"
-  senderId: string | null;   // agent id, safe-sender id, address
-  threadId: string | null;   // a2a thread, email thread, chat id
-  intent: string | null;     // a2a intent or engine event type (tracker.assigned, scheduler.fire, …)
-  authorized: boolean;       // may the agent act/reply on this sender's behalf
+  senderName: string | null;
+  senderId: string | null;
+  threadId: string | null;
+  intent: string | null;     // a2a intent OR engine event type (tracker.assigned, scheduler.fire, mailbox.notify, …)
+  authorized: boolean;       // may the agent reply to THIS sender as a conversation
 }
 ```
 
-This is not new storage so much as a **projection** over columns that already exist (`source`, `source_agent_id`, `a2a_*`, `inbound_meta`) plus a backfill for the gaps (iMessage/dashboard `inbound_meta`, engine-event typing). One function, `originOf(messageRow): MessageOrigin`, becomes the single source of truth, with a read-time shim that parses legacy text markers for old rows so we don't need a destructive migration.
+`deriveOrigin(row)` is the single source of truth, with a read-time shim for legacy prose rows. `authorized` means precisely "Lane 1 vs Lane 3 for a human." It is not advisory.
 
 ### 4.2 The turn opens by declaring its counterparty
 
-Replace the scattered `triggerRow` / `resolveInbound` / `isA2ATurn` logic (loop.ts ~404–528) with one step that produces a **TurnCounterparty**:
+One step (`resolveTurnCounterparty`) produces a `TurnCounterparty` from the origin and renders an always-present header the model anchors on ("This turn you are responding to **David**, your primary user, over **iMessage**. Everything marked EVENT or MEMORY is context, not David talking."). Generated from the origin, never from prose.
 
-```
-This turn's counterparty: David — your primary user — speaking over iMessage.
-(Reply goes back to iMessage. Everything below marked EVENT or MEMORY is context, not David talking.)
-```
+The counterparty for a turn is the **longest-waiting authorized conversation** (FIFO), or the A2A thread if this is an agent turn. A turn triggered by an *unauthorized* notification has no Lane-1 counterparty; its counterparty defaults to the owner, and the notification rides in Lane 3 (see 4.4): the agent's job is to decide whether to surface it to the owner.
 
-For an agent turn:
-```
-This turn's counterparty: Kelly — the PM agent — over A2A, thread a1b2 (intent: QUESTION).
-Reply with send_to_agent on thread a1b2. David is not part of this exchange.
-```
+### 4.3 Lane 1 is scoped to the counterparty AND `authorized`
 
-This single, structured, always-present header is what the model anchors on. It is generated from `MessageOrigin`, not from prose parsing.
-
-### 4.3 The live conversation (Lane 1) is scoped to the counterparty
-
-The fresh-tail query (`store.ts:getRecentMessages`, used by `assembler.ts`) gains a counterparty filter:
-- **Human turn:** messages whose origin is the same human+channel conversation (today: `a2a_thread_id IS NULL AND` engine markers excluded). Pure human↔agent alternation.
+The fresh-tail scope keeps only:
+- **Human turn:** messages whose origin is the same conversation (channel + sender) **and** `authorized`. An unauthorized message on the same channel is never Lane 1.
 - **Agent turn:** messages on that `a2a_thread_id` only.
 
-No A2A in a human turn. No human chat in an agent turn. No engine events interleaved in either. This is the structural replacement for the current "strip A2A on user turns" filter — done at the query, by attribution, not by regex after the fact.
+This is the line the original draft got wrong (it scoped on channel + sender only). Adding `authorized` here is what stops a notification from masquerading as the conversation.
 
-### 4.4 Lane 2 + Lane 3 render as clearly-delimited context, never as peer messages
+### 4.4 Lane 3 (awareness) is engine events PLUS unauthorized inbound
 
-Today the assembler pushes ~15 scaffolding blocks and ~12 engine markers into the messages array as `role='user'`, interleaved with the live tail. Redesign: collect them into a **single, structured context envelope** placed before the live conversation, with stable section headers the model is taught once:
+The assembler collects Lane 3 into one clearly-delimited envelope, rendered from structured origin:
 
 ```
-=== YOUR MEMORY (not messages — what you know) ===
-  · Identity / standing prefs
-  · Current goal (the "active directive" — your objective, not a message)
-  · Scratchpad, briefing, relevant vault, summaries
-=== EVENTS SINCE YOU LAST ACTED (things that happened — not people talking) ===
+=== EVENTS AND NOTICES SINCE YOU LAST ACTED (things that happened / things to be aware of, not people talking to you) ===
   · [tracker] You were assigned "Plan offsite" (task 3f2a)
-  · [scheduler] Daily digest task fired
-  · [agent: Kelly] asked on thread a1b2: "status?"  (answer on its own turn)
-=== CONVERSATION (this is <counterparty> talking to you) ===
-  (the live tail — one counterparty)
+  · [scheduler] Daily digest fired
+  · [agent: Kelly] asked on thread a1b2: "status?"  (gets its own turn)
+  · [email -> David's inbox] from billing@acme.com: "Invoice 91 overdue"  (a notification, not addressed to you; surface to David only if it matters)
 ```
 
-One convention. The model learns "MEMORY = what I know, EVENTS = things that happened, CONVERSATION = the person I'm replying to." This replaces ~30 bespoke markers with three categories.
+The mailbox notification lives here, attributed honestly as an **email** from a **third party** to the **owner's** inbox. The agent reads it, and the only action it can take is to **surface it to the owner** (a Lane-1 reply to the owner) or ignore it. It is never a conversation it replies to. This is what makes "stay aware of everything, reply only to authorized" true at the same time.
 
-### 4.5 The model call carries the counterparty explicitly
+### 4.5 The turn lifecycle (new section; this is where the session's turn-bugs are designed out)
 
-`ModelCallParams` (model.ts:23) gains `counterparty: TurnCounterparty`. The Anthropic 2-role constraint is unchanged — attribution rides in the structured header + the three-lane framing, which is consistent and documented, not ad-hoc. (We are not inventing API roles; we are making the *content* unambiguous and uniform.)
+A turn is not just "assemble context and call the model." It has a lifecycle with four guarantees:
 
----
+1. **Claim at pickup.** The instant a turn picks up a conversation, that conversation is marked *served* (durably, via `conv_key`), independent of how the turn ends. A conversation that has been claimed is never re-picked, so the engine can never re-run already-done, non-idempotent work. (This kills the duplicate-project / drain-re-trigger class: an interrupted or messily-ended turn cannot resurrect the same request.)
 
-## 5. Subsystem-by-subsystem impact
+2. **Respond once; never re-prompt a model that already replied.** If the agent has produced a user-facing reply this turn, the engine does not re-prompt it (no "you still have an open task, keep going" nudge that the weak model answers by re-replying). The engine reconciles bookkeeping itself. Re-prompting is allowed only when there was *no* reply yet (a genuine silent stop). (This kills the double-response class.)
 
-### 5.1 Storage & schema (`db/migrations`, `store.ts`, shared `types.ts`)
-- **Backfill `inbound_meta` for iMessage + dashboard** so every inbound has `{channel, sender, relation, authorized}` (imessage-bridge.ts persist path; chat.ts dashboard submit). Removes the last prose-only channels.
-- **Type engine events:** add `origin_kind` + `origin_intent` (or reuse `source` + a new `event_type`) so tracker/scheduler/healer/etc. inserts carry structured origin instead of `[SOURCE: …]` text. ~30 insert sites (enumerated in research) get a structured origin instead of a hand-built marker string.
-- **`rowToMessage` maps ALL attribution columns** (currently drops 5). Surface them on the shared `Message` type.
-- `originOf(row)` projection + legacy-marker read-shim for pre-migration rows. **No destructive migration**; old rows resolve via the shim.
+3. **Close the loop.** A turn that completes work the **user** asked for owes the user a completion report. If the work finishes on an agent/engine turn (where user-facing text is suppressed, e.g. the agent was answering the PM when the last task validated), the engine schedules a single user-facing closeout turn so the agent always says "done, here is what I did" and never acks-and-ghosts. The completion report is bounded ("summarize, do not redo") and fires once.
 
-### 5.2 Inbound channels (`inbound-channel.ts`, watchers, bridges)
-- `resolveInbound` already centralizes channel resolution (3-tier: voice → `inbound_meta` → prose). Make `inbound_meta` mandatory for all channels (close the iMessage/dashboard gap) so the prose tier becomes legacy-only (kept for old rows via the shim, deleted later).
-- Derive `relation` once: owner (is_primary / authenticated account) vs known_contact (safe-sender) vs third_party (unknown) vs agent. This is the "the user vs the user's friend" distinction the model needs, computed once and stored, not re-derived from prose.
+4. **Reconcile, do not destroy.** When tracker state and the agent's words disagree (the agent said "done" but did not formally close a task), the engine **keeps the agent's reply visible** and reconciles the task in the background (pause a one-shot, reset a recurring, default a missing goal so the PM can validate). It never deletes a real reply to protect an internal invariant the user cannot see. (This kills the suppression-ate-my-reply class and the no-goal PM-revert ping-pong.)
 
-### 5.3 The loop (`runtime.ts`, `v2/loop.ts`, `v2/state.ts`)
-- Replace `triggerRow` query + `lastUserMessageContent` + `latestUserSource` + `isA2ATurn`/`forceA2ATurn`/`unansweredUser`/`mostRecentIsA2A` (loop.ts ~404–528, the whole tangle I recently added) with **one** `resolveTurnCounterparty(agentId)` returning `{ counterparty: MessageOrigin, channel, replyTarget }`.
-- `state.ts` carries `counterparty` immutably for the turn (replaces `triggeredByIMessage`, `triggeredByA2AReplyIntent`, `inboundChannel`, `inboundContext`).
-- Turn routing (which counterparty's turn runs when several are waiting) stays on the existing wakeup/serialization machinery (handleMessage/activeRuns/pendingWakeups) — but "what is this turn about" is now a clean counterparty resolve, not a 120-line heuristic.
+### 4.6 The model call carries the counterparty
 
-### 5.4 Context assembly & prompt (`memory/assembler.ts`, `prompt/assembler.ts`, `prompt/registry/*`)
-- Fresh tail scoped by counterparty (5.3).
-- The ~15 scaffolding blocks → the **MEMORY** envelope (Lane 2). They already exist; they get one consistent frame instead of 15 `═══` headers masquerading as user messages.
-- The ~12 in-tail engine markers + the ~30 engine-injected message types → the **EVENTS** envelope (Lane 3), rendered from structured origin.
-- The turn header (4.2) is a new, always-present system section generated from the counterparty.
-- `sys.message-sources` (the [SOURCE:…] taxonomy the model must memorize) shrinks to documenting the **three lanes** once.
-
-### 5.5 Multi-agent / A2A (`a2a-transport.ts`, `a2a-replies.ts`, `tools.ts`)
-- A2A inbound is just `origin.kind='agent'`. When it's the current counterparty → Lane 1 (its thread). When it isn't → Lane 3 event + its own queued turn.
-- The A2A reply enforcer, the `a2a_replies` durable tracking, preemption/wakeup all stay — but the "is this an A2A turn / did A2A bleed into a user turn" guesswork disappears because the counterparty is explicit.
-- Group/squad threads = a multi-party Lane 1: here (and only here) each message keeps a consistent `senderName` tag, because there genuinely are multiple counterparties. This is the one place per-message tagging is correct, and it uses the same `MessageOrigin`.
-
-### 5.6 Engine messaging (scheduler, tracker, healer, rate-limit, budget, spawner, model-switch, session-reset…)
-- All ~30 enumerated insert sites stop hand-writing `[SOURCE: …]` / `[System: …]` strings and instead persist with a structured `origin` (kind='engine', intent='tracker.assigned' etc.).
-- The assembler renders them uniformly in the EVENTS lane. Wake semantics (does this event trigger a turn) stay as-is.
-
-### 5.7 Visibility / dashboard (`shared/visibility.ts`, dashboard `Chat.tsx`)
-- `classifyMessageForDisplay` becomes **purely structured** (read `origin`), deleting the regex/prefix lists. A2A/engine/agent-only vs user-visible falls straight out of `origin.kind`/`relation`.
-- The dashboard already consumes `source`; it consumes `origin` the same way. This subsumes the `source='a2a'` display hack I just added.
-
-### 5.8 Model layer (`model.ts`)
-- `counterparty` added to params; providers unchanged (still 2-role). Role mapping (tool→user) unchanged.
+`ModelCallParams` gains `counterparty`. Providers stay 2-role; attribution rides in the structured header + the three-lane framing. The dashboard receives the turn's counterparty kind on `agent:status` so the composer can stay quiet during pure agent-to-agent turns (the thinking dots / stop button reflect "is the agent talking to *me*"). This is the counterparty surfaced to the UI, not a parallel signal.
 
 ---
 
-## 6. What this DELETES (the elegance payoff)
+## 5. Subsystem impact, stated as a producer/consumer contract
 
-This is the point — fewer moving parts, not more:
+**Producer contract (every inbound stamps a complete origin; no prose-only inserts):**
+- iMessage, Teams, Gmail, Outlook, SMS, live-voice, scheduler: already stamp complete `inbound_meta` / `origin_kind` with the correct `authorized` / `accountKind`.
+- **Twilio voicemail (open gap):** still inserts a bare `[SOURCE: VOICEMAIL …]` `role='user'` row with no `inbound_meta`. It survives only because the legacy prose shim catches `[SOURCE:`. Fix: stamp `recordInboundMeta({ channel:'phone', accountKind:'agent', authorized:false, sender, phoneFromNumber, phoneCallSid })`. (Hardening, not a live bug, but exactly the kind of "leans on the shim the redesign exists to retire" that the prime directive forbids.)
 
-- **My recent band-aids, all removed:** the fresh-tail A2A strip, the A2A-turn salience reorder, the `forceA2ATurn`/`a2aTurnRetries`/`lastTurnWasA2A` re-trigger machinery, the `interAgentTurn` output suppression, the `source='a2a'` display tag, the enforcer gating. They were compensating for mixed senders; with one counterparty per turn they're unnecessary.
-- **The prose marker taxonomy** (`HIDDEN_USER_CONTENT_PREFIXES`, `ENGINE_INJECTION_PREFIXES`, `ASSISTANT_FALLBACK_PREFIXES`, the `[SOURCE: …]` zoo) → replaced by structured `origin`. Kept only inside the read-shim for legacy rows, then retired.
-- **The `triggerRow` exclusion filters** and the `isA2ATurn` heuristic cluster in loop.ts → one counterparty resolve.
-- **The "model must parse [SOURCE:…]" system-prompt section** → "three lanes" explanation.
-- **Content-based visibility regex** → structured classification.
+**Consumer contract (every decision reads the structured origin):**
+- `getWaitingHumanConversations` (the single "owes a reply" definition): `kind:'user'` **AND** `authorized`. This one change propagates correctly to the trigger pick, `hasUnansweredUser`, `isA2ATurn`, and the runtime drain, because they all derive from it.
+- `scopeToHumanConversation`: Lane 1 keeps `kind:'user'` AND `authorized` AND same conversation; everything else drops to Lane 3 / its own turn.
+- The assembler's EVENTS lane: include `kind:'engine'` **and** unauthorized `kind:'user'` inbound (4.4).
+- Reply destination / routing: keep keying off `inboundChannel` (already gated on `authorized` by `resolveInbound`), so an unauthorized inbound never auto-routes a reply to the sender.
+- Inter-agent suppression and the A2A reply guard: drive off `counterparty.kind === 'agent'`, not `content.includes('[SOURCE: PM AGENT POKE …]')`. Delete the prose tails.
+- `classifyMessageForDisplay`: purely structured (`origin.kind` / `relation` / `authorized`); the prefix regex stays only as the origin-less fallback for optimistic/streaming bubbles.
 
-Net: ~30 ad-hoc markers and ~6 turn-classification hacks collapse into one `MessageOrigin` + one turn header + three rendering lanes.
-
----
-
-## 7. Migration & backward compatibility
-
-- **No destructive migration.** New columns are additive; `originOf()` has a read-time shim that maps legacy text markers → structured origin for rows written before the change. Old conversations render correctly.
-- **Backfill job (optional, online):** walk historical rows, parse markers, populate the structured columns so the shim can eventually be deleted.
-- **Phase the writers before the readers:** start stamping structured origin on new inserts first; the assembler keeps reading both until backfill confidence is high.
+**Audit rule (the prime directive, operationalized):** for each field of `MessageOrigin`, grep its consumers. `authorized` must be read by the waiting-set definition, the Lane-1 scope, and the EVENTS lane. If a field has zero or one consumer where the design implies several, that is the next bug.
 
 ---
 
-## 8. Phasing (incremental, each phase shippable & testable)
+## 6. What this deletes (the elegance payoff)
 
-1. **Foundation (no behavior change):** `MessageOrigin` type, `originOf()` + legacy shim, `rowToMessage` maps all columns, surface on `Message`. Pure plumbing; verify identical output.
-2. **Close the channel gaps:** stamp `inbound_meta` for iMessage + dashboard; compute `relation` once. Verify every inbound has structured channel+sender.
-3. **Counterparty resolve:** introduce `resolveTurnCounterparty`, thread into state; keep old rendering. Verify the header matches reality across all channels + A2A.
-4. **Lane 1 scoping:** scope the fresh tail by counterparty. This alone kills the cross-sender confusion. Delete the A2A strip + isA2ATurn hacks. Heavy testing here (the dev harness already exercises this).
-5. **Lanes 2 & 3 framing:** move scaffolding → MEMORY envelope, engine messages → EVENTS envelope, structured rendering. Delete the marker zoo. Retire the band-aids.
-6. **Visibility structured:** flip `classifyMessageForDisplay` to `origin`-based; delete regex. Dashboard parity check.
-7. **Cleanup:** delete legacy prose paths once backfill is done.
+- The session band-aids that compensated for the unconsumed origin: the email "stamp it engine" hack, the prose `includes()` checks for PM-poke / group-broadcast, and any per-channel special-casing for "is this a conversation."
+- The fragile A2A-vs-user turn heuristics, replaced by the single authorized-driven waiting-set.
+- The "delete the agent's reply to keep the tracker consistent" suppression, replaced by reconcile-in-background.
+- The remaining `[SOURCE: …]` prose taxonomy on the read side, replaced by structured origin (shim kept for legacy rows only).
 
-Each phase is independently verifiable on the dev server with real, multi-sender scenarios (user-on-dashboard + user-on-iMessage + a friend + an agent, simultaneously) — reading the **actual** assembled context and the **actual** dashboard classifier, not greps.
+Net: one `MessageOrigin`, one "owes a reply" definition, one turn header, three rendering lanes, and a turn lifecycle that closes its own loop. Fewer moving parts, and the parts that remain are driven by data instead of string-matching.
 
 ---
 
-## 9. Risks & edge cases (anticipate, don't discover)
+## 7. Failure modes we hit, and the design rule that makes each impossible
 
-- **Recent unrecorded detail on an agent turn:** Kelly asks about something David said seconds ago, before it's in memory. Mitigation: a short "recent activity" item in the EVENTS lane (summary, not raw Lane-1 messages) so the gist is available without reintroducing sender mixing.
-- **Group/squad threads:** genuinely multi-party. Handled as multi-party Lane 1 with consistent per-message `senderName` (the one correct use of per-message tags).
-- **Channel switch mid-conversation** (user moves dashboard→iMessage): each is its own counterparty/channel; the turn header states the current one; continuity comes from memory, not from merging the two live tails.
-- **Prompt-cache churn:** the turn header is volatile (per counterparty). Place it where today's volatile per-turn content goes (after the cached prefix, like `msg.current-time`) so we don't break caching.
-- **The owner on two channels at once:** still one counterparty *per turn* (owner-via-dashboard ≠ owner-via-iMessage as live tails), but both are clearly the owner; the EVENTS lane can note "you also have an unread iMessage from David" so the agent isn't blind to it.
-- **Legacy rows / mid-migration:** the read-shim guarantees old rows and in-flight messages still attribute correctly.
-- **Tool results:** unchanged (role tool→user, agent-only); they're part of Lane 1's mechanics, attribution `self`.
+| Symptom (observed) | Root cause | The rule that prevents it |
+|---|---|---|
+| Owner's scheduled tasks (Tomorrow Brief, digest) silently stopped running | A mailbox notification counted as a "waiting human," outranking scheduler fires | Waiting-set = authorized inbound only (3, 4.3, 5) |
+| Agent relapsed to its last topic on every new email | Phantom "waiting user" flipped agent turns into user turns; suppressed A2A text leaked | Same waiting-set fix; `isA2ATurn` derives from it |
+| Agent did the work but never told the user ("ack-and-ghost") | Completion landed on a PM/A2A turn where user text is suppressed | Close-the-loop completion report (4.5.3) |
+| Same project/request done 2-5 times | Conversation not marked served until a clean terminal reply; drain re-ran it | Claim-at-pickup served tracking (4.5.1) |
+| Agent answered the same question twice, slightly reworded | Idle nudge re-prompted a model that had already replied | Respond-once / no re-prompt after a reply (4.5.2) |
+| Agent's "done, here's what I set up" reply vanished | Close-out hardcap deleted the reply to keep the tracker consistent | Reconcile-do-not-destroy (4.5.4) |
+| PM reverted completions forever ("no goal recorded") | Inline project tasks were created with no goal | Reconcile defaults a missing goal so PM can validate (4.5.4) |
+| An email got treated as an internal engine message | A patch stamped it `engine` instead of fixing the consumer | An email is `kind:'user'`, `channel:'email'`, `authorized:false`; the lane is decided by `authorized`, not by lying about `kind` (3) |
+| `authorized` computed but ignored everywhere | "Built the data, not the consumption" | The prime directive: every field has named consumers (0, 5 audit rule) |
 
 ---
 
-## 10. Decisions (resolved with David, 2026-06-24)
+## 8. Phasing and current state
 
-1. **Scope:** build all phases, incrementally, each independently testable. Phase 4 fixes the reported confusion; 5–7 are the cleanup/elegance payoff. Do all of it.
-2. **`relation` vocabulary:** `owner / known_contact / third_party / agent / engine`. Approved.
-3. **Owner on two channels:** owner-via-dashboard and owner-via-iMessage are **two distinct conversations**, bridged by memory. This is what preserves on-channel reply routing (Invariant 2).
-4. **Backfill:** handled automatically via the read-time shim; a historical backfill is optional and can run later. Not a blocker.
-5. **Where it rides:** **dev server only.** Nothing is committed until David approves after exhaustive testing. No Stable/Preflight decision needed yet.
+**Shipped (preflight 3.1.10 series):** the structured origin + `origin_kind`/`conv_key` columns, `deriveOrigin`, counterparty resolve + turn header, Lane-1 scoping by conversation, the EVENTS lane for engine events, structured visibility, the claim-at-pickup served tracking, respond-once, reconcile-do-not-destroy, goal defaulting, and the composer turn-kind signal.
+
+**Remaining (this revision's work, in order):**
+1. **The waiting-set fix.** `getWaitingHumanConversations` and `scopeToHumanConversation` read `authorized`. Smallest change, largest blast radius: fixes the relapse, the scheduler hijack, and the A2A-leak together.
+2. **The awareness lane.** EVENTS includes unauthorized inbound so the agent still sees and can surface notifications. Verify a notification is excluded from the reply-set **and** still reaches the owner when it matters.
+3. **Close-the-loop completion.** A user-requested project that finishes on a non-user turn schedules one bounded completion report.
+4. **Producer hardening.** Stamp the voicemail notification; delete the inter-agent prose `includes()` tails in favor of `counterparty.kind`.
+5. **The prime-directive audit.** Per-field consumer check; retire the remaining legacy prose read paths once backfill confidence is high.
+
+Each phase is verified against the adversarial scenario that exposed it, on the dev server, reading actual assembled context.
+
+---
+
+## 9. Risks and edge cases
+
+- **A notification that genuinely needs a reply on the owner's behalf:** out of scope by Invariant 3; the agent surfaces it to the owner and the owner decides. (If a sender should be auto-answered, they belong on the safe-sender list, i.e. `authorized:true`, which puts them in Lane 1 by the rule, not by a special case.)
+- **Recent unrecorded detail on an agent turn:** Kelly asks about something the owner said seconds ago. Answered from Lane 2 (memory / the agent's own files), with a short "recent activity" note in Lane 3, never by mixing in the owner's raw Lane-1 messages.
+- **Owner on two channels at once:** two distinct Lane-1 conversations bridged by memory; each is its own authorized counterparty; the EVENTS lane can note "you also have an unread iMessage from David."
+- **Group/squad threads:** genuinely multi-party Lane 1; the one correct place for per-message `senderName` tags, still from `MessageOrigin`.
+- **Prompt-cache churn:** the turn header is volatile; place it after the cached prefix.
+- **Completion-report duplication:** the close-the-loop turn fires once and only when the completing turn was non-user (so a normal user-turn completion, which already wraps up, never double-reports).
+
+---
+
+## 10. Decisions
+
+1. **The lane of a human message is decided by `authorized`.** Authorized -> Lane 1 (a conversation). Unauthorized -> Lane 3 (awareness; surface to the owner, never reply to the sender). This is the spec correction the data model was always built for.
+2. **One "owes a reply" definition** (`getWaitingHumanConversations`) feeds the trigger, the drain, `hasUnansweredUser`, and `isA2ATurn`. Fix it once.
+3. **The prime directive holds going forward:** no field of the origin ships without a named consumer; no turn decision reads prose when the origin answers it.
+4. **A turn closes its own loop:** claim at pickup, respond once, report completion to the user, reconcile bookkeeping without destroying replies.
+5. **Where it rides:** dev server first, verified against the adversarial scenarios that exposed each failure, committed only on David's approval.
