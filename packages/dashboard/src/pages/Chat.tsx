@@ -591,6 +591,10 @@ export const Chat = ({ panel = null }: ChatProps) => {
   // messages effect (set up once / not in deps) read the live value.
   const [pinnedToBottom, setPinnedToBottom] = useState(true);
   const pinnedToBottomRef = useRef(true);
+  // True while a "jump to latest" is in flight: the scroll handler must not
+  // un-pin (and re-show the button) on the intermediate positions of a multi-
+  // frame jump, or a deep jump that lands on a partial layout would flip back.
+  const jumpingRef = useRef(false);
   const NEAR_BOTTOM_PX = 80; // within this of the bottom counts as "at the bottom"
 
   useEffect(() => {
@@ -659,6 +663,27 @@ export const Chat = ({ panel = null }: ChatProps) => {
     } else {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
+  }, []);
+
+  // Reliable "jump to the true bottom" for the jump-to-latest button. A single
+  // scrollTop=scrollHeight lands on a stale/partial height when the user has
+  // scrolled far up and paginated older messages in — the layout below hasn't
+  // settled yet, so it stops on a random "floor" (worse on mobile). Re-assert the
+  // bottom across several frames + a couple of timeouts (same belt-and-braces the
+  // initial load uses, which is why a refresh always lands at the bottom). The
+  // jumpingRef keeps the scroll handler from un-pinning on the way down.
+  const jumpToBottom = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    jumpingRef.current = true;
+    pinnedToBottomRef.current = true;
+    setPinnedToBottom(true);
+    const go = () => { const c = messagesContainerRef.current; if (c) c.scrollTop = c.scrollHeight; };
+    go();
+    requestAnimationFrame(go);
+    requestAnimationFrame(() => requestAnimationFrame(go));
+    setTimeout(go, 90);
+    setTimeout(() => { go(); jumpingRef.current = false; }, 320);
   }, []);
 
   useEffect(() => {
@@ -802,7 +827,10 @@ export const Chat = ({ panel = null }: ChatProps) => {
       // hot scroll handler doesn't re-render on every pixel.
       const nearBottom =
         container.scrollHeight - container.scrollTop - container.clientHeight < NEAR_BOTTOM_PX;
-      if (nearBottom !== pinnedToBottomRef.current) {
+      // While a jump-to-latest is settling, don't un-pin on an intermediate
+      // (still-above-bottom) position — that's what made a deep jump bounce to a
+      // partial floor and the button flicker back.
+      if (!jumpingRef.current && nearBottom !== pinnedToBottomRef.current) {
         pinnedToBottomRef.current = nearBottom;
         setPinnedToBottom(nearBottom);
       }
@@ -1393,11 +1421,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
       className="dojo3-jump-latest"
       aria-label="Jump to latest messages"
       title="Jump to latest"
-      onClick={() => {
-        pinnedToBottomRef.current = true;
-        setPinnedToBottom(true);
-        scrollToBottom(true);
-      }}
+      onClick={jumpToBottom}
     >
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
