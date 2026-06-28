@@ -1011,10 +1011,14 @@ export const Chat = ({ panel = null }: ChatProps) => {
         if (idx >= 0) {
           // No-reply path: server broadcasts an empty assistant message to
           // indicate "drop this bubble". Without this the bubble lingers as
-          // either thinking dots or an empty row.
+          // either thinking dots or an empty row. EXCEPTION: keep it if it
+          // carries attachments — on a silent canvas-open the engine surfaces the
+          // "Open in canvas" chip on an otherwise-empty assistant message, and
+          // dropping it would lose the chip.
           if (
             e.message.role === 'assistant' &&
-            (!e.message.content || e.message.content.length === 0)
+            (!e.message.content || e.message.content.length === 0) &&
+            (!e.message.attachments || e.message.attachments.length === 0)
           ) {
             return prev.filter((_, i) => i !== idx);
           }

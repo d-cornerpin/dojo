@@ -322,6 +322,7 @@ export type WsEvent =
   | VoiceWakeDetectedEvent
   | VoiceSleepDetectedEvent
   | DockOpenEvent
+  | DockCollapseEvent
   | CanvasUpdatedEvent
   | UiNavigateEvent;
 
@@ -330,6 +331,15 @@ export type WsEvent =
  * agent (via a tool) to surface a working document / HTML render ('canvas')
  * or a live website ('iframe') alongside the conversation.
  */
+/**
+ * The canvas/dock was collapsed to the edge handle (the user closed it, or
+ * another device did). Content is retained server-side; the dashboard shows the
+ * re-open handle. Broadcast so every connected device stays in sync.
+ */
+export interface DockCollapseEvent {
+  type: 'dock:collapse';
+}
+
 export interface DockOpenEvent {
   type: 'dock:open';
   data: {

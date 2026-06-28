@@ -2237,7 +2237,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Show files to user ──
   {
     name: 'show_to_user',
-    description: 'Display one or more files (images, PDFs, etc.) to the user IN THE CHAT as part of your reply. Use this when you have a file you want the user to actually look at — a slide PNG that a sub-agent sent you, a Drive file you downloaded, an image from your uploads folder. WITHOUT this tool, "take a look at this image" is a lie — the file is on disk but the user sees no thumbnail.\n\nThis tool inserts an assistant-role message into your chat with the files attached and your `caption` as the bubble text. The user sees: your caption + thumbnails. After calling, end your turn (or continue with more tool calls if needed).\n\nExample (forwarding a slide preview a sub-agent sent):\n  show_to_user({ file_paths: ["/Users/.../uploads/<your-agent-id>/draft_slide_preview.png"], caption: "Sub-agent finished a draft of the title slide. Looks good to me — anything you want changed?" })\n\nFile paths must already exist (typically under ~/.dojo/uploads/<your-agent-id>/ or wherever a sub-agent delivered them). Files outside the uploads dir are copied in.',
+    description: 'Display one or more IMAGES (and short audio/video clips) to the user IN THE CHAT as inline thumbnails, as part of your reply. Use this for a picture you want the user to actually look at right in the conversation — a slide PNG a sub-agent sent you, a Drive image you downloaded, a photo from your uploads folder. WITHOUT this tool, "take a look at this image" is a lie — the file is on disk but the user sees no thumbnail.\n\nDOCUMENTS GO IN THE CANVAS, NOT HERE. A PDF, Word/Excel/PowerPoint, Markdown, text, or code file passed to show_to_user is REJECTED — those render as a real formatted preview in the canvas. Canvas-renderable files auto-open the moment you write them (file_write, or creating a Word/Excel/PDF); use show_canvas({ path }) to (re)open one. Reserve show_to_user for images/media.\n\nThis tool inserts an assistant-role message into your chat with the files attached and your `caption` as the bubble text. The user sees: your caption + thumbnails. After calling, end your turn (or continue with more tool calls if needed).\n\nExample (forwarding a slide preview a sub-agent sent):\n  show_to_user({ file_paths: ["/Users/.../uploads/<your-agent-id>/draft_slide_preview.png"], caption: "Sub-agent finished a draft of the title slide. Looks good to me — anything you want changed?" })\n\nFile paths must already exist (typically under ~/.dojo/uploads/<your-agent-id>/ or wherever a sub-agent delivered them). Files outside the uploads dir are copied in.',
     input_schema: {
       type: 'object',
       properties: {
@@ -6906,6 +6906,18 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
             const filename = path.basename(srcPath);
             const mimeType = guessMime(filename);
             const category = categorize(mimeType, filename);
+
+            // show_to_user is for IMAGES (and short audio/video clips) shown
+            // inline in the chat. DOCUMENTS — PDF, Word/Excel/PowerPoint,
+            // Markdown/text/code — belong in the CANVAS, where they render as a
+            // real formatted preview instead of a dead download chip. The two
+            // surfaces are routinely confused by weaker models; reject documents
+            // here and point at the canvas so the agent can't pick the wrong one.
+            if (category === 'pdf' || category === 'text' || category === 'office' || category === 'unknown') {
+              content = `Error: "${filename}" is a document, not an image — show_to_user is for images (and short audio/video clips) shown inline in the chat. Documents render in the CANVAS: a canvas-renderable file auto-opens the moment you write it (file_write, or creating a Word/Excel/PDF), or call show_canvas({ path: "${srcPath}" }) to (re)open it. Using show_to_user here would give the user a useless download chip instead of a readable preview.`;
+              isError = true;
+              break;
+            }
 
             // If file is already in this agent's uploads dir, use it directly.
             // Otherwise copy in so the dashboard's /api/upload/file/<agentId>/<name>

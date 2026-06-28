@@ -1381,6 +1381,58 @@
 /* Mobile bottom-edge grabber — hidden on desktop (the side grabber is used). */
 .dojo3-dock-resizer--bottom { display: none; }
 
+/* Re-open handle: shown on the RIGHT edge of the screen when the canvas is
+   collapsed (closed but remembered). Mirrors the dock resizer's slider pill, so
+   it reads as "grab/click to bring the canvas back". Top-centered on mobile.
+   Fixed to the viewport so it's always reachable regardless of scroll. */
+.dojo3-dock-handle {
+  position: fixed;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 21;
+  width: 16px;
+  height: 80px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  /* Let vertical scroll gestures pass THROUGH the handle to the chat — a tap
+     still re-opens the canvas, but a swipe scrolls the conversation. Without
+     this the handle (a button) swallowed the swipe and the chat couldn't be
+     scrolled while collapsed, especially with the top-centered mobile handle. */
+  touch-action: pan-y;
+}
+.dojo3-dock-handle__grip {
+  display: block;
+  width: 4px;
+  height: 46px;
+  border-radius: 999px;
+  background: rgba(140, 116, 84, 0.45);
+  transition: background 0.2s ease, height 0.2s ease, width 0.2s ease;
+}
+.dojo3-dock-handle:hover .dojo3-dock-handle__grip,
+.dojo3-dock-handle:focus-visible .dojo3-dock-handle__grip {
+  background: var(--dojo3-champagne);
+  height: 70px;
+}
+@media (max-width: 767px) {
+  .dojo3-dock-handle {
+    right: auto;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 80px;
+    height: 16px;
+  }
+  .dojo3-dock-handle__grip { width: 46px; height: 4px; }
+  .dojo3-dock-handle:hover .dojo3-dock-handle__grip,
+  .dojo3-dock-handle:focus-visible .dojo3-dock-handle__grip { width: 70px; height: 4px; }
+}
+
 /* ── Canvas on mobile ──
    A side-by-side dock can't work on a phone, so the canvas becomes a TOP panel
    covering the upper part of the screen (default 50vh). The latest chat and the

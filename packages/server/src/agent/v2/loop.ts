@@ -2399,50 +2399,95 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }, agentId);
         }
         persistedContent = null;
-        // Clear the streaming bubble in the dashboard. We need BOTH events:
-        //  - chat:chunk done:true ends the bubble's streaming state (without
-        //    this the thinking dots stay forever, since the normal done:true
-        //    at line ~923 only fires when persistedContent or tools exist).
-        //  - chat:message with empty content tells the dashboard to drop the
-        //    bubble entirely so the chat doesn't show an empty assistant row.
-        broadcast({
-          type: 'chat:chunk',
-          agentId,
-          messageId,
-          content: '',
-          done: true,
-        });
-        broadcast({
-          type: 'chat:message',
-          agentId,
-          message: {
-            id: messageId, agentId, role: 'assistant' as const,
-            content: '',
-            tokenCount: null, modelId: null, cost: null, latencyMs: null,
-            createdAt: new Date().toISOString(),
-          },
-        });
-        const sysId = uuidv4();
-        const sysContent = '[Agent ended turn without replying — conversation closed]';
+
+        // Silent turn that still opened a canvas (or queued attachments via
+        // show_to_user): surface the pending "Open in canvas" chip / thumbnails
+        // onto this otherwise-empty assistant bubble instead of dropping it. The
+        // user asked the agent to open a canvas; even on [no-reply] they need the
+        // affordance back to it (an explicit show_canvas + [no-reply] otherwise
+        // left NO chip). Draining here also pre-empts the end-of-turn safety net,
+        // so the chip is surfaced exactly once.
+        let surfacedNoReplyAttachments = false;
         try {
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-            VALUES (?, ?, 'system', ?, ?, datetime('now'))
-          `).run(sysId, agentId, sysContent, turnNumber);
+          const { drainPendingAttachments } = await import('../pending-attachments.js');
+          const noReplyAttachments = drainPendingAttachments(agentId);
+          if (noReplyAttachments.length > 0) {
+            // A short factual line so the bubble renders cleanly (and tells the
+            // user WHAT opened); the "Open in canvas" chip rides on it.
+            const canvasDoc = noReplyAttachments.find((a) => a.openInCanvas);
+            const noReplyCaption = canvasDoc
+              ? `Opened ${canvasDoc.filename ? `"${canvasDoc.filename.replace(/\.[a-z0-9]+$/i, '')}"` : 'a document'} in the canvas.`
+              : 'Here you go.';
+            db.prepare(`
+              INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, turn_number, created_at)
+              VALUES (?, ?, 'assistant', ?, ?, ?, datetime('now'))
+            `).run(messageId, agentId, noReplyCaption, JSON.stringify(noReplyAttachments), turnNumber);
+            broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
+            broadcast({
+              type: 'chat:message',
+              agentId,
+              message: {
+                id: messageId, agentId, role: 'assistant' as const,
+                content: noReplyCaption,
+                tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                createdAt: new Date().toISOString(),
+                attachments: noReplyAttachments,
+              },
+            });
+            surfacedNoReplyAttachments = true;
+          }
+        } catch (err) {
+          logger.warn('v2: failed to surface no-reply canvas chip', {
+            agentId, error: err instanceof Error ? err.message : String(err),
+          }, agentId);
+        }
+
+        if (!surfacedNoReplyAttachments) {
+          // Clear the streaming bubble in the dashboard. We need BOTH events:
+          //  - chat:chunk done:true ends the bubble's streaming state (without
+          //    this the thinking dots stay forever, since the normal done:true
+          //    at line ~923 only fires when persistedContent or tools exist).
+          //  - chat:message with empty content tells the dashboard to drop the
+          //    bubble entirely so the chat doesn't show an empty assistant row.
+          broadcast({
+            type: 'chat:chunk',
+            agentId,
+            messageId,
+            content: '',
+            done: true,
+          });
           broadcast({
             type: 'chat:message',
             agentId,
             message: {
-              id: sysId, agentId, role: 'system' as const,
-              content: sysContent,
+              id: messageId, agentId, role: 'assistant' as const,
+              content: '',
               tokenCount: null, modelId: null, cost: null, latencyMs: null,
               createdAt: new Date().toISOString(),
             },
           });
-        } catch (err) {
-          logger.warn('v2: failed to persist no-reply marker', {
-            agentId, error: err instanceof Error ? err.message : String(err),
-          }, agentId);
+          const sysId = uuidv4();
+          const sysContent = '[Agent ended turn without replying — conversation closed]';
+          try {
+            db.prepare(`
+              INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+              VALUES (?, ?, 'system', ?, ?, datetime('now'))
+            `).run(sysId, agentId, sysContent, turnNumber);
+            broadcast({
+              type: 'chat:message',
+              agentId,
+              message: {
+                id: sysId, agentId, role: 'system' as const,
+                content: sysContent,
+                tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                createdAt: new Date().toISOString(),
+              },
+            });
+          } catch (err) {
+            logger.warn('v2: failed to persist no-reply marker', {
+              agentId, error: err instanceof Error ? err.message : String(err),
+            }, agentId);
+          }
         }
         // Turn continuity: declining ([no-reply]) IS addressing the counterparty.
         // Tag this turn's own messages with the conversation — that conv_key is

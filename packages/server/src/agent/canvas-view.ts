@@ -26,6 +26,7 @@ import { getEffectiveVisionModel } from '../services/vision-model.js';
 import { inlineHtmlAssets } from '../services/canvas-html.js';
 import { renderOfficeToHtml, isOfficeRenderable } from '../services/office-render.js';
 import { broadcast } from '../gateway/ws.js';
+import { getDb } from '../db/connection.js';
 
 const logger = createLogger('canvas-view');
 
@@ -71,13 +72,71 @@ function startCanvasWatch(filePath: string): void {
   } catch { /* best effort — never let watching break a canvas open */ }
 }
 
+// Canvas status: once a canvas exists it is either OPEN (dock showing) or
+// COLLAPSED (minimised to the edge handle; content retained). Persisted to the
+// DB so the canvas survives a browser refresh, a server restart, and follows the
+// user from one device to another (the dashboard reads GET /api/canvas on mount).
+export type CanvasStatus = 'open' | 'collapsed';
+let canvasStatus: CanvasStatus = 'collapsed';
+let canvasHydrated = false;
+const CANVAS_CONFIG_KEY = 'current_canvas';
+
+function persistCanvas(): void {
+  try {
+    const value = currentCanvas
+      ? JSON.stringify({ state: currentCanvas, status: canvasStatus })
+      : '';
+    getDb().prepare(
+      `INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
+    ).run(CANVAS_CONFIG_KEY, value);
+  } catch { /* best effort — never let persistence break a canvas open */ }
+}
+
+// Lazily rehydrate the in-memory canvas from the DB on first access, so a server
+// restart doesn't drop an open canvas the user expects to still be there.
+function hydrateCanvas(): void {
+  if (canvasHydrated) return;
+  canvasHydrated = true;
+  try {
+    const row = getDb().prepare('SELECT value FROM config WHERE key = ?')
+      .get(CANVAS_CONFIG_KEY) as { value: string } | undefined;
+    if (row?.value) {
+      const parsed = JSON.parse(row.value) as { state: CanvasState; status: CanvasStatus };
+      if (parsed?.state) {
+        currentCanvas = parsed.state;
+        canvasStatus = parsed.status === 'open' ? 'open' : 'collapsed';
+        if (currentCanvas.kind === 'canvas' && currentCanvas.path) startCanvasWatch(currentCanvas.path);
+      }
+    }
+  } catch { /* best effort */ }
+}
+
 export function setCurrentCanvas(state: CanvasState | null): void {
+  hydrateCanvas();
   currentCanvas = state;
+  // Opening a canvas always brings it to the OPEN state (the agent put something
+  // there for the user to see). Clearing it resets to collapsed.
+  canvasStatus = state ? 'open' : 'collapsed';
   if (state?.kind === 'canvas' && state.path) startCanvasWatch(state.path);
   else stopCanvasWatch();
+  persistCanvas();
 }
 export function getCurrentCanvas(): CanvasState | null {
+  hydrateCanvas();
   return currentCanvas;
+}
+/** Full persisted shape for the dashboard's load-on-mount (GET /api/canvas). */
+export function getPersistedCanvas(): { state: CanvasState; status: CanvasStatus } | null {
+  hydrateCanvas();
+  return currentCanvas ? { state: currentCanvas, status: canvasStatus } : null;
+}
+/** Update just the open/collapsed status (user collapsed or re-opened the dock). */
+export function setCanvasStatus(status: CanvasStatus): void {
+  hydrateCanvas();
+  if (!currentCanvas) return;
+  canvasStatus = status;
+  persistCanvas();
 }
 
 const IMAGE_MIME: Record<string, string> = {

@@ -65,7 +65,7 @@ export function Dojo3Stage({
   const activeAgent = useActiveAgent();
   const isPrimary = activeAgent.isPrimary;
   const techSession = useTechniqueSession();
-  const { dock, width: dockWidth, height: dockHeight, open: openDock, setWidth: setDockWidth, setHeight: setDockHeight } = useRightDock();
+  const { dock, collapsed, width: dockWidth, height: dockHeight, open: openDock, reopen: reopenDock, collapseRemote, setWidth: setDockWidth, setHeight: setDockHeight } = useRightDock();
   const { subscribe } = useWebSocket();
   const [resizing, setResizing] = useState(false);
 
@@ -81,6 +81,15 @@ export function Dojo3Stage({
     });
     return unsub;
   }, [subscribe, openDock]);
+
+  // Another device collapsed the canvas — mirror it here (show the edge handle).
+  useEffect(() => {
+    const unsub = subscribe('dock:collapse', (e) => {
+      if (e.type !== 'dock:collapse') return;
+      collapseRemote();
+    });
+    return unsub;
+  }, [subscribe, collapseRemote]);
 
   // Drag the grabber between the chat and a media dock to resize (the chat
   // grows/shrinks inversely). Transition is disabled while dragging.
@@ -415,6 +424,21 @@ export function Dojo3Stage({
           />
         )}
       </aside>
+
+      {/* Re-open handle: when the canvas is collapsed (closed but remembered), a
+          slider tab sits on the right edge (top on mobile). Click to re-open it
+          with its previous content. Persisted, so it survives refresh/devices. */}
+      {!dock && collapsed && (
+        <button
+          type="button"
+          className="dojo3-dock-handle"
+          onClick={reopenDock}
+          aria-label={collapsed.title ? `Re-open canvas: ${collapsed.title}` : 'Re-open canvas'}
+          title={collapsed.title ? `Re-open: ${collapsed.title}` : 'Re-open canvas'}
+        >
+          <span className="dojo3-dock-handle__grip" aria-hidden="true" />
+        </button>
+      )}
     </div>
   );
 }

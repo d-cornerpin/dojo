@@ -16,6 +16,7 @@ import { memoryRouter } from './routes/memory.js';
 import { trackerRouter } from './routes/tracker.js';
 import { routerRouter } from './routes/router.js';
 import { screenShareRouter } from './routes/screen-share.js';
+import { canvasRouter } from './routes/canvas.js';
 import { createVncBridge } from '../screen-share/bridge.js';
 import { costsRouter } from './routes/costs.js';
 import { servicesRouter } from './routes/services.js';
@@ -255,6 +256,7 @@ export function createServer() {
   app.route('/api/tracker', trackerRouter); // /api/tracker/projects/*, /api/tracker/tasks/*
   app.route('/api/router', routerRouter);  // /api/router/config, /api/router/test, etc.
   app.route('/api/screen-share', screenShareRouter); // /api/screen-share/status, /enable, /disable
+  app.route('/api/canvas', canvasRouter); // GET /api/canvas (restore on mount), POST /api/canvas/status
   app.route('/api/costs', costsRouter);    // /api/costs/summary, /api/costs/records, etc.
   app.route('/api/system', servicesRouter); // /api/system/watchdog, /api/system/resources, etc.
   app.route('/api/control', controlRouter); // /api/control/mouse-click, /api/control/screen-read, etc.

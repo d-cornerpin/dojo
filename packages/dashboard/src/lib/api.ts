@@ -1503,6 +1503,29 @@ export const forgetVncPassword = () =>
   request<{ saved: boolean }>('/screen-share/vnc-password', { method: 'DELETE' });
 
 
+// ── Canvas (right dock) ──
+// The current canvas is persisted server-side so it survives a refresh / server
+// restart and follows the user across devices. getCanvas restores it on mount;
+// setCanvasStatus records a collapse (close → edge handle) or a re-open.
+export interface CanvasPersisted {
+  state: {
+    kind: 'canvas' | 'iframe' | 'screenshot';
+    html?: string;
+    url?: string;
+    path?: string;
+    title?: string;
+    sourceUrl?: string;
+  };
+  status: 'open' | 'collapsed';
+}
+export const getCanvas = () => request<CanvasPersisted | null>('/canvas');
+export const setCanvasStatus = (status: 'open' | 'collapsed') =>
+  request<CanvasPersisted | null>('/canvas/status', {
+    method: 'POST',
+    body: JSON.stringify({ status }),
+  });
+
+
 // ── Costs ──
 
 export const getCostSummary = async (
