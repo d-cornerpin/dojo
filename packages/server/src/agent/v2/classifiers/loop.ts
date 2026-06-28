@@ -121,9 +121,33 @@ const GENERATION_TOOL_PROSE_FIELDS = (() => {
   return s;
 })();
 
+/**
+ * OPEN-3 — Inter-agent coordination tools where the `payload`/`message` IS the
+ * operation identity, not prose. send_to_agent's args are
+ * {agent, thread_id, intent, payload}; stripping `payload` as prose collapsed
+ * every distinct message to the SAME thread/intent into one signature, so
+ * legitimate multi-message PM coordination on a user turn hit the 3-repeat
+ * threshold and got blocked ("STOP — you have called send_to_agent N times").
+ * Keeping the content field means distinct messages count as distinct
+ * operations; a TRUE thrash (re-sending the identical message) still collapses
+ * to one signature and is still caught. Mirrors the SEARCH/GENERATION carve-outs.
+ */
+const COORDINATION_TOOLS = new Set([
+  'send_to_agent',
+  'broadcast_to_group',
+]);
+
+const COORDINATION_TOOL_PROSE_FIELDS = (() => {
+  const s = new Set(DEFAULT_PROSE_FIELDS);
+  s.delete('payload');
+  s.delete('message');
+  return s;
+})();
+
 function proseFieldsFor(toolName: string): ReadonlySet<string> {
   if (SEARCH_TOOLS.has(toolName)) return SEARCH_TOOL_PROSE_FIELDS;
   if (GENERATION_TOOLS.has(toolName)) return GENERATION_TOOL_PROSE_FIELDS;
+  if (COORDINATION_TOOLS.has(toolName)) return COORDINATION_TOOL_PROSE_FIELDS;
   return DEFAULT_PROSE_FIELDS;
 }
 

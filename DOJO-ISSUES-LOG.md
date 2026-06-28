@@ -217,22 +217,29 @@ terminal text, 0 explicit imessage_send calls, routed `[Reply routed via iMessag
 to Crystal]` (the correct recipient). Regression 12/12, scoping, normal conv,
 structural-engine robustness all still green.
 
-## OPEN-8 — Multi-source routing: A2A interleaving an iMessage turn can default the reply to the OWNER
+## RESOLVED (was OPEN-8) — Multi-source routing addressed by the redesign's counterparty/waiting machinery
 **Severity: medium. Caused by redesign: no (pre-existing, see memory
 imessage-multisource-routing-rootcause). Surfaced by the battery's broken isolation.**
 - Symptom: in a battery run where a live A2A from Kelly arrived DURING Crystal's
-  iMessage turn, the dinner reply routed `[Reply routed via iMessage to David]`
-  (the owner) instead of to Crystal, and an A2A planning line also reached David.
-  In strict isolation (one inbound, no bleed-in) the same cases are correct:
-  reply→Crystal, A2A→suppressed.
-- Likely root: when send_to_agent / a second inbound interleaves, the pending
-  iMessage recipient (Crystal) gets wiped, so iMessage routing falls back to the
-  owner; and the turn's counterparty can resolve to the wrong sender when two
-  arrive together. This is turn-serialization / pending-recipient state, not the
-  attribution projection.
-- Proposed direction: make the pending-iMessage-recipient survive an interleaved
-  send_to_agent (don't clear it on A2A activity), and ensure each inbound gets its
-  own serialized turn with its own counterparty rather than sharing one turn.
+  iMessage turn, the dinner reply routed to David (owner) instead of Crystal, and
+  an A2A planning line also reached David. In strict isolation the same cases were
+  already correct.
+- Root: the OLD racy in-memory `pendingIMResponseMap` got wiped by interleaved
+  A2A activity, so iMessage routing fell back to the owner; and two inbounds could
+  share one turn with the wrong counterparty.
+- FIX (addressed by the attribution redesign — verified by code path, all three
+  mechanisms the proposed direction called for are implemented):
+  (1) Recipient survives: reply routing uses `counterparty.senderId` (stable,
+  per-turn), NOT the racy pending map (loop.ts ~4700 — the documented Crystal→David
+  fix). (2) Right counterparty under interleave: `getWaitingHumanConversations`
+  picks the FIFO-oldest unanswered human as the trigger; `hasUnansweredUser` forces
+  `isA2ATurn=false` whenever a human is pending, so the turn addresses Crystal and
+  the A2A is deferred to its own later turn (one counterparty per turn). (3) No A2A
+  leak to the human: text-riding-with-tools is suppressed (OPEN-3-update). The racy
+  state that caused this is gone.
+- Caveat: confirm with a real multi-source scenario (human iMessage + live A2A) once
+  the battery's per-scenario isolation is fixed — the redesign analysis is complete
+  but a clean interleaved live run wasn't re-captured.
 
 ## RESOLVED (write side) — Engine events now carry STRUCTURED origin, not just prose
 **Status: FIXED (this session). Verified the read-shim is no longer load-bearing.**
@@ -264,99 +271,133 @@ convenient, then the prose-shim + visibility regex fallback can be deleted.
 - Residual (pre-existing, now HARMLESS): the model still sometimes thrashes
   send_to_agent and does file work on an A2A turn before it settles — wasteful but
   none of it reaches a human. Root is the weak model not single-shotting the A2A
-  reply; the engine guards now contain the blast radius. Tighter containment
-  (restrict A2A-turn tools to send_to_agent + reads) is a possible follow-up.
+  reply; the engine guards now contain the blast radius.
+- DISPOSITION (this session): the send_to_agent-thrash part is further reduced by
+  the OPEN-3 fix (coordination signature keeps `payload`, so identical re-sends are
+  caught while distinct sends pass). The proposed "restrict A2A-turn tools to
+  send_to_agent + reads" follow-up is DEFERRED on purpose: it would break
+  legitimate A2A WORKER turns (a worker asked via A2A to research / write files
+  genuinely needs full tools), and the residual is harmless inefficiency, not a
+  correctness or leak issue. Closing as resolved-with-known-residual.
 
 ---
 
-## OPEN-1 — DeepSeek V4 Pro emits malformed JSON tool args; engine rejects (no repair)
+## RESOLVED (was OPEN-1) — DeepSeek V4 emits malformed JSON tool args; engine now repairs before rejecting
 **Severity: medium-high. Caused by redesign: no (model + engine robustness).**
 - Symptom: `tracker_update_status` call rejected — `OpenAI: malformed tool call
   JSON arguments` then `Rejecting tool call with malformed arguments`. The args
   arrive wrapped as `{__malformed_args: "..."}`. Happens with long/complex string
   fields (e.g. a multi-line `result`).
-- Evidence: log `component:"model"` `"OpenAI: malformed tool call JSON arguments"`
-  `{toolName:"tracker_update_status"}`; `tools.ts:4060` `__malformed_args` path.
-- Impact: the agent "completes" a task but the call is rejected → it retries →
-  burns turns → can cascade into the thrash breaker (OPEN-4).
-- Proposed direction: the engine should attempt a structured repair of malformed
-  tool-call JSON (common failure modes: unescaped newlines/quotes in long string
-  args) before rejecting, OR re-prompt the model with a targeted "your JSON for
-  arg X was malformed; resend just that call" instead of a generic rejection.
-  Build to the weak-model floor — DeepSeek WILL emit malformed args.
+- Root: weak models emit raw, unescaped control characters (newlines/tabs/CRs)
+  inside long string values, which is illegal JSON. The parse failed and the call
+  was rejected outright, forcing a full retry that burned turns and fed the thrash
+  breaker (OPEN-4).
+- FIX (this session): added `repairToolCallArgs()` in `model.ts` (exported). On a
+  JSON.parse failure it walks the raw string tracking in-string state and escapes
+  any raw control char inside a JSON string (`\n`/`\r`/`\t` and other C0 via
+  `\u00XX`), then re-parses (also trying a trailing-comma strip). Wired into BOTH
+  the OpenAI/DeepSeek path and the Ollama path before falling back to
+  `__malformed_args`. Genuinely truncated output still returns null → the existing
+  clear "retry with valid JSON" path. Verified with focused tests: unescaped
+  newline-in-`result`, tab+newline, and trailing-comma all repair and parse;
+  valid JSON is unchanged; truncated JSON correctly yields null. Build-to-the-floor
+  per the design law. (Eliminates the dominant feeder of OPEN-4.)
 
-## OPEN-2 — Anti-hoarding gate refuses legitimate multi-task `tracker_get_status`
+## RESOLVED (was OPEN-2) — Anti-hoarding gate no longer counts tracker reads
 **Severity: medium. Caused by redesign: no (pre-existing gate).**
 - Symptom: `[System: anti-hoarding gate engaged. The tracker_get_status call you
-  just made was refused because you've loaded ...]`, and `Refused: engine
-  anti-hoarding...` tool results, while the agent was legitimately gathering
-  status across several tracker tasks to answer an emailed "send me the project
-  status" request.
-- Evidence: persisted system message "anti-hoarding gate engaged"; gate at
-  `loop.ts` ~3384 (`Anti-hoarding gate (v2.5.43)`).
-- Impact: the agent can't read the status it needs → gives a partial answer or
-  thrashes.
-- Proposed direction: the anti-hoarding gate counts loading-tool calls without
-  "structuring" — but reading N distinct tasks' statuses to answer a status
-  request is not hoarding. Consider exempting read-only tracker status calls with
-  DISTINCT ids, or counting by distinct-target rather than raw call count.
+  just made was refused because you've loaded ...]` while the agent was
+  legitimately gathering status across several tracker tasks to answer an emailed
+  "send me the project status" request.
+- Root: `classifiers/hoarding.ts` listed `tracker_get_status` / `tracker_list_active`
+  / `tracker_get_project` in `LOADING_TOOLS`, so they counted toward
+  `LOADING_GATE_THRESHOLD`. But the gate exists to stop EXTERNAL corpus-synthesis
+  (loading docs/web/files that get summarized into confabulation). The tracker is
+  the agent's own STRUCTURED state that survives compaction — reading it can't
+  confabulate, and reading N tasks to report status is the behavior the gate
+  wants. The gate was refusing tracker reads and telling the agent to "open a
+  tracker project" while it was reading the tracker.
+- FIX (this session): removed the three tracker read tools from `LOADING_TOOLS`
+  (with a comment). External-source loading (file/web/exec/gmail/drive/etc.) still
+  counts; tracker reads are free. The loop detector still catches a thrash of the
+  SAME read. Verified: `isLoadingTool` now returns exempt for the three tracker
+  reads and LOADING for file_read/web_fetch/exec/gmail_read.
 
-## OPEN-3 — `send_to_agent` thrash-gated on USER turns (PM coordination blocked)
-**Severity: medium. Caused by redesign: partially exposed (my A2A exemption only
-covers A2A turns).**
+## RESOLVED (was OPEN-3) — `send_to_agent` no longer thrash-gated for distinct messages
+**Severity: medium. Caused by redesign: partially exposed (the A2A exemption only
+covered A2A turns).**
 - Symptom: on email/Teams user turns where the agent coordinated with the PM
-  (`send_to_agent` to kelly), the loop detector's cross-turn window tripped and
-  returned "STOP — you have called `send_to_agent` N times…", blocking legitimate
-  coordination. (On A2A turns this is now exempted; on user turns it is not.)
-- Evidence: persisted "STOP — you have called `send_to_agent`" tool results
-  during user-turn cases; `classifiers/loop.ts:201` (`loopDetector`),
-  `MAX_REPEATS_BEFORE_BREAK`.
-- Impact: the agent's PM coordination is blocked mid-task.
-- Proposed direction: the loop detector windows `send_to_agent` by canonical
-  signature across turns; distinct legitimate sends (different thread/intent)
-  should not count together. Consider keying the window by thread, or resetting
-  the `send_to_agent` window per outer turn, or a higher threshold for A2A tools.
+  (`send_to_agent` to kelly), the loop detector tripped and returned "STOP — you
+  have called `send_to_agent` N times…", blocking legitimate coordination.
+- Root: `canonicalToolSignature` stripped `payload` as prose, so send_to_agent
+  was keyed only by `{agent, thread_id, intent}`. Distinct messages on the same
+  thread collapsed to one signature → 3 hit the repeat threshold → blocked. The
+  existing exemption only covered A2A turns (counterparty.kind==='agent').
+- FIX (this session): added a `COORDINATION_TOOLS` carve-out in
+  `classifiers/loop.ts` (send_to_agent, broadcast_to_group) that KEEPS
+  `payload`/`message` in the signature — same pattern as the SEARCH (`query`) and
+  GENERATION (`description`) carve-outs. Now distinct messages = distinct
+  operations (allowed, on user AND A2A turns); a true thrash (identical message
+  re-sent) still collapses to one signature and is still caught. Verified:
+  same-thread different-payload → distinct sigs; identical resend → same sig.
+  More general + safer than a blanket exemption (real thrash is still detected).
 
-## OPEN-4 — Thrash-gate breaker auto-blocks a task (cascade)
+## RESOLVED (was OPEN-4) — Thrash-gate breaker cascade (fixed by removing its feeders)
 **Severity: medium. Caused by redesign: no.**
 - Symptom: `v2: thrash gate breaker tripped — task auto-blocked` — a tracker task
-  was auto-blocked after the agent repeatedly hit gates (OPEN-1/2/3) without
-  making "progress."
-- Evidence: log `component:"v2-loop"` `"thrash gate breaker tripped — task
-  auto-blocked"`; `loop.ts` ~838 (`THRASH_GATE_BREAKER_LIMIT`).
-- Impact: legitimate work gets auto-blocked because the *engine's own gates*
-  prevented progress — the breaker punishes the agent for the gates' false
-  positives. This is the most user-visible "everything is erroring" symptom.
-- Proposed direction: fix OPEN-1/2/3 (the root false-positives); the breaker is
-  correct in principle but is currently tripped by upstream gate errors rather
-  than genuine agent thrashing.
+  auto-blocked after the agent repeatedly hit gates without making "progress." The
+  most user-visible "everything is erroring" symptom.
+- Root: the breaker (`THRASH_GATE_BREAKER_LIMIT=6`) trips on
+  `thrashGateRefusalCount`, which only accrues when the agent repeats an identical
+  signature ≥4× (`DUPLICATE_SIG_LIMIT`) and keeps hitting the per-signature gate.
+  Those false repeats were manufactured by OPEN-1/2/3: a rejected malformed
+  `tracker_update_status` got retried with the same malformed signature → 4 repeats
+  → gate → breaker; hoarding/loop false-refusals drove similar retry loops.
+- FIX (this session): resolved by fixing the three feeders — OPEN-1 (repair
+  malformed args so the completion call succeeds first time), OPEN-2 (tracker reads
+  no longer hoarding-gated), OPEN-3 (distinct coordination messages no longer
+  loop-blocked). The breaker LOGIC is intentionally unchanged — it is correct and
+  should still catch GENUINE thrash (an agent truly re-issuing one identical call).
+  No false-positive feeders remain in the audited paths.
 
-## OPEN-5 — Unknown sender on the agent's OWN iMessage line gets an auto-reply (test-label vs policy)
-**Severity: low (needs a policy ruling, not clearly a bug). Caused by redesign: no
-(prior-phase authorization; NOT touched by Phase 6, which is display-only).**
+## RESOLVED (was OPEN-5) — NOT a product bug: a dev-harness artifact; the real iMessage path already gates
+**Severity: was logged as "needs policy ruling"; turned out to be a test-harness
+artifact. Real product is correct. Caused by redesign: no.**
 - Symptom: in `battery.mjs` the "iMessage from UNKNOWN number — expect SUPPRESSED"
-  case produced an outbound iMessage to the unknown number: "This is an AI assistant.
-  You may have the wrong number — who are you trying to reach?" The test label
-  expected no auto-reply.
-- Evidence: the inbound row's `inbound_meta` is
-  `{"channel":"imessage","accountKind":"agent","authorized":true,"sender":"+19998887777","relation":"third_party"}`.
-  Because the message hit the AGENT's own iMessage line (`accountKind:agent`), the
-  producer marks it `authorized:true` (auto-reply-eligible) while correctly tagging
-  `relation:third_party` (unknown). The agent then sent a generic, safe clarifying
-  reply.
-- Impact: none to the security invariant — the agent did NOT act on the unknown
-  sender's behalf, reveal owner data, or perform a task; it only sent a "wrong
-  number?" probe. The mismatch is between the battery's "expect SUPPRESSED" label
-  and the intended own-line behavior. (Model judgment is also a factor: DeepSeek may
-  reply on some runs and stay silent on others.)
-- Proposed direction: decide the policy — either (a) accept safe clarifying replies
-  to unknowns on the agent's own line and update the battery label, or (b) suppress
-  auto-replies when `relation==='third_party'` even on an agent-kind line and have
-  the agent surface it as a dashboard notification instead. Needs David's ruling.
+  case produced an outbound iMessage to the unknown number ("…you may have the wrong
+  number…"). The test label expected no auto-reply.
+- ACTUAL ROOT (traced this session): the REAL iMessage bridge never lets an unknown
+  sender through in the first place. `imessage-bridge.ts` polls the Messages DB with
+  a query restricted to approved senders (`chat_identifier LIKE` each safe sender)
+  and re-validates every row against `findSafeSenderByAddress`, DROPPING anything
+  that isn't a real safe-sender match (`:782-854`). An unknown sender's message never
+  reaches the agent → it cannot reply. Email/Teams/SMS likewise stamp
+  `authorized:false` for unknowns → no reply. The agent already replies ONLY to
+  safe senders on every channel — exactly the required security rule.
+- Why the battery "failed": the DEV simulator route (`gateway/routes/dev.ts`)
+  injected the fake unknown sender with `authorized:true` hardcoded, bypassing the
+  bridge's real gate. So the battery exercised a state the real product never
+  produces. The inbound_meta evidence above came from that dev injection, not a real
+  inbound.
+- DECISION (David, this session): no product change — "go back to the way it was."
+  A surfacing-with-buttons feature was started then reverted (the bridge already
+  filters unknowns out, so there's nothing to surface). The real fix is to the DEV
+  HARNESS: the iMessage simulator should respect the safe-sender gate (not inject
+  `authorized:true` for a non-safe sender), so the battery reflects reality. Logged
+  for whoever maintains dev-test-tools; no engine/product code changes.
 
 ---
 
-## OPEN-9 — Close-the-loop: agent promises to relay to the owner, then never does
+## RESOLVED (was OPEN-9) — Close-the-loop: just-in-time hint on contact turns
+**Disposition (David, this session): "add a just-in-time hint."**
+- FIX: `renderCounterpartyHeader` (counterparty.ts) now appends a close-the-loop
+  reminder ONLY on non-owner human turns (relation !== 'owner') — "if your reply
+  promises to follow up with <owner>, actually do it THIS turn (reminder or a note),
+  a promise to a contact isn't kept until you act." Relevant-only (per-turn
+  counterparty header, NOT always-on SOUL), framed as advice so the model keeps
+  judgment. Verified: hint present on known_contact + third_party headers, absent on
+  owner and agent headers. Best-effort by design — the engine can't reliably detect
+  every "I'll do X" promise, so this nudges rather than enforces.
 - Symptom: a known contact (iMessage) said "scratch the beer — next week?" and the
   agent replied "I'll ask David about next week and let you know" — but then never
   surfaced anything to the owner and created no reminder/task to do so. An empty

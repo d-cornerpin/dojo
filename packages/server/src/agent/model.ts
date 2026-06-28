@@ -683,11 +683,21 @@ async function callOllamaModel(
               try {
                 parsedArgs = JSON.parse(rawArgs);
               } catch {
-                logger.warn('Ollama: malformed tool call JSON arguments', {
-                  toolName: tc.function?.name,
-                  rawArgs: typeof rawArgs === 'string' ? rawArgs.slice(0, 200) : String(rawArgs),
-                }, agentId);
-                parsedArgs = { __malformed_args: typeof rawArgs === 'string' ? rawArgs.slice(0, 500) : String(rawArgs) };
+                // Structured repair before rejecting (OPEN-1) — same floor-model
+                // failure mode (raw control chars in long string args).
+                const repaired = repairToolCallArgs(rawArgs);
+                if (repaired !== null) {
+                  parsedArgs = repaired;
+                  logger.info('Repaired malformed tool call JSON arguments', {
+                    toolName: tc.function?.name,
+                  }, agentId);
+                } else {
+                  logger.warn('Ollama: malformed tool call JSON arguments (repair failed)', {
+                    toolName: tc.function?.name,
+                    rawArgs: typeof rawArgs === 'string' ? rawArgs.slice(0, 200) : String(rawArgs),
+                  }, agentId);
+                  parsedArgs = { __malformed_args: typeof rawArgs === 'string' ? rawArgs.slice(0, 500) : String(rawArgs) };
+                }
               }
             } else {
               parsedArgs = {};
@@ -1095,6 +1105,56 @@ async function buildOpenAIMessages(
   return openaiMessages;
 }
 
+/**
+ * Best-effort repair of malformed tool-call argument JSON from weak models.
+ * The dominant DeepSeek (and other floor-model) failure mode is raw, unescaped
+ * control characters — newlines / tabs / carriage returns — inside long string
+ * values (e.g. a multi-line `result` or `description` field), plus the
+ * occasional trailing comma. The engine must build to the floor: rejecting the
+ * call forces a full retry that burns turns and can trip the thrash breaker
+ * (DOJO-ISSUES-LOG OPEN-1/OPEN-4). We walk the raw string tracking in-string
+ * state and escape any raw control char that appears inside a JSON string, then
+ * re-parse (also trying a trailing-comma strip). Returns the parsed object on
+ * success, or null if it still can't parse (e.g. genuinely truncated output).
+ */
+export function repairToolCallArgs(raw: string): Record<string, unknown> | null {
+  const escapeControlCharsInStrings = (s: string): string => {
+    let out = '';
+    let inStr = false;
+    let escaped = false;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (inStr) {
+        if (escaped) { out += ch; escaped = false; continue; }
+        if (ch === '\\') { out += ch; escaped = true; continue; }
+        if (ch === '"') { out += ch; inStr = false; continue; }
+        if (ch === '\n') { out += '\\n'; continue; }
+        if (ch === '\r') { out += '\\r'; continue; }
+        if (ch === '\t') { out += '\\t'; continue; }
+        // Other C0 control chars (e.g. \b, \f, vertical tab) are illegal raw in
+        // JSON strings too — escape via \u00XX so the parser accepts them.
+        if (ch < ' ') { out += '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'); continue; }
+        out += ch;
+      } else {
+        if (ch === '"') { inStr = true; }
+        out += ch;
+      }
+    }
+    return out;
+  };
+  const escaped = escapeControlCharsInStrings(raw);
+  const candidates = [escaped, escaped.replace(/,(\s*[}\]])/g, '$1')];
+  for (const c of candidates) {
+    try {
+      const parsed = JSON.parse(c);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch { /* try next candidate */ }
+  }
+  return null;
+}
+
 async function callOpenAIModel(
   params: ModelCallParams,
   modelInfo: { providerId: string; apiModelId: string; contextWindow: number; maxOutputTokens: number; providerType: string; providerBaseUrl: string | null; thinkingEnabled: boolean; capabilities: string[] },
@@ -1464,11 +1524,22 @@ async function callOpenAIModel(
         try {
           parsedArgs = JSON.parse(acc.args);
         } catch {
-          malformedArgs = true;
-          logger.warn('OpenAI: malformed tool call JSON arguments', {
-            toolName: acc.name,
-            rawArgs: acc.args.slice(0, 200),
-          }, agentId);
+          // Attempt a structured repair before rejecting (OPEN-1): weak models
+          // routinely emit raw control chars inside long string args. Rejecting
+          // forces a full retry that burns turns and feeds the thrash breaker.
+          const repaired = repairToolCallArgs(acc.args);
+          if (repaired !== null) {
+            parsedArgs = repaired;
+            logger.info('Repaired malformed tool call JSON arguments', {
+              toolName: acc.name,
+            }, agentId);
+          } else {
+            malformedArgs = true;
+            logger.warn('OpenAI: malformed tool call JSON arguments (repair failed)', {
+              toolName: acc.name,
+              rawArgs: acc.args.slice(0, 200),
+            }, agentId);
+          }
         }
       }
       if (malformedArgs) {

@@ -50,10 +50,16 @@ const LOADING_TOOLS = new Set<string>([
   'web_search',
   'web_fetch',
   'web_browse',
-  // Tracker reads
-  'tracker_get_status',
-  'tracker_list_active',
-  'tracker_get_project',
+  // NOTE (OPEN-2): tracker reads (tracker_get_status / tracker_list_active /
+  // tracker_get_project) are deliberately NOT counted here. The gate targets
+  // EXTERNAL corpus-synthesis — sources that get summarized into a deliverable
+  // and cause confabulation. The tracker is the agent's own STRUCTURED state;
+  // it survives compaction (this gate's refusal text says so), so reading it
+  // can't confabulate. Reading N tasks to answer "send me the project status"
+  // is exactly the behavior the gate wants, not hoarding — counting it refused
+  // legitimate status gathering and told the agent to "open a tracker project"
+  // while it was reading the tracker. The loop detector still catches a thrash
+  // of the SAME read; distinct status reads are free.
   // Agent introspection
   'get_agent_profile',
   'list_agents',

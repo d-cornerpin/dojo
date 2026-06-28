@@ -187,10 +187,23 @@ export function renderCounterpartyHeader(cp: TurnCounterparty): string {
       `and your chat text is not shown to them.`
     );
   }
+  // OPEN-9 (close-the-loop) — just-in-time, only on non-owner human turns (not
+  // the owner, not agents). If a reply to a contact commits the agent to relay
+  // something to the owner ("I'll ask David"), the loop isn't closed until it
+  // actually does — the engine can't reliably detect the promise, so this is
+  // relevant-only guidance, not enforcement. Framed as advice (the model keeps
+  // judgment); appears only when the counterparty is a contact, so no SOUL bloat.
+  const closeTheLoop =
+    cp.relation !== 'owner'
+      ? ` Close-the-loop: if your reply promises to follow up with ${getOwnerName()} ` +
+        `(e.g. "I'll ask/tell/check with them"), actually do it THIS turn — create a ` +
+        `reminder or send ${getOwnerName()} a note — a promise to a contact isn't kept until you act on it.`
+      : '';
   return (
     `## Who you are talking to this turn\n` +
     `You are responding to **${cp.name}** (${relationLabel(cp.relation)}) over ${channel}. ` +
     `Your reply goes back to them on ${channel}. Anything in your context marked as memory, an event, ` +
-    `or another agent's message is background — it is NOT ${cp.name} talking.`
+    `or another agent's message is background — it is NOT ${cp.name} talking.` +
+    closeTheLoop
   );
 }
