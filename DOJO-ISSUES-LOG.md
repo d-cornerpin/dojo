@@ -356,6 +356,64 @@ covers A2A turns).**
 
 ---
 
+## OPEN-9 — Close-the-loop: agent promises to relay to the owner, then never does
+- Symptom: a known contact (iMessage) said "scratch the beer — next week?" and the
+  agent replied "I'll ask David about next week and let you know" — but then never
+  surfaced anything to the owner and created no reminder/task to do so. An empty
+  promise to a third party. This is one of the nine behaviors the attribution
+  battery probes ("close-the-loop / respond-once-but-follow-through").
+- Evidence: attribution-battery-2 (Tidewater) run 4, kevin msg rowid 41319
+  ("No worries. I'll ask David about next week and let you know.") routed to Cory
+  at 41320. No subsequent kevin message (41319→end of run, last scenario at 41365)
+  mentions the beer / next week / Cory to the owner; `tasks` and scheduled
+  reminders mentioning Cory/beer = 0. NOT a capability limit: in the same window
+  the agent DID proactively surface other items to the owner (e.g. rowid 41351,
+  "Renata just emailed a follow-up…"), so it can surface — it just dropped this one.
+- Likely root: no follow-through mechanism when the agent commits to relay
+  something to the owner. The turn ends after the reply to the counterparty; nothing
+  converts "I'll ask David" into either an in-turn owner message or a queued
+  reminder/task, and the next (unrelated) turn moves on. Hard for the engine to
+  catch every "I'll do X" promise mechanically, so partly model judgment — same
+  family as the consignment owner-gating item.
+- Caused by current work? No. Unrelated to the message-attribution redesign or the
+  baseline memory-bleed fix; the routing/attribution itself was correct (right reply
+  to the right counterparty on the right channel). This is a follow-through gap.
+- Proposed direction: TBD per David ("log it, don't fix yet"). Candidate fixes when
+  picked up: (a) compose-time guidance — when a reply promises to relay/ask the
+  owner, also create a reminder or send the owner a note in the same turn; or
+  (b) treat social-promise follow-through as owner-trainable model behavior (the
+  same call David made on consignment) and leave it. Decide before building.
+
+---
+
+## OPEN-10 (DECIDED: out of scope) — Agent commits an owner-gated commercial term without surfacing it
+- Symptom: a wholesale buyer (authorized email contact) asked about decaf supply AND
+  consignment. The agent replied committing to a commercial term on the owner's
+  behalf — "Happy to do consignment for the first month… then we switch to standard
+  wholesale terms month two" — without surfacing the decision to the owner first.
+  Inconsistent with its own behavior in the same reply: it correctly gated PRICING
+  ("locking down the final numbers with David") and, in other turns, correctly
+  surfaced the lease decision rather than committing. So it knows some things need
+  owner sign-off; it just drew the line in the wrong place for consignment terms.
+- Evidence: attribution-battery-2 (Tidewater) run 2, kevin's reply to
+  tomas@harborview.example.com (the "Good to hear from you, Tomas — both requests are
+  no problem at all… Consignment: Happy to do consignment for the first month…"
+  message). Routing itself was correct (right counterparty, right channel = email);
+  the defect is in WHAT it promised, not where it sent it.
+- Likely root: model judgment on the floor model (DeepSeek V4 Flash). The engine
+  can't mechanically tell "yes, we stock decaf" (fine to confirm) from "yes, we'll do
+  consignment for month one" (a financial commitment that should be owner-gated) —
+  that line is semantic. Same family as OPEN-9 (close-the-loop follow-through).
+- Caused by current work? No. Routing/attribution was correct; this is a
+  commercial-judgment gap, not an attribution-redesign or baseline-memory issue.
+- DECISION (David, 2026-06-27): OUT OF SCOPE — not an engine-correctness defect.
+  Users train their own agents on what they may or may not commit to on the owner's
+  behalf. Logged for the record only; no fix planned. If revisited, the candidate
+  fix is compose-time guidance ("if a reply commits us to terms/money/dates, surface
+  to the owner first"), kept as just-in-time advice, NOT an engine-enforced block.
+
+---
+
 ## Test scaffolding — REMOVED before the Preflight commit (record of what was stripped)
 The following dev/test-only scaffolding was added during the redesign and STRIPPED
 out before committing to Preflight (none of it ships). Kept here as a record:

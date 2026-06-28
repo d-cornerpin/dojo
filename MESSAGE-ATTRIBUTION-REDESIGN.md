@@ -18,6 +18,15 @@
 
 The first version of this redesign built `MessageOrigin` with an `authorized` flag and then read it in exactly one consumer. Every other decision ("is this a waiting conversation," "is this a user turn," "does this outrank a scheduled task," "what is the trigger") fell back to checking `kind` alone. The structured path existed but was bypassed, so the model still got confused and the engine made wrong turn decisions. The fix below is not new design; it is wiring the flag the design already defined into the decisions the design already described.
 
+**The root-cause law (the companion directive — read this before every fix):**
+> **We are not in the business of suppressing results we don't like. We are in the business of figuring out exactly what caused the undesirable effect and finding the elegant solution that makes it simply not happen.**
+
+The test for any fix: does it make the bad thing *not happen*, or does it let the bad thing happen and then hide the output? The second is a patch wearing a "suppress" label. A real fix removes the cause. Two worked examples from this effort:
+- **Root (correct attribution, not suppression).** Preamble narration ("Let me check the calendar") was leaking into the chat. The cause is structural: any model response that contains a tool call is *non-terminal* (the loop runs the tool and re-prompts), so the real reply always arrives later as a separate tool-less message. Text riding alongside a tool call was therefore never a message to the user — it belongs to the work lane. The fix routes it to the correct lane. We are not deleting a real reply; we are correctly identifying which lane the text was always in.
+- **Patch (rejected) vs root (shipped).** Near-duplicate replies appeared because the task-closeout machinery re-prompted the model *in the middle of a live conversation*, and the weak model re-answered. The patch was to delete the duplicate after the fact (let it generate, then hide it). The root was to stop the machinery from re-prompting during a Lane-1 conversation at all — the danglers are caught off the conversation path (pre-turn gate + PM poke). No re-prompt → no second generation → nothing to suppress.
+
+Watchword: if a fix's mechanism is "let it happen, then null it out," stop and find the cause. The word "suppress" in a diff is a smell worth a second look — sometimes it's correct lane-attribution (fine), sometimes it's hiding a symptom (not fine).
+
 **Working agreement:** build on the dev server, commit nothing until David approves, and verify each phase against *real, adversarial* scenarios (a notification flood colliding with a scheduler fire, an agent finishing long PM-validated work, two senders at once), reading the **actual** assembled context, not greps. Synthetic batteries that only exercise genuine inbound are how the `authorized` gap shipped green.
 
 ---
@@ -189,14 +198,21 @@ Net: one `MessageOrigin`, one "owes a reply" definition, one turn header, three 
 
 **Shipped (preflight 3.1.10 series):** the structured origin + `origin_kind`/`conv_key` columns, `deriveOrigin`, counterparty resolve + turn header, Lane-1 scoping by conversation, the EVENTS lane for engine events, structured visibility, the claim-at-pickup served tracking, respond-once, reconcile-do-not-destroy, goal defaulting, and the composer turn-kind signal.
 
-**Remaining (this revision's work, in order):**
-1. **The waiting-set fix.** `getWaitingHumanConversations` and `scopeToHumanConversation` read `authorized`. Smallest change, largest blast radius: fixes the relapse, the scheduler hijack, and the A2A-leak together.
-2. **The awareness lane.** EVENTS includes unauthorized inbound so the agent still sees and can surface notifications. Verify a notification is excluded from the reply-set **and** still reaches the owner when it matters.
-3. **Close-the-loop completion.** A user-requested project that finishes on a non-user turn schedules one bounded completion report.
-4. **Producer hardening.** Stamp the voicemail notification; delete the inter-agent prose `includes()` tails in favor of `counterparty.kind`.
-5. **The prime-directive audit.** Per-field consumer check; retire the remaining legacy prose read paths once backfill confidence is high.
+**Harness-verification status (§11.1–11.3), honest as of 2026-06-26 — only what was driven through `bin/inbound` + read back counts:**
+- **Waiting-set + awareness lane (Phases 1–2): VERIFIED.** A wire-fraud email from an unknown sender → excluded from the reply-set (`waitingKeys: []`), lands in the EVENTS lane, zero outbound to the sender (`/api/dev/outbound` empty), surfaced to the owner. Kills relapse / turn-hijack / email-treated-as-engine together.
+- **Close-the-loop (Phase 3): VERIFIED working + bounded.** A2A turn completes the owner's one-shot task → A2A turn produces no user text (suppressed) → one engine `completion_report` turn → a single short report to the owner (3 runs, all 1–2 lines). The original wall-of-text was the report branching into a status rundown of OTHER tasks; the completion-report prompt now forbids mentioning anything but the just-completed task, re-verified with 3 blocker tasks present (report named only the completed work).
+- **A2A suppression after prose-tail removal (Phase 4): VERIFIED incidentally** — A2A turns leak no user-facing text (seen across the close-the-loop runs).
+- **Not yet driven through the harness:** scheduler-not-starved-by-a-notification (mechanism follows from the verified waiting-set, but not behavior-run), the voicemail stamp (deterministic check only), double-reply / duplicate-project (shipped in earlier preflight, not this revision's new code).
 
-Each phase is verified against the adversarial scenario that exposed it, on the dev server, reading actual assembled context.
+One principle governs all of it: every decision reads the structured origin, never prose or `kind` alone. Below, "code landed" = written + typechecks; it does NOT mean verified unless the line above says so.
+
+1. **The waiting-set fix — code landed.** `getWaitingHumanConversations` (counterparty.ts) and `scopeToHumanConversation` (assembler.ts) now read `authorized`. Verified deterministically: a human inbound stamped `authorized:false` (the real channel shape, no engine-stamp) is excluded from the owes-a-reply set while the genuine user message stays; verified live: an injected email notification did not hijack the turn, the agent answered the real question once, and made no reply to the notification's sender.
+2. **The awareness lane — DONE.** `scopeToHumanConversation` keeps unauthorized inbound (instead of dropping it as "another conversation") and the EVENTS lane lifts it alongside engine events, relabeled `<channel> notice from <sender>` under a header that says surface-to-owner-if-it-matters / never-reply-to-sender. Notifications are excluded from the reply-set **and** still reach the agent's awareness.
+3. **Close-the-loop completion — DONE.** When a one-shot task the owner asked for finishes on an A2A turn (text suppressed), the engine injects ONE engine-origin `completion_report` event and a wakeup; the follow-up turn is engine-triggered (not A2A, not suppressed) so the agent's "done, here's what I did" reaches the owner and cannot re-trigger itself. Scoped to this-turn one-shot completions (recurring/scheduler runs stay silent). Detection verified deterministically (picks only the new one-shot; excludes old/recurring/in_progress); delivery verified live (the agent surfaced the completed work to the owner in one bounded message).
+4. **Producer hardening — DONE.** The Twilio voicemail now stamps `recordInboundMeta({channel:'phone', accountKind:'agent', authorized:false, …})` (retiring the last prose-only producer; verified the stamped voicemail is excluded from the reply-set). The inter-agent suppression prose `includes('[SOURCE: GROUP BROADCAST / PM AGENT POKE …]')` tails are deleted in favor of `counterparty.kind === 'agent'` (which equals `isA2ATurn` by construction, so behavior is preserved with no prose dependency).
+5. **The prime-directive audit — DONE.** Per-field consumer sweep: every `MessageOrigin` field has named consumers; no `kind:'user'` decision skips `authorized`; all remaining `[SOURCE:]` reads are legacy origin-less display/routing shims. One live decision still on prose was fixed: scheduler-triggered detection now reads `origin_intent === 'scheduler'` (prose kept as fallback), which also repaired a latent gap where the prose check could never match after the waiting-set fix.
+
+These five are not separate features — they are the one principle (every decision reads the structured origin) applied to each consumer that was still reading prose or `kind`. The acceptance test is your actual broken behaviors (§7) reproduced through the harness and shown dead by reading what the agent does — not a checklist ticked off. **Not committed, not released, not verified** beyond the one item above.
 
 ---
 
@@ -218,3 +234,46 @@ Each phase is verified against the adversarial scenario that exposed it, on the 
 3. **The prime directive holds going forward:** no field of the origin ships without a named consumer; no turn decision reads prose when the origin answers it.
 4. **A turn closes its own loop:** claim at pickup, respond once, report completion to the user, reconcile bookkeeping without destroying replies.
 5. **Where it rides:** dev server first, verified against the adversarial scenarios that exposed each failure, committed only on David's approval.
+
+---
+
+## 11. Verification harness and protocol — READ THIS BEFORE TOUCHING TESTING
+
+This section exists because I (Claude) forgot the harness existed, fell back to hand-injecting DB rows and *reasoning about what should happen*, and then called the result "verified." That is the exact failure this whole redesign is about (claiming a thing works without reading what the system actually did). It is not allowed. The rules below are binding.
+
+### 11.1 The instruments (in `dev-test-tools/`, against the local dev server only)
+
+| Tool | What it does | Use it for |
+|---|---|---|
+| `bin/send "msg"` | Dashboard message to an agent; blocks to idle; prints a turn summary. | A dashboard/owner turn. **Its stdout is a summary, not the whole turn — never conclude from it alone.** |
+| `bin/inbound --channel <imessage\|email\|teams\|sms\|a2a> --from <sender> [--relation ...] [--authorized true\|false] [--subject ...] [--thread ...] [--intent ...] [--from-agent ...] "text"` | Injects a **real** inbound through the actual producer path (content marker + structured `inbound_meta` + trigger), runs the turn, prints the agent reply **and where the reply actually routed** (via the `/api/dev/outbound` capture). | Channel attribution, counterparty scoping, authorization, reply routing. **This is the primary behavioral instrument.** |
+| `bin/receipt [agentId] [N]` | Dumps the actual context **receipt(s)** the server wrote — the literal lanes/slots/messages the model received. Enabled by config `context_receipt_mode='meta'\|'full'` (already on in dev). | Reading exactly what the model saw. Ground truth. |
+| `GET /api/dev/context-dump/:agentId` | Runs the **real assembler** and returns exactly what the model will see for the next turn. | Lane-assignment ground truth (Lane 1 vs EVENTS) without spending a model call. |
+| `bin/inspect` / `bin/tail` / `bin/status` / `bin/reset` / `bin/model` | State / logs / status / session reset / model switch. | Setup + observation. `tail`/log grep is how you confirm an engine path (e.g. `"close-the-loop: scheduled completion report"`) actually fired. |
+
+### 11.2 Server-side dependency (the part that keeps getting lost)
+
+`bin/inbound`, `/api/dev/outbound`, and `/api/dev/context-dump` are served by **dev-only, non-production, NEVER-COMMITTED** server code:
+- `packages/server/src/gateway/routes/dev.ts` (the `/api/dev` routes) + its mount in `gateway/server.ts`
+- `packages/server/src/agent/v2/sim-outbound.ts` + the sim-capture intercepts in `tools.ts:executeTool` and `services/imessage-bridge.ts:sendResponseViaIMessage`
+- inventory recorded in `DOJO-ISSUES-LOG.md` §363–366
+
+These were wiped from the working tree in the preflight.2 revert and were **not recoverable from git** (working-tree-only, never committed). **REBUILT 2026-06-26** and this time backed up where a revert can't reach them: the canonical source now lives **outside the git repo** in `dev-test-tools/server-instruments/` (the same place `bin/inbound`/`bin/receipt` survived), with one-command install/uninstall:
+
+```bash
+node dev-test-tools/server-instruments/install.mjs     # restore into the server tree (idempotent)
+node dev-test-tools/server-instruments/uninstall.mjs   # remove before any release (round-trip verified clean)
+```
+
+Every in-place edit is tagged `[DEV-INSTRUMENTS]`; gated to `NODE_ENV !== 'production'`; must never ship (before release: `uninstall.mjs`, then grep for the tag must be empty). **If `curl /api/dev/...` returns 404, run `install.mjs` — do NOT fall back to DB injection + guessing.**
+
+### 11.3 The verification rule (binding)
+
+1. **Drive the real turn machine through the real simulators** (`bin/inbound` for any channel, `bin/send` for dashboard). Do not insert rows into `messages`/`tasks` and reason about what the engine "would" do.
+2. **Read what actually happened**, in full: the complete turn (every tool call, thinking, every assistant/system message — not the first line of `bin/send`), the assembled context (`context-dump` / `bin/receipt`), and the outbound routing (`/api/dev/outbound`). Confirm engine paths fired via the structured log.
+3. **One adversarial scenario per failure mode** (§7 table), each with: the exact `bin/inbound` command, the exact `context-dump`/`outbound` assertion, and the log line proving the engine path fired. A green battery that only exercises clean inbound is how the `authorized` gap shipped.
+4. **Never write the word "verified"** for a phase that has not been put through 1–3. Synthetic SQL checks and `typecheck` are necessary but are NOT verification of behavior.
+
+### 11.4 Status reset (2026-06-26)
+
+Every "verified" claim previously made for Phases 1–5 was made **without** this harness (synthetic DB injection + a few `bin/send` prompts) and is therefore **INVALID**. Concrete proof it was invalid: the "clean" Everest turn actually cascaded (seeded dangling task → PM A2A retask → task completed on an A2A turn → **the close-the-loop completion report fired as an unbounded, unsolicited wall of every open task dumped to the dashboard** — log `05:43:16 "v2 close-the-loop: scheduled completion report after A2A turn"`). That is a real Phase-3 defect (fires too eagerly; output is not bounded to "a sentence or two"). All phases must be re-verified through §11.1–11.3, and Phase 3's eagerness/boundedness must be redesigned, before any further "done" claim.

@@ -250,6 +250,20 @@ twilioRouter.post('/webhook/voicemail-transcription', async (c) => {
           INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
           VALUES (?, ?, 'user', ?, datetime('now'))
         `).run(msgId, primaryId, content);
+        // v3.1.10 (attribution redesign §5, Phase 4) — stamp structured origin so
+        // this notification rides the awareness lane by data, not by the legacy
+        // [SOURCE: …] prose shim. A voicemail is a phone-channel notification ABOUT
+        // the owner's number; the agent surfaces it, never auto-replies to the
+        // caller, so authorized:false. This retires the last prose-only producer.
+        const { recordInboundMeta } = await import('../../agent/v2/inbound-channel.js');
+        recordInboundMeta(msgId, {
+          channel: 'phone',
+          accountKind: 'agent',
+          authorized: false,
+          sender: from,
+          phoneFromNumber: from,
+          phoneCallSid: callSid,
+        });
         const { broadcast } = await import('../ws.js');
         broadcast({
           type: 'chat:message',

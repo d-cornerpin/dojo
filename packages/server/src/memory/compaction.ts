@@ -15,6 +15,7 @@ import {
 import { generateSummary } from './summarize.js';
 import { archiveMessagesBeforeCompaction, isDreamerIgnored } from '../vault/archive.js';
 import { lastCompactionDividerAt } from '../agent/shared-state.js';
+import { summaryPartyTag } from './party-label.js';
 import type { Message } from '@dojo/shared';
 
 // ── Assembled-context token estimate ──
@@ -644,7 +645,11 @@ export async function runLeafCompaction(
     // none of the meaning beyond tool name + outcome, which the one-liner keeps.
     const content = chunk.map(m => {
       const role = m.role.toUpperCase();
-      return `[${role}] ${condenseToolJsonForSummary(scrubTechniqueContentForSummary(m.content))}`;
+      // Tag each message with its conversation party so the summarizer can carry
+      // attribution into every fact (see summaryPartyTag above).
+      const party = summaryPartyTag(m);
+      const tag = party ? `${role} · ${party}` : role;
+      return `[${tag}] ${condenseToolJsonForSummary(scrubTechniqueContentForSummary(m.content))}`;
     }).join('\n\n---\n\n');
 
     const messageIds = chunk.map(m => m.id);

@@ -39,10 +39,14 @@ export function getDepthPrompt(depth: number, targetTokens: number, previousCont
 
 ${identity}
 
-INPUT FORMAT: The conversation below is formatted as [ROLE] followed by the message content, separated by --- dividers.
-[USER] = messages from the human user
-[ASSISTANT] = responses from the AI assistant
-[TOOL] = results from tool executions
+INPUT FORMAT: The conversation below is formatted as [ROLE · PARTY] followed by the message content, separated by --- dividers.
+[USER · <name>] = an inbound message, tagged with WHO it is from and on which channel (e.g. [USER · David], [USER · Alex Chen (imessage)], [USER · priya@northwind.example.com (email)], [USER · Kelly (agent)])
+[ASSISTANT · <party>] / [TOOL · <party>] = the AI assistant's own reply / a tool result, tagged with the conversation it was part of
+The PARTY tag tells you which conversation each message belongs to. These are SEPARATE conversations with different people, not one stream.
+
+CONVERSATION ATTRIBUTION — CRITICAL:
+- Every fact, request, reminder, pending task, or decision MUST state which party/conversation it belongs to. Write "David asked to move his dentist to 3pm" and "Priya (email) asked for the offsite budget" — NEVER an unattributed "dentist moved to 3pm; offsite budget requested" that drops who it was for.
+- Keep different parties' items separate. Do not merge a request from one person with an action for another. A later reader uses these labels to act on the RIGHT person's request on the right turn; an unlabeled fact causes it to act on the wrong conversation.
 
 TEMPORAL ANCHORING — CRITICAL:
 - Begin the summary with the time period it covers: [YYYY-MM-DD HH:MM – HH:MM] or [YYYY-MM-DD] if timestamps are unclear.
@@ -59,8 +63,8 @@ ABSOLUTE RULES — NEVER VIOLATE THESE:
 - Preserve ALL technical specifics: error messages, config values, commands run, API responses
 - When the user says "X is Y", write "X is Y" — do not generalize to "discussed X"
 - Capability / tool availability is VOLATILE state, not a durable fact. Record what was ATTEMPTED and the OUTCOME ("tried to download from the user's account, got a 'no such tool' error"), but NEVER write a standing verdict like "the agent cannot download user attachments" or "that feature isn't supported" — the platform gains tools over time and such verdicts silently go false. Keep the dated attempt, drop the conclusion.
-- Note any unresolved questions, pending tasks, or open decisions
-- Attribute every fact to the correct person
+- Note any unresolved questions, pending tasks, or open decisions — AND tag each with the party/conversation it belongs to
+- Attribute every fact to the correct person AND the correct conversation, using the [ROLE · PARTY] tags. Carry the party label into the summary text so whose-request-is-whose survives compression.
 - CRITICAL — Preserve resolution state. At the end of the summary, include a section:
   RESOLVED: [issue] — fixed [how/when]
   DECIDED: [what was decided and why]
@@ -98,7 +102,7 @@ ABSOLUTE RULES:
 - NEVER drop business names, project names, people's names, or technical specifics
 - Remove only true duplicates (exact same fact stated twice) and filler/pleasantries
 - Do NOT carry forward standing capability verdicts ("agent can't do X", "X not supported") as current fact — keep a dated attempt/outcome if one is present, but those conclusions are stale-prone and must not be stated as present truth
-- Maintain correct attribution — never confuse who said or did what
+- Maintain correct attribution — never confuse who said or did what. The source summaries tag facts with the party/conversation they belong to (David, a named contact on a channel, another agent); CARRY THOSE LABELS FORWARD. Keep different parties' requests separate; never merge them into an unattributed statement.
 - Target approximately ${targetTokens} tokens — use the space for facts, not narrative
 - Do NOT include preamble — write the condensed summary directly
 ${contextBlock}`;

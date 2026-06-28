@@ -341,6 +341,14 @@ export function classifyMessageForDisplay(msg: DisplayMessageInput): DisplayClas
         return { tier: 'agent-only', kind };
       }
       // origin.kind === 'user' (or 'self', not expected on a user row).
+      // Unauthorized human inbound (a mailbox notification about the owner's inbox,
+      // an unknown sender, a scam/promo email) is Lane-3 awareness, NOT a conversation
+      // — the agent surfaces it to the owner only if it matters; the raw notification
+      // never clutters the chat. `authorized` is load-bearing for display too, not
+      // just the turn machine (the prime directive).
+      if (origin.authorized === false) {
+        return { tier: 'agent-only', kind: 'system-other' };
+      }
       if (isInboundChannel(origin.channel)) {
         return { tier: 'user-visible', kind: 'inbound-channel' };
       }

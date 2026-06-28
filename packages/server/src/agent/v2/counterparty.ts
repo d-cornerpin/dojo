@@ -57,7 +57,13 @@ export function getWaitingHumanConversations(agentId: string): WaitingConversati
       a2aThreadId: r.a2a_thread_id, a2aIntent: r.a2a_intent, a2aRequiresResponse: r.a2a_requires_response,
       inboundMeta: r.inbound_meta, originKind: r.origin_kind, originIntent: r.origin_intent,
     });
-    if (o.kind !== 'user') continue;
+    // The single "owes a reply" definition (see MESSAGE-ATTRIBUTION-REDESIGN §3):
+    // a conversation the agent must answer is AUTHORIZED human inbound. Unauthorized
+    // inbound (a mailbox notification about the owner's inbox, an unknown sender) is
+    // Lane-3 awareness — the agent surfaces it to the owner, it never counts as a
+    // waiting conversation. Skipping it here propagates to the trigger pick, the
+    // runtime drain, hasUnansweredUser, and isA2ATurn, which all derive from this.
+    if (o.kind !== 'user' || !o.authorized) continue;
     const key = conversationKey(o.channel, o.senderId, o.senderName, o.threadId);
     let e = agg.get(key);
     if (!e) { e = { latest: r, oldestWaitingRowid: null }; agg.set(key, e); }  // first seen = latest

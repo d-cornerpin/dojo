@@ -293,7 +293,15 @@ async function assembleContextViaRegistry(
   // project and move on, with the quick-reply default. Not a standing SOUL rule.
   if (turnContext?.counterparty?.kind === 'user' && (turnContext.othersWaiting ?? 0) > 0) {
     const n = turnContext.othersWaiting!;
-    systemPrompt = `${systemPrompt}\n\n[Engine hint: ${n} other conversation${n === 1 ? ' is' : 's are'} waiting for you right now. If THIS request is quick, just answer it. If it's a large or multi-step task (research, a plan, a project), don't do all the deep work now while the others wait — send a brief acknowledgment, capture it with tracker_create_project / a tracker task, and end the turn so you can serve the others; then work the project across later turns. Reply on this turn's channel as usual.]`;
+    systemPrompt = `${systemPrompt}\n\n[Engine hint: ${n} other conversation${n === 1 ? ' is' : 's are'} waiting for you right now. If THIS request is quick, just answer it. If it's a large or multi-step task (research, a plan, a project), don't do all the deep work now while the others wait — send a brief acknowledgment, capture it with tracker_create_project / a tracker task, and end the turn so you can serve the others; then work the project across later turns. Reply on this turn's channel as usual. Speak only to the person this turn is for: your text output IS the message they receive, so write the reply itself — don't narrate your triage ("I have two things to handle, let me reply to X and check Y's thread") and don't mention other people's or other agents' threads to them. Deciding what order to work things in is yours to do silently; the engine will bring you back for the others.]`;
+  }
+  // Intent hint (just-in-time): this turn is a quick CONVERSATIONAL ask, not a project.
+  // Keep the agent from over-tracking it — a one-line request that becomes a tracked,
+  // PM-validated task churns (enforcement nags → wrong completion → PM reverts → re-asks
+  // the user). Handle it directly; if a detail is missing, ask once and let the
+  // conversation hold. (Suppressed when others are waiting, since that hint already covers it.)
+  if (turnContext?.conversationalTurn && !(turnContext?.othersWaiting && turnContext.othersWaiting > 0)) {
+    systemPrompt = `${systemPrompt}\n\n[Engine hint: this is a quick conversational request, not a multi-step project. Handle it directly — answer it, do the small thing (set the reminder, move the event), or ask ONE clarifying question and then stop. Do NOT create a tracked project/task or loop in the PM for something this small. If you're missing a detail, just ask the user once and wait — the conversation holds until they reply, so don't re-ask it later or keep working it in the background.]`;
   }
   const { messages } = await assembleMessageContext(agentId, modelId, systemPrompt, turnContext);
   return { systemPrompt, messages, systemEntryIds: sys.entryIds };
@@ -396,8 +404,12 @@ function scopeToHumanConversation(tail: Message[], cp: TurnCounterparty | undefi
     const o = m.origin;
     if (!o) return true;                       // unclassified — keep (safe default)
     if (o.kind === 'user') {
-      // Only THIS human's conversation stays in the live tail; other humans
-      // are a separate counterparty and get their own turn.
+      // Unauthorized human inbound (a mailbox notification about the owner's inbox,
+      // an unknown sender) is NOT a conversation. Keep it so the caller can lift it
+      // into the EVENTS/awareness lane (surfaced to the owner, never answered as
+      // chat). Authorized human inbound stays in the live tail only if it's THIS
+      // counterparty's conversation; other humans get their own turn.
+      if (!o.authorized) return true;
       return conversationKey(o.channel, o.senderId, o.senderName, o.threadId) === cpKey;
     }
     if (o.kind === 'self') {
@@ -860,23 +872,38 @@ async function assembleMessageContext(
   // masquerade as user messages) go to the EVENTS lane. role='system' engine
   // messages are left in place — the message builder already skips them, and
   // surfacing them here would change long-standing behavior.
-  const engineEvents = scopedTail.filter((m) => m.origin?.kind === 'engine' && m.role === 'user');
-  const engineUserIds = new Set(engineEvents.map((m) => m.id));
-  const freshTail = scopedTail.filter((m) => !engineUserIds.has(m.id));
-  if (engineEvents.length > 0) {
-    const eventLines = engineEvents.slice(-10).map((m) => {
+  // EVENTS / awareness lane: engine notices AND unauthorized human inbound (mailbox
+  // notifications about the owner's inbox, unknown senders) — things the agent should
+  // be AWARE of but is NOT in conversation with. Authorized human inbound and the
+  // current A2A counterparty stay in the live tail. (MESSAGE-ATTRIBUTION-REDESIGN §3, §4.4.)
+  const awarenessEvents = scopedTail.filter((m) =>
+    m.role === 'user' &&
+    (m.origin?.kind === 'engine' || (m.origin?.kind === 'user' && m.origin?.authorized === false)),
+  );
+  const awarenessIds = new Set(awarenessEvents.map((m) => m.id));
+  const freshTail = scopedTail.filter((m) => !awarenessIds.has(m.id));
+  if (awarenessEvents.length > 0) {
+    const eventLines = awarenessEvents.slice(-10).map((m) => {
+      const o = m.origin;
       const body = (typeof m.content === 'string' ? m.content : '')
         .replace(/^\s*\[[^\]]*\]\s*/, '') // drop the leading [SOURCE: …] marker
         .replace(/\s+/g, ' ')
         .trim();
-      const type = m.origin?.intent ?? 'event';
-      return `• [${type}] ${body.slice(0, 400)}`;
+      // Engine events are labeled by intent. An unauthorized human inbound is a
+      // notification ABOUT the owner — label it by channel + sender so the agent
+      // knows it is not addressed to it.
+      const label = o?.kind === 'user'
+        ? `${o.channel ?? 'msg'} notice${o.senderName ? ` from ${o.senderName}` : ''}`
+        : (o?.intent ?? 'event');
+      return `• [${label}] ${body.slice(0, 400)}`;
     });
     messages.push({
       role: 'user',
       content:
-        '═══ EVENTS (things that happened — NOT messages from a person or another agent; ' +
-        'for your awareness, act only if relevant to the conversation below) ═══\n' +
+        '═══ EVENTS & NOTICES (things that happened, and notifications addressed to the ' +
+        'owner that you are AWARE of but are NOT in conversation with — NOT the person ' +
+        'you are replying to below. Surface one to the owner only if it genuinely ' +
+        'matters; never reply to its sender) ═══\n' +
         eventLines.join('\n'),
     });
   }

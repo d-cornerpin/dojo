@@ -87,6 +87,7 @@ import {
 } from './state.js';
 
 import { partitionTools, type ToolBatch } from './classifiers/concurrency.js';
+import { complexityClassifier } from './classifiers/complexity.js';
 import { loopDetector, RECENT_TOOL_WINDOW, canonicalToolSignature, isNearDuplicateText } from './classifiers/loop.js';
 import { recordToolOutcome, crossTurnFailureNote } from './attempt-record.js';
 // Engine message-injection now flows exclusively through the registry channel
@@ -316,7 +317,12 @@ function startStatusHeartbeat(agentId: string): void {
   if (existing) clearInterval(existing);
   const timer = setInterval(() => {
     try {
-      broadcast({ type: 'agent:status', agentId, status: 'working' });
+      // Carry the current turn kind on EVERY heartbeat. Without it, the client
+      // (Chat.tsx) treats a missing turnKind as 'user' and re-shows the working
+      // UI (thinking dots + stop button) on the next tick — clobbering the 'a2a'
+      // turnKind that the turn-start broadcast set, so inter-agent turns flashed
+      // the working UI back into the user's chat every heartbeat interval.
+      broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: currentTurnKind.get(agentId) ?? 'user' });
     } catch {
       /* best effort */
     }
@@ -535,8 +541,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
   const forcedA2ATurn = forceA2ATurn.has(agentId);
   forceA2ATurn.delete(agentId);
   const mostRecentInbound = db.prepare(
-    "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1",
-  ).get(agentId) as { content: string } | undefined;
+    "SELECT content, origin_kind, origin_intent FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+  ).get(agentId) as { content: string; origin_kind: string | null; origin_intent: string | null } | undefined;
   const mostRecentIsA2A = parseA2ATrigger(mostRecentInbound?.content ?? null) !== null;
   // The user always wins: if a real user-channel message is still unanswered
   // (newer than our last user-facing text reply), this is a user turn even if
@@ -1238,7 +1244,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
       // ── Phase: assemble context ──
       state = advance(state, { phase: 'assemble' });
-      const ctx = await assembleContext(agentId, contextModelId, { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1) });
+      // Intent companion to attribution: a quick conversational ask ("add a reminder",
+      // "move my 10am") must not spin up a tracked, PM-validated task that then churns.
+      // Classify the trigger — a 'simple' ask from a user is conversational, a 'complex'
+      // one is project work — and pass it so the assembler injects guidance to handle
+      // it directly. (Reuses the complexity classifier that was computed but unconsumed.)
+      const conversationalTurn = counterparty.kind === 'user'
+        && complexityClassifier(lastUserMessageContent ?? '').complexity === 'simple';
+      const ctx = await assembleContext(agentId, contextModelId, { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn });
       let systemPrompt = ctx.systemPrompt;
       const messages = ctx.messages;
 
@@ -1851,13 +1864,24 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // TRUE streaming — broadcast each chunk as it arrives.
             onChunk: (chunk) => {
               if (abortController.signal.aborted) return;
-              broadcast({
-                type: 'chat:chunk',
-                agentId,
-                messageId,
-                content: chunk,
-                done: false,
-              });
+              // Inter-agent turns must NOT stream to the user's chat. The turn's
+              // persisted message is hidden from the dashboard (source='a2a', via
+              // the origin classifier), but the live chat:chunk path bypasses that
+              // filter — streaming the agent-to-agent prose live produced a "reply
+              // to no one" bubble that then vanished on refresh (the refetch
+              // correctly hides the A2A row). Suppress the live stream at the
+              // source so inter-agent coordination never reaches the user's chat,
+              // live OR on reload. The phone/TTS accumulation below is unaffected:
+              // an inter-agent turn never has phoneStreamCallSid set.
+              if (!isA2ATurn && counterparty.kind !== 'agent') {
+                broadcast({
+                  type: 'chat:chunk',
+                  agentId,
+                  messageId,
+                  content: chunk,
+                  done: false,
+                });
+              }
               // v2.9.23 — phone-call streaming TTS. Accumulate chunks
               // into a buffer and flush each completed sentence to
               // CallSession.queueAgentSay as it appears. Effect: audio
@@ -2124,14 +2148,54 @@ export async function runV2Turn(agentId: string): Promise<void> {
       }
 
       // Broadcast streaming complete + persist assistant message.
-      // v3.1.10: drive suppression off the turn classification. lastUserMessageContent
-      // is A2A-filtered (the triggerRow query excludes A2A/agent rows), so the legacy
-      // string checks could never match an A2A turn and A2A-turn chatter leaked.
-      // isA2ATurn is the authoritative signal: the entire A2A turn is agent-internal.
-      const interAgentTurn =
-        isA2ATurn ||
-        (lastUserMessageContent?.includes('[SOURCE: GROUP BROADCAST FROM') ?? false) ||
-        (lastUserMessageContent?.includes('[SOURCE: PM AGENT POKE FROM') ?? false);
+      // v3.1.10 (attribution redesign §5, Phase 4): drive suppression off the
+      // STRUCTURED counterparty, never prose. counterparty.kind === 'agent' exactly
+      // when isA2ATurn (resolveTurnCounterparty), so this is the same authoritative
+      // signal with the legacy [SOURCE: GROUP BROADCAST / PM AGENT POKE] includes()
+      // tails deleted (per the prime directive: decide by origin, not string-match).
+      // Companion rule (channel-awareness): a turn that is NOT a conversation with a
+      // present user must not emit user-visible text. The leak this closes: on an
+      // autonomous/background turn (owner asleep, no user waiting) the agent
+      // SPONTANEOUSLY messages another agent — send_to_agent / broadcast — and its
+      // trailing reasoning ("It's 1 AM, David's asleep, let me reply to Kelly about
+      // the homepage copy…") persisted into the owner's chat. That is the agent
+      // talking out loud about what it will tell the PM. Such text is coordination,
+      // never a message to the owner, so suppress it. A genuine user turn
+      // (hasUnansweredUser) still persists even if it also pings an agent; deliberate
+      // surfaces (scheduler digest, completion report) don't do A2A, so they persist.
+      const spontaneousA2ATurn =
+        !hasUnansweredUser &&
+        (state.sentToAgentThisTurn ||
+          result.toolCalls.some(tc => tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group'));
+      // Also: a turn whose most-recent trigger is an A2A poke, with NO fresh user
+      // waiting, is a background/inter-agent turn even if isA2ATurn is false (the
+      // poke was already replied to, so unrepliedAssign is null). Without this, a
+      // PM poke with nothing new to do flips to a "user turn" and the agent
+      // RE-EMITS a user-facing summary ("a few things before you log off…") on
+      // every poke. Fresh user always wins (hasUnansweredUser guard).
+      const a2aBackgroundTurn = mostRecentIsA2A && !hasUnansweredUser;
+      // The agent is mid A2A exchange: it was poked by an agent (mostRecentIsA2A)
+      // AND it messaged an agent back this turn (sentToAgent). Its terminal text is
+      // the coordination summary addressed to that agent ("Here's the status rundown,
+      // Kelly:"), never the owner — suppress even if a user is waiting (the user's
+      // own message gets its own turn, where mostRecentIsA2A is false).
+      const a2aExchangeTurn = mostRecentIsA2A && state.sentToAgentThisTurn;
+      // Pure background/wakeup turn: no user waiting, no fresh trigger, not A2A, not a
+      // deliberate engine surface (scheduler digest / completion report). The agent's
+      // text here ("3 AM, you're asleep, let me make progress…") is internal — suppress.
+      const deliberateSurfaceTurn = mostRecentInbound?.origin_intent === 'scheduler' || mostRecentInbound?.origin_intent === 'completion_report';
+      const pureBackgroundTurn = !hasUnansweredUser && !triggerRow && !mostRecentIsA2A && !deliberateSurfaceTurn;
+      const interAgentTurn = isA2ATurn || counterparty.kind === 'agent' || spontaneousA2ATurn || a2aBackgroundTurn || a2aExchangeTurn || pureBackgroundTurn;
+      // [DIAGNOSTIC] phantom-waiting-user: an A2A poke that should be a background turn
+      // is being flipped to a user turn by a stale waiting conversation. Log which
+      // conversation is keeping hasUnansweredUser true so the served-tracking edge can
+      // be pinned. (Remove once fixed.)
+      if (mostRecentIsA2A && hasUnansweredUser) {
+        logger.warn('v2 PHANTOM-FLIP: A2A turn flipped to user by waiting conversation', {
+          agentId, turnNumber,
+          waiting: waitingConvs.map(w => ({ key: w.key, oldest: w.oldestWaitingRowid, latest: String(w.latest.content).slice(0, 45) })),
+        }, agentId);
+      }
       const persistenceDecision = outputPersistenceClassifier({
         responseText: result.content ?? null,
         toolCallsThisTurn: result.toolCalls,
@@ -2161,6 +2225,47 @@ export async function runV2Turn(agentId: string): Promise<void> {
           interAgentTurn,
         }, agentId);
         persistedContent = null;
+      }
+      // Channel-awareness (attribution redesign §5): assistant text that rides in
+      // the SAME model response as one or more tool calls is the agent thinking-
+      // before-acting — Lane-2 process narration ("Let me check the calendar",
+      // "Close-out gate is released now, let me handle the other task", "Now I have a
+      // clear picture, let me reply to Kelly"), never a message to the user. The user
+      // reply is ALWAYS the terminal message: a separate, tool-less response emitted
+      // after the work completes (verified empirically — every legitimate reply is
+      // tool-less; every preamble / machinery-narration / A2A-coordination leak rides
+      // with a tool call). outputPersistenceClassifier already applies exactly this on
+      // inter-agent turns; generalize it to ALL turns so preambles stop leaking into
+      // the conversation on normal user turns too. Subsumes the prior
+      // send_to_agent/broadcast-only suppression. Deterministic engine enforcement,
+      // not prompt-hope (the weak-model correctness floor).
+      if (persistedContent && result.toolCalls.length > 0) {
+        persistedContent = null;
+      }
+
+      // Cross-turn respond-once (attribution redesign §4.5). The within-turn dedup
+      // above only compares against the single most-recent assistant message and is
+      // exempt on tool-bearing turns, so it misses the real leak: the agent
+      // RE-ENGAGES the same conversation a few turns later and re-posts a
+      // near-identical reply ("Dry cleaning set for 6pm, dentist not found" twice).
+      // Close the loop by comparing against the last few persisted assistant replies
+      // (suppressed turns were never persisted, so the DB holds only shown text).
+      if (persistedContent && persistedContent.trim().length > 0) {
+        try {
+          const recentReplies = db
+            .prepare(
+              "SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' AND content NOT LIKE '[{%' ORDER BY rowid DESC LIMIT 5",
+            )
+            .all(agentId) as Array<{ content: string }>;
+          if (recentReplies.some(r => isNearDuplicateText(r.content, persistedContent!))) {
+            logger.info('v2: suppressed cross-turn near-duplicate reply (respond-once)', {
+              turnNumber,
+            }, agentId);
+            persistedContent = null;
+          }
+        } catch {
+          // best-effort; never block a reply on a dedup read failure
+        }
       }
 
       // ── Duplicate-final-answer prevention (v2.7.2, scoped down v2.7.3) ──
@@ -2254,7 +2359,23 @@ export async function runV2Turn(agentId: string): Promise<void> {
         result.toolCalls.length === 0 &&
         /^\s*[`*_]*\s*\[no-reply\]\s*[`*_]*\s*$/i.test(persistedContent);
 
-      if (isBareNoReply && latestUserSource === 'voice') {
+      // Decline-as-prose: the weak model sometimes states "I'm not going to reply to
+      // this" in prose ("No reply needed here — I can't address X…") instead of the
+      // [no-reply] sentinel. Treated as a normal reply, that deliberation gets ROUTED
+      // to the counterparty — it was literally sent to Ben as the Globex renewal email
+      // reply (thread "Renewal") AND shown in the owner's chat. Honor the agent's
+      // stated intent: a message that OPENS with an unambiguous self-decline is a
+      // no-reply, not a message to anyone — suppress + don't route, same as the
+      // sentinel. Conservative: leading phrase only, no tool calls, so it never
+      // swallows a substantive reply that merely mentions "no reply" mid-sentence.
+      const DECLINE_OPENER_RE = /^\s*[`*_>]*\s*(?:no\s+(?:reply|response)\s+(?:needed|necessary|required|warranted)\b|no\s+need\s+to\s+(?:reply|respond)\b|nothing\s+(?:to\s+)?(?:reply|respond|to\s+say)\b|i(?:'|’)?ll\s+hold\s+off\s+(?:on\s+)?repl|i\s+(?:won(?:'|’)?t|will\s+not|am\s+not\s+going\s+to)\s+(?:reply|respond)\b)/i;
+      const isDeclineNonReply =
+        persistedContent !== null &&
+        result.toolCalls.length === 0 &&
+        !isBareNoReply &&
+        DECLINE_OPENER_RE.test(persistedContent);
+
+      if ((isBareNoReply || isDeclineNonReply) && latestUserSource === 'voice') {
         // Voice is a LIVE conversation, so going silent reads as a dropped
         // call. The voice-conduct prompt block tells the agent not to use
         // [no-reply] here, but the weakest model (the correctness floor)
@@ -2271,7 +2392,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
         logger.info('v2: [no-reply] on a voice turn, substituted a brief spoken acknowledgment to avoid dead air', {
           agentId, loopCount: state.loopCount,
         }, agentId);
-      } else if (isBareNoReply) {
+      } else if (isBareNoReply || isDeclineNonReply) {
+        if (isDeclineNonReply) {
+          logger.info('v2: agent declined in prose ("no reply needed…") — honoring intent as no-reply (not routing it)', {
+            agentId, turnNumber, preview: (persistedContent ?? '').slice(0, 60),
+          }, agentId);
+        }
         persistedContent = null;
         // Clear the streaming bubble in the dashboard. We need BOTH events:
         //  - chat:chunk done:true ends the bubble's streaming state (without
@@ -2692,7 +2818,29 @@ export async function runV2Turn(agentId: string): Promise<void> {
             tr => tr.name === 'tracker_update_status' || tr.name === 'tracker_complete_step' || tr.name === 'tracker_close_project',
           );
 
-          if (openTasks.length > 0 && !transitionedThisTurn) {
+          // ── Channel-awareness: enforce task bookkeeping only on a TASK-EXECUTION
+          // turn, never on a CONVERSATION turn (attribution redesign §4.5). ──
+          // The closeout/auto-pause/PM-escalation machinery exists to catch "the
+          // agent WORKED a task and forgot to record it." A pure conversational
+          // reply — answering "what's on my plate?", searching the vault and telling
+          // the user "I couldn't find the key", greeting a contact — is NOT task
+          // execution; the standing backlog is not this turn's responsibility.
+          // Firing on it is exactly what turned a simple question into a closeout-miss
+          // + PM sweep storm. A turn "worked a task" only if it was task-triggered
+          // (scheduler / A2A task coordination) OR it produced a real side effect
+          // (sent a message, ran exec, created a doc/file). Reading the tracker or
+          // just talking does not count. Decide by what the turn actually did.
+          const SIDE_EFFECTING = new Set([
+            'gmail_send', 'outlook_send', 'gmail_reply', 'outlook_reply', 'gmail_forward', 'outlook_forward',
+            'imessage_send', 'sms_send', 'teams_send_message', 'teams_send_channel_message', 'voice_call',
+            'calendar_create', 'calendar_update', 'drive_upload', 'docs_create', 'sheets_create', 'slides_create',
+            'share_publicly', 'exec', 'file_write', 'tracker_add_notes', 'tracker_create_task',
+          ]);
+          const schedulerTurn = mostRecentInbound?.origin_intent === 'scheduler' || (lastUserMessageContent ?? '').includes('[SOURCE: SCHEDULER');
+          const workedATaskThisTurn = schedulerTurn || isA2ATurn ||
+            state.toolResults.some(tr => !tr.isError && SIDE_EFFECTING.has(tr.name));
+
+          if (openTasks.length > 0 && !transitionedThisTurn && workedATaskThisTurn) {
             // v2.10.2 — detect scheduler-triggered turns AND scan this
             // turn's tool_results for side-effecting calls that
             // returned success. Pre-fix, the agent had to read a
@@ -2705,7 +2853,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // turn) rather than task_log — most tools don't write
             // per-task log entries when called, so a task_log scan
             // would almost always come up empty.
-            const isSchedulerTriggered = (lastUserMessageContent ?? '').includes('[SOURCE: SCHEDULER');
+            // v3.1.10 (attribution redesign §5, Phase 5): decide by structured
+            // origin first. The scheduler stamps origin_intent='scheduler'; reading
+            // it fixes the case where lastUserMessageContent (now sourced from the
+            // authorized-human waiting set) is null on a pure scheduler turn and the
+            // prose marker could never match. Prose kept only as the legacy fallback.
+            const isSchedulerTriggered =
+              mostRecentInbound?.origin_intent === 'scheduler' ||
+              (lastUserMessageContent ?? '').includes('[SOURCE: SCHEDULER');
             const NON_IDEMPOTENT_TOOLS = new Set([
               'gmail_send', 'outlook_send', 'gmail_reply', 'outlook_reply',
               'imessage_send', 'sms_send', 'teams_send_message',
@@ -3229,7 +3384,22 @@ export async function runV2Turn(agentId: string): Promise<void> {
             break;
           }
 
+          // Lane separation (attribution redesign §4.5): this nudge re-prompts the
+          // model ("close out your open tasks; write NO user-facing text"). On a live
+          // conversation turn the model ignores the no-text instruction and re-answers
+          // the present user, producing the near-duplicate reply (field-documented
+          // below). The deeper problem is the bleed itself: task-closeout is machinery
+          // (Lane 2/3), and it has no business re-running the model in the middle of a
+          // Lane-1 conversation about something unrelated (the open tasks are usually
+          // pre-existing background danglers, not this turn's work). So on a user turn
+          // we do NOT re-prompt — the agent answered the user, the turn ends here, and
+          // the danglers are caught off the conversation path by the deterministic
+          // pre-turn close-out gate next turn and by the PM poke chain (which is where
+          // closeout enforcement belongs). The re-prompt remains for non-conversation
+          // turns (autonomous / A2A), where any resulting text is already routed to the
+          // agent-internal lane and never surfaces to the user.
           if (
+            counterparty.kind !== 'user' &&
             !state.nudgedForTrackerCloseThisTurn &&
             !state.trackerStatusUpdatedThisTurn &&
             state.nonTrackerToolCalls > 0
@@ -4721,14 +4891,43 @@ export async function runV2Turn(agentId: string): Promise<void> {
     try {
       const { drainPendingAttachmentsWithCaptions } = await import('../pending-attachments.js');
       const stranded = drainPendingAttachmentsWithCaptions(agentId);
-      // Invariant #2: on an A2A turn there is no human to surface files to — the
-      // reply goes to the other agent via send_to_agent. Still DRAIN the queue
-      // (so stray attachments can't bleed into a later human turn), but never
-      // surface "Here are the files for you." to the owner on an inter-agent turn.
+      // De-dup: the agent sometimes re-generates the SAME deliverable across turns of
+      // a multi-step task (CRM_Recommendation_Top written twice, q3-board-update-v3
+      // re-saved). The stranded-attachment net would then post "Here are the files for
+      // you." for each regeneration → file-surface spam in the owner's chat. Surface
+      // each filename to the owner ONCE per session; drop names already shown.
+      const sessStart = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
+      const shownNames = new Set<string>();
+      try {
+        for (const row of db.prepare(
+          "SELECT attachments FROM messages WHERE agent_id = ? AND role = 'assistant' AND attachments IS NOT NULL AND created_at >= ?",
+        ).all(agentId, sessStart) as Array<{ attachments: string }>) {
+          for (const a of JSON.parse(row.attachments) as Array<{ filename?: string }>) if (a.filename) shownNames.add(a.filename);
+        }
+      } catch { /* best effort */ }
+      stranded.attachments = stranded.attachments.filter((a: { filename?: string }) => !(a.filename && shownNames.has(a.filename)));
       if (stranded.attachments.length > 0 && counterparty.kind !== 'agent') {
+        // Caption: prefer the model's own caption. Otherwise derive an INFORMATIVE
+        // line from the deliverables themselves — never a content-free generic
+        // "Here are the files for you.". Root reason: that generic line is identical
+        // for every uncaptioned deliverable, so two distinct files (blog_migration_plan,
+        // team_offsite_july_2026) surfaced on different turns read as duplicate spam in
+        // the owner's chat (David's run-#9 report). Naming the file makes each surface
+        // distinct and tells the owner WHAT it is. We are not hiding a duplicate; we are
+        // making the message say what it always should have.
+        const describeDeliverables = (atts: Array<{ filename?: string }>): string => {
+          const names = atts
+            .map(a => (a.filename ?? '').trim())
+            .filter(Boolean)
+            .map(fn => fn.replace(/\.[a-z0-9]+$/i, '').replace(/[_-]+/g, ' ').trim())
+            .filter(Boolean);
+          if (names.length === 0) return 'Here you go.';
+          if (names.length === 1) return `Here's the ${names[0]}.`;
+          return `Here are the files:\n${names.map(n => `• ${n}`).join('\n')}`;
+        };
         const captionText = stranded.captions.length > 0
           ? stranded.captions.join('\n\n')
-          : 'Here are the files for you.';
+          : describeDeliverables(stranded.attachments);
         const synthId = uuidv4();
         db.prepare(`
           INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, turn_number, created_at)
@@ -4760,6 +4959,62 @@ export async function runV2Turn(agentId: string): Promise<void> {
       logger.warn('show_to_user safety net failed (non-fatal)', {
         agentId, error: err instanceof Error ? err.message : String(err),
       }, agentId);
+    }
+
+    // ── Close-the-loop completion report (attribution redesign §4.5.3, Phase 3) ──
+    // The ack-and-ghost fix. When a one-shot task the owner asked for finishes on
+    // an A2A turn, the agent's text was suppressed (it was answering another agent
+    // / the PM), so the owner never heard "done." Schedule ONE bounded, user-facing
+    // follow-up turn so the agent reports what it did. Guarantees:
+    //   • Fires ONLY on A2A turns. A normal user turn already wraps up to the user,
+    //     so it never double-reports (§9).
+    //   • The scheduled turn is engine-triggered (not A2A), so isA2ATurn is false on
+    //     it → its reply is NOT suppressed and reaches the owner, and it cannot
+    //     re-trigger another completion report (no infinite loop).
+    //   • Scoped to completions in THIS turn's window (completed_at >= turnStartedAt),
+    //     so each completion is reported at most once across turns.
+    //   • One-shot only (repeat_interval IS NULL): recurring/scheduler runs stay
+    //     silent per the silent-closeout rule.
+    //   • Bounded: the engine prompt says summarize, do not redo.
+    if (isA2ATurn) {
+      try {
+        const justCompleted = db.prepare(`
+          SELECT id, title, result FROM tasks
+          WHERE assigned_to = ?
+            AND status = 'complete'
+            AND completed_at >= ?
+            AND repeat_interval IS NULL
+          ORDER BY completed_at ASC
+          LIMIT 5
+        `).all(agentId, turnStartedAt) as Array<{ id: string; title: string; result: string | null }>;
+        if (justCompleted.length > 0) {
+          const taskLines = justCompleted
+            .map(t => `  - "${t.title}"${t.result ? ` — ${t.result.replace(/\s+/g, ' ').slice(0, 160)}` : ''}`)
+            .join('\n');
+          const reportMsg = (
+            `[Engine event: completion report owed] You just finished work the owner asked for while you were talking to another agent, so they have not seen the result yet:\n` +
+            `${taskLines}\n\n` +
+            `Send the owner ONE short completion note: that the task(s) named ABOVE are done, plus a one-line note of what you did. Hard limits:\n` +
+            `- Mention ONLY the task(s) listed above. Do NOT list, summarize, or mention ANY other tasks, blockers, projects, or your overall status — this is a completion note, not a status report or a "what needs you" rundown.\n` +
+            `- One or two sentences, on the owner's channel. Do NOT redo the work or re-run tools.\n` +
+            `If there is genuinely nothing worth telling them, reply with [no-reply].`
+          );
+          const reportId = uuidv4();
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, origin_kind, origin_intent, turn_number, created_at)
+            VALUES (?, ?, 'user', ?, 'engine', 'completion_report', ?, datetime('now'))
+          `).run(reportId, agentId, reportMsg, turnNumber);
+          // Queue wakeup so handleMessage's finally fires the report turn.
+          pendingWakeups.add(agentId);
+          logger.info('v2 close-the-loop: scheduled completion report after A2A turn', {
+            agentId, taskCount: justCompleted.length, taskIds: justCompleted.map(t => t.id.slice(0, 8)),
+          }, agentId);
+        }
+      } catch (err) {
+        logger.warn('v2 close-the-loop completion-report scheduling failed (non-fatal)', {
+          agentId, error: err instanceof Error ? err.message : String(err),
+        }, agentId);
+      }
     }
 
     stopStatusHeartbeat(agentId);

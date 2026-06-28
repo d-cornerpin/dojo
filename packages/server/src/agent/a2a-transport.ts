@@ -645,6 +645,14 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
       latencyMs: null,
       createdAt: new Date().toISOString(),
       attachments: attachmentsList.length > 0 ? attachmentsList : undefined,
+      // Carry the structured A2A attribution so the origin-stamp seam (ws.ts)
+      // derives kind:'agent' from data, not from re-parsing the [A2A:…] marker.
+      // Without these, an inbound A2A classified as kind:'user' and leaked into
+      // the dashboard chat even with wordy mode off.
+      sourceAgentId: envelope.fromAgent,
+      a2aThreadId: threadId,
+      a2aIntent: effectiveIntent,
+      a2aRequiresResponse: requiresResponse ? 1 : 0,
     },
   });
 
@@ -693,61 +701,19 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
       // any in-flight tool may have been orphaned, and noting the
       // recent preempt count so they can self-throttle if A and B are
       // ping-ponging.
-      try {
-        let isUrgentSender = envelope.fromAgent === 'system';
-        if (!isUrgentSender) {
-          const { isPMAgent, isHealerAgent } = await import('../config/platform.js');
-          isUrgentSender = isPMAgent(envelope.fromAgent) || isHealerAgent(envelope.fromAgent);
-        }
-        const { lastA2APreemptAt, A2A_PREEMPT_MIN_INTERVAL_MS } = await import('./shared-state.js');
-        const now = Date.now();
-        const lastPreemptAt = lastA2APreemptAt.get(target.id) ?? 0;
-        const throttled = !isUrgentSender && (now - lastPreemptAt < A2A_PREEMPT_MIN_INTERVAL_MS);
-        if (!throttled) {
-          const { preemptAgentForUrgentMessage } = await import('./runtime.js');
-          const preempted = preemptAgentForUrgentMessage(target.id);
-          if (preempted) {
-            lastA2APreemptAt.set(target.id, now);
-            // Bump the preempt counter for this receiver (windowed) and
-            // set the marker flag so the assembler can inject the
-            // "you were interrupted" note on the next assembly.
-            try {
-              const targetConfigRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(target.id) as { config: string } | undefined;
-              const targetConfig = targetConfigRow?.config ? JSON.parse(targetConfigRow.config) as Record<string, unknown> : {};
-              const recent = (targetConfig.a2aPreemptRecent as Array<{ at: number; from: string }> | undefined) ?? [];
-              const fiveMinAgo = now - 5 * 60 * 1000;
-              const filteredRecent = recent.filter((r) => r.at > fiveMinAgo);
-              filteredRecent.push({ at: now, from: senderName });
-              targetConfig.a2aPreemptRecent = filteredRecent;
-              targetConfig.a2aPreemptPending = {
-                fromAgent: envelope.fromAgent,
-                fromName: senderName,
-                intent: effectiveIntent,
-                threadShort,
-                at: new Date(now).toISOString(),
-                recentCount: filteredRecent.length,
-              };
-              db.prepare("UPDATE agents SET config = ? WHERE id = ?").run(JSON.stringify(targetConfig), target.id);
-            } catch (err) {
-              logger.warn('Failed to set A2A preempt marker', {
-                targetId: target.id,
-                err: err instanceof Error ? err.message : String(err),
-              });
-            }
-            logger.info('A2A delivery: preempted target run for wake-intent message', {
-              targetId: target.id,
-              from: envelope.fromAgent,
-              intent: effectiveIntent,
-              urgent: isUrgentSender,
-            });
-          }
-        } else {
-          logger.info('A2A delivery: skipping preempt (throttled)', {
-            targetId: target.id, from: envelope.fromAgent, intent: effectiveIntent,
-            sinceLastPreemptMs: now - lastPreemptAt,
-          });
-        }
-      } catch { /* preempt is best-effort */ }
+      // (duplicate-work root fix) We deliberately do NOT preempt the receiver's
+      // in-flight turn for an inbound wake-intent A2A. This is the same root cause
+      // as the chat path (gateway/routes/chat.ts): preempting aborts a multi-step
+      // turn AFTER it has committed side effects (created a tracker project, written
+      // a deliverable file) and BEFORE it marks its work served, so the re-triggered
+      // turn redoes that work — duplicate projects, the plan delivered twice, the
+      // same question answered twice. Confirmed via per-turn LOOP-START markers: an
+      // urgent PM QUESTION preempted kevin mid-turn and the turn restarted under the
+      // same turn_number. The message is still delivered + persisted, and the
+      // end-of-turn A2A re-trigger (runtime.ts finally) gives this inbound its OWN
+      // dedicated turn right after the current one finishes — so the PM gets answered
+      // without interrupted-and-redone work. Genuine emergency interrupts (stop)
+      // still use the explicit stop control, the correct place for that.
 
       const runtime = getAgentRuntime();
       runtime.handleMessage(target.id, contextMessage).catch(err => {

@@ -8,6 +8,7 @@ import { createLogger } from '../logger.js';
 import { estimateTokens } from '../memory/store.js';
 import { archiveConversation } from './store.js';
 import { isSystemServiceAgent, getSystemServiceAgentIds } from '../config/platform.js';
+import { summaryPartyTag } from '../memory/party-label.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('vault-archive');
@@ -191,6 +192,11 @@ export function archiveMessagesBeforeCompaction(
       id: m.id,
       role: m.role,
       content: m.content,
+      // Conversation/party attribution (channel-aware redesign): preserve WHO each
+      // message is from so the Dreamer can keep whose-request-is-whose when it
+      // writes vault memories. Derived now because the raw origin columns are not
+      // carried into the archive blob.
+      party: summaryPartyTag(m),
       tokenCount: m.tokenCount,
       modelId: m.modelId,
       cost: m.cost,

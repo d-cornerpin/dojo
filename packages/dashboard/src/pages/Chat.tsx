@@ -588,6 +588,21 @@ export const Chat = ({ panel = null }: ChatProps) => {
   // because this Chat is bound to it. Per-message accumulator drives a live
   // reaction as the reply starts; lastMoodRef de-dupes repeat sets.
   const dojoOrb = useDojoOrb();
+  // Mirror turnKind / wordyMode into refs so the WS handler closures (set up
+  // once) read the CURRENT value. Used to suppress live streaming bubbles on
+  // inter-agent (a2a) turns: those messages are hidden on reload (source='a2a'),
+  // but a streaming bubble is created with no origin/source, so it bypasses the
+  // render-time visibility filter and flashes the agent-to-agent text, tool
+  // badges, and thinking dots into the user's chat until reconcile. Gating the
+  // bubble creation here is the uniform fix (covers content AND reasoning chunks).
+  const turnKindRef = useRef(turnKind);
+  turnKindRef.current = turnKind;
+  const wordyModeRef = useRef(wordyMode);
+  wordyModeRef.current = wordyMode;
+  // True when the current turn's streamed output must NOT render in the user's
+  // chat (inter-agent turn, wordy mode off). Wordy mode deliberately surfaces
+  // inter-agent activity, so it streams normally there.
+  const suppressStreamForTurn = () => turnKindRef.current === 'a2a' && !wordyModeRef.current;
   const streamTextRef = useRef<Map<string, string>>(new Map());
   // De-dupe per (message, emotion): streaming chunks of the SAME message don't
   // re-fire, but a NEW message re-fires even the same mood (so two angry
@@ -783,6 +798,12 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const unsubChunk = subscribe('chat:chunk', (event: WsEvent) => {
       const e = event as ChatChunkEvent;
       if (e.agentId !== agentIdRef.current) return;
+      // Inter-agent turn (wordy off): never build a streaming bubble. The bubble
+      // has no origin/source so the render-time visibility filter can't hide it —
+      // it would flash the agent-to-agent reply (text, tool badges, thinking
+      // dots) into the chat until reconcile. The finalized message is hidden on
+      // reload via source='a2a'; this keeps it hidden live too.
+      if (suppressStreamForTurn()) return;
 
       // Orb mood: accumulate this message's streamed text and emote the orb as
       // soon as a `((mood: NAME))` marker appears (it leads the reply).
@@ -861,6 +882,8 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const unsubReasoning = subscribe('chat:reasoning_chunk', (event: WsEvent) => {
       const e = event as { type: 'chat:reasoning_chunk'; agentId: string; messageId: string; content: string; done: boolean };
       if (e.agentId !== agentIdRef.current) return;
+      // Same as chat:chunk — inter-agent reasoning must not create a live bubble.
+      if (suppressStreamForTurn()) return;
       setMessages((prev) => {
         const idx = prev.findIndex((m) => m.id === e.messageId);
         if (idx >= 0) {

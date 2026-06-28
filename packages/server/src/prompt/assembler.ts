@@ -477,6 +477,14 @@ export interface PromptTurnContext {
    * (head-of-line). Situational (only when others wait), not a standing rule.
    */
   othersWaiting?: number;
+  /**
+   * True when this turn's trigger is a quick CONVERSATIONAL ask (a 'simple'-complexity
+   * message from a user) rather than multi-step project work. The assembler injects a
+   * just-in-time hint so the agent handles it directly instead of spinning up a tracked,
+   * PM-validated task that churns. Channel-awareness companion: a conversation is not a
+   * project.
+   */
+  conversationalTurn?: boolean;
 }
 
 /**

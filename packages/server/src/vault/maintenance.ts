@@ -386,6 +386,7 @@ interface ParsedArchiveMessage {
   role: string;
   content: string;
   createdAt?: string;
+  party?: string | null;
 }
 
 function parseArchiveMessages(conv: VaultConversation): ParsedArchiveMessage[] | null {
@@ -454,16 +455,17 @@ function preprocessMessages(messages: ParsedArchiveMessage[]): ParsedArchiveMess
     // (6) Tiny / empty.
     if (content.trim().length < 30) continue;
 
-    filtered.push({ role: m.role, content, createdAt: m.createdAt });
+    filtered.push({ role: m.role, content, createdAt: m.createdAt, party: m.party });
   }
   return filtered;
 }
 
 function formatArchiveMessage(m: ParsedArchiveMessage): string {
   const role = (m.role ?? 'unknown').toUpperCase();
+  const party = m.party ? ` · ${m.party}` : '';
   const ts = m.createdAt ? ` [${m.createdAt}]` : '';
   const body = truncateMessageContent(m.content ?? '');
-  return `[${role}${ts}] ${body}`;
+  return `[${role}${party}${ts}] ${body}`;
 }
 
 function wrapArchive(conv: VaultConversation, body: string, partLabel?: string): string {
@@ -745,6 +747,8 @@ function buildDreamerCycleMessage(
 Vault state: ${stats.totalEntries} entries (${stats.pinnedCount} pinned, ${stats.permanentCount} permanent). Pin cap: ${MAX_PINNED_ENTRIES}${stats.pinnedCount > MAX_PINNED_ENTRIES ? ' — OVER CAP, prune now' : ''}.${archiveSummary}${batchNote}
 
 Process the archives below. Extract durable memories and route each to the right store per your SOUL: vault_remember for general knowledge, contact_remember for person-as-entity facts (who someone is, role/company, relationships, channel preferences, a new email/phone), and credential_add ONLY when an archive contains the actual value of a service credential (follow your SOUL's cautions: never guess, skip anything personal-financial). Discard junk archives. Only update USER.md if an archive has a clear, explicit, FUNDAMENTAL profile change you can quote (see your SOUL). Never edit SOUL.md. Then call complete_task.
+
+Conversation attribution: the archive messages are tagged with the party each is from ([USER · David], [USER · Alex Chen (imessage)], [USER · priya@… (email)], [USER · Kelly (agent)]). When a memory is a request, preference, or pending item that belongs to a SPECIFIC person or channel, say so in the memory text ("David asked to…", "Priya (email) is waiting on…"), and prefer contact_remember for who-someone-is facts. A memory that records one person's request must never read as if it were everyone's — keeping whose-is-whose is what lets the agent act on the right conversation later.
 
 ${batchText}`;
 }

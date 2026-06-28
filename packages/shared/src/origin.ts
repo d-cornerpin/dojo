@@ -65,7 +65,12 @@ export interface OriginFields {
   originIntent?: string | null;    // engine event type ('tracker' | 'scheduler' | …)
 }
 
-const A2A_MARKER_RE = /^\[A2A:([A-Z]+)\s+thread:([0-9a-fA-F]+)\s+from:([^\]]+)\]/;
+// thread ids are NOT always hex — they're often named (e.g. "pm-review-2026-06-25",
+// "thread-jlpvqj-poke-14a"), and the marker carries a slice(0,8) of that. The old
+// [0-9a-fA-F]+ pattern silently failed every named-thread A2A, so deriveOrigin fell
+// back to kind:'user' and inbound A2A leaked into the dashboard chat with wordy OFF.
+// Match any non-space, non-']' run instead.
+const A2A_MARKER_RE = /^\[A2A:([A-Z]+)\s+thread:([^\s\]]+)\s+from:([^\]]+)\]/;
 const LEGACY_AGENT_RE = /^\[SOURCE: AGENT MESSAGE FROM ([^\]]+)\]/i;
 
 function safeParseMeta(raw: string): InboundMeta | null {

@@ -124,10 +124,22 @@ export async function submitUserMessage(
 
   queueEmbedding('message', messageId, agentId, content);
 
-  try {
-    const { preemptAgentForUrgentMessage } = await import('../../agent/runtime.js');
-    preemptAgentForUrgentMessage(agentId);
-  } catch { /* best effort */ }
+  // NOTE (duplicate-work root fix): we deliberately do NOT preempt the running
+  // turn here. preemptAgentForUrgentMessage aborts the in-flight turn so the new
+  // message can run sooner — but the abort lands AFTER the turn has already
+  // committed side effects (created a tracker project, written a deliverable file)
+  // and BEFORE it marks its work served. The re-triggered turn then redid that
+  // work from scratch: duplicate offsite projects, "Here's the plan" delivered
+  // twice, the same question answered twice. Root cause, confirmed via per-turn
+  // LOOP-START/TERMINAL-PERSIST markers: rapid inbound messages preempted a
+  // multi-step turn repeatedly, each retry reusing the same turn_number and
+  // re-running the committed work. The fix is to let the current turn FINISH:
+  // handleMessage's activeRuns guard (below) queues this message as a pending
+  // wakeup, and the end-of-turn drain serves it next — one turn at a time, no
+  // interrupted-and-redone work. Genuine "stop what you're doing" still works via
+  // the explicit stop control (stopAgent), which is the right place for an
+  // intentional interrupt. (Speed tradeoff: a follow-up sent mid-task waits for
+  // the current task to finish instead of interrupting it — correct over fast.)
 
   // A fresh user message means the user wants the agent to act. Any
   // stale stop signal from a prior interrupted turn must be cleared, or
