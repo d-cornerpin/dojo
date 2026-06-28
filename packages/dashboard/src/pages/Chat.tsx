@@ -583,6 +583,15 @@ export const Chat = ({ panel = null }: ChatProps) => {
   });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  // "Stick to bottom" behaviour (Claude-style). Pinned = the view follows new
+  // content. When the user scrolls up to read history we UNPIN: auto-scroll
+  // stops (so agent activity no longer yanks them down) and a "jump to latest"
+  // button appears above the composer. Re-pin only when they click it or scroll
+  // back to the bottom. The ref mirrors the state so the WS handlers + the
+  // messages effect (set up once / not in deps) read the live value.
+  const [pinnedToBottom, setPinnedToBottom] = useState(true);
+  const pinnedToBottomRef = useRef(true);
+  const NEAR_BOTTOM_PX = 80; // within this of the bottom counts as "at the bottom"
 
   useEffect(() => {
     api.getSetting('primary_agent_name').then(r => {
@@ -663,14 +672,18 @@ export const Chat = ({ panel = null }: ChatProps) => {
     lastMessageIdRef.current = last.id;
     lastMessageSigRef.current = sig;
     if (isNewMessage) {
-      scrollToBottom();
+      // Only follow new messages when pinned. If the user scrolled up to read
+      // history, a new agent message (thinking/work/system) must NOT yank them
+      // back down — that was the annoyance. They stay put; the jump-to-latest
+      // button is already showing.
+      if (pinnedToBottomRef.current) scrollToBottom();
     } else {
       // Same message growing (streaming chunk): only follow if user is
       // near the bottom. ~80px slack so a slight scroll-up doesn't break
       // the follow behavior, but reading older history isn't disturbed.
       const container = messagesContainerRef.current;
       if (container) {
-        const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+        const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < NEAR_BOTTOM_PX;
         if (nearBottom) scrollToBottom(true);
       }
     }
@@ -720,6 +733,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
           })),
         );
         setHasMore(result.data.length >= 50);
+        // Fresh conversation load starts pinned to the bottom.
+        pinnedToBottomRef.current = true;
+        setPinnedToBottom(true);
         // Scroll to bottom on initial load — use instant (not smooth).
         // Multiple fallbacks because DOM layout isn't always complete
         // after a single rAF (long message lists, images, attachments).
@@ -780,6 +796,16 @@ export const Chat = ({ panel = null }: ChatProps) => {
     if (!container) return;
 
     const handleScroll = () => {
+      // Track pin state: at/near the bottom → pinned (follow new content);
+      // scrolled up → unpinned (stop following, show the jump-to-latest button).
+      // Only commit a React state change when the value actually flips, so this
+      // hot scroll handler doesn't re-render on every pixel.
+      const nearBottom =
+        container.scrollHeight - container.scrollTop - container.clientHeight < NEAR_BOTTOM_PX;
+      if (nearBottom !== pinnedToBottomRef.current) {
+        pinnedToBottomRef.current = nearBottom;
+        setPinnedToBottom(nearBottom);
+      }
       if (container.scrollTop < 100 && hasMore && !loadingMore) {
         loadOlderMessages();
       }
@@ -856,7 +882,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             updated.isStreaming = false;
             updated.modelId = (e as any).modelId ?? null;
             updated.toolCalls = toolCallsSnapshot ?? undefined;
-            requestAnimationFrame(() => scrollToBottom());
+            if (pinnedToBottomRef.current) requestAnimationFrame(() => scrollToBottom());
           }
           const out = [...prev];
           out[idx] = updated;
@@ -1127,6 +1153,9 @@ export const Chat = ({ panel = null }: ChatProps) => {
   const handleSend = async (content: string, attachments?: AttachmentInfo[]) => {
     setIsWorking(true);
     setAwaitingUserReply(true); // user is now waiting on a reply — keep the working UI up through any a2a sub-work
+    // Sending re-pins: the user wants to see their message and the reply.
+    pinnedToBottomRef.current = true;
+    setPinnedToBottom(true);
 
     // Technique session: prepend build/edit/setup/refresh context to the wire
     // message. The bubble still shows only what the user typed (UserBubble
@@ -1350,6 +1379,29 @@ export const Chat = ({ panel = null }: ChatProps) => {
     />
   );
 
+  // Jump-to-latest button — shown only when the user has scrolled up off the
+  // bottom. Rendered at the stage level (not inside .dojo3-chat, which is a
+  // z-index:1 stacking context below the composer) so it floats ABOVE the
+  // composer. Clicking re-pins the view to the newest messages.
+  const jumpToLatest = !pinnedToBottom ? (
+    <button
+      type="button"
+      className="dojo3-jump-latest"
+      aria-label="Jump to latest messages"
+      title="Jump to latest"
+      onClick={() => {
+        pinnedToBottomRef.current = true;
+        setPinnedToBottom(true);
+        scrollToBottom(true);
+      }}
+    >
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M6 9l6 6 6-6" />
+      </svg>
+    </button>
+  ) : null;
+
   const toggleWordyMode = () => {
     const next = !wordyMode;
     setWordyMode(next);
@@ -1375,6 +1427,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     <PresenceProvider>
     <Dojo3Stage
       composer={composer}
+      jumpToLatest={jumpToLatest}
       agentName={activeAgentName || agentName}
       isWorking={showWorkingUi}
       wordyMode={wordyMode}

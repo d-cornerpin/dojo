@@ -15,6 +15,10 @@ import { usePresence } from './PresenceProvider';
 interface Dojo3StageProps {
   children: ReactNode;
   composer: ReactNode;
+  /** Optional "jump to latest" button, floated above the composer at stage level
+   *  (so it escapes the .dojo3-chat z-index:1 stacking context). Null/undefined
+   *  when the view is pinned to the bottom. */
+  jumpToLatest?: ReactNode;
   agentName: string;
   isWorking: boolean;
   wordyMode: boolean;
@@ -45,6 +49,7 @@ const fanItems = [
 export function Dojo3Stage({
   children,
   composer,
+  jumpToLatest,
   agentName,
   isWorking,
   wordyMode,
@@ -385,6 +390,7 @@ export function Dojo3Stage({
       </div>
 
       <div className="dojo3-composer-scrim" aria-hidden="true" />
+      {jumpToLatest}
       {composer}
       </div>
 
