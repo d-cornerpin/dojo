@@ -563,6 +563,16 @@ export const Chat = ({ panel = null }: ChatProps) => {
   // only talking to another agent; we keep the composer quiet for those (no
   // thinking dots / stop button) unless wordy mode is on.
   const [turnKind, setTurnKind] = useState<'user' | 'a2a'>('user');
+  // The user has a request in flight (sent a message, no completion yet). Drives
+  // the working UI (thinking dots + stop button) so it stays visible for the
+  // WHOLE request — even when the agent dips into agent-to-agent (a2a)
+  // coordination to fulfill it. Those a2a sub-turns are turnKind:'a2a', which on
+  // its own would hide the UI and make the agent look dead mid-task (regression:
+  // a user asked the agent to SSH somewhere and saw no dots/stop while it worked
+  // because the work ran over a2a). Set on send, cleared when the agent goes
+  // idle (request done). Background a2a churn never sets this, so the UI still
+  // stays quiet for PURE inter-agent work with no user waiting.
+  const [awaitingUserReply, setAwaitingUserReply] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
@@ -1071,6 +1081,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
         setTurnKind(e.turnKind ?? 'user');
       } else if (e.status === 'idle' || e.status === 'error') {
         setIsWorking(false);
+        setAwaitingUserReply(false); // request finished — stop forcing the working UI
         reconcileStreamingBubbles();
       }
     });
@@ -1080,6 +1091,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
       if (e.agentId !== agentIdRef.current) return;
       toast.error(`Agent terminated: ${e.reason}`);
       setIsWorking(false);
+      setAwaitingUserReply(false);
       reconcileStreamingBubbles();
     });
 
@@ -1114,6 +1126,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
 
   const handleSend = async (content: string, attachments?: AttachmentInfo[]) => {
     setIsWorking(true);
+    setAwaitingUserReply(true); // user is now waiting on a reply — keep the working UI up through any a2a sub-work
 
     // Technique session: prepend build/edit/setup/refresh context to the wire
     // message. The bubble still shows only what the user typed (UserBubble
@@ -1316,7 +1329,13 @@ export const Chat = ({ panel = null }: ChatProps) => {
   // The agent is "working" for the UI's thinking dots + stop button only when
   // it's a normal user turn — OR any turn while wordy mode is on. On a pure
   // agent-to-agent (A2A) turn with wordy off, the composer stays calm.
-  const showWorkingUi = isWorking && (turnKind !== 'a2a' || wordyMode);
+  // Show the working UI (dots + stop) whenever the agent is working AND either:
+  // it's a user-facing turn, wordy mode is on, OR the user has a request in flight
+  // (awaitingUserReply). The last clause is what keeps the UI visible across a2a
+  // sub-turns of a user-initiated task. It hides ONLY for pure background a2a
+  // (another agent working, no user waiting): then turnKind==='a2a',
+  // awaitingUserReply===false, wordy off → hidden.
+  const showWorkingUi = isWorking && (turnKind !== 'a2a' || wordyMode || awaitingUserReply);
 
   const composer = (
     <Dojo3Composer
