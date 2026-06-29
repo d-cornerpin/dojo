@@ -53,7 +53,6 @@ import { checkTimeouts } from '../spawner.js';
 import {
   isAwaitingIMResponse,
   clearIMResponseFlag,
-  getInboundSenderFor,
 } from '../../services/imessage-bridge.js';
 import { resolveInbound } from './inbound-channel.js';
 // recordCost intentionally NOT imported — callModel records cost internally.
@@ -4748,10 +4747,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
         const { resolveReplyDestination } = await import('./reply-destination.js');
         const { getPresence, isImessageConfigured } = await import('../../services/presence.js');
-        const {
-          sendResponseViaIMessage, getInboundSenderFor,
-          isAgentInitiatedContact, clearAgentInitiatedContact, clearIMResponseFlag,
-        } = await import('../../services/imessage-bridge.js');
+        const { sendResponseViaIMessage } = await import('../../services/imessage-bridge.js');
 
         // Invariant #2 (attribution redesign): an A2A turn's reply goes to the
         // other agent via send_to_agent — its trailing text must NEVER route to
@@ -4792,24 +4788,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
           });
         };
 
-        // Option B relay guard: if this inbound came from someone the agent
-        // proactively reached out to (a relay — "David asked me to ask
-        // Mike"), the agent's end-of-turn text is a report for the original
-        // requester, NOT an auto-reply to that contact. Suppress iMessage
-        // routing and leave the text in the dashboard. Consume-once: clear
-        // the relay flag so a genuine later exchange auto-routes normally.
-        const relaySender = getInboundSenderFor(agentId);
-        const isRelayReply =
-          destination === 'imessage' && !!relaySender && isAgentInitiatedContact(agentId, relaySender);
-
-        if (isRelayReply && relaySender) {
-          clearAgentInitiatedContact(agentId, relaySender);
-          clearIMResponseFlag(agentId);
-          logger.info('Option B: suppressed iMessage auto-route on relay reply (kept in dashboard)', {
-            agentId,
-            inboundSender: relaySender,
-          }, agentId);
-        } else if (destination === 'imessage' && !state.explicitSendThisTurn.imessage && isImessageConfigured()) {
+        // The agent works out details DIRECTLY with whoever it is talking to —
+        // including someone it proactively reached on the owner's behalf (the
+        // owner asked it to reach a contact). Its reply to that person routes
+        // BACK to that person over iMessage; it then brings the result to the
+        // owner separately, when it actually has it. That is the whole point of
+        // having an agent handle this kind of back-and-forth.
+        //
+        // This path used to force such a reply to stay in the dashboard, on the
+        // assumption the agent's text was a report to the owner — but the agent's
+        // reply was addressed to the CONTACT, so a contact-bound message ended up
+        // dropped into the owner's chat (the exact failure observed). Removed:
+        // a reply to a contact always routes to that contact.
+        if (destination === 'imessage' && !state.explicitSendThisTurn.imessage && isImessageConfigured()) {
           // Label the badge with the recipient the bridge ACTUALLY delivered
           // to, never a hardcoded default. If the send was suppressed (sender
           // no longer authorized, empty body), skip the marker entirely so we

@@ -7201,7 +7201,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         // and use the dashboard chat instead.
         const {
           getIMBridgeStatus, getSafeSenders, findSafeSenderByAddress,
-          getInboundSenderFor, sendIMessageWithAttachments, markAgentInitiatedContact,
+          getInboundSenderFor, sendIMessageWithAttachments,
         } = await import('../services/imessage-bridge.js');
         const bridgeStatus = getIMBridgeStatus();
         if (!bridgeStatus.running) {
@@ -7365,15 +7365,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
           });
         }
 
-        // Relay tracking (Option B): when this send targets someone OTHER
-        // than the person who triggered this turn — a proactive outreach
-        // (no inbound sender) or an explicit switch — record them as an
-        // agent-initiated contact. When they reply, the engine won't
-        // auto-route the agent's report back to them; it stays in the
-        // dashboard for the original requester.
-        if (!inboundSender || switchedFromInbound) {
-          markAgentInitiatedContact(agentId, recipient);
-        }
 
         // ── Success string (with recipient-switching warning) ────────
         // If the agent receives an iMessage from sender A and then sends
