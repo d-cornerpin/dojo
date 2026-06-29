@@ -24,34 +24,50 @@ import { getDb } from '../../db/connection.js';
 // current session. Engine events and A2A are not human conversations here.
 export interface WaitingConversation {
   key: string;
-  /** The conversation's LATEST message row (the trigger — answers multi-part together). */
+  /** The conversation's NEWEST unanswered message row (kept for logging/context). */
   latest: {
-    rowid: number; content: string; source: string | null; source_agent_id: string | null;
+    rowid: number; conv_key: string | null; content: string; source: string | null; source_agent_id: string | null;
     a2a_thread_id: string | null; a2a_intent: string | null; a2a_requires_response: number | null;
     inbound_meta: string | null; origin_kind: string | null; origin_intent: string | null; created_at: string;
   };
+  /** The conversation's OLDEST unanswered message row — this is the turn TRIGGER,
+   *  so the agent answers a conversation's pending messages oldest-first and a
+   *  later ping can't be answered before the request that preceded it (OPEN-12). */
+  oldest: WaitingConversation['latest'];
   oldestWaitingRowid: number;
+  /**
+   * Contents of EVERY still-unanswered message in this conversation, oldest →
+   * newest (OPEN-12). The trigger pick + pickup-stamp uses only `latest`, and
+   * stamping the latest's conv_key collaterally marks older unanswered siblings
+   * served (the served test is rowid > MAX(stamped rowid)). So a middle message
+   * (a relay request) that arrived before a later one (a follow-up ping) would
+   * be dropped without ever getting a turn. The loop uses this list to surface
+   * ALL pending messages on the one turn that handles the conversation, so none
+   * is silently absorbed.
+   */
+  unanswered: string[];
 }
 
 export function getWaitingHumanConversations(agentId: string): WaitingConversation[] {
   const db = getDb();
   const sessionStart = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
   const rows = db.prepare(
-    `SELECT rowid, content, source, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, origin_kind, origin_intent, created_at
+    `SELECT rowid, conv_key, content, source, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, origin_kind, origin_intent, created_at
        FROM messages WHERE agent_id = ? AND role = 'user' AND created_at >= ?
        ORDER BY created_at DESC, rowid DESC LIMIT 25`,
   ).all(agentId, sessionStart) as WaitingConversation['latest'][];
-  // Durable "served" signal: the latest rowid of an OWN message (assistant/tool)
-  // tagged with each conversation's conv_key — i.e. the agent's reply for that
-  // conversation. An inbound is answered when a reply for its conversation comes
-  // AFTER it (higher rowid). Survives restart (it's read from the DB).
-  const replyRows = db.prepare(
-    `SELECT conv_key, MAX(rowid) AS maxReply FROM messages
-       WHERE agent_id = ? AND conv_key IS NOT NULL AND created_at >= ? GROUP BY conv_key`,
-  ).all(agentId, sessionStart) as Array<{ conv_key: string; maxReply: number }>;
-  const lastReplyByConv = new Map(replyRows.map((r) => [r.conv_key, r.maxReply]));
-  const agg = new Map<string, { latest: WaitingConversation['latest']; oldestWaitingRowid: number | null }>();
+  // OPEN-12 root fix — per-message "served", not "a later reply exists".
+  // A user message is UNANSWERED iff its OWN conv_key is still NULL, i.e. no turn
+  // ever CLAIMED it at pickup (the loop stamps the trigger's conv_key the moment
+  // it picks it up). The previous signal marked a message served whenever any
+  // reply with a higher rowid existed for its conversation — so a DISTINCT
+  // message that arrived mid-turn (a relay request before a follow-up ping) was
+  // collaterally served by the unrelated reply and dropped without ever getting a
+  // turn. Per-message claim cannot drop a distinct ask: every unclaimed message
+  // gets its own turn until it is itself picked up.
+  const agg = new Map<string, { latest: WaitingConversation['latest']; oldest: WaitingConversation['latest']; oldestWaitingRowid: number; unanswered: Array<{ rowid: number; content: string }> }>();
   for (const r of rows) {                              // newest → oldest by rowid
+    if (r.conv_key != null) continue;                  // already claimed at a pickup — answered/owned
     const o = deriveOrigin({
       role: 'user', content: r.content, source: r.source, sourceAgentId: r.source_agent_id,
       a2aThreadId: r.a2a_thread_id, a2aIntent: r.a2a_intent, a2aRequiresResponse: r.a2a_requires_response,
@@ -66,13 +82,20 @@ export function getWaitingHumanConversations(agentId: string): WaitingConversati
     if (o.kind !== 'user' || !o.authorized) continue;
     const key = conversationKey(o.channel, o.senderId, o.senderName, o.threadId);
     let e = agg.get(key);
-    if (!e) { e = { latest: r, oldestWaitingRowid: null }; agg.set(key, e); }  // first seen = latest
-    const lastReply = lastReplyByConv.get(key) ?? -1;
-    if (r.rowid > lastReply) e.oldestWaitingRowid = r.rowid;                    // unanswered → older overwrite
+    if (!e) { e = { latest: r, oldest: r, oldestWaitingRowid: r.rowid, unanswered: [] }; agg.set(key, e); }  // first seen = newest unanswered
+    e.oldest = r;                                      // iterating newest→oldest, last write = oldest unanswered
+    e.oldestWaitingRowid = r.rowid;
+    e.unanswered.push({ rowid: r.rowid, content: r.content });
   }
   return [...agg.entries()]
-    .filter(([, e]) => e.oldestWaitingRowid !== null)
-    .map(([key, e]) => ({ key, latest: e.latest, oldestWaitingRowid: e.oldestWaitingRowid! }))
+    .map(([key, e]) => ({
+      key,
+      latest: e.latest,
+      oldest: e.oldest,
+      oldestWaitingRowid: e.oldestWaitingRowid,
+      // Collected newest→oldest above; expose oldest→newest for the reader.
+      unanswered: e.unanswered.sort((a, b) => a.rowid - b.rowid).map((u) => u.content),
+    }))
     .sort((a, b) => a.oldestWaitingRowid - b.oldestWaitingRowid);              // FIFO by rowid
 }
 

@@ -23,7 +23,17 @@
 // turn satisfies the gate for the rest of the turn.
 // ════════════════════════════════════════
 
-/** Number of loading-tool calls in a single turn before the gate fires. */
+/** Number of loading-tool calls in a single turn before the gate fires.
+ *
+ * Kept at 6 (NOT raised — raising the bar would just mask the real cause). The
+ * OPEN-16 false-positive — a routine "did I get an email from <someone>?" lookup
+ * tripping the gate — was not caused by the threshold being too low. Its cause
+ * was that FAILED loading calls counted: a multi-account `outlook_search` that
+ * errored ("say which account") and retried padded the count with calls that
+ * loaded NOTHING into context and so cannot cause the summarization
+ * confabulation this gate exists to prevent. The fix is therefore at the
+ * accounting site (failed loads are not counted, see loop.ts) plus exempting the
+ * bounded recall_recent_thread read below — not a higher threshold. */
 export const LOADING_GATE_THRESHOLD = 6;
 
 /**
@@ -45,7 +55,11 @@ const LOADING_TOOLS = new Set<string>([
   'memory_search',
   'vault_search',
   'vault_describe',
-  'recall_recent_thread',
+  // NOTE (OPEN-16): recall_recent_thread is deliberately NOT counted. It is a
+  // bounded read of the CURRENT conversation's recent turns (conversation-scoped
+  // as of OPEN-15), an orientation read the agent uses to answer "what was just
+  // happening", not external corpus accumulation that confabulates. Counting it
+  // pushed routine lookups over the gate.
   // Web
   'web_search',
   'web_fetch',

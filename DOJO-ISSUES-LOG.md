@@ -455,6 +455,139 @@ artifact. Real product is correct. Caused by redesign: no.**
 
 ---
 
+## RESOLVED (was OPEN-11) — Scheduler/engine turn runs a STALE already-answered user request (task hijack)
+**VERIFIED on dev 2026-06-29:** scheduler fired a "post a coffee haiku" task with a stale, already-answered memory-rundown sitting in context → the agent wrote the haiku, not another rundown. Required a follow-up fix the typecheck missed and only the dev run caught: `scopeToEngineTurn` must drop a prior conversation's tool RESULTS (stamped conv_key), not just its text — copying the A2A scoper's "keep self tool activity" leaked the stale exec output and the model regenerated the rundown from it.
+**Severity: HIGH (reliability). Caused by current work: YES (gap in the redesign's turn scoping).**
+- Symptom (prod, 3.1.10-preflight.11, 2026-06-28): the scheduler fired a recurring
+  task at 7:00:07 ("Run daily gastro email digest — scan Gmail, append to
+  gastro-tracker.md"). Instead the agent ran a STALE, hour-old, already-answered
+  "give me a RAM rundown" request — ran `ps`/`top`, texted the user a RAM report —
+  and NEVER did the gastro task. The scheduler then reset the task (missed
+  `tracker_update_status`).
+- Root cause: a scheduler (engine) turn has no dedicated scoping lane or directive
+  source. `runtime.handleMessage` ignores its content arg and calls `runV2Turn(agentId)`
+  (`runtime.ts:436,452`), which rebuilds the trigger from the DB. `getWaitingHumanConversations`
+  drops engine origins (`counterparty.ts:66`), so the scheduler turn has no waiting
+  conversation → `resolveTurnCounterparty` synthesizes an OWNER/dashboard human
+  counterparty from null content (`origin.ts:200-204`), `currentTurnKind` is set to
+  `'user'` (`loop.ts:567`), and fresh-tail scoping (`assembler.ts:857-859`, only two
+  branches: `'agent'`→A2A, else→human) takes `scopeToHumanConversation` against the
+  owner tail — keeping the stale RAM request live. `getActiveUserDirective`
+  (`directive.ts:36-81`) then re-pins the most-recent ≥200-char user message as the
+  "ACTIVE USER DIRECTIVE" with NO origin filter and NO already-served filter, so the
+  hour-old answered request out-competes the actual scheduled task (which is demoted
+  to an EVENTS-lane bullet, `assembler.ts:879-908`).
+- Fix direction: (a) give engine/scheduler turns a real lane — scope the tail to the
+  triggering engine event and present the scheduler payload as the directive, mirror
+  of `scopeToA2AThread`; (b) `getActiveUserDirective` must exclude `origin_kind='engine'`
+  rows AND rows already served (their conv_key has a later own-reply) so an answered
+  request can never be re-pinned as the active WHAT.
+
+---
+
+## RESOLVED (was OPEN-12) — Rapid same-sender inbound: middle message gets NO turn (silently absorbed)
+**VERIFIED on dev 2026-06-29:** two rapid distinct iMessages (the 2nd landing mid-turn) — before: only the 1st answered, 2nd dropped; after: BOTH answered, oldest-first, agent idle (no thrash/double). ROOT fix (a first attempt was a patch — a "note" that only fired when both were waiting at one pickup): "served" is now per-message — a message is unanswered iff its OWN conv_key is NULL (claimed at pickup), not "a later reply exists." Trigger is the OLDEST unanswered message.
+**Severity: HIGH (reliability). Caused by current work: YES (consequence of conv_key coalescing).**
+- Symptom (prod, same session): user sent "Can you let Jain know the dates and times?"
+  → ZERO agent activity (no thinking, no tool call, no reply). 4 min later user sent
+  "Kevin?" → agent replied "I'm here. What's up?" with no memory of the request. The
+  middle message never created a turn.
+- Root cause: all inbound from one sender collapse to one conversation keyed by
+  `channel:sender` (`counterparty.ts:100-105`). `getWaitingHumanConversations` keeps
+  only the newest row as `.latest` (`counterparty.ts:69`); the loop triggers only
+  `waitingConvs[0].latest` (`loop.ts:438`) and stamps conv_key on only that row
+  (`loop.ts:455-460`). The served-check (`counterparty.ts:70-71`) then marks the WHOLE
+  conversation answered once a reply lands after the newest rowid — so an earlier
+  unanswered message is dropped from the waiting set forever. If the agent was mid-run
+  when it arrived (`runtime.ts:438-442` sets pendingWakeups and returns), the message
+  is persisted but its only trigger path is `.latest`, which a newer message displaces.
+  (Persistence rule #2 is technically upheld — the loss is in turn-creation, not storage.)
+- Fix direction: do not collapse distinct same-sender messages to a single trigger.
+  Either re-trigger the drain per unanswered rowid, or feed ALL unanswered same-sender
+  rows into the trigger turn (not just `.latest`); the served-check must not mark an
+  OLDER unanswered message served because a reply landed after a NEWER one.
+
+---
+
+## RESOLVED (was OPEN-13) — Inbound iMessage live-vs-refetch attribution divergence
+**VERIFIED on dev 2026-06-29 (with a framing correction):** the original "bubbles don't render" symptom was actually OPEN-12 (messages not getting persisted/turned), now fixed. The REAL OPEN-13 defect: the bridge's live `chat:message` broadcast omitted `inboundMeta`, so the central origin stamp marker-PARSED it (an owner iMessage classified as `relation=known_contact`) while HTTP refetch used structured meta (`relation=owner`) — a live-vs-refetch attribution divergence. Test confirmed: display TIER was already consistent (user-visible) for authorized iMessages, but RELATION diverged; the fix (broadcast now carries `inboundMeta`) makes both paths use the structured origin → owner stays owner.
+**Severity: MEDIUM (visibility/auditability). Caused by current work: partially (origin asymmetry).**
+- Symptom: two of the user's inbound iMessages reached the model (its thinking/replies
+  reference them) but never rendered as inbound bubbles in the dashboard; only the 1st
+  and 4th rendered. The user's "did you send to Jain?" question "never appeared in the chat."
+- Root cause: the iMessage bridge's live `chat:message` broadcast omits `origin`/`source`
+  (`imessage-bridge.ts:1043-1063`); the dashboard then reads `origin=undefined`
+  (`Chat.tsx:1123`) and falls to the legacy content-marker display path
+  (`visibility.ts:361-363`). Persisted rows get a server-derived `origin` via
+  `deriveOrigin` on refetch, so the live broadcast and the HTTP/store path can disagree
+  about visibility — and the non-rendered ones line up with the coalesced/non-latest
+  messages from OPEN-12.
+- Fix direction: run the just-inserted row through `deriveOrigin` and include
+  `origin`+`source` in the bridge broadcast so live render and refetch agree. (Pairs
+  with OPEN-12.)
+
+---
+
+## RESOLVED (detection-verified; was OPEN-14) — No claim-grounding guard: agent fabricates a completed action
+**DETECTION VERIFIED on dev 2026-06-29; end-to-end firing NOT force-reproduced.** Deterministic 8-case test of `detectUngroundedDeliveryClaim` passes, including the exact failure text ("Sent it to Jain…", no tool → flagged), grounded case (same claim + `send_to_agent` → not flagged), and false-positive guards ("I emailed YOU", "I'll let Devi know" future, "sent Monday's notes"). The test caught a real gap in my own patterns — "texted Cory"/"emailed Tomas" (verb + name, no preposition) weren't matched; added a direct-object pattern for person-taking verbs. The loop hook is wired (mirrors the proven nudge-and-`continue` pattern) and produced NO false positives in two real relay scenarios (agent correctly asked for a missing number / actually called `send_to_agent`). CAVEAT: could not force a live confabulation to watch the re-enter fire — the model kept behaving correctly. Detection + wiring proven; firing path proven by construction, not by a forced live confab.
+**Severity: HIGH (trust). Caused by current work: NO (pre-existing missing guard, newly exposed).**
+- Symptom: agent texted "Already done. Sent it to Jain a minute ago: [flight details].
+  All set." with NO `send_to_agent`/A2A/message tool call anywhere in the turn. Same
+  class: a RAM report that stitched fresh memory totals onto an hour-old process table.
+- Root cause: nothing in the engine cross-checks a user-facing past-tense action claim
+  ("sent/texted/emailed/created/scheduled X") against the tool calls that actually fired
+  this turn. `outputPersistenceClassifier` (`output.ts:95-118`) only decides
+  persist-vs-suppress; `isGenericCloseout` (`output.ts:136-141`) only trims a short
+  "Done." on continuations; the close-the-loop hint (`counterparty.ts:196-201`) fires
+  ONLY on non-owner turns and only nudges about FUTURE promises, not past-tense
+  completion claims — and the failure was on an OWNER turn.
+- Fix direction: a post-response grounding classifier that runs before persistence —
+  detect past-tense action claims and verify a matching tool-call family fired this turn;
+  on mismatch, inject a one-shot system correction and re-enter the loop (mirror the
+  missed-reply nudge at `loop.ts:3163`) so the agent actually does it or corrects the
+  claim. Must fire on owner turns too. This is engine enforcement of "every claimed
+  action has a tool call behind it" (consistent with invariant #1, and the
+  preserve-the-reason / no-suppression laws — fix the cause, don't hide the text).
+
+---
+
+## RESOLVED (was OPEN-15) — `recall_recent_thread` bleeds unrelated cross-task output into a conversation
+**VERIFIED on dev 2026-06-29:** seeded an agent with two conversations + a cross-conversation tool result; `recall_recent_thread` with default `scope:'conversation'` (current = owner) returned only the owner conversation and EXCLUDED the other conversation's messages and its tool output (the apt/dnsmasq-style leak); `scope:'all'` returned everything. Conversation key is derived from the most-recently-stamped conv_key in session.
+**Severity: MEDIUM. Caused by current work: NO (pre-existing coarse scope).**
+- Symptom: while answering "Did you get John's flight info?", `recall_recent_thread`
+  returned unrelated `apt autoremove … dnsmasq … opennds-daemon` output from a different
+  task in the same session.
+- Root cause: `recallRecentThread` (`recall.ts:175-396`) scopes its query only by
+  `agent_id` + `session_started_at` + role (`recall.ts:212-232`) — no conv_key, thread,
+  or task filter. It returns the raw last-N messages across every interleaved
+  conversation/task on the agent's single stream.
+- Fix direction: pass the turn's conv_key/counterparty into `RecallOptions` and default
+  to conversation-scoped recall, with an explicit opt-out param for the genuine
+  post-compaction "show me everything" recovery case. Tool rows aren't conv-tagged today,
+  so scope by the matching conversation's user/assistant turn boundaries.
+
+---
+
+## RESOLVED (was OPEN-16) — Anti-hoarding gate false-positives on routine multi-source lookups
+**VERIFIED on dev 2026-06-29 (root-cause, not a threshold bump):** a first attempt raised the threshold 6→8 — reverted as a patch ("raise the bar to mask"). REAL cause: FAILED loading calls counted. A multi-account `outlook_search` that errored and retried padded the count with calls that loaded nothing. Fix: failed loads decrement the count (loop.ts), `recall_recent_thread` exempted, threshold stays 6. `isLoadingTool` test passes 7/7 (recall/contact_search/load_tool_docs exempt; outlook/gmail/vault/exec counted). Recounting the exact original failure: net 3 (was 6) → gate no longer fires.
+**Severity: MEDIUM. Caused by current work: NO (pre-existing gate design).**
+- Symptom: a trivial "did I get an email from John?" check made 6 read-only calls
+  (vault_search, contact_search, recall_recent_thread, load_tool_docs, outlook_search,
+  gmail_search) and the gate REFUSED further searches, demanding `tracker_create_project`
+  — degrading the answer.
+- Root cause: `LOADING_GATE_THRESHOLD = 6` (`hoarding.ts:27`) fires on raw count of
+  LOADING_TOOLS with no deliverable signal; there is no exemption for cheap read-only
+  orientation tools (`contact_search`, `recall_recent_thread`, `load_tool_docs`), and
+  none of the lookup tools is a STRUCTURING_TOOL, so a normal lookup can never satisfy
+  the gate. The gate's intent is corpus-synthesis-with-a-deliverable, but its firing
+  signal is count-only.
+- Fix direction: exempt read-only orientation tools from the count (mirror the existing
+  tracker-read carve-out, `hoarding.ts:53-62`), and/or gate on deliverable-intent
+  (token-weighted volume or presence of draft/deliverable text) rather than raw call
+  count. Raising the constant alone is the weakest fix.
+
+---
+
 ## Test scaffolding — REMOVED before the Preflight commit (record of what was stripped)
 The following dev/test-only scaffolding was added during the redesign and STRIPPED
 out before committing to Preflight (none of it ships). Kept here as a record:

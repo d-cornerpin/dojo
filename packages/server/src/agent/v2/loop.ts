@@ -111,6 +111,7 @@ import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
 import { resolveTurnCounterparty, getWaitingHumanConversations, type TurnCounterparty } from './counterparty.js';
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
 import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout } from './classifiers/output.js';
+import { detectUngroundedDeliveryClaim } from './classifiers/grounding.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
 import { permissionAlternativeFinder } from './classifiers/permission.js';
 import { semanticTechniqueMatches, SEMANTIC_STRONG_THRESHOLD, buildTechniqueMatchQuery } from './classifiers/technique.js';
@@ -435,7 +436,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // human conversations here.
   const waitingConvs = getWaitingHumanConversations(agentId);
   const chosenConvKey = waitingConvs[0]?.key ?? null;
-  const triggerRow = waitingConvs[0]?.latest;
+  // OPEN-12: trigger on the OLDEST unanswered message in the chosen conversation,
+  // so a conversation's pending messages are answered oldest-first — a later ping
+  // ("are you there?") can never be answered before the request that came before it.
+  const triggerRow = waitingConvs[0]?.oldest;
   const lastUserMessageContent = triggerRow?.content ?? null;
   // CLAIM this conversation the moment the turn picks it up: stamp the trigger
   // inbound's conv_key so it reads as SERVED regardless of how this turn ends.
@@ -559,6 +563,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
   const hasUnansweredUser = waitingConvs.length > 0;
   const isA2ATurn = unrepliedAssign !== null && !hasUnansweredUser && (mostRecentIsA2A || forcedA2ATurn);
   if (isA2ATurn) lastTurnWasA2A.add(agentId); else lastTurnWasA2A.delete(agentId);
+
+  // ── Engine turn classification (OPEN-11) ──
+  // A turn triggered by an engine event — a scheduler task or reminder firing
+  // (a role='user' row with origin_kind='engine'). The owner always wins: only
+  // when no human conversation is waiting and this isn't an A2A turn does the
+  // engine event drive the turn. On an engine turn the assembler scopes the live
+  // tail to the engine event (scopeToEngineTurn) instead of the owner's human
+  // chat, so an hour-old already-answered request can't be run in place of the
+  // scheduled task (the gastro-digest-ran-a-stale-RAM-rundown hijack). The
+  // scheduler payload itself is the ACTIVE USER DIRECTIVE this turn.
+  const isEngineTurn = !isA2ATurn && !hasUnansweredUser && mostRecentInbound?.origin_kind === 'engine';
 
   // Now that the turn kind is known, record it and re-broadcast the working
   // status with it so the composer can stay quiet on pure A2A turns (unless
@@ -1251,7 +1266,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // it directly. (Reuses the complexity classifier that was computed but unconsumed.)
       const conversationalTurn = counterparty.kind === 'user'
         && complexityClassifier(lastUserMessageContent ?? '').complexity === 'simple';
-      const ctx = await assembleContext(agentId, contextModelId, { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn });
+      const ctx = await assembleContext(agentId, contextModelId, { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn });
       let systemPrompt = ctx.systemPrompt;
       const messages = ctx.messages;
 
@@ -2241,6 +2256,54 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // not prompt-hope (the weak-model correctness floor).
       if (persistedContent && result.toolCalls.length > 0) {
         persistedContent = null;
+      }
+
+      // ── Grounding guard (OPEN-14) ── Catch a fabricated completion BEFORE it
+      // is persisted: a terminal, user-facing reply that claims it already
+      // delivered something to a NAMED THIRD PARTY ("Already done. Sent it to
+      // <them>…") when NO send/message tool fired this turn. The third party never
+      // got it; the user is being told something false. This is not suppression — we inject a
+      // one-shot correction and re-enter so the agent ACTUALLY sends (or, if it
+      // genuinely sent in an earlier turn, confirms and continues). One-shot, and
+      // only on user-facing (non-inter-agent) terminal replies.
+      if (
+        persistedContent &&
+        result.toolCalls.length === 0 &&
+        !interAgentTurn &&
+        !state.nudgedForUngroundedClaimThisTurn
+      ) {
+        const grounding = detectUngroundedDeliveryClaim({
+          responseText: persistedContent,
+          toolCallsThisTurn: state.toolCalls,
+          counterpartyName: counterparty.name,
+        });
+        if (grounding.ungrounded) {
+          const nudgeText =
+            `[System: your reply says you already delivered something to ${grounding.recipient} ("${grounding.verbHint}…"), ` +
+            `but no send/message tool was called this turn — so that delivery did NOT happen here. ` +
+            `If you ALREADY sent it to ${grounding.recipient} in an earlier turn, just confirm and continue. ` +
+            `If you have NOT actually sent it, do it NOW with the correct tool (send_to_agent for another agent, ` +
+            `imessage_send / the email-send tool for a person) BEFORE telling the user it is done. ` +
+            `Never tell the user something is sent or handled that you have not actually done.]`;
+          const nudgeId = uuidv4();
+          db.prepare(
+            `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at) VALUES (?, ?, 'system', ?, ?, datetime('now'))`,
+          ).run(nudgeId, agentId, nudgeText, turnNumber);
+          broadcast({
+            type: 'chat:message',
+            agentId,
+            message: {
+              id: nudgeId, agentId, role: 'system' as const, content: nudgeText,
+              tokenCount: null, modelId: null, cost: null, latencyMs: null,
+              createdAt: new Date().toISOString(),
+            },
+          });
+          state = advance(state, { nudgedForUngroundedClaimThisTurn: true });
+          logger.info('v2 grounding guard fired — ungrounded delivery claim, re-entering', {
+            agentId, recipient: grounding.recipient,
+          }, agentId);
+          continue; // re-enter so the agent actually sends or corrects the claim
+        }
       }
 
       // Cross-turn respond-once (attribution redesign §4.5). The within-turn dedup
@@ -3951,6 +4014,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
           } catch { /* recording is best-effort */ }
 
           state = advance(state, { toolCallsExecutedThisTurn: state.toolCallsExecutedThisTurn + 1 });
+
+          // OPEN-16: a FAILED loading call loaded nothing into context, so it
+          // can't cause the summarization confabulation the anti-hoarding gate
+          // guards against — undo the dispatch-time increment so failed retries
+          // (e.g. a multi-account outlook_search erroring on a missing `account`
+          // param) don't pad the count and trip the gate on a legitimate lookup.
+          if (
+            toolResult.isError &&
+            isLoadingTool(tc.name) &&
+            !isTrainerOwnTechniquesRead(agentId, tc.name, tc.arguments) &&
+            state.loadingToolCallsThisTurn > 0
+          ) {
+            state = advance(state, { loadingToolCallsThisTurn: state.loadingToolCallsThisTurn - 1 });
+          }
 
           // v2.7.23 — track explicit channel-send tool calls so the
           // end-of-turn reply-destination resolver can skip auto-routing

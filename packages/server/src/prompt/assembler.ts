@@ -464,6 +464,16 @@ export interface PromptTurnContext {
    */
   isA2ATurn?: boolean;
   /**
+   * True when this turn was triggered by an engine event (a scheduler task /
+   * reminder firing), not by a human or an agent. The trigger is a role='user'
+   * row with origin_kind='engine'. On such a turn the live tail is scoped to the
+   * engine event itself (scopeToEngineTurn) instead of the owner's human
+   * conversation, so an hour-old already-answered request can't out-compete the
+   * scheduled task and get run in its place (OPEN-11 — the gastro-digest-ran-a-
+   * stale-RAM-request hijack). Computed once per turn in the v2 loop.
+   */
+  isEngineTurn?: boolean;
+  /**
    * The single counterparty this turn is addressing (attribution redesign,
    * Phase 3). The assembler renders an explicit "who you're talking to" header
    * from it (Phase 3) and scopes the live conversation to it (Phase 4), so the

@@ -1025,19 +1025,20 @@ async function pollMessages(): Promise<void> {
           // texting" (is_primary). recipientAddress mirrors the raw `sender`
           // that pendingIMResponseMap + getInboundSenderFor use, so reply
           // routing is byte-identical — this only ADDS the relation signal.
-          recordInboundMeta(msgId, {
-            channel: 'imessage',
-            accountKind: 'agent',
+          const inboundMetaObj = {
+            channel: 'imessage' as const,
+            accountKind: 'agent' as const,
             authorized: true, // the bridge already gated to approved senders
             sender,
             recipientAddress: sender,
-            chatType: 'dm',
-            relation: senderRecord?.is_primary
+            chatType: 'dm' as const,
+            relation: (senderRecord?.is_primary
               ? 'owner'
               : senderRecord
                 ? 'known_contact'
-                : 'third_party',
-          });
+                : 'third_party') as 'owner' | 'known_contact' | 'third_party',
+          };
+          recordInboundMeta(msgId, inboundMetaObj);
 
           broadcast({
             type: 'chat:message',
@@ -1047,6 +1048,14 @@ async function pollMessages(): Promise<void> {
               agentId: primaryId,
               role: 'user' as const,
               content: msgContent,
+              // OPEN-13: carry the SAME structured inbound_meta into the live
+              // broadcast that the DB row holds, so the central origin stamp
+              // (ws.ts stampChatMessageOrigin) derives identical attribution
+              // live and on HTTP refetch. Without it the live broadcast had no
+              // inboundMeta and fell back to marker-parsing, so a live-rendered
+              // iMessage bubble could disagree with the refetched one (some
+              // inbound bubbles rendered, others didn't).
+              inboundMeta: JSON.stringify(inboundMetaObj),
               tokenCount: null,
               modelId: null,
               cost: null,

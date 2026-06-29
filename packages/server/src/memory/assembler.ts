@@ -382,6 +382,43 @@ function scopeToA2AThread(tail: Message[], threadId: string | null): Message[] {
 }
 
 /**
+ * Scope a fresh tail for an ENGINE turn (a scheduler task / reminder firing).
+ * (OPEN-11.) An engine turn is the engine asking the agent to execute a
+ * specific task — it is NOT a conversation with the owner, even though the
+ * trigger row is stored as role='user'. Before this, an engine turn synthesized
+ * an owner/dashboard counterparty and took scopeToHumanConversation, which kept
+ * the owner's whole recent tail live — so an hour-old, already-answered request
+ * (e.g. "give me a RAM rundown") sat at full salience and the model ran THAT
+ * instead of the scheduled task (the gastro-digest hijack). Here we drop the
+ * human conversation entirely: the task lives in the ACTIVE USER DIRECTIVE (the
+ * engine event) and the EVENTS lane, and the agent works it from there + memory,
+ * exactly the way an A2A turn answers from memory rather than the raw user tail.
+ * Keeps: the agent's own current-turn work (untagged / tool activity) and engine
+ * events (the caller lifts those into the EVENTS lane). Drops: all human inbound
+ * and all A2A.
+ */
+function scopeToEngineTurn(tail: Message[]): Message[] {
+  return tail.filter((m) => {
+    const o = m.origin;
+    if (!o) return true;                       // unclassified — keep (safe default)
+    if (o.kind === 'engine') return true;      // kept; EVENTS lane lifts it out
+    if (o.kind === 'self') {
+      // Keep ONLY the current turn's own work (untagged — conv_key is stamped at
+      // turn end). Any self message stamped with a PRIOR conversation's conv_key
+      // — including its tool RESULTS — is dropped. This is stricter than the A2A
+      // scoper on purpose: the bug it fixes is the engine turn regenerating a
+      // stale human request's answer from that request's leftover tool results
+      // (a scheduled haiku task re-emitted the previous "memory rundown" because
+      // the rundown's exec results, tagged for the human conversation, were tool
+      // activity and survived). A scheduled task works from its directive + fresh
+      // tools, never a prior conversation's loaded data.
+      return !m.convKey;
+    }
+    return false;                              // drop human + agent inbound
+  });
+}
+
+/**
  * Scope a fresh tail to the ONE human conversation this turn addresses
  * (attribution redesign, Phase 4 — human side). The A2A-turn path has its own
  * scoper above; this is the human-turn equivalent and closes the gap that let
@@ -798,7 +835,10 @@ async function assembleMessageContext(
   // — the single most important piece of context the system can preserve.
   try {
     const { getActiveUserDirective, formatDirectiveBlock } = await import('./directive.js');
-    const directive = getActiveUserDirective(agentId);
+    // On a human/A2A turn, the directive must be the human's ask, never a
+    // scheduler/reminder event that just fired (OPEN-11). On an engine turn the
+    // engine event IS the directive, so keep engine rows eligible there.
+    const directive = getActiveUserDirective(agentId, { excludeEngine: !turnContext?.isEngineTurn });
     if (directive) {
       const block = formatDirectiveBlock(directive);
       const directiveTokens = estimateTokens(block);
@@ -856,6 +896,8 @@ async function assembleMessageContext(
   // call sees; memory/dreamer/vault are unaffected.
   const scopedTail = turnContext?.counterparty?.kind === 'agent'
     ? scopeToA2AThread(freshTailRaw, turnContext.counterparty.threadId)
+    : turnContext?.isEngineTurn
+    ? scopeToEngineTurn(freshTailRaw)
     : scopeToHumanConversation(freshTailRaw, turnContext?.counterparty);
 
   // ── EVENTS lane (attribution redesign, Phase 5) ──

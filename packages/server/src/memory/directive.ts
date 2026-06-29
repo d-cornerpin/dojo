@@ -33,7 +33,18 @@ interface UserMessageRow {
  * recent user message of any length if none qualify. Returns null if the
  * agent has no user messages in the current session.
  */
-export function getActiveUserDirective(agentId: string): { content: string; messageId: string; createdAt: string } | null {
+export function getActiveUserDirective(
+  agentId: string,
+  opts?: {
+    /**
+     * On a HUMAN turn, exclude engine-origin rows (scheduler/reminder events)
+     * so a task that just fired can't masquerade as the user's directive and
+     * pull the agent off the human conversation it's actually in. On an ENGINE
+     * turn, leave them IN — the engine event IS the directive (OPEN-11).
+     */
+    excludeEngine?: boolean;
+  },
+): { content: string; messageId: string; createdAt: string } | null {
   const db = getDb();
 
   const sessionRow = db
@@ -46,6 +57,9 @@ export function getActiveUserDirective(agentId: string): { content: string; mess
   if (sessionStart) {
     baseClauses.push("created_at >= ?");
     baseParams.push(sessionStart);
+  }
+  if (opts?.excludeEngine) {
+    baseClauses.push("(origin_kind IS NULL OR origin_kind != 'engine')");
   }
 
   // Prefer the most recent substantive ask.

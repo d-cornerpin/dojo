@@ -76,6 +76,15 @@ export interface RecallOptions {
   truncateMessageChars?: number;
   beforeId?: string;
   since?: string;
+  /**
+   * Conversation scoping (OPEN-15). Default 'conversation' — recall is limited
+   * to the CURRENT conversation (rows tagged with this turn's conv_key, plus
+   * untagged current-turn / legacy rows). This stops an unrelated task's output
+   * (e.g. an `apt autoremove` exec from a different conversation) bleeding into
+   * the recall when the agent asks "what was just said." Pass 'all' for the
+   * genuine cross-conversation recovery case ("show me everything recent").
+   */
+  scope?: 'conversation' | 'all';
 }
 
 const ROLE_LABEL: Record<string, string> = {
@@ -214,6 +223,26 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
     if (sessionBoundary) {
       clauses.push('created_at >= ?');
       params.push(sessionBoundary);
+    }
+    // Conversation scoping (OPEN-15). The current turn's trigger inbound is
+    // stamped with its conv_key at pickup (loop.ts), so the most recently
+    // stamped conv_key in this session identifies the conversation we're in.
+    // Limit recall to that conversation plus untagged rows (current-turn,
+    // not-yet-stamped work and legacy rows), which keeps the live thread while
+    // dropping OTHER conversations' tagged output — the cross-task bleed that
+    // surfaced unrelated `apt`/package output during a flight-info question.
+    if (opts.scope !== 'all') {
+      const cur = db
+        .prepare(
+          `SELECT conv_key FROM messages
+             WHERE agent_id = ? AND conv_key IS NOT NULL${sessionBoundary ? ' AND created_at >= ?' : ''}
+             ORDER BY rowid DESC LIMIT 1`,
+        )
+        .get(...(sessionBoundary ? [agentId, sessionBoundary] : [agentId])) as { conv_key: string } | undefined;
+      if (cur?.conv_key) {
+        clauses.push('(conv_key = ? OR conv_key IS NULL)');
+        params.push(cur.conv_key);
+      }
     }
     if (opts.since) {
       clauses.push('created_at >= ?');

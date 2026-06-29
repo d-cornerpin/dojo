@@ -280,6 +280,14 @@ export interface AgentTurnState {
    */
   nudgedForAddNotesStopThisTurn: boolean;
   /**
+   * Set true the first time the grounding guard (OPEN-14) fires in a turn — the
+   * terminal reply claimed a completed delivery to a named third party but no
+   * delivery tool fired this turn. One-shot: the agent gets one correction to
+   * actually send (or confirm a prior send), then the turn ends normally so a
+   * model that keeps re-asserting can't spin the loop.
+   */
+  nudgedForUngroundedClaimThisTurn: boolean;
+  /**
    * Set true the first time the "going idle with in_progress task" detector
    * fires in a turn. Pattern: the agent is ending the turn (no more tool
    * calls) with at least one in_progress task assigned to them AND did NOT
@@ -435,6 +443,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     closeOutGateSatisfied: false,
     nudgedForCloseOutThisTurn: false,
     nudgedForAddNotesStopThisTurn: false,
+    nudgedForUngroundedClaimThisTurn: false,
     nudgedForGoingIdleWithInProgressThisTurn: false,
     awaitingPostCompactRecall: false,
     nudgedForPostCompactRecall: false,

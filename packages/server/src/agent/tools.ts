@@ -935,6 +935,11 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'string',
           description: 'Optional ISO timestamp — only include messages on or after this time. Useful for "show me everything since 2pm today" style lookbacks.',
         },
+        scope: {
+          type: 'string',
+          enum: ['conversation', 'all'],
+          description: 'Default "conversation" — recall is limited to the conversation you are currently in (the person/thread this turn is about), so an unrelated task\'s output does not bleed in. Pass "all" only when you genuinely need to look across every recent conversation (e.g. "what have I been doing across everything?").',
+        },
       },
       required: [],
     },
@@ -4454,6 +4459,10 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         );
         const beforeId = typeof args.before_id === 'string' ? args.before_id : undefined;
         const since = typeof args.since === 'string' ? args.since : undefined;
+        // OPEN-15: default to the current conversation; allow an explicit
+        // scope:"all" to recover across conversations when the agent really
+        // means "show me everything recent."
+        const recallScope = args.scope === 'all' ? 'all' : 'conversation';
         const { recallRecentThread } = await import('../memory/recall.js');
         content = recallRecentThread(agentId, {
           turnCount,
@@ -4463,6 +4472,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           truncateMessageChars,
           beforeId,
           since,
+          scope: recallScope,
         });
         break;
       }
