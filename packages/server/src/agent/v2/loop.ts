@@ -118,6 +118,24 @@ import { listTechniques } from '../../techniques/store.js';
 
 const logger = createLogger('v2-loop');
 
+/** Max send_to_agent / broadcast_to_group calls to ONE recipient in a single
+ *  turn before the re-send cap refuses further sends to them. Set well above any
+ *  genuine multi-send (two distinct messages, a retry or two) so it only ever
+ *  catches a pathological async re-send loop. */
+const A2A_SEND_CAP_PER_RECIPIENT = 5;
+
+/** Standard tail appended to false-positive-prone engine refusals: makes the
+ *  agent the tripwire for a wrong block. The engine can't always tell a genuine
+ *  action from a pathological one, so when it refuses, the agent — which DOES
+ *  have the context — is told to surface a wrong-looking block to the user
+ *  instead of silently giving up. Strictly additive: it never blocks anything,
+ *  it only adds a chance the user hears about a block that shouldn't have
+ *  happened. (Model-dependent, so not a guarantee — a safety net, not a gate.) */
+const ENGINE_BLOCK_ESCAPE_HATCH =
+  'If you believe this block is a mistake and it is stopping something the user genuinely needs, ' +
+  'do NOT silently give up — tell the user what you were trying to do and that the engine blocked it, ' +
+  'so they can decide.';
+
 // Fire-and-forget media generators. Each posts a "started" ack and delivers
 // the finished asset later as a synthetic message (from a background worker
 // or poller), so the agent must NOT get a second turn — the loop exits
@@ -3688,9 +3706,42 @@ export async function runV2Turn(agentId: string): Promise<void> {
             return {
               toolCallId: tc.id,
               name: tc.name,
-              content: loopCheck.refusalMessage!,
+              content: loopCheck.refusalMessage! + '\n\n' + ENGINE_BLOCK_ESCAPE_HATCH,
               isError: true,
             };
+          }
+
+          // ── A2A re-send cap (per recipient per turn) ──
+          // Inter-agent replies are ASYNC — the recipient answers on its OWN
+          // later turn, never synchronously in this one. An agent that doesn't
+          // get an instant reply re-sends the same ask, REWORDING it each time,
+          // which defeats the content-signature dedup (every rewording is a new
+          // signature) and spams the recipient (observed: 29 send_to_agent calls
+          // to one agent in a single turn). Cap it at A2A_SEND_CAP_PER_RECIPIENT
+          // per recipient per turn — set well ABOVE any genuine case (two distinct
+          // messages to one agent, a retry after a transient failure) so it only
+          // catches a pathological re-send loop, never real multi-send. Different
+          // recipients are independent, and the first several sends always pass.
+          if (tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group') {
+            const a = (tc.arguments ?? {}) as Record<string, unknown>;
+            const recip = String(
+              a.to_agent ?? a.agent ?? a.to ?? a.recipient ?? a.group ?? a.group_id ?? '',
+            ).trim().toLowerCase();
+            if (recip && (state.sendsPerAgentThisTurn[recip] ?? 0) >= A2A_SEND_CAP_PER_RECIPIENT) {
+              const refusal =
+                `[System: you have already sent "${recip}" ${A2A_SEND_CAP_PER_RECIPIENT} messages this turn. ` +
+                `Inter-agent replies are ASYNCHRONOUS — "${recip}" answers on their OWN next turn, not in this one. ` +
+                `Re-sending the same ask (even reworded) does NOT get a faster reply; it only spams them. ` +
+                `End your turn now; you will see their reply when it arrives. ${ENGINE_BLOCK_ESCAPE_HATCH}]`;
+              try {
+                broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
+                broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusal.slice(0, 500) });
+              } catch { /* best effort */ }
+              logger.info('v2: A2A re-send cap — recipient over per-turn cap', {
+                agentId, recipient: recip, cap: A2A_SEND_CAP_PER_RECIPIENT,
+              }, agentId);
+              return { toolCallId: tc.id, name: tc.name, content: refusal, isError: true };
+            }
           }
 
           // ── Thrash-gate refusal (per-canonical-signature) ──
@@ -3712,7 +3763,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 `  (a) Call \`${tc.name}\` with DIFFERENT args (a different id / target) if you have more to read.\n` +
                 `  (b) Call tracker_update_status(status='complete', result='...', evidence=[...]) using the data you've already gathered.\n` +
                 `  (c) Call tracker_update_status(status='blocked', notes='<specific obstacle>') if you genuinely cannot proceed.\n` +
-                `  (d) Send the user a direct question if you need clarification.`;
+                `  (d) Send the user a direct question if you need clarification.\n\n` +
+                ENGINE_BLOCK_ESCAPE_HATCH;
               state = advance(state, { thrashGateRefusalCount: state.thrashGateRefusalCount + 1 });
               logger.warn('v2: thrash gate refused tool call', {
                 toolName: tc.name, signature: thisSig,
@@ -3766,7 +3818,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 `loaded ${state.loadingToolCallsThisTurn} sources this turn without scaffolding. Read the refusal ` +
                 `text in your next tool result for the qualifying actions. The engine will continue refusing ` +
                 `loading calls until you call one of: tracker_create_project, tracker_create_task, file_write, ` +
-                `file_append, file_patch, or scratchpad_set.]`
+                `file_append, file_patch, or scratchpad_set. ${ENGINE_BLOCK_ESCAPE_HATCH}]`
               );
               const sysMsgId = uuidv4();
               try {
@@ -3858,6 +3910,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // Track sentToAgentThisTurn for downstream classifiers
           if (tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group') {
             state = advance(state, { sentToAgentThisTurn: true });
+            // Count sends per recipient so the A2A re-send cap (above) can refuse
+            // a pathological re-send loop once it crosses the per-turn cap.
+            const a = (tc.arguments ?? {}) as Record<string, unknown>;
+            const recip = String(
+              a.to_agent ?? a.agent ?? a.to ?? a.recipient ?? a.group ?? a.group_id ?? '',
+            ).trim().toLowerCase();
+            if (recip) {
+              state = advance(state, {
+                sendsPerAgentThisTurn: {
+                  ...state.sendsPerAgentThisTurn,
+                  [recip]: (state.sendsPerAgentThisTurn[recip] ?? 0) + 1,
+                },
+              });
+            }
           }
           // ── Close-out gate satisfaction (v2.5.46) ──
           // If the agent is taking a qualifying tracker action this
@@ -4430,6 +4496,51 @@ export async function runV2Turn(agentId: string): Promise<void> {
       );
       if (counterparty.kind === 'agent' && (state.sentToAgentThisTurn || issuedA2AReplyThisIteration)) {
         logger.info('v2: A2A reply sent — exiting loop (send_to_agent is the response)', { agentId }, agentId);
+        break;
+      }
+
+      // ── Delegation turn-end (agent-coordination flow) ──
+      // On a NON-A2A turn, a wake-intent send_to_agent (QUESTION / ASSIGN /
+      // BLOCK) means the agent asked another agent for something it needs, and
+      // that reply is ASYNCHRONOUS — it lands on a LATER turn, never in this one.
+      // End the turn now. Without this, the agent loops re-asking (observed: 29
+      // send_to_agent calls in one turn) AND/OR fabricates the answer before the
+      // reply arrives. The owner's question is parked + resumed when the reply
+      // lands (close-the-loop, handled below / in the runtime). The model can
+      // still delegate to MULTIPLE agents in this single response's tool batch
+      // before the turn ends, so genuine multi-delegation is not blocked.
+      const issuedWakeAsk = (result.toolCalls ?? []).some((tc) => {
+        if (tc.name !== 'send_to_agent') return false;
+        const intent = String((tc.arguments as Record<string, unknown> | undefined)?.intent ?? '').toUpperCase();
+        return intent === 'QUESTION' || intent === 'ASSIGN' || intent === 'BLOCK';
+      });
+      if (counterparty.kind !== 'agent' && issuedWakeAsk) {
+        // PARK the owner's question on the thread we just asked. At pickup this
+        // turn's trigger was stamped "served" (anti-thrash); overwrite that with
+        // a park marker so the question (a) does NOT re-trigger — no re-asking —
+        // and (b) is NOT falsely treated as answered. When the agent replies on
+        // this thread, the runtime un-parks it (conv_key → NULL) so it re-fires
+        // and the agent answers the OWNER with the real reply in context.
+        if (triggerRow && chosenConvKey) {
+          let parkThread: string | null = null;
+          for (let i = state.toolResults.length - 1; i >= 0; i--) {
+            const tr = state.toolResults[i];
+            if (tr.name === 'send_to_agent' && typeof tr.content === 'string') {
+              const m = tr.content.match(/on thread ([a-z0-9]{6,})/i);
+              if (m) { parkThread = m[1].slice(0, 8); break; }
+            }
+          }
+          if (parkThread) {
+            try {
+              db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ?`)
+                .run(`park:${parkThread}`, agentId, triggerRow.rowid);
+              logger.info('v2: parked owner question awaiting agent reply', {
+                agentId, thread: parkThread, ownerRowid: triggerRow.rowid,
+              }, agentId);
+            } catch { /* best effort */ }
+          }
+        }
+        logger.info('v2: delegation send — exiting loop (reply is async; owner question parked)', { agentId }, agentId);
         break;
       }
 

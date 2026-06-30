@@ -4902,7 +4902,13 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
               `to:${agentRef} intent:${effectiveIntent}${result.autoPromotedFromFyi ? '(promoted from FYI)' : ''} thread:${result.threadId.slice(0, 8)} requires_response:${requiresResponse}${result.autoCreatedTaskId ? ` task:${result.autoCreatedTaskId.slice(0, 8)}` : ''}`,
             );
             content = `[A2A:${effectiveIntent}] Message delivered to "${agentRef}" on thread ${result.threadId.slice(0, 8)}.` +
-              (requiresResponse || result.autoPromotedFromFyi ? ' Response expected.' : ' No response expected (read-only context).');
+              (requiresResponse || result.autoPromotedFromFyi
+                ? ` Their reply is ASYNCHRONOUS — it arrives on a LATER turn, NOT now, and you do NOT have it yet. ` +
+                  `If someone is waiting on that answer (e.g. the owner asked you to find it out), tell them you have ASKED ` +
+                  `and will report back when "${agentRef}" replies — NEVER make up, guess, or relay a response you have not ` +
+                  `actually received. Do not message "${agentRef}" again about this (re-sending does not speed it up). ` +
+                  `End your turn now; you will be woken when they answer.`
+                : ' No response expected (read-only context).');
             if (result.autoPromotedFromFyi) {
               content +=
                 `\nNote: the engine auto-promoted your FYI to DELIVERABLE because the payload looked deliverable-shaped (URL or completion+artefact reference). Your receiver was woken. Use intent="DELIVERABLE" explicitly next time so the routing is unambiguous.`;

@@ -516,6 +516,56 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
     : '';
   const contextMessage = `[A2A:${effectiveIntent} thread:${threadShort} from:${senderName}${promotionTag}] ${envelope.payload}${threadInfo}${primaryDeliverableHint}`;
 
+  // ── Close-the-loop: ENGINE delivers the answer to the owner ──
+  // When the recipient earlier asked someone on the owner's behalf, the owner's
+  // question was PARKED on this thread (conv_key='park:<thread>', see loop.ts).
+  // This delivery is the reply. We do NOT re-fire the owner's question for the
+  // model to handle — that proved flaky (the weak model re-reads "ask X" and
+  // re-asks instead of answering, an ask→park→answer→re-ask LOOP). Instead the
+  // ENGINE delivers the answer straight to the owner on their own channel and
+  // marks the question relayed (served, never re-fires). Deterministic — the
+  // owner ALWAYS gets the answer, regardless of what the model does next. Only
+  // reply intents (the asker is waiting on them) close the loop.
+  if (effectiveIntent === 'ANSWER' || effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'COMPLETE' || effectiveIntent === 'FAIL') {
+    try {
+      const parked = db.prepare(
+        `SELECT rowid, content, inbound_meta FROM messages WHERE agent_id = ? AND conv_key = ? AND role = 'user' ORDER BY rowid DESC LIMIT 1`,
+      ).get(target.id, `park:${threadShort}`) as { rowid: number; content: string; inbound_meta: string | null } | undefined;
+      if (parked) {
+        // Mark relayed FIRST (idempotent): a duplicate ANSWER on this thread
+        // won't match `park:` again, so the owner can't be double-delivered.
+        db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ?`).run(`relayed:${threadShort}`, target.id, parked.rowid);
+        const answer = String(envelope.payload).replace(/\s+/g, ' ').trim().slice(0, 1200);
+        const deliveryText = `Heard back from ${senderName}: ${answer}`;
+        // Resolve the owner's reply channel from the parked question's STRUCTURED
+        // inbound_meta (not by regex-scraping the SOURCE marker — that text varies
+        // and the dev harness omits the address). Reply-to is meta.sender, the
+        // same value loop.ts uses as imRecipient (counterparty.senderId).
+        let meta: { channel?: string; sender?: string } = {};
+        try { meta = parked.inbound_meta ? JSON.parse(parked.inbound_meta) : {}; } catch { meta = {}; }
+        if (meta.channel === 'imessage' && meta.sender) {
+          const { sendResponseViaIMessage } = await import('../services/imessage-bridge.js');
+          const delivered = sendResponseViaIMessage(deliveryText, target.id, meta.sender);
+          logger.info('A2A close-the-loop: engine delivered answer to owner (iMessage)', {
+            agentId: target.id, thread: threadShort, recipient: meta.sender, delivered: !!delivered,
+          });
+        } else {
+          // Dashboard (or unknown-channel) owner — surface it as the agent's
+          // own chat message so it renders in their dashboard conversation.
+          const msgId = uuidv4();
+          db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'assistant', ?, datetime('now'))`).run(msgId, target.id, deliveryText);
+          broadcast({
+            type: 'chat:message', agentId: target.id,
+            message: { id: msgId, agentId: target.id, role: 'assistant' as const, content: deliveryText, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
+          });
+          logger.info('A2A close-the-loop: engine delivered answer to owner (dashboard)', { agentId: target.id, thread: threadShort });
+        }
+      }
+    } catch (err) {
+      logger.warn('A2A close-the-loop delivery failed', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   // ── 10. Process attachments BEFORE persist+broadcast ──
   // Pre-2026-04-30: attachments were processed AFTER the message was inserted
   // and the broadcast went out, so the dashboard's chat feed got the message

@@ -171,6 +171,19 @@ export interface AgentTurnState {
 
   // ── Engine-tracked turn flags ──
   sentToAgentThisTurn: boolean;
+  /**
+   * Count of send_to_agent / broadcast_to_group calls per recipient
+   * (normalized/lowercased) THIS turn. Inter-agent replies are async — the
+   * recipient answers on its own LATER turn — so an agent that doesn't get an
+   * instant reply re-sends the same ask, reworded (which defeats the content-
+   * signature dedup), and spams them (observed: 29 sends to one agent in a turn).
+   * The loop caps it at A2A_SEND_CAP_PER_RECIPIENT per recipient per turn. The
+   * cap is set well ABOVE any genuine case (two distinct messages to one agent,
+   * a retry after a transient failure) so it can only catch a pathological
+   * re-send loop, never a real multi-send — genuine and pathological behavior
+   * are far apart here, unlike the anti-hoarding gate's overlap.
+   */
+  sendsPerAgentThisTurn: Record<string, number>;
   // True once a user-facing reply has surfaced earlier THIS turn. Used by the
   // engine to suppress a redundant trailing closeout ("Done." / "All set.") on
   // a later continuation iteration — the deterministic floor for "respond once
@@ -427,6 +440,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     inboundContext: params.inboundContext,
 
     sentToAgentThisTurn: false,
+    sendsPerAgentThisTurn: {},
     surfacedReplyThisTurn: false,
     lastAssistantTextForIM: null,
     explicitSendThisTurn: {},
