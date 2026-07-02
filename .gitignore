@@ -56,3 +56,9 @@ packages/dashboard/public/ort/
 # Local router test harness (dev-only; run via: npx tsx packages/server/scripts/router-harness.mts)
 /packages/server/scripts/router-harness.mts
 /SCREEN-SHARE-PLAN.md
+
+# Internal planning / audit / design docs — NEVER upload publicly (kept local only).
+# Add every new planning doc here so it can't be committed to the public repo.
+/DOJO-ISSUES-LOG.md
+/COMMS-AUDIT.md
+/MEMORY-GRAPH-DESIGN.md
