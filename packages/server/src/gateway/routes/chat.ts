@@ -94,10 +94,20 @@ export async function submitUserMessage(
     modelContent = buildContentWithAttachments(content, attachments);
   }
 
+  // I-2 (comms-audit): stamp STRUCTURED origin on dashboard (non-voice) owner
+  // messages. Before, dashboard messages had no inbound_meta, so deriveOrigin fell
+  // back to prose parsing — a user who PASTED a transcript/log starting with a
+  // recognized marker (`[A2A:...]`, `[SOURCE: SCHEDULER]`) had their own message
+  // reclassified as an agent/engine event and HIDDEN from the chat. With structured
+  // meta + the prose-subordination in deriveOrigin, a pasted marker can't hijack the
+  // classification. Voice keeps its own source-based path.
+  const dashMeta = source === 'voice'
+    ? null
+    : JSON.stringify({ channel: 'dashboard', accountKind: 'agent', authorized: true, relation: 'owner' });
   db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, source, created_at)
-    VALUES (?, ?, 'user', ?, ?, ?, datetime('now'))
-  `).run(messageId, agentId, modelContent, attachments ? JSON.stringify(attachments) : null, source ?? null);
+    INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, source, inbound_meta, created_at)
+    VALUES (?, ?, 'user', ?, ?, ?, ?, datetime('now'))
+  `).run(messageId, agentId, modelContent, attachments ? JSON.stringify(attachments) : null, source ?? null, dashMeta);
 
   logger.info('User message persisted', { agentId, messageId, attachmentCount: attachments?.length ?? 0 }, agentId);
 

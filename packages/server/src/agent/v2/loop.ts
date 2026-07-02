@@ -60,7 +60,7 @@ import { queueEmbedding } from '../../memory/embeddings.js';
 import { isPrimaryAgent, isTrainerAgent, isPMAgent } from '../../config/platform.js';
 import os from 'node:os';
 import path from 'node:path';
-import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind } from '../turn-state.js';
+import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, continuationContext } from '../turn-state.js';
 
 import {
   stoppedAgents,
@@ -107,7 +107,7 @@ import { trackerEnforcer } from './classifiers/tracker.js';
 import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD } from '../../memory/compaction.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
-import { resolveTurnCounterparty, getWaitingHumanConversations, type TurnCounterparty } from './counterparty.js';
+import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, type TurnCounterparty } from './counterparty.js';
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
 import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout } from './classifiers/output.js';
 import { detectUngroundedDeliveryClaim } from './classifiers/grounding.js';
@@ -269,7 +269,16 @@ const ACK_DEFAULT_TEXT = 'Working on it…';
 const THRASH_WINDOW_MS = 2 * 60 * 1000;
 const DUPLICATE_SIG_LIMIT = 4;
 const THRASH_GATE_BREAKER_LIMIT = 6;
+// Soft drift threshold: the engine NUDGES the agent once (no block) — legitimate
+// progress also varies signatures, so a block here would false-positive.
 const THRASH_GATE_DRIFT_LIMIT = 8;
+// Hard drift threshold: well above the soft one. If the agent keeps varying call
+// signatures to dodge the gate for THIS many iterations DESPITE the nudge, it is a
+// genuine signature-varying spiral (which never increments the refusal count, so the
+// refusal-breaker never catches it) — terminally block so it can't loop unbounded
+// across auto-continued turns (comms-audit REG-1). The gap between 8 and 24 gives a
+// genuinely-working task ample room past the nudge before any block.
+const THRASH_GATE_DRIFT_HARD_LIMIT = 24;
 
 function detectTaskThrashing(agentId: string): {
   thrashing: boolean;
@@ -368,7 +377,7 @@ export function setAgentStatus(agentId: string, status: string): void {
         UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?
       `).run(status, agentId);
     }
-    if (status === 'idle') currentTurnKind.delete(agentId);
+    if (status === 'idle') { currentTurnKind.delete(agentId); currentTurnConvKey.delete(agentId); currentTurnImRecipient.delete(agentId); }
     // On 'working', carry the turn kind so the composer can stay quiet on pure
     // A2A turns (unless wordy mode). Defaults to 'user' until the counterparty
     // is resolved early in the turn.
@@ -452,7 +461,22 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // decide whether to re-trigger and drain the rest. Engine events / A2A are not
   // human conversations here.
   const waitingConvs = getWaitingHumanConversations(agentId);
-  const chosenConvKey = waitingConvs[0]?.key ?? null;
+  // C3: restore a human-task continuation. When a long human task hit MAX_TOOL_LOOPS /
+  // the time budget / emergency compaction, the engine auto-continued with an empty
+  // trigger and stashed the conversation here. This continuation turn has no waiting
+  // human (the ask was stamped served at the original pickup), so without restoring it
+  // the turn would be pureBackgroundTurn → its final answer suppressed + routed to
+  // dashboard. Always consume the entry on read: a continuation is used once, and if a
+  // real human turn arrived in between (waitingConvs non-empty) the entry is stale and
+  // must be dropped so it can't falsely restore later.
+  const continuation = continuationContext.get(agentId);
+  continuationContext.delete(agentId);
+  const isHumanContinuation = waitingConvs.length === 0 && !!continuation;
+  const chosenConvKey = isHumanContinuation ? continuation!.convKey : (waitingConvs[0]?.key ?? null);
+  // E-C1: publish the conversation this turn serves so recall_recent_thread scopes
+  // to it. null on engine/A2A turns (no waiting human) so recall doesn't latch the
+  // last human conversation. Cleared when the agent goes idle.
+  currentTurnConvKey.set(agentId, chosenConvKey);
   // OPEN-12: trigger on the OLDEST unanswered message in the chosen conversation,
   // so a conversation's pending messages are answered oldest-first — a later ping
   // ("are you there?") can never be answered before the request that came before it.
@@ -474,12 +498,59 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // handling right now is killed. Continuing a long task is the tracker/PM's job,
   // never re-running the user's message.
   if (chosenConvKey && triggerRow) {
+    let claimed = true;
     try {
-      db.prepare(
+      const res = db.prepare(
         `UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ? AND conv_key IS NULL`,
       ).run(chosenConvKey, agentId, triggerRow.rowid);
+      claimed = res.changes > 0;
     } catch { /* best effort — served-tagging also happens at turn end */ }
+    // C24: reset the turn-continuation counter at the start of a genuinely NEW
+    // human-triggered turn (a fresh trigger claimed here). The counter bounds CONSECUTIVE
+    // time-budget auto-continuations of ONE turn; without a reset it accumulated across the
+    // whole process, so three unrelated long turns would prematurely hard-stop the fourth.
+    // Continuation turns (empty trigger → no pickup) never reach here, so a single long
+    // task's own continuations still accumulate and cap correctly.
+    if (claimed) turnContinuationCounts.delete(agentId);
+    if (!claimed) {
+      // D-2 (comms-audit): the atomic claim affected 0 rows — ANOTHER process already
+      // stamped this trigger between our read and our stamp (cross-process race on one
+      // SQLite DB). Bail cleanly instead of running a DUPLICATE turn on the same
+      // message. Single-process production never hits this (changes is always 1); this
+      // only guards the multi-process case (e.g. stray dev `tsx watch` processes). The
+      // idle status clears the turn-state maps; the other process serves the message.
+      logger.warn('v2: pickup claim lost — another process already claimed this trigger; skipping to avoid a duplicate turn', { agentId, rowid: triggerRow.rowid }, agentId);
+      setAgentStatus(agentId, 'idle');
+      return;
+    }
   }
+
+  // N-1 (comms-audit): re-arm a stranded human ask. The pickup stamp above marks the
+  // trigger served so a concurrent turn can't double-serve it. If THIS turn then aborts
+  // BEFORE producing any answer (model-call exhausted all retries, or no model available
+  // at all — a transient rate-limit / provider outage), leaving the stamp in place would
+  // drop the ask from the waiting set FOREVER and the user would get permanent silence on
+  // a purely transient infra failure — while the recovery toast promises "retrying
+  // automatically". Reverting the stamp to NULL returns the ask to the waiting set so the
+  // runtime finally-drain (runtime.ts) re-serves it once the provider recovers (bounded by
+  // MAX_DRAIN_STUCK, so a persistent failure can't tight-loop). `AND conv_key = ?` reverts
+  // only our OWN stamp (idempotent, safe against a concurrent re-stamp). Call ONLY on
+  // no-answer abort paths — never after any reply text has been produced, or it would
+  // resurrect an answered ask and double-reply.
+  const revertTriggerStampOnAbort = () => {
+    if (chosenConvKey && triggerRow) {
+      try {
+        db.prepare(`UPDATE messages SET conv_key = NULL WHERE rowid = ? AND conv_key = ?`)
+          .run(triggerRow.rowid, chosenConvKey);
+      } catch { /* best effort — recovery, never block the abort */ }
+    }
+  };
+  // T-6 (comms-audit, RESOLVED per the owner): rapid bursts are handled by PER-MESSAGE
+  // serving — every message in a burst keeps its conv_key NULL until its own turn
+  // picks it up, so none is ever DROPPED (the priority). The cost the owner accepted is
+  // that a later message's turn can repeat an earlier answer from the tail. We do NOT
+  // combine the burst onto one turn / stamp siblings served, because on the weak model
+  // that risks marking a message answered without answering it (a dropped reply).
   // Phase 3 — bind the inbound source for the whole turn. Computed once
   // here and threaded into every assembleContext call below so the
   // voice-conduct block stays in scope across tool-call iterations of
@@ -590,7 +661,35 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // chat, so an hour-old already-answered request can't be run in place of the
   // scheduled task (the gastro-digest-ran-a-stale-RAM-rundown hijack). The
   // scheduler payload itself is the ACTIVE USER DIRECTIVE this turn.
-  const isEngineTurn = !isA2ATurn && !hasUnansweredUser && mostRecentInbound?.origin_kind === 'engine';
+  // E-A2: detect the engine turn from a PENDING (unprocessed) engine event, not
+  // just "the most-recent inbound is engine." A human message that arrives in the
+  // same window as a scheduler/reminder event makes mostRecentInbound non-engine;
+  // the human wins this turn, and without this the engine event would never again
+  // be most-recent and would be silently starved (task stuck in_progress). The
+  // pending-event check + the runtime drain (which re-triggers while one is pending)
+  // give it its own turn after the human is served.
+  const pendingEngineEvent = (!isA2ATurn && !hasUnansweredUser) ? getPendingEngineEvent(agentId) : null;
+  const isEngineTurn = !isA2ATurn && !hasUnansweredUser && pendingEngineEvent != null;
+  // Mark the engine event PROCESSED at pickup (mirrors the human pickup-stamp) so it
+  // can't re-fire and so getPendingEngineEvent stops returning it. conv_key='engine'
+  // is a non-human sentinel (the human waiting-set ignores engine rows by origin).
+  if (isEngineTurn && pendingEngineEvent) {
+    let engineClaimed = true;
+    try {
+      const res = db.prepare(`UPDATE messages SET conv_key = 'engine' WHERE agent_id = ? AND rowid = ? AND conv_key IS NULL`)
+        .run(agentId, pendingEngineEvent.rowid);
+      engineClaimed = res.changes > 0;
+    } catch { /* best effort */ }
+    if (!engineClaimed) {
+      // C24: symmetry with the human pickup-claim above — the atomic engine-event claim
+      // affected 0 rows, so ANOTHER process already picked up this engine event. Bail cleanly
+      // instead of running a DUPLICATE engine turn. Single-process production never hits this
+      // (changes is always 1); guards stray dev `tsx watch` processes on the one SQLite DB.
+      logger.warn('v2: engine-event claim lost — another process already claimed it; skipping to avoid a duplicate engine turn', { agentId, rowid: pendingEngineEvent.rowid }, agentId);
+      setAgentStatus(agentId, 'idle');
+      return;
+    }
+  }
 
   // Now that the turn kind is known, record it and re-broadcast the working
   // status with it so the composer can stay quiet on pure A2A turns (unless
@@ -612,15 +711,29 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // The single entity this turn is addressing, resolved from structured origin.
   // Drives the explicit "who you're talking to" header (Phase 3) and the
   // fresh-tail scoping (Phase 4). Derived from the same signals computed above.
-  const counterparty: TurnCounterparty = resolveTurnCounterparty({
-    isA2ATurn,
-    a2aFromName: a2aReplyContext?.fromName ?? null,
-    a2aThreadShort: a2aReplyContext?.threadShort ?? null,
-    triggerContent: lastUserMessageContent,
-    triggerSource: triggerRow?.source ?? null,
-    triggerInboundMeta: triggerRow?.inbound_meta ?? null,
-    inboundChannel,
-  });
+  // C3: on a human-task continuation, restore the ORIGINAL counterparty so the final
+  // answer routes to the conversation's real channel/person (the empty-trigger
+  // continuation has no inbound to resolve from). Otherwise resolve normally.
+  const counterparty: TurnCounterparty = isHumanContinuation
+    ? continuation!.counterparty
+    : resolveTurnCounterparty({
+        isA2ATurn,
+        a2aFromName: a2aReplyContext?.fromName ?? null,
+        a2aThreadShort: a2aReplyContext?.threadShort ?? null,
+        triggerContent: lastUserMessageContent,
+        triggerSource: triggerRow?.source ?? null,
+        triggerInboundMeta: triggerRow?.inbound_meta ?? null,
+        inboundChannel,
+      });
+
+  // T-4: publish this turn's iMessage recipient (the human counterparty) so an
+  // explicit no-recipient imessage_send / image_create reply goes to THIS person,
+  // not the racy last-inbound pendingIMResponseMap.
+  if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
+    currentTurnImRecipient.set(agentId, counterparty.senderId);
+  } else {
+    currentTurnImRecipient.delete(agentId);
+  }
 
   // Determine v2 turn_number — read max from messages, increment.
   // Per Part XVIII §E: turn_number is per-agent, monotonically increasing,
@@ -683,6 +796,43 @@ export async function runV2Turn(agentId: string): Promise<void> {
     pendingTechniqueAck: initialPendingTechniqueAck,
   });
 
+  // C4: re-arm a stranded human ask on a CLEAN-RETRY no-answer break. A deliberate
+  // `break` that ends a turn with the trigger still stamped-served (at pickup) strands a
+  // human ask that got no answer — it is never re-served (inv 2). This reverts the pickup
+  // stamp so the runtime drain re-serves it, but ONLY when the turn is a clean retry:
+  //   - no user-facing text (lastAssistantTextForIM), and
+  //   - no surfaced reply, and
+  //   - no delivery-tool send (explicitSendThisTurn), and
+  //   - NO tools executed at all (toolCallsExecutedThisTurn === 0).
+  // The last clause is the correctness-critical one: a break that reached end-of-turn
+  // AFTER executing tools (stuck-repeating, no-results, spinning-cap, continuation-cap,
+  // empty-after-tools) may have already performed a side effect (created a task, wrote a
+  // file, sent a message) — re-serving it would DUPLICATE that side effect. Those
+  // "did work but didn't reply" cases are owned by the note-then-stopped / going-idle
+  // nudges, not by re-serving. So we re-arm only the give-up break, where no work was
+  // done and re-serving is a safe transient-empty retry. Bounded by MAX_DRAIN_STUCK.
+  const reArmIfStrandedNoAnswer = () => {
+    if (
+      !state.lastAssistantTextForIM &&
+      !state.surfacedReplyThisTurn &&
+      !Object.values(state.explicitSendThisTurn).some(Boolean) &&
+      state.toolCallsExecutedThisTurn === 0
+    ) {
+      revertTriggerStampOnAbort();
+    }
+  };
+
+  // C3: before an engine auto-continue (MAX_TOOL_LOOPS / time-budget / emergency-compact /
+  // block), stash the human conversation this turn is serving so the continuation turn —
+  // which fires with an EMPTY trigger and thus has no waiting human — restores it and
+  // delivers the final answer to the right person/channel instead of suppressing it as
+  // background chatter (see continuationContext). No-op on a non-human turn (chosenConvKey
+  // null). On a continuation-of-a-continuation, chosenConvKey is the restored value, so it
+  // re-stashes and the chain holds.
+  const stashContinuationIfHuman = () => {
+    if (chosenConvKey) continuationContext.set(agentId, { convKey: chosenConvKey, counterparty });
+  };
+
   // ── v2.5.46: pre-turn close-out gate detection ──
   // Look up in_progress tasks the agent appears to have abandoned. Pre-
   // v2.7.17 this used `updated_at < turnStartedAt` (any task not touched
@@ -741,7 +891,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
       LIMIT 10
     `).all(agentId, agentId) as Array<{ id: string; title: string; kind: string }>;
 
-    const danglingRows = [...inProgressDanglers, ...strandedRows];
+    // BUG-2 (comms-audit convergence pass): NEVER arm the close-out gate on a turn a
+    // human is waiting on (`triggerRow` set ⇒ this turn serves a waiting human, by the
+    // user-always-wins rule). Task-closeout is Lane 2/3 machinery; per the lane-separation
+    // law (see the nudge guard at "counterparty.kind !== 'user'" later in this file) it has
+    // no business running in the middle of a Lane-1 conversation about something unrelated —
+    // the danglers are almost always pre-existing background leftovers, not this turn's work.
+    // When armed on a conversation turn the gate (a) DELETED the agent's just-streamed reply
+    // and (b) REFUSED the tool calls the agent needed to answer — both silent-drop / blocked-
+    // turn failures (inv 2, inv 6) on the weak-model floor, where the model routinely answers
+    // a fresh ask in plain text without first touching the tracker. Abandoned danglers are
+    // still enforced off the conversation path: by this same gate on the next non-conversation
+    // turn, and by the PM poke chain (where closeout enforcement belongs).
+    const danglingRows = triggerRow ? [] : [...inProgressDanglers, ...strandedRows];
     if (danglingRows.length > 0) {
       state = advance(state, {
         danglingTaskIds: danglingRows.map((r) => r.id),
@@ -866,6 +1028,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
     }, agentId);
   }
 
+  // G-SUP-2 (comms-audit): turn-scoped stash for user-facing text that rode with
+  // tool calls and was deferred (suppressed as possible narration). Recovered at
+  // turn-end ONLY if the turn delivered no proper tool-less reply, so a genuine
+  // answer the weak model paired with a closing tool is never silently lost.
+  let deferredUserReplyWithTools: string | null = null;
+
   try {
     // ── Main loop ──
     //
@@ -912,14 +1080,50 @@ export async function runV2Turn(agentId: string): Promise<void> {
         state.thrashGateActivatedAtLoopCount !== null
           ? state.loopCount - state.thrashGateActivatedAtLoopCount
           : 0;
-      if (
-        !isPMAgent(agentId) &&
-        (state.thrashGateRefusalCount >= THRASH_GATE_BREAKER_LIMIT || drift >= THRASH_GATE_DRIFT_LIMIT)
-      ) {
-        const breakerReason =
-          state.thrashGateRefusalCount >= THRASH_GATE_BREAKER_LIMIT
-            ? `agent ignored the thrash gate ${state.thrashGateRefusalCount}× without wrapping up`
-            : `agent dodged the thrash gate for ${drift} iterations (varying call signatures to avoid the gate) without calling tracker_update_status`;
+      const refusalTrip = state.thrashGateRefusalCount >= THRASH_GATE_BREAKER_LIMIT;
+      const driftSoftTrip = drift >= THRASH_GATE_DRIFT_LIMIT;
+      const driftHardTrip = drift >= THRASH_GATE_DRIFT_HARD_LIMIT;
+      // ── DRIFT-SOFT path (comms-audit G-BLK-1 + REG-1): NUDGE once, never block ──
+      // Drift (gate on while the agent varies its call signatures) is a
+      // false-positive-prone signal: legitimate progress varies signatures too, so a
+      // block at the soft threshold is exactly the "engine stops genuine work" failure
+      // the owner forbids. Inject ONE visible nudge (with the escape-hatch) and let the
+      // agent continue. CRITICAL: do NOT reset the drift window here — the earlier
+      // version did, which let a signature-varying spiral loop forever (it never
+      // increments the refusal count, so the refusal-breaker never caught it, and on
+      // MAX_TOOL_LOOPS the turn just auto-continued with drift reset to 0). Letting
+      // drift keep accumulating means a genuine spiral eventually hits the HARD limit
+      // below and terminates deterministically.
+      if (!isPMAgent(agentId) && driftSoftTrip && !driftHardTrip && !refusalTrip) {
+        if (!state.nudgedForThrashDriftThisTurn) {
+          const driftNudge =
+            `[System: the engine thrash gate has been active for ${drift} iterations and you keep ` +
+            `varying your tool calls without recording progress. If you ARE making progress, call ` +
+            `tracker_update_status (or tracker_add_notes) to record it, then continue. If you are stuck, ` +
+            `wrap up and tell the user where things stand. ${ENGINE_BLOCK_ESCAPE_HATCH}]`;
+          const driftNudgeId = uuidv4();
+          try {
+            db.prepare(
+              `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at) VALUES (?, ?, 'system', ?, ?, datetime('now'))`,
+            ).run(driftNudgeId, agentId, driftNudge, turnNumber);
+          } catch { /* best effort */ }
+          // One-shot nudge only — the drift window is deliberately NOT reset.
+          state = advance(state, { nudgedForThrashDriftThisTurn: true });
+          logger.info('v2: thrash drift nudge (one-shot; drift keeps accruing to the hard limit)', {
+            agentId, drift, loopCount: state.loopCount,
+          }, agentId);
+        }
+        // fall through — soft drift never blocks; the hard limit below is the stop
+      } else if (!isPMAgent(agentId) && (refusalTrip || driftHardTrip)) {
+        // ── TERMINAL BLOCK: the agent either IGNORED explicit gate refusals
+        // (refusalTrip), OR kept varying call signatures to DODGE the gate past the
+        // HARD drift limit despite the nudge (driftHardTrip) — a genuine spiral that
+        // the refusal counter can't see. The task hits a real terminal state. The
+        // AGENT is told (a persisted system message with the escape-hatch), not just a
+        // dashboard toast, so the block is VISIBLE and recoverable, not a dead-end.
+        const breakerReason = refusalTrip
+          ? `agent ignored the thrash gate ${state.thrashGateRefusalCount}× without wrapping up`
+          : `agent kept varying call signatures for ${drift} iterations to dodge the thrash gate, never wrapping up`;
         try {
           const db2 = getDb();
           const task = db2.prepare(`
@@ -956,6 +1160,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
               taskId: task.id, refusalCount: state.thrashGateRefusalCount, loopCount: state.loopCount,
             }, agentId);
           }
+          const agentNoteId = uuidv4();
+          db2.prepare(
+            `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at) VALUES (?, ?, 'system', ?, ?, datetime('now'))`,
+          ).run(
+            agentNoteId,
+            agentId,
+            `[System: the engine auto-blocked your current task because you ${breakerReason}. On your next ` +
+            `turn, either re-state the goal and resume (call tracker_update_status), or tell the user it is ` +
+            `blocked and why. ${ENGINE_BLOCK_ESCAPE_HATCH}]`,
+            turnNumber,
+          );
         } catch (err) {
           logger.warn('v2: thrash auto-block failed', { error: err instanceof Error ? err.message : String(err) }, agentId);
         }
@@ -1018,9 +1233,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // structured engine origin (mig 075) so it's attributed as an EVENT,
             // not parsed from the [Engine thrash gate] prose.
             db.prepare(`
-              INSERT OR IGNORE INTO messages (id, agent_id, role, content, origin_kind, origin_intent, turn_number, created_at)
-              VALUES (?, ?, 'user', ?, 'engine', 'thrash_gate', ?, datetime('now'))
+              INSERT OR IGNORE INTO messages (id, agent_id, role, content, conv_key, origin_kind, origin_intent, turn_number, created_at)
+              VALUES (?, ?, 'user', ?, 'engine-steer', 'engine', 'thrash_gate', ?, datetime('now'))
             `).run(steerMsgId, agentId, steerMsg, turnNumber);
+            // C6: stamp a non-NULL conv_key sentinel ('engine-steer'). The steer is
+            // origin_kind='engine' with conv_key NULL, so getPendingEngineEvent (which
+            // selects conv_key-NULL engine rows) would return it → the drain fires an
+            // engine turn → which can mint ANOTHER steer → unbounded thrash-steer loop.
+            // A non-NULL conv_key makes it un-selectable as a pending event while still
+            // reaching the model (the EVENTS/awareness lane filters on origin_kind, not
+            // conv_key) and still rendering in the dashboard.
           } catch { /* best effort */ }
           logger.warn('v2: thrash gate activated for signature', {
             toolName: thrash.toolName, signature: thrash.signature,
@@ -1126,6 +1348,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           },
         });
         // Queue wakeup so handleMessage's finally fires the loop again
+        stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
         pendingWakeups.add(agentId);
         break;
       }
@@ -1172,6 +1395,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }, agentId);
         }
         // Queue wakeup so the next iteration assembles fresh post-compaction context
+        stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
         pendingWakeups.add(agentId);
         break;
       } else if (gateResult.decision === 'block') {
@@ -1201,6 +1425,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         try {
           await checkAndCompact(agentId, configuredModelId, contextWindow, { force: true });
         } catch { /* best effort */ }
+        stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
         pendingWakeups.add(agentId);
         break;
       }
@@ -1794,6 +2019,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           routerFreshDecision = true;
           const selected = selectModel(decision.tier, agentId, undefined, ['tools']);
           if (!selected) {
+            revertTriggerStampOnAbort(); // N-1: no answer produced — re-arm the ask
             throw new AgentError('Auto-router: no models available in any tier', agentId, { code: 'NO_MODEL' });
           }
           modelId = selected.modelId;
@@ -1939,6 +2165,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 }
                 if (last > 0) phoneStreamBuffer = phoneStreamBuffer.slice(last);
                 if (flushParts.length > 0) {
+                  // B-2 (comms-audit): set the streamed flag SYNCHRONOUSLY the moment
+                  // we decide to flush, BEFORE the detached async IIFE. The old code
+                  // set it inside the IIFE after an awaited import, so the turn-end
+                  // check could read it as false (microtask not yet run) and fall to
+                  // the one-shot full-reply fallback → the caller heard the reply
+                  // TWICE. Setting it here is safe even though the enqueue is deferred:
+                  // queueAgentSay only no-ops when the session is gone or ENDED, and
+                  // `ended` is a one-way latch — so if the session is still live at
+                  // turn-end (the only path that reads this flag, after re-checking
+                  // !session / isEnded()), it was live at IIFE time too and the parts
+                  // WERE enqueued. There is no live-call-hears-silence window here.
+                  phoneStreamFlushedAny = true;
                   // v2.10.1 — queueAgentSay is now just an enqueue
                   // (the CallSession runs a single-flight drain
                   // worker), so synchronous push is fine and order
@@ -1956,7 +2194,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
                         // serial synthesis.
                         void session.queueAgentSay(part);
                       }
-                      phoneStreamFlushedAny = true;
                     } catch { /* best effort; one-shot fallback runs at turn end */ }
                   })();
                 }
@@ -2000,6 +2237,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // Dreamer overflow, provider 4xx, healer notification, etc. Phase 6
           // moves all of that into agent/v2/recovery.ts.)
           if (!isAutoRouted || attempt >= maxAttempts - 1) {
+            revertTriggerStampOnAbort(); // N-1: model call failed with no answer — re-arm the ask
             throw err;
           }
 
@@ -2014,6 +2252,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             logger.error('v2 auto-router: no fallback models available', {
               failedModel: modelId, tier: fallbackTier, excludedModels, attempt,
             }, agentId);
+            revertTriggerStampOnAbort(); // N-1: all fallbacks exhausted, no answer — re-arm the ask
             throw err;
           }
           logger.warn(`v2 auto-router: ${modelId} failed → falling back to ${fallback.modelId}`, {
@@ -2028,6 +2267,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
       }
 
       if (!callSucceeded || !result) {
+        // Defensive guard only — in practice unreachable: the retry loop above exits
+        // either by `break` (callSucceeded=true) or by throwing on the final failed
+        // attempt (the catch's give-up paths). The N-1 stamp-revert therefore lives at
+        // those actual throw sites (revertTriggerStampOnAbort), NOT here, so a model-call
+        // failure re-arms the human's ask on the path that genuinely runs.
+        revertTriggerStampOnAbort();
         throw new AgentError('Model call failed after all attempts', agentId, { code: 'MODEL_CALL_FAILED' });
       }
 
@@ -2152,6 +2397,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
           severity: 'warning',
           retryable: true,
         });
+        // C4: this give-up break is the clean-retry case — reached only when NO tools
+        // executed this turn (the empty-after-tools break above catches the tools case)
+        // and the model produced empty text 3x. Re-arm the human ask so the drain re-serves
+        // it (the toast still tells the user they can also resend). Guarded so it never
+        // re-arms a turn that produced any answer/side effect.
+        reArmIfStrandedNoAnswer();
         break;
       }
 
@@ -2165,7 +2416,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // "model regenerated identical text" failure mode (multiple triggers,
       // model stalls). Tool-bearing turns are exempt — even with identical
       // text, the tool calls themselves carry new state.
-      if (result.content && result.toolCalls.length === 0) {
+      // GOVERNING RULE (comms-audit G-SUP-3, sibling of G-SUP-1): never suppress on
+      // a turn a human is waiting on. This dedup compares against the most recent
+      // assistant message ACROSS turns, so when a user RE-ASKS the same thing the
+      // correct answer is necessarily near-identical to the prior turn's answer
+      // ("capital of France?" → "Paris" twice) and was being silently eaten — the
+      // re-ask got no reply at all. Restrict the dedup to non-user turns (a genuine
+      // mid-stall regeneration with no one waiting); a fresh user ask is always
+      // answered. A tool-less reply ends the turn, so this cannot loop.
+      if (result.content && result.toolCalls.length === 0 && !triggerRow) {
         const lastAssistant = db
           .prepare(
             "SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' ORDER BY created_at DESC, rowid DESC LIMIT 1",
@@ -2189,7 +2448,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // present user must not emit user-visible text. The leak this closes: on an
       // autonomous/background turn (owner asleep, no user waiting) the agent
       // SPONTANEOUSLY messages another agent — send_to_agent / broadcast — and its
-      // trailing reasoning ("It's 1 AM, David's asleep, let me reply to Kelly about
+      // trailing reasoning ("It's 1 AM, the owner's asleep, let me reply to the PM agent about
       // the homepage copy…") persisted into the owner's chat. That is the agent
       // talking out loud about what it will tell the PM. Such text is coordination,
       // never a message to the owner, so suppress it. A genuine user turn
@@ -2208,15 +2467,29 @@ export async function runV2Turn(agentId: string): Promise<void> {
       const a2aBackgroundTurn = mostRecentIsA2A && !hasUnansweredUser;
       // The agent is mid A2A exchange: it was poked by an agent (mostRecentIsA2A)
       // AND it messaged an agent back this turn (sentToAgent). Its terminal text is
-      // the coordination summary addressed to that agent ("Here's the status rundown,
-      // Kelly:"), never the owner — suppress even if a user is waiting (the user's
-      // own message gets its own turn, where mostRecentIsA2A is false).
-      const a2aExchangeTurn = mostRecentIsA2A && state.sentToAgentThisTurn;
+      // coordination addressed to that agent, so suppress it.
+      // T-5 (comms-audit / PHANTOM-FLIP): but ONLY when no human is waiting. When a
+      // user message is waiting, "user wins" makes THIS a user turn (trigger = the
+      // waiting human), so its text is the USER's reply — suppressing it here dropped
+      // the user's answer. The other A2A classifiers already carry this guard; this
+      // one was missing it (the old comment's "suppress even if a user is waiting"
+      // wrongly assumed the user gets a separate turn — this turn already IS it).
+      const a2aExchangeTurn = mostRecentIsA2A && state.sentToAgentThisTurn && !hasUnansweredUser;
       // Pure background/wakeup turn: no user waiting, no fresh trigger, not A2A, not a
       // deliberate engine surface (scheduler digest / completion report). The agent's
       // text here ("3 AM, you're asleep, let me make progress…") is internal — suppress.
-      const deliberateSurfaceTurn = mostRecentInbound?.origin_intent === 'scheduler' || mostRecentInbound?.origin_intent === 'completion_report';
-      const pureBackgroundTurn = !hasUnansweredUser && !triggerRow && !mostRecentIsA2A && !deliberateSurfaceTurn;
+      // E-A2: a deliberate surface (scheduler/reminder/completion report) is meant to
+      // reach the user. Read it from the PENDING engine event too — in the race case
+      // mostRecentInbound is the human that out-raced the event, so checking only
+      // mostRecentInbound would wrongly suppress a reminder's text on the engine turn.
+      const deliberateSurfaceTurn =
+        mostRecentInbound?.origin_intent === 'scheduler' || mostRecentInbound?.origin_intent === 'completion_report' ||
+        (isEngineTurn && (pendingEngineEvent?.originIntent === 'scheduler' || pendingEngineEvent?.originIntent === 'completion_report'));
+      // C3: a human-task continuation (auto-continued after MAX_TOOL_LOOPS / budget /
+      // compaction) has no waiting human but IS finishing a human's ask — its final
+      // answer must be delivered + routed to the restored counterparty, never suppressed
+      // as background chatter.
+      const pureBackgroundTurn = !hasUnansweredUser && !triggerRow && !mostRecentIsA2A && !deliberateSurfaceTurn && !isHumanContinuation;
       const interAgentTurn = isA2ATurn || counterparty.kind === 'agent' || spontaneousA2ATurn || a2aBackgroundTurn || a2aExchangeTurn || pureBackgroundTurn;
       // [DIAGNOSTIC] phantom-waiting-user: an A2A poke that should be a background turn
       // is being flipped to a user turn by a stale waiting conversation. Log which
@@ -2237,7 +2510,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
       let persistedContent: string | null = result.content;
       // v2.5.7 — strip system routing tags the LLM may have copied from
-      // prior conversation history (e.g. "[SENT VIA IMESSAGE to David]")
+      // prior conversation history (e.g. "[SENT VIA IMESSAGE to the owner]")
       // before persisting OR routing to iMessage. This cleans both the
       // dashboard render path and the iMessage outbound path at the source,
       // and keeps the next turn's LLM context free of the hallucinated tags
@@ -2262,7 +2535,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // the SAME model response as one or more tool calls is the agent thinking-
       // before-acting — Lane-2 process narration ("Let me check the calendar",
       // "Close-out gate is released now, let me handle the other task", "Now I have a
-      // clear picture, let me reply to Kelly"), never a message to the user. The user
+      // clear picture, let me reply to the PM agent"), never a message to the user. The user
       // reply is ALWAYS the terminal message: a separate, tool-less response emitted
       // after the work completes (verified empirically — every legitimate reply is
       // tool-less; every preamble / machinery-narration / A2A-coordination leak rides
@@ -2272,6 +2545,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // send_to_agent/broadcast-only suppression. Deterministic engine enforcement,
       // not prompt-hope (the weak-model correctness floor).
       if (persistedContent && result.toolCalls.length > 0) {
+        // GOVERNING RULE (comms-audit G-SUP-2): on a turn a HUMAN is waiting on,
+        // this text MIGHT be the genuine answer the weak model paired with a
+        // closing tool (tracker_update_status, etc.) — the v2.7.24 capture below
+        // exists for exactly that, but this blanket null defeated it (two patches
+        // in conflict). Don't show it as a mid-turn bubble (avoid preamble leak),
+        // but REMEMBER it: if the turn ends with no proper tool-less reply, the
+        // finalize block recovers it so the ask is never silently dropped. On an
+        // inter-agent / background turn it is coordination narration — hard-
+        // suppress with no recovery (keeps A2A chatter off human channels).
+        if (hasUnansweredUser && !interAgentTurn) {
+          deferredUserReplyWithTools = persistedContent;
+        }
         persistedContent = null;
       }
 
@@ -2291,7 +2576,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
       ) {
         const grounding = detectUngroundedDeliveryClaim({
           responseText: persistedContent,
-          toolCallsThisTurn: state.toolCalls,
+          // C5: pass the CUMULATIVE tool activity across all iterations, not
+          // state.toolCalls (which is overwritten each iteration with the current
+          // response's calls → always [] on this tool-less terminal iteration, so a
+          // real send made in an earlier iteration was invisible and the guard
+          // false-fired into a DUPLICATE send). state.toolResults is the accumulated
+          // record; only successful deliveries ground the claim (an errored send is
+          // not a real delivery, so it should still be able to fire the correction).
+          toolCallsThisTurn: state.toolResults
+            .filter((r) => !r.isError)
+            .map((r) => ({ name: r.name })),
           counterpartyName: counterparty.name,
         });
         if (grounding.ungrounded) {
@@ -2330,7 +2624,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // near-identical reply ("Dry cleaning set for 6pm, dentist not found" twice).
       // Close the loop by comparing against the last few persisted assistant replies
       // (suppressed turns were never persisted, so the DB holds only shown text).
-      if (persistedContent && persistedContent.trim().length > 0) {
+      //
+      // GOVERNING RULE (comms-audit G-SUP-1): suppression NEVER applies on a turn a
+      // human is waiting on. If a user asked (hasUnansweredUser) — including asking
+      // the SAME thing again, where the correct answer is necessarily near-identical
+      // ("what's on my calendar?" twice) — the reply is a genuine answer and must be
+      // delivered, never eaten as a "duplicate." Cross-turn dedup is ONLY for the
+      // agent spontaneously RE-POSTING with no new user ask driving the turn.
+      if (persistedContent && persistedContent.trim().length > 0 && !triggerRow) {
         try {
           const recentReplies = db
             .prepare(
@@ -2453,16 +2754,26 @@ export async function runV2Turn(agentId: string): Promise<void> {
         persistedContent !== null &&
         result.toolCalls.length === 0 &&
         !isBareNoReply &&
+        // N-2 (comms-audit): NEVER treat a prose "decline" as no-reply on a turn a
+        // human is WAITING on. The DECLINE_OPENER_RE false-positives on a genuine
+        // answer that merely opens with such a phrase ("No response needed on the
+        // receipt — your June total is $432."), which was nulled and dropped on every
+        // channel. The governing rule: suppression never fires when serving a waiting
+        // ask. A bare [no-reply] (the agent's explicit, whole-message choice) is still
+        // honored for chatter-prevention; only the FUZZY prose-decline is guarded.
+        !triggerRow &&
         DECLINE_OPENER_RE.test(persistedContent);
 
-      if ((isBareNoReply || isDeclineNonReply) && latestUserSource === 'voice') {
-        // Voice is a LIVE conversation, so going silent reads as a dropped
-        // call. The voice-conduct prompt block tells the agent not to use
-        // [no-reply] here, but the weakest model (the correctness floor)
-        // still emits it sometimes, so the engine enforces the floor: swap
-        // the bare sentinel for a short spoken acknowledgment and let it flow
-        // through the normal persist + TTS path instead of swallowing into
-        // dead air.
+      if ((isBareNoReply || isDeclineNonReply) && (latestUserSource === 'voice' || state.inboundChannel === 'phone')) {
+        // Voice AND phone are LIVE conversations, so going silent reads as a dropped
+        // call. (comms-audit B-1/phone: phone utterances persist with NO `source`, so
+        // they read as 'text' and were EXCLUDED from this guard — a bare [no-reply] on
+        // a live call left the caller in dead air. Phone is distinguished by
+        // inboundChannel==='phone'.) The voice-conduct prompt block tells the agent not
+        // to use [no-reply] here, but the weakest model (the correctness floor) still
+        // emits it sometimes, so the engine enforces the floor: swap the bare sentinel
+        // for a short spoken acknowledgment and let it flow through the normal persist +
+        // TTS path instead of swallowing into dead air.
         const voiceAcks = [
           'Okay, just say the word.',
           "Sounds good, I'm here when you need me.",
@@ -2479,6 +2790,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }, agentId);
         }
         persistedContent = null;
+        // REG-3 (comms-audit): the agent INTENTIONALLY went silent ([no-reply] /
+        // prose decline). Discard any deferred text-with-tools narration so the
+        // G-SUP-2 finalize recovery can't resurrect it and override the decision.
+        deferredUserReplyWithTools = null;
 
         // Silent turn that still opened a canvas (or queued attachments via
         // show_to_user): surface the pending "Open in canvas" chip / thumbnails
@@ -2515,6 +2830,24 @@ export async function runV2Turn(agentId: string): Promise<void> {
               },
             });
             surfacedNoReplyAttachments = true;
+
+            // N-3 (comms-audit): same gap as A-1, on the [no-reply] path. The drain
+            // above surfaces the files onto the DASHBOARD bubble only. If the requester
+            // is on iMessage, the deliverable they asked for never reaches their channel
+            // (the end-of-turn channel router is skipped on a no-reply turn, and the
+            // stranded safety net can't re-find these — they're already drained). Deliver
+            // to the iMessage counterparty here. iMessage user only (a dashboard turn
+            // already rendered them in the bubble).
+            if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
+              try {
+                const { sendIMessageWithAttachment } = await import('../../services/imessage-bridge.js');
+                for (const att of noReplyAttachments as Array<{ path?: string }>) {
+                  if (att.path) sendIMessageWithAttachment(counterparty.senderId, att.path, '');
+                }
+              } catch (err) {
+                logger.warn('N-3: no-reply attachment iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
+              }
+            }
           }
         } catch (err) {
           logger.warn('v2: failed to surface no-reply canvas chip', {
@@ -2826,6 +3159,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }
       }
 
+      // A-1 (comms-audit): the end-of-turn channel router routes TEXT only, so a
+      // deliverable file attached to the reply reached only the dashboard. If the
+      // requester is on iMessage, deliver the files to them too. iMessage counterparty
+      // only (a dashboard turn already renders the files in its bubble above).
+      if (queuedAttachments.length > 0 && counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
+        try {
+          const { sendIMessageWithAttachment } = await import('../../services/imessage-bridge.js');
+          for (const att of queuedAttachments as Array<{ path?: string }>) {
+            if (att.path) sendIMessageWithAttachment(counterparty.senderId, att.path, '');
+          }
+        } catch (err) {
+          logger.warn('A-1: reply-attachment iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
+        }
+      }
+
       // Broadcast streaming complete (only if we actually streamed something)
       if ((persistedContent && persistedContent.trim().length > 0) || result.toolCalls.length > 0) {
         broadcast({
@@ -3076,7 +3424,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // tracker_update_status, AUTO-PAUSE the danglers AND suppress
         // the misleading assistant text. The user must not see "Done"
         // while the tracker still shows in_progress; that's the exact
-        // failure shape David reported on the iMessage profile run.
+        // failure shape the owner reported on the iMessage profile run.
         if (
           state.nudgedForGoingIdleWithInProgressThisTurn &&
           !state.toolResults.some(
@@ -3199,7 +3547,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 if (t) broadcast({ type: 'tracker:task_updated', data: t } as never);
               }
             } catch { /* best effort */ }
-            logger.warn('v2 idle-with-in_progress hardcap fired — auto-paused + suppressed reply', {
+            logger.warn('v2 idle-with-in_progress hardcap fired — auto-paused; reply KEPT (persisted + shown), task paused + escalated to PM', {
               agentId, pausedCount, pausedIds, recurringResetCount: recurringResetIds.length, recurringResetIds,
             }, agentId);
             // v2.9.13: actively escalate to PM with full context (the
@@ -3312,7 +3660,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // ── End-of-turn tracker close-out check (v2.5.40) ──
         // Common failure: agent opens a project, marks task 1 in_progress,
         // does the work, never marks it complete (or any subsequent task).
-        // Stella's poke chain eventually catches it but costs a 30-min
+        // The PM agent's poke chain eventually catches it but costs a 30-min
         // wait. Detect at the moment of failure: agent is ending the turn
         // with text, has at least one in_progress task assigned, AND made
         // no tracker_update_status / tracker_complete_step call this turn.
@@ -3337,43 +3685,26 @@ export async function runV2Turn(agentId: string): Promise<void> {
             state.danglingTaskIds.length > 0 &&
             !state.closeOutGateSatisfied
           ) {
-            // ── Suppress the duplicate user-facing summary ──
-            // The agent just streamed a response that the user has seen in
-            // real-time. Without this block, that text remained in the DB
-            // and on screen as a second reply — the failure shape the user
-            // reported on the Presenton run (May 2026). The gate already
-            // told the agent "do NOT generate a user-facing response on
-            // this turn"; if they did anyway, we erase the bubble.
-            //
-            // Steps:
-            //   1. Delete the just-persisted assistant message so the next
-            //      turn's assembled context doesn't include it (the agent
-            //      can't reference work that the user never saw).
-            //   2. Broadcast chat:chunk done:true content:'' to close out
-            //      the streaming bubble in the dashboard.
-            //   3. Broadcast chat:message with empty content to make the
-            //      bubble disappear from the chat (matches the [no-reply]
-            //      sentinel handling at the top of this same block).
-            try {
-              db.prepare('DELETE FROM messages WHERE id = ?').run(messageId);
-            } catch (delErr) {
-              logger.warn('v2: close-out — failed to delete suppressed assistant message', {
-                agentId, messageId, error: delErr instanceof Error ? delErr.message : String(delErr),
-              }, agentId);
-            }
-            try {
-              broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
-              broadcast({
-                type: 'chat:message',
-                agentId,
-                message: {
-                  id: messageId, agentId, role: 'assistant' as const,
-                  content: '',
-                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
-                  createdAt: new Date().toISOString(),
-                },
-              });
-            } catch { /* best effort */ }
+            // ── KEEP the agent's reply visible; reconcile the tracker silently ──
+            // BUG-2 (comms-audit convergence pass): this gate used to DELETE the
+            // just-streamed assistant reply and erase the bubble whenever an
+            // UNRELATED idle/stranded tracker task existed — with no human-waiting
+            // guard. On the weak-model floor the agent routinely answers a fresh,
+            // unrelated human question in plain text (without first calling a
+            // tracker_* tool); the gate then ate that answer and the user got
+            // silence (inv 2). That is the same silent-drop class as the whole P0,
+            // and it contradicts the sibling going-idle hardcap which was already
+            // fixed (2026-06-25, ~line 3333) to KEEP the closeout visible. Apply the
+            // identical trade here: protecting an internal tracker-consistency
+            // invariant the user never sees (they read the chat, not the task table)
+            // is NOT worth suppressing a real reply. The reply was already persisted
+            // AND streamed earlier this turn, so we simply let it stand and STILL
+            // reconcile the danglers below (pause one-shot / leave on_deck). No
+            // duplicate risk: there is no second-chance re-prompt here (only one
+            // reply was ever generated).
+            logger.info('v2: pre-turn close-out gate — keeping the agent reply visible, reconciling danglers in the background', {
+              agentId, danglingCount: state.danglingTaskIds.length,
+            }, agentId);
 
             try {
               // Distinguish the two kinds of danglers so the auto-pause
@@ -3440,8 +3771,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   );
                 }
                 const closeOutMsg = (
-                  `[System: pre-turn close-out gate was unsatisfied AND you produced user-facing text — your reply was suppressed (the bubble was removed from the user\'s view) and the danglers were resolved by the engine: ${parts.join('; ')}. ` +
-                  `Next time the gate fires, the FIRST thing you do this turn must be a tracker tool call. The user sent NO new prompt to read — there is nothing to reply to until the tracker is in sync.]`
+                  `[System: pre-turn close-out gate was unsatisfied. Your reply to the user was kept visible, and the engine reconciled the danglers for you: ${parts.join('; ')}. ` +
+                  `These tasks were unrelated leftovers — next time the gate fires, call a tracker tool (tracker_update_status / tracker_complete_step / tracker_close_project) to close them yourself instead of leaving it to the engine. Replying to the user was fine; just keep the tracker in sync too.]`
                 );
                 const closeOutMsgId = uuidv4();
                 try {
@@ -3469,7 +3800,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                     }
                   }
                 } catch { /* best effort */ }
-                logger.warn('v2: close-out one-shot escalation — auto-paused + suppressed reply', {
+                logger.warn('v2: close-out one-shot escalation — auto-paused danglers, reply kept visible', {
                   agentId, pausedCount, onDeckCount: onDeckIds.length, totalDangling: state.danglingTaskIds.length,
                 }, agentId);
                 // v2.9.13: notify PM with the suppressed text + verbs.
@@ -3502,7 +3833,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             !state.trackerStatusUpdatedThisTurn
           ) {
             // Hardcap: nudge fired once and was ignored. End the turn.
-            // Stella will catch the dangling tasks on her next poke pass.
+            // The PM agent will catch the dangling tasks on its next poke pass.
             logger.warn('v2: tracker close-out nudge ignored — ending turn anyway', {
               agentId,
             }, agentId);
@@ -3671,7 +4002,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
               `Engine policy: every fresh technique load requires a technique_acknowledge call before ANY other tool can run — otherwise agents keep skipping past the technique and acting on cached memory.\n\n` +
               `Call this next, then your "${tc.name}" call will work on the following iteration:\n` +
               `  technique_acknowledge(name="${p.techniqueId}", summary="<your-paraphrase-of-the-key-steps, at-least-100-chars>")\n\n` +
-              `Tools allowed while the gate is on: ${[...TECHNIQUE_GATE_ALLOWED].join(', ')}.`;
+              `Tools allowed while the gate is on: ${[...TECHNIQUE_GATE_ALLOWED].join(', ')}.\n\n` +
+              ENGINE_BLOCK_ESCAPE_HATCH;
             try {
               broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
               broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusalText.slice(0, 500) });
@@ -3887,7 +4219,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
               `Before any other tool call, resolve at least one with tracker_complete_step, ` +
               `tracker_update_status (complete | blocked | paused), or — if you're genuinely still working ` +
               `on it across turns — tracker_add_notes to signal "in flight." After ANY one of those, the gate ` +
-              `disengages for the rest of this turn and "${tc.name}" will work normally.`
+              `disengages for the rest of this turn and "${tc.name}" will work normally.\n\n` +
+              ENGINE_BLOCK_ESCAPE_HATCH
             );
             try {
               broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
@@ -4043,11 +4376,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
             if (isPrimaryAgent(agentId)) {
               toolResult = appendVisibilityHintIfRelevant(toolResult);
             }
-            // v2.7.22 — soft nudge toward [no-reply] after bookkeeping
-            // tools. Applies to all agents (sub-agents close out via
-            // complete_task; primary agents via tracker_update_status
-            // / vault_remember / etc.). See BOOKKEEPING_NUDGE comment.
-            toolResult = appendBookkeepingNudgeIfRelevant(toolResult);
+            // v2.7.22 — soft nudge toward [no-reply] after bookkeeping tools.
+            // C22: NEVER append this nudge on a turn serving a waiting human. On the
+            // weak model, "Booked for Tuesday." + tracker_update_status in one iteration
+            // defers the text (G-SUP-2); the tool result then carries the "end with
+            // [no-reply]" nudge; iteration 2 emits [no-reply] as instructed → the REG-3
+            // clear discards the deferred genuine answer → the user gets silence. Gating
+            // on !triggerRow && !hasUnansweredUser confines the nudge to engine/background
+            // turns where silence is the correct outcome, stopping the conflict at the
+            // source rather than hoping the reworded prompt holds on a weak model.
+            if (!triggerRow && !hasUnansweredUser) {
+              toolResult = appendBookkeepingNudgeIfRelevant(toolResult);
+            }
           } catch (toolErr) {
             const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
             logger.error('v2: tool crashed', { tool: tc.name, error: errMsg }, agentId);
@@ -4421,7 +4761,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // Secondary check: agent may have an active task from a previous
         // turn that they're just continuing. Don't nudge them either.
         // Widened to include on_deck (queued) — the user said the v2.5.40
-        // test fired a nudge right after Kevin cleanly completed a 3-task
+        // test fired a nudge right after the primary agent cleanly completed a 3-task
         // project, because by the moment the check ran every task was
         // already `complete`. The fix is the trackerToolCalledThisTurn
         // gate above, but keep this as belt+suspenders for cross-turn
@@ -4518,16 +4858,47 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // PARK the owner's question on the thread we just asked. At pickup this
         // turn's trigger was stamped "served" (anti-thrash); overwrite that with
         // a park marker so the question (a) does NOT re-trigger — no re-asking —
-        // and (b) is NOT falsely treated as answered. When the agent replies on
-        // this thread, the runtime un-parks it (conv_key → NULL) so it re-fires
-        // and the agent answers the OWNER with the real reply in context.
+        // and (b) is NOT falsely treated as answered. When the other agent's reply
+        // comes back on this thread, the ENGINE closes the loop directly: it delivers
+        // the answer to the owner on their own channel and marks the parked row
+        // `relayed:<thread>` (see a2a-transport.ts). It does NOT un-park to NULL / re-fire
+        // the model — that proved flaky (the weak model re-reads "ask X" and re-asks,
+        // an ask→park→answer→re-ask loop). Deterministic delivery, regardless of the model.
         if (triggerRow && chosenConvKey) {
           let parkThread: string | null = null;
-          for (let i = state.toolResults.length - 1; i >= 0; i--) {
-            const tr = state.toolResults[i];
-            if (tr.name === 'send_to_agent' && typeof tr.content === 'string') {
-              const m = tr.content.match(/on thread ([a-z0-9]{6,})/i);
-              if (m) { parkThread = m[1].slice(0, 8); break; }
+          // T-2 (comms-audit): derive the asked thread STRUCTURALLY from the A2A row
+          // the send just created (source_agent_id = this agent, this turn), not by
+          // regex-scraping the tool-result prose. If the result wording ever changed,
+          // the regex would miss and the owner's question would be SILENTLY DROPPED
+          // (it keeps its served conv_key and never re-fires). Regex kept as fallback.
+          try {
+            // C9: constrain to reply-warranting intents and pick the OLDEST such send
+            // this turn. The weak model routinely batches a real QUESTION→worker AND a
+            // STATUS/FYI→PM in one response; without the intent filter a trailing
+            // STATUS/FYI/broadcast wins `ORDER BY rowid DESC` and the owner's question
+            // gets parked on the WRONG thread → the real ANSWER finds no park (owner's
+            // question dropped) or an unrelated payload is relayed as "Heard back from X".
+            // The first (oldest) reply-warranting send of the turn is the delegation of
+            // the owner's ask being handed off — park on that (ASC).
+            const sent = db.prepare(
+              `SELECT a2a_thread_id FROM messages WHERE source_agent_id = ? AND a2a_thread_id IS NOT NULL AND a2a_intent IN ('QUESTION','ASSIGN','BLOCK') AND created_at >= ? ORDER BY rowid ASC LIMIT 1`,
+            ).get(agentId, turnStartedAt) as { a2a_thread_id: string } | undefined;
+            // BUG-4 (comms-audit): park under the FULL thread id (not an 8-char prefix).
+            // Two parked questions from one agent that share an 8-hex prefix would
+            // otherwise collide — the relay's `ORDER BY rowid DESC LIMIT 1` would return
+            // the newest, relay answer B against question A, mark A relayed, and silently
+            // drop A's real answer (wrong-answer + drop). Full id makes the structural
+            // path collision-free; the relay reads the full key first, then the 8-char key
+            // for the rare regex-fallback below (whose source prose only carries 8 chars).
+            if (sent?.a2a_thread_id) parkThread = sent.a2a_thread_id;
+          } catch { /* best effort — fall back to the prose regex */ }
+          if (!parkThread) {
+            for (let i = state.toolResults.length - 1; i >= 0; i--) {
+              const tr = state.toolResults[i];
+              if (tr.name === 'send_to_agent' && typeof tr.content === 'string') {
+                const m = tr.content.match(/on thread ([a-z0-9]{6,})/i);
+                if (m) { parkThread = m[1].slice(0, 8); break; }
+              }
             }
           }
           if (parkThread) {
@@ -4722,6 +5093,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // Schedule a self-continuation. Reassembles context fresh — the agent
       // sees its full history including the work it just did and continues
       // naturally. 1s delay lets DB writes settle.
+      stashContinuationIfHuman(); // C3: carry the human conversation into the continuation
       setTimeout(() => {
         try {
           getAgentRuntime().handleMessage(agentId, '').catch((err) => {
@@ -4739,6 +5111,37 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
     // ── Phase: finalize ──
     state = advance(state, { phase: 'finalize' });
+
+    // ── G-SUP-2 recovery (comms-audit) ──
+    // A human was waiting, the only user-facing text this turn rode with tool
+    // calls (deferred above as possible narration), and the turn delivered NO
+    // proper tool-less reply (lastAssistantTextForIM still unset). Recover the
+    // deferred text so the ask is answered, never silently dropped — deliver it
+    // to the dashboard chat AND hand it to the channel router below. When a real
+    // tool-less reply DID land, lastAssistantTextForIM is set and this is skipped,
+    // so there is no double-reply.
+    if (deferredUserReplyWithTools && !state.lastAssistantTextForIM) {
+      const recoveredId = uuidv4();
+      try {
+        db.prepare(
+          `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at) VALUES (?, ?, 'assistant', ?, ?, datetime('now'))`,
+        ).run(recoveredId, agentId, deferredUserReplyWithTools, turnNumber);
+        broadcast({
+          type: 'chat:message',
+          agentId,
+          message: {
+            id: recoveredId, agentId, role: 'assistant' as const, content: deferredUserReplyWithTools,
+            tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString(),
+          },
+        });
+        state = advance(state, { lastAssistantTextForIM: stripOrbMood(deferredUserReplyWithTools) });
+        logger.info('v2 G-SUP-2 recovery: delivered deferred text-with-tools reply (turn ended with no tool-less reply)', {
+          agentId, turnNumber,
+        }, agentId);
+      } catch (err) {
+        logger.warn('v2 G-SUP-2 recovery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
+      }
+    }
 
     // ── Reply-destination resolver (v2.7.23, OpenClaw-inspired) ──
     // The model just writes text; the engine decides which channel to
@@ -4865,7 +5268,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // a human channel. Without this guard, resolveReplyDestination falls
         // through to the dashboard default and the "away" override then promotes
         // it to iMessage, texting the OWNER an answer meant for another agent
-        // (observed: Kelly's A2A question answered by texting David). Force the
+        // (observed: the PM agent's A2A question answered by texting the owner). Force the
         // no-auto-route value ('dashboard' matches none of the channel branches
         // below) when this turn's counterparty is an agent.
         const destination = counterparty.kind === 'agent'
@@ -4917,12 +5320,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // no longer authorized, empty body), skip the marker entirely so we
           // don't claim a delivery that didn't happen.
           // Route to THIS turn's counterparty (stable), not the racy in-memory
-          // pendingIMResponseMap — the fix for a reply to Crystal going to David
+          // pendingIMResponseMap — the fix for a reply to a contact going to the owner
           // when another iMessage arrived mid-turn. counterparty.senderId is the
           // iMessage address for a human iMessage turn; null (proactive/away) lets
           // the bridge fall back to the owner.
           const imRecipient = counterparty.kind === 'user' && counterparty.channel === 'imessage' ? counterparty.senderId : undefined;
-          const delivered = sendResponseViaIMessage(state.lastAssistantTextForIM, agentId, imRecipient);
+          // C8: this reply reached iMessage EITHER because the turn's counterparty is an
+          // iMessage contact (imRecipient set → reply to them) OR because the away-override
+          // promoted a dashboard/proactive turn to iMessage to reach the OWNER (imRecipient
+          // undefined). In the latter case the send is owner-bound by definition — flag it
+          // so the bridge routes to the owner and never adopts a contact's stale
+          // pendingIMResponseMap entry (the "owner's reply texted to a contact" bug).
+          const ownerBound = imRecipient === undefined;
+          const delivered = sendResponseViaIMessage(state.lastAssistantTextForIM, agentId, imRecipient, ownerBound);
           if (delivered) {
             persistRoutingMarker(`iMessage to ${delivered.name}`);
             logger.info('v2.7.23: routed reply via iMessage', {
@@ -4987,6 +5397,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
               arguments: {
                 message_id: state.inboundContext.emailMessageId,
                 body: state.lastAssistantTextForIM,
+                // B-1 (comms-audit): reply FROM the same mailbox that received it.
+                // Omitted before, so with 2+ agent accounts the reply silently failed.
+                ...(state.inboundContext.emailAccount ? { account: state.inboundContext.emailAccount } : {}),
               },
             };
             const result = await executeTool(agentId, tc);
@@ -5136,7 +5549,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // "Here are the files for you.". Root reason: that generic line is identical
         // for every uncaptioned deliverable, so two distinct files (blog_migration_plan,
         // team_offsite_july_2026) surfaced on different turns read as duplicate spam in
-        // the owner's chat (David's run-#9 report). Naming the file makes each surface
+        // the owner's chat (the owner's run-#9 report). Naming the file makes each surface
         // distinct and tells the owner WHAT it is. We are not hiding a duplicate; we are
         // making the message say what it always should have.
         const describeDeliverables = (atts: Array<{ filename?: string }>): string => {
@@ -5175,6 +5588,22 @@ export async function runV2Turn(agentId: string): Promise<void> {
           fileCount: stranded.attachments.length,
           captionCount: stranded.captions.length,
         }, agentId);
+        // A-1/A-2 (comms-audit): this safety net runs AFTER the channel router above,
+        // so setting lastAssistantTextForIM here would NEVER route — the stranded
+        // deliverable files reached only the dashboard. If the requester is on
+        // iMessage, send the FILES (with the caption on the first) to them directly so
+        // a file they asked for actually reaches their channel, not just the dashboard.
+        if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
+          try {
+            const { sendIMessageWithAttachment } = await import('../../services/imessage-bridge.js');
+            let first = true;
+            for (const att of stranded.attachments as Array<{ path?: string }>) {
+              if (att.path) { sendIMessageWithAttachment(counterparty.senderId, att.path, first ? captionText : ''); first = false; }
+            }
+          } catch (err) {
+            logger.warn('A-1/A-2: stranded-file iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
+          }
+        }
         if (stranded.attachments.length > 0) {
           state = advance(state, { lastAssistantTextForIM: captionText });
         }
@@ -5302,6 +5731,29 @@ export async function runV2Turn(agentId: string): Promise<void> {
     stopStatusHeartbeat(agentId);
     activeAbortControllers.delete(agentId);
 
+    // C2: a throw anywhere AFTER the pickup-stamp (assembleContext, decideTier,
+    // enforceModelCapabilities, the grounding INSERT, the assistant/tool persists —
+    // all before the model call's own try/catch owns the error) reaches THIS
+    // function-level catch with the human trigger still stamped served at pickup, so
+    // the ask would be silently stranded and never re-served (inv 2 + 6).
+    // recoverFromError does NOT touch conv_key. reArmIfStrandedNoAnswer re-arms the
+    // ask so the drain re-serves it — but ONLY under the clean-retry guard (no reply
+    // delivered AND no tool executed this turn). That guard is deliberately
+    // conservative: it covers the common, dominant case (a transient model/infra
+    // failure on the FIRST call — pre-tool sites like assembleContext / decideTier /
+    // enforceModelCapabilities), which is the one we live-verified. It intentionally
+    // does NOT re-arm the POST-tool throw sites listed above (grounding INSERT,
+    // assistant/tool persists): a turn that already executed a tool may have committed
+    // a non-idempotent side effect (created a task, wrote a file, sent a message), and
+    // re-serving it would DUPLICATE that side effect — the OPEN-12/duplicate-project
+    // class the pickup-stamp exists to prevent. So we accept a narrow residual strand
+    // (a post-tool non-model throw that delivered no reply) rather than risk a
+    // duplicate; those "did work but didn't reply" cases are owned by the
+    // note-then-stopped / going-idle nudges. (The symmetric engine-stamp revert is
+    // intentionally left to C6/C7's loss-over-loop handling for engine events — a
+    // dropped scheduler tick re-fires next cycle; it is not re-armed here.)
+    reArmIfStrandedNoAnswer();
+
     // 5a: a turn that died with a technique injected counts as a failure
     // signal for that technique.
     if (turnInjectedTechniqueId) {
@@ -5329,6 +5781,25 @@ export async function runV2Turn(agentId: string): Promise<void> {
         recoveryError: recovErr instanceof Error ? recovErr.message : String(recovErr),
         originalError: err instanceof Error ? err.message : String(err),
       }, agentId);
+    }
+  } finally {
+    // C15: on EVERY exit path (clean reply, decline, MAX_TOOL_LOOPS, spinning/thrash
+    // break, exception) tag THIS turn's own assistant/tool rows with the conversation's
+    // conv_key. The clean reply/decline exits (~:2851/:5199) already stamp, but the
+    // abort/break paths did not, leaving tool_use/tool_result rows conv_key NULL forever;
+    // scopeToHumanConversation keeps untagged self rows as "in-progress work", so an
+    // aborted turn's scratch (e.g. a contact's deep-research tool output) bled into the NEXT
+    // person's live tail + conversation-scoped recall (inv 4). turn_number scopes it to
+    // this turn's own rows only. Independent of C2/C4's TRIGGER revert (which nulls the
+    // role='user' trigger row to re-serve the ask; this tags the role in ('assistant',
+    // 'tool') rows so they don't leak) — different roles, no conflict. On the clean path
+    // the rows are already tagged, so `conv_key IS NULL` makes this a no-op. Best-effort.
+    if (chosenConvKey) {
+      try {
+        db.prepare(
+          `UPDATE messages SET conv_key = ? WHERE agent_id = ? AND turn_number = ? AND role IN ('assistant','tool') AND conv_key IS NULL`,
+        ).run(chosenConvKey, agentId, turnNumber);
+      } catch { /* best effort — turn teardown must not throw */ }
     }
   }
 }

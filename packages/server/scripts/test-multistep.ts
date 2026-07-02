@@ -18,7 +18,7 @@ interface Case {
 const cases: Case[] = [
   // ── Regression: short lookup questions must NOT flag multi-step ──
   { query: 'Do you have any new emails from today?', want: 'definitely_single', note: 'v2.5.46 bug — "emails" was a false-positive verb' },
-  { query: 'Any new messages from Kelly?',           want: 'definitely_single' },
+  { query: 'Any new messages from Alex?',            want: 'definitely_single' },
   { query: 'What was the last text from Alex?',      want: 'definitely_single' },
   { query: 'Do you have any pending tasks?',         want: 'definitely_single' },
   { query: 'Is there a post about the launch?',      want: 'definitely_single' },

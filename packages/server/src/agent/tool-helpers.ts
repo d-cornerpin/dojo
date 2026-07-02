@@ -109,7 +109,7 @@ export function friendlyDbError(err: unknown, context?: string): string {
 
 // ── resolveAgentRef ───────────────────────────────────────────────────────
 //
-// Accepts either an agent UUID, a sensei id ("kevin", "dreamer", …), or an
+// Accepts either an agent UUID, a sensei id ("primary", "dreamer", …), or an
 // agent name (case-insensitive). Returns the canonical id or a friendly error.
 //
 // This is the cross-tool version of the resolver previously inlined into

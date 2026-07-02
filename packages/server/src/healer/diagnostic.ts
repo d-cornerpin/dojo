@@ -505,7 +505,7 @@ function getBulletproofToolHealth(): DiagnosticItem[] {
   }
 
   // 4. Vault dreaming backlog. If unprocessed conversations pile up >25
-  //    the Dreamer isn't running. Kevin can now trigger it on demand via
+  //    the Dreamer isn't running. The primary agent can now trigger it on demand via
   //    dreamer_run_now — surface this as an info-level item.
   const backlog = db.prepare(`
     SELECT COUNT(*) as cnt FROM vault_conversations WHERE is_processed = 0

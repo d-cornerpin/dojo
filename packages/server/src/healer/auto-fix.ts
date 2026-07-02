@@ -10,7 +10,6 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { v4 as uuidv4 } from 'uuid';
 import { sanitizeMessagesOnModelChange } from '../agent/model-switch.js';
-import { getPrimaryAgentId } from '../config/platform.js';
 import type { DiagnosticItem } from './diagnostic.js';
 
 const logger = createLogger('healer-autofix');
@@ -322,25 +321,13 @@ export function runAutoFixes(diagnosticId: string, items: DiagnosticItem[]): { f
     }
   }
 
-  // Notify primary agent of auto-fixes (if any)
-  if (fixCount > 0) {
-    try {
-      const primaryId = getPrimaryAgentId();
-      const msgId = uuidv4();
-      const content = `[SOURCE: HEALER AUTO-FIX REPORT — automated maintenance, not a message from the user. No reply needed.]\n\nThe Healer performed ${fixCount} automatic fix(es):\n${fixes.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\nNo action needed — these are routine maintenance tasks.`;
-
-      db.prepare(`
-        INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-        VALUES (?, ?, 'system', ?, datetime('now'))
-      `).run(msgId, primaryId, content);
-
-      broadcast({
-        type: 'chat:message',
-        agentId: primaryId,
-        message: { id: msgId, agentId: primaryId, role: 'system' as const, content, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
-      });
-    } catch { /* best effort */ }
-  }
+  // NOTE: the per-cycle "applied N fixes — nothing needs your attention" note to the
+  // primary was REMOVED here. It is superseded by the Healer's single once-daily health
+  // heartbeat (runHealingCycle Step 5), which reports "all systems operational" (or what
+  // needs attention) exactly once per day and folds the routine-fix count into that. The
+  // full per-fix detail remains in the healer_actions table (the vitals panel reads it).
+  // runAutoFixes ALSO runs on the 5-minute frequent cadence, where a note every few
+  // minutes would itself be the firehose we're removing.
 
   logger.info('Auto-fix cycle complete', { fixCount, diagnosticId });
   return { fixCount, fixes };

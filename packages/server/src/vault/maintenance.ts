@@ -20,6 +20,7 @@ import {
   isSetupCompleted,
 } from '../config/platform.js';
 import type { Message } from '@dojo/shared';
+import { isPlatformNoise as isSharedPlatformNoise } from '../memory/platform-noise.js';
 import { v4 as uuidv4 } from 'uuid';
 import {
   getConversation,
@@ -214,42 +215,11 @@ const BATCH_BUDGET_CAP_RATIO = 0.35;
 // the model, slashing the token cost of every cycle while keeping the
 // signal — what the agent and user actually said and decided.
 
-// Patterns to drop entirely: any user/assistant/system message whose
-// content matches is omitted from the formatted archive.
-const PLATFORM_NOISE_PATTERNS: RegExp[] = [
-  /^\s*\[CONTINUITY BRIEF/i,
-  /^\s*\[New Session\]/i,
-  /^\s*── New Session ──/,
-  /^\s*\[System: /i,
-  /^\s*\[SOURCE: SYSTEM/i,
-  /^\s*\[SOURCE: HEALER/i,
-  /^\s*\[SOURCE: SCHEDULER/i,
-  /^\s*\[SOURCE: SUB-AGENT COMPLETION/i,
-  /^\s*\[SOURCE: TRACKER TASK/i,
-  /^\s*\[SOURCE: PM AGENT POKE/i,
-  /^\s*\[SOURCE: AGENT HEALTH ALERT/i,
-  /^\s*\[Context note: the user just hit the Stop button/i,
-  /^\s*Tracker review --/i,
-  /^I got stuck on that/i,
-  /^I'm sorry — I'm having trouble/i,
-  /^Understood, I have reviewed/i, // synthetic ack messages from the assembler
-  /^Understood, I know what I was working on/i,
-  /^Understood, I will continue working on my active tasks/i,
-  // Dreamer cycle messages and embedded SOUL prompts — these were the
-  // single biggest source of recursive bloat (the Dreamer's own past
-  // cycle messages and SOUL.md were being re-archived and re-fed). We
-  // now block service agents from archiving entirely (see archive.ts),
-  // but if an old archive somehow contains a relayed cycle message or
-  // SOUL excerpt, drop it here too.
-  /^\s*═══ DREAM CYCLE ═══/,
-  /^\s*═══ COMPRESSED HISTORY/,
-  /^\s*Vault state: \d+ entries/,
-  /^\s*Process the archives below/i,
-  /^\s*Full archive list \(\d+ total\)/i,
-  /^\s*This is batch \d+ of \d+/i,
-  /^\s*# Identity\s*$/m, // start of any SOUL.md prompt embedded in a message
-  /^\s*You are the (Dreamer|Trainer|Healer|PM|Imaginer)\b/i,
-];
+// Platform-noise taxonomy (sub-agent completions, PM/scheduler/healer pokes,
+// session dividers, embedded SOUL prompts, synthetic acks) now lives in the
+// shared memory/platform-noise module so the vault archiver and LIVE compaction
+// agree on what is plumbing vs. conversation. Imported below; the local
+// isPlatformNoise wrapper is kept so callers here are unchanged.
 
 // Conversational filler — acknowledgments and process narration. Drop the
 // whole message if its trimmed content matches. Length-bounded so prose
@@ -264,10 +234,7 @@ const FILLER_PATTERNS: RegExp[] = [
 ];
 
 function isPlatformNoise(content: string): boolean {
-  for (const pat of PLATFORM_NOISE_PATTERNS) {
-    if (pat.test(content)) return true;
-  }
-  return false;
+  return isSharedPlatformNoise(content);
 }
 
 function isFiller(content: string): boolean {
@@ -748,7 +715,7 @@ Vault state: ${stats.totalEntries} entries (${stats.pinnedCount} pinned, ${stats
 
 Process the archives below. Extract durable memories and route each to the right store per your SOUL: vault_remember for general knowledge, contact_remember for person-as-entity facts (who someone is, role/company, relationships, channel preferences, a new email/phone), and credential_add ONLY when an archive contains the actual value of a service credential (follow your SOUL's cautions: never guess, skip anything personal-financial). Discard junk archives. Only update USER.md if an archive has a clear, explicit, FUNDAMENTAL profile change you can quote (see your SOUL). Never edit SOUL.md. Then call complete_task.
 
-Conversation attribution: the archive messages are tagged with the party each is from ([USER · David], [USER · Alex Chen (imessage)], [USER · priya@… (email)], [USER · Kelly (agent)]). When a memory is a request, preference, or pending item that belongs to a SPECIFIC person or channel, say so in the memory text ("David asked to…", "Priya (email) is waiting on…"), and prefer contact_remember for who-someone-is facts. A memory that records one person's request must never read as if it were everyone's — keeping whose-is-whose is what lets the agent act on the right conversation later.
+Conversation attribution: the archive messages are tagged with the party each is from ([USER · Sam], [USER · Alex Chen (imessage)], [USER · priya@… (email)], [USER · Nova (agent)]). When a memory is a request, preference, or pending item that belongs to a SPECIFIC person or channel, say so in the memory text ("Sam asked to…", "Priya (email) is waiting on…"), and prefer contact_remember for who-someone-is facts. A memory that records one person's request must never read as if it were everyone's — keeping whose-is-whose is what lets the agent act on the right conversation later.
 
 ${batchText}`;
 }
@@ -1243,6 +1210,24 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
     // ended silently with no record; the tab was empty even after months
     // of dreaming.
     writeDreamReportForCycle(state, 'complete');
+    // ONE consolidated per-CYCLE notice to the primary (owner request: the Dreamer
+    // messages once per cycle, not once per batch — the per-batch note is suppressed in
+    // completeAgent). Brief + self-attributed → awareness lane; full detail is in the
+    // Dreams tab / dream_reports. Best-effort: never let the notice break cycle teardown.
+    try {
+      const after = getVaultStats();
+      const gained = Math.max(0, after.totalEntries - state.vaultStatsBefore.totalEntries);
+      const archives = state.archivesProcessedThisCycle;
+      const { postAgentNotice } = await import('../agent/agent-notice.js');
+      postAgentNotice({
+        toAgentId: primaryId,
+        fromName: 'Dreamer',
+        brief: `Tidied up memory tonight — processed ${archives} archive${archives === 1 ? '' : 's'} into ${gained} new vault ${gained === 1 ? 'entry' : 'entries'}. Nothing needs your attention.`,
+        intent: 'dreamer_cycle',
+      });
+    } catch (err) {
+      logger.warn('Dreamer cycle-complete notice failed', { error: err instanceof Error ? err.message : String(err) });
+    }
     pendingBatches.delete(primaryId);
     logger.info('All Dreamer batches complete', { totalBatches: state.batches.length });
     broadcast({ type: 'dream:complete', data: { batches: state.batches.length } } as never);

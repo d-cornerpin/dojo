@@ -18,27 +18,9 @@
 // continuity with v1, the new structured one carries the original ask.
 // ════════════════════════════════════════
 
-import { v4 as uuidv4 } from 'uuid';
-import { createLogger } from '../../../logger.js';
-import { broadcast } from '../../../gateway/ws.js';
-import { getDb } from '../../../db/connection.js';
-
-const logger = createLogger('v2-task-complete-hook');
-
-interface TaskRow {
-  id: string;
-  title: string | null;
-  description: string | null;
-  original_description: string | null;
-  completion_summary: string | null;
-  assigned_to: string | null;
-}
-
-interface AgentRow {
-  id: string;
-  name: string | null;
-  parent_agent: string | null;
-}
+// (comms-audit 2026-07-01) This hook is now a documented no-op — see onTaskComplete.
+// The DB / broadcast / uuid imports and the row interfaces it used to need for its
+// full-report injection were removed with the injection.
 
 /**
  * Fires after a sub-agent reports task completion. Persists a structured
@@ -55,104 +37,25 @@ export async function onTaskComplete(
   taskId: string | null | undefined,
   completingAgentId: string,
 ): Promise<void> {
-  if (!taskId) return;
-
-  const db = getDb();
-
-  let task: TaskRow | undefined;
-  let completingAgent: AgentRow | undefined;
-  try {
-    task = db
-      .prepare(
-        'SELECT id, title, description, original_description, completion_summary, assigned_to FROM tasks WHERE id = ?',
-      )
-      .get(taskId) as TaskRow | undefined;
-    completingAgent = db
-      .prepare('SELECT id, name, parent_agent FROM agents WHERE id = ?')
-      .get(completingAgentId) as AgentRow | undefined;
-  } catch (err) {
-    logger.warn('onTaskComplete: DB lookup failed', {
-      taskId,
-      completingAgentId,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return;
-  }
-
-  if (!task) {
-    logger.debug('onTaskComplete: task not found, skipping', { taskId });
-    return;
-  }
-  if (!completingAgent) {
-    logger.debug('onTaskComplete: completing agent not found, skipping', { completingAgentId });
-    return;
-  }
-
-  // Resolve the parent: spec uses "task.parent_agent" but the actual model
-  // is that sub-agents have a parent_agent on the agents table. If the
-  // completing agent has no parent (e.g. it's the primary agent finishing
-  // its own work), the hook no-ops — there's no one to notify.
-  const parentId = completingAgent.parent_agent;
-  if (!parentId || parentId === completingAgentId) return;
-
-  const parent = db
-    .prepare('SELECT id, name FROM agents WHERE id = ?')
-    .get(parentId) as { id: string; name: string | null } | undefined;
-  if (!parent) {
-    logger.debug('onTaskComplete: parent agent not found in DB, skipping', { parentId });
-    return;
-  }
-
-  // Build the structured note. Spec wording from Part X §1156-1167:
-  //   "[System: <agentId> completed task '<title>'.
-  //    Original ask: <description>
-  //    Completion summary: <summary>
-  //    Review and decide whether to accept, redirect, or reassign.]"
-  const subAgentDisplay = completingAgent.name ?? completingAgentId;
-  const title = task.title ?? '(untitled)';
-  const originalAsk = (task.original_description ?? task.description ?? '').slice(0, 400);
-  const summary = (task.completion_summary ?? '').slice(0, 400);
-
-  const lines = [
-    `[System: ${subAgentDisplay} completed task "${title}".`,
-    originalAsk ? `Original ask: ${originalAsk}` : 'Original ask: (none recorded)',
-    summary ? `Completion summary: ${summary}` : 'Completion summary: (no summary provided)',
-    'Review and decide whether to accept, redirect, or reassign.]',
-  ];
-  const content = lines.join('\n');
-
-  try {
-    const messageId = uuidv4();
-    const now = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-    db.prepare(
-      `INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-       VALUES (?, ?, 'system', ?, ?)`,
-    ).run(messageId, parentId, content, now);
-    broadcast({
-      type: 'chat:message',
-      agentId: parentId,
-      message: {
-        id: messageId,
-        agentId: parentId,
-        role: 'system',
-        content,
-        tokenCount: null,
-        modelId: null,
-        cost: null,
-        latencyMs: null,
-        createdAt: now,
-      },
-    });
-    logger.info('onTaskComplete: structured note delivered to parent', {
-      taskId,
-      parentId,
-      completingAgentId,
-    });
-  } catch (err) {
-    logger.warn('onTaskComplete: failed to persist/broadcast note (non-fatal)', {
-      taskId,
-      parentId,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  // No-op (comms-audit 2026-07-01, rank 3). This hook used to inject a full
+  //   "[System: <agent> completed task '<title>'. Original ask: … Completion
+  //    summary: … Review and decide whether to accept, redirect, or reassign.]"
+  // report into the PARENT's conversation + a chat:message to the parent's
+  // dashboard feed on EVERY task-linked sub-agent completion. That is a firehose
+  // dump: it duplicated the brief, self-attributed AGENT NOTICE that
+  // spawner.completeAgent now writes (the good template), and flooded the owner's
+  // dashboard chat with an engine work-log the primary does not need to see.
+  //
+  // The requirement it encoded — the parent may need the ORIGINAL ASK (not just
+  // the completion summary) to judge the result, in case the sub-agent's
+  // description drifted mid-task — is preserved WITHOUT the dump: (a) the brief
+  // AGENT NOTICE tells the parent the delegate finished; (b) the tracker task row
+  // durably carries original_description + completion_summary for review; (c) the
+  // full completion detail (summary + results + stats) is on the agent bus
+  // (sendAgentMessage) for deliberate pull. Nothing is surfaced into the parent's
+  // live conversation or dashboard chat here. Kept as a documented seam rather
+  // than deleted so the requirement above stays visible to future readers.
+  void taskId;
+  void completingAgentId;
+  return;
 }

@@ -70,7 +70,7 @@ function seedAttachmentMsg(id: string, content: string): void {
   ]);
   mockDb.current!.prepare(
     `INSERT INTO messages (id, agent_id, role, content, attachments)
-     VALUES (?, 'kevin', 'user', ?, ?)`,
+     VALUES (?, 'primary', 'user', ?, ?)`,
   ).run(id, content, att);
 }
 
@@ -80,7 +80,7 @@ describe('injectAttachmentBlocks', () => {
     const messages: Array<{ role: 'user' | 'assistant'; content: string | unknown[] }> = [
       { role: 'user', content: 'what is in this image?' },
     ];
-    injectAttachmentBlocks(messages as never, 'kevin');
+    injectAttachmentBlocks(messages as never, 'primary');
     expect(Array.isArray(messages[0].content)).toBe(true);
     const blocks = messages[0].content as Array<{ type: string }>;
     expect(blocks.find((b) => b.type === 'image')).toBeDefined();
@@ -96,7 +96,7 @@ describe('injectAttachmentBlocks', () => {
     const messages: Array<{ role: 'user' | 'assistant'; content: string | unknown[] }> = [
       { role: 'user', content: wrapped },
     ];
-    injectAttachmentBlocks(messages as never, 'kevin');
+    injectAttachmentBlocks(messages as never, 'primary');
     expect(Array.isArray(messages[0].content)).toBe(true);
     const blocks = messages[0].content as Array<{ type: string }>;
     expect(blocks.find((b) => b.type === 'image')).toBeDefined();
@@ -116,7 +116,7 @@ describe('injectAttachmentBlocks', () => {
       { role: 'user', content: 'tag' },
       { role: 'user', content: 'something else ending in tag' },
     ];
-    injectAttachmentBlocks(messages as never, 'kevin');
+    injectAttachmentBlocks(messages as never, 'primary');
     // First user message gets the attachment (exact match, no assistant after)
     expect(Array.isArray(messages[0].content)).toBe(true);
     // Second user message stays a string (no second match for the same row)
@@ -149,7 +149,7 @@ describe('injectAttachmentBlocks', () => {
         content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }],
       },
     ];
-    injectAttachmentBlocks(messages as never, 'kevin');
+    injectAttachmentBlocks(messages as never, 'primary');
     // The user message still gets the image injected — even though iter 1's
     // assistant is "after" it — because that assistant has tool_use blocks
     // and is therefore mid-loop, not a turn boundary.
@@ -170,7 +170,7 @@ describe('injectAttachmentBlocks', () => {
       { role: 'assistant', content: 'I saw the first image.' }, // plain text → turn boundary
       { role: 'user', content: 'second image' },
     ];
-    injectAttachmentBlocks(messages as never, 'kevin');
+    injectAttachmentBlocks(messages as never, 'primary');
     // First user message stays a string (prior turn, attachment not re-injected)
     expect(typeof messages[0].content).toBe('string');
     // Second user message gets the image (current turn)

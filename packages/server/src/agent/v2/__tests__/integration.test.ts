@@ -127,11 +127,11 @@ vi.mock('../../../memory/assembler.js', () => ({
 // (config/runtime.js mock removed in Phase 9 Stage 2 — module deleted)
 
 vi.mock('../../../config/platform.js', () => ({
-  isPrimaryAgent: (id: string) => id === 'kevin',
+  isPrimaryAgent: (id: string) => id === 'primary',
   isPMAgent: () => false,
   getOwnerName: () => 'TestUser',
-  getPrimaryAgentId: () => 'kevin',
-  getPrimaryAgentName: () => 'Kevin',
+  getPrimaryAgentId: () => 'primary',
+  getPrimaryAgentName: () => 'Primary',
   getDreamerAgentId: () => 'dreamer',
 }));
 
@@ -244,10 +244,10 @@ function setupTestDb(): Database.Database {
     );
   `);
 
-  // Seed Kevin (primary agent)
+  // Seed the primary agent
   db.prepare(`
     INSERT INTO agents (id, name, model_id, status, config, classification)
-    VALUES ('kevin', 'Kevin', 'test-model', 'idle', '{}', 'sensei')
+    VALUES ('primary', 'Primary', 'test-model', 'idle', '{}', 'sensei')
   `).run();
   db.prepare(`
     INSERT INTO providers (id, name, type, auth_type)
@@ -260,7 +260,7 @@ function setupTestDb(): Database.Database {
   // Seed a user message so assembleContext has something to work with
   db.prepare(`
     INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
-    VALUES ('msg-user-1', 'kevin', 'user', 'hello kevin', 1, datetime('now'))
+    VALUES ('msg-user-1', 'primary', 'user', 'hello primary', 1, datetime('now'))
   `).run();
 
   return db;
@@ -330,7 +330,7 @@ describe('runV2Turn integration', () => {
       stopReason: 'end_turn',
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // Model was called once
     expect(callModelSpy).toHaveBeenCalledTimes(1);
@@ -349,7 +349,7 @@ describe('runV2Turn integration', () => {
     // Agent ends idle
     const agent = mockDb.current!
       .prepare('SELECT status FROM agents WHERE id = ?')
-      .get('kevin') as { status: string };
+      .get('primary') as { status: string };
     expect(agent.status).toBe('idle');
   });
 
@@ -362,7 +362,7 @@ describe('runV2Turn integration', () => {
       stopReason: 'end_turn',
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // The bug we hit: injectAttachmentBlocks was never called from v2 loop.
     // This test catches it.
@@ -378,7 +378,7 @@ describe('runV2Turn integration', () => {
       stopReason: 'end_turn',
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     expect(enforceModelCapabilitiesSpy).toHaveBeenCalled();
     // Capability enforcement must precede the model call.
@@ -396,7 +396,7 @@ describe('runV2Turn integration', () => {
       stopReason: 'end_turn',
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     const params = callModelSpy.mock.calls[0][0] as { abortSignal?: AbortSignal };
     expect(params.abortSignal).toBeDefined();
@@ -419,7 +419,7 @@ describe('runV2Turn integration', () => {
       };
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // Each chunk should have produced a separate chat:chunk broadcast
     // (NOT batched until model finishes — that was v1's bug)
@@ -449,7 +449,7 @@ describe('runV2Turn integration', () => {
       isError: false,
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // Loop should call model exactly ONCE — complete_task exits before
     // a follow-up call.
@@ -477,7 +477,7 @@ describe('runV2Turn integration', () => {
       isError: false,
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // Same as complete_task — image_create exits without follow-up call.
     expect(callModelSpy).toHaveBeenCalledTimes(1);
@@ -489,7 +489,7 @@ describe('runV2Turn integration', () => {
       callCount++;
       if (callCount === 1) {
         // After first call, simulate user clicking stop mid-loop
-        stoppedAgents.add('kevin');
+        stoppedAgents.add('primary');
         return {
           content: '',
           toolCalls: [{ id: 'tc1', name: 'file_read', arguments: { path: '/x' } }],
@@ -513,7 +513,7 @@ describe('runV2Turn integration', () => {
       isError: false,
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // First call ran, tool ran, stop was set, second iteration's
     // top-of-loop check should exit BEFORE second model call.
@@ -522,11 +522,11 @@ describe('runV2Turn integration', () => {
     // Status should be idle
     const agent = mockDb.current!
       .prepare('SELECT status FROM agents WHERE id = ?')
-      .get('kevin') as { status: string };
+      .get('primary') as { status: string };
     expect(agent.status).toBe('idle');
 
     // stoppedAgents should be cleared by the loop
-    expect(stoppedAgents.has('kevin')).toBe(false);
+    expect(stoppedAgents.has('primary')).toBe(false);
   });
 
   it('PRESERVATION #37: pre-call compaction gate fires WARN at 90%', async () => {
@@ -548,7 +548,7 @@ describe('runV2Turn integration', () => {
       stopReason: 'end_turn',
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // chat:error with code CONTEXT_HIGH should fire (warn doesn't block,
     // turn continues normally)
@@ -581,11 +581,11 @@ describe('runV2Turn integration', () => {
       stopReason: 'end_turn',
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // Emergency compaction was forced
     expect(checkAndCompactSpy).toHaveBeenCalledWith(
-      'kevin',
+      'primary',
       expect.any(String),
       expect.any(Number),
       expect.objectContaining({ force: true }),
@@ -627,7 +627,7 @@ describe('runV2Turn integration', () => {
     // auto-continue path fires within the test.
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
-      await runV2Turn('kevin');
+      await runV2Turn('primary');
       // Drain the 1s delay before handleMessage('') fires.
       await vi.advanceTimersByTimeAsync(1500);
     } finally {
@@ -639,13 +639,13 @@ describe('runV2Turn integration', () => {
 
     // The system message documenting the auto-continue was persisted.
     const sysMsgs = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'kevin' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
       .all() as Array<{ content: string }>;
     expect(sysMsgs).toHaveLength(1);
     expect(sysMsgs[0].content).toMatch(/75 tool calls.*Starting a fresh turn/);
 
     // handleMessage('') was called to continue.
-    expect(handleMessageSpy).toHaveBeenCalledWith('kevin', '');
+    expect(handleMessageSpy).toHaveBeenCalledWith('primary', '');
   });
 
   it('PRESERVATION #37: pre-call compaction gate surrenders turn at ≥99%', async () => {
@@ -669,11 +669,11 @@ describe('runV2Turn integration', () => {
       stopReason: 'end_turn',
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // Forced compaction was attempted.
     expect(checkAndCompactSpy).toHaveBeenCalledWith(
-      'kevin',
+      'primary',
       expect.any(String),
       expect.any(Number),
       expect.objectContaining({ force: true }),
@@ -684,7 +684,7 @@ describe('runV2Turn integration', () => {
 
     // A [System: ...] note was persisted explaining the surrender.
     const sysMsgs = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'kevin' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
       .all() as Array<{ content: string }>;
     expect(sysMsgs).toHaveLength(1);
     expect(sysMsgs[0].content).toMatch(/memory is too full|impossibly full|pausing|surrender/i);
@@ -704,7 +704,7 @@ describe('runV2Turn integration', () => {
       stopReason: 'end_turn',
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     expect(drainPendingAttachmentsSpy).toHaveBeenCalled();
 
@@ -726,7 +726,7 @@ describe('runV2Turn integration', () => {
       stopReason: 'end_turn',
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // Cost is recorded INSIDE callModel (in model.ts). v2 loop must NOT
     // also call recordCost. recordCostSpy is only fired if v2 loop
@@ -743,12 +743,12 @@ describe('runV2Turn integration', () => {
       stopReason: 'end_turn',
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     expect(queueEmbeddingSpy).toHaveBeenCalled();
     const args = queueEmbeddingSpy.mock.calls[0];
     expect(args[0]).toBe('message');
-    expect(args[2]).toBe('kevin');
+    expect(args[2]).toBe('primary');
     expect(args[3]).toBe('meaningful response');
   });
 
@@ -771,7 +771,7 @@ describe('runV2Turn integration', () => {
       };
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // The model should have been called THREE times:
     //   call 1 — initial empty
@@ -787,7 +787,7 @@ describe('runV2Turn integration', () => {
 
     // No assistant message was persisted (all responses were empty).
     const assistantMsgs = mockDb.current!
-      .prepare("SELECT * FROM messages WHERE agent_id = 'kevin' AND role = 'assistant'")
+      .prepare("SELECT * FROM messages WHERE agent_id = 'primary' AND role = 'assistant'")
       .all();
     expect(assistantMsgs).toHaveLength(0);
   });
@@ -799,7 +799,7 @@ describe('runV2Turn integration', () => {
     mockDb.current!
       .prepare(
         `INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
-         VALUES ('msg-prior-assistant', 'kevin', 'assistant', 'Hello back!', 1, datetime('now'))`,
+         VALUES ('msg-prior-assistant', 'primary', 'assistant', 'Hello back!', 1, datetime('now'))`,
       )
       .run();
 
@@ -811,11 +811,11 @@ describe('runV2Turn integration', () => {
       stopReason: 'end_turn',
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // Still exactly one assistant message — the dup was rejected.
     const assistantMsgs = mockDb.current!
-      .prepare("SELECT id FROM messages WHERE agent_id = 'kevin' AND role = 'assistant'")
+      .prepare("SELECT id FROM messages WHERE agent_id = 'primary' AND role = 'assistant'")
       .all();
     expect(assistantMsgs).toHaveLength(1);
   });
@@ -826,7 +826,7 @@ describe('runV2Turn integration', () => {
     mockDb.current!
       .prepare(
         `INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
-         VALUES ('msg-prior-assistant', 'kevin', 'assistant', 'Same text', 1, datetime('now'))`,
+         VALUES ('msg-prior-assistant', 'primary', 'assistant', 'Same text', 1, datetime('now'))`,
       )
       .run();
 
@@ -848,10 +848,10 @@ describe('runV2Turn integration', () => {
       toolCallId: 'tc1', name: 'file_read', content: 'body', isError: false,
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     const assistantMsgs = mockDb.current!
-      .prepare("SELECT id FROM messages WHERE agent_id = 'kevin' AND role = 'assistant'")
+      .prepare("SELECT id FROM messages WHERE agent_id = 'primary' AND role = 'assistant'")
       .all();
     expect(assistantMsgs.length).toBeGreaterThan(1);
   });
@@ -884,7 +884,7 @@ describe('runV2Turn integration', () => {
       isError: false,
     }));
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // Four model calls (the nudge resets the counter so the post-nudge
     // sequence repeats): iter 1 → counter 1; iter 2 → counter hits 2,
@@ -934,7 +934,7 @@ describe('runV2Turn integration', () => {
       };
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // No NO_RESULTS error should have fired — the "good" result reset the counter.
     const noResultsErrors = (getBroadcastEventsByType('chat:error') as Array<{ code?: string }>).filter(
@@ -979,7 +979,7 @@ describe('runV2Turn integration', () => {
       isError: false,
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // Two model calls: tool-use then empty end-of-turn. No silent retry.
     expect(modelCallCount).toBe(2);
@@ -1023,12 +1023,12 @@ describe('runV2Turn integration', () => {
       isError: false,
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // Inspect messages in insertion order
     const rows = mockDb.current!
       .prepare("SELECT role FROM messages WHERE agent_id = ? ORDER BY created_at, rowid")
-      .all('kevin') as Array<{ role: string }>;
+      .all('primary') as Array<{ role: string }>;
     // Find index of assistant message with tool_use, then verify the next
     // message is the tool result (not a system message in between)
     for (let i = 0; i < rows.length - 1; i++) {
@@ -1062,20 +1062,20 @@ describe('runV2Turn integration', () => {
       new Error('400 The model does not support image input — no endpoints found that support images'),
     );
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // No injury side effects (Tier B).
     expect(recordErrorMock).not.toHaveBeenCalled();
     expect(onAgentInjuredSpy).not.toHaveBeenCalled();
 
     // Wakeup was queued so the agent retries.
-    expect(pendingWakeups.has('kevin')).toBe(true);
+    expect(pendingWakeups.has('primary')).toBe(true);
 
     // System note persisted, sourced from formatTierBNoteForAgent (spec
     // table). For vision_mismatch the body explains the model can't see
     // images and points to Settings.
     const sysMsgs = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'kevin' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
       .all() as Array<{ content: string }>;
     expect(sysMsgs).toHaveLength(1);
     expect(sysMsgs[0].content).toMatch(/can't see images|cannot see images/i);
@@ -1084,9 +1084,9 @@ describe('runV2Turn integration', () => {
     expect(removeCapabilitySpy).toHaveBeenCalledWith('test-model', 'vision');
 
     // Streak counter incremented; now keyed by (kind, fingerprint) per v2.3.19.
-    expect(recoveryRunStreak.get('kevin')?.count).toBe(1);
-    expect(recoveryRunStreak.get('kevin')?.kind).toBe('vision_mismatch');
-    expect(recoveryRunStreak.get('kevin')?.inputsFingerprint).toBeDefined();
+    expect(recoveryRunStreak.get('primary')?.count).toBe(1);
+    expect(recoveryRunStreak.get('primary')?.kind).toBe('vision_mismatch');
+    expect(recoveryRunStreak.get('primary')?.inputsFingerprint).toBeDefined();
   });
 
   it('PHASE 6: tool_format_rejected 400 → system note + wakeup, no injury', async () => {
@@ -1097,14 +1097,14 @@ describe('runV2Turn integration', () => {
       new Error('400 tool_use block has invalid input: missing required parameter'),
     );
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     expect(recordErrorMock).not.toHaveBeenCalled();
     expect(onAgentInjuredSpy).not.toHaveBeenCalled();
-    expect(pendingWakeups.has('kevin')).toBe(true);
+    expect(pendingWakeups.has('primary')).toBe(true);
 
     const sysMsgs = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'kevin' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
       .all() as Array<{ content: string }>;
     expect(sysMsgs).toHaveLength(1);
     // Either the tool_format_rejected or tool_args_schema_mismatch template
@@ -1114,7 +1114,7 @@ describe('runV2Turn integration', () => {
     expect(sysMsgs[0].content).toMatch(/tool call|Re-call with|Re-issue/i);
 
     // Streak kind is one of the two acceptable tool-error kinds.
-    const kind = recoveryRunStreak.get('kevin')?.kind;
+    const kind = recoveryRunStreak.get('primary')?.kind;
     expect(['tool_format_rejected', 'tool_args_schema_mismatch']).toContain(kind);
   });
 
@@ -1129,8 +1129,8 @@ describe('runV2Turn integration', () => {
     );
 
     // First run: streak gets created with the real fingerprint at count=1.
-    await runV2Turn('kevin');
-    const entry = recoveryRunStreak.get('kevin');
+    await runV2Turn('primary');
+    const entry = recoveryRunStreak.get('primary');
     expect(entry).toBeDefined();
     expect(entry!.kind).toBe('vision_mismatch');
     // No injury yet (count=1 << MAX).
@@ -1138,7 +1138,7 @@ describe('runV2Turn integration', () => {
 
     // Bump count to MAX so the next identical failure trips the cap.
     const { MAX_INLOOP_RECOVERIES_SAME_INPUTS } = await import('../../shared-state.js');
-    recoveryRunStreak.set('kevin', {
+    recoveryRunStreak.set('primary', {
       ...entry!,
       count: MAX_INLOOP_RECOVERIES_SAME_INPUTS,
     });
@@ -1147,15 +1147,15 @@ describe('runV2Turn integration', () => {
     onAgentInjuredSpy.mockClear();
 
     // Second identical failure — same kind, same fingerprint → escalate.
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
-    expect(recordErrorMock).toHaveBeenCalledWith('kevin');
+    expect(recordErrorMock).toHaveBeenCalledWith('primary');
     expect(onAgentInjuredSpy).toHaveBeenCalled();
-    expect(recoveryRunStreak.has('kevin')).toBe(false); // reset
+    expect(recoveryRunStreak.has('primary')).toBe(false); // reset
 
     // Give-up note persisted before the injury cascade.
     const sysMsgs = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'kevin' AND role = 'system' ORDER BY rowid ASC")
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid ASC")
       .all() as Array<{ content: string }>;
     const giveUp = sysMsgs.find((m) =>
       /(tried this recovery|approach and it keeps failing|Healer is being notified)/i.test(m.content),
@@ -1169,18 +1169,18 @@ describe('runV2Turn integration', () => {
       new Error('400 prompt is too long: 250000 tokens > 200000 maximum'),
     );
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // Forced compaction was invoked.
     expect(checkAndCompactSpy).toHaveBeenCalledWith(
-      'kevin',
+      'primary',
       expect.any(String),
       expect.any(Number),
       expect.objectContaining({ force: true }),
     );
 
     // Wakeup queued.
-    expect(pendingWakeups.has('kevin')).toBe(true);
+    expect(pendingWakeups.has('primary')).toBe(true);
 
     // No injury.
     expect(recordErrorMock).not.toHaveBeenCalled();
@@ -1197,7 +1197,7 @@ describe('runV2Turn integration', () => {
     //   - schedule the Healer
     callModelSpy.mockRejectedValue(new Error('401 Unauthorized: invalid_api_key'));
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // Healer was scheduled (Tier D does fire Healer — cross-provider,
     // potentially useful for diagnosis even if not auto-fix).
@@ -1215,7 +1215,7 @@ describe('runV2Turn integration', () => {
     // System note persisted for the agent so when it eventually wakes,
     // it has context to apologize to the user.
     const sysMsgs = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'kevin' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
       .all() as Array<{ content: string }>;
     expect(sysMsgs).toHaveLength(1);
     expect(sysMsgs[0].content).toMatch(/platform error|API key/i);
@@ -1225,7 +1225,7 @@ describe('runV2Turn integration', () => {
   it('PHASE 6 (v2.3.19): access_denied 403 → Tier D lock with ACCESS_DENIED code', async () => {
     callModelSpy.mockRejectedValue(new Error('403 Forbidden: model access denied'));
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     expect(onAgentInjuredSpy).toHaveBeenCalled();
     const errors = (getBroadcastEventsByType('chat:error') as Array<{ code?: string; error?: string }>);
@@ -1241,10 +1241,10 @@ describe('runV2Turn integration', () => {
     // its next session.
     callModelSpy.mockRejectedValue(new Error('500 Internal Server Error: something weird'));
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     const sysMsgs = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'kevin' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
       .all() as Array<{ content: string }>;
     expect(sysMsgs).toHaveLength(1);
     // The unclassified-error note tells the agent to apologize and end cleanly.
@@ -1256,14 +1256,14 @@ describe('runV2Turn integration', () => {
   it('PHASE 6: generic non-recoverable error → injury (recordError + healer + chat:error)', async () => {
     callModelSpy.mockRejectedValue(new Error('500 Internal Server Error'));
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
-    expect(recordErrorMock).toHaveBeenCalledWith('kevin');
+    expect(recordErrorMock).toHaveBeenCalledWith('primary');
     expect(onAgentInjuredSpy).toHaveBeenCalled();
 
     // Last error persisted on the agent row.
     const agent = mockDb.current!
-      .prepare("SELECT last_error FROM agents WHERE id = 'kevin'")
+      .prepare("SELECT last_error FROM agents WHERE id = 'primary'")
       .get() as { last_error: string | null };
     expect(agent.last_error).toContain('500');
 
@@ -1275,7 +1275,7 @@ describe('runV2Turn integration', () => {
   it('PHASE 6: rate-limit 429 → injury + RATE_LIMITED code + rate-limit system msg', async () => {
     callModelSpy.mockRejectedValue(new Error('429 Rate limit exceeded'));
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     expect(onAgentInjuredSpy).toHaveBeenCalled();
 
@@ -1289,7 +1289,7 @@ describe('runV2Turn integration', () => {
     // template. Tests assert the agent-facing language, not the old
     // "[Rate limited]" bracket.
     const sysMsgs = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'kevin' AND role = 'system'")
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'")
       .all() as Array<{ content: string }>;
     expect(sysMsgs.find((m) => /rate limit error/i.test(m.content) && /retrying automatically/i.test(m.content))).toBeDefined();
   });
@@ -1299,7 +1299,7 @@ describe('runV2Turn integration', () => {
     recordErrorMock.mockReturnValue(true);
     callModelSpy.mockRejectedValue(new Error('500 transient'));
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // chat:error has ERROR_LOOP code.
     const errors = (getBroadcastEventsByType('chat:error') as Array<{ code?: string; error?: string }>);
@@ -1316,7 +1316,7 @@ describe('runV2Turn integration', () => {
   it('PHASE 6: clean turn end clears recovery streak', async () => {
     // Pre-load the streak. After a clean text-only turn, the loop's
     // post-completion path should call recoveryRunStreak.delete(agentId).
-    recoveryRunStreak.set('kevin', { kind: 'vision_mismatch', count: 2 });
+    recoveryRunStreak.set('primary', { kind: 'vision_mismatch', count: 2 });
     callModelSpy.mockResolvedValue({
       content: 'all done',
       toolCalls: [],
@@ -1325,9 +1325,9 @@ describe('runV2Turn integration', () => {
       stopReason: 'end_turn',
     });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
-    expect(recoveryRunStreak.has('kevin')).toBe(false);
+    expect(recoveryRunStreak.has('primary')).toBe(false);
   });
 
   // ── Round-3 audit gap closures (2026-05-04) ──
@@ -1373,12 +1373,12 @@ describe('runV2Turn integration', () => {
       new Error('400 modality not supported: audio input rejected'),
     );
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     expect(recordErrorMock).not.toHaveBeenCalled();
     expect(onAgentInjuredSpy).not.toHaveBeenCalled();
-    expect(pendingWakeups.has('kevin')).toBe(true);
-    expect(recoveryRunStreak.get('kevin')?.kind).toBe('unsupported_modality');
+    expect(pendingWakeups.has('primary')).toBe(true);
+    expect(recoveryRunStreak.get('primary')?.kind).toBe('unsupported_modality');
   });
 
   it('PHASE 6 audit-gap: malformed_request 400 → system note + wakeup, no injury', async () => {
@@ -1386,12 +1386,12 @@ describe('runV2Turn integration', () => {
       new Error('400 invalid_request_error: malformed parameter foo'),
     );
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     expect(recordErrorMock).not.toHaveBeenCalled();
     expect(onAgentInjuredSpy).not.toHaveBeenCalled();
-    expect(pendingWakeups.has('kevin')).toBe(true);
-    expect(recoveryRunStreak.get('kevin')?.kind).toBe('malformed_request');
+    expect(pendingWakeups.has('primary')).toBe(true);
+    expect(recoveryRunStreak.get('primary')?.kind).toBe('malformed_request');
   });
 
   it('PHASE 6 audit-gap: unsupported_input 404 → system note + wakeup, no injury', async () => {
@@ -1399,12 +1399,12 @@ describe('runV2Turn integration', () => {
       new Error('404 No endpoints found that support audio input for this model'),
     );
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     expect(recordErrorMock).not.toHaveBeenCalled();
     expect(onAgentInjuredSpy).not.toHaveBeenCalled();
-    expect(pendingWakeups.has('kevin')).toBe(true);
-    expect(recoveryRunStreak.get('kevin')?.kind).toBe('unsupported_input');
+    expect(pendingWakeups.has('primary')).toBe(true);
+    expect(recoveryRunStreak.get('primary')?.kind).toBe('unsupported_input');
   });
 
   it('PHASE 6 audit-gap: output_truncation thrown as error → system note + wakeup, no injury', async () => {
@@ -1414,23 +1414,23 @@ describe('runV2Turn integration', () => {
       new Error('max_output_tokens exceeded: response was 9000 tokens, limit 8192'),
     );
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     expect(recordErrorMock).not.toHaveBeenCalled();
     expect(onAgentInjuredSpy).not.toHaveBeenCalled();
-    expect(pendingWakeups.has('kevin')).toBe(true);
+    expect(pendingWakeups.has('primary')).toBe(true);
 
     // System note explains output budget exhaustion.
     const sysMsgs = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'kevin' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
       .all() as Array<{ content: string }>;
     expect(sysMsgs).toHaveLength(1);
     expect(sysMsgs[0].content).toMatch(/output token limit/i);
   });
 
   it('PHASE 6 audit-gap: auto-router fallback → tries next model, no injury', async () => {
-    // Switch Kevin to auto-routed.
-    mockDb.current!.prepare("UPDATE agents SET model_id = 'auto' WHERE id = 'kevin'").run();
+    // Switch the primary agent to auto-routed.
+    mockDb.current!.prepare("UPDATE agents SET model_id = 'auto' WHERE id = 'primary'").run();
     // Seed two models in the test DB so selector has something to return.
     mockDb.current!
       .prepare(
@@ -1461,7 +1461,7 @@ describe('runV2Turn integration', () => {
         stopReason: 'end_turn',
       });
 
-    await runV2Turn('kevin');
+    await runV2Turn('primary');
 
     // Both selectModel calls fired (initial + fallback).
     expect(selectModelMock).toHaveBeenCalledTimes(2);

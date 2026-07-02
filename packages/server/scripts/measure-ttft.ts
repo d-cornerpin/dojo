@@ -12,7 +12,7 @@ import { callModel } from '../src/agent/model.js';
 import { getDb } from '../src/db/connection.js';
 import { loadSecrets } from '../src/config/loader.js';
 
-const PRIMARY_AGENT_ID = 'kevin'; // Just used to satisfy callModel's agentId
+const PRIMARY_AGENT_ID = 'primary'; // Just used to satisfy callModel's agentId
                                   // accounting; nothing is persisted by this
                                   // script.
 

@@ -3,10 +3,10 @@
 //
 // Field test: prompt-level guidance about "open a tracker project before
 // loading sources" was being ignored by DeepSeek V4 Pro on
-// corpus-synthesis tasks. Kevin made 9 source-loading calls in 4 turns
+// corpus-synthesis tasks. The primary agent made 9 source-loading calls in 4 turns
 // (use_technique, file_read x3, list_agents, exec, get_agent_profile x3)
 // without ever calling tracker_create_project, file_write, or
-// scratchpad_set. The reflex was in his prompt; he just plowed through.
+// scratchpad_set. The reflex was in its prompt; it just plowed through.
 //
 // CLAUDE.md rule: "The engine enforces. The model follows prompts."
 // So we move enforcement out of the prompt and into the loop.

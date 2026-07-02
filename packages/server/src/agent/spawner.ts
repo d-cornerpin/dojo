@@ -6,6 +6,7 @@ import { getAgentRuntime } from './runtime.js';
 import { getAgentPermissions, checkPermission } from './permissions.js';
 import { isPrimaryAgent } from '../config/platform.js';
 import { sendAgentMessage } from './agent-bus.js';
+import { postAgentNotice } from './agent-notice.js';
 import { memoryGrep } from '../memory/retrieval.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
 import { archiveAgentConversation } from '../vault/archive.js';
@@ -604,14 +605,33 @@ export async function completeAgent(
       },
     });
 
-    // Also insert as a system message into parent's messages for context assembly
-    const completionMsgId = uuidv4();
-    const completionContent = `[SOURCE: SUB-AGENT COMPLETION — automated notification that a sub-agent you spawned has finished, not a message from the user] Sub-agent "${agent.name}" completed: ${status}. ${summary}`;
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'system', ?, datetime('now'))
-    `).run(completionMsgId, agent.parent_agent, completionContent);
-    broadcastMessage(agent.parent_agent as string, { id: completionMsgId, role: 'system', content: completionContent });
+    // Notify the parent — but as a BRIEF, first-person, self-attributed note in the
+    // parent's awareness lane, NOT the full result dumped into its conversation.
+    // Pre-fix this injected the ENTIRE completion summary as a role='system' row, which
+    // live compaction then folded into the parent's context summaries, and the parent
+    // model read another agent's work out of its own history and narrated it back to the
+    // user — repeatedly (the owner's "Dreamer batch" summaries). Now:
+    //   • The FULL result stays in the agent bus (sendAgentMessage above) — the record /
+    //     lane the parent can pull from deliberately if it needs the detail.
+    //   • The parent sees only a brief self-attributed one-liner, structurally tagged
+    //     origin_kind='engine' so it lands in the EVENTS/awareness lane (never the live
+    //     user conversation), and marked platform-noise so compaction never folds it into
+    //     a summary. The parent may CHOOSE to surface it to the user in its own voice; the
+    //     raw exchange never enters the user's chat.
+    const firstSentence = (summary ?? '').split(/(?<=[.!?])\s/)[0] ?? '';
+    const brief = firstSentence.length > 180 ? `${firstSentence.slice(0, 177)}...` : firstSentence;
+    // The Dreamer is a persistent PER-BATCH agent: it calls complete_task once per batch,
+    // so notifying the parent here would drip N notices per nightly cycle. It posts ONE
+    // consolidated notice at cycle END instead (spawnNextDreamerBatch). Skip the per-batch
+    // note for it; every other agent still gets its normal per-completion note.
+    const { isDreamerAgent: isDreamer } = await import('../config/platform.js');
+    if (!(agent.name === 'Dreamer' || isDreamer(agentId))) {
+      postAgentNotice({
+        toAgentId: agent.parent_agent,
+        fromName: agent.name ?? 'sub-agent',
+        brief: brief || `Finished my work (${status}).`,
+      });
+    }
   }
 
   // Resolve the task this agent owns. Prefer the explicit agent.task_id link
@@ -762,7 +782,13 @@ export async function completeAgent(
     }, agentId);
   }
 
-  if (!resolvedTaskId && agent.parent_agent && status === 'complete') {
+  // The Dreamer never links its batches to tracker tasks, so this "you forgot to link a
+  // task" nag would fire on EVERY batch — another per-batch drip. Suppress it for the
+  // Dreamer; its single per-cycle notice (spawnNextDreamerBatch) is the only message it
+  // sends the primary. Every normal sub-agent still gets the orphaned-completion heads-up.
+  const { isDreamerAgent: isDreamerForOrphan } = await import('../config/platform.js');
+  const isDreamerCompletion = agent.name === 'Dreamer' || isDreamerForOrphan(agentId);
+  if (!resolvedTaskId && agent.parent_agent && status === 'complete' && !isDreamerCompletion) {
     // Apprentice completed but no task was linked. Common pattern: parent
     // spawned the apprentice and created tasks separately, but defaulted
     // assigned_to to themselves. The work happened, but no tracker row got
@@ -772,25 +798,20 @@ export async function completeAgent(
     //
     // Only fires for clean completions (status='complete'); failures and
     // blocks have their own signal already.
-    try {
-      const orphanWarning = `[SOURCE: ORPHANED COMPLETION — automated notification, not a message from the user] Sub-agent "${agent.name}" finished but had no tracker task linked. Their work is in their completion summary above, but no task row was updated. This usually means you spawned ${agent.name} without passing task_id, AND the matching tracker task is still assigned to you (the parent) instead of ${agent.name}. To track this kind of work next time: either pass task_id at spawn, or call tracker_create_task with assigned_to="${agent.name}" before assigning the work. If a tracker task should reflect what ${agent.name} just did, mark it complete yourself with tracker_update_status.`;
-      const orphanMsgId = uuidv4();
-      db.prepare(`
-        INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-        VALUES (?, ?, 'system', ?, datetime('now'))
-      `).run(orphanMsgId, agent.parent_agent, orphanWarning);
-      broadcastMessage(agent.parent_agent as string, { id: orphanMsgId, role: 'system', content: orphanWarning });
-      logger.info('Orphaned completion notice sent to parent', {
-        agentId,
-        parentId: agent.parent_agent,
-        agentName: agent.name,
-      });
-    } catch (err) {
-      logger.warn('Failed to send orphaned-completion notice to parent', {
-        agentId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    // comms-audit rank 10: this used to inject a 5-sentence engine TUTORIAL as a
+    // role='system' row + dashboard broadcast (and its "[SOURCE: ORPHANED COMPLETION"
+    // prefix was NOT in platform-noise, so compaction could fold it into a summary and
+    // re-narrate it — the one role='system' dump with a live re-narration vector). It
+    // also referenced a "completion summary above" that no longer exists after the brief-
+    // note fix. Replace with a brief, self-attributed awareness note; the how-to-link-a-
+    // task guidance belongs in the tracker tool docs the parent reads WHEN it acts, not
+    // dumped into the conversation.
+    postAgentNotice({
+      toAgentId: agent.parent_agent,
+      fromName: agent.name ?? 'sub-agent',
+      brief: `Heads up — I finished, but my work wasn't linked to a tracker task, so no task row updated. If you want it tracked, mark the matching task complete or pass task_id next time.`,
+      intent: 'orphaned_completion',
+    });
   }
 
   // If this is the Dreamer completing, mark its archives as processed.

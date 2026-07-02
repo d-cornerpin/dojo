@@ -207,7 +207,7 @@ const UserBubble = ({ msg, wordyMode = false }: { msg: ChatMessage; wordyMode?: 
  * assistant bubble instead (mirror of the user-side "from X" badge).
  */
 interface OutboundChannelInfo {
-  label: string;  // e.g. "to David via iMessage"
+  label: string;  // e.g. "to the owner via iMessage"
   emoji: string;
 }
 

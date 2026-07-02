@@ -298,13 +298,24 @@ async function pollForNewMessages(): Promise<void> {
         // (the watcher is agent-only); the shared auth check applies the
         // agent-kind gate, so an unknown sender => authorized:false => the
         // agent reads it as a notification and does not auto-reply.
+        // C19: classify anything that is NOT a 1:1 as 'group' (the old `=== 'group' ?
+        // 'group' : 'dm'` mislabeled Graph 'meeting' chats as 'dm', so multi-party meetings
+        // bypassed the group gate and could earn an auto-reply into the meeting). And make
+        // the group downgrade visible to ORIGIN, not just routing: a group/meeting message
+        // is authorized:false so deriveOrigin classifies it as a non-auto-reply notice and
+        // getWaitingHumanConversations does NOT make it a mandatory waiting turn (previously
+        // deriveOrigin saw authorized:true → forced turn, while A-3 routed it to dashboard —
+        // the schizophrenic counterparty). It still reaches the model via the EVENTS lane;
+        // the agent can choose to reply into the group with an explicit teams_send_message.
+        // A 1:1 (DM) from a safe sender stays authorized → normal routed reply turn.
+        const isDm = chat.chatType === 'oneOnOne';
         recordInboundMeta(msgId, {
           channel: 'teams',
           accountKind: 'agent',
-          authorized: isSenderAuthorized('teams', senderEmail, 'agent'),
+          authorized: isDm && isSenderAuthorized('teams', senderEmail, 'agent'),
           sender: senderEmail,
           chatId: chat.id,
-          chatType: chat.chatType === 'group' ? 'group' : 'dm',
+          chatType: isDm ? 'dm' : 'group',
           recipientAddress: senderEmail ?? undefined,
         });
 

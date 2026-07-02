@@ -44,7 +44,7 @@ export interface MessageOrigin {
   kind: OriginKind;
   relation: Relation;
   channel: Channel | null;
-  senderName: string | null; // "David", "Kelly", "+1555…", or null
+  senderName: string | null; // e.g. "the owner", "the PM agent", "+1555…", or null
   senderId: string | null;   // agent id / address / safe-sender id
   threadId: string | null;   // a2a thread, email message id, teams chat id
   intent: string | null;     // a2a intent (QUESTION/ASSIGN/…) or engine event type (scheduler/tracker/…)
@@ -148,9 +148,15 @@ export function deriveOrigin(f: OriginFields): MessageOrigin {
   // ── role === 'user' (the interesting case: could be a human, an agent, or engine) ──
 
   // 1. Another agent (structured A2A columns, or legacy A2A / agent-message marker).
+  // I-2 (comms-audit): the STRUCTURED columns (sourceAgentId / a2aThreadId) are always
+  // authoritative, but the PROSE markers (a2a / legacyAgent regex) are subordinate to
+  // structured inbound_meta — a real inbound-channel message that merely CONTAINS an
+  // A2A-looking string (e.g. the owner pasting an agent transcript into the dashboard)
+  // must be classified by its channel (inbound_meta), not reclassified as an agent
+  // message and hidden. A genuine legacy A2A row has no inbound_meta, so it still matches.
   const a2a = A2A_MARKER_RE.exec(trimmed);
   const legacyAgent = LEGACY_AGENT_RE.exec(trimmed);
-  if (f.sourceAgentId || f.a2aThreadId || a2a || legacyAgent) {
+  if (f.sourceAgentId || f.a2aThreadId || ((a2a || legacyAgent) && !f.inboundMeta)) {
     return {
       kind: 'agent', relation: 'agent', channel: 'a2a',
       senderName: (a2a?.[3] ?? legacyAgent?.[1])?.trim() ?? null,

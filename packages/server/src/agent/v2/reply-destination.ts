@@ -10,7 +10,7 @@
 // pattern, which failed in practice because the model's trained default
 // for conversational/short replies is to stream text, not call a tool.
 // Asking the model to flip mid-stream lost ~50% of replies into dashboard
-// chat that David never saw on iMessage.
+// chat that the owner never saw on iMessage.
 //
 // Two layers:
 //

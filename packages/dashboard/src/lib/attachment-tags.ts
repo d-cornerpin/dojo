@@ -7,7 +7,7 @@
  *   here
  *
  *   [Image attached: photo.jpg (1259579 bytes), fileId: 6ffa...]
- *   Path: /Users/.../uploads/kevin/...jpg
+ *   Path: /Users/.../uploads/primary/...jpg
  *   If your model supports vision, this image is shown to you ... attachment_id="...".
  *
  * That boilerplate is for the model, not the user — the chat renders the file

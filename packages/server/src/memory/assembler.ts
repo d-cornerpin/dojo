@@ -12,7 +12,7 @@ import { isPMAgent } from '../config/platform.js';
 import { buildAssemblyContext, assembleSystemFromRegistry } from '../prompt/registry/assembler.js';
 import type { AssemblyTurnState } from '../prompt/registry/types.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2 — single-track v2)
-import { turnBoundary } from '../agent/turn-state.js';
+import { turnBoundary, currentTurnConvKey } from '../agent/turn-state.js';
 import type { Summary } from './dag.js';
 import type { Message } from '@dojo/shared';
 
@@ -285,7 +285,7 @@ async function assembleContextViaRegistry(
   // giving the model an unambiguous anchor on the current counterparty.
   let systemPrompt = sys.text;
   if (turnContext?.counterparty) {
-    systemPrompt = `${systemPrompt}\n\n---\n\n${renderCounterpartyHeader(turnContext.counterparty)}`;
+    systemPrompt = `${systemPrompt}\n\n---\n\n${renderCounterpartyHeader(turnContext.counterparty, { isEngineTurn: turnContext.isEngineTurn })}`;
   }
   // Head-of-line hint (just-in-time, only when others are waiting): the engine
   // serves one conversation at a time, so a long synchronous task makes everyone
@@ -307,16 +307,24 @@ async function assembleContextViaRegistry(
   return { systemPrompt, messages, systemEntryIds: sys.entryIds };
 }
 
-/** Inbound markers that identify an A2A / inter-agent message stored as role='user'. */
+/**
+ * Prose fallback for identifying an inbound A2A row when its structured origin is
+ * missing (legacy/un-classified rows). The PRIMARY signal is the structured
+ * `origin.kind === 'agent'` (derived from the source_agent_id / a2a_thread_id
+ * columns); this regex is only the backup so a row without origin can't slip through.
+ */
 const A2A_INBOUND_RE = /^\s*(\[A2A:|\[SOURCE: AGENT MESSAGE FROM|\[SOURCE: GROUP BROADCAST FROM|\[SOURCE: PM AGENT POKE FROM)/;
 
 /**
  * Remove inter-agent traffic from a fresh tail for a normal/user turn:
- *   (a) inbound A2A messages (role='user', A2A marker),
+ *   (a) inbound A2A messages (role='user' with origin.kind==='agent'),
  *   (b) the agent's own send_to_agent / broadcast_to_group tool calls,
  *   (c) the tool_results paired to those calls (matched by tool_use_id).
- * Used only on non-A2A turns; see the caller for rationale. Pure — does not
- * touch the DB.
+ * This is what keeps inter-agent traffic OUT of the primary's HUMAN conversation so
+ * it isn't confused about who it's talking to — the a2a message still exists in the
+ * store (dashboard wordy mode shows it) and is seen by the receiver on its own A2A
+ * turn; it just doesn't bleed into a human turn. Keys on STRUCTURED origin, not prose
+ * (the marker regex is only a fallback for rows lacking origin). Pure — no DB writes.
  */
 function stripA2AFromTail(tail: Message[]): Message[] {
   const a2aToolIds = new Set<string>();
@@ -346,7 +354,9 @@ function stripA2AFromTail(tail: Message[]): Message[] {
     } catch { return false; }
   };
   return tail.filter((m) => {
-    if (m.role === 'user' && A2A_INBOUND_RE.test(m.content ?? '')) return false;
+    // Structural first: an inbound A2A row is origin.kind==='agent' (from the a2a
+    // columns). Fall back to the prose marker only when origin is absent (legacy rows).
+    if (m.role === 'user' && (m.origin?.kind === 'agent' || A2A_INBOUND_RE.test(m.content ?? ''))) return false;
     if (m.role === 'assistant' && isA2AAssistant(m.content ?? '')) return false;
     if (m.role === 'tool' && isA2AToolResult(m.content ?? '')) return false;
     return true;
@@ -363,8 +373,10 @@ function stripA2AFromTail(tail: Message[]): Message[] {
  * structured origin (deriveOrigin) — no marker regex.
  */
 function scopeToA2AThread(tail: Message[], threadId: string | null): Message[] {
+  // C-2 (comms-audit): match on the FULL thread id, not an 8-char prefix, so two
+  // distinct A2A threads sharing a prefix can't bleed into each other's scope.
   const sameThread = (t?: string | null) =>
-    !!t && !!threadId && t.slice(0, 8) === threadId.slice(0, 8);
+    !!t && !!threadId && t === threadId;
   return tail.filter((m) => {
     const o = m.origin;
     if (!o) return true;                                  // unclassified — keep
@@ -424,7 +436,7 @@ function scopeToEngineTurn(tail: Message[]): Message[] {
  * scoper above; this is the human-turn equivalent and closes the gap that let
  * a DIFFERENT human's inbound (e.g. a friend on iMessage) sit in — and then
  * get merged with — the owner's dashboard turn. Without it the model saw
- * "[SOURCE: IMESSAGE FROM Crystal] dinner? <david's question>" as one message
+ * "[SOURCE: IMESSAGE FROM a contact] dinner? <the owner's question>" as one message
  * and could not tell who asked what — the exact conflation this redesign kills.
  *
  * Keeps: messages whose origin resolves to the SAME conversation as the
@@ -838,7 +850,36 @@ async function assembleMessageContext(
     // On a human/A2A turn, the directive must be the human's ask, never a
     // scheduler/reminder event that just fired (OPEN-11). On an engine turn the
     // engine event IS the directive, so keep engine rows eligible there.
-    const directive = getActiveUserDirective(agentId, { excludeEngine: !turnContext?.isEngineTurn });
+    // T-1: on a HUMAN turn, scope the directive to THIS conversation so a different
+    // human's task can't be pinned as the active directive (cross-conversation leak).
+    // On engine/A2A turns leave it unscoped (the engine event / A2A thread drives those).
+    const cp = turnContext?.counterparty;
+    // RR#1 (comms-audit): scope to the EXACT conv_key the pickup stamped on the
+    // trigger (chosenConvKey, mirrored into currentTurnConvKey), NOT a key re-derived
+    // from the resolved counterparty. resolveTurnCounterparty can downgrade the channel
+    // (inboundChannel ?? origin.channel) or substitute the owner name where the pickup
+    // used the raw sender, producing a key that does not equal the stamped one — which
+    // would empty the ACTIVE USER DIRECTIVE on the very turn meant to answer the user.
+    // Fall back to re-derivation only outside a turn (map unset).
+    const stampedConvKey = currentTurnConvKey.get(agentId);
+    // C16: on an A2A (agent) or engine turn, SUPPRESS the ACTIVE USER DIRECTIVE entirely.
+    // Those turns have their OWN directive source — the A2A payload / engine event, already
+    // scoped into the tail and rendered by the counterparty/engine header. Passing null here
+    // meant "unscoped = pick the newest user row across ALL conversations", which on an A2A
+    // turn selected the A2A inbound (role='user', conv_key NULL) and rendered it as
+    // "ACTIVE USER DIRECTIVE" while the header said "this is NOT your user" — identity
+    // conflation on exactly the turns the redesign isolates. The '__none__' sentinel makes
+    // getActiveUserDirective return null. Human turns keep their scoped directive.
+    const directiveConvKey =
+      (turnContext?.isEngineTurn || cp?.kind === 'agent')
+        ? '__none__'
+        : (cp && cp.kind === 'user'
+            ? (stampedConvKey ?? conversationKey(cp.channel, cp.senderId, cp.name, cp.threadId))
+            : null);
+    const directive = getActiveUserDirective(agentId, {
+      excludeEngine: !turnContext?.isEngineTurn,
+      conversationKey: directiveConvKey,
+    });
     if (directive) {
       const block = formatDirectiveBlock(directive);
       const directiveTokens = estimateTokens(block);
@@ -884,7 +925,7 @@ async function assembleMessageContext(
   // Counterparty scoping (attribution redesign, Phase 4) — the live
   // conversation is scoped to the ONE counterparty this turn addresses, so the
   // model can never see two senders' messages mixed together (the root of the
-  // "Kelly is asking me two things" conflation).
+  // "the PM agent is asking me two things" conflation).
   //   • User turn  → the human conversation only (A2A inbound + the agent's own
   //                  send_to_agent activity stripped; engine events stay for now,
   //                  Phase 5 moves them to a dedicated EVENTS lane).

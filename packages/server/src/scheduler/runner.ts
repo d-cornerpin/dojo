@@ -10,7 +10,8 @@ import { broadcast } from '../gateway/ws.js';
 import { calculateNextRun, type ScheduledTask } from './engine.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';
-import { getPrimaryAgentId, getPMAgentId } from '../config/platform.js';
+import { postAgentNotice } from '../agent/agent-notice.js';
+import { getPrimaryAgentId, getPMAgentId, getOwnerName } from '../config/platform.js';
 
 const logger = createLogger('scheduler');
 
@@ -81,46 +82,22 @@ function alertMissedRuns(taskRow: Record<string, unknown>, missedSlots: number):
     ? (repeatInterval === 1 ? `every ${repeatUnit.replace(/s$/, '')}` : `every ${repeatInterval} ${repeatUnit}`)
     : 'recurring';
 
-  const alertText = (
-    `[System: scheduled task "${taskTitle}" (${taskId.slice(0, 8)}) has MISSED ${missedSlots} scheduled run${missedSlots === 1 ? '' : 's'}.\n` +
-    `  - Cadence: ${cadence}\n` +
-    `  - Anchor time: ${anchorTime ?? '(none)'}\n` +
-    `  - Most recent slot that was supposed to fire: ${nextRunAt}\n` +
-    `  - Last successful run: ${lastRunAt ?? 'never'}\n` +
-    `  - Current time: ${new Date().toISOString()}\n\n` +
-    `Likely cause: the platform was offline, or the task was paused longer than expected.\n` +
-    `The task has been auto-paused so it doesn't fire repeatedly. Decide what to do — ` +
-    `call tracker_resolve_missed_runs(task_id="${taskId}", action="<one of>"):\n` +
-    `  - run_now: unpause, fire ONE catch-up run right now, then resume the normal schedule from the next anchor.\n` +
-    `             Use this when the task's work is cumulative (e.g. "summarize what happened since last run") and one consolidated run will cover all the missed slots.\n` +
-    `  - skip:    unpause, skip every missed slot, resume from the NEXT future anchor.\n` +
-    `             Use this when each scheduled run is independent and stale (e.g. "post today's reminder") — there's nothing meaningful to do for the missed days.\n` +
-    `  - pause:   leave the task paused. No runs. The user will resume manually via the dashboard.\n` +
-    `             Use this when you're unsure or the situation needs a human decision.\n` +
-    `Default if you do nothing within a few minutes: the task stays paused (option "pause").]`
-  );
-
-  const msgId = uuidv4();
-  try {
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'system', ?, datetime('now'))
-    `).run(msgId, assignedAgent, alertText);
-    broadcast({
-      type: 'chat:message',
-      agentId: assignedAgent,
-      message: {
-        id: msgId, agentId: assignedAgent, role: 'system' as const,
-        content: alertText,
-        tokenCount: null, modelId: null, cost: null, latencyMs: null,
-        createdAt: new Date().toISOString(),
-      },
-    });
-  } catch (err) {
-    logger.warn('alertMissedRuns: failed to persist alert message', {
-      taskId, error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  // comms-audit rank 9: this used to dump a role='system' block — cadence, anchor, last
+  // run, current time, likely cause, plus a FOUR-option resolution matrix each with a
+  // 2-line explanation and a call template — into the agent's messages + dashboard chat.
+  // Worse than verbose: role='system' is SKIPPED by the model-context builder, so the
+  // woken agent's MODEL never saw the alert and could never call tracker_resolve_missed_runs
+  // — the whole resolve flow was silently broken (a correctness bug). Now a brief, model-
+  // visible awareness note (role='user' origin_kind='engine'); the run_now/skip/pause option
+  // semantics live just-in-time in the tracker_resolve_missed_runs tool description the
+  // agent reads WHEN it calls the tool.
+  postAgentNotice({
+    toAgentId: assignedAgent,
+    fromName: 'Scheduler',
+    selfIntro: false,
+    intent: 'scheduler_missed_runs',
+    brief: `Your recurring task "${taskTitle}" (${cadence}) missed ${missedSlots} run${missedSlots === 1 ? '' : 's'} while the box was offline or paused, so I auto-paused it. Call tracker_resolve_missed_runs(task_id="${taskId}") to catch up with one run (run_now), skip to the next slot, or leave it paused.`,
+  });
 
   // Wake the agent so it sees the alert. handleMessage with a thin
   // synthetic trigger is enough — the actual alert lives in the messages
@@ -323,10 +300,10 @@ async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
       const askText =
         `[VALIDATION CHECK] Task "${t.title}" (id=${t.id}) was marked ${t.status} by ${agentName} ${VALIDATION_ESCALATION_MIN}+ minutes ago, ` +
         `but the PM agent has not validated it. ` +
-        `David, is this actually ${t.status === 'complete' ? 'done' : t.status}? Reply yes/no with any context. ` +
+        `${getOwnerName()}, is this actually ${t.status === 'complete' ? 'done' : t.status}? Reply yes/no with any context. ` +
         `\n\n` +
-        `**Primary agent**: when David replies, call tracker_apply_user_validation(task_id="${t.id}", validated=<true if yes / false if no>, user_quote="<David's exact reply>", feedback="<optional details if validated=false>"). ` +
-        `validated=true clears the bug icon; validated=false reverts to in_progress and notifies the assigned agent with David's feedback.`;
+        `**Primary agent**: when ${getOwnerName()} replies, call tracker_apply_user_validation(task_id="${t.id}", validated=<true if yes / false if no>, user_quote="<the user's exact reply>", feedback="<optional details if validated=false>"). ` +
+        `validated=true clears the bug icon; validated=false reverts to in_progress and notifies the assigned agent with the user's feedback.`;
 
       // Post as a user-facing system message in the primary agent's chat
       // so the user sees the question alongside their normal chat history.
@@ -346,7 +323,7 @@ async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
         },
       });
 
-      // For iMessage delivery when David is away from the dojo: the system
+      // For iMessage delivery when the owner is away from the dojo: the system
       // message above is also broadcast to the primary agent, who has the
       // imessage_send tool. When the primary is woken by the message they
       // can forward via iMessage naturally. We do not call iMessage

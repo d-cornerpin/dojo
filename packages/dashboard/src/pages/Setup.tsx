@@ -1145,7 +1145,7 @@ const PMAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) => {
       <div>
         <label className="block text-sm font-medium text-ui/70 mb-1">PM Name</label>
         <input type="text" value={pmName} onChange={(e) => { setPmName(e.target.value); setSaved(false); }}
-          placeholder="e.g., Kelly, Max, Tracker"
+          placeholder="e.g., Alex, Max, Tracker"
           className="glass-input" />
       </div>
 

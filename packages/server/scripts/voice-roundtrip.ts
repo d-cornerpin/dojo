@@ -68,7 +68,7 @@ const FIXTURES: Array<{ id: string; reference: string; note: string }> = [
   },
   {
     id: 'proper_nouns',
-    reference: 'Tell Stella to meet Jordan at the Tacoma Dome on Saturday.',
+    reference: 'Tell Alex to meet Jordan at the Tacoma Dome on Saturday.',
     note: 'proper nouns and place names',
   },
   {

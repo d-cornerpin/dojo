@@ -6,6 +6,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';
+import { postAgentNotice } from '../agent/agent-notice.js';
 import { listTasks, getTask, getLastPoke, logPoke } from './schema.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { getRecentObservations, getRecentTransitions, formatEntryLine } from './task-log.js';
@@ -356,9 +357,12 @@ export function noteTransitionForReview(taskId: string, toStatus: string): void 
       });
       return;
     }
-    // Reset the throttle so the next runPMReview fires immediately.
+    // Reset the throttle so the next runPMReview fires immediately (responsive to a
+    // genuine transition). Do NOT clear lastSituationReportHash here: a transition that
+    // does not change the actionable issue-set must still dedup-skip, or we reintroduce
+    // the "re-notify the same board on every task churn" firehose. runPMReview recomputes
+    // the issue-set and re-runs only if it actually changed.
     lastLLMReviewAt = 0;
-    lastSituationReportHash = '';
     logger.info('PM event wake: firing runPMReview', { batchedTasks: fired });
     runPMReview().catch((err) => {
       logger.error('Event-driven PM review failed', { error: err instanceof Error ? err.message : String(err) });
@@ -1203,14 +1207,21 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
     return;
   }
 
-  // Stable dedup hash — keyed on (taskId, issueType) per issue plus the
-  // task summary. Earlier versions hashed the human-readable issue text,
-  // which embedded "X minutes ago" counters that drifted every minute and
-  // defeated the skip. (v2.3.7)
+  // Stable dedup hash — keyed ONLY on the actionable issue-set (taskId, issueType).
+  // This is the engine-level "don't firehose the primary" gate: the PM brain (and
+  // therefore any PM→primary send it produces) re-runs ONLY when the set of genuinely
+  // actionable issues changes — a new/changed/resolved (task, issue-type). It must NOT
+  // re-run on board CHURN: the full `taskSummary` (ledger lines, notes, status text,
+  // next_run_at timestamps) shifts constantly, so including it here made every minor
+  // tracker change bust the dedup and re-review/re-notify the same board every few
+  // minutes (the owner's "PM keeps sending everything" firehose). The stableId strips the
+  // "X minutes ago" drift that defeated the older text hash (v2.3.7). A genuinely large
+  // report is still fine when the issue-set DID change — this gates frequency/necessity,
+  // never length.
   const stableIssuesKey = issues.map(i => i.stableId).sort().join(',');
-  const reportHash = taskSummary + '|' + stableIssuesKey;
+  const reportHash = stableIssuesKey;
   if (reportHash === lastSituationReportHash) {
-    logger.debug('PM review: situation unchanged since last review, skipping LLM call');
+    logger.debug('PM review: actionable issue-set unchanged since last review, skipping (no re-notify)');
     return;
   }
   lastSituationReportHash = reportHash;
@@ -1241,27 +1252,19 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
     // path; this only guarantees the failure path. ('' never matches a real
     // hash, so the next cycle retries this exact issue-set.)
     lastSituationReportHash = '';
-    try {
-      const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
-      await deliverA2AMessage({
-        intent: 'QUESTION',
-        threadId: uuidv4(),
-        requiresResponse: false,
-        payload:
-          `PM review failed to run (engine fallback delivery). Engine-detected tracker issues that still need attention:\n` +
-          issues.map((issue, i) => `${i + 1}. ${issue.text}`).join('\n') +
-          `\n\nHandle what you can directly; the PM will retry on its next cycle.`,
-        toAgent: getPrimaryAgentId(),
-        fromAgent: 'system',
-      });
-      logger.warn('PM review failure: engine delivered issue list to primary directly', {
-        issueCount: issues.length,
-      });
-    } catch (fallbackErr) {
-      logger.error('PM review fallback delivery also failed', {
-        error: fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr),
-      });
-    }
+    // comms-audit rank 8: on a PM-LLM failure this used to splice the FULL engine issue
+    // list — issues.map(i => i.text), which is engine-internal directive prose written FOR
+    // the PM, including literal "POKE THEM: send_to_agent(...)" restart scripts — straight
+    // into a [A2A:QUESTION from:system] to the primary, where it reached the model as
+    // re-narration bait. The PM retries next cycle (hash reset above) and the issues are
+    // already on the tracker board, so the primary only needs a brief heads-up, not the raw
+    // engine directives. Post a brief PM awareness note; never forward issue.text.
+    postAgentNotice({
+      toAgentId: getPrimaryAgentId(),
+      fromName: 'PM',
+      intent: 'pm_review_failed',
+      brief: `My review couldn't run this cycle — ${issues.length} tracker item${issues.length === 1 ? '' : 's'} still need${issues.length === 1 ? 's' : ''} a look (they're on the board). I'll retry next cycle; handle anything urgent directly.`,
+    });
   }
 }
 

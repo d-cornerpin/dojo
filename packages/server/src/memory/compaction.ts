@@ -14,9 +14,26 @@ import {
 } from './dag.js';
 import { generateSummary } from './summarize.js';
 import { archiveMessagesBeforeCompaction, isDreamerIgnored } from '../vault/archive.js';
+import { isSystemServiceAgent } from '../config/platform.js';
 import { lastCompactionDividerAt } from '../agent/shared-state.js';
 import { summaryPartyTag } from './party-label.js';
+import { isPlatformNoise } from './platform-noise.js';
 import type { Message } from '@dojo/shared';
+
+// Inbound A2A — a peer agent's message TO this agent. For the primary's own context
+// summary this is inter-agent traffic, not the user's conversation, so it is excluded
+// from summary input. Must match the SAME marker set the assembler strips from a human
+// turn (assembler.ts A2A_INBOUND_RE): the modern [A2A: …] envelope plus the legacy
+// agent-message / group-broadcast / PM-poke source markers — otherwise a legacy variant
+// would be stripped from live turns but still bleed into the persistent summary.
+const A2A_INBOUND_MARKER_RE = /^\s*(\[A2A:|\[SOURCE: AGENT MESSAGE FROM|\[SOURCE: GROUP BROADCAST FROM|\[SOURCE: PM AGENT POKE FROM)/i;
+
+/** A row that must NOT be folded into a context summary: platform/inter-agent plumbing
+ *  or an inbound peer A2A message. Keeps another agent's work out of the primary's
+ *  narrative so the model can't later read it back and narrate it to the user. */
+function isNonConversationForSummary(content: string | null | undefined): boolean {
+  return isPlatformNoise(content) || (!!content && A2A_INBOUND_MARKER_RE.test(content));
+}
 
 // ── Assembled-context token estimate ──
 //
@@ -483,7 +500,13 @@ export async function checkAndCompact(
     const messagesForArchive = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(contextWindow));
     const archiveCompactedIds = getCompactedMessageIds(agentId);
     const uncompactedForArchive = messagesForArchive.filter(m => !archiveCompactedIds.has(m.id));
-    if (uncompactedForArchive.length > 0 && !isDreamerIgnored(agentId)) {
+    // C11: service agents (Healer/Trainer/PM/Imaginer/Dreamer) are excluded from archival —
+    // archiveMessagesBeforeCompaction returns null for them (its own service-agent skip),
+    // and this guard previously misread that null as "archive FAILED → abort compaction",
+    // so the healer never compacted, grew unbounded, and retried every few seconds. Their
+    // histories are pure plumbing (never memory-worthy), so skipping the archive step is
+    // correct; compaction then proceeds normally.
+    if (uncompactedForArchive.length > 0 && !isDreamerIgnored(agentId) && !isSystemServiceAgent(agentId)) {
       const archiveId = archiveMessagesBeforeCompaction(agentId, uncompactedForArchive);
       if (!archiveId) {
         logger.error('Archive failed — aborting compaction to prevent data loss', { agentId, messageCount: uncompactedForArchive.length }, agentId);
@@ -561,7 +584,10 @@ export async function checkAndCompact(
     // Archive raw messages to vault BEFORE proactive compaction.
     // If archival fails, ABORT — don't compact without preserving the data.
     // Exception: dreamer-ignored agents intentionally skip archive.
-    if (uncompactedMessages.length > 0 && !isDreamerIgnored(agentId)) {
+    // C11: same service-agent exclusion as the leaf-compaction archive guard above —
+    // archive returns null for service agents; without this the null is misread as
+    // "archive failed → abort" and the healer's proactive compaction never runs.
+    if (uncompactedMessages.length > 0 && !isDreamerIgnored(agentId) && !isSystemServiceAgent(agentId)) {
       const archiveId = archiveMessagesBeforeCompaction(agentId, uncompactedMessages);
       if (!archiveId) {
         logger.error('Archive failed — aborting proactive compaction to prevent data loss', { agentId, messageCount: uncompactedMessages.length }, agentId);
@@ -643,14 +669,22 @@ export async function runLeafCompaction(
     // JSON to one-liners: fed verbatim, the summarizer quotes raw JSON into
     // summaries (observed live), wasting tokens on wire format while keeping
     // none of the meaning beyond tool name + outcome, which the one-liner keeps.
-    const content = chunk.map(m => {
-      const role = m.role.toUpperCase();
-      // Tag each message with its conversation party so the summarizer can carry
-      // attribution into every fact (see summaryPartyTag above).
-      const party = summaryPartyTag(m);
-      const tag = party ? `${role} · ${party}` : role;
-      return `[${tag}] ${condenseToolJsonForSummary(scrubTechniqueContentForSummary(m.content))}`;
-    }).join('\n\n---\n\n');
+    const content = chunk
+      // Drop inter-agent/lifecycle plumbing (sub-agent completions, PM/scheduler/
+      // healer pokes, inbound A2A, session dividers, synthetic acks) from the summary
+      // input. Without this the summarizer folded another agent's completion dump into
+      // the primary's context summary, and the model then narrated that work back to
+      // the user (the repeated "Dreamer batch" summaries). The vault already strips these;
+      // this makes live compaction agree.
+      .filter(m => !isNonConversationForSummary(m.content))
+      .map(m => {
+        const role = m.role.toUpperCase();
+        // Tag each message with its conversation party so the summarizer can carry
+        // attribution into every fact (see summaryPartyTag above).
+        const party = summaryPartyTag(m);
+        const tag = party ? `${role} · ${party}` : role;
+        return `[${tag}] ${condenseToolJsonForSummary(scrubTechniqueContentForSummary(m.content))}`;
+      }).join('\n\n---\n\n');
 
     const messageIds = chunk.map(m => m.id);
     const earliestAt = chunk[0].createdAt;
@@ -666,6 +700,23 @@ export async function runLeafCompaction(
         }, agentId);
         break;
       }
+      // A chunk that was ENTIRELY inter-agent/lifecycle plumbing has no
+      // conversation to summarize. Skip the LLM round-trip and record a minimal
+      // placeholder so the rows are still marked compacted + removed from the live
+      // tail (bookkeeping intact) without inventing narrative from plumbing.
+      if (content.trim().length === 0) {
+        createLeafSummary(
+          agentId,
+          '(system/inter-agent activity — no user conversation in this span)',
+          estimateTokens('(system/inter-agent activity — no user conversation in this span)'),
+          messageIds,
+          earliestAt,
+          latestAt,
+        );
+        summariesCreated++;
+        continue;
+      }
+
       const summary = await generateSummary({
         content,
         depth: 0,
@@ -899,14 +950,19 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
     if (allMessages.length < 5) return; // Not enough context to summarize
 
     // Format messages for the summarizer. Scrub technique tool-result
-    // bodies first so they don't leak into the continuity brief.
-    const formatted = allMessages.map(m => {
-      const role = m.role === 'assistant' ? '[ASSISTANT]' : m.role === 'user' ? '[USER]' : `[${m.role.toUpperCase()}]`;
-      const scrubbed = scrubTechniqueContentForSummary(m.content);
-      // Truncate very long messages (tool results) to keep the input manageable
-      const content = scrubbed.length > 2000 ? scrubbed.slice(0, 2000) + '...[truncated]' : scrubbed;
-      return `${role}\n${content}`;
-    }).join('\n---\n');
+    // bodies first so they don't leak into the continuity brief. Also drop
+    // inter-agent/lifecycle plumbing (same reason as the leaf summary above): a
+    // sub-agent completion dump or PM poke must not become part of the brief the
+    // primary reads after compaction, or it narrates another agent's work to the user.
+    const formatted = allMessages
+      .filter(m => !isNonConversationForSummary(m.content))
+      .map(m => {
+        const role = m.role === 'assistant' ? '[ASSISTANT]' : m.role === 'user' ? '[USER]' : `[${m.role.toUpperCase()}]`;
+        const scrubbed = scrubTechniqueContentForSummary(m.content);
+        // Truncate very long messages (tool results) to keep the input manageable
+        const content = scrubbed.length > 2000 ? scrubbed.slice(0, 2000) + '...[truncated]' : scrubbed;
+        return `${role}\n${content}`;
+      }).join('\n---\n');
 
     // Cap the input to avoid sending too much to the summarizer
     const maxInput = Math.min(formatted.length, 50000);

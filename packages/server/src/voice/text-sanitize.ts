@@ -25,7 +25,7 @@ export function sanitizeForSpeech(text: string): string {
   //    only animates the on-screen orb and is invisible to the user.
   s = s.replace(/\(\(\s*mood\s*:\s*[a-z]+\s*\)\)/gi, '');
 
-  // 1. Drop fenced code blocks entirely (Kevin uses them for tool examples /
+  // 1. Drop fenced code blocks entirely (the primary agent uses them for tool examples /
   //    config snippets; spoken word doesn't benefit from "import os newline
   //    def main colon").
   s = s.replace(/```[\s\S]*?```/g, ' code block ');
@@ -91,7 +91,7 @@ export function sanitizeForSpeech(text: string): string {
   s = s.replace(/[ \t]+$/gm, '');
 
   // 16. Expand units / abbreviations / TLDs into pronounceable forms.
-  //     ("72°F" → "72 degrees Fahrenheit", "kevin.com" → "kevin dot com", etc.)
+  //     ("72°F" → "72 degrees Fahrenheit", "example.com" → "example dot com", etc.)
   s = normalizeForSpeech(s);
 
   return s;

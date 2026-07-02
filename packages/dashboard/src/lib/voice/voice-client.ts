@@ -45,7 +45,7 @@ export interface VoiceClientOptions {
   wakeWordEnabled?: boolean;
   wakePhrase?: string;
   sleepPhrase?: string;
-  /** When true, detected speech while Kevin is speaking cancels TTS and
+  /** When true, detected speech while the primary agent is speaking cancels TTS and
    *  starts a new utterance. Off by default — phone speakers echo TTS into
    *  the mic and false-trigger interruption every time. */
   bargeInEnabled?: boolean;
@@ -159,7 +159,7 @@ export class VoiceClient {
   // transcriptions. Without this the server only sees a single big PCM
   // frame at end-of-speech and can never emit a partial.
   private isCapturing = false;
-  // When true, the current speech-start was suppressed (echo while Kevin
+  // When true, the current speech-start was suppressed (echo while the primary agent
   // was speaking, barge-in disabled). The matching speech-end must also
   // be suppressed — otherwise we'd send utterance_end to the server and
   // flip the UI to "transcribing" mid-reply for nothing.
@@ -167,7 +167,7 @@ export class VoiceClient {
   // The server fires `voice:tts_end` the moment it finishes SENDING WAV
   // chunks, but the browser is still PLAYING the buffered audio for several
   // seconds afterwards. If we transition to 'listening' immediately, the
-  // mic activates while Kevin's still talking through the speaker, the echo
+  // mic activates while the primary agent's still talking through the speaker, the echo
   // gets through (suppression is keyed on state==='speaking'), and we kick
   // off a phantom utterance. So we defer the transition: set this flag on
   // tts_end and actually flip to 'listening' from source.onended once the
@@ -595,7 +595,7 @@ export class VoiceClient {
         });
         // Bare wake call — play a soft "I'm listening" chime so the user
         // knows it's safe to speak the actual prompt. Skip when remainder
-        // is present (one-breath "Hey Kevin, remind me..." — the agent
+        // is present (one-breath "Hey <agent>, remind me..." — the agent
         // will respond directly so a chime would just be noise).
         if (!remainder) this.playChime('/wake-chime.wav');
         break;
@@ -649,10 +649,10 @@ export class VoiceClient {
   private handleSpeechStart(): void {
     if (this.state === 'speaking') {
       if (!this.bargeInEnabled) {
-        // Phone speakers feed Kevin's TTS back into the mic. iOS's hardware
+        // Phone speakers feed the primary agent's TTS back into the mic. iOS's hardware
         // AEC can't cancel browser-played audio reliably, so the VAD reads
         // the echo as user speech and false-triggers barge-in within a word
-        // or two of TTS starting. Half-duplex while Kevin speaks: suppress
+        // or two of TTS starting. Half-duplex while the primary agent speaks: suppress
         // this speech-start AND mark the utterance as suppressed so the
         // matching onSpeechEnd also no-ops (otherwise we'd flip the client
         // to 'transcribing' mid-reply with no actual audio to transcribe).
@@ -687,7 +687,7 @@ export class VoiceClient {
     // onSpeechStart fired, through the redemption tail. The live frames
     // we streamed while `isCapturing` was true START at onSpeechStart, so
     // they're missing the leading 800ms — which is exactly enough to
-    // chop off the first word of every utterance ("Hey Kevin" → "Kevin",
+    // chop off the first word of every utterance ("Hey <agent>" → "<agent>",
     // "How are you feeling" → "feeling"). Fix: send the canonical buffer
     // at end-of-utterance and have the server use IT for the final
     // transcript instead of its accumulated streamed frames. Live frames
@@ -797,7 +797,7 @@ export class VoiceClient {
       if (idx >= 0) this.scheduledSources.splice(idx, 1);
       // Last chunk drained AND server already said tts_end — NOW flip to
       // listening. Doing it any earlier and we'd activate the mic while
-      // Kevin is still audibly speaking, the echo would slip through (no
+      // the primary agent is still audibly speaking, the echo would slip through (no
       // longer guarded by state==='speaking'), and we'd start an echo
       // utterance instead of waiting for the user.
       if (this.scheduledSources.length === 0 && this.ttsEndPendingPlayback) {

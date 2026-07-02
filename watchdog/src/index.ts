@@ -19,20 +19,51 @@ const LOG_PATH = path.join(os.homedir(), '.dojo', 'logs', 'watchdog.log');
 const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://localhost:11434';
 const DOJO_DIR = path.join(os.homedir(), '.dojo');
 
-// iMessage recipient — try env var first, then read from platform DB
-function getImessageRecipient(): string {
-  const envRecipient = process.env.DOJO_IMESSAGE_RECIPIENT;
-  if (envRecipient) return envRecipient;
+// W-B1 (comms-audit): the watchdog must never text an UNAPPROVED number. It runs
+// out-of-band (even when the platform is down), so it can't go through the bridge's
+// safe-sender gate — it validates here instead, against the same
+// `imessage_approved_senders` config the bridge uses. The candidate (env override or
+// the legacy default-sender) is used only if it matches an approved sender; otherwise
+// we fall back to the approved PRIMARY (the owner). If nothing is approved, return ''
+// (send nothing) rather than text an unvalidated recipient.
+const normAddr = (s: string): string => String(s ?? '').toLowerCase().replace(/[^a-z0-9@.]/g, '').replace(/^1(\d{10})$/, '$1');
 
+function getApprovedSenders(): Array<{ address: string; is_primary?: boolean }> {
   try {
-    if (!fs.existsSync(DB_PATH)) return '';
+    if (!fs.existsSync(DB_PATH)) return [];
     const db = new Database(DB_PATH, { readonly: true });
-    const row = db.prepare("SELECT value FROM config WHERE key = 'imessage_default_sender'").get() as { value: string } | undefined;
+    const row = db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined;
     db.close();
-    return row?.value ?? '';
+    if (!row?.value) return [];
+    const parsed = JSON.parse(row.value);
+    const arr = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.senders) ? parsed.senders : []);
+    return arr
+      .map((s: unknown) => (typeof s === 'string' ? { address: s } : (s as { address?: string; is_primary?: boolean })))
+      .filter((s: { address?: string }) => !!s.address) as Array<{ address: string; is_primary?: boolean }>;
   } catch {
-    return '';
+    return [];
   }
+}
+
+// iMessage recipient — validated against the approved-sender allowlist (W-B1).
+function getImessageRecipient(): string {
+  const approved = getApprovedSenders();
+  if (approved.length === 0) return ''; // nothing approved → send nothing
+  const candidate = process.env.DOJO_IMESSAGE_RECIPIENT
+    ?? (() => {
+      try {
+        if (!fs.existsSync(DB_PATH)) return '';
+        const db = new Database(DB_PATH, { readonly: true });
+        const row = db.prepare("SELECT value FROM config WHERE key = 'imessage_default_sender'").get() as { value: string } | undefined;
+        db.close();
+        return row?.value ?? '';
+      } catch { return ''; }
+    })();
+  // Use the candidate only if it's actually an approved sender.
+  if (candidate && approved.some((s) => normAddr(s.address) === normAddr(candidate))) return candidate;
+  // Otherwise fall back to the approved primary (the owner), or the first approved.
+  const primary = approved.find((s) => s.is_primary) ?? approved[0];
+  return primary.address;
 }
 
 let consecutiveFailures = 0;

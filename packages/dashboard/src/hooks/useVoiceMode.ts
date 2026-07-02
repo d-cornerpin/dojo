@@ -101,7 +101,7 @@ async function loadSavedVoiceSettings(): Promise<SavedVoiceSettings> {
       wakeWordEnabled: wake.ok && wake.data.value === 'true',
       wakePhrase: (wp.ok && wp.data.value && wp.data.value.trim()) || defaultWakePhrase,
       sleepPhrase: (sp.ok && sp.data.value && sp.data.value.trim()) || 'stop listening',
-      // Off by default — phone speakers echo Kevin's TTS into the mic and
+      // Off by default — phone speakers echo the primary agent's TTS into the mic and
       // make voice-based barge-in unreliable. Users on headphones (or
       // desktop with good speaker separation) can enable it in Settings.
       bargeInEnabled: bargeIn.ok && bargeIn.data.value === 'true',

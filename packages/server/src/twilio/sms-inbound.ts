@@ -84,9 +84,16 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
   const db = getDb();
   // Idempotency: Twilio may retry on slow ACKs. MessageSid is the
   // stable de-dup key.
+  // N-6 (comms-audit): anchor the match to the END of content (no trailing
+  // wildcard). buildContent always writes `…\nMessage SID: <sid>` as the final
+  // token (both known-sender and notification shapes), so a tail-anchored match
+  // is exact — it can't false-positive on a SID-looking string quoted earlier in
+  // a message body. (The leading wildcard still scans; for this low-volume channel
+  // that's fine — a dedicated indexed column would be the move only if SMS volume
+  // ever grows.)
   const existing = db.prepare(
     `SELECT id FROM messages WHERE content LIKE ? AND role = 'user' LIMIT 1`,
-  ).get(`%Message SID: ${payload.messageSid}%`) as { id: string } | undefined;
+  ).get(`%Message SID: ${payload.messageSid}`) as { id: string } | undefined;
   if (existing) {
     logger.info('Inbound SMS already ingested, skipping', { messageSid: payload.messageSid });
     return true;

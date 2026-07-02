@@ -218,7 +218,7 @@ describe('loopDetector', () => {
     expect(result.decision).toBe('ok');
   });
 
-  // v2.7.25 regression — David reported a vault_search sweep getting
+  // v2.7.25 regression — the owner reported a vault_search sweep getting
   // blocked: 4 related-but-distinct phrasings hit the 3-repeat threshold
   // because the global PROSE_FIELDS set dropped `query` from the
   // signature. For search tools query is the operation; this test pins
@@ -230,7 +230,7 @@ describe('loopDetector', () => {
       canonicalToolSignature('vault_search', { query: 'iMessage delivery failure broken bridge troubleshooting not receiving replies', mode: 'semantic' }),
     ];
     const result = loopDetector(
-      tc('vault_search', { query: 'inbound iMessage from David gets an imessage_send', mode: 'semantic' }),
+      tc('vault_search', { query: 'inbound iMessage from Alex gets an imessage_send', mode: 'semantic' }),
       sigs,
     );
     expect(result.decision).toBe('ok');

@@ -385,7 +385,7 @@ const VoiceSettingsSection = ({ config, onPatch }: { config: api.TwilioConfigDto
       >
         <option value="reject">Reject (drop the call)</option>
         <option value="voicemail">Voicemail (greeting + transcribe message)</option>
-        <option value="agent">Connect to agent (anyone can reach Kevin)</option>
+        <option value="agent">Connect to agent (anyone can reach your agent)</option>
       </select>
     </FieldRow>
     <FieldRow label="Max call duration (minutes)">
@@ -474,7 +474,7 @@ const SafeSenderSection = ({ kind }: { kind: 'sms' | 'voice' }) => {
           <input
             value={newName}
             onChange={e => setNewName(e.target.value)}
-            placeholder="e.g. Crystal"
+            placeholder="e.g. Alex"
             className="glass-input w-full text-xs"
           />
         </div>

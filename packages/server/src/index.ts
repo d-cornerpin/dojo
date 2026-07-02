@@ -197,6 +197,55 @@ async function main(): Promise<void> {
     }
   }
 
+  // 4b2. Re-drain unanswered conversations after restart (comms-audit D-1).
+  // An inbound that arrived before a restart is durably persisted with conv_key
+  // NULL (unanswered), but the in-memory wakeup that would trigger its turn is
+  // lost on restart — so it would sit unanswered until the NEXT inbound happens
+  // to poke the runtime. Nothing else re-reads it: the waiting SET is durable,
+  // the TRIGGER to read it was not. Sweep every agent for waiting human
+  // conversations and kick a drain, so a message the user sent is never silently
+  // forgotten across a restart (invariant 2 — never forgets to answer).
+  // handleMessage('') re-reads the DB and the normal serving path takes over;
+  // it is idempotent (an already-served row has a conv_key and is skipped), and
+  // sends are staggered so a fleet of agents doesn't fire all at once.
+  try {
+    const db = getDb();
+    const { getWaitingHumanConversations } = await import('./agent/v2/counterparty.js');
+    const { findUnrepliedAssignForAgent } = await import('./agent/a2a-replies.js');
+    const { getAgentRuntime } = await import('./agent/runtime.js');
+    // C20: exclude terminated agents — the re-drain must never resurrect a dead agent.
+    // findUnrepliedAssignForAgent has no status filter, so a terminated agent with an
+    // unreplied A2A ASSIGN would otherwise be kicked, run a turn (status flipped to
+    // 'working'), and emit a zombie A2A reply.
+    const agentRows = db.prepare("SELECT id FROM agents WHERE status != 'terminated'").all() as Array<{ id: string }>;
+    let redrained = 0;
+    for (const { id } of agentRows) {
+      try {
+        // T-3 (comms-audit): re-drain BOTH unanswered human conversations AND an
+        // unreplied A2A ASSIGN/QUESTION. The earlier D-1 swept only human
+        // conversations, so an inter-agent request that arrived just before a
+        // restart was lost forever (its wakeup was in-memory; nothing re-reads it
+        // and findUnrepliedAssignForAgent only runs inside a turn). One kick covers
+        // both — runV2Turn re-classifies and serves whichever is owed.
+        const owesHuman = getWaitingHumanConversations(id).length > 0;
+        const owesA2A = !owesHuman && findUnrepliedAssignForAgent(id) !== null;
+        if (owesHuman || owesA2A) {
+          redrained++;
+          const delay = redrained * 300;
+          setTimeout(() => {
+            try { void getAgentRuntime().handleMessage(id, '').catch(() => { /* best effort */ }); }
+            catch { /* best effort */ }
+          }, delay);
+        }
+      } catch { /* per-agent best effort */ }
+    }
+    if (redrained > 0) {
+      logger.info(`Boot re-drain: kicked ${redrained} agent(s) with unanswered conversations after restart`);
+    }
+  } catch (err) {
+    logger.warn('Boot re-drain failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+  }
+
   // 4c. Ensure PM agent exists and poke loop is running (if enabled and setup is complete)
   {
     const { isSetupCompleted } = await import('./config/platform.js');

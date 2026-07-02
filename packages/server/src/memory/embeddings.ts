@@ -63,54 +63,71 @@ export async function generateEmbedding(
 ): Promise<Float32Array> {
   const config = getEmbeddingConfig();
 
-  // Truncate text to prevent very large inputs
-  const truncated = text.length > 8000 ? text.slice(0, 8000) : text;
+  // C12: truncate to a cap safely UNDER the embed model's token context. The old 8000-char
+  // cap bounded CHARACTERS, but the Ollama failure is a TOKEN-context overflow — a dense or
+  // non-English summary exceeds the token context well under 8000 chars, so the embed call
+  // 500'd and the summary dropped (invisible to vector recall). ~2000 chars is a safe floor;
+  // the adaptive halving-retry below rescues anything still too dense.
+  const EMBED_CHAR_CAP = 2000;
+  let truncated = text.length > EMBED_CHAR_CAP ? text.slice(0, EMBED_CHAR_CAP) : text;
 
   if (config.provider === 'ollama') {
     const baseUrl = config.baseUrl.replace(/\/+$/, '');
-    const response = await fetch(`${baseUrl}/api/embeddings`, {
+    // C12: adaptive retry — on a token-context overflow, halve the input and retry (up to
+    // 3x) so a dense input still embeds instead of dropping to un-searchable.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const response = await fetch(`${baseUrl}/api/embeddings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: config.model,
+          prompt: truncated,
+          // keep_alive: how long Ollama holds the model resident after this call.
+          // The router warmer passes a window so the embedder stays loaded while
+          // auto-router is in use (no cold ~300ms reloads per route).
+          ...(opts?.keepAlive !== undefined ? { keep_alive: opts.keepAlive } : {}),
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (response.ok) {
+        const data = await response.json() as { embedding: number[] };
+        return new Float32Array(data.embedding);
+      }
+      const errorText = await response.text().catch(() => '');
+      if (response.status === 500 && /exceeds the context length/i.test(errorText) && truncated.length > 200) {
+        truncated = truncated.slice(0, Math.floor(truncated.length / 2));
+        continue;
+      }
+      throw new Error(`Ollama embedding failed: HTTP ${response.status} ${errorText.slice(0, 200)}`);
+    }
+    throw new Error('Ollama embedding failed: input still exceeded the context length after 3 halving retries');
+  }
+
+  // OpenAI-compatible endpoint — C12: same adaptive halving retry on a context overflow.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const response = await fetch(`${config.baseUrl}/v1/embeddings`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify({
         model: config.model,
-        prompt: truncated,
-        // keep_alive: how long Ollama holds the model resident after this call.
-        // The router warmer passes a window so the embedder stays loaded while
-        // auto-router is in use (no cold ~300ms reloads per route).
-        ...(opts?.keepAlive !== undefined ? { keep_alive: opts.keepAlive } : {}),
+        input: truncated,
       }),
       signal: AbortSignal.timeout(30000),
     });
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
-      throw new Error(`Ollama embedding failed: HTTP ${response.status} ${errorText.slice(0, 200)}`);
+    if (response.ok) {
+      const data = await response.json() as { data: Array<{ embedding: number[] }> };
+      return new Float32Array(data.data[0].embedding);
     }
-
-    const data = await response.json() as { embedding: number[] };
-    return new Float32Array(data.embedding);
-  }
-
-  // OpenAI-compatible endpoint
-  const response = await fetch(`${config.baseUrl}/v1/embeddings`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: config.model,
-      input: truncated,
-    }),
-    signal: AbortSignal.timeout(30000),
-  });
-
-  if (!response.ok) {
     const errorText = await response.text().catch(() => '');
+    if ((response.status === 500 || response.status === 400) && /exceeds the (context|maximum context) length|maximum context length|too long/i.test(errorText) && truncated.length > 200) {
+      truncated = truncated.slice(0, Math.floor(truncated.length / 2));
+      continue;
+    }
     throw new Error(`Embedding API failed: HTTP ${response.status} ${errorText.slice(0, 200)}`);
   }
-
-  const data = await response.json() as { data: Array<{ embedding: number[] }> };
-  return new Float32Array(data.data[0].embedding);
+  throw new Error('Embedding API failed: input still exceeded the context length after 3 halving retries');
 }
 
 // ── Store Embedding ──

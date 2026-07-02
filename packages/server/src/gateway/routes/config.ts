@@ -1912,8 +1912,8 @@ configRouter.put('/settings/:key', async (c) => {
   `).run(key, body.value);
 
   // Mirror channel safe-sender lists into the contacts store so a name the user
-  // just trusted (e.g. "Jain" on the iMessage list) resolves when they later
-  // say "text Jain about ...". The dashboard replaces the whole list on save;
+  // just trusted (e.g. "Alex" on the iMessage list) resolves when they later
+  // say "text Alex about ...". The dashboard replaces the whole list on save;
   // the mirror is idempotent + additive (it never deletes contacts) and
   // best-effort (a contacts hiccup must not fail the setting write).
   try {

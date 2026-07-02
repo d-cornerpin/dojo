@@ -12,9 +12,9 @@ describe('formatErrorForHuman (Tier D — user-facing)', () => {
   it('auth_invalid mentions provider + agent + next action', () => {
     const out = formatErrorForHuman('auth_invalid', {
       providerName: 'Anthropic',
-      agentName: 'Jain',
+      agentName: 'Alex',
     });
-    expect(out).toContain('Jain');
+    expect(out).toContain('Alex');
     expect(out).toContain('Anthropic');
     expect(out).toContain('Settings');
     expect(out).not.toMatch(/[{}]/); // no JSON

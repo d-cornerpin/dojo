@@ -124,8 +124,8 @@ function makeTask(db: Database.Database, overrides: Record<string, unknown> = {}
     description: 'test description',
     goal: 'test goal',
     status: 'in_progress',
-    assigned_to: 'kevin',
-    created_by: 'kevin',
+    assigned_to: 'primary',
+    created_by: 'primary',
     priority: 'normal',
     pause_validated: 0,
     complete_validated: 0,
@@ -171,7 +171,7 @@ describe('Phase D scenario suite', () => {
     // Seed a recent poke.
     testDb.prepare(`
       INSERT INTO poke_log (id, task_id, agent_id, poke_number, poke_type, sent_at, response_received)
-      VALUES (?, ?, 'kevin', 1, 'nudge', datetime('now','-20 seconds'), 0)
+      VALUES (?, ?, 'primary', 1, 'nudge', datetime('now','-20 seconds'), 0)
     `).run(`poke-${taskId}`, taskId);
 
     // Simulate the engine smell-detector firing as it would when the task
@@ -223,11 +223,11 @@ describe('Phase D scenario suite', () => {
     testDb.prepare(`
       INSERT INTO task_override_requests
         (id, task_id, requested_by, requested_status, justification, last_engine_error, attempts_attached, status, created_at)
-      VALUES (?, ?, 'kevin', 'complete', ?, ?, 3, 'pending', datetime('now'))
+      VALUES (?, ?, 'primary', 'complete', ?, ?, 3, 'pending', datetime('now'))
     `).run(
       id,
       taskId,
-      'Engine hard-gate circuit-breaker auto-fired after 3 consecutive same-task hard-gate rejections by kevin.',
+      'Engine hard-gate circuit-breaker auto-fired after 3 consecutive same-task hard-gate rejections by primary.',
       'evidence[0] missing kind or claim',
     );
     const row = testDb.prepare(`SELECT status, attempts_attached, requested_status FROM task_override_requests WHERE id = ?`).get(id) as { status: string; attempts_attached: number; requested_status: string };
@@ -278,7 +278,7 @@ describe('Phase D scenario suite', () => {
   it('Scenario H: bulk close writes one transition entry per task with reason', () => {
     const projectId = `proj-${Math.random().toString(36).slice(2, 8)}`;
     testDb.prepare(`
-      INSERT INTO projects (id, title, level, status, created_by) VALUES (?, 'test project', 1, 'active', 'kevin')
+      INSERT INTO projects (id, title, level, status, created_by) VALUES (?, 'test project', 1, 'active', 'primary')
     `).run(projectId);
     const t1 = makeTask(testDb, { project_id: projectId });
     const t2 = makeTask(testDb, { project_id: projectId, status: 'on_deck' });
@@ -290,7 +290,7 @@ describe('Phase D scenario suite', () => {
       testDb.prepare(`UPDATE tasks SET status = 'fallen', completed_at = datetime('now') WHERE id = ?`).run(id);
       testDb.prepare(`
         INSERT INTO task_log (id, task_id, from_entity, entry_kind, from_status, to_status, action_taken, reason, created_at)
-        VALUES (?, ?, 'agent:kevin', 'transition', ?, 'fallen', 'bulk-closed via tracker_close_project', ?, datetime('now'))
+        VALUES (?, ?, 'agent:primary', 'transition', ?, 'fallen', 'bulk-closed via tracker_close_project', ?, datetime('now'))
       `).run(`bulk-${id}`, id, fromStatus.status, reason);
     }
 
@@ -303,10 +303,10 @@ describe('Phase D scenario suite', () => {
     const taskId = makeTask(testDb);
     testDb.prepare(`
       INSERT INTO task_log (id, task_id, from_entity, entry_kind, note, created_at)
-      VALUES (?, ?, 'user', 'observation', 'David noting that this task needs clarification', datetime('now'))
+      VALUES (?, ?, 'user', 'observation', 'the owner noting that this task needs clarification', datetime('now'))
     `).run(`obs-${taskId}`, taskId);
     const row = testDb.prepare(`SELECT from_entity, entry_kind, note FROM task_log WHERE task_id = ? AND entry_kind = 'observation'`).get(taskId) as { from_entity: string; entry_kind: string; note: string };
     expect(row.from_entity).toBe('user');
-    expect(row.note).toContain('David noting');
+    expect(row.note).toContain('the owner noting');
   });
 });

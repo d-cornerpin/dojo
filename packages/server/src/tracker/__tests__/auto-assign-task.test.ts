@@ -53,7 +53,7 @@ beforeEach(() => {
 describe('autoCreateAssignTask', () => {
   it('creates a task assigned to the receiver, created by the sender', () => {
     const result = autoCreateAssignTask({
-      senderId: 'kevin',
+      senderId: 'primary',
       receiverId: 'maddy',
       payload: 'Build me a 14-slide deck for Meridian Health.',
       threadId: 'thread-1',
@@ -63,7 +63,7 @@ describe('autoCreateAssignTask', () => {
     const task = getTask(result!.taskId);
     expect(task).not.toBeNull();
     expect(task!.assignedTo).toBe('maddy');
-    expect(task!.createdBy).toBe('kevin');
+    expect(task!.createdBy).toBe('primary');
     expect(task!.status).toBe('in_progress');
     expect(task!.title).toBe('Build me a 14-slide deck for Meridian Health');
     expect(task!.description).toBe('Build me a 14-slide deck for Meridian Health.');
@@ -71,11 +71,11 @@ describe('autoCreateAssignTask', () => {
 
   it('reuses the existing task when a second ASSIGN arrives on the same thread', () => {
     const first = autoCreateAssignTask({
-      senderId: 'kevin', receiverId: 'maddy',
+      senderId: 'primary', receiverId: 'maddy',
       payload: 'Build the deck.', threadId: 'thread-1',
     });
     const second = autoCreateAssignTask({
-      senderId: 'kevin', receiverId: 'maddy',
+      senderId: 'primary', receiverId: 'maddy',
       payload: 'Also include a closing slide.', threadId: 'thread-1',
     });
     expect(first).not.toBeNull();
@@ -86,11 +86,11 @@ describe('autoCreateAssignTask', () => {
 
   it('creates separate tasks for separate threads even with the same sender/receiver', () => {
     const a = autoCreateAssignTask({
-      senderId: 'kevin', receiverId: 'maddy',
+      senderId: 'primary', receiverId: 'maddy',
       payload: 'First job.', threadId: 'thread-A',
     });
     const b = autoCreateAssignTask({
-      senderId: 'kevin', receiverId: 'maddy',
+      senderId: 'primary', receiverId: 'maddy',
       payload: 'Second job.', threadId: 'thread-B',
     });
     expect(a!.taskId).not.toBe(b!.taskId);
@@ -101,7 +101,7 @@ describe('autoCreateAssignTask', () => {
   it('truncates long titles to a sentence or 80 chars', () => {
     const long = 'A'.repeat(200);
     const result = autoCreateAssignTask({
-      senderId: 'kevin', receiverId: 'maddy',
+      senderId: 'primary', receiverId: 'maddy',
       payload: long, threadId: 'thread-long',
     });
     const task = getTask(result!.taskId);
@@ -112,7 +112,7 @@ describe('autoCreateAssignTask', () => {
 
   it('uses first-sentence as title when payload has multiple sentences', () => {
     const result = autoCreateAssignTask({
-      senderId: 'kevin', receiverId: 'maddy',
+      senderId: 'primary', receiverId: 'maddy',
       payload: 'Draft a press release. Include a quote from the CEO. Aim for 300 words.',
       threadId: 'thread-multi',
     });
@@ -122,7 +122,7 @@ describe('autoCreateAssignTask', () => {
 
   it('falls back to a placeholder title for empty/whitespace payloads', () => {
     const result = autoCreateAssignTask({
-      senderId: 'kevin', receiverId: 'maddy',
+      senderId: 'primary', receiverId: 'maddy',
       payload: '   ', threadId: 'thread-empty',
     });
     const task = getTask(result!.taskId);

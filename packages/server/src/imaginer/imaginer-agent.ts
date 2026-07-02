@@ -2,7 +2,7 @@
 // Imaginer System Agent
 // ════════════════════════════════════════
 //
-// Imaginer is a Sensei-tier permanent agent (like Kevin, PM, Trainer). Its
+// Imaginer is a Sensei-tier permanent agent (like the primary agent, PM, Trainer). Its
 // sole job is handling image generation requests from other agents via the
 // `image_create` tool. When an agent calls `image_create`, a message is
 // routed to Imaginer containing the description + metadata. Imaginer

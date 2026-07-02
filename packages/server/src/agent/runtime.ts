@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
 import type Anthropic from '@anthropic-ai/sdk';
 import { getDb } from '../db/connection.js';
+import { postAgentNotice } from './agent-notice.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getModelCapabilities } from '../services/capabilities.js';
@@ -318,7 +319,7 @@ import {
 } from './shared-state.js';
 
 import { turnBoundary, forceA2ATurn, a2aTurnRetries, MAX_A2A_TURN_RETRIES, lastTurnWasA2A, drainHead, MAX_DRAIN_STUCK, currentTurnKind } from './turn-state.js';
-import { getWaitingHumanConversations } from './v2/counterparty.js';
+import { getWaitingHumanConversations, getPendingEngineEvent } from './v2/counterparty.js';
 import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';
 
 // Recovery-streak Map and cap moved to shared-state.ts (Phase 6 2026-05-04)
@@ -434,6 +435,15 @@ export function preemptAgentForUrgentMessage(agentId: string): boolean {
 
 class AgentRuntime {
   async handleMessage(agentId: string, _content: string): Promise<void> {
+    // C20: never run a terminated agent (defense-in-depth for every entry path — the
+    // terminated guard previously existed only on the queued-wakeup path, so the boot
+    // re-drain / an A2A kick could still run a dead agent, flip it to 'working', and emit
+    // a zombie reply). Mirrors the check at the wakeup-processing path below.
+    const st = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined;
+    if (st?.status === 'terminated') {
+      logger.info('Skipping run — agent is terminated', { agentId }, agentId);
+      return;
+    }
     // If agent is already running, queue a wakeup so we re-run after current loop finishes
     if (activeRuns.has(agentId)) {
       logger.info('Agent busy — queuing wakeup for after current run', { agentId }, agentId);
@@ -606,6 +616,14 @@ class AgentRuntime {
               logger.warn('drain: head conversation not advancing — stopping re-trigger', { agentId, headRowid: head, waiting: waiting.length }, agentId);
               drainHead.delete(agentId);
             }
+          } else if (getPendingEngineEvent(agentId)) {
+            // E-A2: a human is no longer waiting but an engine event (scheduler/
+            // reminder/tracker/healer) is still UNPROCESSED — it was out-raced by a
+            // human and would otherwise be silently starved. Give it its own turn.
+            // It is stamped served at pickup, so this fires at most once per event
+            // (no spin), and only when no human is owed.
+            drainHead.delete(agentId);
+            pendingWakeups.add(agentId);
           } else {
             drainHead.delete(agentId);
           }
@@ -694,47 +712,28 @@ class AgentRuntime {
         LIMIT 5
       `).all(injuredAgentId) as StalledTaskRow[];
 
-      const stateLabel = pausedByLoop ? 'PAUSED (hit error loop)' : 'INJURED';
-      const firstLineOfError = errorMessage.split('\n')[0].slice(0, 200);
+      const stateLabel = pausedByLoop ? 'paused (hit an error loop)' : 'injured';
+      const firstLineOfError = errorMessage.split('\n')[0].slice(0, 80);
+      const errorHint = firstLineOfError ? ` ("${firstLineOfError}")` : '';
+      const stalledNote = stalledTasks.length > 0
+        ? ` ${stalledTasks.length} of its task${stalledTasks.length === 1 ? '' : 's'} stalled.`
+        : '';
 
-      const parts: string[] = [];
-      parts.push(
-        `[SOURCE: AGENT HEALTH ALERT — automated notification, not a message from the user] ⚠️ ${injured.name} (${injured.classification}, ID: ${injuredAgentId}) is now ${stateLabel}.`,
-      );
-      parts.push(`Last error: ${firstLineOfError}`);
-      if (stalledTasks.length > 0) {
-        parts.push('');
-        parts.push(`Tracker tasks now stalled on ${injured.name}:`);
-        for (const t of stalledTasks) {
-          parts.push(`  • ${t.title} (${t.status}, ID: ${t.id})`);
-        }
-      }
-      parts.push('');
-      parts.push(
-        `Auto-recovery (engine retry + grace period) already ran and did not unstick them. Options: (a) reset_session(agent_id="${injuredAgentId}") to heal them and let them retry, (b) reassign their work to another agent, or (c) escalate to the user. The Healer agent is also being notified in parallel — if they post a recovery action shortly, you can wait it out before stepping in.`,
-      );
-
-      const content = parts.join('\n');
-      const msgId = uuidv4();
-      db.prepare(`
-        INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-        VALUES (?, ?, 'system', ?, datetime('now'))
-      `).run(msgId, primaryId, content);
-
-      broadcast({
-        type: 'chat:message',
-        agentId: primaryId,
-        message: {
-          id: msgId,
-          agentId: primaryId,
-          role: 'system' as const,
-          content,
-          tokenCount: null,
-          modelId: null,
-          cost: null,
-          latencyMs: null,
-          createdAt: new Date().toISOString(),
-        },
+      // comms-audit rank 6: this used to dump a role='system' multi-item report (state +
+      // raw error + a bulleted stalled-task list with IDs + a 3-option recovery paragraph)
+      // into the primary's messages + the owner's dashboard chat. Two problems: (1) a
+      // firehose the primary does not need verbatim; (2) role='system' is SKIPPED by the
+      // model-context builder, so the primary's MODEL never saw the alert and could never
+      // take the reset/reassign action it was being told to take — a real correctness bug.
+      // Now a brief, self-attributed note in the awareness lane (role='user'
+      // origin_kind='engine'), so the primary actually sees it and can act or surface it.
+      // The full error + stalled-task list + recovery options live on the Healer's A2A
+      // thread (injury-recovery) for deliberate pull.
+      postAgentNotice({
+        toAgentId: primaryId,
+        fromName: 'Healer',
+        brief: `${injured.name} got ${stateLabel}${errorHint} and auto-recovery couldn't unstick it.${stalledNote} Want me to reset it or hand its work to another agent? I'm also on it in parallel.`,
+        intent: 'agent_health',
       });
 
       logger.info('Primary agent notified of sub-agent injury', {
@@ -804,11 +803,17 @@ export function injectAttachmentBlocks(
   // message by content suffix (the original DB content is the END of
   // the wrapped message). Bug fix 2026-05-04 — was matching by
   // strict equality and missing every post-reset / post-stop case.
-  const recentDbMsgs = db.prepare(`
+  // A-4 (comms-audit): fetch the recent 10, then order OLDEST-first. The assembled
+  // `messages` are processed oldest-first below, so with a newest-first db list the
+  // `.find` for two BYTE-IDENTICAL user messages (same text, DIFFERENT attachments)
+  // returned the NEWEST unused row for the OLDEST message — swapping their
+  // attachments. Oldest-first here makes identical-content matches resolve in
+  // chronological order (oldest message → oldest row), so the right files attach.
+  const recentDbMsgs = (db.prepare(`
     SELECT id, content, attachments FROM messages
     WHERE agent_id = ? AND role = 'user' AND attachments IS NOT NULL
     ORDER BY created_at DESC, rowid DESC LIMIT 10
-  `).all(agentId) as Array<{ id: string; content: string; attachments: string }>;
+  `).all(agentId) as Array<{ id: string; content: string; attachments: string }>).reverse();
 
   if (recentDbMsgs.length === 0) return freshResizes;
 

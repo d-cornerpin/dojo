@@ -12,6 +12,36 @@ export const turnBoundary = new Map<string, string>();
 // pure agent-to-agent turns unless wordy mode is on. Cleared when idle.
 export const currentTurnKind = new Map<string, 'user' | 'a2a'>();
 
+// E-C1: the conv_key of the conversation the current turn is serving. Set when the
+// turn picks its trigger; read by recall_recent_thread so it scopes to the CURRENT
+// conversation instead of re-deriving "the most recently stamped conv_key" — which
+// on an engine/A2A turn (no human conv stamped this turn) wrongly latched the last
+// HUMAN conversation and bled it into the recall. The map having an entry means a
+// turn is in progress: a non-null value = that human conversation; an explicit null
+// = engine/A2A turn (no human conv) → recall stays on untagged/current-turn rows.
+// No entry = called outside a turn → recall falls back to the legacy heuristic.
+export const currentTurnConvKey = new Map<string, string | null>();
+
+// T-4: the iMessage address this turn is conversing with (the turn counterparty's
+// senderId, when it's a human iMessage turn). getInboundSenderFor prefers this over
+// the racy per-agent pendingIMResponseMap (a single last-inbound value), so an
+// explicit imessage_send with no recipient — and an image_create reply — go to THIS
+// turn's person, not whoever messaged most recently during a multi-conversation
+// drain (the "reply to a contact sent to the owner" class of bug). Cleared on idle.
+export const currentTurnImRecipient = new Map<string, string>();
+
+// C3: carries the "a human is still waiting on this task" signal across an ENGINE
+// auto-continue (MAX_TOOL_LOOPS / time-budget / emergency-compaction). The continued
+// turn fires with an EMPTY trigger, so it has no waiting human and no triggerRow —
+// without this it is classified pureBackgroundTurn, its final answer suppressed as
+// inter-agent chatter, and the reply loses its channel (routes to dashboard). Stashed
+// (the conversation's convKey + counterparty) right before the auto-continue; restored
+// and CONSUMED (deleted) at the top of the next turn. Always deleted on read: a
+// continuation is used at most once, and if a real human turn arrived in between it is
+// stale and must be dropped so it can never falsely restore on a later background wake.
+// (Import type only — erased at compile, so no runtime cycle with counterparty.ts.)
+export const continuationContext = new Map<string, { convKey: string; counterparty: import('./v2/counterparty.js').TurnCounterparty }>();
+
 // A2A turn isolation (v3.1.10).
 //
 // Inter-agent (A2A) traffic must never bleed into a user-facing reply: the

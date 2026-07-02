@@ -111,11 +111,39 @@ function resolveFromMeta(raw: string): ResolvedInbound | null {
     return { inboundChannel: 'dashboard', inboundContext: null };
   }
 
+  // A-3 (comms-audit): a Teams GROUP message must NOT earn an auto-reply into the
+  // group. Group replies are explicit-tool-only (the agent decides to call
+  // teams_send_message). Downgrade to a dashboard notice so the agent reads it but
+  // the engine never auto-routes a reply to every group ping. This was documented in
+  // three comments (channel-auth header, state.ts, loop.ts) but enforced NOWHERE.
+  // DM Teams chats keep their routed reply context below.
+  if (meta.channel === 'teams' && meta.chatType === 'group') {
+    return { inboundChannel: 'dashboard', inboundContext: null };
+  }
+
+  // C10: re-validate the sender at RESOLVE time for the auto-reply channels, mirroring
+  // the prose branches (which DO recheck). resolveFromMeta previously trusted only the
+  // persisted `meta.authorized` flag — but every modern producer stamps inbound_meta, so
+  // the prose fallbacks that recheck are dead in practice, and a row stamped
+  // authorized:true whose sender was LATER removed from the safe list still earned an
+  // auto-reply on SMS/Teams-DM/email (only iMessage re-validates at send). Downgrade to a
+  // dashboard notice on failure so the agent still reads it but the engine never
+  // auto-routes a reply to an unauthorized/removed sender (inv 5). (iMessage stays as-is —
+  // it re-validates at send in sendResponseViaIMessage.)
+  if (meta.channel === 'sms' || meta.channel === 'teams' || meta.channel === 'email') {
+    const slot = meta.accountKind === 'user' ? 'user' : 'agent';
+    const senderKey = meta.smsFromNumber ?? meta.sender ?? meta.recipientAddress ?? '';
+    if (!isSenderAuthorized(meta.channel, senderKey, slot, meta.emailService ? { emailService: meta.emailService } : undefined)) {
+      return { inboundChannel: 'dashboard', inboundContext: null };
+    }
+  }
+
   const context: ChannelInboundContext = {
     recipientAddress: meta.recipientAddress,
     emailMessageId: meta.emailMessageId,
     emailService: meta.emailService,
     emailSubject: meta.emailSubject,
+    emailAccount: meta.emailAccount, // B-1: reply from the SAME mailbox
     chatId: meta.chatId,
     chatType: meta.chatType,
     smsFromNumber: meta.smsFromNumber,
@@ -151,12 +179,14 @@ function resolveFromProse(agentId: string, content: string | null): ResolvedInbo
     // Teams is an agent-kind channel today (the watcher is agent-only); the
     // shared check applies the agent-kind gate so it stays correct if a
     // user-Teams watcher is ever added.
-    if (isSenderAuthorized('teams', senderAddress, 'agent') && chatIdMatch?.[1]) {
+    // A-3 (comms-audit): authorized DM Teams chats auto-route; GROUP chats do NOT
+    // (no auto-reply into the group) — they fall through to the dashboard notice.
+    if (isSenderAuthorized('teams', senderAddress, 'agent') && chatIdMatch?.[1] && !isGroup) {
       return {
         inboundChannel: 'teams',
         inboundContext: {
           chatId: chatIdMatch[1],
-          chatType: isGroup ? 'group' : 'dm',
+          chatType: 'dm',
           recipientAddress: senderAddress,
         },
       };
@@ -223,13 +253,20 @@ function resolveFromProse(agentId: string, content: string | null): ResolvedInbo
   }
 
   if (content?.includes('[SOURCE: SMS FROM')) {
-    // sms-inbound.ts already gates on the safe-sender list before emitting
-    // the `[SOURCE: SMS FROM` tag (unknown senders get `[SOURCE: SMS
-    // NOTIFICATION` and fall through to dashboard), so anything tagged here
-    // is from a known sender.
+    // sms-inbound.ts gates on the safe-sender list before emitting the
+    // `[SOURCE: SMS FROM` tag (unknown senders get `[SOURCE: SMS NOTIFICATION`
+    // and fall through to dashboard), so anything tagged here was authorized AT
+    // TAG TIME.
+    // N-5 (comms-audit): re-run the safe-sender check at RESOLVE time anyway, the
+    // same way the Teams (above) and email paths do. The tag is durable prose; a
+    // number removed from the SMS safe-list after the row was written (or an old/
+    // replayed row) would otherwise still resolve as an authorized SMS reply target
+    // and the agent would auto-reply to a sender it's no longer allowed to. If the
+    // recheck fails, route to dashboard as a notification instead (inv 5: never act
+    // on an unauthorized sender's behalf).
     const fromMatch = content.match(/\[SOURCE: SMS FROM ([^\]]+)\]/);
     const toMatch = content.match(/^To:\s*(\S+)/im);
-    if (fromMatch?.[1]) {
+    if (fromMatch?.[1] && isSenderAuthorized('sms', fromMatch[1].trim(), 'agent')) {
       return {
         inboundChannel: 'sms',
         inboundContext: {

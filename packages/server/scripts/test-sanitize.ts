@@ -40,7 +40,7 @@ const cases: Array<[string, string]> = [
   ['Render at 1920x1080', 'Render at 1920 by 1080'],
   ['Total cost $5.99 plus tax', 'Total cost 5 dollars and 99 cents plus tax'],
   ['Costs $20', 'Costs 20 dollars'],
-  ['Check kevin.com later', 'Check kevin dot com later'],
+  ['Check example.com later', 'Check example dot com later'],
   ['Domain is example.org', 'Domain is example dot org'],
   ['Hosted on model.ai', 'Hosted on model dot A I'],
   ['Meeting Tue at 3pm', 'Meeting Tuesday at 3 p m'],

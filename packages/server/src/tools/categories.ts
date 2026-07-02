@@ -250,9 +250,9 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
   const lines: string[] = [];
   lines.push('## Available Tools');
   lines.push('');
-  // v2.5.42 — primary-class agents (Kevin and equivalents) get the structured
+  // v2.5.42 — primary-class agents (the primary agent and equivalents) get the structured
   // 5-bullet reflex block even in compact mode. Field test showed DeepSeek V4
-  // Pro skimming past the one-paragraph version: Kevin had file_append,
+  // Pro skimming past the one-paragraph version: the primary agent had file_append,
   // scratchpad_set, and tracker_create_project always-loaded on prod but
   // never used them on a multi-source flowchart task. The dense paragraph
   // was technically present; structurally invisible. Sub-agents stay on the

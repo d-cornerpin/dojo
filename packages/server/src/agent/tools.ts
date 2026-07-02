@@ -1087,7 +1087,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'show_canvas',
     description:
-      'Open a canvas in the user\'s right dock — a side panel where you and the user look at a working document together. The dojo interface slides left to make room and the canvas renders on the right. Use this to show the user something you have produced or have on disk: an HTML page, a Markdown doc, a plain-text/code file, a report, a chart, a mockup, or a Word / Excel / PDF document (these render as a formatted preview).\n\nNOTE: any canvas-renderable file already opens in the canvas automatically the moment you create it — writing one with file_write (HTML, Markdown, text, code, JSON, CSV, SVG, ...) and creating a Word / Excel / PDF document all auto-open. You usually do NOT need to call show_canvas at all. Use show_canvas to (re)show an existing file, or to render inline `html` / a `url`.\n\nThree ways to fill it (use ONE):\n  • `path` — the absolute path to a file on disk you wrote with file_write (e.g. "/Users/.../uploads/kevin/report.md"). BEST for documents you will keep editing: HTML renders, Markdown renders formatted, text/code shows monospaced, and the canvas gets a download button. After you call show_canvas({path}), any later file_write / file_patch / file_append to that SAME path auto-refreshes the canvas — you do NOT need to call show_canvas again. For HTML, relative asset paths resolve against the file\'s own folder, so reference local images as <img src="photo.png"> with the image saved next to the .html file and it will render.\n  • `html` — inline HTML markup to render directly (runs sandboxed); no file needed. Inline markup cannot reference local files — embed images as data: URIs or write a file with the image beside it instead.\n  • `url` — content already hosted at a URL (a file_write download URL also works).\n\nExamples:\n  • show_canvas({ title: "Spec", path: "/Users/me/uploads/kevin/spec.md" })\n  • show_canvas({ title: "Q3", html: "<h1>Q3</h1><p>...</p>" })',
+      'Open a canvas in the user\'s right dock — a side panel where you and the user look at a working document together. The dojo interface slides left to make room and the canvas renders on the right. Use this to show the user something you have produced or have on disk: an HTML page, a Markdown doc, a plain-text/code file, a report, a chart, a mockup, or a Word / Excel / PDF document (these render as a formatted preview).\n\nNOTE: any canvas-renderable file already opens in the canvas automatically the moment you create it — writing one with file_write (HTML, Markdown, text, code, JSON, CSV, SVG, ...) and creating a Word / Excel / PDF document all auto-open. You usually do NOT need to call show_canvas at all. Use show_canvas to (re)show an existing file, or to render inline `html` / a `url`.\n\nThree ways to fill it (use ONE):\n  • `path` — the absolute path to a file on disk you wrote with file_write (e.g. "/Users/.../uploads/<agent-id>/report.md"). BEST for documents you will keep editing: HTML renders, Markdown renders formatted, text/code shows monospaced, and the canvas gets a download button. After you call show_canvas({path}), any later file_write / file_patch / file_append to that SAME path auto-refreshes the canvas — you do NOT need to call show_canvas again. For HTML, relative asset paths resolve against the file\'s own folder, so reference local images as <img src="photo.png"> with the image saved next to the .html file and it will render.\n  • `html` — inline HTML markup to render directly (runs sandboxed); no file needed. Inline markup cannot reference local files — embed images as data: URIs or write a file with the image beside it instead.\n  • `url` — content already hosted at a URL (a file_write download URL also works).\n\nExamples:\n  • show_canvas({ title: "Spec", path: "/Users/me/uploads/<agent-id>/spec.md" })\n  • show_canvas({ title: "Q3", html: "<h1>Q3</h1><p>...</p>" })',
     input_schema: {
       type: 'object',
       properties: {
@@ -1961,7 +1961,7 @@ export const toolDefinitions: ToolDefinition[] = [
       type: 'object',
       properties: {
         proposal_id: { type: 'string', description: 'The ID of the proposal you carried out. Available in the diagnostic message you received.' },
-        notes: { type: 'string', description: 'Brief note about what you actually did (e.g., "Switched Kelly to Claude Haiku 4.5 via API"). Stored alongside the timestamp for the audit trail.' },
+        notes: { type: 'string', description: 'Brief note about what you actually did (e.g., "Switched the PM agent to Claude Haiku 4.5 via API"). Stored alongside the timestamp for the audit trail.' },
       },
       required: ['proposal_id'],
     },
@@ -2223,7 +2223,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Public file sharing ──
   {
     name: 'share_publicly',
-    description: 'Publish a file (or a small directory of files) to a publicly-accessible URL and return that URL. Use this when the user wants to view or share something outside the DOJO — e.g. an HTML page another agent built, a PDF report, an image, a static website. The DOJO copies the source into ~/.dojo/out/<slug>/ and exposes it at /share/<slug>/<filename> (no auth). If the DOJO has a Cloudflare tunnel running, the URL works from anywhere on the internet; otherwise it falls back to localhost (only viewable on the same machine). Use the returned URL directly — do NOT try to construct one yourself.\n\nHTML asset handling: when sharing a single .html file, the engine automatically scans it for linked local assets (`<img src>`, `<link href>`, `<script src>`, `url(…)` in inline CSS) and copies each one into the share directory so the page renders correctly at the public URL. Refs starting with http(s)://, data:, etc. are left alone. The tool result reports how many assets were copied. For multi-file sites or when you need precise control, point source_path at the directory and pass entry_filename.\n\nExamples:\n  • Share a single HTML page (linked assets auto-copied): share_publicly({ source_path: "/Users/.../uploads/kevin/report.html" })\n  • Share a directory site: share_publicly({ source_path: "/Users/.../uploads/kevin/site/", entry_filename: "index.html" })\n  • Share an image: share_publicly({ source_path: "/Users/.../uploads/kevin/chart.png" })',
+    description: 'Publish a file (or a small directory of files) to a publicly-accessible URL and return that URL. Use this when the user wants to view or share something outside the DOJO — e.g. an HTML page another agent built, a PDF report, an image, a static website. The DOJO copies the source into ~/.dojo/out/<slug>/ and exposes it at /share/<slug>/<filename> (no auth). If the DOJO has a Cloudflare tunnel running, the URL works from anywhere on the internet; otherwise it falls back to localhost (only viewable on the same machine). Use the returned URL directly — do NOT try to construct one yourself.\n\nHTML asset handling: when sharing a single .html file, the engine automatically scans it for linked local assets (`<img src>`, `<link href>`, `<script src>`, `url(…)` in inline CSS) and copies each one into the share directory so the page renders correctly at the public URL. Refs starting with http(s)://, data:, etc. are left alone. The tool result reports how many assets were copied. For multi-file sites or when you need precise control, point source_path at the directory and pass entry_filename.\n\nExamples:\n  • Share a single HTML page (linked assets auto-copied): share_publicly({ source_path: "/Users/.../uploads/<agent-id>/report.html" })\n  • Share a directory site: share_publicly({ source_path: "/Users/.../uploads/<agent-id>/site/", entry_filename: "index.html" })\n  • Share an image: share_publicly({ source_path: "/Users/.../uploads/<agent-id>/chart.png" })',
     input_schema: {
       type: 'object',
       properties: {
@@ -2313,7 +2313,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'imessage_send',
-    description: 'Send an iMessage from YOUR OWN iMessage account (the DOJO bridge). **As of v2.7.23, replies to inbound iMessages auto-route via the engine — you do NOT need to call this tool to reply. Just write your reply text; engine delivers it.**\n\n**DEFAULT-CHANNEL RULE — When the primary user is actively talking to you on dashboard, the default is "reply in dashboard."** Do NOT additionally text them on iMessage to "also share on their phone" or "make sure they see it." Their reply belongs in the dashboard they are looking at.\n\n**Exceptions where you SHOULD call imessage_send even though the user is in dashboard:**\n\n- **The user explicitly named iMessage in this turn\'s request.** e.g. "text me the meeting list," "iMessage me when that finishes," "send the summary to my phone." The user choosing the channel overrides the default-channel rule.\n- **A task you are working on explicitly specifies iMessage as the delivery channel.** Tasks frequently encode delivery preferences in their goal or notes ("when this completes, iMessage David with the result," "deliver via iMessage, not chat"). The task directive is the authoritative source for that work item; the default-channel rule is for the absence of a task directive, not in addition to it.\n- **The recipient is someone OTHER than the primary user.** Texting the user\'s spouse, a colleague, a third-party contact on the safe-sender list — the default-channel rule is only about the primary user.\n\n**Beyond those exceptions, this tool is for:**\n\n- **PROACTIVE outreach** = the turn was NOT triggered by a user message at all. Examples: a scheduled task fires and you decide to text the user, a watchdog event needs surfacing while the user is offline, a long-running job you started yesterday completes and you let the user know.\n- **RICH actions** = sending with attachments (image, PDF, etc.). The text rides with the first file via the imsg CLI. Use only when an attachment is genuinely needed; sending a link as a "rich action" does not qualify.\n\nVOICE: write like an actual text message. No markdown, no headers, no bullet lists. Short and conversational.\n\nRecipient rule: pass `recipient` explicitly when proactively messaging someone or when sending to a non-default address. The value MUST exactly match a safe-sender address. If you only know the person by name (e.g. user said "text <contact-name>"), call `imessage_list_contacts` first to look up the address. Passing an unknown address is refused. For attachments, pass any local path (e.g. ~/.dojo/uploads/<agent-id>/photo.jpg).',
+    description: 'Send an iMessage from YOUR OWN iMessage account (the DOJO bridge). **As of v2.7.23, replies to inbound iMessages auto-route via the engine — you do NOT need to call this tool to reply. Just write your reply text; engine delivers it.**\n\n**DEFAULT-CHANNEL RULE — When the primary user is actively talking to you on dashboard, the default is "reply in dashboard."** Do NOT additionally text them on iMessage to "also share on their phone" or "make sure they see it." Their reply belongs in the dashboard they are looking at.\n\n**Exceptions where you SHOULD call imessage_send even though the user is in dashboard:**\n\n- **The user explicitly named iMessage in this turn\'s request.** e.g. "text me the meeting list," "iMessage me when that finishes," "send the summary to my phone." The user choosing the channel overrides the default-channel rule.\n- **A task you are working on explicitly specifies iMessage as the delivery channel.** Tasks frequently encode delivery preferences in their goal or notes ("when this completes, iMessage the owner with the result," "deliver via iMessage, not chat"). The task directive is the authoritative source for that work item; the default-channel rule is for the absence of a task directive, not in addition to it.\n- **The recipient is someone OTHER than the primary user.** Texting the user\'s spouse, a colleague, a third-party contact on the safe-sender list — the default-channel rule is only about the primary user.\n\n**Beyond those exceptions, this tool is for:**\n\n- **PROACTIVE outreach** = the turn was NOT triggered by a user message at all. Examples: a scheduled task fires and you decide to text the user, a watchdog event needs surfacing while the user is offline, a long-running job you started yesterday completes and you let the user know.\n- **RICH actions** = sending with attachments (image, PDF, etc.). The text rides with the first file via the imsg CLI. Use only when an attachment is genuinely needed; sending a link as a "rich action" does not qualify.\n\nVOICE: write like an actual text message. No markdown, no headers, no bullet lists. Short and conversational.\n\nRecipient rule: pass `recipient` explicitly when proactively messaging someone or when sending to a non-default address. The value MUST exactly match a safe-sender address. If you only know the person by name (e.g. user said "text <contact-name>"), call `imessage_list_contacts` first to look up the address. Passing an unknown address is refused. For attachments, pass any local path (e.g. ~/.dojo/uploads/<agent-id>/photo.jpg).',
     input_schema: {
       type: 'object',
       properties: {
@@ -2488,7 +2488,7 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         title: {
           type: 'string',
-          description: 'A short, descriptive title for the audio — 2 to 6 words that summarize what was said. Used as the file name when the user downloads it. Examples: "weekly recap", "rude grocery joke", "good morning kevin". Plain words only — no extensions, no quotes, no special characters. Strongly recommended; if omitted, the file name falls back to a generic id.',
+          description: 'A short, descriptive title for the audio — 2 to 6 words that summarize what was said. Used as the file name when the user downloads it. Examples: "weekly recap", "rude grocery joke", "good morning". Plain words only — no extensions, no quotes, no special characters. Strongly recommended; if omitted, the file name falls back to a generic id.',
         },
       },
       required: ['text'],
@@ -4463,6 +4463,13 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         // scope:"all" to recover across conversations when the agent really
         // means "show me everything recent."
         const recallScope = args.scope === 'all' ? 'all' : 'conversation';
+        // E-C1: scope recall to the conversation THIS turn is serving (from live
+        // turn state), not the last-stamped-conv_key heuristic that bled an
+        // unrelated human conversation into recall on engine/A2A turns.
+        const { currentTurnConvKey } = await import('./turn-state.js');
+        const turnConvKey = currentTurnConvKey.has(agentId)
+          ? (currentTurnConvKey.get(agentId) ?? null)
+          : undefined;
         const { recallRecentThread } = await import('../memory/recall.js');
         content = recallRecentThread(agentId, {
           turnCount,
@@ -4473,6 +4480,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           beforeId,
           since,
           scope: recallScope,
+          turnConvKey,
         });
         break;
       }
@@ -4760,7 +4768,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
 
         // Intent is REQUIRED — no silent default. Previously this fell back
         // to 'FYI', which is a no-wake intent. Agents that didn't specify
-        // an intent for a wake-needing message (deliver work, ask Kevin to
+        // an intent for a wake-needing message (deliver work, ask the primary agent to
         // iMessage, etc.) had their messages silently dead-on-arrival.
         // Force a deliberate choice every call by erroring on missing intent.
         const VALID_INTENTS = ['QUESTION', 'ASSIGN', 'BLOCK', 'ANSWER', 'DELIVERABLE', 'FYI', 'STATUS', 'COMPLETE', 'FAIL'];
@@ -5033,7 +5041,13 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         for (const member of healthyMembers) {
           const bcResult = await deliverBc({
             intent: bcIntent as import('./a2a-transport.js').A2AIntent,
-            threadId: bcThreadId ?? '',
+            // A-1/A-2 (comms-audit): each recipient gets a FRESH thread (empty →
+            // auto-generated per member in the transport). A SHARED thread_id across
+            // recipients collided the per-thread semantic-dedup, hop counter, and
+            // ASSIGN-task lookup, so an identical broadcast to N members silently
+            // dropped members 2+ as duplicates / mis-assigned the task to member 1.
+            // Broadcasts are one-to-many fan-out with no shared-thread semantics.
+            threadId: '',
             requiresResponse: ['QUESTION', 'ASSIGN', 'BLOCK'].includes(bcIntent),
             payload: broadcastPayload,
             toAgent: member.id,
@@ -6712,7 +6726,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         const newGroup = args.assigned_to_group as string | undefined;
         if (newAgent) {
           // Resolve name → UUID. Match by id OR name (case-insensitive) so
-          // sensei ids like "kevin" and capitalised names both work. Friendlier
+          // sensei ids like "primary" and capitalised names both work. Friendlier
           // error than the bare FK violation.
           if (!newAgent.match(/^[0-9a-f]{8}-[0-9a-f]{4}-/)) {
             const lookup = reassignDb.prepare(
@@ -7386,7 +7400,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
           ? ` NOTE: this was a SWITCH - the inbound that triggered this turn came from ${switchedFromInbound}, but you sent to ${recipientLabel} instead. Confirm this was intentional.`
           : '';
         // Audit detail captures the full sharing context so a later review
-        // can answer "did Kevin over-share with sender X?" without
+        // can answer "did the primary agent over-share with sender X?" without
         // reconstructing from chat history. We log the recipient's
         // sharing_level, whether this was a reply or a switch, and the
         // inbound sender (when applicable).
@@ -7626,6 +7640,15 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
         // needs this to know whether to send the finished image back via
         // iMessage when it's done — the flag will be long gone by then.
         const triggeredByIMessage = isAwaitingIMResponse(agentId);
+        // C13: capture the requester's iMessage address NOW, at tool-CALL time. The delivery
+        // IIFE waits for the agent to go idle before sending the finished image, and idle
+        // wipes currentTurnImRecipient + consumes pendingIMResponseMap — so re-reading
+        // getInboundSenderFor at delivery time returned null and the image fell to the owner
+        // (getDefaultSender), or to a third party if a concurrent iMessage turn ran during
+        // generation. This const is closed over by the deferred IIFE and unaffected by idle.
+        const requesterIMessage = triggeredByIMessage
+          ? (await import('../services/imessage-bridge.js')).getInboundSenderFor(agentId)
+          : null;
 
         auditLog(agentId, 'image_create', null, 'success',
           `Request ${requestId} queued (aspect ${aspectRatio}${styleHint ? `, style ${styleHint}` : ''})`,
@@ -7694,7 +7717,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
             // Set the requesting agent back to 'working' so the thinking
             // dots stay visible during image generation. The user sees the
             // agent say "On it!" → thinking dots stay → image appears.
-            // Without this, Kevin goes idle between the ack and delivery
+            // Without this, the primary agent goes idle between the ack and delivery
             // and the user sees an awkward gap of silence.
             db.prepare("UPDATE agents SET status = 'working', updated_at = datetime('now') WHERE id = ?").run(agentId);
             broadcast({ type: 'agent:status', agentId, status: 'working' });
@@ -7806,7 +7829,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
               // and fired runtime.handleMessage so the model would
               // wake up, see "image ready" and write a contextual
               // reply with the auto-attached image. That looped:
-              // Kevin's fresh model turn saw the original user
+              // the primary agent's fresh model turn saw the original user
               // prompt still in scope ("make me a giant banana"),
               // didn't reliably parse the wake message as the
               // completion signal, and re-called image_create.
@@ -7911,7 +7934,13 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent �
                 }
                 if (shouldSendViaIMessage) {
                   const { sendIMessageWithAttachment, getDefaultSender } = await import('../services/imessage-bridge.js');
-                  const recipient = getDefaultSender();
+                  // A-3 (comms-audit): route the image to the REQUESTER (the inbound
+                  // iMessage sender), not always the owner. Before, a contact who asked
+                  // for an image got nothing and the OWNER received an unrequested image.
+                  // Only fall back to the owner for a proactive/away send (no inbound).
+                  // C13: use the requester captured at call time (see above), not a
+                  // delivery-time re-read (which idle has since wiped → owner/wrong person).
+                  const recipient = requesterIMessage ?? getDefaultSender();
                   if (recipient) {
                     sendIMessageWithAttachment(recipient, result.filePath, 'Here you go!');
                   }

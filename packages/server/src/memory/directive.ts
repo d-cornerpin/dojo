@@ -43,8 +43,23 @@ export function getActiveUserDirective(
      * turn, leave them IN — the engine event IS the directive (OPEN-11).
      */
     excludeEngine?: boolean;
+    /**
+     * On a HUMAN turn, the conv_key of the conversation this turn is addressing.
+     * When set, the directive is scoped to THIS conversation only (comms-audit T-1):
+     * the most-recent substantive ask is picked from the current counterparty's
+     * conversation, never from a DIFFERENT human's. Without this, talking to a contact
+     * could pin the owner's task as the ACTIVE USER DIRECTIVE (cross-conversation leak).
+     * Leave undefined on engine/A2A turns (the engine event / A2A thread drives those).
+     */
+    conversationKey?: string | null;
   },
 ): { content: string; messageId: string; createdAt: string } | null {
+  // C16: the '__none__' sentinel means "this turn has no user directive" — used on A2A
+  // and engine turns, whose directive comes from the A2A payload / engine event (rendered
+  // by the counterparty/engine header), NOT from the newest user row. Returning null here
+  // stops an A2A inbound from being pinned as the ACTIVE USER DIRECTIVE. (Distinct from
+  // conversationKey undefined = "unscoped, pick newest" and a real key = "scope to it".)
+  if (opts?.conversationKey === '__none__') return null;
   const db = getDb();
 
   const sessionRow = db
@@ -61,6 +76,33 @@ export function getActiveUserDirective(
   if (opts?.excludeEngine) {
     baseClauses.push("(origin_kind IS NULL OR origin_kind != 'engine')");
   }
+  // T-1: scope to the current conversation. The current ask is conv_key-stamped at
+  // pickup (turn start, before assembly), so it matches; a DIFFERENT human's ask
+  // carries a different conv_key and is excluded from the directive pin.
+  if (opts?.conversationKey) {
+    baseClauses.push('conv_key = ?');
+    baseParams.push(opts.conversationKey);
+  }
+
+  // Exclude asks already ANSWERED on their own conversation. An answered request
+  // must never be re-pinned as the active directive: that is the OPEN-11 bug
+  // where an unrelated later turn (a scheduler tick, an inbound email) re-runs a
+  // stale answered ask and the agent re-replies out of nowhere. A user row is
+  // "answered" iff a later assistant message carrying USER-FACING TEXT exists on
+  // the SAME conv_key. Keying on a real text reply (not on pickup) means this can
+  // NEVER drop the ask currently being answered — at context-assembly time the
+  // turn has not produced its reply yet, so no later text row exists — and never
+  // touches a still-waiting ask (conv_key IS NULL can't match the correlation, so
+  // those rows are always kept). Pure tool_use assistant turns are NOT a reply,
+  // so a half-finished ask (tools fired, no text yet) also stays in force. This
+  // only ever REMOVES an answered ask from the headline pin; it never blocks a
+  // turn — the live conversation tail is unaffected.
+  baseClauses.push(
+    "NOT EXISTS (SELECT 1 FROM messages a " +
+      "WHERE a.agent_id = messages.agent_id AND a.role = 'assistant' " +
+      "AND a.conv_key IS NOT NULL AND a.conv_key = messages.conv_key AND a.rowid > messages.rowid " +
+      "AND (a.content NOT LIKE '[%' OR a.content LIKE '%\"type\":\"text\"%'))",
+  );
 
   // Prefer the most recent substantive ask.
   const substantive = db

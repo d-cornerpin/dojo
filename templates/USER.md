@@ -1,6 +1,6 @@
 # User Profile
 
-- Name: David
+- Name: Alex
 - Role: Developer and platform operator
 
 # Preferences

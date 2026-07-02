@@ -21,8 +21,6 @@
 // already did it, confirm and continue."
 // ════════════════════════════════════════
 
-import type { ToolCall } from '@dojo/shared';
-
 /** Outbound delivery tools — a claim of "sent/told/forwarded to <someone>" is
  *  grounded only if one of these fired this turn. */
 const DELIVERY_TOOLS = new Set<string>([
@@ -75,8 +73,11 @@ const FUTURE_MARKERS = /\b(?:i['’]ll|ill|will|won['’]t|going to|gonna|about 
 export interface GroundingInput {
   /** The terminal user-facing text the agent is about to commit. */
   responseText: string | null;
-  /** Every tool call made this turn (across iterations). */
-  toolCallsThisTurn: ToolCall[];
+  /** Names of the tools that ran this turn ACROSS ALL iterations (C5: must be the
+   *  cumulative activity, not just the terminal iteration's calls — otherwise a real
+   *  send made in an earlier iteration is invisible here and the guard false-fires into
+   *  a duplicate send). Only the tool NAME is inspected (isDeliveryTool). */
+  toolCallsThisTurn: ReadonlyArray<{ name: string }>;
   /** Name of the person THIS turn is replying to — a "delivery" to them is the
    *  reply itself, never a relay, so claims naming them are not fabrications. */
   counterpartyName?: string | null;

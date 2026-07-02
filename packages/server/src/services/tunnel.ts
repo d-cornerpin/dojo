@@ -175,7 +175,7 @@ function broadcastStatus(): void {
 }
 
 /**
- * v2.5.6 — read the user-entered named-tunnel URL (e.g. https://kevin.theagentdojo.com).
+ * v2.5.6 — read the user-entered named-tunnel URL (e.g. https://primary.theagentdojo.com).
  * Quick tunnels parse their URL from cloudflared stderr; named tunnels can't
  * (the URL lives in Cloudflare's dashboard, not in cloudflared's logs), so
  * we ask the user to type it in once and persist it here.

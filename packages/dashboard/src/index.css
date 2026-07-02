@@ -3776,7 +3776,7 @@
 }
 
 /* third layer: modals over busy panel content get a MORE OPAQUE glass
-   (David, 2026-06-16) so the content below does not read through. */
+   (the owner, 2026-06-16) so the content below does not read through. */
 /* A forward LAYER, not a dark modal: rather than dimming with a dark scrim,
    we LIGHTEN and blur whatever is behind, so the new panel reads as the
    front-most layer. Each layer deeper into the stack lightens/blurs more. */

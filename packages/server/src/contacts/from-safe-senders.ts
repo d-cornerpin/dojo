@@ -4,8 +4,8 @@
 // When someone is added to a channel's safe-sender allowlist (via the
 // dashboard Settings/Channels UI or the agent's add_safe_sender tool), mirror
 // them into the DOJO contacts store so the name resolves later. Without this, a
-// user who adds "Jain" to the iMessage safe-sender list and then says "text
-// Jain about X" sends the agent hunting the vault for a contact that never
+// user who adds "Alex" to the iMessage safe-sender list and then says "text
+// Alex about X" sends the agent hunting the vault for a contact that never
 // existed -- it spins out on the missing record.
 //
 // Properties:
@@ -60,7 +60,7 @@ export function configKeyToChannel(key: string): SafeSenderChannel | null {
 type SyncOutcome = 'created' | 'updated' | 'noop';
 
 // Mirror one safe sender. Match by the channel's address first, then by exact
-// display name, so adding an iMessage handle to an existing "Jain" record
+// display name, so adding an iMessage handle to an existing "Alex" record
 // augments it instead of forking a duplicate.
 function syncOne(channel: SafeSenderChannel, sender: SafeSender, agentId: string | null): SyncOutcome {
   const address = sender.address?.trim();

@@ -62,8 +62,8 @@ describe('classifyMessageForDisplay — hide/show', () => {
   });
 
   it('shows real inbound channels + normal text (user role)', () => {
-    expect(hidden('user', '[SOURCE: IMESSAGE FROM David] hi')).toBe(false);
-    expect(hidden('user', '[SOURCE: PHONE CALL FROM David] hi')).toBe(false);
+    expect(hidden('user', '[SOURCE: IMESSAGE FROM Alex] hi')).toBe(false);
+    expect(hidden('user', '[SOURCE: PHONE CALL FROM Alex] hi')).toBe(false);
     expect(hidden('user', '[SOURCE: SMS FROM +15551234567] hi')).toBe(false);
     expect(hidden('user', '[SOURCE: TEAMS MESSAGE FROM Alice] hi')).toBe(false);
     expect(hidden('user', '[SOURCE: GMAIL NOTIFICATION - acct] hi')).toBe(false);
@@ -92,25 +92,25 @@ describe('classifyMessageForDisplay — hide/show', () => {
 
 describe('channel parsers — real marker shapes', () => {
   it('parseInboundChannel covers all five channels + rejects non-channels', () => {
-    expect(parseInboundChannel('[SOURCE: IMESSAGE FROM David (x) - The main user.] hi')?.channel).toBe('imessage');
+    expect(parseInboundChannel('[SOURCE: IMESSAGE FROM Alex (x) - The main user.] hi')?.channel).toBe('imessage');
     expect(parseInboundChannel('[SOURCE: PHONE CALL FROM (unknown)]\n\nhi')).toMatchObject({ channel: 'phone', sender: null });
     expect(parseInboundChannel('[SOURCE: SMS FROM +15551234567] hi')).toMatchObject({ channel: 'sms', sender: '+15551234567' });
     expect(parseInboundChannel('[SOURCE: TEAMS MESSAGE FROM Alice Smith] hi')).toMatchObject({ channel: 'teams', sender: 'Alice Smith' });
-    expect(parseInboundChannel('[SOURCE: GMAIL NOTIFICATION - dcliff9@gmail.com (user)] hi')?.channel).toBe('email');
+    expect(parseInboundChannel('[SOURCE: GMAIL NOTIFICATION - user@example.com (user)] hi')?.channel).toBe('email');
     expect(parseInboundChannel('[SOURCE: AGENT MESSAGE FROM DAVEJR (agent ID: x)]')).toBeNull();
     expect(parseInboundChannel('just a normal message')).toBeNull();
   });
 
   it('parseOutboundRouting handles real outbound markers including phone', () => {
-    expect(parseOutboundRouting('[Reply routed via iMessage to David]')).toMatchObject({ channel: 'imessage', recipient: 'David' });
-    expect(parseOutboundRouting('[Reply routed via phone call to David]')).toMatchObject({ channel: 'phone', recipient: 'David' });
-    expect(parseOutboundRouting('[SENT VIA IMESSAGE to David]')).toMatchObject({ channel: 'imessage', recipient: 'David' });
+    expect(parseOutboundRouting('[Reply routed via iMessage to Alex]')).toMatchObject({ channel: 'imessage', recipient: 'Alex' });
+    expect(parseOutboundRouting('[Reply routed via phone call to Alex]')).toMatchObject({ channel: 'phone', recipient: 'Alex' });
+    expect(parseOutboundRouting('[SENT VIA IMESSAGE to Alex]')).toMatchObject({ channel: 'imessage', recipient: 'Alex' });
     expect(parseOutboundRouting('not a marker')).toBeNull();
   });
 
   it('stripInboundChannelMarker removes the header + phone trailer', () => {
-    expect(stripInboundChannelMarker('[SOURCE: IMESSAGE FROM David] hello there')).toBe('hello there');
-    const phone = '[SOURCE: PHONE CALL FROM David]\n\nHey Kevin\n\nCall SID: CA123\nTo: +1555\nDirection: inbound';
-    expect(stripInboundChannelMarker(phone)).toBe('Hey Kevin');
+    expect(stripInboundChannelMarker('[SOURCE: IMESSAGE FROM Alex] hello there')).toBe('hello there');
+    const phone = '[SOURCE: PHONE CALL FROM Alex]\n\nHey there\n\nCall SID: CA123\nTo: +1555\nDirection: inbound';
+    expect(stripInboundChannelMarker(phone)).toBe('Hey there');
   });
 });

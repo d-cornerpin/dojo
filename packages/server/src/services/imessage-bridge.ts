@@ -12,6 +12,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { handleIMCommand } from './imessage-commands.js';
 import { getAgentRuntime } from '../agent/runtime.js';
+import { currentTurnImRecipient } from '../agent/turn-state.js';
 import { v4 as uuidv4 } from 'uuid';
 import Database from 'better-sqlite3';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
@@ -602,13 +603,20 @@ export function clearIMResponseFlag(agentId: string): void {
  * accidentally reply to sender B).
  */
 export function getInboundSenderFor(agentId: string): string | null {
+  // T-4: the LIVE turn's iMessage counterparty wins over the racy last-inbound map.
+  // pendingIMResponseMap holds a single value per agent (the most recent inbound),
+  // so during a multi-conversation drain an explicit no-recipient imessage_send /
+  // image_create could go to the wrong person. The turn publishes its counterparty
+  // to currentTurnImRecipient; prefer it, fall back to the legacy map outside a turn.
+  const turnRecipient = currentTurnImRecipient.get(agentId);
+  if (turnRecipient) return turnRecipient;
   return pendingIMResponseMap.get(agentId)?.sender ?? null;
 }
 
 // ── Agent-initiated (relay) contact tracking ──
 //
 // When the agent proactively texts someone who ISN'T the person who
-// triggered the current turn (a relay: "David asked me to ask Mike"), we
+// triggered the current turn (a relay: "the owner asked me to ask a contact"), we
 // record that contact here. When that contact later REPLIES, the agent's
 // end-of-turn text is a report back to the original requester (the
 // dashboard user), NOT an auto-reply to the contact — so the v2.7.23
@@ -653,8 +661,8 @@ export function clearAgentInitiatedContact(agentId: string, address: string): vo
  * message content) so the tag renders as raw text.
  *
  * Aggressive strip: removes the bracket PLUS any same-line content after
- * it — Kevin sometimes emits the tag followed by a duplicated URL on the
- * same line ("[SENT VIA IMESSAGE to David]https://..."). The whole
+ * it — the primary agent sometimes emits the tag followed by a duplicated URL on the
+ * same line ("[SENT VIA IMESSAGE to the owner]https://..."). The whole
  * trailing block is hallucinated noise, not legitimate content.
  *
  * Exported so the v2 loop can sanitize persistedContent at the source and
@@ -680,8 +688,23 @@ export function sendResponseViaIMessage(
   text: string,
   agentId?: string,
   recipientOverride?: string | null,
+  ownerBound?: boolean,
 ): { address: string; name: string } | null {
   if (!agentId) agentId = getPrimaryAgentId();
+  // C8: an OWNER-BOUND send (the away-override promoted a dashboard/proactive reply to
+  // iMessage precisely to reach the owner who stepped away) must go to the owner/primary,
+  // never to whatever contact the racy pendingIMResponseMap last captured mid-turn — that
+  // was the "owner's private dashboard reply texted to a contact" bug (inv 1 + 4). This is
+  // authoritative, so it's checked before the recipientOverride and map branches.
+  if (ownerBound) {
+    const owner = getDefaultSender();
+    pendingIMResponseMap.delete(agentId);
+    if (!owner) return null;
+    const cleanedOwner = stripSystemTags(text);
+    if (!cleanedOwner) return null;
+    sendIMessage(owner, cleanedOwner);
+    return { address: owner, name: findSafeSenderByAddress(getSafeSenders(), owner)?.name ?? owner };
+  }
   // Two safety rails on the fallback path:
   //  (a) when there's no inbound trigger, default to the starred primary
   //      (getDefaultSender), NOT approvedSenders[0]. They're often the
@@ -695,7 +718,7 @@ export function sendResponseViaIMessage(
   let recipientName: string | null = null;
   // The TURN's counterparty wins over pendingIMResponseMap. That in-memory map is
   // set per inbound and gets overwritten when another iMessage arrives during a
-  // turn — the bug where a reply to Crystal routed to David under concurrency.
+  // turn — the bug where a reply to a contact routed to the owner under concurrency.
   // When the loop passes the turn's counterparty address, use it (validated). If
   // it is no longer a safe sender, SUPPRESS — never fall back to texting the
   // owner an answer meant for someone else.
@@ -963,7 +986,7 @@ async function pollMessages(): Promise<void> {
           // exact recipient string to pass back when replying, AND the
           // sharing policy that governs what's appropriate to disclose.
           const senderRecord = findSafeSenderByAddress(approvedSenders, sender);
-          // Avoid the "kbrns6@outlook.com (kbrns6@outlook.com)" duplication
+          // Avoid the "user@example.com (user@example.com)" duplication
           // when the user hasn't set a display name (legacy migration just
           // copied the address into the name slot).
           const senderLabel = senderRecord
@@ -1028,7 +1051,15 @@ async function pollMessages(): Promise<void> {
           const inboundMetaObj = {
             channel: 'imessage' as const,
             accountKind: 'agent' as const,
-            authorized: true, // the bridge already gated to approved senders
+            // comms-audit I-1: authorize ONLY when there is an actual safe-sender
+            // record, matching email/SMS/Teams (unknown sender → authorized:false →
+            // downgraded to a dashboard notice, never an auto-reply). The old hardcoded
+            // `true` contradicted the relation below (which can be 'third_party' when
+            // senderRecord is null), and let a sender that passed the loose bridge
+            // pre-filter but has no record earn an auto-reply turn — an asymmetry no
+            // other channel allows. Owner/known_contact both have a record, so they are
+            // unaffected; only a true unknown is denied (invariant 5).
+            authorized: !!senderRecord,
             sender,
             recipientAddress: sender,
             chatType: 'dm' as const,
@@ -1357,6 +1388,16 @@ export function sendIMessageWithAttachment(
   filePath: string,
   caption?: string,
 ): boolean {
+  // C14: safe-sender revalidation — a sender removed from the allowlist mid-conversation
+  // must not still receive FILES while their text reply is correctly suppressed (inv-5
+  // asymmetry). Mirrors sendResponseViaIMessage's recipient check. (Capturing attachment
+  // sends in test mode — "never really text a real address during a harness test" — is
+  // injected by the local test harness as a patch, NOT baked into base source, so this
+  // file ships with no harness dependency.)
+  if (!findSafeSenderByAddress(getSafeSenders(), recipient)) {
+    logger.warn('Attachment send suppressed: recipient not on safe-sender list', { recipient });
+    return false;
+  }
   const imsg = getImsgPath();
 
   if (!imsg) {

@@ -14,8 +14,8 @@ describe('payloadLooksDeliverable', () => {
       expect(payloadLooksDeliverable('Check this out: https://hitchstream.com/?p=4253')).toBe(true);
     });
 
-    it('the literal Nora-to-Kevin example from the v2.3.17 bug report', () => {
-      const payload = `Draft #21 is ready for David.\n\n**Post ID:** 4253\n**Title:** How to Build a Wedding Day Timeline That Actually Works\n**Preview:** https://hitchstream.com/?p=4253\n**Status:** Draft`;
+    it('the literal Nora-to-the-primary-agent example from the v2.3.17 bug report', () => {
+      const payload = `Draft #21 is ready for Alex.\n\n**Post ID:** 4253\n**Title:** How to Build a Wedding Day Timeline That Actually Works\n**Preview:** https://hitchstream.com/?p=4253\n**Status:** Draft`;
       expect(payloadLooksDeliverable(payload)).toBe(true);
     });
 

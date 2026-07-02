@@ -179,6 +179,21 @@ fi
 }
 echo "  ✓ packaged build boots — import graph resolves and migrations run"
 
+# ── Dev-instrument ship-gate (C23) ──
+# The dev-test-tools harness injects sim-outbound send-capture + /api/dev routes into
+# source (tools.ts, model.ts, imessage-bridge.ts, gateway/server.ts). uninstall.mjs
+# removes them, but a FORGOTTEN or PARTIAL uninstall would ship them — silently capturing
+# real sends, exposing dev-only endpoints, or (worse) leaving the sim-outbound import wired
+# while the module is gone, which throws on every tool/model call. Refuse to publish if the
+# packaged artifact still references any of them. Mirrors the smoke-boot module-resolution
+# gate above.
+if grep -rqiE "sim-outbound|/api/dev/|DEV-INSTRUMENTS" "$SMOKE_PLATFORM/packages/server/dist" 2>/dev/null; then
+  echo "  ---- offending dev-instrument references in packaged build ----"
+  grep -rniE "sim-outbound|/api/dev/|DEV-INSTRUMENTS" "$SMOKE_PLATFORM/packages/server/dist" 2>/dev/null | head -10
+  fail "Dev-instrument ship-gate: packaged build still references dev instruments (sim-outbound / /api/dev). Run dev-test-tools/server-instruments/uninstall.mjs, rebuild, and re-run. NOT publishing."
+fi
+echo "  ✓ no dev instruments (sim-outbound / /api/dev) in packaged build"
+
 # ── Dry run stops here ──
 if [ "$DRY_RUN" = "1" ]; then
   step "DRY RUN — reverting the version bump; not committing, pushing, or releasing"

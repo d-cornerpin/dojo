@@ -23,6 +23,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, isPrimaryAgent, getOwnerName, isPMAgent } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
+import { postAgentNotice } from '../agent/agent-notice.js';
 import { formatTimeForAgent } from '../services/format-time.js';
 
 const logger = createLogger('tracker-tools');
@@ -83,12 +84,13 @@ function checkProjectCompletion(projectId: string | null, callingAgentId: string
         // Mark project as complete
         db.prepare("UPDATE projects SET status = 'complete', updated_at = datetime('now') WHERE id = ?").run(projectId);
 
-        // Get all task results for a summary
+        // Count the tasks for the brief completion line. comms-audit rank 5: the old
+        // code enumerated EVERY task ("- title: status — last-notes-line") into the notice
+        // — a firehose duplicating the kanban board. The board already shows the per-task
+        // detail; the notice only needs the count.
         const tasks = db.prepare(`
-          SELECT title, status, notes FROM tasks WHERE project_id = ? ORDER BY step_number ASC, created_at ASC
-        `).all(projectId) as Array<{ title: string; status: string; notes: string | null }>;
-
-        const summary = tasks.map(t => `- ${t.title}: ${t.status}${t.notes ? ` — ${t.notes.split('\n').pop()}` : ''}`).join('\n');
+          SELECT COUNT(*) AS count FROM tasks WHERE project_id = ?
+        `).get(projectId) as { count: number };
 
         // v2.7.2 — fixes the duplicate-final-answer failure shape:
         //
@@ -106,13 +108,13 @@ function checkProjectCompletion(projectId: string | null, callingAgentId: string
         //
         //   2. Text rewritten to be a pure status record, not an
         //      instruction. The old text said "Please review the results
-        //      and let David know" which the model interpreted as a fresh
+        //      and let the owner know" which the model interpreted as a fresh
         //      assignment and kept working. The new text contains no
         //      verbs aimed at the reader — it's just the completion fact.
-        const completionLine = `[tracker:project_complete] "${project.title}" — ${tasks.length} task${tasks.length === 1 ? '' : 's'} closed.\n${summary}`;
+        const completionLine = `[tracker:project_complete] "${project.title}" — ${tasks.count} task${tasks.count === 1 ? '' : 's'} closed.`;
         notifyPrimaryAgent(completionLine, callingAgentId);
 
-        logger.info('Project completed', { projectId, title: project.title, taskCount: tasks.length });
+        logger.info('Project completed', { projectId, title: project.title, taskCount: tasks.count });
 
         broadcast({
           type: 'tracker:project_updated',
@@ -932,7 +934,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       const updatedTask = getTask(taskId)!;
       broadcast({ type: 'tracker:task_updated', data: updatedTask });
       notifyPrimaryAgent(
-        `Recurring task "${updatedTask.title}" fully completed by ${updatedTask.assignedToName ?? updatedTask.assignedTo ?? agentId} (all runs done).${notes ? ` Notes: ${notes}` : ''}`,
+        `Recurring task "${updatedTask.title}" fully completed by ${updatedTask.assignedToName ?? updatedTask.assignedTo ?? agentId} (all runs done).`, // comms-audit rank 5: dropped verbatim ` Notes: ${notes}` inline (full work-log firehose); notes live on the task row for deliberate pull
         agentId,
       );
       checkProjectCompletion(updatedTask.projectId, agentId);
@@ -1016,7 +1018,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         const updatedTask = getTask(taskId)!;
         const nextRunFmt = updatedTask.nextRunAt ? formatTimeForAgent(updatedTask.nextRunAt) : null;
         notifyPrimaryAgent(
-          `Recurring run completed by ${updatedTask.assignedToName ?? updatedTask.assignedTo ?? agentId}: "${updatedTask.title}". Run ${updatedTask.runCount}${nextRunFmt ? `, next: ${nextRunFmt}` : ''}.${notes ? ` Notes: ${notes}` : ''}`,
+          `Recurring run completed by ${updatedTask.assignedToName ?? updatedTask.assignedTo ?? agentId}: "${updatedTask.title}". Run ${updatedTask.runCount}${nextRunFmt ? `, next: ${nextRunFmt}` : ''}.`, // comms-audit rank 5: dropped verbatim ` Notes: ${notes}` inline (full work-log firehose); notes live on the task row for deliberate pull
           agentId,
         );
         return [
@@ -1080,7 +1082,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     if (status === 'complete') {
       const notes = args.notes as string | undefined;
       notifyPrimaryAgent(
-        `Task "${task.title}" completed by ${task.assignedToName ?? task.assignedTo ?? agentId}.${notes ? ` Notes: ${notes}` : ''}`,
+        `Task "${task.title}" completed by ${task.assignedToName ?? task.assignedTo ?? agentId}.`, // comms-audit rank 5: dropped verbatim ` Notes: ${notes}` inline (full work-log firehose); notes live on the task row for deliberate pull
         agentId,
       );
       // Handle one-time scheduled task completion. Recurring tasks are
@@ -1982,7 +1984,7 @@ export async function trackerRetask(
 
   const directive = (args.directive ?? '').trim();
   if (directive.length < 30) {
-    return 'Error: directive must be at least 30 characters. Tell the agent concretely what they did wrong and what to do instead (e.g. "you posted the brief in chat but the task specifies email delivery; please call send_email with the same content to david@cornerp.in").';
+    return 'Error: directive must be at least 30 characters. Tell the agent concretely what they did wrong and what to do instead (e.g. "you posted the brief in chat but the task specifies email delivery; please call send_email with the same content to user@example.com").';
   }
 
   const resolved = resolveTaskId(rawTaskId);
@@ -2767,11 +2769,18 @@ export async function trackerValidateBlocked(
       actionTaken: 'tracker_validate_blocked(valid=true)',
       reason: 'PM blessed the block as real',
     });
-    notifyPrimaryAgent(
-      `Block validated on task "${task.title}" (${taskId.slice(0, 8)}). Real obstacle, surface to user or unblock manually.`,
-      pmAgentId,
-      true, // forceNotify even if PM is primary (it's not, but be safe)
-    );
+    // comms-audit (actionable-but-invisible correctness bug): this is an ACTIONABLE
+    // notice — the primary is told to "surface to the user or unblock manually" — but it
+    // used to go through notifyPrimaryAgent (role='system'), which the model-context
+    // builder SKIPS, so the primary's model never saw it and could never take either
+    // action. Route it through the model-visible awareness lane (postAgentNotice) so the
+    // primary actually sees it and can act.
+    postAgentNotice({
+      toAgentId: getPrimaryAgentId(),
+      fromName: 'PM',
+      intent: 'block_validated',
+      brief: `I confirmed the block on "${task.title}" (${taskId.slice(0, 8)}) is a real obstacle. Please surface it to the user or unblock it manually.`,
+    });
     logger.info('Block validated by PM', { taskId, pmAgentId }, pmAgentId);
     return `[OK] Block validated on "${task.title}" (${taskId}). Primary notified to investigate or unblock.`;
   }
@@ -3062,9 +3071,9 @@ export async function trackerRequestUserVerdict(
     } else {
       const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
       const relayPayload =
-        `Please relay to David: a stalemate has been flagged on task "${task.title}" (${taskId.slice(0, 8)}) ` +
-        `assigned to me (${agentId}). The user verdict request follows. Show this verbatim to David in chat and ` +
-        `then call tracker_apply_user_verdict(task_id="${taskId}", status="<david's choice>", user_quote="<his exact reply>") on my behalf.\n\n` +
+        `Please relay to ${getOwnerName()}: a stalemate has been flagged on task "${task.title}" (${taskId.slice(0, 8)}) ` +
+        `assigned to me (${agentId}). The user verdict request follows. Show this verbatim to ${getOwnerName()} in chat and ` +
+        `then call tracker_apply_user_verdict(task_id="${taskId}", status="<the owner's choice>", user_quote="<their exact reply>") on my behalf.\n\n` +
         userMessage;
       await deliverA2AMessage({
         intent: 'ASSIGN',

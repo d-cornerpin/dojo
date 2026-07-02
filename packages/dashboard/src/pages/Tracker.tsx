@@ -634,7 +634,7 @@ const OverrideQueuePanel = ({
 
 // ── Tracker hygiene + telemetry (Phase D, Wordy Mode only) ──
 // Renders rolled-up validate rates, smell flag counts, override rollup,
-// elevated tasks, and PM cost-per-model. Lets David see at a glance
+// elevated tasks, and PM cost-per-model. Lets the owner see at a glance
 // whether the system is healthy or something needs attention.
 const HygienePanel = ({
   hygiene,

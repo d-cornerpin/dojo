@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { readLogEntries } from '../../logger.js';
 import { broadcast } from '../ws.js';
+import { getPrimaryAgentId } from '../../config/platform.js';
 import type { HealthData, LogEntry } from '@dojo/shared';
 
 const systemRouter = new Hono();
@@ -219,7 +220,7 @@ systemRouter.post('/system/reset-idle-sessions', async (c) => {
 // Auth-protected via the gateway's middleware (same as the rest of /system/*).
 systemRouter.post('/debug-toast', async (c) => {
   const body = await c.req.json().catch(() => ({}));
-  const agentId = (body.agentId as string | undefined) ?? 'kevin';
+  const agentId = (body.agentId as string | undefined) ?? getPrimaryAgentId();
   const severity = (body.severity as 'info' | 'warning' | 'error' | undefined) ?? 'info';
   const message = (body.message as string | undefined) ?? `Test ${severity.toUpperCase()} toast — ${new Date().toLocaleTimeString()}`;
   broadcast({

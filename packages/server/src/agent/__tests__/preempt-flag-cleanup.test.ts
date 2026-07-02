@@ -25,26 +25,26 @@ describe('preempt flag cleanup (finding #195)', () => {
 
   it('clearing the flag at run-end means the next run sees no stale preempt', () => {
     // Simulate the scenario: a preempt fires mid-run.
-    preemptedAgents.add('kevin');
-    expect(preemptedAgents.has('kevin')).toBe(true);
+    preemptedAgents.add('primary');
+    expect(preemptedAgents.has('primary')).toBe(true);
 
     // The run exits via the natural "no tool calls" path WITHOUT hitting
     // the preempt check. Then handleMessage's finally block runs and
     // clears the flag (this is the fix).
-    preemptedAgents.delete('kevin');
+    preemptedAgents.delete('primary');
 
     // A queued-wakeup run starts fresh. The preempt check at the top of
     // its first outer iteration should NOT see a stale flag.
-    expect(preemptedAgents.has('kevin')).toBe(false);
+    expect(preemptedAgents.has('primary')).toBe(false);
   });
 
   it('multiple agents have independent preempt flags', () => {
-    preemptedAgents.add('kevin');
+    preemptedAgents.add('primary');
     preemptedAgents.add('healer');
 
-    preemptedAgents.delete('kevin');
+    preemptedAgents.delete('primary');
 
-    expect(preemptedAgents.has('kevin')).toBe(false);
+    expect(preemptedAgents.has('primary')).toBe(false);
     expect(preemptedAgents.has('healer')).toBe(true);
   });
 

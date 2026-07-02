@@ -5187,7 +5187,7 @@ const VoiceTab = () => {
   const [bargeInEnabled, setBargeInEnabled] = useState(false);
   const [soundEffectsEnabled, setSoundEffectsEnabled] = useState(true);
   // Primary agent name drives both the "Voice for X" header and the default
-  // wake phrase ("hey <name>") so neither hardcodes "Kevin".
+  // wake phrase ("hey <name>") so neither hardcodes a specific name.
   const [primaryAgentName, setPrimaryAgentName] = useState('Agent');
   const defaultWakePhrase = `hey ${primaryAgentName.toLowerCase()}`;
 

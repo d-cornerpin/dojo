@@ -9,7 +9,7 @@
  *   3m 37s        → 3 minutes 37 seconds
  *   18%           → 18 percent
  *   30.01in       → 30.01 inches      (Kokoro reads "30.01" as "thirty point zero one")
- *   kevin.com     → kevin dot com
+ *   example.com   → example dot com
  *   Tue           → Tuesday
  *   $5.99         → 5 dollars and 99 cents
  *
@@ -135,7 +135,7 @@ const PATTERNS: Array<[RegExp, Replacer]> = [
   [/(?<!\d-)\b(\d{1,3})\s*[-–]\s*(\d{1,3})\b(?!-\d)/g, '$1 to $2'],
 
   // ── Domain TLDs (after URL stripping has already handled http URLs) ─
-  // Catches bare-domain refs like "kevin.com", "example.org", "model.ai".
+  // Catches bare-domain refs like "example.com", "example.org", "model.ai".
   // Common letter-acronym TLDs get a space between letters so Kokoro reads
   // each letter ("dot a i" not "dot eye"). Word TLDs stay as one word.
   [/\.com\b/gi, ' dot com'],

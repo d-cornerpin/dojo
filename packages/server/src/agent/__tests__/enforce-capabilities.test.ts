@@ -49,7 +49,7 @@ describe('enforceModelCapabilities — vision gate (#PDF-fix)', () => {
     const messages: Array<{ role: 'user' | 'assistant'; content: string | unknown[] }> = [
       { role: 'user', content: [{ type: 'text', text: 'look' }, imageBlock()] },
     ];
-    enforceModelCapabilities('kevin', 'm1', messages as never);
+    enforceModelCapabilities('primary', 'm1', messages as never);
     // Image gone, text kept.
     expect(typeof messages[0].content === 'string' || (messages[0].content as unknown[]).every((b: unknown) => (b as { type: string }).type === 'text')).toBe(true);
     // Banner fired exactly once.
@@ -62,7 +62,7 @@ describe('enforceModelCapabilities — vision gate (#PDF-fix)', () => {
     const messages: Array<{ role: 'user' | 'assistant'; content: string | unknown[] }> = [
       { role: 'user', content: [{ type: 'text', text: 'summarize this' }, documentBlock('q4-report.pdf')] },
     ];
-    enforceModelCapabilities('kevin', 'm1', messages as never);
+    enforceModelCapabilities('primary', 'm1', messages as never);
     expect(Array.isArray(messages[0].content)).toBe(true);
     const blocks = messages[0].content as Array<{ type: string }>;
     expect(blocks.find((b) => b.type === 'document')).toBeDefined();
@@ -83,7 +83,7 @@ describe('enforceModelCapabilities — vision gate (#PDF-fix)', () => {
         ],
       },
     ];
-    enforceModelCapabilities('kevin', 'm1', messages as never);
+    enforceModelCapabilities('primary', 'm1', messages as never);
     const blocks = messages[0].content as Array<{ type: string }>;
     expect(blocks.find((b) => b.type === 'image')).toBeUndefined();
     expect(blocks.find((b) => b.type === 'document')).toBeDefined();
@@ -101,7 +101,7 @@ describe('enforceModelCapabilities — vision gate (#PDF-fix)', () => {
     const messages: Array<{ role: 'user' | 'assistant'; content: string | unknown[] }> = [
       { role: 'user', content: [{ type: 'text', text: 'what' }, imageBlock()] },
     ];
-    enforceModelCapabilities('kevin', 'm1', messages as never);
+    enforceModelCapabilities('primary', 'm1', messages as never);
     const blocks = messages[0].content as Array<{ type: string }>;
     expect(blocks.find((b) => b.type === 'image')).toBeDefined();
     expect(broadcastSpy).not.toHaveBeenCalled();
@@ -121,7 +121,7 @@ describe('enforceModelCapabilities — vision gate (#PDF-fix)', () => {
         ],
       },
     ];
-    enforceModelCapabilities('kevin', 'm1', messages as never);
+    enforceModelCapabilities('primary', 'm1', messages as never);
     const blocks = messages[0].content as Array<{ type: string; content?: Array<{ type: string }> }>;
     const tr = blocks[0];
     expect(tr.type).toBe('tool_result');
@@ -134,19 +134,19 @@ describe('enforceModelCapabilities — vision gate (#PDF-fix)', () => {
 describe('enforceModelCapabilities — tools gate', () => {
   it('returns useTools=true for tools-capable model', () => {
     capabilitiesMock.mockReturnValue(['tools', 'vision']);
-    const r = enforceModelCapabilities('kevin', 'm1', []);
+    const r = enforceModelCapabilities('primary', 'm1', []);
     expect(r.useTools).toBe(true);
   });
 
   it('returns useTools=false for tools-incapable model', () => {
     capabilitiesMock.mockReturnValue(['vision']); // no tools
-    const r = enforceModelCapabilities('kevin', 'm-no-tools', []);
+    const r = enforceModelCapabilities('primary', 'm-no-tools', []);
     expect(r.useTools).toBe(false);
   });
 
   it('returns useTools=true on unknown capabilities (optimistic)', () => {
     capabilitiesMock.mockReturnValue([]); // probe returned nothing
-    const r = enforceModelCapabilities('kevin', 'm-unknown', []);
+    const r = enforceModelCapabilities('primary', 'm-unknown', []);
     expect(r.useTools).toBe(true);
   });
 });

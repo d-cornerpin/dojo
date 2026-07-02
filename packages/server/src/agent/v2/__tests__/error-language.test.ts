@@ -64,7 +64,7 @@ describe('Tier D user-facing strings (formatErrorForHuman)', () => {
     it(`${kind}: zero forbidden patterns`, () => {
       const out = formatErrorForHuman(kind, {
         providerName: 'Anthropic',
-        agentName: 'Jain',
+        agentName: 'Alex',
         modelName: 'claude-sonnet-4-6',
         attemptedAlternatives: 2,
       });
@@ -75,7 +75,7 @@ describe('Tier D user-facing strings (formatErrorForHuman)', () => {
     });
 
     it(`${kind}: ends with or contains a concrete next action`, () => {
-      const out = formatErrorForHuman(kind, { providerName: 'Anthropic', agentName: 'Jain' });
+      const out = formatErrorForHuman(kind, { providerName: 'Anthropic', agentName: 'Alex' });
       // Heuristic: every Tier D template should point the user toward an
       // action — Settings, dashboard, free up space, retry, etc.
       expect(out, `${kind} has no next-action language`).toMatch(
@@ -114,9 +114,9 @@ describe('scrubTechnicalDetail (last-line defense)', () => {
   });
 
   it('preserves readable English when input is already clean', () => {
-    const clean = 'Jain is stuck and the Healer is missing. Open Settings → Sensei.';
+    const clean = 'Alex is stuck and the Healer is missing. Open Settings → Sensei.';
     const scrubbed = scrubTechnicalDetail(clean);
-    expect(scrubbed).toContain('Jain');
+    expect(scrubbed).toContain('Alex');
     expect(scrubbed).toContain('Settings');
   });
 

@@ -281,6 +281,7 @@ export function executeLoadToolDocs(agentId: string, toolNames: string[]): strin
 // ── Always-loaded tools lookup per agent (from DB) ──
 
 import { getDb } from '../db/connection.js';
+import { getPrimaryAgentId } from '../config/platform.js';
 
 // Resolve which always-loaded tool set to use for a given agent. This runs
 // synchronously at call time, so we can't `await import()`. Instead we read
@@ -293,14 +294,15 @@ function getDefaultForAgent(agentId: string): string[] {
   try {
     const db = getDb();
 
-    // Check system agent IDs from config table (avoids importing platform.ts)
+    // Check system agent IDs from config table. The primary id falls back to
+    // the platform config default (name-free) rather than a hardcoded id.
     const configRows = db.prepare(
       "SELECT key, value FROM config WHERE key IN ('primary_agent_id', 'pm_agent_id', 'trainer_agent_id', 'imaginer_agent_id')",
     ).all() as Array<{ key: string; value: string }>;
     const configMap: Record<string, string> = {};
     for (const r of configRows) configMap[r.key] = r.value;
 
-    if (agentId === (configMap['primary_agent_id'] ?? 'kevin')) return PRIMARY_AGENT_ALWAYS_LOADED;
+    if (agentId === (configMap['primary_agent_id'] ?? getPrimaryAgentId())) return PRIMARY_AGENT_ALWAYS_LOADED;
     if (agentId === (configMap['pm_agent_id'] ?? 'pm')) return PM_AGENT_ALWAYS_LOADED;
     if (agentId === (configMap['trainer_agent_id'] ?? 'trainer')) return TRAINER_AGENT_ALWAYS_LOADED;
     if (agentId === (configMap['imaginer_agent_id'] ?? 'imaginer')) return IMAGINER_AGENT_ALWAYS_LOADED;

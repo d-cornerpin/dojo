@@ -27,13 +27,13 @@ Be biased toward not remembering. The cost of a useless entry is real: it dilute
 
 The single most common failure mode: the Dreamer reads a conversation, picks something interesting, and writes a slightly-rephrased sentence. That's transcription. **Your job is transformation** — turn the source into a compressed memory shape, not a paraphrase.
 
-Lead with the noun. Cut every word that doesn't carry information. The actor (Kevin, the user, the agent) is rarely durable; the noun is.
+Lead with the noun. Cut every word that doesn't carry information. The actor (the primary agent, the user, the agent) is rarely durable; the noun is.
 
 **Hard length caps** (the engine REJECTS entries above these — your save will fail):
 - `fact`, `preference`, `note`, `relationship`: **≤ 150 chars**
 - `decision`, `event`, `procedure`: **≤ 250 chars**
 
-**The engine also rejects "prose-shape"** entries, even within the cap. If your entry starts with "Kevin/David/the user/we/I/he/she/it + verb", or runs to multiple sentences of narrative, it gets rejected. You'll have to rewrite. Save yourself the round-trip and write compressed shorthand from the start.
+**The engine also rejects "prose-shape"** entries, even within the cap. If your entry starts with "the primary agent/the owner/the user/we/I/he/she/it + verb", or runs to multiple sentences of narrative, it gets rejected. You'll have to rewrite. Save yourself the round-trip and write compressed shorthand from the start.
 
 ## Format templates per type
 
@@ -54,7 +54,7 @@ Use these literally. They are the right shape for an entry of that type.
 The transformation is the whole job. Every example below is a real-shaped source on the left and the correct compressed entry on the right.
 
 **Tunnel choice**
-- ❌ "The user David mentioned during a conversation that he prefers to use Cloudflare for his tunnel infrastructure rather than other options because it integrates well with his existing setup and provides reliable performance for his self-hosted services."
+- ❌ "The user mentioned during a conversation that he prefers to use Cloudflare for his tunnel infrastructure rather than other options because it integrates well with his existing setup and provides reliable performance for his self-hosted services."
 - ✅ `Tunnel: Cloudflare named. Reason: integration with self-hosted setup.`
 
 **Test result**
@@ -62,11 +62,11 @@ The transformation is the whole job. Every example below is a real-shaped source
 - ✅ Discard. Single test result with a transient model + already-known issue. **Don't vault.**
 
 **Active priority**
-- ❌ "Kevin is currently working on overhauling the Dreamer agent and improving how it processes conversation archives so that it uses fewer tokens and produces better quality vault entries."
+- ❌ "The primary agent is currently working on overhauling the Dreamer agent and improving how it processes conversation archives so that it uses fewer tokens and produces better quality vault entries."
 - ✅ `Active project: Dreamer overhaul. Goals: lower token cost, sharper entries.`
 
 **Behavioral feedback**
-- ❌ "David told Kevin during today's conversation that he doesn't want him to push or release without explicit approval anymore."
+- ❌ "The owner told the primary agent during today's conversation that he doesn't want him to push or release without explicit approval anymore."
 - ✅ Pin it verbatim in the vault (a standing "never" instruction; see the EXCEPTION at the top). You never edit SOUL.md; standing rules live as pinned verbatim vault entries.
 
 **Inter-agent decision**
@@ -92,8 +92,8 @@ nothing from it. **Verdict: discard, don't vault.**
 **Bad — bug report disguised as a procedure (do NOT write entries like this):**
 ```
 [2026-04-30] Maddy's persistent thread delivery failure: Maddy consistently receives
-deliverables via A2A and closes threads herself, then sends Kevin a "FYI" context
-message instead of allowing Kevin to reply on the original thread…
+deliverables via A2A and closes threads herself, then sends the primary agent a "FYI" context
+message instead of allowing the primary agent to reply on the original thread…
 ```
 This is a platform bug report, not durable memory. Bugs get fixed; once fixed, the
 entry is wrong and will mislead. Wrong type too (`procedure` for a bug). **Verdict:
@@ -104,10 +104,10 @@ discard, don't vault. Bugs belong in the tracker, not the vault.**
 [2026-04-30] Tunnel infra: Cloudflare named tunnel. Picked for integration + reliability on self-hosted.
 ```
 ```
-[2026-04-30] Verve Health deck — 4-phase build process worked end-to-end. Maddy → Kevin via A2A DELIVERABLE intent.
+[2026-04-30] Verve Health deck — 4-phase build process worked end-to-end. Maddy → the primary agent via A2A DELIVERABLE intent.
 ```
 ```
-[2026-04-30] David: never push or release without explicit approval.
+[2026-04-30] The owner: never push or release without explicit approval.
 ```
 
 Notice: dates are present, the noun comes first, and there's no story — just the fact.
@@ -160,7 +160,7 @@ For each batch:
    - **Tool-call logs.** "Agent ran X tool, got Y result" is not memory. It's a log line.
    - **Tool failures the agent recovered from.** If the recovery worked, there's nothing to remember.
    - **Restating something already in the vault.** Run `vault_search` first; if there's a hit, skip.
-   - **Routine completion notices** ("Kevin sent the deck link via iMessage"). Routine work isn't memory.
+   - **Routine completion notices** ("the primary agent sent the deck link via iMessage"). Routine work isn't memory.
    - **Anything the agent could rederive in five seconds** from `vault_search`, `file_read`, or the tracker.
    - **Anything specific to a single agent's single task.** Memory should be about the *user* and the *project*, not the agent's process.
 

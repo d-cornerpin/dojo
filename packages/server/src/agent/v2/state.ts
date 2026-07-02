@@ -75,6 +75,12 @@ export interface ChannelInboundContext {
   emailMessageId?: string;
   emailService?: 'outlook' | 'gmail';
   emailSubject?: string;
+  // B-1 (comms-audit): which connected mailbox received this message (the
+  // account email). Multi-account (Path B): the auto-reply MUST go out from the
+  // SAME account, so this is threaded into the gmail_reply/outlook_reply `account`
+  // param. Without it, resolveGoogle/MicrosoftAccount(undefined) returns null when
+  // 2+ agent accounts are connected and the reply silently fails.
+  emailAccount?: string;
   // v2.9.18: Twilio SMS reply context. Set when inboundChannel is
   // 'sms' so the terminal-text auto-route knows which number to
   // send to (the original sender) and which of our Twilio numbers
@@ -301,6 +307,15 @@ export interface AgentTurnState {
    */
   nudgedForUngroundedClaimThisTurn: boolean;
   /**
+   * Set true the first time the thrash-gate DRIFT path nudges this turn
+   * (comms-audit G-BLK-1). Drift (gate on while the agent varies call signatures)
+   * is a false-positive-prone signal — legitimate progress also varies signatures —
+   * so it must NOT terminally block a task. Instead it injects one visible nudge
+   * (with the escape-hatch) and resets the drift window; MAX_TOOL_LOOPS bounds any
+   * real spiral. Only the explicit-refusal-count path terminally blocks. One-shot.
+   */
+  nudgedForThrashDriftThisTurn: boolean;
+  /**
    * Set true the first time the "going idle with in_progress task" detector
    * fires in a turn. Pattern: the agent is ending the turn (no more tool
    * calls) with at least one in_progress task assigned to them AND did NOT
@@ -458,6 +473,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     nudgedForCloseOutThisTurn: false,
     nudgedForAddNotesStopThisTurn: false,
     nudgedForUngroundedClaimThisTurn: false,
+    nudgedForThrashDriftThisTurn: false,
     nudgedForGoingIdleWithInProgressThisTurn: false,
     awaitingPostCompactRecall: false,
     nudgedForPostCompactRecall: false,

@@ -156,7 +156,7 @@ function getMaxOutputTokens(apiModelId: string, providerType: string): number {
 // the remaining N-1 tool_use blocks orphaned. Stripping them silently
 // rewrote the assistant message — on the next turn the model thought it
 // had only called one tool, so it re-fired the others. That's the
-// "agent repeats itself" regression David caught.
+// "agent repeats itself" regression the owner caught.
 //
 // Fix: walk forward consuming every consecutive message that looks like a
 // tool-result carrier and union all their tool_use_ids before deciding

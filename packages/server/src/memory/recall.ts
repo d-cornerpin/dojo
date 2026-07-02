@@ -85,6 +85,14 @@ export interface RecallOptions {
    * genuine cross-conversation recovery case ("show me everything recent").
    */
   scope?: 'conversation' | 'all';
+  /**
+   * E-C1: the conv_key of the conversation THIS turn is serving, threaded from the
+   * live turn state. A string scopes recall to that conversation; explicit null
+   * means an engine/A2A turn (no human conversation) so recall stays on untagged
+   * rows and never latches a prior human conversation; `undefined` (called outside
+   * a turn) falls back to the legacy "most-recently-stamped conv_key" heuristic.
+   */
+  turnConvKey?: string | null;
 }
 
 const ROLE_LABEL: Record<string, string> = {
@@ -232,16 +240,39 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
     // dropping OTHER conversations' tagged output — the cross-task bleed that
     // surfaced unrelated `apt`/package output during a flight-info question.
     if (opts.scope !== 'all') {
-      const cur = db
-        .prepare(
-          `SELECT conv_key FROM messages
-             WHERE agent_id = ? AND conv_key IS NOT NULL${sessionBoundary ? ' AND created_at >= ?' : ''}
-             ORDER BY rowid DESC LIMIT 1`,
-        )
-        .get(...(sessionBoundary ? [agentId, sessionBoundary] : [agentId])) as { conv_key: string } | undefined;
-      if (cur?.conv_key) {
-        clauses.push('(conv_key = ? OR conv_key IS NULL)');
-        params.push(cur.conv_key);
+      // E-C1: prefer the LIVE turn's conv_key over re-deriving "most recently
+      // stamped" — which on an engine/A2A turn latched the last HUMAN conversation
+      // and bled it into the recall. A string = that conversation; explicit null =
+      // engine/A2A turn (untagged rows only, no human-conv bleed); undefined =
+      // called outside a turn, use the legacy heuristic.
+      let scopeKey: string | null | undefined;
+      if (opts.turnConvKey !== undefined) {
+        scopeKey = opts.turnConvKey;
+      } else {
+        const cur = db
+          .prepare(
+            `SELECT conv_key FROM messages
+               WHERE agent_id = ? AND conv_key IS NOT NULL${sessionBoundary ? ' AND created_at >= ?' : ''}
+               ORDER BY rowid DESC LIMIT 1`,
+          )
+          .get(...(sessionBoundary ? [agentId, sessionBoundary] : [agentId])) as { conv_key: string } | undefined;
+        scopeKey = cur?.conv_key;
+      }
+      if (scopeKey) {
+        // C17: keep the current conversation's stamped rows, but restrict the NULL part to
+        // the agent's OWN activity (assistant/tool) or A2A rows — NEVER a bare `conv_key IS
+        // NULL`, which also matches ANOTHER human's not-yet-claimed waiting inbound and
+        // legacy rows, bleeding a different human's conversation into this recall (inv 4).
+        // The current conversation's own user rows get stamped conv_key at pickup/turn-end
+        // (C15), so they're covered by `conv_key = ?`; the NULL branch is only for this
+        // turn's still-untagged own scratch.
+        clauses.push("(conv_key = ? OR (conv_key IS NULL AND (role IN ('assistant','tool') OR source_agent_id IS NOT NULL)))");
+        params.push(scopeKey);
+      } else if (opts.turnConvKey === null) {
+        // Engine/A2A turn (no human conv_key): restrict to the agent's own untagged
+        // activity / A2A rows, never a human's unclaimed inbound or a prior human
+        // conversation's tagged output.
+        clauses.push("conv_key IS NULL AND (role IN ('assistant','tool') OR source_agent_id IS NOT NULL)");
       }
     }
     if (opts.since) {

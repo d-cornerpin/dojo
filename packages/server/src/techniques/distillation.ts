@@ -25,6 +25,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { getTrainerAgentId, isTrainerEnabled } from '../config/platform.js';
+import { postAgentNotice } from '../agent/agent-notice.js';
 
 const logger = createLogger('technique-distillation');
 
@@ -177,36 +178,25 @@ export async function runDistillationCycle(): Promise<void> {
     }
   }
 
-  // ── 5c: the owner hears about it from the PRIMARY ──
-  try {
-    const parts: string[] = [];
-    if (candidates.length > 0) {
-      parts.push(
-        `The engine spotted ${candidates.length} repeated task pattern(s) and asked the Trainer to draft technique(s): ` +
-        candidates.map((c) => `"${c.sampleTitle}" (${c.count}x)`).join(', ') +
-        `. Drafts are inert until published. When the owner has a moment, ask whether to promote them (the Trainer publishes via publish_technique on approval).`,
-      );
-    }
-    if (retireFlags.length > 0) {
-      parts.push(
-        `Retirement flags: ` +
-        retireFlags.map((r) => `"${r.name}" succeeded only ${(r.successRate * 100).toFixed(0)}% of its last ${r.uses} uses`).join('; ') +
-        `. Ask the owner whether to archive; if yes, tell the Trainer to set the technique state to archived.`,
-      );
-    }
-    if (parts.length > 0) {
-      await deliverA2AMessage({
-        intent: 'FYI',
-        threadId: uuidv4(),
-        requiresResponse: false,
-        payload: `Learning-loop summary (engine, nightly):\n${parts.join('\n\n')}`,
-        toAgent: getPrimaryAgentId(),
-        fromAgent: 'system',
-      });
-    }
-  } catch (err) {
-    logger.error('distillation: primary notice failed', {
-      error: err instanceof Error ? err.message : String(err),
+  // ── 5c: the primary hears about it — briefly ──
+  // comms-audit (critic find): this used to deliver an enumerated nightly report
+  // ("spotted N patterns and asked the Trainer to draft: 'title' (Nx), … Retirement
+  // flags: 'name' succeeded only X% of its last Y uses; …") as an FYI through the A2A
+  // transport, which lands it as an unstamped role='user' [A2A:FYI from:system] row in
+  // the primary's live tail and reaches the model — a verbose firehose. The full
+  // candidate + retirement enumeration already goes to the Trainer's ASSIGN thread
+  // (above) and the technique/tracker tables the owner reads when acting. The primary
+  // only needs a brief, actionable heads-up in its awareness lane.
+  const bits: string[] = [];
+  if (candidates.length > 0) bits.push(`drafted ${candidates.length} technique${candidates.length === 1 ? '' : 's'} from repeated task patterns`);
+  if (retireFlags.length > 0) bits.push(`flagged ${retireFlags.length} technique${retireFlags.length === 1 ? '' : 's'} for possible retirement`);
+  if (bits.length > 0) {
+    postAgentNotice({
+      toAgentId: getPrimaryAgentId(),
+      fromName: 'Learning loop',
+      selfIntro: false,
+      intent: 'learning_loop',
+      brief: `Nightly pass: I ${bits.join(' and ')}. Want to review whether to promote or archive them? The drafts are inert until you approve.`,
     });
   }
 }

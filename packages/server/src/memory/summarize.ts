@@ -40,12 +40,12 @@ export function getDepthPrompt(depth: number, targetTokens: number, previousCont
 ${identity}
 
 INPUT FORMAT: The conversation below is formatted as [ROLE · PARTY] followed by the message content, separated by --- dividers.
-[USER · <name>] = an inbound message, tagged with WHO it is from and on which channel (e.g. [USER · David], [USER · Alex Chen (imessage)], [USER · priya@northwind.example.com (email)], [USER · Kelly (agent)])
+[USER · <name>] = an inbound message, tagged with WHO it is from and on which channel (e.g. [USER · the owner], [USER · Alex Chen (imessage)], [USER · priya@northwind.example.com (email)], [USER · a PM agent (agent)])
 [ASSISTANT · <party>] / [TOOL · <party>] = the AI assistant's own reply / a tool result, tagged with the conversation it was part of
 The PARTY tag tells you which conversation each message belongs to. These are SEPARATE conversations with different people, not one stream.
 
 CONVERSATION ATTRIBUTION — CRITICAL:
-- Every fact, request, reminder, pending task, or decision MUST state which party/conversation it belongs to. Write "David asked to move his dentist to 3pm" and "Priya (email) asked for the offsite budget" — NEVER an unattributed "dentist moved to 3pm; offsite budget requested" that drops who it was for.
+- Every fact, request, reminder, pending task, or decision MUST state which party/conversation it belongs to. Write "the owner asked to move their dentist to 3pm" and "Priya (email) asked for the offsite budget" — NEVER an unattributed "dentist moved to 3pm; offsite budget requested" that drops who it was for.
 - Keep different parties' items separate. Do not merge a request from one person with an action for another. A later reader uses these labels to act on the RIGHT person's request on the right turn; an unlabeled fact causes it to act on the wrong conversation.
 
 TEMPORAL ANCHORING — CRITICAL:
@@ -102,7 +102,7 @@ ABSOLUTE RULES:
 - NEVER drop business names, project names, people's names, or technical specifics
 - Remove only true duplicates (exact same fact stated twice) and filler/pleasantries
 - Do NOT carry forward standing capability verdicts ("agent can't do X", "X not supported") as current fact — keep a dated attempt/outcome if one is present, but those conclusions are stale-prone and must not be stated as present truth
-- Maintain correct attribution — never confuse who said or did what. The source summaries tag facts with the party/conversation they belong to (David, a named contact on a channel, another agent); CARRY THOSE LABELS FORWARD. Keep different parties' requests separate; never merge them into an unattributed statement.
+- Maintain correct attribution — never confuse who said or did what. The source summaries tag facts with the party/conversation they belong to (the owner, a named contact on a channel, another agent); CARRY THOSE LABELS FORWARD. Keep different parties' requests separate; never merge them into an unattributed statement.
 - Target approximately ${targetTokens} tokens — use the space for facts, not narrative
 - Do NOT include preamble — write the condensed summary directly
 ${contextBlock}`;

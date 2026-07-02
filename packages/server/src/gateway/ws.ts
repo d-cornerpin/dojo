@@ -122,7 +122,7 @@ function notifyInternalListeners(event: WsEvent): void {
   // Snapshot the listener set before iterating. JS Set iteration visits
   // items added during iteration, so without snapshotting a listener that
   // subscribes inside another listener's callback would also receive the
-  // in-flight event. That caused the v2.6.8 "Hello hello David" double-
+  // in-flight event. That caused the v2.6.8 "Hello hello" double-
   // synthesis bug in voice mode: the proactive watcher's callback set up
   // the burst listener, which then also fired for the same chat:chunk and
   // pushed its content into the splitter a second time.

@@ -42,7 +42,7 @@ vi.mock('../../config/platform.js', () => ({
   isPMAgent: () => false,
   isDreamerAgent: () => false,
   getDreamerAgentId: () => 'dreamer',
-  getPrimaryAgentId: () => 'kevin',
+  getPrimaryAgentId: () => 'primary',
 }));
 
 vi.mock('../runtime.js', () => ({

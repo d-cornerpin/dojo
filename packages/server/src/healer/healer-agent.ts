@@ -20,6 +20,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { compileDiagnosticReport } from './diagnostic.js';
 import { runAutoFixes } from './auto-fix.js';
+import { postAgentNotice } from '../agent/agent-notice.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import type { Message } from '@dojo/shared';
 import {
@@ -585,7 +586,7 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
   // Step 3: If there are warnings/critical items remaining, OR if there
   // are approved-but-not-yet-applied proposals waiting, wake the permanent
   // Healer agent. v2.3.19 — pre-spec, the Healer only fired when the
-  // diagnostic found something to diagnose. If David approved a proposal
+  // diagnostic found something to diagnose. If the owner approved a proposal
   // but no NEW issues came up, the proposal sat forever waiting for
   // Healer to execute it. Now any pending approval also triggers the
   // cycle.
@@ -718,6 +719,37 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
 
   // Step 4: Append to the healer log file
   appendToHealerLog(report, autoFixCount);
+
+  // Step 5 (owner request): ONE daily heartbeat to the primary — a positive "all systems
+  // operational" when healthy, or a brief notice of what needs attention when not. This is
+  // the Healer's single daily message; real-time injury alerts (runtime.notifyPrimaryOfInjury)
+  // fire on the spot for immediate breakage and are separate. Re-compile AFTER the auto-fixes
+  // so we report the true remaining state, not the pre-fix snapshot (don't flag a problem the
+  // auto-fix just resolved). This runs on the daily scheduled cycle; a manual dashboard-
+  // triggered cycle also posts (a status in response to an explicit run is expected).
+  try {
+    const finalReport = compileDiagnosticReport();
+    const problems = finalReport.items.filter((i) => i.severity === 'critical' || i.severity === 'warning');
+    if (problems.length === 0) {
+      postAgentNotice({
+        toAgentId: getPrimaryAgentId(),
+        fromName: 'Healer',
+        brief: `Daily health check: all systems operational.${autoFixCount > 0 ? ` Applied ${autoFixCount} routine fix${autoFixCount === 1 ? '' : 'es'}; nothing needs your attention.` : ''}`,
+        intent: 'agent_health',
+      });
+    } else {
+      const titles = problems.slice(0, 5).map((p) => p.title).join('; ');
+      const more = problems.length > 5 ? ` (+${problems.length - 5} more)` : '';
+      postAgentNotice({
+        toAgentId: getPrimaryAgentId(),
+        fromName: 'Healer',
+        brief: `Daily health check: ${problems.length} issue${problems.length === 1 ? '' : 's'} need attention — ${titles}${more}. I'm ${config.healerMode === 'active' ? 'working on what I can' : 'in monitor mode'}.`,
+        intent: 'agent_health',
+      });
+    }
+  } catch (err) {
+    logger.warn('Healer daily status notice failed', { error: err instanceof Error ? err.message : String(err) });
+  }
 
   logger.info('Healing cycle complete', {
     diagnosticId: report.id,

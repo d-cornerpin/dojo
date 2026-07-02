@@ -495,7 +495,7 @@ export class CallSession {
     // `fromNumber`) to a friendly name. For inbound calls the other
     // party IS `fromNumber`; for outbound calls the other party is
     // `toNumber` (Twilio sets webhook From = our Twilio number and
-    // To = the dialed party). The dashboard badge wants "from David"
+    // To = the dialed party). The dashboard badge wants "from the owner"
     // either way; using `fromNumber` blindly surfaced our own Twilio
     // number on outbound calls (production note 2026-06-07).
     const otherPartyNumber =
@@ -836,7 +836,7 @@ export function callerIsAllowlisted(fromNumber: string): boolean {
  * Resolve a phone number to the friendly name configured on the Twilio
  * voice safe-callers list. Returns the name if matched, or null when
  * the caller isn't in the list (or the lookup fails). Used to render
- * "from David via phone call" instead of "+13035135244".
+ * "from the owner via phone call" instead of "+15551234567".
  */
 export function resolveTwilioCallerName(fromNumber: string): string | null {
   if (!fromNumber || fromNumber === '(unknown)') return null;

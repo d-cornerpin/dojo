@@ -1,4 +1,4 @@
-// R8 enforcement guard — the hard governance rule (David's "hard rule moving
+// R8 enforcement guard — the hard governance rule (the owner's "hard rule moving
 // forward"): engine injection into the assembled context happens ONLY through
 // the registry. This test greps the server source for raw injection patterns
 // outside a small allow-list and FAILS the build if any appear, so a new stray

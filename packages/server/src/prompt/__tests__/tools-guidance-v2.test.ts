@@ -17,11 +17,11 @@ vi.mock('../../db/connection.js', () => ({
 // (config/runtime.js mock removed in Phase 9 Stage 2 — module deleted)
 
 vi.mock('../../config/platform.js', () => ({
-  isPrimaryAgent: (id: string) => id === 'kevin',
+  isPrimaryAgent: (id: string) => id === 'primary',
   isPMAgent: () => false,
   getOwnerName: () => 'TestUser',
-  getPrimaryAgentId: () => 'kevin',
-  getPrimaryAgentName: () => 'Kevin',
+  getPrimaryAgentId: () => 'primary',
+  getPrimaryAgentName: () => 'Primary',
   getPMAgentId: () => 'pm',
   getPMAgentName: () => 'PM',
 }));
@@ -76,7 +76,7 @@ beforeEach(() => {
       config TEXT NOT NULL DEFAULT '{}'
     );
   `);
-  db.prepare(`INSERT INTO agents (id, name, status, classification) VALUES ('kevin', 'Kevin', 'idle', 'sensei')`).run();
+  db.prepare(`INSERT INTO agents (id, name, status, classification) VALUES ('primary', 'Primary', 'idle', 'sensei')`).run();
   mockDb.current = db;
 });
 
@@ -90,7 +90,7 @@ function assembleSystemPrompt(agentId: string, modelId: string): string {
 
 describe('Phase 5 v2 tools-guidance content', () => {
   it('contains the "How You Communicate" terseness section verbatim', () => {
-    const prompt = assembleSystemPrompt('kevin', 'test-model');
+    const prompt = assembleSystemPrompt('primary', 'test-model');
     expect(prompt).toContain('## How You Communicate');
     expect(prompt).toContain("Be terse. Lead with the answer.");
     expect(prompt).toContain('"I went ahead and read the file and now I\'ll..."');
@@ -100,13 +100,13 @@ describe('Phase 5 v2 tools-guidance content', () => {
   });
 
   it('contains the "How Tools Return Content" pattern section', () => {
-    const prompt = assembleSystemPrompt('kevin', 'test-model');
+    const prompt = assembleSystemPrompt('primary', 'test-model');
     expect(prompt).toContain('## How Tools Return Content');
     expect(prompt).toContain('Tools default to **compact**');
   });
 
   it('does NOT contain v1 MANDATORY blocks', () => {
-    const prompt = assembleSystemPrompt('kevin', 'test-model');
+    const prompt = assembleSystemPrompt('primary', 'test-model');
     expect(prompt).not.toMatch(/MANDATORY: Project Tracker/);
     expect(prompt).not.toMatch(/MANDATORY: Acknowledge & Report/);
     expect(prompt).not.toMatch(/MANDATORY: Check Techniques/);
@@ -114,14 +114,14 @@ describe('Phase 5 v2 tools-guidance content', () => {
   });
 
   it('does NOT contain v1 verbose vault instructions block', () => {
-    const prompt = assembleSystemPrompt('kevin', 'test-model');
+    const prompt = assembleSystemPrompt('primary', 'test-model');
     // The 40-line v1 vault block had specific phrasing that we removed
     expect(prompt).not.toMatch(/Your Long-Term Memory \(The Vault\)/);
     expect(prompt).not.toMatch(/use vault_search instinctively/);
   });
 
   it('keeps short per-category notes (iMessage, vault, tracker, etc.)', () => {
-    const prompt = assembleSystemPrompt('kevin', 'test-model');
+    const prompt = assembleSystemPrompt('primary', 'test-model');
     // Brief 1-2 line notes are part of the v2 design
     expect(prompt).toMatch(/## iMessage/);
     expect(prompt).toMatch(/## Talking to Other Agents/);
@@ -130,20 +130,20 @@ describe('Phase 5 v2 tools-guidance content', () => {
   });
 
   it('keeps the Available Tools index', () => {
-    const prompt = assembleSystemPrompt('kevin', 'test-model');
+    const prompt = assembleSystemPrompt('primary', 'test-model');
     expect(prompt).toContain('## Available Tools');
     expect(prompt).toContain('Always-loaded tools');
   });
 
   it('uses the trimmed "Project Manager" block (no FORBIDDEN paragraph)', () => {
-    const prompt = assembleSystemPrompt('kevin', 'test-model');
+    const prompt = assembleSystemPrompt('primary', 'test-model');
     // v2 trim mentions PM and what they do briefly; NOT "FORBIDDEN" / "NEVER" caps
     expect(prompt).not.toMatch(/Creating your own monitoring infrastructure is FORBIDDEN/);
     expect(prompt).not.toMatch(/NEVER create monitoring, pulse-check, or status-polling agents/);
   });
 
   it('uses the trimmed "Message Sources" block (source-tag table only, no Channel awareness essay)', () => {
-    const prompt = assembleSystemPrompt('kevin', 'test-model');
+    const prompt = assembleSystemPrompt('primary', 'test-model');
     expect(prompt).toMatch(/## Message Sources/);
     // The verbose "Channel awareness — keeping iMessage and dashboard separate" block
     // was a 15-line v1 essay; v2 must not include it.
@@ -155,7 +155,7 @@ describe('Phase 5 v2 tools-guidance content', () => {
     // for small tool inventories, but for primary agents with the full
     // platform (~165 tools) the tool index alone is ~1.4K. 4-5K total is
     // realistic and still a 50%+ cut from v1. Confirm we're in that range.
-    const prompt = assembleSystemPrompt('kevin', 'test-model');
+    const prompt = assembleSystemPrompt('primary', 'test-model');
     const approxTokens = Math.ceil(prompt.length / 4);
     expect(approxTokens).toBeLessThan(6000); // hard ceiling — would mean we missed something big
   });

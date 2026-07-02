@@ -238,8 +238,8 @@ function markAssistantMessageVoiced(agentId: string, messageId: string): void {
 }
 
 /**
- * Whisper inserts noise around short phrases — a wake phrase like "hey kevin"
- * might come back as "Hey, Kevin?" or "hey, kevin." or even "kevin". This
+ * Whisper inserts noise around short phrases — a wake phrase like "hey aria"
+ * might come back as "Hey, Aria?" or "hey, aria." or even "aria". This
  * normalizes both sides before matching so the wake-word check isn't brittle.
  */
 function normalizeForPhrase(s: string): string {
@@ -249,8 +249,8 @@ function normalizeForPhrase(s: string): string {
 /**
  * Compact American Soundex implementation. Phonetic equivalence catches
  * the homophone class of whisper misfires for unusual proper nouns:
- *   Jain → J500, Jane → J500, Jayne → J500   (all match)
- *   Kevin → K150, Kevyn → K150               (all match)
+ *   Aria → A600, Arya → A600, Ariya → A600   (all match)
+ *   Alex → A420, Aleks → A420                (all match)
  *
  * Hand-rolled rather than pulling in `natural` for one tiny function.
  */
@@ -289,7 +289,7 @@ function soundexPhrase(phrase: string): string {
 // Words that commonly prefix a wake phrase. When the configured wake phrase
 // starts with one of these AND whisper drops it (which happens often for
 // quiet leading words on iPad/laptop mics), we still wake on the core word
-// alone — but ONLY for short utterances, so "Jain is at the store" said to
+// alone — but ONLY for short utterances, so "Aria is at the store" said to
 // another human doesn't false-trigger.
 const WAKE_INTRO_WORDS = new Set(['hey', 'hi', 'yo', 'ok', 'okay', 'hello']);
 const SHORT_UTTERANCE_MAX_WORDS = 3;
@@ -299,7 +299,7 @@ const SHORT_UTTERANCE_MAX_WORDS = 3;
  * order from cheapest to loosest:
  *   1. Exact substring after normalization (fast path — preserves prior behavior).
  *   2. Phonetic equivalence: Soundex on each word, then substring match. Catches
- *      Jain/Jane/Jayne and similar whisper proper-noun drift.
+ *      Aria/Arya/Ariya and similar whisper proper-noun drift.
  *   3. Intro-word drop: if the phrase is "hey <core>" and whisper transcribed
  *      just <core> (or a homophone), still match — but only when the
  *      utterance is ≤3 words, to avoid waking on incidental name mentions.

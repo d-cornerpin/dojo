@@ -589,7 +589,7 @@ export function autoCreateAssignTask(params: {
     // producing two tasks for one unit of work and, for non-idempotent
     // tools (gmail_send, sms_send, voice_call, exec hitting live APIs),
     // a duplicate side effect. Production incident 2026-06-08: Email
-    // 08 (Mariana Vázquez task) duplicated when PM rerouted Kevin
+    // 08 (Mariana Vázquez task) duplicated when PM rerouted the primary agent
     // after an auto-pause. The ASSIGN message itself still delivers
     // and wakes the receiver; just no fork.
     if (isPMAgent(params.senderId)) {

@@ -16,11 +16,12 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
+import { isSenderAuthorized } from './v2/channel-auth.js';
 // A2A protocol constants and helpers — inlined here to avoid runtime
 // imports from @dojo/shared (which points at .ts source and can't be
 // loaded by Node.js in production without a TS loader).
 // Types are still imported from @dojo/shared as type-only (erased at compile time).
-import type { A2AIntent, A2AEnvelope, A2ADropReason } from '@dojo/shared';
+import type { A2AIntent, A2AEnvelope, A2ADropReason, ToolCall } from '@dojo/shared';
 
 // Terminal intents CLOSE the thread (prevent acknowledgement replies).
 // But closing the thread and waking the receiver are INDEPENDENT concepts.
@@ -489,7 +490,15 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
     const isDeliverableShape =
       autoPromotedFromFyi ||
       (effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'ANSWER');
-    if (targetIsPrimary && !senderIsOps && isDeliverableShape) {
+    // C21: if this ANSWER/DELIVERABLE matches a PARKED owner question, the close-the-loop
+    // relay below already delivers "Heard back from X" on the owner's channel. Appending
+    // the deliverable hint too would make the woken primary ALSO send the gist (explicit
+    // tool calls aren't suppressed on a background turn) → the owner gets it twice, seconds
+    // apart. Suppress the hint when a park row exists; the engine owns delivery on that thread.
+    const parkHandlesDelivery = !!db.prepare(
+      `SELECT 1 FROM messages WHERE agent_id = ? AND role = 'user' AND conv_key IN (?, ?) LIMIT 1`,
+    ).get(target.id, `park:${threadId}`, `park:${threadShort}`);
+    if (targetIsPrimary && !senderIsOps && isDeliverableShape && !parkHandlesDelivery) {
       const ownerName = getOwnerName();
       // v2.9.21 — Engine hint, not Engine order. The previous wording
       // ("[Engine: Send ... unless they're already actively in this
@@ -528,37 +537,117 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   // reply intents (the asker is waiting on them) close the loop.
   if (effectiveIntent === 'ANSWER' || effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'COMPLETE' || effectiveIntent === 'FAIL') {
     try {
-      const parked = db.prepare(
+      // BUG-4 (comms-audit): read the FULL-id park key first (loop.ts now parks under the
+      // full thread id via the structural path — collision-free), then fall back to the
+      // 8-char key for the rare regex-fallback park (whose source prose carries only 8
+      // chars). Mark relayed under the SAME key space that matched so the idempotency guard
+      // still fires. This removes the prefix-collision wrong-answer/drop while staying
+      // compatible with any question parked under the short key.
+      const parkLookup = db.prepare(
         `SELECT rowid, content, inbound_meta FROM messages WHERE agent_id = ? AND conv_key = ? AND role = 'user' ORDER BY rowid DESC LIMIT 1`,
-      ).get(target.id, `park:${threadShort}`) as { rowid: number; content: string; inbound_meta: string | null } | undefined;
+      );
+      let matchedParkKey = `park:${threadId}`;
+      let parked = parkLookup.get(target.id, matchedParkKey) as { rowid: number; content: string; inbound_meta: string | null } | undefined;
+      if (!parked) {
+        matchedParkKey = `park:${threadShort}`;
+        parked = parkLookup.get(target.id, matchedParkKey) as { rowid: number; content: string; inbound_meta: string | null } | undefined;
+      }
       if (parked) {
         // Mark relayed FIRST (idempotent): a duplicate ANSWER on this thread
         // won't match `park:` again, so the owner can't be double-delivered.
-        db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ?`).run(`relayed:${threadShort}`, target.id, parked.rowid);
+        // C24 (documented, not fixed — low probability): marking BEFORE delivery trades a
+        // double-deliver risk (worse) for a lost-answer-on-crash risk (rarer). If the
+        // process dies in the window between this UPDATE and the send below, the park is
+        // consumed but the owner never got the answer. A durable fix would add a
+        // `delivered_at` column and mark-after-deliver with an idempotent send; deferred as
+        // the crash window is a few milliseconds and single-process.
+        const relayedKey = matchedParkKey.replace('park:', 'relayed:');
+        db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ?`).run(relayedKey, target.id, parked.rowid);
         const answer = String(envelope.payload).replace(/\s+/g, ' ').trim().slice(0, 1200);
         const deliveryText = `Heard back from ${senderName}: ${answer}`;
         // Resolve the owner's reply channel from the parked question's STRUCTURED
         // inbound_meta (not by regex-scraping the SOURCE marker — that text varies
         // and the dev harness omits the address). Reply-to is meta.sender, the
         // same value loop.ts uses as imRecipient (counterparty.senderId).
-        let meta: { channel?: string; sender?: string } = {};
+        let meta: { channel?: string; sender?: string; chatId?: string; chatType?: string; emailMessageId?: string; emailService?: string; emailAccount?: string; smsFromNumber?: string; smsToNumber?: string } = {};
         try { meta = parked.inbound_meta ? JSON.parse(parked.inbound_meta) : {}; } catch { meta = {}; }
-        if (meta.channel === 'imessage' && meta.sender) {
-          const { sendResponseViaIMessage } = await import('../services/imessage-bridge.js');
-          const delivered = sendResponseViaIMessage(deliveryText, target.id, meta.sender);
-          logger.info('A2A close-the-loop: engine delivered answer to owner (iMessage)', {
-            agentId: target.id, thread: threadShort, recipient: meta.sender, delivered: !!delivered,
+        // Channel-aware delivery (comms-audit O-1): the owner's parked question may
+        // have arrived on ANY channel — deliver the relayed answer back on THAT
+        // channel, mirroring loop.ts's direct reply router (iMessage / Teams / email),
+        // not a binary iMessage-or-dashboard split. The earlier version sent every
+        // non-iMessage owner's relayed answer to the dashboard (the gap O-1 closes).
+        // Anything unhandled or failed falls back to the dashboard so the owner ALWAYS
+        // gets the answer somewhere. (phone: the call is over by relay time, so it uses
+        // the dashboard fallback; sms now has its own lane below — BUG-3.)
+        let delivered = false;
+        try {
+          if (meta.channel === 'imessage' && meta.sender) {
+            const { sendResponseViaIMessage } = await import('../services/imessage-bridge.js');
+            delivered = !!sendResponseViaIMessage(deliveryText, target.id, meta.sender);
+          } else if (
+            meta.channel === 'teams' && meta.chatId &&
+            // C18: never relay into a GROUP chat (the owner's private "Heard back from X"
+            // would go to the whole group), and re-validate the sender at relay time (they
+            // may have been removed from the safe list mid-conversation). Either condition
+            // fails → fall through to the guaranteed dashboard fallback below.
+            meta.chatType !== 'group' && isSenderAuthorized('teams', meta.sender ?? '', 'agent')
+          ) {
+            const { executeTool } = await import('./tools.js');
+            const tc: ToolCall = { id: uuidv4(), name: 'teams_send_message', arguments: { chat_id: meta.chatId, message: deliveryText } };
+            const r = await executeTool(target.id, tc);
+            delivered = !r.isError;
+          } else if (
+            meta.channel === 'email' && meta.emailMessageId &&
+            // C18: re-validate the email sender at relay time; a removed sender must not
+            // get the relayed answer (falls through to the dashboard fallback).
+            isSenderAuthorized('email', meta.sender ?? '', 'agent', { emailService: meta.emailService === 'outlook' ? 'outlook' : 'gmail' })
+          ) {
+            const { executeTool } = await import('./tools.js');
+            const toolName = meta.emailService === 'gmail' ? 'gmail_reply' : 'outlook_reply';
+            const tc: ToolCall = {
+              id: uuidv4(), name: toolName,
+              // B-2 (comms-audit): reply FROM the mailbox that received the owner's
+              // original question (multi-account), not an ambiguous default.
+              arguments: { message_id: meta.emailMessageId, body: deliveryText, ...(meta.emailAccount ? { account: meta.emailAccount } : {}) },
+            };
+            const r = await executeTool(target.id, tc);
+            delivered = !r.isError;
+          } else if (meta.channel === 'sms' && (meta.smsFromNumber || meta.sender)) {
+            // BUG-3 (comms-audit): the owner can ask via SMS, and the inbound SMS path
+            // stamps channel='sms' + smsFromNumber/smsToNumber into inbound_meta. The
+            // earlier O-1 relay had no SMS lane, so an SMS-origin owner's relayed answer
+            // was dumped to a dashboard they may never open. Route via the sms_send tool
+            // (like the teams/email branches above), not a raw client call: same executor,
+            // its safe-sender revalidation, and harness-capturable — text the original
+            // from-number back so the thread stays continuous on the owner's phone.
+            const { executeTool } = await import('./tools.js');
+            const to = meta.smsFromNumber ?? meta.sender!;
+            const tc: ToolCall = { id: uuidv4(), name: 'sms_send', arguments: { to, body: deliveryText } };
+            const r = await executeTool(target.id, tc);
+            delivered = !r.isError;
+          }
+        } catch (err) {
+          logger.warn('A2A close-the-loop channel delivery failed, falling back to dashboard', {
+            agentId: target.id, channel: meta.channel, error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        if (delivered) {
+          logger.info('A2A close-the-loop: engine delivered answer to owner on their channel', {
+            agentId: target.id, thread: threadShort, channel: meta.channel,
           });
         } else {
-          // Dashboard (or unknown-channel) owner — surface it as the agent's
-          // own chat message so it renders in their dashboard conversation.
+          // Dashboard (or unhandled/failed channel) owner — surface it as the agent's
+          // own chat message so it renders in their dashboard conversation. Always
+          // reaches them, so the answer is never lost even on an unsupported channel.
           const msgId = uuidv4();
           db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'assistant', ?, datetime('now'))`).run(msgId, target.id, deliveryText);
           broadcast({
             type: 'chat:message', agentId: target.id,
             message: { id: msgId, agentId: target.id, role: 'assistant' as const, content: deliveryText, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
           });
-          logger.info('A2A close-the-loop: engine delivered answer to owner (dashboard)', { agentId: target.id, thread: threadShort });
+          logger.info('A2A close-the-loop: engine delivered answer to owner (dashboard fallback)', {
+            agentId: target.id, thread: threadShort, channel: meta.channel ?? 'none',
+          });
         }
       }
     } catch (err) {
@@ -673,6 +762,14 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   const attachmentsJson = attachmentsList.length > 0 ? JSON.stringify(attachmentsList) : null;
 
   // ── 11. Persist to messages table (with attachments) ──
+  // C25 (revised): the a2a pipe is DUMB — it carries the sender's real message faithfully,
+  // no transform and no length cap. A genuinely large, needed handoff must pass through
+  // whole. Firehose PREVENTION is the SENDER's job (a helper messages the primary only when
+  // there's a real actionable reason, not its full internal state on a timer). Keeping a2a
+  // out of the primary's HUMAN conversation (so it isn't confused about who it's talking to)
+  // is the ASSEMBLER's job, done structurally by origin.kind — not by rewriting the message
+  // here. Visibility to the user is the dashboard's job: a2a is the 'agent-only' tier
+  // (server-classified), hidden in regular chat, shown in wordy mode.
   const msgId = uuidv4();
   db.prepare(`
     INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, attachments, created_at)
@@ -680,7 +777,9 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   `).run(msgId, target.id, contextMessage, envelope.fromAgent, threadId, effectiveIntent, requiresResponse ? 1 : 0, attachmentsJson);
 
   // ── 12. Broadcast to dashboard (with attachments so the live UI shows the
-  // image immediately, not just on page refresh) ──
+  // image immediately, not just on page refresh). The a2a row is the 'agent-only'
+  // visibility tier (visibility.ts, from structured origin) — the dashboard hides it in
+  // regular chat and shows it in wordy mode. Nothing here decides visibility. ──
   broadcast({
     type: 'chat:message',
     agentId: target.id,
@@ -758,7 +857,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
       // a deliverable file) and BEFORE it marks its work served, so the re-triggered
       // turn redoes that work — duplicate projects, the plan delivered twice, the
       // same question answered twice. Confirmed via per-turn LOOP-START markers: an
-      // urgent PM QUESTION preempted kevin mid-turn and the turn restarted under the
+      // urgent PM QUESTION preempted the primary agent mid-turn and the turn restarted under the
       // same turn_number. The message is still delivered + persisted, and the
       // end-of-turn A2A re-trigger (runtime.ts finally) gives this inbound its OWN
       // dedicated turn right after the current one finishes — so the PM gets answered
