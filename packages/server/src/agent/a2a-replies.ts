@@ -56,7 +56,11 @@ export interface UnrepliedAssign {
  * graceful "no longer owed" outcome from the user's perspective, which
  * matches the user expectation of "session reset = clean slate."
  */
-export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 20): UnrepliedAssign | null {
+// `maxAgeMinutes` (optional): ignore assigns older than this. The boot re-drain passes 30
+// so a weeks-old inter-agent assign can't force-wake an agent into stale backlog on restart
+// (incident 2026-07-02) — the same staleness cutoff as the boot message sweep. Omitted by
+// every other caller (in-turn A2A detection), which keeps the full-session behavior.
+export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 20, maxAgeMinutes?: number): UnrepliedAssign | null {
   const db = getDb();
 
   // Look up the session boundary. If null (never reset), there's no
@@ -66,14 +70,14 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
     .get(agentId) as { session_started_at: string | null } | undefined;
   const sessionStartedAt = sessionRow?.session_started_at ?? null;
 
-  const baseSql = `SELECT id, content, created_at FROM messages
-                   WHERE agent_id = ? AND role = 'user'`;
-  const sql = sessionStartedAt
-    ? `${baseSql} AND created_at >= ? ORDER BY created_at DESC, rowid DESC LIMIT ?`
-    : `${baseSql} ORDER BY created_at DESC, rowid DESC LIMIT ?`;
-  const params: unknown[] = sessionStartedAt
-    ? [agentId, sessionStartedAt, lookback]
-    : [agentId, lookback];
+  const clauses: string[] = [`agent_id = ?`, `role = 'user'`];
+  const params: unknown[] = [agentId];
+  if (sessionStartedAt) { clauses.push(`created_at >= ?`); params.push(sessionStartedAt); }
+  if (maxAgeMinutes != null) { clauses.push(`created_at >= datetime('now', ?)`); params.push(`-${maxAgeMinutes} minutes`); }
+  const sql = `SELECT id, content, created_at FROM messages
+                   WHERE ${clauses.join(' AND ')}
+                   ORDER BY created_at DESC, rowid DESC LIMIT ?`;
+  params.push(lookback);
 
   const rows = db
     .prepare(sql)

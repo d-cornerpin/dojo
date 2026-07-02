@@ -197,6 +197,40 @@ async function main(): Promise<void> {
     }
   }
 
+  // 4b1. Boot staleness sweep (incident 2026-07-02). When the box has been offline or
+  // behind for a while, its message backlog fills with role='user' rows whose conv_key is
+  // still NULL (unanswered/unstamped) — old human inbounds AND old engine events. The boot
+  // re-drain below, plus the runtime/engine drains, treat those as freshly-waiting and would
+  // force-wake EVERY agent into a mass "catch up on weeks of work" storm (agents re-running
+  // ancient reminders, the healer backfilling a diagnostic for every past day, a sub-agent
+  // publishing without approval). A message pending from a genuine QUICK restart is
+  // seconds-to-minutes old; anything older than 30 minutes at boot is stale history, not
+  // in-flight work. Stamp those stale rows with a dead sentinel conv_key so no drain can pick
+  // them up — silently, with NO user prompt (the user has no context to judge "catch up on
+  // weeks of backlog?" and one wrong 'yes' is irreversible).
+  //
+  // SCOPE — this touches the messages table ONLY (conversation/context/notification rows). It
+  // NEVER touches the tracker (tasks/projects/schedules): those are the system of record, and
+  // the PM keeps picking up and completing stale tracker tasks at its normal pace, exactly as
+  // before. Nothing is completed, paused, expired, or deleted. A pending message UNDER 30
+  // minutes old is left NULL so the re-drain below still catches a genuine just-before-restart
+  // message.
+  {
+    try {
+      const db = getDb();
+      const swept = db.prepare(
+        `UPDATE messages SET conv_key = 'stale-boot'
+          WHERE role = 'user' AND conv_key IS NULL
+            AND created_at < datetime('now', '-30 minutes')`,
+      ).run();
+      if (swept.changes > 0) {
+        logger.info(`Boot staleness sweep: cleared ${swept.changes} stale (>30m) unanswered message row(s) so they can't re-wake agents (tracker untouched)`);
+      }
+    } catch (err) {
+      logger.warn('Boot staleness sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   // 4b2. Re-drain unanswered conversations after restart (comms-audit D-1).
   // An inbound that arrived before a restart is durably persisted with conv_key
   // NULL (unanswered), but the in-memory wakeup that would trigger its turn is
@@ -228,7 +262,12 @@ async function main(): Promise<void> {
         // and findUnrepliedAssignForAgent only runs inside a turn). One kick covers
         // both — runV2Turn re-classifies and serves whichever is owed.
         const owesHuman = getWaitingHumanConversations(id).length > 0;
-        const owesA2A = !owesHuman && findUnrepliedAssignForAgent(id) !== null;
+        // Boot staleness (incident 2026-07-02): only re-drain an A2A assign from the last 30
+        // minutes — a genuine just-before-restart request. An older unreplied assign is stale
+        // backlog and must not force-wake the agent (matches the message sweep in 4b1). The
+        // human side is already covered because 4b1 stamped stale human rows out of the
+        // waiting set.
+        const owesA2A = !owesHuman && findUnrepliedAssignForAgent(id, 20, 30) !== null;
         if (owesHuman || owesA2A) {
           redrained++;
           const delay = redrained * 300;
