@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.92",
-    "@anthropic-ai/sdk": "^0.39.0",
+    "@anthropic-ai/sdk": "^0.110.0",
     "@dojo/shared": "*",
     "@hono/node-server": "^1.13.8",
     "@hono/node-ws": "^1.1.0",
