@@ -177,7 +177,9 @@ systemRouter.post('/system/reset-idle-sessions', async (c) => {
       const now = new Date();
       const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
       db.prepare(
-        "UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief') WHERE id = ?",
+        // Clear the stale continuity brief AND the session-scoped scratchpad
+        // (matches agents.ts / reset_session so all reset paths behave alike).
+        "UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief', '$.scratchpad') WHERE id = ?",
       ).run(boundary, boundary, agent.id);
 
       const markerId = uuidv4();

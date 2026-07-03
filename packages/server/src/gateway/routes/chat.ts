@@ -317,7 +317,9 @@ chatRouter.post('/:agentId/new-session', async (c) => {
     //    Use SQLite datetime format (not ISO) to match the messages table format
     const now = new Date();
     const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-    db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief') WHERE id = ?").run(boundary, boundary, agentId);
+    // Clear both session-scoped config keys: the stale continuity brief and the
+    // scratchpad (session-scoped per its tool docs). Matches agents.ts reset.
+    db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief', '$.scratchpad') WHERE id = ?").run(boundary, boundary, agentId);
 
     // 4. Insert session marker for the UI divider only
     const markerId = uuidv4();

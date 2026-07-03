@@ -909,7 +909,7 @@ function wakeupDreamer(cycleMessage: string): void {
   // and compaction summaries accumulate until they fill the context window,
   // triggering repeated compaction/continuity-brief loops that stall the agent.
   const boundary = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-  db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief') WHERE id = ?")
+  db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief', '$.scratchpad') WHERE id = ?")
     .run(boundary, boundary, dreamerId);
 
   // Clear accumulated compaction summaries (context items)

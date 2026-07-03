@@ -6124,10 +6124,13 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           // from appearing in the fresh tail, summaries are the ONLY way
           // the agent retains context across a reset.
 
-          // Set session boundary and clear stale continuity brief
+          // Set session boundary and clear stale continuity brief + session
+          // scratchpad. Scratchpad is session-scoped (its own tool docs promise
+          // it "auto-clears on session reset"); leaving it behind bleeds the
+          // prior task's outline into the fresh session via the assembler.
           const now = new Date();
           const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-          db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief') WHERE id = ?").run(boundary, boundary, resolvedId);
+          db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief', '$.scratchpad') WHERE id = ?").run(boundary, boundary, resolvedId);
 
           // Insert UI divider
           const markerId = uuidv4();
