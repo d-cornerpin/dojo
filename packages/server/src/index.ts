@@ -19,9 +19,9 @@ const PORT = parseInt(process.env.DOJO_PORT ?? '3001', 10);
 // exiting. Without this, a throw inside a third-party WebSocket event
 // listener (Hume SDK, the gateway WS) takes down the process leaving
 // only an opaque stderr dump. We still exit so dev-mode (tsx watch)
-// restarts cleanly — just leave a breadcrumb first.
+// restarts cleanly, just leave a breadcrumb first.
 process.on('uncaughtException', (err) => {
-  logger.error('Uncaught exception — process will exit', {
+  logger.error('Uncaught exception, process will exit', {
     error: err instanceof Error ? err.message : String(err),
     stack: err instanceof Error ? err.stack : undefined,
   });
@@ -57,7 +57,7 @@ function ensurePrimaryAgent(): void {
   const primaryId = getPrimaryAgentId();
   const primaryName = getPrimaryAgentName();
 
-  // Skip if setup hasn't been completed — OOBE will provision the agent
+  // Skip if setup hasn't been completed, OOBE will provision the agent
   const setupDone = db.prepare("SELECT value FROM config WHERE key = 'setup_completed'").get() as { value: string } | undefined;
   if (!setupDone || setupDone.value !== 'true') {
     logger.info('Setup not completed, skipping primary agent creation (OOBE will handle it)');
@@ -91,7 +91,7 @@ async function main(): Promise<void> {
   logger.info('Starting Dojo Agent Platform...');
 
   // System-dependency check (brew packages like whisper-cpp). Runs in the
-  // background — we don't block server startup on a `brew install` that
+  // background, we don't block server startup on a `brew install` that
   // could take 30+ seconds. By the time the install completes and the
   // toast broadcasts, the dashboard has reconnected to the restarted
   // server and the user sees the "whisper-cpp installed" notification.
@@ -166,7 +166,7 @@ async function main(): Promise<void> {
   try {
     const { loadSavedChecks } = await import('./migration/checks.js');
     loadSavedChecks();
-  } catch { /* ignore — migration module may not exist yet */ }
+  } catch { /* ignore, migration module may not exist yet */ }
 
   // 3b. Generate tool documentation files for load_tool_docs
   try {
@@ -199,17 +199,17 @@ async function main(): Promise<void> {
 
   // 4b1. Boot staleness sweep (incident 2026-07-02). When the box has been offline or
   // behind for a while, its message backlog fills with role='user' rows whose conv_key is
-  // still NULL (unanswered/unstamped) — old human inbounds AND old engine events. The boot
+  // still NULL (unanswered/unstamped), old human inbounds AND old engine events. The boot
   // re-drain below, plus the runtime/engine drains, treat those as freshly-waiting and would
   // force-wake EVERY agent into a mass "catch up on weeks of work" storm (agents re-running
   // ancient reminders, the healer backfilling a diagnostic for every past day, a sub-agent
   // publishing without approval). A message pending from a genuine QUICK restart is
   // seconds-to-minutes old; anything older than 30 minutes at boot is stale history, not
   // in-flight work. Stamp those stale rows with a dead sentinel conv_key so no drain can pick
-  // them up — silently, with NO user prompt (the user has no context to judge "catch up on
+  // them up, silently, with NO user prompt (the user has no context to judge "catch up on
   // weeks of backlog?" and one wrong 'yes' is irreversible).
   //
-  // SCOPE — this touches the messages table ONLY (conversation/context/notification rows). It
+  // SCOPE, this touches the messages table ONLY (conversation/context/notification rows). It
   // NEVER touches the tracker (tasks/projects/schedules): those are the system of record, and
   // the PM keeps picking up and completing stale tracker tasks at its normal pace, exactly as
   // before. Nothing is completed, paused, expired, or deleted. A pending message UNDER 30
@@ -218,36 +218,126 @@ async function main(): Promise<void> {
   {
     try {
       const db = getDb();
+      // D11: how many stale UNANSWERED rows are genuine authorized-human asks
+      // (not engine notices, not A2A)? A quick restart with a handful of these is
+      // a person waiting on an answer, HOLD those for the re-drain below to
+      // serve (never silently drop a question). A large backlog is stale history
+      // (box was offline for a long time), suppress it as before.
+      const HUMAN_HOLD_LIMIT = 5;
+      const HUMAN_PREDICATE =
+        `(origin_kind IS NULL OR origin_kind != 'engine') AND source_agent_id IS NULL AND a2a_thread_id IS NULL`;
+      // AUDIT-FIX: count PER AGENT (a global count let 6 asks across 6 agents all
+      // get swept), and only count SERVABLE rows (>= the agent's session start,
+      // which is the re-drain's own floor). Holding an unservable row parked it in
+      // limbo: never served by the re-drain, never swept, re-held every boot.
+      const SERVABLE = `${HUMAN_PREDICATE} AND m.created_at >= COALESCE((SELECT session_started_at FROM agents WHERE id = m.agent_id), '1970-01-01')`;
+      const heldAgents = (db.prepare(
+        `SELECT m.agent_id AS id, COUNT(*) AS c FROM messages m
+          WHERE m.role = 'user' AND m.conv_key IS NULL AND m.swept_at IS NULL
+            AND m.created_at < datetime('now', '-30 minutes')
+            AND ${SERVABLE}
+          GROUP BY m.agent_id HAVING COUNT(*) <= ${HUMAN_HOLD_LIMIT}`,
+      ).all() as Array<{ id: string; c: number }>);
+      const heldTotal = heldAgents.reduce((s, a) => s + a.c, 0);
+      const heldIdList = heldAgents.map((a) => `'${a.id.replace(/'/g, "''")}'`).join(',');
+      // D11: mark stale rows SWEPT (drain-suppression) instead of OVERWRITING
+      // conv_key. Overwriting destroyed the row's conversation identity so recall
+      // returned the agent's replies but not what the user said. swept_at keeps
+      // conv_key intact (recall/scoping derive the true key) while the waiting
+      // query + engine-drain skip swept rows, so a restart still can't re-run
+      // weeks-old backlog. When an agent has only a few servable human asks stale,
+      // EXCLUDE those from the sweep so the re-drain below serves them.
+      //
+      // D8: also EXCLUDE engine events still inside their delivery lifecycle
+      // (migration 084), i.e. rows carrying proof of an in-process delivery:
+      // a future retry backoff (next_attempt_at > now) or 1-4 recorded failed
+      // attempts. Only the D8 abort-revert path ever writes that state, so mass
+      // stale backlog (the boot-storm class this sweep exists for) has
+      // delivery_attempts = 0 / next_attempt_at NULL and is swept silently
+      // exactly as before. The exclusion cannot weaken the storm protection:
+      // getPendingEngineEvent's own eligibility requires created_at within the
+      // 6-hour expiry horizon AND attempts < 5, so nothing older than 6 hours
+      // can EVER wake an agent regardless of what survives this sweep; an
+      // in-lifecycle row past the horizon is disposed LOUDLY (swept + one
+      // owner notice, which never wakes anyone) at the first eligibility
+      // consult. Exhausted rows (attempts >= 5) are not excluded here. The
+      // IS NOT NULL guard matters: without it a NULL next_attempt_at makes
+      // the comparison NULL, the OR NULL, the AND NULL, and NOT(NULL) is
+      // NULL = row skipped, which would shield ALL plain engine backlog
+      // from the sweep (verified against an aged DB copy).
       const swept = db.prepare(
-        `UPDATE messages SET conv_key = 'stale-boot'
-          WHERE role = 'user' AND conv_key IS NULL
-            AND created_at < datetime('now', '-30 minutes')`,
+        `UPDATE messages AS m SET swept_at = datetime('now')
+          WHERE m.role = 'user' AND m.conv_key IS NULL AND m.swept_at IS NULL
+            AND m.created_at < datetime('now', '-30 minutes')
+            AND NOT (m.origin_kind = 'engine'
+                     AND ((m.next_attempt_at IS NOT NULL AND m.next_attempt_at > datetime('now'))
+                          OR (m.delivery_attempts > 0 AND m.delivery_attempts < 5)))
+            ${heldAgents.length > 0 ? `AND NOT (${SERVABLE} AND m.agent_id IN (${heldIdList}))` : ''}`,
       ).run();
-      if (swept.changes > 0) {
-        logger.info(`Boot staleness sweep: cleared ${swept.changes} stale (>30m) unanswered message row(s) so they can't re-wake agents (tracker untouched)`);
+      if (swept.changes > 0 || heldTotal > 0) {
+        logger.info(`Boot staleness sweep: drain-suppressed ${swept.changes} stale (>30m) row(s) via swept_at (conv_key preserved for recall)${heldTotal > 0 ? `; HELD ${heldTotal} genuine human ask(s) across ${heldAgents.length} agent(s) for the re-drain` : ''} (tracker untouched)`);
       }
     } catch (err) {
       logger.warn('Boot staleness sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
     }
   }
 
+  // 4b1. D19: boot crash-reconciliation, split "claimed" from "answered".
+  // A crash AFTER the pickup stamp claimed a human ask (conv_key set) but BEFORE
+  // the reply was produced leaves the row reading SERVED forever: the in-memory
+  // revert (loop.ts revertTriggerStampOnAbort) never ran, and the re-drain below
+  // sees nothing waiting. A claimed human row is genuinely ANSWERED only if a
+  // later assistant/tool row carries the SAME conv_key (the turn-end stamp). Revert
+  // claims with no such reply so the re-drain re-serves them. Scoped to a recent
+  // window (a fresh crash) and biased to RE-SERVE (a possible duplicate reply) over
+  // DROP (silent loss). Uses idx_messages_agent_created for the reply check.
+  {
+    try {
+      const db = getDb();
+      const claimed = db.prepare(
+        `SELECT rowid, conv_key, agent_id, created_at FROM messages
+          WHERE role = 'user' AND conv_key IS NOT NULL AND swept_at IS NULL
+            AND conv_key NOT IN ('engine', 'engine-steer')
+            AND conv_key NOT LIKE 'park:%' AND conv_key NOT LIKE 'relayed:%'
+            AND source_agent_id IS NULL AND a2a_thread_id IS NULL
+            AND (origin_kind IS NULL OR origin_kind != 'engine')
+            AND created_at >= datetime('now', '-30 minutes')`,
+      ).all() as Array<{ rowid: number; conv_key: string; agent_id: string; created_at: string }>;
+      const hasReply = db.prepare(
+        `SELECT 1 FROM messages WHERE agent_id = ? AND role IN ('assistant', 'tool')
+            AND conv_key = ? AND created_at >= ? LIMIT 1`,
+      );
+      let reArmed = 0;
+      for (const r of claimed) {
+        if (hasReply.get(r.agent_id, r.conv_key, r.created_at)) continue; // genuinely answered
+        db.prepare('UPDATE messages SET conv_key = NULL WHERE rowid = ? AND agent_id = ?').run(r.rowid, r.agent_id);
+        reArmed++;
+      }
+      if (reArmed > 0) {
+        logger.warn(`Boot crash-reconciliation: re-armed ${reArmed} claimed-but-unanswered human ask(s) for the re-drain (crash between pickup and reply; tracker untouched)`);
+      }
+    } catch (err) {
+      logger.warn('Boot crash-reconciliation failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   // 4b2. Re-drain unanswered conversations after restart (comms-audit D-1).
   // An inbound that arrived before a restart is durably persisted with conv_key
   // NULL (unanswered), but the in-memory wakeup that would trigger its turn is
-  // lost on restart — so it would sit unanswered until the NEXT inbound happens
+  // lost on restart, so it would sit unanswered until the NEXT inbound happens
   // to poke the runtime. Nothing else re-reads it: the waiting SET is durable,
   // the TRIGGER to read it was not. Sweep every agent for waiting human
   // conversations and kick a drain, so a message the user sent is never silently
-  // forgotten across a restart (invariant 2 — never forgets to answer).
+  // forgotten across a restart (invariant 2, never forgets to answer).
   // handleMessage('') re-reads the DB and the normal serving path takes over;
   // it is idempotent (an already-served row has a conv_key and is skipped), and
   // sends are staggered so a fleet of agents doesn't fire all at once.
   try {
     const db = getDb();
-    const { getWaitingHumanConversations } = await import('./agent/v2/counterparty.js');
+    const { getWaitingHumanConversations, getPendingEngineEvent } = await import('./agent/v2/counterparty.js');
     const { findUnrepliedAssignForAgent } = await import('./agent/a2a-replies.js');
     const { getAgentRuntime } = await import('./agent/runtime.js');
-    // C20: exclude terminated agents — the re-drain must never resurrect a dead agent.
+    // C20: exclude terminated agents, the re-drain must never resurrect a dead agent.
     // findUnrepliedAssignForAgent has no status filter, so a terminated agent with an
     // unreplied A2A ASSIGN would otherwise be kicked, run a turn (status flipped to
     // 'working'), and emit a zombie A2A reply.
@@ -260,15 +350,23 @@ async function main(): Promise<void> {
         // conversations, so an inter-agent request that arrived just before a
         // restart was lost forever (its wakeup was in-memory; nothing re-reads it
         // and findUnrepliedAssignForAgent only runs inside a turn). One kick covers
-        // both — runV2Turn re-classifies and serves whichever is owed.
+        // both, runV2Turn re-classifies and serves whichever is owed.
         const owesHuman = getWaitingHumanConversations(id).length > 0;
         // Boot staleness (incident 2026-07-02): only re-drain an A2A assign from the last 30
-        // minutes — a genuine just-before-restart request. An older unreplied assign is stale
+        // minutes, a genuine just-before-restart request. An older unreplied assign is stale
         // backlog and must not force-wake the agent (matches the message sweep in 4b1). The
         // human side is already covered because 4b1 stamped stale human rows out of the
         // waiting set.
         const owesA2A = !owesHuman && findUnrepliedAssignForAgent(id, 20, 30) !== null;
-        if (owesHuman || owesA2A) {
+        // D8: also re-drain a pending-ELIGIBLE engine event (a reminder mid-delivery
+        // when the box restarted). Eligibility, not raw age: getPendingEngineEvent
+        // gates on the migration-084 lifecycle (unclaimed + unswept + attempts < 5 +
+        // backoff passed + created_at within the 6-hour expiry horizon), and the 4b1
+        // sweep above has already suppressed stale attempts=0 backlog, so a restart
+        // rescues an in-flight reminder without re-running weeks-old history. The
+        // call also expires exhausted events loudly (owner notice, no wake).
+        const owesEngine = !owesHuman && !owesA2A && getPendingEngineEvent(id) !== null;
+        if (owesHuman || owesA2A || owesEngine) {
           redrained++;
           const delay = redrained * 300;
           setTimeout(() => {
@@ -284,6 +382,34 @@ async function main(): Promise<void> {
   } catch (err) {
     logger.warn('Boot re-drain failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
   }
+
+  // 4b3. D13: boot re-drain of PARKED owner questions (fail-closed backstop).
+  // A parked owner question (conv_key 'park:<thread>') whose reply never came, or
+  // whose reply arrived but crashed before the relay, previously sat open FOREVER:
+  // nothing re-read parks after a restart (the 4b2 re-drain only covers waiting
+  // conversations and asks under 30 minutes), so "ask X and get back to me" ended
+  // in permanent silence with everything looking healthy. resolveParksAtBoot scans
+  // ALL open parks (bounded + age-capped so boot stays fast): it relays any answer
+  // that already exists, fails closed (deterministic owner notice on the park's own
+  // channel) when the asked agent is terminated or the park is past TTL, and leaves
+  // fresh parks for the periodic TTL sweep. It only relays or marks message rows,
+  // it NEVER wakes an agent, so it cannot start a boot storm and needs no
+  // wake-budget accounting. Delayed so the channel bridges (iMessage/Twilio) are up
+  // before any notice goes out; a bridge that is still down just means the notice
+  // takes the guaranteed dashboard fallback.
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const { resolveParksAtBoot } = await import('./agent/a2a-transport.js');
+        const r = await resolveParksAtBoot();
+        if (r.relayedReplies > 0 || r.failedClosed > 0 || r.leftOpen > 0) {
+          logger.info(`Boot park re-drain: relayed ${r.relayedReplies} stranded repl(ies), failed ${r.failedClosed} park(s) closed, left ${r.leftOpen} open for the TTL sweep`);
+        }
+      } catch (err) {
+        logger.warn('Boot park re-drain failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+      }
+    })();
+  }, 20_000);
 
   // 4c. Ensure PM agent exists and poke loop is running (if enabled and setup is complete)
   {
@@ -317,12 +443,12 @@ async function main(): Promise<void> {
     }
   }
 
-  // v2.10.3 — Imaginer agent retired. Image generation is now a
+  // v2.10.3, Imaginer agent retired. Image generation is now a
   // platform-config model picker (Settings → Dojo → Image Generation
   // Model) and the `image_create` tool calls that model directly.
   // Migration 059 terminates the legacy Imaginer agent row. This
   // step intentionally left empty for the gap.
-  // 4c3. (Removed — Imaginer agent no longer auto-spawned)
+  // 4c3. (Removed, Imaginer agent no longer auto-spawned)
 
   // 4c4. Ensure Healer agent exists (permanent resident)
   {
@@ -376,7 +502,7 @@ async function main(): Promise<void> {
 
       // One-shot purge of service-agent archives still sitting in the
       // backlog from before service agents were excluded from archiving.
-      // Idempotent — runs on every boot but is a no-op once clean.
+      // Idempotent, runs on every boot but is a no-op once clean.
       try {
         const { purgeServiceAgentArchives } = await import('./vault/archive.js');
         purgeServiceAgentArchives();
@@ -471,7 +597,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4i-2. Start the daily update checker — refreshes a DB cache of the latest
+  // 4i-2. Start the daily update checker, refreshes a DB cache of the latest
   // release once a day (model-free). The agent reads it on demand via
   // check_for_update; the owner decides whether to check on a schedule.
   {
@@ -591,7 +717,7 @@ async function main(): Promise<void> {
   // min); a job submitted before a restart still has a live provider job
   // we need to keep polling. The poller picks up every row still in
   // 'queued'/'polling' and drives it to delivery. Synchronous scan, async
-  // poll loops — doesn't block boot.
+  // poll loops, doesn't block boot.
   {
     try {
       const { startVideoJobPoller } = await import('./services/video-job-poller.js');
@@ -605,7 +731,7 @@ async function main(): Promise<void> {
 
   // Run-once generation jobs (image / audio / music) can't resume
   // mid-flight after a restart, so this clears any leftover queued/running
-  // rows instead of resuming them — keeps the dashboard indicator honest.
+  // rows instead of resuming them, keeps the dashboard indicator honest.
   {
     try {
       const { startGenerationJobsWorker } = await import('./services/generation-jobs.js');
@@ -667,6 +793,64 @@ async function main(): Promise<void> {
     logger.warn('Failed to schedule dreaming cycle', { error: err instanceof Error ? err.message : String(err) });
   }
 
+  // D4: schedule the incremental embedding-backfill drain. Channel inbound
+  // (iMessage / SMS / email / Teams) is persisted at ~80 scattered sites and
+  // none embed at write, so before this drain July had 0 embedded messages
+  // across all channels, anything told to the agent over a channel was
+  // invisible to vector recall. runBackfill only touches rows missing an
+  // embedding (LEFT JOIN filter) and guards against overlapping runs, so it
+  // self-limits once caught up. First pass is delayed so boot isn't slowed; the
+  // big one-time history catch-up runs in the background, later passes are light.
+  const scheduleEmbeddingBackfill = async () => {
+    try {
+      const { runBackfill, isBackfillRunning } = await import('./memory/backfill.js');
+      if (isBackfillRunning()) return;
+      await runBackfill();
+    } catch (err) {
+      logger.debug('scheduled embedding backfill drain failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+  setTimeout(() => { void scheduleEmbeddingBackfill(); }, 60_000);
+  setInterval(() => { void scheduleEmbeddingBackfill(); }, 10 * 60_000);
+
+  // D13: TTL sweep for parked owner questions, the "no reply EVER comes" backstop.
+  // Every 10 minutes, any open park older than the park TTL is failed CLOSED: the
+  // engine relays a deterministic "could not get an answer" notice to the owner on
+  // the park's own channel (the same delivery path a real reply uses) and consumes
+  // the park (park: -> relayed:) so it fires exactly once. If the reply actually
+  // arrived but was never relayed, the sweep relays the REAL answer instead.
+  // Engine-enforced and model-independent: the owner is never left in silence
+  // because the asked agent died, was terminated, or dropped the ask.
+  setInterval(() => {
+    void (async () => {
+      try {
+        const { sweepExpiredParks } = await import('./agent/a2a-transport.js');
+        await sweepExpiredParks();
+      } catch (err) {
+        logger.warn('park TTL sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+      }
+    })();
+  }, 10 * 60_000);
+
+  // D17: one-time re-embed of vault entries left with a NULL embedding (pre-C12
+  // Ollama drops). Without an embedding they can never match a semantic
+  // vault_search, only an exact LIKE, so a fact stored there is effectively
+  // unfindable by meaning. Best-effort, delayed so it doesn't compete with boot.
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const { reembedNullVaultEntries } = await import('./vault/store.js');
+        await reembedNullVaultEntries();
+      } catch (err) {
+        logger.debug('reembedNullVaultEntries failed (non-fatal)', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+  }, 90_000);
+
   // One-shot migration: if the platform has exactly one enabled
   // vision-capable model and no fallback vision model is configured,
   // silently set that single model as the fallback. Preserves working
@@ -682,7 +866,7 @@ async function main(): Promise<void> {
     });
   }
 
-  // v2.9.13 — one-shot recovery for recurring tasks that the engine's
+  // v2.9.13, one-shot recovery for recurring tasks that the engine's
   // close-out hardcap silently paused before the recurring-task
   // carve-out landed. Releases the user's daily / scheduled tasks back
   // to their normal cadence without manual intervention.
@@ -699,10 +883,10 @@ async function main(): Promise<void> {
   try {
     const { scheduleHealingCycle, startHealerSelfWatchdog } = await import('./healer/healer-agent.js');
     scheduleHealingCycle();
-    // v2.3.19 (error-handling-spec Phase 3) — engine-level safety net so
+    // v2.3.19 (error-handling-spec Phase 3), engine-level safety net so
     // the Healer can't get permanently stuck. Runs every 5 min.
     startHealerSelfWatchdog();
-    // v2.3.19 (error-handling-spec Phase 4) — frequent auto-fix sweep for
+    // v2.3.19 (error-handling-spec Phase 4), frequent auto-fix sweep for
     // status recovery (stuck/paused/errored agents past their cooldown).
     // Replaces the "wait until 04:00 to unstick a paused agent" behavior.
     const { startFrequentAutoFixes } = await import('./healer/auto-fix.js');
@@ -712,7 +896,7 @@ async function main(): Promise<void> {
     logger.warn('Failed to schedule healing cycle', { error: err instanceof Error ? err.message : String(err) });
   }
 
-  // Injury recovery is event-driven — when an agent enters 'error' status,
+  // Injury recovery is event-driven, when an agent enters 'error' status,
   // runtime.ts calls onAgentInjured() which schedules a 5-minute grace
   // period, then notifies the Healer agent if the agent hasn't recovered.
   // On startup, rehydrate any agents that were injured before a restart

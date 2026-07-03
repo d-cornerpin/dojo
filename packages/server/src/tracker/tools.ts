@@ -2150,7 +2150,9 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
   };
 
   const nextRun = calculateNextRun(scheduledTask);
-  db.prepare("UPDATE tasks SET is_paused = 0, schedule_status = 'waiting', status = 'on_deck', next_run_at = ?, updated_at = datetime('now') WHERE id = ?").run(nextRun, taskId);
+  // missed_runs_paused_at = NULL: an explicit resume also disarms the D12
+  // engine fallback for a pause the missed-runs detector set.
+  db.prepare("UPDATE tasks SET is_paused = 0, schedule_status = 'waiting', status = 'on_deck', next_run_at = ?, missed_runs_paused_at = NULL, updated_at = datetime('now') WHERE id = ?").run(nextRun, taskId);
   const freshResumed = getTask(taskId);
   if (freshResumed) broadcast({ type: 'tracker:task_updated', data: freshResumed });
 
@@ -2181,8 +2183,14 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
   const title = (task.title as string) ?? '(untitled)';
 
   if (action === 'pause') {
-    // Already paused by the alert handler; just confirm and exit. No
-    // state change needed beyond what alertMissedRuns already did.
+    // Already paused by the alert handler; confirm and exit. D12: clear
+    // missed_runs_paused_at so the engine's auto-skip fallback stands down.
+    // The agent explicitly chose to keep the task paused, and the model
+    // tool takes precedence over the fallback when called first.
+    db.prepare(`
+      UPDATE tasks SET missed_runs_paused_at = NULL, updated_at = datetime('now')
+      WHERE id = ? AND missed_runs_paused_at IS NOT NULL
+    `).run(taskId);
     logger.info('Missed-runs resolved: pause', { taskId }, agentId);
     return `OK: task "${title}" stays paused. The user can resume it from the dashboard, or you can later call tracker_resume_schedule.`;
   }
@@ -2214,7 +2222,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
     db.prepare(`
       UPDATE tasks
       SET is_paused = 0, schedule_status = 'waiting', status = 'on_deck',
-          next_run_at = ?, updated_at = datetime('now')
+          next_run_at = ?, missed_runs_paused_at = NULL, updated_at = datetime('now')
       WHERE id = ?
     `).run(nextRun, taskId);
     logger.info('Missed-runs resolved: skip', { taskId, nextRun }, agentId);
@@ -2229,7 +2237,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
   db.prepare(`
     UPDATE tasks
     SET is_paused = 0, schedule_status = 'waiting', status = 'on_deck',
-        next_run_at = ?, updated_at = datetime('now')
+        next_run_at = ?, missed_runs_paused_at = NULL, updated_at = datetime('now')
     WHERE id = ?
   `).run(nowIso, taskId);
   logger.info('Missed-runs resolved: run_now', { taskId }, agentId);

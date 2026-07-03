@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { calculateNextRun, type ScheduledTask } from './engine.js';
+import { calculateNextRun, normalizeDbTimestamp, type ScheduledTask } from './engine.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
@@ -68,15 +68,25 @@ function alertMissedRuns(taskRow: Record<string, unknown>, missedSlots: number):
   }
   if (!assignedAgent) assignedAgent = getPrimaryAgentId();
 
-  // Pause the task while the agent decides — prevents re-firing on every
-  // scheduler tick. The agent's resolve call will unpause + apply the
-  // chosen action.
-  db.prepare(`
+  // Pause the task while the agent decides (prevents re-firing on every
+  // scheduler tick). The agent's resolve call will unpause + apply the
+  // chosen action. D12: stamp missed_runs_paused_at so the engine can
+  // deterministically auto-resolve as SKIP when nothing resolves this
+  // pause within MISSED_RUNS_AUTO_RESOLVE_MINUTES; the model tool clears
+  // the stamp on every action and therefore takes precedence when called
+  // first. The UPDATE is guarded on is_paused = 0 so overlapping ticks or
+  // processes pause and notify exactly once.
+  const paused = db.prepare(`
     UPDATE tasks
     SET is_paused = 1, schedule_status = 'paused', status = 'paused',
+        missed_runs_paused_at = datetime('now'),
         updated_at = datetime('now')
-    WHERE id = ?
+    WHERE id = ? AND is_paused = 0
   `).run(taskId);
+  if (paused.changes === 0) {
+    logger.info('Scheduler: missed-runs pause already set elsewhere, skipping duplicate alert', { taskId });
+    return;
+  }
 
   const cadence = repeatInterval && repeatUnit
     ? (repeatInterval === 1 ? `every ${repeatUnit.replace(/s$/, '')}` : `every ${repeatInterval} ${repeatUnit}`)
@@ -354,6 +364,121 @@ async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
   }
 }
 
+// ── D12: deterministic missed-runs fallback ──
+//
+// alertMissedRuns pauses an overdue recurring task and asks the assigned
+// agent to resolve via tracker_resolve_missed_runs. Before D12 that model
+// call was the ONLY path back to 'waiting': a model that ignored the notice
+// once left the recurring task paused forever, silently. The engine now
+// auto-resolves as SKIP once the pause has sat unresolved for more than
+// MISSED_RUNS_AUTO_RESOLVE_MINUTES: advance next_run_at to the next FUTURE
+// anchor for its cadence, clear the pause back to the waiting convention,
+// record a task_log note, and log loudly. The model tool takes precedence
+// when called first because every resolve action clears
+// missed_runs_paused_at, which disarms this fallback. The fallback never
+// completes, deletes, or reassigns a task.
+
+const MISSED_RUNS_AUTO_RESOLVE_MINUTES = 10;
+
+async function autoResolveStaleMissedRunPauses(): Promise<void> {
+  const db = getDb();
+  try {
+    const stale = db.prepare(`
+      SELECT * FROM tasks
+      WHERE is_paused = 1
+        AND missed_runs_paused_at IS NOT NULL
+        AND datetime(missed_runs_paused_at) <= datetime('now', '-${MISSED_RUNS_AUTO_RESOLVE_MINUTES} minutes')
+      LIMIT 25
+    `).all() as Array<Record<string, unknown>>;
+    if (stale.length === 0) return;
+
+    const { writeTaskLog } = await import('../tracker/task-log.js');
+    for (const task of stale) {
+      const taskId = task.id as string;
+      const nowIso = new Date().toISOString();
+      // Same computation as the model tool's SKIP action: pretend a run
+      // just happened so the walk lands strictly on the next FUTURE anchor.
+      const nextRun = calculateNextRun({
+        id: taskId,
+        scheduled_start: task.scheduled_start as string | null,
+        repeat_interval: task.repeat_interval as number | null,
+        repeat_unit: task.repeat_unit as string | null,
+        repeat_end_type: task.repeat_end_type as string | null,
+        repeat_end_value: task.repeat_end_value as string | null,
+        run_count: (task.run_count as number) ?? 0,
+        is_paused: 0,
+        last_run_at: nowIso,
+        next_run_at: null,
+        schedule_status: 'waiting',
+        repeat_days_of_week: task.repeat_days_of_week as string | null,
+        anchor_time: task.anchor_time as string | null,
+      });
+
+      // Informational skip count, same approximation the detector used.
+      const intervalMs = intervalApproxMs(task.repeat_unit as string | null, task.repeat_interval as number | null);
+      const missedIso = task.next_run_at as string | null;
+      const missedSlots = intervalMs && missedIso
+        ? Math.max(1, Math.floor((Date.now() - new Date(normalizeDbTimestamp(missedIso)).getTime()) / intervalMs))
+        : 1;
+
+      if (nextRun) {
+        // Guarded release: the model tool clears missed_runs_paused_at when
+        // it resolves first, so .changes === 0 means the model (or another
+        // process) won the race and this fallback must not touch the task.
+        const released = db.prepare(`
+          UPDATE tasks
+          SET is_paused = 0, schedule_status = 'waiting', status = 'on_deck',
+              next_run_at = ?, missed_runs_paused_at = NULL, updated_at = datetime('now')
+          WHERE id = ? AND is_paused = 1 AND missed_runs_paused_at IS NOT NULL
+        `).run(nextRun, taskId);
+        if (released.changes !== 1) continue;
+        writeTaskLog({
+          taskId,
+          fromEntity: 'engine',
+          entryKind: 'auto_sweep',
+          fromStatus: 'paused',
+          toStatus: 'on_deck',
+          actionTaken: `engine auto-skipped ${missedSlots} missed run${missedSlots === 1 ? '' : 's'} to the next scheduled time`,
+          reason: `paused-for-missed-runs was not resolved within ${MISSED_RUNS_AUTO_RESOLVE_MINUTES} minutes (tracker_resolve_missed_runs never ran); schedule resumed, next run at ${nextRun}`,
+        });
+        logger.warn('Scheduler: AUTO-RESOLVED stale missed-runs pause, skipped to next future anchor', {
+          taskId, title: task.title, missedSlots, nextRun, pausedAt: task.missed_runs_paused_at,
+        });
+        try {
+          const { getTask } = await import('../tracker/schema.js');
+          const fresh = getTask(taskId);
+          if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh } as never);
+        } catch { /* dashboard refresh is best-effort */ }
+      } else {
+        // No future anchor exists (past repeat end, or the anchor is
+        // uncomputable). Never complete or delete a task from this path:
+        // disarm the fallback and leave the task paused for a human or
+        // agent decision.
+        const disarmed = db.prepare(`
+          UPDATE tasks
+          SET missed_runs_paused_at = NULL, updated_at = datetime('now')
+          WHERE id = ? AND is_paused = 1 AND missed_runs_paused_at IS NOT NULL
+        `).run(taskId);
+        if (disarmed.changes !== 1) continue;
+        writeTaskLog({
+          taskId,
+          fromEntity: 'engine',
+          entryKind: 'auto_sweep',
+          actionTaken: 'missed-runs auto-resolve found no future run; task left paused',
+          reason: 'calculateNextRun returned null (past repeat end or missing anchor); the engine does not complete or delete tasks from this path',
+        });
+        logger.warn('Scheduler: stale missed-runs pause has no future anchor, left paused (fallback disarmed)', {
+          taskId, title: task.title,
+        });
+      }
+    }
+  } catch (err) {
+    logger.warn('autoResolveStaleMissedRunPauses failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 // ── Check and trigger due tasks ──
 
 export async function checkScheduledTasks(): Promise<void> {
@@ -365,6 +490,8 @@ export async function checkScheduledTasks(): Promise<void> {
   cleanupStaleRuns();
   pruneTerminalTasks();
   resumeExpiredPauses();
+  // D12: engine fallback for missed-runs pauses the model never resolved.
+  await autoResolveStaleMissedRunPauses();
   // Phase B.1: 12-hour auto-expire sweeps.
   await sweepStaleOverrideRequests();
   await sweepStaleUserVerdictRequests();
@@ -396,13 +523,18 @@ export async function checkScheduledTasks(): Promise<void> {
     // Per user spec, the engine doesn't get to silently backfill or skip:
     // wake the assigned agent and let them decide via
     // tracker_resolve_missed_runs.
+    // D12: a NEVER-run task (run_count = 0) whose start is in the past is a
+    // first fire, not a missed run; the old detector funneled it into the
+    // pause-and-ask trap. Only a task that has genuinely fired before can
+    // miss a run, so the detector requires run_count > 0 (the 1.5x-interval
+    // overdue rule below is unchanged for those).
     const repeatInterval = taskRow.repeat_interval as number | null;
     const repeatUnit = taskRow.repeat_unit as string | null;
-    if (repeatInterval && repeatUnit) {
+    if (repeatInterval && repeatUnit && runCount > 0) {
       const nextRunIso = taskRow.next_run_at as string | null;
       const intervalMs = intervalApproxMs(repeatUnit, repeatInterval);
       if (nextRunIso && intervalMs) {
-        const overdueMs = Date.now() - new Date(nextRunIso).getTime();
+        const overdueMs = Date.now() - new Date(normalizeDbTimestamp(nextRunIso)).getTime();
         if (overdueMs > intervalMs * 1.5) {
           const missedSlots = Math.max(1, Math.floor(overdueMs / intervalMs));
           alertMissedRuns(taskRow, missedSlots);
@@ -431,13 +563,51 @@ export async function checkScheduledTasks(): Promise<void> {
       } catch { /* ignore parse errors */ }
     }
 
+    // ── D21: atomic occurrence claim + advance-at-fire ──
+    // Exactly one process may fire a given occurrence: the claim UPDATE is
+    // keyed on the exact occurrence value this tick read (next_run_at = ?)
+    // plus the not-already-claimed convention (schedule_status = 'waiting',
+    // is_paused = 0), and .changes === 1 is the claim token. Overlapping
+    // ticks and duplicate dev processes lose the claim and skip. The NEXT
+    // occurrence is computed and written HERE, at fire time, instead of at
+    // model close-out, so a hung or crashed turn can no longer stall the
+    // cadence: close-out (onTaskRunComplete) only flips the schedule back
+    // to 'waiting' and honors the already-advanced next_run_at.
+    const claimedOccurrence = taskRow.next_run_at as string;
+    const nextAtFire = calculateNextRun({
+      id: taskId,
+      scheduled_start: taskRow.scheduled_start as string | null,
+      repeat_interval: repeatInterval,
+      repeat_unit: repeatUnit,
+      repeat_end_type: taskRow.repeat_end_type as string | null,
+      repeat_end_value: taskRow.repeat_end_value as string | null,
+      run_count: runNumber, // count the run being fired now, so end conditions land exactly
+      is_paused: 0,
+      last_run_at: now, // the slot firing now is spent; walk to the one after it
+      next_run_at: null,
+      schedule_status: 'waiting',
+      repeat_days_of_week: taskRow.repeat_days_of_week as string | null,
+      anchor_time: taskRow.anchor_time as string | null,
+    });
+    const claim = db.prepare(`
+      UPDATE tasks
+      SET schedule_status = 'running', status = 'in_progress',
+          last_run_at = ?, next_run_at = ?, updated_at = datetime('now')
+      WHERE id = ? AND schedule_status = 'waiting' AND is_paused = 0
+        AND next_run_at = ? AND next_run_at <= ?
+    `).run(now, nextAtFire, taskId, claimedOccurrence, now);
+    if (claim.changes !== 1) {
+      logger.info('Scheduler: occurrence already claimed elsewhere, skipping', { taskId, occurrence: claimedOccurrence });
+      continue;
+    }
+
     const runId = uuidv4();
 
-    // 1. Create run instance
+    // 1. Create run instance for the claimed occurrence
     db.prepare(`
       INSERT INTO task_runs (id, task_id, run_number, scheduled_for, status, created_at)
       VALUES (?, ?, ?, ?, 'pending', datetime('now'))
-    `).run(runId, taskId, runNumber, taskRow.next_run_at as string);
+    `).run(runId, taskId, runNumber, claimedOccurrence);
 
     // 2. Determine who runs it
     let assignedAgent = taskRow.assigned_to as string | null;
@@ -446,7 +616,7 @@ export async function checkScheduledTasks(): Promise<void> {
     if (assignedGroup && !assignedAgent) {
       assignedAgent = pickAvailableAgentFromGroup(assignedGroup);
       if (!assignedAgent) {
-        // No agent available — notify primary agent
+        // No agent available, notify primary agent
         const primaryId = getPrimaryAgentId();
         const groupName = (db.prepare('SELECT name FROM agent_groups WHERE id = ?').get(assignedGroup) as { name: string } | undefined)?.name ?? assignedGroup;
         sendAgentMessage(getPMAgentId(), primaryId, 'status',
@@ -455,6 +625,15 @@ export async function checkScheduledTasks(): Promise<void> {
           });
         // Mark run as skipped
         db.prepare("UPDATE task_runs SET status = 'skipped', error = 'No available agent in group' WHERE id = ?").run(runId);
+        // D21: release the claim taken above and restore the occurrence and
+        // prior last_run_at, so the task retries on the next tick exactly as
+        // it did before the claim existed.
+        db.prepare(`
+          UPDATE tasks
+          SET schedule_status = 'waiting', status = 'on_deck',
+              next_run_at = ?, last_run_at = ?, updated_at = datetime('now')
+          WHERE id = ? AND schedule_status = 'running'
+        `).run(claimedOccurrence, taskRow.last_run_at as string | null, taskId);
         continue;
       }
     }
@@ -463,17 +642,12 @@ export async function checkScheduledTasks(): Promise<void> {
       assignedAgent = getPrimaryAgentId();
     }
 
-    // Check if assigned agent is alive — if terminated, reassign to primary
+    // Check if assigned agent is alive; if terminated, reassign to primary
     const agentStatus = db.prepare('SELECT status FROM agents WHERE id = ?').get(assignedAgent) as { status: string } | undefined;
     if (!agentStatus || agentStatus.status === 'terminated') {
       logger.warn('Scheduler: assigned agent is terminated, reassigning to primary', { taskId, assignedAgent });
       assignedAgent = getPrimaryAgentId();
     }
-
-    // 3. Update task status — set both schedule_status and main status
-    db.prepare(`
-      UPDATE tasks SET schedule_status = 'running', status = 'in_progress', last_run_at = ?, updated_at = datetime('now') WHERE id = ?
-    `).run(now, taskId);
 
     // Phase B.0: audit trail of scheduler-driven transition.
     try {
@@ -589,7 +763,35 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
     anchor_time: task.anchor_time as string | null,
   };
 
-  const nextRun = calculateNextRun(scheduledTask);
+  // D21 advance-at-fire: the NEXT occurrence was already computed and
+  // written when this run's occurrence was claimed. Honor the stored value;
+  // recompute only when the run overran its own cadence (the stored next
+  // occurrence is already due or past), which matches the old close-out
+  // behavior of never re-firing slots that passed while the run executed.
+  // A NULL stored value means the schedule has no further runs (one-shot,
+  // or an end condition was reached at fire time). Legacy in-flight rows
+  // claimed by pre-change code still carry the just-fired PAST occurrence,
+  // so they land in the recompute branch and advance exactly as before.
+  const storedNext = task.next_run_at as string | null;
+  let nextRun: string | null = null;
+  if (storedNext) {
+    const storedMs = new Date(normalizeDbTimestamp(storedNext)).getTime();
+    nextRun = !isNaN(storedMs) && storedMs > Date.now()
+      ? storedNext
+      : calculateNextRun(scheduledTask);
+  }
+
+  // D8 (owner-approved tracker change, the ONLY one): a one-shot task whose final
+  // run FAILED must not be auto-marked complete. "Remind me at 3pm" that was never
+  // spoken used to end as schedule_status='completed' / status='complete', reading
+  // as done in the tracker with the owner never told. The failed no-next-run case
+  // now lands on the tracker's EXISTING failed convention, status='fallen'
+  // (migration 012: failed -> fallen; the dashboard counts 'fallen' as failed and
+  // the PM treats it as terminal, so there is no re-fire and no PM churn), with
+  // schedule_status='completed' still recording that the schedule itself has no
+  // more runs. A deterministic owner-visible notice is posted via the agent-notice
+  // path. Recurring tasks and successful one-shots are byte-for-byte unchanged.
+  const failedFinalRun = !nextRun && status === 'failed';
 
   // Phase B.0/B.1: audit the per-run completion with whatever
   // result_summary the scheduler/agent provided. For terminal closes
@@ -603,10 +805,12 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
       fromEntity: 'scheduler',
       entryKind: 'transition',
       fromStatus: 'in_progress',
-      toStatus: nextRun ? 'on_deck' : 'complete',
+      toStatus: nextRun ? 'on_deck' : (failedFinalRun ? 'fallen' : 'complete'),
       actionTaken: nextRun
         ? `scheduler ran #${(task.run_count as number) + 1}, next at ${nextRun}`
-        : `scheduler ran final run #${(task.run_count as number) + 1}, no more runs`,
+        : (failedFinalRun
+            ? `scheduler ran final run #${(task.run_count as number) + 1}, run FAILED, task marked fallen (not complete) and owner notified`
+            : `scheduler ran final run #${(task.run_count as number) + 1}, no more runs`),
       reason: `run finished with status=${status}`,
       note: summary || null,
     });
@@ -619,6 +823,25 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
     db.prepare(`
       UPDATE tasks SET next_run_at = ?, schedule_status = 'waiting', status = 'on_deck', last_run_at = ?, updated_at = datetime('now') WHERE id = ?
     `).run(nextRun, now, taskId);
+  } else if (failedFinalRun) {
+    // D8: final run failed, keep the failure VISIBLE (see block comment above).
+    db.prepare(`
+      UPDATE tasks SET schedule_status = 'completed', status = 'fallen', completed_at = datetime('now'), last_run_at = ?, updated_at = datetime('now') WHERE id = ?
+    `).run(now, taskId);
+    try {
+      const title = String(task.title ?? 'untitled task');
+      const noun = (task.kind as string | null) === 'reminder' ? 'reminder' : 'task';
+      postAgentNotice({
+        toAgentId: (task.assigned_to as string | null) ?? getPrimaryAgentId(),
+        fromName: 'Scheduler',
+        selfIntro: false,
+        intent: 'schedule_run_failed',
+        brief: `I could not deliver a scheduled ${noun}: ${title.slice(0, 100)}`,
+      });
+    } catch (err) {
+      logger.warn('scheduler: failed-final-run owner notice failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
+    }
+    logger.warn('Scheduler: final run failed; task marked fallen (not complete) and owner notified', { taskId, runId, status });
   } else {
     // No more runs: mark everything as completed
     db.prepare(`

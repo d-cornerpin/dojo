@@ -12,6 +12,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { handleIMCommand } from './imessage-commands.js';
 import { getAgentRuntime } from '../agent/runtime.js';
+import { activeRuns, agentStartTimes } from '../agent/shared-state.js';
 import { currentTurnImRecipient } from '../agent/turn-state.js';
 import { v4 as uuidv4 } from 'uuid';
 import Database from 'better-sqlite3';
@@ -573,24 +574,103 @@ let lastSeenRowId = 0;
 const POLL_INTERVAL_MS = 5000;
 
 // True while pollMessages is mid-flight. setInterval keeps firing every 5s,
-// but if a poll is still processing inbound messages we skip the next tick
-// to avoid two batches racing on pendingIMResponseMap. Without this guard,
-// a slow agent turn (30s+) would let the next poll tick start, set
-// pendingIMResponseMap for a NEW inbound, and the in-progress turn would
-// silently reply to the wrong person.
+// but if a poll is still reading/persisting inbound rows we skip the next
+// tick so two polls never read chat.db (or advance lastSeenRowId)
+// concurrently. D10: the poll loop no longer awaits the agent's TURN, so
+// this guard now only spans the fast ingest work (read chat.db, persist,
+// broadcast, dispatch); turn serialization is the runtime's job
+// (activeRuns + pendingWakeups in handleMessage).
 let pollInFlight = false;
+
+// D19 pt3: bounded retry counter for rows whose persist INSERT failed. We
+// deliberately do NOT advance lastSeenRowId past an unpersisted row (a crash
+// or transient DB error would otherwise silently drop the text forever), but
+// an always-failing row must not wedge the bridge either: after
+// MAX_PERSIST_RETRIES polls we advance past it with a loud error log, which
+// is the OLD behavior (advance-then-drop) made deliberate and bounded.
+const MAX_PERSIST_RETRIES = 12;
+const persistRetries = new Map<number, number>();
+
+// ── D10 busy-ack ──
+// When an authorized sender's iMessage lands while a LONG turn (>60s old) is
+// already running, the message is persisted + queued behind that turn (the
+// runtime serializes per agent), which used to mean pure silence for up to a
+// whole turn. Send ONE deterministic engine ack per sender per running turn
+// so the person knows they were heard. Engine send, never a model turn.
+const BUSY_ACK_TURN_AGE_MS = 60_000;
+const BUSY_ACK_TEXT = 'On it. I am mid-task right now, I will get back to you shortly.';
+// agentId -> the running turn (identified by its start timestamp) + senders acked for it
+const busyAckState = new Map<string, { turnStartedAt: number; ackedSenders: Set<string> }>();
+
+function maybeSendBusyAck(agentId: string, sender: string): void {
+  // Only when a turn is ALREADY running (checked before we dispatch this
+  // message, so our own dispatch can't trip it) and it's older than 60s.
+  if (!activeRuns.has(agentId)) return;
+  const turnStartedAt = agentStartTimes.get(agentId);
+  if (!turnStartedAt) return;
+  if (Date.now() - turnStartedAt < BUSY_ACK_TURN_AGE_MS) return;
+  let st = busyAckState.get(agentId);
+  if (!st || st.turnStartedAt !== turnStartedAt) {
+    st = { turnStartedAt, ackedSenders: new Set<string>() };
+    busyAckState.set(agentId, st);
+  }
+  const key = canonicalContactAddress(sender);
+  if (st.ackedSenders.has(key)) return; // at most once per sender per running turn
+  st.ackedSenders.add(key);
+  sendIMessage(sender, BUSY_ACK_TEXT);
+  // Surface the queued state on the dashboard too (transient; the 30s
+  // working-status heartbeat re-asserts 'working' while the turn runs).
+  broadcast({ type: 'agent:status', agentId, status: 'queued' });
+  logger.info('Busy-ack sent: inbound iMessage queued behind a running turn', {
+    agentId,
+    sender,
+    turnAgeMs: Date.now() - turnStartedAt,
+  });
+}
 
 // Track which sender triggered each agent's current turn so we reply to the right person.
 // No timeout — the flag stays until the agent's response is sent. Slow turns (tool calls,
 // slow models) should still get their iMessage reply.
+//
+// D10: the poll loop no longer serializes behind the running turn, so this
+// single-slot map CAN be overwritten by a newer inbound mid-turn. That is
+// safe because every routing consumer prefers turn-anchored state
+// (currentTurnImRecipient, set from the turn's counterparty which derives
+// from the persisted inbound_meta); the map survives only as (a) the
+// "an iMessage inbound is pending" boolean and (b) a legacy fallback for
+// rows without inbound_meta. To keep it per-message correct, consumption is
+// now sender-scoped: clears pass the sender they are consuming FOR, so a
+// turn finishing for sender A can never eat the entry a newer inbound from
+// sender B just wrote.
 const pendingIMResponseMap = new Map<string, { sender: string }>(); // agentId -> sender
 
 export function isAwaitingIMResponse(agentId: string): boolean {
   return pendingIMResponseMap.has(agentId);
 }
 
-export function clearIMResponseFlag(agentId: string): void {
+/**
+ * Clear the pending-inbound flag. When `onlyIfSender` is provided, the entry
+ * is removed ONLY if it still belongs to that sender (canonical compare), so
+ * a consume-once clear scoped to turn A cannot drop the entry a newer
+ * inbound B wrote mid-turn. Omit `onlyIfSender` for an unconditional clear.
+ */
+export function clearIMResponseFlag(agentId: string, onlyIfSender?: string): void {
+  if (onlyIfSender !== undefined) {
+    const entry = pendingIMResponseMap.get(agentId);
+    if (!entry) return;
+    if (canonicalContactAddress(entry.sender) !== canonicalContactAddress(onlyIfSender)) return;
+  }
   pendingIMResponseMap.delete(agentId);
+}
+
+/**
+ * Raw pending-map read (no currentTurnImRecipient preference, unlike
+ * getInboundSenderFor). The v2 loop captures this at run start so its
+ * end-of-turn consume-once clear can be scoped to THIS turn's inbound,
+ * not a newer one that arrived while the turn ran.
+ */
+export function getPendingIMSenderRaw(agentId: string): string | null {
+  return pendingIMResponseMap.get(agentId)?.sender ?? null;
 }
 
 /**
@@ -698,7 +778,10 @@ export function sendResponseViaIMessage(
   // authoritative, so it's checked before the recipientOverride and map branches.
   if (ownerBound) {
     const owner = getDefaultSender();
-    pendingIMResponseMap.delete(agentId);
+    // Consume only the OWNER's own pending entry (sender-scoped). A newer
+    // contact inbound that landed mid-turn keeps its entry so its pending
+    // signal survives until its own turn serves it.
+    if (owner) clearIMResponseFlag(agentId, owner);
     if (!owner) return null;
     const cleanedOwner = stripSystemTags(text);
     if (!cleanedOwner) return null;
@@ -727,10 +810,11 @@ export function sendResponseViaIMessage(
     if (allowed) { sender = recipientOverride; recipientName = allowed.name; }
     else {
       logger.warn('Auto-reply suppressed: turn counterparty not on safe-sender list', { agentId, recipient: recipientOverride });
-      pendingIMResponseMap.delete(agentId);
+      clearIMResponseFlag(agentId, recipientOverride);
       return null;
     }
-    pendingIMResponseMap.delete(agentId);
+    // Sender-scoped consume: only this recipient's own pending entry.
+    clearIMResponseFlag(agentId, recipientOverride);
     const cleanedOverride = stripSystemTags(text);
     if (!cleanedOverride) return null;
     sendIMessage(sender, cleanedOverride);
@@ -752,7 +836,9 @@ export function sendResponseViaIMessage(
     sender = getDefaultSender();
     if (sender) recipientName = findSafeSenderByAddress(getSafeSenders(), sender)?.name ?? null;
   }
-  pendingIMResponseMap.delete(agentId);
+  // Consume the entry we actually read (sender-scoped); nothing to clear on
+  // the default-sender path where no entry existed.
+  if (entry) clearIMResponseFlag(agentId, entry.sender);
   if (!sender) return null;
   const cleaned = stripSystemTags(text);
   if (!cleaned) return null;
@@ -823,6 +909,34 @@ async function pollMessages(): Promise<void> {
         chat_identifier: string;
       }>;
 
+      // ── D19 pt3: advance-after-persist ──
+      // lastSeenRowId used to advance BEFORE the message INSERT, so a crash
+      // in the read→persist window (which includes attachment copying and
+      // HEIC conversion) permanently dropped that text from both stores.
+      // Now a row's advance happens in exactly one of two places:
+      //   (a) a deliberate skip path (non-safe-sender, empty reaction row,
+      //       handled command, persist given up after bounded retries):
+      //       advancePastRow, semantics unchanged from before; or
+      //   (b) the persist path: inside the SAME SQLite transaction as the
+      //       message INSERT, so persist + advance are atomic.
+      // Crash windows, walked explicitly:
+      //   1. Crash BEFORE the transaction commits: no message row, rowid not
+      //      advanced. Next poll re-reads the same chat.db row. No loss, no
+      //      duplicate.
+      //   2. Crash AFTER the commit (before broadcast/dispatch): message row
+      //      AND rowid are both durable, so the next poll does not re-read
+      //      it; the persisted row sits waiting and the boot re-drain serves
+      //      it (D19 pt1 reconciliation). No loss. There is no window in
+      //      which the rowid is past an unpersisted message.
+      //   3. Orphaned attachment copies from a crash mid-window are benign
+      //      (re-poll re-copies under a fresh name).
+      const advancePastRow = (rowId: number): void => {
+        lastSeenRowId = rowId;
+        saveLastSeenRowId(rowId);
+        deferredAttachmentRetries.delete(rowId);
+        persistRetries.delete(rowId);
+      };
+
       for (const msg of messages) {
         // ── Attachment-readiness gate ──
         // If chat.db claims this message has attachments but the files
@@ -856,10 +970,6 @@ async function pollMessages(): Promise<void> {
           }
         }
 
-        lastSeenRowId = msg.ROWID;
-        saveLastSeenRowId(lastSeenRowId);
-        deferredAttachmentRetries.delete(msg.ROWID); // clear any prior retry count
-
         const sender = msg.chat_identifier;
         const primaryId = getPrimaryAgentId();
 
@@ -872,6 +982,7 @@ async function pollMessages(): Promise<void> {
             chatIdentifier: sender,
             rowid: msg.ROWID,
           });
+          advancePastRow(msg.ROWID); // deliberate skip, advance as before
           continue;
         }
 
@@ -896,6 +1007,7 @@ async function pollMessages(): Promise<void> {
           logger.debug('iMessage skipped — no text and no attachments of any kind', {
             rowid: msg.ROWID,
           });
+          advancePastRow(msg.ROWID); // deliberate skip, advance as before
           continue;
         }
 
@@ -919,6 +1031,7 @@ async function pollMessages(): Promise<void> {
           const commandResponse = await handleIMCommand(cleanedText, sender);
           if (commandResponse) {
             sendIMessage(sender, commandResponse);
+            advancePastRow(msg.ROWID); // command fully handled, advance as before
             continue;
           }
         }
@@ -1031,16 +1144,6 @@ async function pollMessages(): Promise<void> {
           // the assembled system prompt tells the model SMS voice is required.
           const msgContent = `[SOURCE: IMESSAGE FROM ${senderLabel} - this person texted YOUR OWN iMessage account (the DOJO bridge - YOUR phone, not the user's). The text arrived via iMessage, not the dashboard chat. ${policyLine} ${replyHint} ${updateDiscipline} Respond to THIS topic only; do not pull in unrelated dashboard conversation context.] ${textForModel}`;
 
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)
-            VALUES (?, ?, 'user', ?, ?, datetime('now'))
-          `).run(
-            msgId,
-            primaryId,
-            msgContent,
-            attachmentResult.uploadedFiles.length > 0 ? JSON.stringify(attachmentResult.uploadedFiles) : null,
-          );
-
           // Stamp structured inbound metadata (v3.1.x attribution redesign).
           // iMessage previously relied on the in-memory pendingIMResponseMap +
           // prose [SOURCE: ...] marker. We now ALSO record structured meta so
@@ -1069,8 +1172,43 @@ async function pollMessages(): Promise<void> {
                 ? 'known_contact'
                 : 'third_party') as 'owner' | 'known_contact' | 'third_party',
           };
-          recordInboundMeta(msgId, inboundMetaObj);
 
+          // ── Atomic persist + advance (D19 pt3) ──
+          // The message INSERT, its inbound_meta stamp, and the durable
+          // lastSeenRowId advance commit in ONE transaction on the same
+          // connection, so there is no crash window in which the rowid is
+          // past a row that was never persisted (see the walk above the
+          // loop). saveLastSeenRowId's swallow-errors wrapper is deliberately
+          // NOT used here; a failed advance must roll the INSERT back too.
+          db.transaction(() => {
+            db.prepare(`
+              INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)
+              VALUES (?, ?, 'user', ?, ?, datetime('now'))
+            `).run(
+              msgId,
+              primaryId,
+              msgContent,
+              attachmentResult.uploadedFiles.length > 0 ? JSON.stringify(attachmentResult.uploadedFiles) : null,
+            );
+            // Same connection, so this UPDATE joins the transaction. Its
+            // internal try/catch keeps meta best-effort (a meta failure never
+            // drops the message itself), matching prior semantics.
+            recordInboundMeta(msgId, inboundMetaObj);
+            db.prepare(`
+              INSERT INTO config (key, value, updated_at) VALUES ('imessage_last_rowid', ?, datetime('now'))
+              ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
+            `).run(String(msg.ROWID), String(msg.ROWID));
+          })();
+          lastSeenRowId = msg.ROWID;
+          deferredAttachmentRetries.delete(msg.ROWID);
+          persistRetries.delete(msg.ROWID);
+
+          // Everything below is POST-COMMIT: the row is durable and the rowid
+          // advanced, so a failure here must never be treated as a persist
+          // failure (no retry/rollback). Worst case on a broadcast/dispatch
+          // error: the bubble shows on refetch and the boot re-drain or the
+          // next inbound serves the waiting row.
+          try {
           broadcast({
             type: 'chat:message',
             agentId: primaryId,
@@ -1104,25 +1242,70 @@ async function pollMessages(): Promise<void> {
           // Flag that primary agent's next response should be sent back via iMessage to this sender
           pendingIMResponseMap.set(primaryId, { sender });
 
-          // Await the turn so the next iteration doesn't overwrite
-          // pendingIMResponseMap mid-flight. handleMessage resolves when
-          // the agent's turn completes (or immediately if the agent is
-          // busy and the message gets queued as a wakeup). Combined with
-          // the pollInFlight guard above, this guarantees one inbound is
-          // fully processed before the next one sets the pending sender.
+          // D10 busy-ack: if this message just queued behind a running turn
+          // older than 60s, tell the sender once (deterministic engine send,
+          // never a model turn). Checked BEFORE our own dispatch below so
+          // the turn this message itself starts can never trip it.
           try {
-            const runtime = getAgentRuntime();
-            await runtime.handleMessage(primaryId, msgContent);
-          } catch (err) {
+            maybeSendBusyAck(primaryId, sender);
+          } catch (ackErr) {
+            logger.warn('Busy-ack attempt failed (non-fatal)', {
+              error: ackErr instanceof Error ? ackErr.message : String(ackErr),
+            });
+          }
+
+          // D10 ingest/dispatch split: do NOT await the turn here. The old
+          // inline await meant that while an iMessage-triggered turn ran
+          // (minutes to an hour), later iMessages were not even READ from
+          // chat.db: no DB row, no dashboard bubble, no wakeup. Reply routing
+          // no longer depends on poll-loop serialization (verified):
+          //   - the end-of-turn auto-reply passes the TURN's counterparty
+          //     explicitly (loop.ts imRecipient / ownerBound), derived from
+          //     the persisted inbound_meta, never this map;
+          //   - in-turn recipient defaults prefer currentTurnImRecipient
+          //     (T-4) over this map; and
+          //   - map consumption is sender-scoped (clearIMResponseFlag), so a
+          //     finishing turn can't eat a newer inbound's entry.
+          // Turn ordering stays correct because the runtime itself serializes
+          // per agent (activeRuns + pendingWakeups in handleMessage) and rows
+          // are persisted in ROWID order before dispatch. This mirrors how
+          // SMS / email / Teams inbounds already dispatch.
+          const runtime = getAgentRuntime();
+          void runtime.handleMessage(primaryId, msgContent).catch(err => {
             logger.error('Failed to process iMessage in runtime', {
               error: err instanceof Error ? err.message : String(err),
             });
-            pendingIMResponseMap.delete(primaryId);
+            clearIMResponseFlag(primaryId, sender);
+          });
+          } catch (postErr) {
+            logger.error('Post-persist broadcast/dispatch failed for inbound iMessage (row is persisted; re-drain will serve it)', {
+              rowid: msg.ROWID,
+              error: postErr instanceof Error ? postErr.message : String(postErr),
+            });
           }
         } catch (err) {
-          logger.error('Failed to inject iMessage to primary agent', {
+          // Persist failed: the message is NOT in the store and the durable
+          // lastSeenRowId was NOT advanced (the transaction rolled back).
+          // Retry this same row next poll, bounded so a permanently failing
+          // row can't wedge the bridge forever. After the cap, advance past
+          // it loudly (the pre-D19 behavior, made deliberate and bounded).
+          const tries = (persistRetries.get(msg.ROWID) ?? 0) + 1;
+          if (tries < MAX_PERSIST_RETRIES) {
+            persistRetries.set(msg.ROWID, tries);
+            logger.error('Failed to persist inbound iMessage, will retry next poll', {
+              rowid: msg.ROWID,
+              attempt: tries,
+              maxRetries: MAX_PERSIST_RETRIES,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            break; // do not advance; re-read this row on the next poll
+          }
+          logger.error('Giving up on inbound iMessage after bounded persist retries, advancing past it', {
+            rowid: msg.ROWID,
+            attemptsMade: tries,
             error: err instanceof Error ? err.message : String(err),
           });
+          advancePastRow(msg.ROWID);
         }
       }
     } finally {

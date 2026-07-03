@@ -1,0 +1,28 @@
+-- 085: D12, deterministic fallback for paused-for-missed-runs tasks.
+--
+-- When the scheduler detects missed runs it pauses the task and asks the
+-- assigned agent to resolve via tracker_resolve_missed_runs. Before this
+-- change that model call was the ONLY path back to 'waiting': if the model
+-- ignored the notice once, the recurring task stayed paused forever,
+-- silently (paused_until is never set by that path, so resumeExpiredPauses
+-- never matches).
+--
+-- missed_runs_paused_at records WHEN the missed-runs pause was set, so the
+-- engine can auto-resolve as SKIP (advance next_run_at to the next future
+-- anchor, clear the pause, log a task_log note) after the task has sat
+-- paused-for-missed-runs for more than 10 minutes. The model tool still
+-- takes precedence when called first: every tracker_resolve_missed_runs
+-- action (run_now / skip / pause) clears this stamp, which disarms the
+-- engine fallback.
+--
+-- No suitable existing column: paused_until means "resume AT" (and its
+-- resume path restores status without skipping to a future anchor, which
+-- would re-trip the detector in a loop), and updated_at is touched by
+-- everything. A dedicated stamp is the only unambiguous signal.
+--
+-- Backfill: none. Rows already paused cannot be distinguished from pauses
+-- the owner chose deliberately (the old alert path left no marker), and
+-- auto-resuming an owner-chosen pause would alter tracker semantics. Only
+-- pauses set after this migration carry the stamp.
+
+ALTER TABLE tasks ADD COLUMN missed_runs_paused_at TEXT;

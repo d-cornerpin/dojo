@@ -1,5 +1,5 @@
 // ════════════════════════════════════════
-// v2 AgentTurnState — single source of truth for turn state
+// v2 AgentTurnState, single source of truth for turn state
 //
 // Per Part VIII of the v2 implementation plan. Replaces the ~20
 // scattered `let X = false` flags in v1's runAgentLoop with one
@@ -51,7 +51,7 @@ export interface A2AReplyContext {
   fromName: string;
 }
 
-// v2.7.23 — Channel-routing context. When an inbound message arrives via
+// v2.7.23, Channel-routing context. When an inbound message arrives via
 // a non-dashboard channel (iMessage, Teams, email), the watcher/bridge
 // populates this so the reply-destination resolver can route the model's
 // terminal text back to the same channel without requiring an explicit
@@ -60,7 +60,7 @@ export interface A2AReplyContext {
 //     address for email auto-reply identity checks.
 //   - chatId: Teams chat id (per the [Chat ID: ...] line in the Teams
 //     notification envelope).
-//   - chatType: 'dm' | 'group' — group chats default to message_tool
+//   - chatType: 'dm' | 'group', group chats default to message_tool
 //     mode per OpenClaw pattern to avoid auto-replying to every group
 //     ping the agent is mentioned in.
 //   - emailMessageId: original message id for email reply tools
@@ -132,13 +132,13 @@ export interface AgentTurnState {
   outputTokensEscalated: number;          // 8000, 16000, 32000, 64000
   consecutivePermissionDenials: number;
   truncationRetryCount: number;
-  spinningNudgeCount: number;             // Part XVIII §F — consecutive ignored spinning nudges
+  spinningNudgeCount: number;             // Part XVIII §F, consecutive ignored spinning nudges
   consecutiveNoResultTools: number;       // tracks "No results found" / "not in memory" returns
   nudgedForNoResults: boolean;            // fire-once per turn for the no-results nudge
   lastResponseSig: string | null;         // canonical signature of last model response (for repetition detection)
   nudgedForRepetition: boolean;           // fire-once per turn for the repetition nudge
-  retriedEmptyResponse: boolean;          // v1 phase 1 — silent retry has fired this turn (#38)
-  nudgedForEmptyResponse: boolean;        // v1 phase 2 — explicit nudge has fired this turn (#38)
+  retriedEmptyResponse: boolean;          // v1 phase 1, silent retry has fired this turn (#38)
+  nudgedForEmptyResponse: boolean;        // v1 phase 2, explicit nudge has fired this turn (#38)
 
   // ── Per-signature thrash gate ──
   // When the task-thrash detector trips on a specific canonical tool
@@ -164,7 +164,7 @@ export interface AgentTurnState {
   readonly triggeredByA2AReplyIntent: A2AReplyContext | null;
   readonly imFlagSetAtRunStart: boolean;
   readonly lastUserMessageContent: string | null;
-  // v2.7.23 — structural inbound channel binding (OpenClaw-inspired). Set
+  // v2.7.23, structural inbound channel binding (OpenClaw-inspired). Set
   // once at preflight by inspecting the last user message. Read at end-
   // of-turn by the reply-destination resolver so terminal assistant text
   // can be auto-routed back to the source channel. `null` means the turn
@@ -179,36 +179,44 @@ export interface AgentTurnState {
   sentToAgentThisTurn: boolean;
   /**
    * Count of send_to_agent / broadcast_to_group calls per recipient
-   * (normalized/lowercased) THIS turn. Inter-agent replies are async — the
-   * recipient answers on its own LATER turn — so an agent that doesn't get an
+   * (normalized/lowercased) THIS turn. Inter-agent replies are async, the
+   * recipient answers on its own LATER turn, so an agent that doesn't get an
    * instant reply re-sends the same ask, reworded (which defeats the content-
    * signature dedup), and spams them (observed: 29 sends to one agent in a turn).
    * The loop caps it at A2A_SEND_CAP_PER_RECIPIENT per recipient per turn. The
    * cap is set well ABOVE any genuine case (two distinct messages to one agent,
    * a retry after a transient failure) so it can only catch a pathological
-   * re-send loop, never a real multi-send — genuine and pathological behavior
+   * re-send loop, never a real multi-send, genuine and pathological behavior
    * are far apart here, unlike the anti-hoarding gate's overlap.
    */
   sendsPerAgentThisTurn: Record<string, number>;
   // True once a user-facing reply has surfaced earlier THIS turn. Used by the
   // engine to suppress a redundant trailing closeout ("Done." / "All set.") on
-  // a later continuation iteration — the deterministic floor for "respond once
+  // a later continuation iteration, the deterministic floor for "respond once
   // per request" so a weak model that forgets [no-reply] can't spam closeouts.
   // The first reply is never touched (this is false until one lands).
   surfacedReplyThisTurn: boolean;
   lastAssistantTextForIM: string | null;
-  // v2.7.23 — set when the agent calls a channel-specific send tool
+  // v2.7.23, set when the agent calls a channel-specific send tool
   // (imessage_send, teams_send_message) successfully this turn. The
   // reply-destination resolver reads this at end-of-turn to skip
   // auto-routing for the same channel (otherwise terminal text would
-  // get delivered twice — once via the tool call, once via the auto-
+  // get delivered twice, once via the tool call, once via the auto-
   // route). Multiple channels can be tracked if the agent crosses
   // them in one turn (rare).
   explicitSendThisTurn: { imessage?: boolean; teams?: boolean; email?: boolean; sms?: boolean; phone?: boolean };
+  /**
+   * D16, set per channel ONLY when an explicit send this turn was addressed to
+   * THIS turn's counterparty (not a relayed 3rd party). The end-of-turn
+   * auto-reply is suppressed on `repliedToCounterpartyThisTurn`, NOT on
+   * `explicitSendThisTurn` (any send): relaying to a different recipient on the
+   * same channel must not swallow the reply to the person who actually wrote in.
+   */
+  repliedToCounterpartyThisTurn: { imessage?: boolean; teams?: boolean; email?: boolean; sms?: boolean; phone?: boolean };
   trackerToolCalledThisTurn: boolean;
   nonTrackerToolCalls: number;
   /**
-   * v2.5.31 — message id of the most recent inbound ASSIGN/QUESTION/BLOCK
+   * v2.5.31, message id of the most recent inbound ASSIGN/QUESTION/BLOCK
    * the missed-reply enforcer has already nudged about this handleMessage
    * invocation. Real fire-once: if the next iteration produces text-no-tool
    * for the same assign id, the loop hard-stops instead of nudging again.
@@ -216,14 +224,14 @@ export interface AgentTurnState {
    */
   nudgedForMissedReplyOnAssignId: string | null;
   /**
-   * v2.5.40 — fire-once flag for the tracker nudge. Set to true after the
+   * v2.5.40, fire-once flag for the tracker nudge. Set to true after the
    * runtime nudge ("you've made N tool calls without an active tracker
    * task") is injected so it doesn't fire again in the same turn even if
    * the agent keeps adding tool calls without creating a project.
    */
   nudgedForTrackerThisTurn: boolean;
   /**
-   * v2.5.40 — set when the agent calls tracker_update_status or
+   * v2.5.40, set when the agent calls tracker_update_status or
    * tracker_complete_step in this turn. Different from
    * trackerToolCalledThisTurn (which fires on ANY tracker_* call,
    * including tracker_create_project). Used by the end-of-turn close-out
@@ -232,43 +240,52 @@ export interface AgentTurnState {
    */
   trackerStatusUpdatedThisTurn: boolean;
   /**
-   * v2.5.40 — fire-once flag for the end-of-turn close-out nudge ("you
+   * v2.5.40, fire-once flag for the end-of-turn close-out nudge ("you
    * have in_progress tasks but didn't update any status this turn"). The
    * nudge fires when the agent is about to end the turn with dangling
    * tasks; the hardcap ends the turn cleanly if the agent ignores it.
    */
   nudgedForTrackerCloseThisTurn: boolean;
   /**
-   * v2.5.43 — running count of loading-tool calls (file_read, exec,
+   * v2.5.43, running count of loading-tool calls (file_read, exec,
    * vault_search, get_agent_profile, web_fetch, use_technique, etc.)
-   * executed THIS turn. Used by the anti-hoarding gate to refuse the
-   * (LOADING_GATE_THRESHOLD + 1)th loading call when no structuring
-   * has happened. Per-turn only; resets each turn.
+   * executed THIS turn. D3: used by the anti-hoarding ADVISORY, once this
+   * crosses LOADING_GATE_THRESHOLD with no structuring AND context is near
+   * compaction, the engine nudges ONCE to write sources down. It no longer
+   * REFUSES any read (that blocked legitimate multi-source work). Per-turn
+   * only; resets each turn.
    */
   loadingToolCallsThisTurn: number;
   /**
-   * v2.5.43 — flips true the moment the agent calls any structuring
+   * v2.5.43, flips true the moment the agent calls any structuring
    * tool (tracker_create_project, tracker_create_task, tracker_update_
    * status, tracker_complete_step, tracker_add_notes, tracker_edit_task,
    * file_write, file_append, file_patch) THIS turn. Once true, the
    * anti-hoarding gate is permanently satisfied for the remainder of
    * this turn.
    *
-   * v2.5.46 — scratchpad_set was REMOVED from this set after a tracker-
+   * v2.5.46, scratchpad_set was REMOVED from this set after a tracker-
    * adoption audit showed it was the cheapest escape and being used as
    * a substitute for the durable plan. Scratchpad is now only an
    * in-flight helper inside tracker steps.
    */
   structuringToolCalledThisTurn: boolean;
   /**
-   * v2.5.43 — fire-once flag for the loud system message that
+   * v2.5.43, fire-once flag for the loud system message that
    * accompanies the first hoarding-gate refusal in a turn. The
    * synthetic tool-result refusal happens on every blocked call; the
    * system message only fires once per turn.
    */
   nudgedForHoardingThisTurn: boolean;
   /**
-   * v2.5.46 — pre-turn close-out gate. At preflight we look up the
+   * D3, the assembled-context utilization ratio (0..1) from the most recent
+   * per-iteration compaction gate. The anti-hoarding advisory reads this so it
+   * only nudges when context is genuinely near compaction (real confabulation
+   * risk), instead of refusing reads by raw call-count. Updated each iteration.
+   */
+  lastContextRatio: number;
+  /**
+   * v2.5.46, pre-turn close-out gate. At preflight we look up the
    * agent's in_progress tasks that were NOT touched in the previous
    * turn. If any exist, this list is populated. Until at least one of
    * them is resolved (tracker_update_status / tracker_complete_step),
@@ -276,14 +293,14 @@ export interface AgentTurnState {
    */
   danglingTaskIds: readonly string[];
   /**
-   * v2.5.46 — flips true the moment the agent closes (status updated)
+   * v2.5.46, flips true the moment the agent closes (status updated)
    * any in_progress task this turn. Disengages the close-out gate for
    * the remainder of the turn (further close-outs encouraged but not
    * forced; the gate fires fresh next turn if there are still danglers).
    */
   closeOutGateSatisfied: boolean;
   /**
-   * v2.5.46 — fire-once flag for the loud system message that
+   * v2.5.46, fire-once flag for the loud system message that
    * accompanies the first close-out gate refusal in a turn. Set true
    * in preflight when the gate is armed; used by enforcement code to
    * tell "gate is armed for this turn" from "no danglers."
@@ -299,7 +316,7 @@ export interface AgentTurnState {
    */
   nudgedForAddNotesStopThisTurn: boolean;
   /**
-   * Set true the first time the grounding guard (OPEN-14) fires in a turn — the
+   * Set true the first time the grounding guard (OPEN-14) fires in a turn, the
    * terminal reply claimed a completed delivery to a named third party but no
    * delivery tool fired this turn. One-shot: the agent gets one correction to
    * actually send (or confirm a prior send), then the turn ends normally so a
@@ -309,7 +326,7 @@ export interface AgentTurnState {
   /**
    * Set true the first time the thrash-gate DRIFT path nudges this turn
    * (comms-audit G-BLK-1). Drift (gate on while the agent varies call signatures)
-   * is a false-positive-prone signal — legitimate progress also varies signatures —
+   * is a false-positive-prone signal, legitimate progress also varies signatures, 
    * so it must NOT terminally block a task. Instead it injects one visible nudge
    * (with the escape-hatch) and resets the drift window; MAX_TOOL_LOOPS bounds any
    * real spiral. Only the explicit-refusal-count path terminally blocks. One-shot.
@@ -339,30 +356,25 @@ export interface AgentTurnState {
   /** Fire-once flag for the post-compaction recall warning. */
   nudgedForPostCompactRecall: boolean;
   /**
-   * v2.7.2 — set true the first time an assistant block in this turn pairs
+   * v2.7.2, set true the first time an assistant block in this turn pairs
    * non-trivial wrap-up text (≥ ~10 chars after trim) with a tracker
    * close-out tool call (tracker_update_status complete/blocked/paused,
    * tracker_complete_step, tracker_close_project). Suppresses any later
-   * text-only assistant block in the same turn — the model has already
+   * text-only assistant block in the same turn, the model has already
    * given the user their response, and any further "Done." / "Read it."
    * follow-up is the duplicate-final-answer failure shape.
    */
   taskClosedWithTextThisTurn: boolean;
 
   /**
-   * v2.7.6 — set when a successful technique_read / use_technique call
-   * lands. Acts as a gate: every subsequent tool call OTHER than the
-   * acknowledge-flow allowlist (more technique reads, technique_acknowledge,
-   * list_techniques) gets refused until the agent calls
-   * technique_acknowledge(name, summary). Persisted into agents.config
-   * so it survives across turns — if the agent ends its turn without
-   * acking, the next turn starts gated.
-   *
-   * The point: "the agent literally can't continue until it acknowledges
-   * that it has read the technique in its entirety." Reading the
-   * technique without processing it leads to skipped steps and the
-   * agent acting on cached / paraphrased memory. The acknowledge step
-   * forces engagement.
+   * v2.7.6, reworked by D6: set when a successful technique_read /
+   * use_technique call lands. The hard tool-refusal gate is REMOVED (it
+   * globally locked tools and could deadlock with the close-out gate);
+   * inline injection of the technique text next to the live message is
+   * what actually drives compliance. This flag is now in-memory for the
+   * current turn only and backs the OPTIONAL technique_acknowledge
+   * affordance (clears the flag, records last-acked). Not persisted;
+   * expires at turn end.
    */
   pendingTechniqueAck: {
     techniqueId: string;
@@ -390,14 +402,13 @@ export interface InitStateParams {
   triggeredByA2AReplyIntent: A2AReplyContext | null;
   imFlagSetAtRunStart: boolean;
   lastUserMessageContent: string | null;
-  // v2.7.23 — structural inbound channel binding; see AgentTurnState fields
+  // v2.7.23, structural inbound channel binding; see AgentTurnState fields
   inboundChannel: 'imessage' | 'teams' | 'email' | 'sms' | 'phone' | 'voice' | 'dashboard' | null;
   inboundContext: ChannelInboundContext | null;
   shouldNudgeTracker: boolean;
   /**
-   * Hydrated from agents.config.pendingTechniqueAck. Null when the gate
-   * isn't currently set. The runtime is responsible for persisting
-   * changes back to the config column.
+   * D6: always null at turn start (cross-turn hydration from agents.config
+   * removed with the hard gate); in-memory for the current turn only.
    */
   pendingTechniqueAck: AgentTurnState['pendingTechniqueAck'];
 }
@@ -459,6 +470,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     surfacedReplyThisTurn: false,
     lastAssistantTextForIM: null,
     explicitSendThisTurn: {},
+    repliedToCounterpartyThisTurn: {},
     trackerToolCalledThisTurn: false,
     nonTrackerToolCalls: 0,
     nudgedForMissedReplyOnAssignId: null,
@@ -468,6 +480,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     loadingToolCallsThisTurn: 0,
     structuringToolCalledThisTurn: false,
     nudgedForHoardingThisTurn: false,
+    lastContextRatio: 0,
     danglingTaskIds: [],
     closeOutGateSatisfied: false,
     nudgedForCloseOutThisTurn: false,
@@ -491,7 +504,7 @@ export function initState(params: InitStateParams): AgentTurnState {
 /**
  * Replace state atomically and validate the result. Use this for every
  * state mutation. Direct field assignment (state.x = y) is forbidden in
- * v2 — it bypasses validation and breaks the no-partial-corruption guarantee.
+ * v2, it bypasses validation and breaks the no-partial-corruption guarantee.
  */
 export function advance(state: AgentTurnState, partial: Partial<AgentTurnState>): AgentTurnState {
   const next: AgentTurnState = { ...state, ...partial };
@@ -562,7 +575,7 @@ export function bumpLoopSignature(
 }
 
 /**
- * Output token escalation chain — Part IX recovery cascade.
+ * Output token escalation chain, Part IX recovery cascade.
  * Returns the next budget level, or null if exhausted.
  */
 const OUTPUT_ESCALATION_CHAIN = [8000, 16000, 32000, 64000] as const;

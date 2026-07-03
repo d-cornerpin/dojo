@@ -26,7 +26,7 @@ export const DEFAULT_ALWAYS_LOADED_TOOLS = [
 
 // Primary agent: needs file/exec + tracker + vault + communication basics.
 // These are the tools the primary agent uses on nearly every meaningful turn.
-// recall_recent_thread is always-loaded as a memory-recovery affordance — when
+// recall_recent_thread is always-loaded as a memory-recovery affordance, when
 // the agent feels disoriented (post-compaction, post-model-switch), the tool
 // must be reachable in one step, not "scan the index → load_tool_docs → call."
 export const PRIMARY_AGENT_ALWAYS_LOADED = [
@@ -55,7 +55,7 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'sms_send',
   'image_create',
   'show_to_user',
-  // Pre-loaded so "show me your screen" works in one call — without it the
+  // Pre-loaded so "show me your screen" works in one call, without it the
   // model reaches for screen_read (which only screenshots for itself) instead.
   'screen_share',
   'recall_recent_thread',
@@ -72,7 +72,7 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
 
 // PM agent: tracker-focused, monitors tasks and sends messages to other agents.
 // Edit tools are pre-loaded because the engine fires rename requests at PM on
-// every multistep auto-create — making PM round-trip through load_tool_docs
+// every multistep auto-create, making PM round-trip through load_tool_docs
 // each time would burn a turn for what should be a single-call rename.
 export const PM_AGENT_ALWAYS_LOADED = [
   ...DEFAULT_ALWAYS_LOADED_TOOLS,
@@ -100,7 +100,7 @@ export const PM_AGENT_ALWAYS_LOADED = [
 ];
 
 // Dreamer agent: vault-focused, extracts knowledge from conversation archives.
-// v2.9.16 — also routes person-as-entity observations into the DOJO
+// v2.9.16, also routes person-as-entity observations into the DOJO
 // contacts store and persists credentials that appear verbatim in
 // archives. Contact verbs: append-and-read only (no forget/update/get -
 // the owner edits via dashboard). Credential verbs: list (check for
@@ -161,7 +161,7 @@ export const HEALER_AGENT_ALWAYS_LOADED = [
   'healer_propose',
 ];
 
-// Imaginer agent: doesn't run through the LLM runtime at all — its
+// Imaginer agent: doesn't run through the LLM runtime at all, its
 // image model gets called directly by the image_create tool's async
 // background task. The always-loaded set is minimal just in case the
 // runtime tries to assemble tools for it (which shouldn't happen, but
@@ -288,7 +288,7 @@ import { getPrimaryAgentId } from '../config/platform.js';
 // the agent's role directly from the DB (one cheap query) and match against
 // known system agent IDs and classifications. The old `require()` approach
 // silently failed in ESM, causing every agent to fall back to the 3-tool
-// default set — meaning they had to `load_tool_docs` before every single
+// default set, meaning they had to `load_tool_docs` before every single
 // tool use, which was slow and model-dependent.
 function getDefaultForAgent(agentId: string): string[] {
   try {
@@ -319,7 +319,7 @@ function getDefaultForAgent(agentId: string): string[] {
     if (row && ['ronin', 'apprentice', 'freelance'].includes(row.classification)) {
       return SUB_AGENT_ALWAYS_LOADED;
     }
-  } catch { /* DB not ready yet — use minimal default */ }
+  } catch { /* DB not ready yet, use minimal default */ }
   return DEFAULT_ALWAYS_LOADED_TOOLS;
 }
 
@@ -330,7 +330,14 @@ export function getAgentAlwaysLoadedTools(agentId: string): string[] {
     if (row?.always_loaded_tools) {
       try {
         const parsed = JSON.parse(row.always_loaded_tools);
-        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed)) {
+          // D13: A2A floor. A sub-agent spawned with a custom always_loaded_tools
+          // set that omits send_to_agent physically CANNOT reply on the A2A thread
+          // it was asked a QUESTION on, so ask -> park -> (no possible reply)
+          // fails closed to permanent silence, even though the thread footer tells
+          // it to "reply with send_to_agent". Always union in the reply tool.
+          return parsed.includes('send_to_agent') ? parsed : [...parsed, 'send_to_agent'];
+        }
       } catch { /* ignore */ }
     }
   } catch { /* column may not exist yet */ }

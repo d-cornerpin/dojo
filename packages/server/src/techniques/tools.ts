@@ -839,7 +839,6 @@ export function executeTechniqueAcknowledge(
     clearedAck: true,
     content:
       `Acknowledgement accepted for "${pendingAck.techniqueName}" (${pendingAck.techniqueId}). ` +
-      `Engine gate cleared — you can now run any tool. ` +
-      `If the technique gets re-read (you call technique_read / use_technique again, or it ages out and you need to re-fetch), the gate will re-engage and a fresh acknowledgement will be required.`,
+      `Acknowledging after a technique read is optional; it records that you engaged with the material before applying it.`,
   };
 }

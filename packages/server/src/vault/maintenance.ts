@@ -1629,6 +1629,35 @@ Use vault_remember for each fact extracted, then file_write to save the trimmed 
   }
 }
 
+// ── Nightly Engine Maintenance Jobs (no Dreamer involved) ──
+//
+// Ride the same nightly window as the dreaming cycle, and run BEFORE the
+// Dreamer is woken: the disk reclaim's VACUUM is guarded on "no agent turn
+// active", which is guaranteed at the top of the window but not once the
+// Dreamer agent is mid-cycle. Each job is independently best-effort; a
+// failure is logged and retried the next night, and never blocks dreaming.
+async function runNightlyEngineMaintenance(): Promise<void> {
+  // Vault-archive disk reclaim (redundant processed archives + guarded VACUUM).
+  try {
+    const { reclaimVaultArchiveSpace } = await import('./disk-reclaim.js');
+    reclaimVaultArchiveSpace();
+  } catch (err) {
+    logger.error('Nightly disk reclaim failed (will retry next night)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Contaminated-summary rebuild (bounded batch; self-limiting once clean).
+  try {
+    const { runSummaryRebuildBatch } = await import('../memory/summary-rebuild.js');
+    await runSummaryRebuildBatch();
+  } catch (err) {
+    logger.error('Nightly summary rebuild failed (will retry next night)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 // ── Dreaming Scheduler ──
 
 let dreamTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1641,8 +1670,10 @@ export function scheduleDreamingCycle(): void {
 
   const config = getDreamingConfig();
   if (config.dreamMode === 'off') {
-    logger.info('Dreaming is disabled, not scheduling');
-    return;
+    // The nightly ENGINE maintenance (disk reclaim + summary rebuild) still
+    // needs its window even when dreaming is off, so the timer is scheduled
+    // regardless; runDreamingCycle itself no-ops in 'off' mode.
+    logger.info('Dreaming is disabled; scheduling nightly window for engine maintenance only');
   }
 
   const [hours, minutes] = config.dreamTime.split(':').map(Number);
@@ -1662,6 +1693,14 @@ export function scheduleDreamingCycle(): void {
   });
 
   dreamTimer = setTimeout(async () => {
+    // Engine maintenance first (idle window, see runNightlyEngineMaintenance).
+    try {
+      await runNightlyEngineMaintenance();
+    } catch (err) {
+      logger.error('Nightly engine maintenance failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     try {
       await runDreamingCycle();
     } catch (err) {

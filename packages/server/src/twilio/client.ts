@@ -8,6 +8,7 @@
 import crypto from 'node:crypto';
 import { createLogger } from '../logger.js';
 import { getTwilioCreds } from './auth.js';
+import { formatForPlainTextChannel } from '../services/plain-text-format.js';
 
 const logger = createLogger('twilio-client');
 
@@ -77,10 +78,12 @@ export async function sendSms(
   if (!to.trim() || !body.trim() || !from.trim()) {
     return { ok: false, error: 'to, body, and from are all required.' };
   }
+  // D15: SMS can't render markdown, strip it here at the single SMS chokepoint
+  // so all three send paths (auto-reply, sms_send tool, A2A relay) go out clean.
   const res = await twilioPost<TwilioSmsResponse>('/Messages.json', {
     To: to,
     From: from,
-    Body: body,
+    Body: formatForPlainTextChannel(body),
   });
   if (!res.ok) {
     logger.warn('Twilio SMS send failed', { to, from, error: res.error, status: res.status });

@@ -48,6 +48,10 @@ export async function vectorSearch(
     limit?: number;
     sourceType?: 'all' | 'message' | 'summary' | 'technique';
     minSimilarity?: number;
+    // D4: a pre-computed query embedding. When the caller already embedded the
+    // per-turn recall query (assembler auto-recall), pass it so the same query
+    // isn't re-embedded once per search lane (messages + summaries + vault).
+    queryEmbedding?: Float32Array;
   },
 ): Promise<VectorSearchResult[]> {
   const limit = options?.limit ?? 10;
@@ -56,8 +60,8 @@ export async function vectorSearch(
 
   logger.info('Vector search', { query: query.slice(0, 80), agentId, limit, sourceType });
 
-  // Generate embedding for the query
-  const queryEmbedding = await generateEmbedding(query);
+  // Reuse the caller's embedding when provided; otherwise embed the query.
+  const queryEmbedding = options?.queryEmbedding ?? await generateEmbedding(query);
 
   // Load embeddings from DB
   const db = getDb();

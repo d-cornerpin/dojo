@@ -63,17 +63,19 @@ export async function generateEmbedding(
 ): Promise<Float32Array> {
   const config = getEmbeddingConfig();
 
-  // C12: truncate to a cap safely UNDER the embed model's token context. The old 8000-char
-  // cap bounded CHARACTERS, but the Ollama failure is a TOKEN-context overflow — a dense or
-  // non-English summary exceeds the token context well under 8000 chars, so the embed call
-  // 500'd and the summary dropped (invisible to vector recall). ~2000 chars is a safe floor;
-  // the adaptive halving-retry below rescues anything still too dense.
-  const EMBED_CHAR_CAP = 2000;
+  // D17: cap raised 2000 -> 7000. The C12 fix over-corrected: a flat 2000-char cap
+  // embedded only the first 20-45% of a typical summary (avg ~4.7k chars, depth-2 ~12k),
+  // so the back half of most summaries was invisible to vector recall (77% of summaries
+  // exceeded 2000 chars). The token-overflow safety C12 was protecting against is ALREADY
+  // handled by the adaptive halving-retry below (a dense input that overflows the embed
+  // model's token context is halved and retried up to 3x), so the char cap can be raised
+  // back to capture most summaries whole while the retry still rescues the rare dense one.
+  const EMBED_CHAR_CAP = 7000;
   let truncated = text.length > EMBED_CHAR_CAP ? text.slice(0, EMBED_CHAR_CAP) : text;
 
   if (config.provider === 'ollama') {
     const baseUrl = config.baseUrl.replace(/\/+$/, '');
-    // C12: adaptive retry — on a token-context overflow, halve the input and retry (up to
+    // C12: adaptive retry, on a token-context overflow, halve the input and retry (up to
     // 3x) so a dense input still embeds instead of dropping to un-searchable.
     for (let attempt = 0; attempt < 3; attempt++) {
       const response = await fetch(`${baseUrl}/api/embeddings`, {
@@ -103,7 +105,7 @@ export async function generateEmbedding(
     throw new Error('Ollama embedding failed: input still exceeded the context length after 3 halving retries');
   }
 
-  // OpenAI-compatible endpoint — C12: same adaptive halving retry on a context overflow.
+  // OpenAI-compatible endpoint, C12: same adaptive halving retry on a context overflow.
   for (let attempt = 0; attempt < 3; attempt++) {
     const response = await fetch(`${config.baseUrl}/v1/embeddings`, {
       method: 'POST',
@@ -173,7 +175,7 @@ export async function storeEmbedding(
       sourceType,
       sourceId,
     });
-    // Embedding is best-effort — don't throw
+    // Embedding is best-effort, don't throw
   }
 }
 
@@ -185,7 +187,7 @@ export function queueEmbedding(
   agentId: string | null,
   content: string,
 ): void {
-  // Fire and forget — don't block the caller
+  // Fire and forget, don't block the caller
   storeEmbedding(sourceType, sourceId, agentId, content).catch(err => {
     logger.debug('Queued embedding failed', {
       error: err instanceof Error ? err.message : String(err),

@@ -369,7 +369,7 @@ export function listEntries(options?: {
    * Phase 7: filter by namespace. Pass `null` (or omit) to default to
    * personal vault (`namespace IS NULL`). Pass a string like
    * `'squad:<group_id>'` to scope to that namespace. The two scopes never
-   * overlap — personal-vault searches never see squad entries and vice versa.
+   * overlap, personal-vault searches never see squad entries and vice versa.
    */
   namespace?: string | null;
 }): VaultEntry[] {
@@ -430,20 +430,31 @@ export async function semanticSearch(query: string, options?: {
   limit?: number;
   type?: string;
   minSimilarity?: number;
+  // D4: reuse a pre-computed query embedding (assembler auto-recall embeds the
+  // per-turn recall query once and shares it across message + vault search).
+  queryEmbedding?: Float32Array;
+  // AUDIT-FIX: restrict to the personal scope (namespace IS NULL), matching the
+  // exact-mode filter in listEntries. Squad-namespace entries are documented as
+  // never overlapping personal scope and must not leak into personal recall.
+  personalOnly?: boolean;
 }): Promise<Array<VaultEntry & { similarity: number }>> {
   const limit = options?.limit ?? 10;
   const minSim = options?.minSimilarity ?? 0.3;
 
   let queryEmbedding: Float32Array;
-  try {
-    queryEmbedding = await generateEmbedding(query);
-  } catch (err) {
-    logger.warn('Failed to generate query embedding, falling back to text search', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    // Fallback to text search
-    const entries = listEntries({ search: query, limit });
-    return entries.map(e => ({ ...e, similarity: 0.5 }));
+  if (options?.queryEmbedding) {
+    queryEmbedding = options.queryEmbedding;
+  } else {
+    try {
+      queryEmbedding = await generateEmbedding(query);
+    } catch (err) {
+      logger.warn('Failed to generate query embedding, falling back to text search', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      // Fallback to text search
+      const entries = listEntries({ search: query, limit });
+      return entries.map(e => ({ ...e, similarity: 0.5 }));
+    }
   }
 
   const db = getDb();
@@ -453,6 +464,9 @@ export async function semanticSearch(query: string, options?: {
   if (options?.type) {
     conditions.push('type = ?');
     params.push(options.type);
+  }
+  if (options?.personalOnly) {
+    conditions.push('namespace IS NULL');
   }
 
   const where = conditions.join(' AND ');
@@ -475,6 +489,29 @@ export async function semanticSearch(query: string, options?: {
 
   scored.sort((a, b) => b.similarity - a.similarity);
   return scored.slice(0, limit);
+}
+
+// D17: some vault entries carry a NULL embedding (a pre-C12 Ollama 500-and-drop
+// at create time, or an embed outage). semanticSearch requires embedding IS NOT
+// NULL, so those entries can NEVER match a semantic vault_search, only an exact
+// LIKE lookup can find them. Re-embed them once so they become findable. Best
+// effort and throttled (LIMIT); anything still failing is retried on the next
+// boot pass. Returns how many entries were successfully re-embedded.
+export async function reembedNullVaultEntries(limit = 200): Promise<number> {
+  const db = getDb();
+  const rows = db.prepare(
+    'SELECT id, content FROM vault_entries WHERE embedding IS NULL AND is_obsolete = 0 LIMIT ?',
+  ).all(limit) as Array<{ id: string; content: string }>;
+  let fixed = 0;
+  for (const row of rows) {
+    try {
+      const emb = await generateEmbedding(row.content);
+      db.prepare('UPDATE vault_entries SET embedding = ? WHERE id = ?').run(Buffer.from(emb.buffer), row.id);
+      fixed++;
+    } catch { /* best effort, retry next boot */ }
+  }
+  if (fixed > 0) logger.info('Re-embedded NULL-embedding vault entries', { fixed });
+  return fixed;
 }
 
 // ── Deduplication Helper ──
@@ -535,12 +572,12 @@ export function getPinnedEntries(): VaultEntry[] {
 }
 
 /**
- * Phase 4 §C — Vault entries tagged 'session_context' get auto-injected at
+ * Phase 4 §C, Vault entries tagged 'session_context' get auto-injected at
  * session start (in addition to pinned entries). Mirrors Claude Code's
  * CLAUDE.md: stable, small, always-loaded context the agent expects to see
  * at the top of every fresh session.
  *
- * The tag lives in the existing `tags` JSON array on each entry — no schema
+ * The tag lives in the existing `tags` JSON array on each entry, no schema
  * change. Users can write `vault_remember(content, tags=['session_context'])`
  * to mark something as session-load-on-start.
  */

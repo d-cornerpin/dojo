@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-// (getRuntimeVersion import removed in Phase 9 Stage 2 — single-track v2)
+// (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
 import { estimateTokens, getMessagesOutsideFreshTail, getRecentMessages } from './store.js';
 import {
   createLeafSummary,
@@ -13,27 +13,34 @@ import {
   replaceContextItems,
 } from './dag.js';
 import { generateSummary } from './summarize.js';
-import { archiveMessagesBeforeCompaction, isDreamerIgnored } from '../vault/archive.js';
+import { archiveMessagesBeforeCompaction, isDreamerIgnored, getArchiveHighWaterMark } from '../vault/archive.js';
 import { isSystemServiceAgent } from '../config/platform.js';
 import { lastCompactionDividerAt } from '../agent/shared-state.js';
 import { summaryPartyTag } from './party-label.js';
 import { isPlatformNoise } from './platform-noise.js';
 import type { Message } from '@dojo/shared';
 
-// Inbound A2A — a peer agent's message TO this agent. For the primary's own context
+// Inbound A2A, a peer agent's message TO this agent. For the primary's own context
 // summary this is inter-agent traffic, not the user's conversation, so it is excluded
 // from summary input. Must match the SAME marker set the assembler strips from a human
 // turn (assembler.ts A2A_INBOUND_RE): the modern [A2A: …] envelope plus the legacy
-// agent-message / group-broadcast / PM-poke source markers — otherwise a legacy variant
+// agent-message / group-broadcast / PM-poke source markers, otherwise a legacy variant
 // would be stripped from live turns but still bleed into the persistent summary.
 const A2A_INBOUND_MARKER_RE = /^\s*(\[A2A:|\[SOURCE: AGENT MESSAGE FROM|\[SOURCE: GROUP BROADCAST FROM|\[SOURCE: PM AGENT POKE FROM)/i;
 
 /** A row that must NOT be folded into a context summary: platform/inter-agent plumbing
  *  or an inbound peer A2A message. Keeps another agent's work out of the primary's
- *  narrative so the model can't later read it back and narrate it to the user. */
-function isNonConversationForSummary(content: string | null | undefined): boolean {
+ *  narrative so the model can't later read it back and narrate it to the user.
+ *  Exported for the nightly contaminated-summary rebuild (memory/summary-rebuild.ts),
+ *  which re-runs old summaries' source messages through this same filter. */
+export function isNonConversationForSummary(content: string | null | undefined): boolean {
   return isPlatformNoise(content) || (!!content && A2A_INBOUND_MARKER_RE.test(content));
 }
+
+/** Placeholder stored when a summarized span contains no user conversation at all
+ *  (pure system/inter-agent plumbing or tool traffic). Shared with the nightly
+ *  summary rebuild so both paths write the identical minimal placeholder. */
+export const NO_CONVERSATION_PLACEHOLDER = '(system/inter-agent activity, no user conversation in this span)';
 
 // ── Assembled-context token estimate ──
 //
@@ -98,8 +105,8 @@ export function estimateAssembledTokens(agentId: string, contextWindow: number):
 
   // Cap summary tokens at the same budget the assembler applies (assembler.ts:
   // budgetSummaries reserves 70% of remaining-after-scaffolding for summaries,
-  // dropping oldest first to fit). Without this cap, a long-lived agent — or
-  // anyone upgrading from v1 with a deep summary DAG — sees the gate trip at
+  // dropping oldest first to fit). Without this cap, a long-lived agent, or
+  // anyone upgrading from v1 with a deep summary DAG, sees the gate trip at
   // >100% on its first turn, force-compaction can't reduce already-condensed
   // depth-N summaries any further, and the loop wedges firing the same
   // "memory is too full" message forever. The assembler will trim summaries
@@ -129,13 +136,13 @@ const logger = createLogger('memory-compaction');
 // block with a one-line stub so the technique body NEVER appears in
 // the generated summary. Without this, the summary keeps a
 // paraphrased copy of the technique and the agent later reads the
-// summary as authoritative — defeating the v2.7.4 stub-after-1-turn
+// summary as authoritative, defeating the v2.7.4 stub-after-1-turn
 // freshness enforcement on the raw tool_result side.
 const TECHNIQUE_FRESH_SENTINEL = '══ TECHNIQUE FRESH READ ══';
 const TECHNIQUE_SCRUB_STUB =
-  '[technique read withheld from summary by engine policy — call technique_read for the current on-disk content; do not paraphrase from this summary]';
+  '[technique read withheld from summary by engine policy, call technique_read for the current on-disk content; do not paraphrase from this summary]';
 
-function scrubTechniqueContentForSummary(messageContent: string): string {
+export function scrubTechniqueContentForSummary(messageContent: string): string {
   // Fast path: plain string content that starts with the sentinel
   // (covers any flow where the runtime persists the raw tool string
   // rather than a JSON tool_result block).
@@ -163,14 +170,14 @@ function scrubTechniqueContentForSummary(messageContent: string): string {
 
 // ── Defaults ──
 //
-// v1: contextThreshold 0.75 — fires at 75% utilization (the "compaction is
+// v1: contextThreshold 0.75, fires at 75% utilization (the "compaction is
 // load-bearing" architecture). v2 raises this to 0.96 emergency-only with
-// a 0.90 WARN line per Part V — compaction becomes a debug signal, not a
+// a 0.90 WARN line per Part V, compaction becomes a debug signal, not a
 // routine event. Threshold lookup is runtime-version-aware so v1 agents
 // keep their original behavior while v2 agents see the new architecture.
 
 const DEFAULTS = {
-  // v2 thresholds — emergency-only compaction (Part V).
+  // v2 thresholds, emergency-only compaction (Part V).
   // The old v1 values (contextThreshold:0.75, leafChunkTokens:20000) were
   // removed in Phase 9 Stage 2 along with the runtime version flag.
   contextThreshold: 0.96,
@@ -180,6 +187,13 @@ const DEFAULTS = {
   condensedMinFanout: 4,
   incrementalMaxDepth: 1,
 };
+
+/** Summary size targets, exposed for the nightly summary rebuild so regenerated
+ *  summaries match the sizes the live compaction path produces. */
+export const SUMMARY_TARGET_TOKENS = {
+  leaf: DEFAULTS.leafTargetTokens,
+  condensed: DEFAULTS.condensedTargetTokens,
+} as const;
 
 function getContextThreshold(): number {
   return DEFAULTS.contextThreshold;
@@ -197,7 +211,7 @@ function getCompactionTailCount(contextWindow: number): number {
   return 24;
 }
 
-// v2.5.11 — Gap-trigger threshold (mirrors UNCOMPACTED_GAP_THRESHOLD inside
+// v2.5.11, Gap-trigger threshold (mirrors UNCOMPACTED_GAP_THRESHOLD inside
 // checkAndCompact). Exported via getUncompactedGapCount for the v2 loop's
 // pre-call routine check.
 export const UNCOMPACTED_GAP_THRESHOLD = 30;
@@ -208,8 +222,8 @@ export const UNCOMPACTED_GAP_THRESHOLD = 30;
  * call checkAndCompact at the routine pre-call gate (in addition to the
  * existing token-utilization-based emergency gate).
  *
- * Two SQLite reads — one for "messages outside fresh tail", one for the
- * set of summarized message IDs — and a Set lookup. Negligible per-turn cost.
+ * Two SQLite reads, one for "messages outside fresh tail", one for the
+ * set of summarized message IDs, and a Set lookup. Negligible per-turn cost.
  */
 export function getUncompactedGapCount(agentId: string, contextWindow: number): number {
   const outside = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(contextWindow));
@@ -230,10 +244,10 @@ function formatTokens(n: number): string {
   return `${n} tokens`;
 }
 
-// v2.5.11 — After the divider, drop a separate, agent-facing system message
+// v2.5.11, After the divider, drop a separate, agent-facing system message
 // that nudges the agent toward recall_recent_thread if it needs detail from
 // the summarized portion. Sits in the messages table so it lands in the
-// v2.7.10 — insertRecallNudge / RECALL_NUDGE_TEXT removed.
+// v2.7.10, insertRecallNudge / RECALL_NUDGE_TEXT removed.
 //
 // The nudge text told the agent to call recall_recent_thread before
 // responding. Paired with the v2/loop.ts hard intercept (also removed)
@@ -318,6 +332,45 @@ async function withCompactionActivity<T>(agentId: string, work: () => Promise<T>
   }
 }
 
+// ── Summary-writer model resolution ──
+//
+// Resolve which model WRITES summaries. It must be able to produce text:
+// media-generation (image/video/music) and embedding models all cost 0, so a
+// naive "cheapest enabled model" picked one of them and every summarization
+// call failed, the gap trigger then re-fires every turn forever (summaries
+// never get written). Precedence:
+//   1) the explicit Settings → compaction model, if enabled + text-capable
+//   2) the caller's preferred model (the agent's own), if it's text-capable
+//   3) the cheapest enabled text-capable model (the floor), deterministic tiebreak
+// Shared by checkAndCompact and the nightly summary rebuild so both write
+// summaries with the same (cheap) model choice. Returns null when no
+// text-capable model exists at all.
+export function resolveSummaryWriterModel(agentId: string, preferredModelId?: string): string | null {
+  const db = getDb();
+  const TEXT_FILTER = "m.capabilities NOT LIKE '%generation%' AND m.capabilities NOT LIKE '%embedding%'";
+  const isUsableTextModel = (id: string): boolean => !!db
+    .prepare(`SELECT 1 FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.id = ? AND m.is_enabled = 1 AND p.id != '__system__' AND ${TEXT_FILTER}`)
+    .get(id);
+  const cheapestTextModel = (): string | undefined => (db
+    .prepare(`SELECT m.id FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.is_enabled = 1 AND p.id != '__system__' AND ${TEXT_FILTER} ORDER BY COALESCE(m.input_cost_per_m, 0) ASC, m.id ASC LIMIT 1`)
+    .get() as { id: string } | undefined)?.id;
+
+  const explicit = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value;
+
+  if (explicit && isUsableTextModel(explicit)) {
+    logger.info('Resolved summary-writer model (explicit setting)', { resolvedModelId: explicit }, agentId);
+    return explicit;
+  }
+  if (!preferredModelId || preferredModelId === 'auto' || preferredModelId === '__auto__' || !isUsableTextModel(preferredModelId)) {
+    const cheapest = cheapestTextModel();
+    if (!cheapest) return null;
+    logger.info('Resolved summary-writer model (cheapest text-capable)', { resolvedModelId: cheapest }, agentId);
+    return cheapest;
+  }
+  // The caller's preferred model is text-capable, keep it.
+  return preferredModelId;
+}
+
 // ── Main Entry Point ──
 
 export async function checkAndCompact(
@@ -326,57 +379,32 @@ export async function checkAndCompact(
   contextWindow: number,
   options?: {
     force?: boolean;
-    // v2.5.12 — Per-call cap on how many leaf chunks may be summarized.
+    // v2.5.12, Per-call cap on how many leaf chunks may be summarized.
     // Used by the routine gap-trigger path so a huge backlog (e.g. an
     // upgrade from a pre-gap-trigger version with thousands of uncompacted
     // messages) drains across many turns instead of blocking a single turn
     // for minutes while it does dozens of LLM calls back-to-back.
     maxChunksPerRun?: number;
-    // v2.5.12 — Skip the expensive continuity-brief LLM call AND the
+    // v2.5.12, Skip the expensive continuity-brief LLM call AND the
     // user-facing divider/nudge insert. Used by routine drain so we don't
     // pay the brief cost on every chunk and don't spam the chat with
     // "Memory Compacted" notifications while we drain a backlog.
     skipContinuityBrief?: boolean;
-    // v2.5.14 — Optional abort signal for cancellation. Used by the
+    // v2.5.14, Optional abort signal for cancellation. Used by the
     // routine background drain in v2 loop so a hung summarizer LLM call
     // can actually be cancelled instead of running until the SDK's
     // 10-minute default timeout fires.
     abortSignal?: AbortSignal;
   },
 ): Promise<{ leafCreated: number; condensedCreated: number; tokensReclaimed: number }> {
-  // Resolve which model WRITES the summaries. It must be able to produce text:
-  // media-generation (image/video/music) and embedding models all cost 0, so a
-  // naive "cheapest enabled model" picked one of them and every summarization
-  // call failed — the gap trigger then re-fires every turn forever (summaries
-  // never get written). Precedence:
-  //   1) the explicit Settings → compaction model, if enabled + text-capable
-  //   2) the agent's own configured model, if it's text-capable
-  //   3) the cheapest enabled text-capable model (the floor), deterministic tiebreak
+  // Resolve which model WRITES the summaries (see resolveSummaryWriterModel).
   {
-    const db = getDb();
-    const TEXT_FILTER = "m.capabilities NOT LIKE '%generation%' AND m.capabilities NOT LIKE '%embedding%'";
-    const isUsableTextModel = (id: string): boolean => !!db
-      .prepare(`SELECT 1 FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.id = ? AND m.is_enabled = 1 AND p.id != '__system__' AND ${TEXT_FILTER}`)
-      .get(id);
-    const cheapestTextModel = (): string | undefined => (db
-      .prepare(`SELECT m.id FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.is_enabled = 1 AND p.id != '__system__' AND ${TEXT_FILTER} ORDER BY COALESCE(m.input_cost_per_m, 0) ASC, m.id ASC LIMIT 1`)
-      .get() as { id: string } | undefined)?.id;
-
-    const explicit = (db.prepare("SELECT value FROM config WHERE key = 'compaction_model_id'").get() as { value: string } | undefined)?.value;
-
-    if (explicit && isUsableTextModel(explicit)) {
-      modelId = explicit;
-      logger.info('Resolved compaction model (explicit setting)', { resolvedModelId: modelId }, agentId);
-    } else if (modelId === 'auto' || modelId === '__auto__' || !isUsableTextModel(modelId)) {
-      const cheapest = cheapestTextModel();
-      if (!cheapest) {
-        logger.warn('No text-capable model available for compaction — skipping', {}, agentId);
-        return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
-      }
-      modelId = cheapest;
-      logger.info('Resolved compaction model (cheapest text-capable)', { resolvedModelId: modelId }, agentId);
+    const resolved = resolveSummaryWriterModel(agentId, modelId);
+    if (!resolved) {
+      logger.warn('No text-capable model available for compaction, skipping', {}, agentId);
+      return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
     }
-    // else: the agent's own configured model is text-capable — keep it.
+    modelId = resolved;
   }
 
   const assembled = estimateAssembledTokens(agentId, contextWindow);
@@ -386,7 +414,7 @@ export async function checkAndCompact(
 
   const force = options?.force ?? false;
 
-  // v2.5.11 — Second trigger: message-count gap. The original token-pressure
+  // v2.5.11, Second trigger: message-count gap. The original token-pressure
   // trigger never fires for long-running agents whose context utilization
   // stays low (fresh tail is bounded by count, so total tokens don't grow
   // unboundedly). Symptom: agents silently lose memory of earlier-today
@@ -420,14 +448,14 @@ export async function checkAndCompact(
     force,
   }, agentId);
 
-  // 90% WARN line (Part V) — if under threshold but past 90%, log loudly +
+  // 90% WARN line (Part V), if under threshold but past 90%, log loudly +
   // broadcast a chat:error severity=warning. Each WARN is an architecture
   // bug to fix in tools/scaffolding/prompts. Fires once per checkAndCompact
   // invocation, not per loop iteration.
   if (!force) {
     const warnRatio = totalTokens / contextWindow;
     if (warnRatio >= 0.90 && warnRatio < 0.96) {
-      const reason = `Context utilization at ${(warnRatio * 100).toFixed(1)}% (${totalTokens}/${contextWindow}). This should not happen in normal v2 operation — investigate tool result sizes, scaffolding injection, system prompt cost.`;
+      const reason = `Context utilization at ${(warnRatio * 100).toFixed(1)}% (${totalTokens}/${contextWindow}). This should not happen in normal v2 operation, investigate tool result sizes, scaffolding injection, system prompt cost.`;
       logger.warn(reason, { agentId, ratio: warnRatio }, agentId);
       // User-facing toast: plain language, no internal jargon. The technical
       // detail goes to the log where developers can see it.
@@ -450,14 +478,14 @@ export async function checkAndCompact(
     // nothing outside the fresh tail to compact, the bloat IS the fresh
     // tail and compaction can't help. Pre-2026-05-01 we still ran the
     // whole reactive path (continuity brief LLM call, condensation,
-    // rebuild, divider broadcast) even when leafCreated would be 0 —
+    // rebuild, divider broadcast) even when leafCreated would be 0, 
     // and the next turn's gate check tripped again, looping. Now we
     // detect the no-op case and log out cleanly.
     // v2.5.11: reuse the gap calc we already did above instead of
     // re-querying.
     const guardUncompactedCount = uncompactedGapCount;
     if (!force && guardUncompactedCount === 0) {
-      logger.warn('Compaction gate exceeded but nothing outside fresh tail to compact — skipping (bloat is in fresh tail itself)', {
+      logger.warn('Compaction gate exceeded but nothing outside fresh tail to compact, skipping (bloat is in fresh tail itself)', {
         assembledTokens: totalTokens,
         threshold,
         freshTailCount: assembled.freshTailCount,
@@ -485,7 +513,7 @@ export async function checkAndCompact(
     // compaction DOES run for any reason (force, threshold, recovery
     // cascade), the agent loses raw thread tail. The brief is cheap (one
     // summarizer call) and the failure mode without it ("forgot what we
-    // were doing") is severe. Always run it — UNLESS this is a routine
+    // were doing") is severe. Always run it, UNLESS this is a routine
     // gap drain (skipContinuityBrief), in which case the agent is not
     // losing context this turn (fresh tail unchanged) and the brief is
     // pure overhead.
@@ -494,13 +522,20 @@ export async function checkAndCompact(
     }
 
     // Archive raw messages to vault BEFORE compaction destroys them.
-    // If archival fails, ABORT compaction — better to have a bloated context than lost data.
+    // If archival fails, ABORT compaction, better to have a bloated context than lost data.
     // Exception: if the agent is on the Dreamer ignore list, the archive is
     // intentionally skipped (returns null). Don't abort compaction in that case.
     const messagesForArchive = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(contextWindow));
     const archiveCompactedIds = getCompactedMessageIds(agentId);
-    const uncompactedForArchive = messagesForArchive.filter(m => !archiveCompactedIds.has(m.id));
-    // C11: service agents (Healer/Trainer/PM/Imaginer/Dreamer) are excluded from archival —
+    // D1: never re-archive messages already copied to the vault. A reset archives
+    // messages without marking them compacted, so without the high-water bound a
+    // later compaction would re-copy them (reintroducing the duplicate-blob bloat).
+    // This bounds only the ARCHIVE input; compaction itself is unaffected.
+    const archiveHighWater = getArchiveHighWaterMark(agentId);
+    const uncompactedForArchive = messagesForArchive.filter(
+      m => !archiveCompactedIds.has(m.id) && (!archiveHighWater || m.createdAt > archiveHighWater),
+    );
+    // C11: service agents (Healer/Trainer/PM/Imaginer/Dreamer) are excluded from archival, 
     // archiveMessagesBeforeCompaction returns null for them (its own service-agent skip),
     // and this guard previously misread that null as "archive FAILED → abort compaction",
     // so the healer never compacted, grew unbounded, and retried every few seconds. Their
@@ -509,7 +544,7 @@ export async function checkAndCompact(
     if (uncompactedForArchive.length > 0 && !isDreamerIgnored(agentId) && !isSystemServiceAgent(agentId)) {
       const archiveId = archiveMessagesBeforeCompaction(agentId, uncompactedForArchive);
       if (!archiveId) {
-        logger.error('Archive failed — aborting compaction to prevent data loss', { agentId, messageCount: uncompactedForArchive.length }, agentId);
+        logger.error('Archive failed, aborting compaction to prevent data loss', { agentId, messageCount: uncompactedForArchive.length }, agentId);
         return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
       }
     }
@@ -519,7 +554,7 @@ export async function checkAndCompact(
       maxChunks: options?.maxChunksPerRun,
       abortSignal: options?.abortSignal,
     }));
-    // v2.5.12 — Skip condensation on routine drain too. Condensation walks
+    // v2.5.12, Skip condensation on routine drain too. Condensation walks
     // the depth tree and can do multiple LLM calls; backlog drains will
     // accumulate enough leaf summaries that condensation runs naturally on
     // the next forced/emergency compaction.
@@ -545,7 +580,7 @@ export async function checkAndCompact(
     // of the pre-v1.15.108 runaway-loop bug). The no-op guard above
     // should catch most of those, but also gate the divider as
     // belt-and-braces.
-    // v2.5.29 — Show the divider on routine drains too, throttled to once
+    // v2.5.29, Show the divider on routine drains too, throttled to once
     // per 10 min per agent. Pre-v2.5.29 routine drains suppressed it
     // entirely (because backlog upgrades would emit one per turn); the
     // side effect was zero compaction visibility on normal long tasks,
@@ -557,7 +592,7 @@ export async function checkAndCompact(
       shouldShowCompactionDivider(agentId)
     ) {
       insertCompactionDivider(agentId, {
-        label: `Memory Compacted${result.tokensReclaimed > 0 ? ` — reclaimed ~${formatTokens(result.tokensReclaimed)}` : ''}${result.leafCreated > 0 ? ` (${result.leafCreated} new summar${result.leafCreated === 1 ? 'y' : 'ies'})` : ''}`,
+        label: `Memory Compacted${result.tokensReclaimed > 0 ? `, reclaimed ~${formatTokens(result.tokensReclaimed)}` : ''}${result.leafCreated > 0 ? ` (${result.leafCreated} new summar${result.leafCreated === 1 ? 'y' : 'ies'})` : ''}`,
       });
     }
 
@@ -582,15 +617,24 @@ export async function checkAndCompact(
     }, agentId);
 
     // Archive raw messages to vault BEFORE proactive compaction.
-    // If archival fails, ABORT — don't compact without preserving the data.
+    // If archival fails, ABORT, don't compact without preserving the data.
     // Exception: dreamer-ignored agents intentionally skip archive.
-    // C11: same service-agent exclusion as the leaf-compaction archive guard above —
+    // C11: same service-agent exclusion as the leaf-compaction archive guard above, 
     // archive returns null for service agents; without this the null is misread as
     // "archive failed → abort" and the healer's proactive compaction never runs.
-    if (uncompactedMessages.length > 0 && !isDreamerIgnored(agentId) && !isSystemServiceAgent(agentId)) {
-      const archiveId = archiveMessagesBeforeCompaction(agentId, uncompactedMessages);
+    // D1: archive only the not-yet-vaulted subset (bounded by the high-water
+    // mark); the compaction trigger above still uses the full uncompacted set,
+    // so context pressure is unchanged. A proactive compaction whose uncompacted
+    // messages are all already archived simply skips the archive step (which is
+    // correct, not a failure) and compacts normally.
+    const proactiveHighWater = getArchiveHighWaterMark(agentId);
+    const messagesToArchive = uncompactedMessages.filter(
+      m => !proactiveHighWater || m.createdAt > proactiveHighWater,
+    );
+    if (messagesToArchive.length > 0 && !isDreamerIgnored(agentId) && !isSystemServiceAgent(agentId)) {
+      const archiveId = archiveMessagesBeforeCompaction(agentId, messagesToArchive);
       if (!archiveId) {
-        logger.error('Archive failed — aborting proactive compaction to prevent data loss', { agentId, messageCount: uncompactedMessages.length }, agentId);
+        logger.error('Archive failed, aborting proactive compaction to prevent data loss', { agentId, messageCount: messagesToArchive.length }, agentId);
         return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
       }
     }
@@ -611,7 +655,7 @@ export async function checkAndCompact(
     // 10-min throttle as the reactive path.
     if (leafCreated > 0 && shouldShowCompactionDivider(agentId)) {
       insertCompactionDivider(agentId, {
-        label: `Memory Compacted (proactive — ${leafCreated} summar${leafCreated === 1 ? 'y' : 'ies'})`,
+        label: `Memory Compacted (proactive, ${leafCreated} summar${leafCreated === 1 ? 'y' : 'ies'})`,
       });
     }
 
@@ -634,7 +678,7 @@ export async function runLeafCompaction(
   const messagesOutside = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(cw));
   const compactedIds = getCompactedMessageIds(agentId);
 
-  // Filter to only uncompacted messages (chronological, oldest first — that's
+  // Filter to only uncompacted messages (chronological, oldest first, that's
   // what getMessagesOutsideFreshTail returns).
   const uncompacted = messagesOutside.filter(m => !compactedIds.has(m.id));
 
@@ -707,8 +751,8 @@ export async function runLeafCompaction(
       if (content.trim().length === 0) {
         createLeafSummary(
           agentId,
-          '(system/inter-agent activity — no user conversation in this span)',
-          estimateTokens('(system/inter-agent activity — no user conversation in this span)'),
+          NO_CONVERSATION_PLACEHOLDER,
+          estimateTokens(NO_CONVERSATION_PLACEHOLDER),
           messageIds,
           earliestAt,
           latestAt,
@@ -873,7 +917,7 @@ export function rebuildContextItems(agentId: string): void {
 // special "continuity" summary and injected first in context assembly,
 // so the agent always knows what it was doing after compaction.
 
-const CONTINUITY_BRIEF_PROMPT = `You are generating a CONTINUITY BRIEF for an AI agent whose conversation history is about to be compressed. After compaction the agent will only see this brief + compressed summaries — not the raw messages. If you are vague, the agent loses its mind on the next turn. Specificity is everything.
+const CONTINUITY_BRIEF_PROMPT = `You are generating a CONTINUITY BRIEF for an AI agent whose conversation history is about to be compressed. After compaction the agent will only see this brief + compressed summaries, not the raw messages. If you are vague, the agent loses its mind on the next turn. Specificity is everything.
 
 Length: aim for 1500–3000 words. This is the single most important context the agent will see; do NOT under-write it.
 
@@ -883,13 +927,13 @@ Required sections (use these headings literally, in this order):
 Quote the user's last 3–5 direct instructions or messages **verbatim** if they are short, or paraphrase tightly with quotes around the load-bearing phrases. The user's exact words matter more than your interpretation. Include any "remember to…", "always…", "never…", "from now on…" instructions verbatim.
 
 ## Current project / task
-What is the agent actually working on right now? Be concrete: specific project name, what stage, what they're trying to achieve. Reject "working on a project" — that's useless. "Fixing the drop-shadow rendering on Layout 7 of the Verve Health deck so it matches Figma reference (file: /Users/.../decks/verve.pptx, slide ID: g3a8f2)" is useful.
+What is the agent actually working on right now? Be concrete: specific project name, what stage, what they're trying to achieve. Reject "working on a project", that's useless. "Fixing the drop-shadow rendering on Layout 7 of the Verve Health deck so it matches Figma reference (file: /Users/.../decks/verve.pptx, slide ID: g3a8f2)" is useful.
 
 ## What was happening RIGHT BEFORE compaction
 Last 1–3 turns: what tool calls just ran, what they returned, what the agent was about to do next. The agent has to continue exactly from here.
 
 ## Specific details to preserve
-File paths, URLs, task IDs, agent IDs, deck IDs, technique names, drive file IDs, model names, error messages, decision rationale — anything an agent picking this up tomorrow couldn't rederive in five seconds. Bullet list of facts. Be exhaustive.
+File paths, URLs, task IDs, agent IDs, deck IDs, technique names, drive file IDs, model names, error messages, decision rationale, anything an agent picking this up tomorrow couldn't rederive in five seconds. Bullet list of facts. Be exhaustive.
 
 ## Active threads / tasks
 Tracker tasks the agent is owning, A2A threads the agent is in the middle of (with thread IDs), files the agent has been editing, tools the agent has loaded.
@@ -900,10 +944,10 @@ Standing rules from this conversation (don't push without approval, the user is 
 Anti-patterns to avoid:
 - "The agent has been working on various tasks." Useless.
 - "The user wants the project to succeed." Useless.
-- "Several decisions were made." Useless — list them.
+- "Several decisions were made." Useless, list them.
 - Filler transitions ("As mentioned above", "In summary", "Looking forward").
 
-Write the brief directly — no preamble, no meta-commentary about being a continuity brief. The first character should start the "## What the user has told the agent" heading.`;
+Write the brief directly, no preamble, no meta-commentary about being a continuity brief. The first character should start the "## What the user has told the agent" heading.`;
 
 // Don't regenerate the brief if a fresh one already exists. Compaction can
 // fire several times in a row when assembled context hovers around the
@@ -914,7 +958,7 @@ const BRIEF_OVERWRITE_GUARD_MS = 5 * 60 * 1000;
 
 // Brief target size. Pre-2026-04-30 this was 800 tokens; v1.15.92 raised
 // to 2500. The structured prompt rewrite (verbatim user quotes + required
-// sections) needs more room to fully capture state, so 4000 tokens — a
+// sections) needs more room to fully capture state, so 4000 tokens, a
 // chunky but bounded brief that can hold weeks of project context across
 // compactions. Still well under typical context windows.
 const BRIEF_TARGET_TOKENS = 4000;
@@ -935,7 +979,7 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
         if (existingBrief && existingAt) {
           const ageMs = Date.now() - new Date(existingAt).getTime();
           if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < BRIEF_OVERWRITE_GUARD_MS) {
-            logger.info('Skipping continuity brief regen — existing brief is fresh', {
+            logger.info('Skipping continuity brief regen, existing brief is fresh', {
               ageSeconds: Math.round(ageMs / 1000),
               guardSeconds: Math.round(BRIEF_OVERWRITE_GUARD_MS / 1000),
             }, agentId);
@@ -984,12 +1028,12 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
     });
 
     if (!result.text || result.text.length < 50) {
-      logger.warn('Continuity brief generation produced empty/short result — skipping', { agentId });
+      logger.warn('Continuity brief generation produced empty/short result, skipping', { agentId });
       return;
     }
 
     // Store the brief in the agent's config JSON. The context assembler reads
-    // it and injects it at assembly time — no messages, no wasted turns, no
+    // it and injects it at assembly time, no messages, no wasted turns, no
     // chat feed clutter. continuityBriefAt is the source of truth for the
     // overwrite guard above.
     const nowIso = new Date().toISOString();
@@ -998,15 +1042,15 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
       hour: '2-digit', minute: '2-digit', hour12: true,
       timeZoneName: 'short',
     });
-    const briefContent = `[CONTINUITY BRIEF — ${briefTimestamp}, generated before memory compaction]\n${result.text}\n\nYour older conversation history has been archived to the vault. If you need details beyond what's in this brief, use vault_search or memory_grep to find specific facts, file paths, decisions, or instructions from your earlier conversation.`;
+    const briefContent = `[CONTINUITY BRIEF, ${briefTimestamp}, generated before memory compaction]\n${result.text}\n\nYour older conversation history has been archived to the vault. If you need details beyond what's in this brief, use vault_search or memory_grep to find specific facts, file paths, decisions, or instructions from your earlier conversation.`;
 
-    // Phase 4 §C (2026-05-04) — set continuityBriefValidUntilTurn so the
+    // Phase 4 §C (2026-05-04), set continuityBriefValidUntilTurn so the
     // assembler stops injecting the brief after 3 turns post-emergency
     // (Part XVIII §C: "the fresh tail is authoritative once the agent has
     // had a few turns to re-orient").
     //
     // currentTurn is computed from MAX(turn_number) on this agent's
-    // messages — same logic v2/loop.ts uses. v1 messages have NULL
+    // messages, same logic v2/loop.ts uses. v1 messages have NULL
     // turn_number so MAX returns the highest v2 turn or null. v1 path
     // doesn't read this field, so a NULL/0 default is harmless.
     const turnRow = db
@@ -1031,8 +1075,8 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
       briefChars: result.text.length,
     }, agentId);
   } catch (err) {
-    // Continuity brief is best-effort — don't block compaction if it fails
-    logger.warn('Continuity brief generation failed — compaction will proceed without it', {
+    // Continuity brief is best-effort, don't block compaction if it fails
+    logger.warn('Continuity brief generation failed, compaction will proceed without it', {
       agentId,
       error: err instanceof Error ? err.message : String(err),
     }, agentId);
@@ -1052,7 +1096,7 @@ function getFreshTailCount(contextWindow: number): number {
 // For the summarizer they are flattened to one-liners that keep WHAT happened
 // (tool name, ok/error, a short result head) and drop the wire format. Pure
 // text content passes through untouched.
-function condenseToolJsonForSummary(content: string): string {
+export function condenseToolJsonForSummary(content: string): string {
   const trimmed = content.trim();
   if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return content;
   try {

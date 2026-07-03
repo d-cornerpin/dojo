@@ -91,7 +91,7 @@ export interface SpawnParams {
   /**
    * If false, skip the initial wakeup. The agent is spawned but stays idle
    * until it gets a real message (a task assignment, an A2A poke, etc.). Use
-   * this when the parent wants to set up state before the apprentice runs —
+   * this when the parent wants to set up state before the apprentice runs, 
    * for example, building a squad and customising each member before any of
    * them start working.
    *
@@ -165,7 +165,7 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   const spawnConfig = getSpawnConfig();
   const parentIsPrimary = isPrimaryAgent(parentId);
 
-  // Validate spawn limits — primary agent is exempt from children and depth limits
+  // Validate spawn limits, primary agent is exempt from children and depth limits
   if (!parentIsPrimary && newDepth > spawnConfig.maxSpawnDepth) {
     throw new Error(`Spawn depth limit reached: max depth is ${spawnConfig.maxSpawnDepth}, would be ${newDepth}`);
   }
@@ -324,13 +324,13 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   let taskMessage: string;
 
   if (params.initialMessage) {
-    // Custom initial message provided — use it, but always remind about complete_task
+    // Custom initial message provided, use it, but always remind about complete_task
     taskMessage = params.initialMessage;
     if (!params.initialMessage.toLowerCase().includes('complete_task')) {
       taskMessage += '\n\nIMPORTANT: When you are finished, you MUST call complete_task with status="complete" and a summary. Do NOT just stop responding.';
     }
   } else if (systemPrompt.toLowerCase().includes('complete_task')) {
-    // System prompt already mentions complete_task — don't inject default instructions
+    // System prompt already mentions complete_task, don't inject default instructions
     taskMessage = `Your task: ${systemPrompt}\n\nBegin working immediately.`;
   } else {
     // Default: inject complete_task instructions
@@ -338,23 +338,23 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
 
 IMPORTANT INSTRUCTIONS:
 1. Begin working immediately.
-2. Use absolute file paths (e.g., /Users/<your-user>/Desktop/...) — do NOT use ~ or relative paths, as they may resolve differently in your context.
+2. Use absolute file paths (e.g., /Users/<your-user>/Desktop/...), do NOT use ~ or relative paths, as they may resolve differently in your context.
 3. If you have been assigned a tracker task, call tracker_update_status(task_id=YOUR_TASK_ID, status="complete", notes="what you did") BEFORE calling complete_task.
-4. When you have completed the task, you MUST call the complete_task tool with status="complete", a summary of what you did, and any results. Do NOT just stop responding — call complete_task so your parent agent knows you are done.
+4. When you have completed the task, you MUST call the complete_task tool with status="complete", a summary of what you did, and any results. Do NOT just stop responding, call complete_task so your parent agent knows you are done.
 5. If you get stuck or cannot complete the task, call complete_task with status="blocked" or status="fallen" and explain why.
-6. Do not wait for further instructions unless you need clarification — just do the work and report back via complete_task.`;
+6. Do not wait for further instructions unless you need clarification, just do the work and report back via complete_task.`;
   }
 
   // Append task ID context if this agent has an associated tracker task
   if (taskId) {
-    taskMessage += `\n\nYour tracker task ID is: ${taskId} — update its status when you finish.`;
+    taskMessage += `\n\nYour tracker task ID is: ${taskId}, update its status when you finish.`;
   }
 
   if (autoStart === false) {
     // Caller wants the agent spawned but not poked. Skip both the initial
     // message and the runtime trigger. The agent will run when something
     // else wakes it (an A2A message, a task assignment, send_to_agent, etc.).
-    logger.info('Spawned with auto_start=false — agent stays idle until externally poked', { agentId, name });
+    logger.info('Spawned with auto_start=false, agent stays idle until externally poked', { agentId, name });
     return { agentId, name, status: 'idle', persist };
   }
 
@@ -421,7 +421,7 @@ export function terminateAgent(agentId: string, reason?: string): void {
     UPDATE agents SET status = 'terminated', updated_at = datetime('now') WHERE id = ?
   `).run(agentId);
 
-  // v2.5.46 Layer 2 — auto-pause in_progress tasks owned by the
+  // v2.5.46 Layer 2, auto-pause in_progress tasks owned by the
   // terminated agent. Without this they sit as zombies (the agent
   // can never close them; PM keeps poking; user sees stale tasks
   // forever). Pause (not complete) so the user can decide whether
@@ -433,7 +433,7 @@ export function terminateAgent(agentId: string, reason?: string): void {
     `).all(agentId) as Array<{ id: string; title: string }>;
     if (danglers.length > 0) {
       const note = `[${new Date().toISOString()}] Auto-paused: assigned agent "${agent.name}" was terminated (reason: ${reason ?? 'manual'}). Reassign or close from the dashboard.`;
-      // v2.9.22 — pause_validated=1 because the engine, not the agent,
+      // v2.9.22, pause_validated=1 because the engine, not the agent,
       // initiated the pause (agent termination). PM doesn't need to
       // re-validate; the user resolves these from the dashboard.
       // Same loop-prevention as the v2 close-out paths.
@@ -542,7 +542,7 @@ export async function completeAgent(
   // are treated as persistent regardless of the config JSON. Pre-fix,
   // this branch only honored `config.persist`, which silently terminated
   // sensei agents (e.g. the Trainer) whose config row didn't carry that
-  // field — the sensei guard in terminateAgent didn't help because
+  // field, the sensei guard in terminateAgent didn't help because
   // completeAgent does its own raw UPDATE.
   let isPersistent = agent.classification === 'sensei' || agent.agent_type === 'persistent';
   if (!isPersistent) {
@@ -605,13 +605,13 @@ export async function completeAgent(
       },
     });
 
-    // Notify the parent — but as a BRIEF, first-person, self-attributed note in the
+    // Notify the parent, but as a BRIEF, first-person, self-attributed note in the
     // parent's awareness lane, NOT the full result dumped into its conversation.
     // Pre-fix this injected the ENTIRE completion summary as a role='system' row, which
     // live compaction then folded into the parent's context summaries, and the parent
     // model read another agent's work out of its own history and narrated it back to the
-    // user — repeatedly (the owner's "Dreamer batch" summaries). Now:
-    //   • The FULL result stays in the agent bus (sendAgentMessage above) — the record /
+    // user, repeatedly (the owner's "Dreamer batch" summaries). Now:
+    //   • The FULL result stays in the agent bus (sendAgentMessage above), the record /
     //     lane the parent can pull from deliberately if it needs the detail.
     //   • The parent sees only a brief self-attributed one-liner, structurally tagged
     //     origin_kind='engine' so it lands in the EVENTS/awareness lane (never the live
@@ -636,7 +636,7 @@ export async function completeAgent(
 
   // Resolve the task this agent owns. Prefer the explicit agent.task_id link
   // (set at spawn time when task_id is passed). Fall back to "any open task
-  // assigned to this agent" — covers the case where a task was created or
+  // assigned to this agent", covers the case where a task was created or
   // reassigned to the agent after spawn (assigned_to does NOT auto-sync to
   // agents.task_id, so without this fallback completeAgent would silently
   // leave the task in_progress and break dependency chains).
@@ -644,7 +644,7 @@ export async function completeAgent(
   if (!resolvedTaskId) {
     // Match either an in-flight assigned task OR a just-completed assigned task
     // with no summary yet (covers the case where the apprentice called
-    // tracker_update_status first and complete_task second — we still want to
+    // tracker_update_status first and complete_task second, we still want to
     // write the summary onto the already-completed task).
     const fallbackTask = db.prepare(`
       SELECT id FROM tasks
@@ -717,7 +717,7 @@ export async function completeAgent(
       logger.warn('noteTransitionForReview hookup failed (non-fatal)', { taskId: resolvedTaskId, error: err instanceof Error ? err.message : String(err) });
     }
 
-    // Phase 7 (Part X) — fire onTaskComplete hook so the parent agent gets
+    // Phase 7 (Part X), fire onTaskComplete hook so the parent agent gets
     // a structured note containing the original ask + completion summary.
     // The existing parent notification at line ~506-536 stays for v1
     // continuity; this hook adds the original-ask context that the v1 note
@@ -726,7 +726,7 @@ export async function completeAgent(
       const { onTaskComplete } = await import('./v2/hooks/task-complete.js');
       await onTaskComplete(resolvedTaskId, agentId);
     } catch (err) {
-      logger.warn('onTaskComplete hook threw — non-fatal, parent will only see the legacy notification', {
+      logger.warn('onTaskComplete hook threw, non-fatal, parent will only see the legacy notification', {
         agentId,
         taskId: resolvedTaskId,
         error: err instanceof Error ? err.message : String(err),
@@ -737,12 +737,12 @@ export async function completeAgent(
   // ── v2.5.46 Layer 2: auto-close any OTHER in_progress tasks ──
   // The agent may have had multiple tasks assigned (parent created
   // several, or agent edited their plan mid-run). complete_task means
-  // "I'm done as an agent" — any other in_progress tasks owned by them
+  // "I'm done as an agent", any other in_progress tasks owned by them
   // would otherwise be orphaned. Auto-close all of them with the same
   // final status as the primary, plus a clear audit note.
   //
-  // Skips the primary task (resolvedTaskId) — it was just handled above.
-  // Skips paused tasks — those were intentionally set aside.
+  // Skips the primary task (resolvedTaskId), it was just handled above.
+  // Skips paused tasks, those were intentionally set aside.
   try {
     const bulkStatus = status === 'complete' ? 'complete' : status === 'fallen' ? 'fallen' : 'blocked';
     const otherDanglers = db.prepare(`
@@ -783,7 +783,7 @@ export async function completeAgent(
   }
 
   // The Dreamer never links its batches to tracker tasks, so this "you forgot to link a
-  // task" nag would fire on EVERY batch — another per-batch drip. Suppress it for the
+  // task" nag would fire on EVERY batch, another per-batch drip. Suppress it for the
   // Dreamer; its single per-cycle notice (spawnNextDreamerBatch) is the only message it
   // sends the primary. Every normal sub-agent still gets the orphaned-completion heads-up.
   const { isDreamerAgent: isDreamerForOrphan } = await import('../config/platform.js');
@@ -801,7 +801,7 @@ export async function completeAgent(
     // comms-audit rank 10: this used to inject a 5-sentence engine TUTORIAL as a
     // role='system' row + dashboard broadcast (and its "[SOURCE: ORPHANED COMPLETION"
     // prefix was NOT in platform-noise, so compaction could fold it into a summary and
-    // re-narrate it — the one role='system' dump with a live re-narration vector). It
+    // re-narrate it, the one role='system' dump with a live re-narration vector). It
     // also referenced a "completion summary above" that no longer exists after the brief-
     // note fix. Replace with a brief, self-attributed awareness note; the how-to-link-a-
     // task guidance belongs in the tracker tool docs the parent reads WHEN it acts, not
@@ -809,7 +809,7 @@ export async function completeAgent(
     postAgentNotice({
       toAgentId: agent.parent_agent,
       fromName: agent.name ?? 'sub-agent',
-      brief: `Heads up — I finished, but my work wasn't linked to a tracker task, so no task row updated. If you want it tracked, mark the matching task complete or pass task_id next time.`,
+      brief: `Heads up, I finished, but my work wasn't linked to a tracker task, so no task row updated. If you want it tracked, mark the matching task complete or pass task_id next time.`,
       intent: 'orphaned_completion',
     });
   }
@@ -823,7 +823,7 @@ export async function completeAgent(
       const { markDreamerArchivesProcessed } = await import('../vault/maintenance.js');
       markDreamerArchivesProcessed(agentId);
     } catch (err) {
-      logger.error('markDreamerArchivesProcessed threw — archives may not be marked processed', {
+      logger.error('markDreamerArchivesProcessed threw, archives may not be marked processed', {
         agentId,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -875,14 +875,26 @@ export function checkTimeouts(): void {
   const db = getDb();
 
   const expiredAgents = db.prepare(`
-    SELECT id, name, timeout_at, config FROM agents
+    SELECT id, name, timeout_at, config, classification FROM agents
     WHERE status NOT IN ('terminated')
       AND timeout_at IS NOT NULL
       AND timeout_at <= datetime('now')
-  `).all() as Array<{ id: string; name: string; timeout_at: string; config: string }>;
+  `).all() as Array<{ id: string; name: string; timeout_at: string; config: string; classification: string }>;
 
   for (const agent of expiredAgents) {
-    // Skip agents with persist: true — they should stay alive
+    // D14: sensei agents cannot be terminated by the reaper, terminateAgent
+    // refuses them (classification==='sensei') and returns WITHOUT clearing
+    // timeout_at, so the 30s reaper re-picked the same stray sensei on every
+    // tick forever (one orphaned duplicate Dreamer produced 1,713 "Cannot
+    // terminate sensei" log lines). Clear its timeout so it is not re-reaped; a
+    // genuinely stray/duplicate sensei is cleaned up out-of-band, not here.
+    if (agent.classification === 'sensei') {
+      db.prepare("UPDATE agents SET timeout_at = NULL, updated_at = datetime('now') WHERE id = ?").run(agent.id);
+      logger.info('Sensei timeout cleared (senseis are not reaped by the timeout checker)', { agentId: agent.id, name: agent.name }, agent.id);
+      continue;
+    }
+
+    // Skip agents with persist: true, they should stay alive
     try {
       const config = JSON.parse(agent.config || '{}');
       if (config.persist) {
@@ -893,7 +905,7 @@ export function checkTimeouts(): void {
       }
     } catch { /* ignore parse errors */ }
 
-    logger.warn('Agent timeout — terminating', {
+    logger.warn('Agent timeout, terminating', {
       agentId: agent.id,
       name: agent.name,
       timeoutAt: agent.timeout_at,

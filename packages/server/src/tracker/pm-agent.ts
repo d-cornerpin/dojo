@@ -27,7 +27,7 @@ const POKE_THRESHOLDS: Record<string, { first: number; second: number; escalate:
 
 const POKE_INTERVAL_MS = 60_000; // 60 seconds
 
-const SCHEDULER_INTERVAL_MS = 30_000; // 30 seconds — scheduler checks run separately
+const SCHEDULER_INTERVAL_MS = 30_000; // 30 seconds, scheduler checks run separately
 
 let pokeLoopTimer: ReturnType<typeof setInterval> | null = null;
 let schedulerTimer: ReturnType<typeof setInterval> | null = null;
@@ -43,7 +43,7 @@ function loadPMSoulPrompt(): string {
   const templatePaths = [
     path.resolve(__dirname, '../../../../templates/PM-SOUL.md'),
     path.resolve(__dirname, '../../../templates/PM-SOUL.md'),
-    // RICK-SOUL.md removed — only PM-SOUL.md is used
+    // RICK-SOUL.md removed, only PM-SOUL.md is used
   ];
 
   for (const templatePath of templatePaths) {
@@ -99,7 +99,7 @@ export function ensurePMAgentRunning(): void {
   // Ensure the primary agent exists before creating PM (parent_agent FK constraint)
   const primaryExists = db.prepare('SELECT id FROM agents WHERE id = ?').get(primaryId);
   if (!primaryExists) {
-    logger.warn('Primary agent not yet created — deferring PM agent spawn', { primaryId });
+    logger.warn('Primary agent not yet created, deferring PM agent spawn', { primaryId });
     // Retry after a short delay
     setTimeout(() => ensurePMAgentRunning(), 5000);
     return;
@@ -163,7 +163,7 @@ export function ensurePMAgentRunning(): void {
   }
 
   if (pm) {
-    // PM exists but was terminated — reactivate with correct name, model, and permissions
+    // PM exists but was terminated, reactivate with correct name, model, and permissions
     const reactivatePermissions = JSON.stringify({
       file_read: 'none',
       file_write: 'none',
@@ -382,7 +382,7 @@ export function noteTransitionForReview(taskId: string, toStatus: string): void 
  *     (validate_pause / retask / override-complete)
  *
  * Before this, the PM only learned about close-out misses indirectly
- * via the periodic situation report — which surfaced the pause as
+ * via the periodic situation report, which surfaced the pause as
  * "UNVALIDATED_PAUSE" with no context about what the agent actually
  * said or what they should have done. PM had no real basis to do
  * anything except validate the pause, which is exactly the rubber-
@@ -443,7 +443,7 @@ export async function escalateCloseoutMissToPM(ctx: {
     ? ctx.suppressedText.slice(0, 1500) + '...'
     : ctx.suppressedText;
 
-  // v2.10.2 — receipts in the A2A body. Pre-fix, PM only saw the
+  // v2.10.2, receipts in the A2A body. Pre-fix, PM only saw the
   // agent's suppressed text ("08 done"), not the tool-call rows from
   // task_log. That made it easy for PM to conclude "no evidence,
   // re-run" when the audit log actually had the [SENT] success row.
@@ -467,11 +467,11 @@ export async function escalateCloseoutMissToPM(ctx: {
       for (const a of auditRows) {
         const action = a.action_taken ?? '(no action recorded)';
         const detail = [a.reason, a.note].filter(Boolean).join(' / ').slice(0, 180);
-        receiptLines.push(`    [${a.created_at}] ${action}${detail ? ` — ${detail}` : ''}`);
+        receiptLines.push(`    [${a.created_at}] ${action}${detail ? `, ${detail}` : ''}`);
       }
     }
     if (receiptLines.length > 0) {
-      receiptsBlock = `Audit log excerpts (the actual receipts — read these BEFORE deciding):\n${receiptLines.join('\n')}\n\n`;
+      receiptsBlock = `Audit log excerpts (the actual receipts, read these BEFORE deciding):\n${receiptLines.join('\n')}\n\n`;
     }
   } catch (err) {
     logger.warn('Failed to assemble audit-log receipts for closeout-miss A2A (non-fatal)', {
@@ -484,18 +484,18 @@ export async function escalateCloseoutMissToPM(ctx: {
     `Agent "${ctx.agentId}" finished a turn without calling tracker_update_status / tracker_complete_step. The engine ` +
     `auto-paused the one-shot dangling task(s) below as a temporary measure. Your job: don't rubber-stamp. Decide per task.\n\n` +
     `Paused task(s):\n${taskLines}\n\n` +
-    `What the agent said (suppressed from the user — they did NOT see this):\n` +
+    `What the agent said (suppressed from the user, they did NOT see this):\n` +
     `> ${truncatedSaid.split('\n').join('\n> ')}\n\n` +
     receiptsBlock +
     `Trigger: ${sourceLabel}\n\n` +
     `Your verbs:\n` +
-    `  (a) tracker_retask(task_id, directive) — push the agent back at it with concrete corrective guidance ` +
+    `  (a) tracker_retask(task_id, directive), push the agent back at it with concrete corrective guidance ` +
     `(e.g. "you wrote the brief in chat but the task spec is email; call send_email with this same content to <recipient>"). USE THIS WHEN the agent did the wrong thing and you can name what they should do instead.\n` +
-    `  (b) tracker_validate_pause(task_id, valid=true) — confirm the pause stands. USE THIS WHEN the work genuinely can't proceed without user input you can name, or when the task is no longer relevant.\n` +
-    `  (c) tracker_override(...) or tracker_validate_complete(...) — accept as complete. USE THIS WHEN you can verify (via the audit-log excerpts above + the suppressed text + a quick tracker_get_status / file check / etc.) that the work actually got done and the agent just forgot to close the tracker.\n\n` +
+    `  (b) tracker_validate_pause(task_id, valid=true), confirm the pause stands. USE THIS WHEN the work genuinely can't proceed without user input you can name, or when the task is no longer relevant.\n` +
+    `  (c) tracker_override(...) or tracker_validate_complete(...), accept as complete. USE THIS WHEN you can verify (via the audit-log excerpts above + the suppressed text + a quick tracker_get_status / file check / etc.) that the work actually got done and the agent just forgot to close the tracker.\n\n` +
     `**Non-idempotent tools demand option (c), not (a).** If the audit log shows a successful call to gmail_send, outlook_send, ` +
     `imessage_send, sms_send, teams_send_message, voice_call, calendar_create, drive_upload, docs_create, sheets_create, share_publicly, ` +
-    `or an exec that hit a live external API — the action already happened. Re-running it would duplicate the side effect (double email, ` +
+    `or an exec that hit a live external API, the action already happened. Re-running it would duplicate the side effect (double email, ` +
     `double text, double charge). Accept as complete via tracker_override / tracker_validate_complete, citing the audit row as evidence. ` +
     `Do NOT use tracker_retask on these; that produces duplicates.\n\n` +
     `For everything else, inspect the goal against what the agent said. If they delivered the wrong artifact OR in the wrong channel, retask. ` +
@@ -525,7 +525,7 @@ export async function escalateCloseoutMissToPM(ctx: {
 /**
  * Smell-pattern detector. Writes signal entries into task_log and sets
  * tasks.last_smell_flag for PM to read as context. Never blocks the
- * transition (that's the engine hard-gate's job) — this is purely an
+ * transition (that's the engine hard-gate's job), this is purely an
  * advisory signal.
  */
 function runSmellDetector(taskId: string, toStatus: string): void {
@@ -587,14 +587,14 @@ function runSmellDetector(taskId: string, toStatus: string): void {
   }
 }
 
-// ── PM LLM Review — runs the PM agent's brain periodically ──
+// ── PM LLM Review, runs the PM agent's brain periodically ──
 
 let lastLLMReviewAt = 0;
 let lastSituationReportHash = '';
-const LLM_REVIEW_INTERVAL_MS = 600_000; // 10 minutes — gives tasks time to settle before reviewing
+const LLM_REVIEW_INTERVAL_MS = 600_000; // 10 minutes, gives tasks time to settle before reviewing
 
 // How many recent messages to keep for the PM. Bumped from 10 to 30 in
-// v2.7.27 — at 10 the pair-aware cutoff + downstream orphan sanitizer
+// v2.7.27, at 10 the pair-aware cutoff + downstream orphan sanitizer
 // were trimming the PM down to 1-2 effective messages on bad turns,
 // leaving it with no context to judge anything. 30 gives the sanitizer
 // more pair-completeness to work with while still keeping the PM's
@@ -630,7 +630,7 @@ function pmCapReached(): boolean {
 
 /**
  * Prune old PM messages to keep the context window small.
- * The PM doesn't need history — the tracker is its memory.
+ * The PM doesn't need history, the tracker is its memory.
  */
 function pruneOldPMMessages(pmId: string): void {
   const db = getDb();
@@ -673,7 +673,7 @@ function pruneOldPMMessages(pmId: string): void {
     // raw DELETE on a compacted PM message throws and the prune fails
     // forever (pm-agent log spam observed in production: "Failed to prune PM
     // messages" every 10 min for hours). The PM doesn't need its archived
-    // summaries anyway — the tracker is its memory — so wipe the link rows
+    // summaries anyway, the tracker is its memory, so wipe the link rows
     // first, then the messages themselves.
     const txn = db.transaction(() => {
       db.prepare(`
@@ -705,7 +705,7 @@ async function runPMReview(): Promise<void> {
 
   // The 10-minute time gate avoids spamming the LLM when nothing meaningful
   // is happening. But unvalidated-complete / blocked / paused tasks and
-  // pending override requests are time-sensitive — the engine escalates to
+  // pending override requests are time-sensitive, the engine escalates to
   // the user at 5 minutes, so PM needs a chance well before that. Bypass
   // the gate when validation work is queued. The per-hour PM LLM cap
   // (PM_LLM_CALLS_PER_HOUR_CAP) still bounds cost.
@@ -725,6 +725,16 @@ async function runPMReview(): Promise<void> {
   })();
   if (pendingValidationCount === 0 && now - lastLLMReviewAt < LLM_REVIEW_INTERVAL_MS) return;
 
+  // D7: enforce the per-hour PM LLM cap on the POLLED path too, not only the
+  // event-wake path. Before this, a stuck complete-but-unvalidated task bypassed
+  // the 10-min gate (pendingValidationCount > 0) and drove a full LLM review on
+  // every 60s poll, ~900 calls/day at idle. The cap bounds that; validation
+  // work is still handled well before the 5-min user escalation.
+  if (pmCapReached()) {
+    logger.debug('PM review skipped, hourly LLM cap reached', { cap: PM_LLM_CALLS_PER_HOUR_CAP });
+    return;
+  }
+
   const pmId = getPMAgentId();
 
   // Prune old messages before each review to keep context tight
@@ -735,7 +745,7 @@ async function runPMReview(): Promise<void> {
   // left assistant tool_calls + tool_results in its history. The OpenAI
   // Pass 1 sanitizer can strip orphan tool_results (e.g., when a prior
   // assistant got pruned away or compacted out), leaving the PM's view
-  // of its own past work inconsistent — and it responds with [no-reply]
+  // of its own past work inconsistent, and it responds with [no-reply]
   // because it can't reconcile what it sees with what it's being asked
   // to do. The codebase's design intent is that PM is stateless and the
   // tracker is its memory. Honor that: wipe the PM's conversation
@@ -749,9 +759,11 @@ async function runPMReview(): Promise<void> {
         WHERE agent_id = ? AND role != 'system'
       `).run(pmId);
       if (wiped.changes > 0) {
-        // Also reset the dedup hash so the next situation-report send goes
-        // through to the freshly-wiped PM instead of being skipped as a duplicate.
-        lastSituationReportHash = '';
+        // D7: do NOT reset the dedup hash here. The dedup key is the actionable
+        // issue-SET (stableIssuesKey), so keeping the hash means a re-review fires
+        // only when the set of tasks needing validation actually CHANGES, not on
+        // every 60s poll of an unchanged board. Resetting it forced a fresh LLM
+        // review each poll while any task sat unvalidated, the ~900-calls/day loop.
         logger.info('Wiped PM conversation history before validation review', {
           pmId, deletedMessages: wiped.changes, pendingValidation: pendingValidationCount,
         });
@@ -815,8 +827,8 @@ async function runPMReview(): Promise<void> {
     }
   }
 
-  // Issues collected as { stableId, text }. The stableId — keyed on task
-  // id + issue type — is what feeds the dedup hash. The free-form text
+  // Issues collected as { stableId, text }. The stableId, keyed on task
+  // id + issue type, is what feeds the dedup hash. The free-form text
   // (with "X minutes" counters) is what the LLM sees. Without this split,
   // every minute of elapsed time changed the hash and the dedup at line
   // 510 never fired (v2.3.7).
@@ -824,9 +836,9 @@ async function runPMReview(): Promise<void> {
   const nowDate = new Date();
 
   for (const task of activeTasks) {
-    // Skip tasks assigned to dormant agents — they belong to old test groups
+    // Skip tasks assigned to dormant agents, they belong to old test groups
     // or paused projects and should not trigger false alarms.
-    // EXCEPTION: in_progress tasks are never skipped — if someone manually
+    // EXCEPTION: in_progress tasks are never skipped, if someone manually
     // activated a task on a dormant agent, the PM should still monitor it.
     if (task.assignedTo && dormantAgentIds.has(task.assignedTo) && task.status !== 'in_progress') continue;
 
@@ -919,7 +931,7 @@ async function runPMReview(): Promise<void> {
             const agentName = task.assignedToName ?? task.assignedTo;
             issues.push({
               stableId: `${task.id}|IDLE`,
-              text: `IDLE: "${task.title}" is in_progress but ${agentName} has been sitting idle for ${idleMin} minute(s) without transitioning the task. POKE THEM: send_to_agent(${agentName}, intent="QUESTION", thread_id=new, message="You have task '${task.title}' (${task.id.slice(0, 8)}) still in_progress but you appear to have gone idle. Pick exactly one and act:\\n\\n1. STILL WORKING: if you're in the middle of this task (file read, batch operation, multi-step process, etc.), CONTINUE from EXACTLY where you stopped. Do NOT restart from the beginning. Do NOT re-read or re-process content you've already covered. Just call your next tool on the next item / next line / next step in your sequence.\\n2. WAITING ON THE USER (you already asked them): mark it paused with tracker_update_status(status='paused', notes='waiting for X').\\n3. BLOCKED (you cannot proceed, need attention): mark it blocked with tracker_update_status(status='blocked', notes='specific obstacle').\\n4. DONE: mark complete with tracker_update_status(status='complete', result='...', evidence=[...]).\\n\\nThis poke is a check-in, not a restart signal. Long-running work is fine — just keep going from where you were."). The agent's expected to have already self-marked paused/blocked - if they didn't, this poke straightens them out. Emphasize option 1 if the work looks like a long read/batch in progress.`,
+              text: `IDLE: "${task.title}" is in_progress but ${agentName} has been sitting idle for ${idleMin} minute(s) without transitioning the task. POKE THEM: send_to_agent(${agentName}, intent="QUESTION", thread_id=new, message="You have task '${task.title}' (${task.id.slice(0, 8)}) still in_progress but you appear to have gone idle. Pick exactly one and act:\\n\\n1. STILL WORKING: if you're in the middle of this task (file read, batch operation, multi-step process, etc.), CONTINUE from EXACTLY where you stopped. Do NOT restart from the beginning. Do NOT re-read or re-process content you've already covered. Just call your next tool on the next item / next line / next step in your sequence.\\n2. WAITING ON THE USER (you already asked them): mark it paused with tracker_update_status(status='paused', notes='waiting for X').\\n3. BLOCKED (you cannot proceed, need attention): mark it blocked with tracker_update_status(status='blocked', notes='specific obstacle').\\n4. DONE: mark complete with tracker_update_status(status='complete', result='...', evidence=[...]).\\n\\nThis poke is a check-in, not a restart signal. Long-running work is fine, just keep going from where you were."). The agent's expected to have already self-marked paused/blocked - if they didn't, this poke straightens them out. Emphasize option 1 if the work looks like a long read/batch in progress.`,
             });
           }
         }
@@ -952,7 +964,7 @@ async function runPMReview(): Promise<void> {
   // column for tasks that pre-date the migration backfill. Once the
   // backfill has run on this DB the legacy fallback should rarely hit.
   //
-  // v2.9.22 — also accept 'auto_sweep' entries so engine-initiated pauses
+  // v2.9.22, also accept 'auto_sweep' entries so engine-initiated pauses
   // surface a real reason. Pre-fix, engine auto-pauses wrote auto_sweep
   // entries that this filter missed, so PM saw "(EMPTY)" and rejected
   // every engine-paused task as gaming. The primary fix (engine auto-pause
@@ -1069,7 +1081,7 @@ async function runPMReview(): Promise<void> {
       stableId: `${cTask.id}|UNVALIDATED_COMPLETE|${cTask.revert_count}`,
       text:
         `UNVALIDATED_COMPLETE: "${cTask.title}" (${cTask.id.slice(0, 8)}) closed by ${agentName}, awaiting your validation.${smellLine}${runLine}${goalEditLine}\n` +
-        `  Goal: ${cTask.goal ?? '(no goal recorded — pre-migration row)'}\n` +
+        `  Goal: ${cTask.goal ?? '(no goal recorded, pre-migration row)'}\n` +
         `  Result: ${cTask.result ?? '(none)'}\n` +
         `  Evidence:\n${evidenceLines}\n` +
         `  Priority=${cTask.priority}, revert_count=${cTask.revert_count}.${tierHint}\n` +
@@ -1139,7 +1151,7 @@ async function runPMReview(): Promise<void> {
         `  Goal: ${oRow.task_goal ?? '(no goal recorded)'}\n` +
         `  Justification: ${oRow.justification}\n` +
         (oRow.last_engine_error ? `  Last engine error: ${oRow.last_engine_error}\n` : '') +
-        (oRow.attempts_attached > 1 ? `  Engine-auto-fired after ${oRow.attempts_attached} hard-gate rejections — the agent was thrashing on shape.\n` : '') +
+        (oRow.attempts_attached > 1 ? `  Engine-auto-fired after ${oRow.attempts_attached} hard-gate rejections, the agent was thrashing on shape.\n` : '') +
         `  Approve: tracker_override(override_request_id="${oRow.id}", approve=true, reason="..."). ` +
         `Deny: tracker_override(override_request_id="${oRow.id}", approve=false, reason="...").`,
     });
@@ -1162,7 +1174,7 @@ async function runPMReview(): Promise<void> {
       const desc = t.description.length > 150 ? t.description.slice(0, 150) + '...' : t.description;
       line += `\n  Instructions: ${desc}`;
     }
-    // Remediation 4e: ledger evidence inline — the PM judges from what the
+    // Remediation 4e: ledger evidence inline, the PM judges from what the
     // agent actually DID (rejects, observations, transitions), not from
     // timestamps plus its own wiped history. Same durable record the agent
     // itself sees via the attempt-ledger context block.
@@ -1194,29 +1206,33 @@ If you spot issues, call send_to_agent to tell ${primaryName}. You can also mess
 For engine-detected issues, act on them: call send_to_agent to notify ${primaryName} or poke the relevant agent.
 
 DO NOT contact ${primaryName} when:
-- Everything looks fine ("all clear" is noise — end silently).
+- Everything looks fine ("all clear" is noise, end silently).
 - You investigated an engine flag and concluded it's a false positive (e.g., recurring task waiting for its next fire). End silently; ${primaryName} does not need to hear what you ruled out.
 - You have nothing actionable to add beyond what the engine already detected.
 
 Only contact ${primaryName} when there is something they need to do. Keep it brief.`;
 
-  // No engine-detected issues and nothing looks unusual — don't burn tokens
+  // No engine-detected issues and nothing looks unusual, don't burn tokens
   // for the PM to say "all clear."
   if (issues.length === 0) {
+    // AUDIT-FIX: clear the dedup hash on an empty set. Without this, the sequence
+    // {A} -> {} -> {A} (the same issue-set recurring after being fully resolved)
+    // compared equal to the stale hash and was skipped until a restart.
+    lastSituationReportHash = '';
     logger.debug('PM review: no issues detected, skipping LLM call');
     return;
   }
 
-  // Stable dedup hash — keyed ONLY on the actionable issue-set (taskId, issueType).
+  // Stable dedup hash, keyed ONLY on the actionable issue-set (taskId, issueType).
   // This is the engine-level "don't firehose the primary" gate: the PM brain (and
   // therefore any PM→primary send it produces) re-runs ONLY when the set of genuinely
-  // actionable issues changes — a new/changed/resolved (task, issue-type). It must NOT
+  // actionable issues changes, a new/changed/resolved (task, issue-type). It must NOT
   // re-run on board CHURN: the full `taskSummary` (ledger lines, notes, status text,
   // next_run_at timestamps) shifts constantly, so including it here made every minor
   // tracker change bust the dedup and re-review/re-notify the same board every few
   // minutes (the owner's "PM keeps sending everything" firehose). The stableId strips the
   // "X minutes ago" drift that defeated the older text hash (v2.3.7). A genuinely large
-  // report is still fine when the issue-set DID change — this gates frequency/necessity,
+  // report is still fine when the issue-set DID change, this gates frequency/necessity,
   // never length.
   const stableIssuesKey = issues.map(i => i.stableId).sort().join(',');
   const reportHash = stableIssuesKey;
@@ -1253,8 +1269,8 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
     // hash, so the next cycle retries this exact issue-set.)
     lastSituationReportHash = '';
     // comms-audit rank 8: on a PM-LLM failure this used to splice the FULL engine issue
-    // list — issues.map(i => i.text), which is engine-internal directive prose written FOR
-    // the PM, including literal "POKE THEM: send_to_agent(...)" restart scripts — straight
+    // list, issues.map(i => i.text), which is engine-internal directive prose written FOR
+    // the PM, including literal "POKE THEM: send_to_agent(...)" restart scripts, straight
     // into a [A2A:QUESTION from:system] to the primary, where it reached the model as
     // re-narration bait. The PM retries next cycle (hash reset above) and the issues are
     // already on the tracker board, so the primary only needs a brief heads-up, not the raw
@@ -1263,7 +1279,7 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
       toAgentId: getPrimaryAgentId(),
       fromName: 'PM',
       intent: 'pm_review_failed',
-      brief: `My review couldn't run this cycle — ${issues.length} tracker item${issues.length === 1 ? '' : 's'} still need${issues.length === 1 ? 's' : ''} a look (they're on the board). I'll retry next cycle; handle anything urgent directly.`,
+      brief: `My review couldn't run this cycle, ${issues.length} tracker item${issues.length === 1 ? '' : 's'} still need${issues.length === 1 ? 's' : ''} a look (they're on the board). I'll retry next cycle; handle anything urgent directly.`,
     });
   }
 }
@@ -1276,16 +1292,16 @@ async function runPokeCheck(): Promise<void> {
   // when an agent sent intent=ASSIGN (autoCreateAssignTask in
   // tracker/schema.ts). The receiver was already woken via A2A and
   // typically handles the work in their reply rather than by updating
-  // the tracker row — so without this sweep, every A2A assignment that
+  // the tracker row, so without this sweep, every A2A assignment that
   // doesn't get an explicit close leaves an on_deck task forever.
   //
-  // Conservative criteria — only touches tasks where ALL of:
+  // Conservative criteria, only touches tasks where ALL of:
   //   - a2a_thread_id IS NOT NULL (engine-injected, not user/agent-made)
   //   - status = 'on_deck'  (not in_progress / not yet handled)
   //   - no schedule (scheduled tasks legitimately wait on_deck)
   //   - updated_at older than 30 min  (give the receiver time to act)
   //   - the receiver has SENT a message since the task was created
-  //     (proves they were active — they just didn't update the tracker)
+  //     (proves they were active, they just didn't update the tracker)
   //
   // Marks 'fallen' with an audit note so the row stays queryable but
   // drops off the active kanban. Never touches agent-created or user-
@@ -1322,7 +1338,7 @@ async function runPokeCheck(): Promise<void> {
         // Only close if the receiver was active (sent any assistant
         // message) after the task was created. If they were silent the
         // whole time, the proper failure path is the in_progress poke
-        // chain — leave it for that, don't sweep silently.
+        // chain, leave it for that, don't sweep silently.
         const wasActive = activeCheck.get(t.assigned_to, t.created_at) as { 1: number } | undefined;
         if (!wasActive) continue;
         closeStmt.run(t.id);
@@ -1412,12 +1428,12 @@ async function runPokeCheck(): Promise<void> {
     // ── Idle detection (v2.3.6) ──
     // Use the OLDER of two signals so a busy-but-stalled task can still
     // be detected:
-    //   1. Per-task idle (task.updated_at) — captures finished-but-not-
+    //   1. Per-task idle (task.updated_at), captures finished-but-not-
     //      closed tasks. The bug we're fixing in v2.3.6: if the agent is
     //      busy on Task B, per-agent idle never triggers and Task A sits
     //      open forever. task.updated_at is reliable as "last assignee-
     //      driven change" because pokes log to poke_log, not the task row.
-    //   2. Per-agent idle (last message anywhere) — preserves the
+    //   2. Per-agent idle (last message anywhere), preserves the
     //      original "agent crashed entirely / went silent" coverage.
     //
     // Whichever signal is older drives the idleSeconds. If the agent is
@@ -1490,7 +1506,7 @@ async function runPokeCheck(): Promise<void> {
       const resetMsg = `AUTO-RESET: Task "${task.title}" (${task.id}) was moved back to on_deck after ${idleMinutes} minutes idle. The assigned agent (${task.assignedToName ?? task.assignedTo}) did not respond after 3 pokes and escalation. The task needs to be reassigned or investigated.`;
 
       // Auto-reset only fires after the full escalation chain has already
-      // failed (2 pokes + 1 escalation) — by definition something needs the
+      // failed (2 pokes + 1 escalation), by definition something needs the
       // primary's attention NOW. Use ASSIGN so primary actually wakes and
       // reassigns/investigates, not FYI which would let the task sit
       // unassigned until the primary is woken by something else.
@@ -1526,7 +1542,7 @@ async function runPokeCheck(): Promise<void> {
       deliverA2AMessage({
         intent: pokeType === 'escalate_primary' ? 'ASSIGN' : 'QUESTION',
         threadId: pokeThreadId,
-        requiresResponse: true, // All pokes expect a response — even escalations to primary
+        requiresResponse: true, // All pokes expect a response, even escalations to primary
         payload: pokeMessage,
         toAgent: recipient,
         fromAgent: pmId,
@@ -1574,7 +1590,7 @@ function buildPokeMessage(
 
   switch (pokeType) {
     case 'nudge':
-      return `Checking in — task "${task.title}" has been idle for ${idleMinutes} minutes.\n\n${taskInfo}\n\nIf you've finished this work, call tracker_update_status with task_id="${task.id}" and status="complete" with notes on what you did.\nIf still working, no action needed.\nIf blocked, call tracker_update_status with status="blocked" and explain why.`;
+      return `Checking in, task "${task.title}" has been idle for ${idleMinutes} minutes.\n\n${taskInfo}\n\nIf you've finished this work, call tracker_update_status with task_id="${task.id}" and status="complete" with notes on what you did.\nIf still working, no action needed.\nIf blocked, call tracker_update_status with status="blocked" and explain why.`;
 
     case 'urgent':
       return `URGENT: Task "${task.title}" has been idle for ${idleMinutes} minutes. This is poke #${pokeNumber}.\n\n${taskInfo}\n\nYou MUST do one of:\n1. Call tracker_update_status(task_id="${task.id}", status="complete", notes="...") if the work is done\n2. Call tracker_update_status(task_id="${task.id}", status="blocked", notes="...") if you're stuck\n3. Continue working on the task`;

@@ -1,5 +1,5 @@
 // ════════════════════════════════════════
-// Phase 1A — loop detector classifier
+// Phase 1A, loop detector classifier
 //
 // Ports v1's canonicalToolSignature + repeat-count check from
 // runtime.ts:261-293 + 1440-1463 into a v2 classifier. Behavior is
@@ -58,13 +58,13 @@ const DEFAULT_PROSE_FIELDS = new Set([
 ]);
 
 /**
- * v2.7.25 — Search / exploration tools where the `query` field IS the
+ * v2.7.25, Search / exploration tools where the `query` field IS the
  * operation identity, not prose. Dropping `query` from the signature
  * collapsed semantically-distinct searches into one bucket and blocked
  * legitimate "try a different phrasing" sweeps (e.g. vault_search with
  * 4 related queries hit the 3-repeat threshold and refused the 4th).
  *
- * For these tools the global PROSE_FIELDS minus `query` is used —
+ * For these tools the global PROSE_FIELDS minus `query` is used, 
  * everything else (`reason`, `note`, etc.) still gets stripped, but
  * each distinct query phrase counts as a distinct operation.
  *
@@ -100,7 +100,7 @@ const SEARCH_TOOL_PROSE_FIELDS = (() => {
  * Generation / creation tools where the `description` (or `prompt`) IS the
  * operation identity, not prose. Field bug: image_create takes
  * `aspect_ratio` + `description`, and `description` was being stripped as
- * prose — leaving only `aspect_ratio: '1:1'` in the signature. Every
+ * prose, leaving only `aspect_ratio: '1:1'` in the signature. Every
  * image_create call with the same aspect ratio collapsed to the same
  * signature, so a batch of 7 distinct headshots got blocked after 3.
  *
@@ -122,12 +122,12 @@ const GENERATION_TOOL_PROSE_FIELDS = (() => {
 })();
 
 /**
- * OPEN-3 — Inter-agent coordination tools where the `payload`/`message` IS the
+ * OPEN-3, Inter-agent coordination tools where the `payload`/`message` IS the
  * operation identity, not prose. send_to_agent's args are
  * {agent, thread_id, intent, payload}; stripping `payload` as prose collapsed
  * every distinct message to the SAME thread/intent into one signature, so
  * legitimate multi-message PM coordination on a user turn hit the 3-repeat
- * threshold and got blocked ("STOP — you have called send_to_agent N times").
+ * threshold and got blocked ("STOP, you have called send_to_agent N times").
  * Keeping the content field means distinct messages count as distinct
  * operations; a TRUE thrash (re-sending the identical message) still collapses
  * to one signature and is still caught. Mirrors the SEARCH/GENERATION carve-outs.
@@ -144,11 +144,47 @@ const COORDINATION_TOOL_PROSE_FIELDS = (() => {
   return s;
 })();
 
+/**
+ * D5, Mutating tools where the content-bearing field IS the operation identity,
+ * not prose. file_write/append/patch take {path, content}; stripping `content`
+ * as prose collapsed every append to the SAME file into one signature, so the
+ * 4th section-append (the tool's own docs recommend building a long doc one
+ * section at a time) was blocked as a "loop". Channel sends take {to, message/
+ * text}; the message content is what distinguishes two real sends to the same
+ * recipient. Keep those fields, canonicalToolSignature already fingerprints
+ * long strings to a cheap prefix+len hash, so distinct writes/sends are
+ * distinct operations. A TRUE thrash (identical content re-written/re-sent)
+ * still collapses to one signature and is still caught.
+ */
+const MUTATING_TOOLS = new Set([
+  'file_write', 'file_append', 'file_patch',
+  'imessage_send', 'sms_send',
+  'email_send', 'gmail_send', 'gmail_reply', 'gmail_send_message',
+  'outlook_send', 'outlook_reply', 'outlook_send_message',
+  'teams_send_message',
+]);
+
+const MUTATING_TOOL_PROSE_FIELDS = (() => {
+  const s = new Set(DEFAULT_PROSE_FIELDS);
+  s.delete('content');
+  s.delete('text');
+  s.delete('message');
+  return s;
+})();
+
 function proseFieldsFor(toolName: string): ReadonlySet<string> {
   if (SEARCH_TOOLS.has(toolName)) return SEARCH_TOOL_PROSE_FIELDS;
   if (GENERATION_TOOLS.has(toolName)) return GENERATION_TOOL_PROSE_FIELDS;
   if (COORDINATION_TOOLS.has(toolName)) return COORDINATION_TOOL_PROSE_FIELDS;
+  if (MUTATING_TOOLS.has(toolName)) return MUTATING_TOOL_PROSE_FIELDS;
   return DEFAULT_PROSE_FIELDS;
+}
+
+// D5: a successful mutating tool (a write or a send) is forward progress, the
+// task-thrash breaker must not count it toward a "stuck" verdict. Exposed so the
+// breaker's madeProgress check can treat writes/sends like tracker transitions.
+export function isMutatingTool(toolName: string): boolean {
+  return MUTATING_TOOLS.has(toolName);
 }
 
 /**
@@ -175,7 +211,7 @@ export function canonicalToolSignature(
   // Truncate long values to a stable prefix instead of a blob marker. The
   // pre-2026-05-06 implementation replaced every >80-char string with the
   // literal "<prose>", which collapsed distinct exec commands (grep vs
-  // sed vs python3) into the same signature — three real, different exec
+  // sed vs python3) into the same signature, three real, different exec
   // calls would trip the loop detector and the fourth got blocked. The
   // PROSE_FIELDS drop above already removes truly free-form agent text;
   // here we just want to ignore late variation (timestamps, trailing
@@ -219,7 +255,7 @@ export function canonicalToolSignature(
  * already in the window, the decision is 'block' with a refusal
  * message that tells the agent to stop and respond with text.
  *
- * Behavior verbatim from v1 runtime.ts:1440-1463 — same threshold,
+ * Behavior verbatim from v1 runtime.ts:1440-1463, same threshold,
  * same refusal message, same windowing.
  */
 export function loopDetector(
@@ -234,16 +270,16 @@ export function loopDetector(
       signature,
       repeatCount: repeatCount + 1,
       refusalMessage:
-        `STOP — you have called \`${call.name}\` ${repeatCount + 1} times with substantially-similar arguments in the last few turns. ` +
+        `STOP, you have called \`${call.name}\` ${repeatCount + 1} times with substantially-similar arguments in the last few turns. ` +
         `The user does not need more verification. The previous result is the answer; trust it. ` +
-        `Respond to the user with TEXT now — do NOT call this tool again, and do NOT call related verification tools (file_read, exec, ls, etc.) on the same artifact. ` +
+        `Respond to the user with TEXT now, do NOT call this tool again, and do NOT call related verification tools (file_read, exec, ls, etc.) on the same artifact. ` +
         `If you genuinely need different information, ask the user a direct question instead.`,
     };
   }
 
   // Same-tool-name threshold REMOVED 2026-05-06. The blanket "same tool
   // called >5 times in the window" check (added in v2.2.2 to catch
-  // memory_grep thrashing) blocked legitimate batch operations — an agent
+  // memory_grep thrashing) blocked legitimate batch operations, an agent
   // updating profiles on 6 sub-agents looked identical to a real loop.
   // The original target (memory_grep thrashing) is now handled by giving
   // memory_grep results their message IDs + a copy-pasteable

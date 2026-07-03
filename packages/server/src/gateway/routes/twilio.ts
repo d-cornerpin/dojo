@@ -99,9 +99,16 @@ twilioRouter.post('/webhook/sms', async (c) => {
   const body = formParams.Body ?? '';
   const numMedia = Number(formParams.NumMedia ?? '0') || 0;
   const mediaUrls: string[] = [];
+  const mediaContentTypes: string[] = [];
   for (let i = 0; i < numMedia; i++) {
     const u = formParams[`MediaUrl${i}`];
-    if (u) mediaUrls.push(u);
+    if (u) {
+      mediaUrls.push(u);
+      // Twilio declares the media MIME alongside each URL; carried through
+      // so the MMS ingest (D15) can name files / pick categories without
+      // trusting only the download response header.
+      mediaContentTypes.push(formParams[`MediaContentType${i}`] ?? '');
+    }
   }
 
   if (!messageSid || !from || !to) {
@@ -109,7 +116,7 @@ twilioRouter.post('/webhook/sms', async (c) => {
   }
 
   try {
-    await ingestInboundSms({ messageSid, fromNumber: from, toNumber: to, body, numMedia, mediaUrls });
+    await ingestInboundSms({ messageSid, fromNumber: from, toNumber: to, body, numMedia, mediaUrls, mediaContentTypes });
   } catch (err) {
     logger.error('Inbound SMS ingestion failed', {
       messageSid, from, to, error: err instanceof Error ? err.message : String(err),

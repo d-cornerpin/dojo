@@ -1,0 +1,37 @@
+-- 084: D8, durable delivery lifecycle for engine events.
+--
+-- An engine event (a scheduled reminder notice: role='user', origin_kind='engine',
+-- conv_key NULL until a turn claims it) had NO delivery state. getPendingEngineEvent
+-- used a hard `created_at >= datetime('now','-1 hour')` cliff, so an agent busy with
+-- humans for more than an hour aged the event out FOREVER: nothing retried it,
+-- cleanupStaleRuns auto-failed the run, and a one-shot reminder's task was then
+-- marked complete. "Remind me at 3pm" while busy = never spoken, tracker says done.
+--
+-- Fix: give each engine event an owned lifecycle IN PLACE, on its own messages row.
+-- Design choice, columns over a separate engine_event_queue table: the event already
+-- IS a messages row, its claim state already IS conv_key ('engine' at pickup), and
+-- its disposal state already IS swept_at (D11). A side table keyed by message id
+-- would be a second source of truth needing sync at every producer (scheduler,
+-- tracker, healer, completion reports) and a join in every consumer (pending query,
+-- boot sweep, quarantine). Two columns complete the state machine where it lives:
+--
+--   delivery_attempts  how many claimed-then-aborted deliveries this event has had
+--                      (bumped by the loop's engine-claim abort revert)
+--   next_attempt_at    earliest time the next delivery may be tried (backoff
+--                      1m/5m/15m/30m/60m); NULL = eligible immediately
+--
+-- Eligibility (counterparty.ts getPendingEngineEvent): conv_key IS NULL AND
+-- swept_at IS NULL AND attempts < 5 AND (next_attempt_at IS NULL OR due) AND
+-- created_at within 6 hours. After 5 attempts or 6 hours the event is expired
+-- LOUDLY: swept_at is stamped and a deterministic owner-visible agent-notice is
+-- posted exactly once. Nothing older than the 6-hour horizon can ever wake an agent.
+--
+-- Backfill: none needed. Existing rows get delivery_attempts=0 / next_attempt_at
+-- NULL, which reads as "never attempted, eligible now", and the D11 boot sweep plus
+-- the 6-hour eligibility horizon keep historical backlog from replaying.
+--
+-- FTS note: migration 083 narrowed messages_au to AFTER UPDATE OF content, so
+-- stamping these columns causes no FTS churn.
+
+ALTER TABLE messages ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN next_attempt_at TEXT;
